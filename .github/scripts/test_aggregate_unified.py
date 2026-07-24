@@ -74,10 +74,14 @@ def test_discover_leaves_reads_summary_from_download_root(tmp_path: Path) -> Non
 def test_discover_leaves_treats_root_summary_layout_as_exclusive(
     tmp_path: Path,
 ) -> None:
-    (tmp_path / "summary.json").write_text(json.dumps(_summary("root-model", 3, 0.8, 0.5, 30, 45)))
+    (tmp_path / "summary.json").write_text(
+        json.dumps(_summary("root-model", 3, 0.8, 0.5, 30, 45))
+    )
     child = tmp_path / "child-artifact"
     child.mkdir()
-    (child / "summary.json").write_text(json.dumps(_summary("child-model", 3, 0.7, 0.4, 30, 36)))
+    (child / "summary.json").write_text(
+        json.dumps(_summary("child-model", 3, 0.7, 0.4, 30, 36))
+    )
 
     leaves = au._discover_leaves(tmp_path)
 
@@ -92,7 +96,9 @@ def test_discover_leaves_warns_and_skips_truncated_summary(
     (malformed / "summary.json").write_text('{"rollouts_per_task":')
     valid = tmp_path / "b-valid"
     valid.mkdir()
-    (valid / "summary.json").write_text(json.dumps(_summary("anthropic:opus", 3, 0.8, 0.5, 30, 45)))
+    (valid / "summary.json").write_text(
+        json.dumps(_summary("anthropic:opus", 3, 0.8, 0.5, 30, 45))
+    )
 
     leaves = au._discover_leaves(tmp_path)
 
@@ -112,7 +118,9 @@ def test_discover_leaves_skips_summary_with_invalid_aggregation_inputs(
     (malformed / "summary.json").write_text(json.dumps(malformed_summary))
     valid = tmp_path / "b-valid"
     valid.mkdir()
-    (valid / "summary.json").write_text(json.dumps(_summary("anthropic:opus", 3, 0.8, 0.5, 30, 45)))
+    (valid / "summary.json").write_text(
+        json.dumps(_summary("anthropic:opus", 3, 0.8, 0.5, 30, 45))
+    )
 
     combined = au.combine(au._discover_leaves(tmp_path))
 
@@ -256,7 +264,7 @@ def test_combine_ignores_none_metrics_from_zero_task_leaf() -> None:
     assert model["incomplete"] is True
 
 
-def test_combine_rejects_duplicate_model_config_category_leaves() -> None:
+def test_combine_quarantines_duplicate_model_config_category_leaves() -> None:
     leaves = [
         {
             "model": "m",
@@ -282,11 +290,11 @@ def test_combine_rejects_duplicate_model_config_category_leaves() -> None:
         },
     ]
 
-    with pytest.raises(
-        ValueError,
-        match=("Duplicate leaf for model 'm', branch 'current', config 'bare', category 'context'"),
-    ):
-        au.combine(leaves)
+    result = au.combine(leaves)
+
+    assert result["rows"][0]["categories"] == {}
+    assert result["rows"][0]["incomplete"] is True
+    assert result["issues"][0]["code"] == "duplicate_leaf"
 
 
 def test_render_markdown_sorts_by_macro_desc():
@@ -457,7 +465,9 @@ def _leaf_dir(
 def test_discover_leaves_rejects_numeric_metrics_for_zero_task_summary(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    malformed = _leaf_dir(tmp_path, "m", "empty", pass_k=1.0, avg_k=1.0, tasks=0, passed=0)
+    malformed = _leaf_dir(
+        tmp_path, "m", "empty", pass_k=1.0, avg_k=1.0, tasks=0, passed=0
+    )
     _leaf_dir(tmp_path, "m", "populated", pass_k=0.8, avg_k=0.5)
 
     (model,) = au.combine(au._discover_leaves(tmp_path))["rows"]
@@ -539,7 +549,9 @@ def test_discover_leaves_warns_and_skips_json_integer_over_digit_limit(
     malformed = tmp_path / "a-malformed"
     malformed.mkdir()
     oversized_integer = "9" * 5000
-    (malformed / "summary.json").write_text(f'{{"rollouts_per_task": {oversized_integer}}}')
+    (malformed / "summary.json").write_text(
+        f'{{"rollouts_per_task": {oversized_integer}}}'
+    )
     _leaf_dir(tmp_path, "good", "context", pass_k=0.8, avg_k=0.5)
 
     leaves = au._discover_leaves(tmp_path)
@@ -575,6 +587,20 @@ def test_main_writes_outputs_and_skips_radar_for_subset(tmp_path):
     assert not (out / "radar_results.json").exists()
 
 
+def test_main_records_invalid_expected_grid_as_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _leaf_dir(tmp_path, "m", "context")
+    monkeypatch.setenv("EXPECTED_LEAVES", "not-json")
+    monkeypatch.setenv("EXPECTED_CATEGORIES", '["context"]')
+    out = tmp_path / "combined"
+
+    assert au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)]) == 0
+
+    combined = json.loads((out / "unified_summary.json").read_text())
+    assert combined["issues"][0]["code"] == "invalid_expected_leaves"
+
+
 def test_main_emits_radar_input_for_three_categories(tmp_path):
     for cat in ("autonomous", "conversation", "context"):
         _leaf_dir(tmp_path, "m", cat)
@@ -594,13 +620,12 @@ def test_main_rejects_nonpositive_rollouts(
     assert "--rollouts must be >= 1" in capsys.readouterr().err
 
 
-def test_main_fails_when_every_expected_row_has_no_leaf(
+def test_main_reports_when_every_expected_row_has_no_leaf(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    # A run with no usable leaves must fail even though the expected grid produces
-    # placeholder rows in the emitted scorecard.
+    # A run with no usable leaves emits a diagnostic scorecard without failing.
     monkeypatch.setenv(
         "EXPECTED_LEAVES",
         '[{"model": "m", "branch": "current", "config": "bare", "category": "context"}]',
@@ -610,9 +635,13 @@ def test_main_fails_when_every_expected_row_has_no_leaf(
 
     rc = au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)])
 
-    assert rc == 1
+    assert rc == 0
     assert (out / "unified_summary.json").exists()
-    assert "::error::No usable eval leaf summaries were found" in capsys.readouterr().out
+    combined = json.loads((out / "unified_summary.json").read_text())
+    assert combined["issues"][0]["code"] == "no_usable_leaf_summaries"
+    assert (
+        "::warning::No usable eval leaf summaries were found" in capsys.readouterr().out
+    )
 
     _leaf_dir(tmp_path, "m", "context")
     assert au.main([str(tmp_path), "--rollouts", "3", "--out-dir", str(out)]) == 0
@@ -674,7 +703,10 @@ def test_main_passes_when_an_unexpected_row_is_complete(
     output = capsys.readouterr().out
     assert rc == 0
     assert "::warning::missing / current / bare incomplete" in output
-    assert "::warning::Every expected (model, branch, config) row is incomplete" not in output
+    assert (
+        "::warning::Every expected (model, branch, config) row is incomplete"
+        not in output
+    )
 
 
 def test_main_does_not_apply_expected_grid_failure_without_expected_leaves(
@@ -692,7 +724,10 @@ def test_main_does_not_apply_expected_grid_failure_without_expected_leaves(
     output = capsys.readouterr().out
     assert rc == 0
     assert "::warning::m / current / bare incomplete" in output
-    assert "::error::Every expected (model, branch, config) row is incomplete" not in output
+    assert (
+        "::error::Every expected (model, branch, config) row is incomplete"
+        not in output
+    )
 
 
 def test_main_preserves_explicit_empty_expected_grid(
@@ -733,8 +768,8 @@ def test_main_warns_and_skips_leaf_with_mismatched_rollouts(
     output = capsys.readouterr().out
     combined = json.loads((out / "unified_summary.json").read_text())
     (model,) = combined["rows"]
-    assert rc == 1
-    assert "::error::No usable eval leaf summaries were found" in output
+    assert rc == 0
+    assert "::warning::No usable eval leaf summaries were found" in output
     assert "rollouts_per_task is 2; expected 3" in output
     assert model["missing_categories"] == ["context"]
 
@@ -779,10 +814,30 @@ def test_combine_flags_missing_leaves_against_expected_grid():
     out = au.combine(
         leaves,
         expected_leaves=[
-            {"model": "a", "branch": "current", "config": "bare", "category": "autonomous"},
-            {"model": "a", "branch": "current", "config": "bare", "category": "context"},
-            {"model": "b", "branch": "current", "config": "bare", "category": "autonomous"},
-            {"model": "b", "branch": "current", "config": "bare", "category": "context"},
+            {
+                "model": "a",
+                "branch": "current",
+                "config": "bare",
+                "category": "autonomous",
+            },
+            {
+                "model": "a",
+                "branch": "current",
+                "config": "bare",
+                "category": "context",
+            },
+            {
+                "model": "b",
+                "branch": "current",
+                "config": "bare",
+                "category": "autonomous",
+            },
+            {
+                "model": "b",
+                "branch": "current",
+                "config": "bare",
+                "category": "context",
+            },
         ],
         expected_categories=["autonomous", "context"],
     )
@@ -947,8 +1002,18 @@ def test_combine_rows_are_model_config_pairs():
         _leaf("openai:gpt", "dcode", "autonomous", 0.0),
     ]
     expected_leaves = [
-        {"model": "openai:gpt", "branch": "current", "config": "bare", "category": "autonomous"},
-        {"model": "openai:gpt", "branch": "current", "config": "dcode", "category": "autonomous"},
+        {
+            "model": "openai:gpt",
+            "branch": "current",
+            "config": "bare",
+            "category": "autonomous",
+        },
+        {
+            "model": "openai:gpt",
+            "branch": "current",
+            "config": "dcode",
+            "category": "autonomous",
+        },
     ]
     combined = aggregate_unified.combine(
         leaves, expected_leaves=expected_leaves, expected_categories=["autonomous"]
@@ -969,17 +1034,17 @@ def test_combine_same_model_configs_do_not_collide():
     assert len(combined["rows"]) == 2
 
 
-def test_combine_raises_on_true_triple_duplicate():
-    import pytest
-
+def test_combine_quarantines_true_triple_duplicate():
     import aggregate_unified
 
     leaves = [
         _leaf("openai:gpt", "bare", "autonomous", 1.0),
         _leaf("openai:gpt", "bare", "autonomous", 0.0),
     ]
-    with pytest.raises(ValueError, match="Duplicate leaf"):
-        aggregate_unified.combine(leaves)
+    result = aggregate_unified.combine(leaves)
+
+    assert result["rows"][0]["categories"] == {}
+    assert result["issues"][0]["code"] == "duplicate_leaf"
 
 
 # --- Task 2: (model, branch, config, category) rows ---------------------------
@@ -1071,6 +1136,8 @@ def test_combine_supports_heterogeneous_required_categories():
         expected_categories=["autonomous", "conversation"],
     )
 
-    rows = {(row["model"], row["branch"], row["config"]): row for row in combined["rows"]}
+    rows = {
+        (row["model"], row["branch"], row["config"]): row for row in combined["rows"]
+    }
     assert rows[("openai:gpt", "current", "bare")]["missing_categories"] == []
     assert rows[("openai:gpt", "current", "tau3")]["missing_categories"] == []

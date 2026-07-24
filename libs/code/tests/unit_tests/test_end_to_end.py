@@ -133,8 +133,8 @@ class TestDeepAgentsCLIEndToEnd:
                             content="I'll help you with that.",
                             tool_calls=[
                                 {
-                                    "name": "write_todos",
-                                    "args": {"todos": []},
+                                    "name": "ls",
+                                    "args": {},
                                     "id": "call_1",
                                     "type": "tool_call",
                                 }

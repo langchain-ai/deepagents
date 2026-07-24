@@ -6403,3 +6403,52 @@ effort = "low"
         with pytest.raises(ModelConfigError) as exc_info:
             create_model("openai_codex:gpt-5.2-codex")
         assert "openai_codex:gpt-5.2-codex" in str(exc_info.value)
+
+
+class TestResolveGoalAutoAcceptCriteria:
+    """Coverage for the config.py wrapper over the goals manifest option."""
+
+    def test_missing_manifest_option_fails_closed_with_warning(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A missing manifest entry disables auto-accept and logs why.
+
+        The `option is None` branch only fires on a manifest regression (a
+        renamed or dropped key), so it must fail closed to review *and* leave a
+        trail rather than silently ignoring a user's saved preference.
+        """
+        from deepagents_code.config import resolve_goal_auto_accept_criteria
+
+        with (
+            patch(
+                "deepagents_code.config_manifest.get_option",
+                return_value=None,
+            ) as get_option,
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+        ):
+            result = resolve_goal_auto_accept_criteria()
+
+        assert result == (False, "default")
+        get_option.assert_called_once_with("goals.auto_accept_criteria")
+        assert any(
+            "goals.auto_accept_criteria" in record.getMessage()
+            for record in caplog.records
+        )
+
+    def test_resolves_effective_preference_and_source(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The wrapper reports the resolved value and its config source."""
+        from deepagents_code import config_manifest
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.config import resolve_goal_auto_accept_criteria
+
+        monkeypatch.setenv(GOAL_AUTO_ACCEPT_CRITERIA, "true")
+        monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+
+        assert resolve_goal_auto_accept_criteria() == (
+            True,
+            f"env ({GOAL_AUTO_ACCEPT_CRITERIA})",
+        )

@@ -6,11 +6,15 @@ from typing import TYPE_CHECKING
 
 from deepagents_code._env_vars import DEBUG_ONBOARDING
 from deepagents_code.onboarding import (
+    GOAL_AUTO_ACCEPT_PROMPT_MARKER_FILENAME,
     ONBOARDING_MARKER_FILENAME,
     ONBOARDING_NAME_MEMORY_END,
     ONBOARDING_NAME_MEMORY_START,
     extract_onboarding_name_block,
+    goal_auto_accept_prompt_marker_path,
     has_completed_onboarding,
+    has_shown_goal_auto_accept_prompt,
+    mark_goal_auto_accept_prompt_shown,
     mark_onboarding_complete,
     onboarding_marker_path,
     should_run_onboarding,
@@ -54,6 +58,40 @@ class TestOnboardingState:
 
         assert onboarding_marker_path(tmp_path).read_text(encoding="utf-8") == "1\n"
         assert should_run_onboarding(tmp_path) is False
+
+    def test_goal_preference_prompt_marker_is_versioned(self, tmp_path) -> None:
+        """Answering the prompt should write its dedicated versioned marker."""
+        assert has_shown_goal_auto_accept_prompt(tmp_path) is False
+
+        assert mark_goal_auto_accept_prompt_shown(tmp_path) is True
+
+        path = goal_auto_accept_prompt_marker_path(tmp_path)
+        assert path.name == GOAL_AUTO_ACCEPT_PROMPT_MARKER_FILENAME
+        assert path.read_text(encoding="utf-8") == "1\n"
+        assert has_shown_goal_auto_accept_prompt(tmp_path) is True
+
+    def test_goal_preference_prompt_marker_uses_state_dir(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The one-time prompt marker should remain private app state."""
+        from deepagents_code import onboarding as onboarding_module
+
+        state_dir = tmp_path / ".deepagents" / ".state"
+        monkeypatch.setattr(onboarding_module, "DEFAULT_STATE_DIR", state_dir)
+
+        assert goal_auto_accept_prompt_marker_path() == (
+            state_dir / GOAL_AUTO_ACCEPT_PROMPT_MARKER_FILENAME
+        )
+
+    def test_goal_preference_prompt_marker_write_failure_returns_false(
+        self,
+        tmp_path,
+    ) -> None:
+        """A marker I/O failure should not escape the onboarding helper."""
+        blocker = tmp_path / "not-a-directory"
+        blocker.write_text("blocked", encoding="utf-8")
+
+        assert mark_goal_auto_accept_prompt_shown(blocker / ".state") is False
 
     def test_write_onboarding_name_memory_creates_managed_block(self, tmp_path) -> None:
         """Submitted names should be written to user agent memory."""

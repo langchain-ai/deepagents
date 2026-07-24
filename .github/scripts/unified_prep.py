@@ -258,6 +258,43 @@ def _load_tasks_json(path: str) -> dict[str, list[str]]:
     return cast(dict[str, list[str]], raw)
 
 
+def filter_tasks(
+    tasks_by_category: dict[str, list[str]], selection: str
+) -> dict[str, list[str]]:
+    """Filter resolved profile tasks by an optional exact-name CSV selection.
+
+    Args:
+        tasks_by_category: Tasks resolved for each selected evaluation category.
+        selection: Comma-separated exact task names, or an empty string for all.
+
+    Returns:
+        Category task lists restricted to the requested names in request order.
+
+    Raises:
+        SystemExit: If a requested task is unavailable in the selected scope.
+    """
+    requested = list(
+        dict.fromkeys(task.strip() for task in selection.split(",") if task.strip())
+    )
+    if not requested:
+        return tasks_by_category
+
+    available = {
+        task for tasks in tasks_by_category.values() for task in tasks
+    }
+    unknown = [task for task in requested if task not in available]
+    if unknown:
+        raise SystemExit(
+            "UNIFIED_INCLUDE_TASKS contains tasks outside the selected categories/profile: "
+            f"{unknown}"
+        )
+
+    return {
+        category: [task for task in requested if task in set(tasks)]
+        for category, tasks in tasks_by_category.items()
+    }
+
+
 def _resolve_branch_sha(branch: str) -> str:
     """Resolve a validated remote ref to an immutable commit SHA."""
     if not re.fullmatch(r"[A-Za-z0-9._/-]+", branch) or branch.startswith("-") or ".." in branch:
@@ -446,9 +483,21 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("full profile requires UNIFIED_TASKS_JSON (enumerated tasks).")
         tasks_by_cat = _load_tasks_json(tasks_json)
 
-    empty_categories = [category for category in categories if not tasks_by_cat.get(category)]
-    if empty_categories:
-        raise SystemExit(f"No tasks resolved for requested categor(y/ies): {empty_categories}")
+    include_tasks = os.environ.get("UNIFIED_INCLUDE_TASKS", "").strip()
+    tasks_by_cat = filter_tasks(tasks_by_cat, include_tasks)
+
+    if include_tasks:
+        # An explicit task selection narrows the active categories to those that
+        # actually contain a requested task. Unknown names already errored in
+        # filter_tasks, so a category emptied here simply wasn't targeted by the
+        # selection and is dropped rather than treated as unresolved.
+        categories = [category for category in categories if tasks_by_cat.get(category)]
+        if not categories:
+            raise SystemExit("UNIFIED_INCLUDE_TASKS matched no selected categories.")
+    else:
+        empty_categories = [category for category in categories if not tasks_by_cat.get(category)]
+        if empty_categories:
+            raise SystemExit(f"No tasks resolved for requested categor(y/ies): {empty_categories}")
 
     n_models = len(model_specs)
 

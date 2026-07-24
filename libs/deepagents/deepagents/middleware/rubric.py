@@ -16,7 +16,8 @@ import logging
 import re
 import secrets
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from importlib import import_module
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -26,7 +27,6 @@ from typing import (
 )
 
 from langchain.agents import create_agent
-from langchain.agents.factory import FALLBACK_MODELS_WITH_STRUCTURED_OUTPUT
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -52,7 +52,7 @@ from pydantic import BaseModel, Discriminator, Field, model_validator
 from typing_extensions import TypedDict
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable
 
     from langchain_core.language_models import BaseChatModel
     from langchain_core.tools import BaseTool
@@ -375,6 +375,36 @@ def _strategy_from_exception(exc: BaseException) -> _StructuredOutputStrategy | 
     return None
 
 
+def _fallback_structured_output_model_patterns() -> Sequence[str] | None:
+    """Load LangChain's private fallback-model patterns when available.
+
+    These patterns support trace diagnostics only. If LangChain relocates or
+    removes them, grading must continue without a model-based prediction.
+    """
+    try:
+        factory = import_module("langchain.agents.factory")
+    except ImportError:
+        logger.debug(
+            "Could not import LangChain's fallback-model patterns for rubric grader diagnostics",
+            exc_info=True,
+        )
+        return None
+    patterns = getattr(factory, "FALLBACK_MODELS_WITH_STRUCTURED_OUTPUT", None)
+    if patterns is None:
+        logger.debug("LangChain's fallback-model patterns are unavailable for rubric grader diagnostics")
+        return None
+    if isinstance(patterns, str) or not isinstance(patterns, Sequence):
+        logger.debug(
+            "LangChain's fallback-model patterns have unsupported type %s",
+            type(patterns).__name__,
+        )
+        return None
+    if not all(isinstance(pattern, str) for pattern in patterns):
+        logger.debug("LangChain's fallback-model patterns contain non-string values")
+        return None
+    return patterns
+
+
 def _strategy_from_model(
     model: object,
     *,
@@ -384,8 +414,9 @@ def _strategy_from_model(
 
     This mirrors LangChain's model-profile and known-model fallbacks, including
     its tool-calling exception for Gemini models before Gemini 3. A configured
-    model string means resolution did not finish, so its strategy is unknown;
-    every resolved model ineligible for provider output uses `ToolStrategy`.
+    model string means resolution did not finish, so its strategy is unknown.
+    If LangChain's private fallback-model table is unavailable, predictions
+    that depend on it are also unknown.
     """
     if isinstance(model, str):
         return None
@@ -396,7 +427,10 @@ def _strategy_from_model(
         if has_tools and normalized is not None and "gemini" in normalized and "gemini-3" not in normalized:
             return "ToolStrategy"
         return "ProviderStrategy"
-    if normalized is not None and any(re.search(pattern, normalized) for pattern in FALLBACK_MODELS_WITH_STRUCTURED_OUTPUT):
+    fallback_patterns = _fallback_structured_output_model_patterns()
+    if fallback_patterns is None:
+        return None
+    if normalized is not None and any(re.search(pattern, normalized) for pattern in fallback_patterns):
         return "ProviderStrategy"
     return "ToolStrategy"
 

@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, NotRequired, TypedDict, cast
 
-from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+from deepagents_code.goal_state_notice import is_internal_message
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -1081,6 +1081,15 @@ def _reduce_message_write_rows(
     return counts
 
 
+def _visible_message_count(messages: list[object]) -> int:
+    """Count messages that appear in user-facing thread history.
+
+    Returns:
+        Number of messages not classified as hidden application context.
+    """
+    return sum(not is_internal_message(message) for message in messages)
+
+
 def _count_messages_from_deltas(deltas: list[Any]) -> int:
     """Count messages from an ordered list of `messages`-channel write deltas.
 
@@ -1128,7 +1137,8 @@ def _count_messages_from_deltas(deltas: list[Any]) -> int:
 
     if not needs_exact_fold:
         try:
-            return len(cast("list[Any]", add_messages([], buffer)))
+            reduced = cast("list[Any]", add_messages([], buffer))
+            return _visible_message_count(cast("list[object]", reduced))
         except Exception:
             logger.debug(
                 "Batched message-count fold failed; using sequential fold",
@@ -1166,7 +1176,7 @@ def _incremental_message_count(deltas: list[Any]) -> int:
                 exc_info=True,
             )
             continue
-    return len(reduced)
+    return _visible_message_count(cast("list[object]", reduced))
 
 
 def _summarize_checkpoint(data: object) -> _CheckpointSummary:
@@ -1177,7 +1187,9 @@ def _summarize_checkpoint(data: object) -> _CheckpointSummary:
     """
     messages = _checkpoint_messages(data)
     return _CheckpointSummary(
-        message_count=len(messages) if messages is not None else None,
+        message_count=(
+            _visible_message_count(messages) if messages is not None else None
+        ),
         initial_prompt=_initial_prompt_from_messages(messages or []),
     )
 
@@ -1220,6 +1232,8 @@ def _initial_prompt_from_messages(messages: list[object]) -> str | None:
     cancellation notice) are skipped so they never surface as a thread's prompt.
     """
     for msg in messages:
+        if is_internal_message(msg):
+            continue
         if getattr(msg, "type", None) == "human":
             prompt = _coerce_prompt_text(getattr(msg, "content", None))
         elif isinstance(msg, dict):
@@ -1230,8 +1244,6 @@ def _initial_prompt_from_messages(messages: list[object]) -> str | None:
                 continue
             prompt = _coerce_prompt_text(msg_dict.get("content"))
         else:
-            continue
-        if prompt is not None and prompt.startswith(SYSTEM_MESSAGE_PREFIX):
             continue
         return prompt
     return None

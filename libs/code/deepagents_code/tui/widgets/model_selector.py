@@ -67,6 +67,7 @@ from the per-provider sections below.
 _RECOMMENDED_MODELS: dict[str, str] = {
     "anthropic:claude-opus-4-7": "Claude Opus 4.7",
     "anthropic:claude-opus-4-8": "Claude Opus 4.8",
+    "anthropic:claude-opus-5": "Claude Opus 5",
     "anthropic:claude-sonnet-5": "Claude Sonnet 5",
     "baseten:deepseek-ai/DeepSeek-V4-Pro": "DeepSeek V4 Pro",
     "baseten:moonshotai/Kimi-K2.7-Code": "Kimi K2.7 Code",

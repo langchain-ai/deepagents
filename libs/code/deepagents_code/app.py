@@ -130,7 +130,7 @@ _DEFERRED_START_NOTICE = (
 )
 
 _AUTO_MODE_ENABLED_WARNING = (
-    "Auto beta enabled. It classifies gated actions but is not sandbox containment."
+    "Auto enabled. It classifies gated actions but is not sandbox containment."
 )
 
 
@@ -7521,7 +7521,7 @@ class DeepAgentsApp(App):
 
         if not self._auto_mode_eligible:
             self._warn_live_approval_mode_unavailable(
-                "Auto is available only in the local TUI."
+                "Auto is unavailable with a sandbox."
             )
             return False
         if not await self._write_live_approval_mode(ApprovalMode.AUTO):
@@ -16815,7 +16815,7 @@ class DeepAgentsApp(App):
         if self._approval_mode is ApprovalMode.MANUAL:
             if not self._auto_mode_eligible:
                 self._warn_live_approval_mode_unavailable(
-                    "Auto is available only in the local TUI."
+                    "Auto is unavailable with a sandbox."
                 )
                 return
             target = ApprovalMode.AUTO
@@ -16853,7 +16853,7 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(target.value)
         if target is ApprovalMode.AUTO:
             self.notify(
-                "Automated review (beta) is enabled. It checks approval-gated "
+                "Automated review is enabled. It checks approval-gated "
                 "actions, but may not catch every issue.",
                 severity="warning",
                 timeout=8,

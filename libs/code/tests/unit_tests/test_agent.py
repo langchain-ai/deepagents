@@ -4720,6 +4720,104 @@ class TestCreateCliAgentInterpreterWiring:
         mock_settings.interpreter_ptc_acknowledge_unsafe = False
         return mock_settings
 
+    def _capture_middleware(self, tmp_path: Path, **kwargs: Any) -> list[Any]:
+        """Run `create_cli_agent` with mocked deps and return its middleware list.
+
+        Keeps the Auto-mode wiring tests below to a single assertion apiece by
+        centralizing the identical patching/boilerplate. Extra keyword
+        arguments (e.g. `auto_mode_enabled`, `interactive`, `sandbox`) are
+        forwarded to `create_cli_agent`.
+        """
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                cwd=tmp_path,
+                **kwargs,
+            )
+        return mock_create.call_args.kwargs["middleware"]
+
+    def test_auto_mode_enabled_wires_middleware(self, tmp_path: Path) -> None:
+        """Auto wires `AutoModeHITLMiddleware` in the interactive, sandbox-free case.
+
+        Regression guard for GA: Auto no longer requires an experimental flag,
+        so an interactive local session with `auto_mode_enabled=True` must
+        install the middleware and bind the canonical ask-user/compaction tools,
+        ordered ahead of compaction.
+        """
+        from deepagents_code.ask_user import AskUserMiddleware
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+        from deepagents_code.offload_middleware import CLICompactionMiddleware
+
+        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        ask_user_middleware = next(
+            item for item in middleware if isinstance(item, AskUserMiddleware)
+        )
+        compaction_middleware = next(
+            item for item in middleware if isinstance(item, CLICompactionMiddleware)
+        )
+        assert auto_middleware._trusted_ask_user_tool is ask_user_middleware.tools[0]
+        assert (
+            auto_middleware._trusted_compaction_tool is compaction_middleware.tools[0]
+        )
+        assert middleware.index(auto_middleware) < middleware.index(
+            compaction_middleware
+        )
+
+    def test_auto_mode_omitted_outside_interactive(self, tmp_path: Path) -> None:
+        """Auto is refused (no middleware) in a non-interactive session."""
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        middleware = self._capture_middleware(
+            tmp_path, auto_mode_enabled=True, interactive=False
+        )
+
+        assert not any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
+
+    def test_auto_mode_omitted_with_sandbox(self, tmp_path: Path) -> None:
+        """Auto is refused (no middleware) when a sandbox backend is active.
+
+        This guard is the sole programmatic protection preventing
+        classifier-backed auto-approval from engaging in a sandboxed session,
+        so it is asserted directly rather than relying on upstream callers.
+        """
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        sandbox = cast(
+            "SandboxBackendProtocol",
+            FilesystemBackend(root_dir=tmp_path, virtual_mode=False),
+        )
+        middleware = self._capture_middleware(
+            tmp_path, auto_mode_enabled=True, sandbox=sandbox
+        )
+
+        assert not any(isinstance(item, AutoModeHITLMiddleware) for item in middleware)
+
     def test_compiled_agent_preserves_canonical_compaction_tool_identity(
         self, tmp_path: Path
     ) -> None:

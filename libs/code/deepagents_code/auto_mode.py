@@ -491,8 +491,8 @@ def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float)
     """Build a safe agent/UI reason for a failed auto classifier call.
 
     Provider exception text stays out of the reason (it can carry secrets or
-    noisy HTML). Timeouts are our own deadline, so reporting the configured
-    limit is safe and actionable.
+    noisy HTML). Timeouts are dcode's local `asyncio.wait_for` deadline, so
+    reporting that app-imposed limit is safe and actionable.
 
     Args:
         exc: Failure raised while invoking or validating the classifier.
@@ -502,7 +502,10 @@ def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float)
         Compact single-line reason for tool messages and TUI events.
     """
     if isinstance(exc, TimeoutError):
-        return f"The authorization classifier timed out after {timeout_seconds:g}s."
+        return (
+            "dcode cancelled the authorization classifier after its local "
+            f"{timeout_seconds:g}s timeout (app-imposed, not a provider timeout)."
+        )
     return f"The authorization classifier was unavailable ({type(exc).__name__})."
 
 

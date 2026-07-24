@@ -2897,13 +2897,13 @@ async def test_malformed_classifier_batch_blocks_call_and_increments_unavailable
 
 
 def test_classifier_unavailable_reason_specializes_timeouts() -> None:
-    assert (
-        classifier_unavailable_reason(TimeoutError(), timeout_seconds=20.0)
-        == "The authorization classifier timed out after 20s."
+    assert classifier_unavailable_reason(TimeoutError(), timeout_seconds=20.0) == (
+        "dcode cancelled the authorization classifier after its local "
+        "20s timeout (app-imposed, not a provider timeout)."
     )
-    assert (
-        classifier_unavailable_reason(TimeoutError(), timeout_seconds=1.5)
-        == "The authorization classifier timed out after 1.5s."
+    assert classifier_unavailable_reason(TimeoutError(), timeout_seconds=1.5) == (
+        "dcode cancelled the authorization classifier after its local "
+        "1.5s timeout (app-imposed, not a provider timeout)."
     )
     assert (
         classifier_unavailable_reason(
@@ -2932,7 +2932,8 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
 
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
     assert plan["decisions"][0]["reason"] == (
-        "The authorization classifier timed out after 1s."
+        "dcode cancelled the authorization classifier after its local "
+        "1s timeout (app-imposed, not a provider timeout)."
     )
 
 
@@ -3449,7 +3450,10 @@ async def test_classifier_unavailable_emits_single_event_for_batch(
         store=store,
         stream_writer=events.append,
     )
-    reason = "The authorization classifier timed out after 1s."
+    reason = (
+        "dcode cancelled the authorization classifier after its local "
+        "1s timeout (app-imposed, not a provider timeout)."
+    )
     plan = {
         "batch_id": _batch_id(ai_message.tool_calls),
         "thread_key": key,

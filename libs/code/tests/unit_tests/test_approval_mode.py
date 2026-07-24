@@ -294,3 +294,45 @@ def test_yolo_and_auto_notice_coexist(tmp_path: Path) -> None:
     assert data["acknowledged"] is True
     assert data["auto_notice_version"] == AUTO_NOTICE_VERSION
     assert data["auto_notice_shown"] is True
+
+
+def test_concurrent_yolo_and_auto_saves_preserve_both(tmp_path: Path) -> None:
+    """Overlapping merge-writes must not drop the other writer's fields."""
+    import json
+    import threading
+
+    path = tmp_path / "approval.json"
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def run_yolo() -> None:
+        try:
+            barrier.wait(timeout=5)
+            assert save_yolo_acknowledgement(path)
+        except BaseException as exc:  # noqa: BLE001 - collect for the join site
+            errors.append(exc)
+
+    def run_auto() -> None:
+        try:
+            barrier.wait(timeout=5)
+            assert save_auto_mode_notice(path)
+        except BaseException as exc:  # noqa: BLE001 - collect for the join site
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=run_yolo),
+        threading.Thread(target=run_auto),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert errors == []
+    assert has_auto_mode_notice(path)
+    assert has_yolo_acknowledgement(path)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["policy_version"] == YOLO_ACKNOWLEDGEMENT_POLICY_VERSION
+    assert data["acknowledged"] is True
+    assert data["auto_notice_version"] == AUTO_NOTICE_VERSION
+    assert data["auto_notice_shown"] is True

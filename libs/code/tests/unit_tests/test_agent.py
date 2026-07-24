@@ -4797,6 +4797,50 @@ class TestCreateCliAgentInterpreterWiring:
             compaction_middleware
         )
 
+    @pytest.mark.parametrize("auto_mode_enabled", [True, False])
+    def test_single_hitl_slot_precedes_server_hooks(
+        self,
+        tmp_path: Path,
+        *,
+        auto_mode_enabled: bool,
+    ) -> None:
+        """One HITL middleware is installed, ahead of the server hook middleware.
+
+        `AutoModeHITLMiddleware` reports the stock `HumanInTheLoopMiddleware`
+        name, so pairing it with the standalone approval middleware would trip
+        `create_agent`'s duplicate-name assertion. `ServerHooksMiddleware` must
+        stay behind whichever one is installed so its `after_model` `PreToolUse`
+        pass resolves before approval routing.
+        """
+        from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
+
+        middleware = self._capture_middleware(
+            tmp_path, auto_mode_enabled=auto_mode_enabled
+        )
+
+        hitl = [item for item in middleware if item.name == "HumanInTheLoopMiddleware"]
+        hooks = next(
+            item for item in middleware if isinstance(item, ServerHooksMiddleware)
+        )
+
+        assert len(hitl) == 1
+        assert middleware.index(hitl[0]) < middleware.index(hooks)
+
+    def test_auto_mode_agent_builds(self, tmp_path: Path) -> None:
+        """Auto mode compiles a real graph rather than aborting on duplicates."""
+        agent, _backend = create_cli_agent(
+            model=_make_fake_chat_model(),
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+            auto_mode_enabled=True,
+        )
+
+        assert agent is not None
+
     def test_auto_mode_omitted_outside_interactive(self, tmp_path: Path) -> None:
         """Auto is refused (no middleware) in a non-interactive session."""
         from deepagents_code.auto_mode import AutoModeHITLMiddleware

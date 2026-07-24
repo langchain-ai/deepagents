@@ -2735,16 +2735,6 @@ def create_cli_agent(
     if restrictive_shell_allow_list is not None:
         agent_middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
 
-    # Server-owned Hooks v2 lifecycle events (Pre/Post tool, Stop, subagent).
-    # Gated at runtime by `hooks_server_events` on the per-run context so idle
-    # sessions without configured handlers pay no interrupt round-trip.
-    from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
-
-    hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
-    if resolved_interrupt_on is not None:
-        agent_middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
-    agent_middleware.append(ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools))
-
     # Get or use custom system prompt
     if system_prompt is None:
         system_prompt = get_system_prompt(
@@ -2827,6 +2817,20 @@ def create_cli_agent(
                 trusted_compaction_tool=compaction_middleware.tools[0],
             )
         )
+    elif resolved_interrupt_on is not None:
+        # `AutoModeHITLMiddleware` reports the same `HumanInTheLoopMiddleware`
+        # name, so installing both would trip `create_agent`'s duplicate-name
+        # assertion. Auto mode's specialized replacement wins when active.
+        agent_middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
+
+    # Server-owned Hooks v2 lifecycle events (Pre/Post tool, Stop, subagent).
+    # Gated at runtime by `hooks_server_events` on the per-run context so idle
+    # sessions without configured handlers pay no interrupt round-trip. Appended
+    # after the HITL middleware so `PreToolUse` resolves before approval routing.
+    from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
+
+    hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
+    agent_middleware.append(ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools))
 
     if fs_tools is not None:
         # `fs_tools` is an explicit allowlist here (`--allow-fs-tools all` and an

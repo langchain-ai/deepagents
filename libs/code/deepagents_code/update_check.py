@@ -2985,6 +2985,31 @@ def install_extra_recovery_command(extra: str) -> str:
     return install_extra_command(extra)
 
 
+def safe_install_extra_recovery_command(extra: str, *, fallback: str) -> str:
+    """Return a manual recovery command, never raising.
+
+    Wraps `install_extra_recovery_command` with the introspection/validation
+    guard that every recovery-hint call site would otherwise duplicate. On
+    failure it logs and returns `fallback` so the hint is never empty.
+
+    Args:
+        extra: Extra name to add.
+        fallback: Command to return when the recovery command cannot be derived.
+
+    Returns:
+        The recovery command, or `fallback` when it could not be determined.
+    """
+    from deepagents_code.extras_info import ExtrasIntrospectionError
+
+    try:
+        return install_extra_recovery_command(extra)
+    except (ExtrasIntrospectionError, ToolRequirementIntrospectionError, ValueError):
+        logger.warning(
+            "install_extra_recovery_command failed; using fallback", exc_info=True
+        )
+        return fallback
+
+
 def _install_extra_uv_tool_command(
     extra: str,
     *,

@@ -5081,7 +5081,9 @@ class TestCreateModelViaInitImportError:
             ) as exc_info,
         ):
             _create_model_via_init("claude-sonnet-4-5", "google_vertexai", {})
-        mock_extra_for_package.assert_called_once_with("langchain-google-vertexai")
+        mock_extra_for_package.assert_called_once_with(
+            "langchain-google-vertexai", "deepagents-code"
+        )
         assert exc_info.value.provider == "google_vertexai"
         assert exc_info.value.package == "langchain-google-vertexai"
 

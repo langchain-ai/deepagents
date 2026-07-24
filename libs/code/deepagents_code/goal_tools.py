@@ -8,7 +8,6 @@ from typing import (
     Any,
     Literal,
     NotRequired,
-    TypedDict,
     TypeVar,
     cast,
 )
@@ -30,7 +29,7 @@ from typing_extensions import override
 # Runtime (not TYPE_CHECKING) imports. `GoalRubricChannels` supplies the shared
 # `PrivateStateAttr`-marked goal/rubric channels that `GoalToolState` extends, so
 # the markers are declared once (see that class). `coerce_goal_status` is used at
-# runtime by `_goal_snapshot`; `GoalStatus` types its result and snapshot fields.
+# runtime by `_update_goal_command` to reject writes against a paused/complete goal.
 from deepagents_code.goal_state_notice import (
     build_goal_state_notice,
     goal_state_fingerprint,
@@ -41,7 +40,6 @@ from deepagents_code.goal_state_notice import (
 )
 from deepagents_code.resume_state import (
     GoalRubricChannels,
-    GoalStatus,
     coerce_goal_status,
 )
 
@@ -50,7 +48,7 @@ if TYPE_CHECKING:
 
     from langgraph.runtime import Runtime
 
-GOAL_TOOL_NAMES = frozenset({"get_goal", "get_rubric", "update_goal"})
+GOAL_TOOL_NAMES = frozenset({"update_goal"})
 """Tool names used by behavioral absence gates and middleware contract tests."""
 
 
@@ -86,62 +84,6 @@ def _goal_state_notice_for(
 ResponseT = TypeVar("ResponseT")
 
 
-class RubricSnapshot(TypedDict):
-    """Read-only rubric view returned by the `get_rubric` tool to the model.
-
-    `active` is always `criteria is not None`; the two never disagree.
-    """
-
-    active: bool
-    """Whether acceptance criteria are currently available."""
-
-    criteria: str | None
-    """Current acceptance criteria, or `None` when no rubric is set."""
-
-    grading_status: str | None
-    """Latest `RubricMiddleware` grading status for the in-progress or
-    just-completed graded turn, or `None`.
-
-    The middleware clears this at the start of the next graded turn, so
-    a `None` does not imply grading never ran.
-    """
-
-
-class GoalSnapshot(TypedDict):
-    """Read-only goal view returned by the `get_goal` tool to the model.
-
-    A fixed-shape projection of goal state. Both construction branches in
-    `_goal_snapshot` must populate every key, so the type checker catches a
-    drift between them.
-    """
-
-    active: bool
-    """Whether the goal is actionable (should drive work).
-
-    Derived from `status`: `active` and `blocked` goals are actionable, while
-    `paused` and `complete` goals are not. Note a `paused` goal is unfinished
-    yet reports `active=False`. `False` when no goal is set (the
-    `objective is None` branch), where `status` is also `None`.
-    """
-
-    objective: str | None
-    """Active goal objective, or `None` when no goal is set."""
-
-    status: GoalStatus | None
-    """Lifecycle status, or `None` when no goal is set.
-
-    A set-but-unlabeled or unrecognized persisted value is normalized to
-    `"active"` by `coerce_goal_status`, so this is always a known `GoalStatus`
-    when a goal is set.
-    """
-
-    criteria: str | None
-    """Persisted goal criteria, or shared rubric criteria when no goal rubric exists."""
-
-    note: str | None
-    """Persisted completion evidence or blocker note for the goal."""
-
-
 class GoalToolState(GoalRubricChannels):
     """State fields used by goal tools.
 
@@ -157,90 +99,6 @@ class GoalToolState(GoalRubricChannels):
     Distinct from the TUI-owned `_sticky_rubric`: this is the per-invocation
     rubric passed in via the graph schema, not checkpointed TUI state.
     """
-
-
-def _clean_state_text(state: dict[str, Any], key: str) -> str | None:
-    """Return a non-empty string from state, or `None`."""
-    value = state.get(key)
-    if not isinstance(value, str):
-        return None
-    value = value.strip()
-    return value or None
-
-
-def _rubric_snapshot(state: dict[str, Any]) -> RubricSnapshot:
-    """Build the `get_rubric` response from graph state.
-
-    Criteria resolve in precedence order: public `rubric` input, else an
-    actionable goal rubric, else a standalone sticky rubric. Goal lifecycle and
-    sticky ownership stay in app state logic; this tool only exposes the current
-    criteria and grading status.
-
-    Args:
-        state: Current graph state injected by LangGraph.
-
-    Returns:
-        Rubric snapshot visible to the model.
-    """
-    criteria = _clean_state_text(state, "rubric")
-    goal_rubric = _clean_state_text(state, "_goal_rubric")
-    sticky_rubric = _clean_state_text(state, "_sticky_rubric")
-    objective = _clean_state_text(state, "_goal_objective")
-    status = coerce_goal_status(state.get("_goal_status")) or "active"
-    goal_is_actionable = objective is not None and status in {"active", "blocked"}
-    sticky_is_goal_rubric = objective is not None and sticky_rubric == goal_rubric
-
-    # Prefer the public `rubric` graph input when present; otherwise surface
-    # actionable goal criteria or a standalone sticky rubric.
-    if criteria is None:
-        if goal_is_actionable and goal_rubric is not None:
-            criteria = goal_rubric
-        elif sticky_rubric is not None and not sticky_is_goal_rubric:
-            criteria = sticky_rubric
-
-    # `_rubric_status` is owned by the SDK's `RubricMiddleware`, co-composed into
-    # this agent's graph; see the `grading_status` field docstring above.
-    grading_status = _clean_state_text(state, "_rubric_status")
-    return {
-        "active": criteria is not None,
-        "criteria": criteria,
-        "grading_status": grading_status,
-    }
-
-
-def _goal_snapshot(state: dict[str, Any]) -> GoalSnapshot:
-    """Build the `get_goal` response from graph state.
-
-    Args:
-        state: Current graph state injected by LangGraph.
-
-    Returns:
-        Goal snapshot visible to the model.
-    """
-    objective = _clean_state_text(state, "_goal_objective")
-    rubric = _rubric_snapshot(state)
-    if objective is None:
-        return {
-            "active": False,
-            "objective": None,
-            "status": None,
-            "criteria": rubric["criteria"],
-            "note": None,
-        }
-    # A set-but-unlabeled or unrecognized status defaults to "active"; an
-    # unknown persisted value never leaks to the model as a bogus status.
-    status: GoalStatus = coerce_goal_status(state.get("_goal_status")) or "active"
-    criteria = _clean_state_text(state, "_goal_rubric") or rubric["criteria"]
-    note = _clean_state_text(state, "_goal_status_note")
-    return {
-        # Blocked goals remain actionable, while paused and complete goals do not
-        # drive work until the user changes their state.
-        "active": status in {"active", "blocked"},
-        "objective": objective,
-        "status": status,
-        "criteria": criteria,
-        "note": note,
-    }
 
 
 def _update_goal_command(
@@ -349,14 +207,15 @@ def _update_goal_command(
 
 
 class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
-    """Expose constrained goal tools and maintain the goal-state notice.
+    """Expose the constrained `update_goal` tool and maintain the goal-state notice.
 
-    Besides registering `get_goal`/`get_rubric`/`update_goal`, this middleware
-    keeps the model oriented at each model boundary: `before_model` persists a
-    fresh goal-state notice into checkpointed history when the latest one no
-    longer matches authoritative state, and `wrap_model_call` re-pins the
-    notice into the (post-summarization) request when the persisted one is out
-    of view. Tool usage guidance lives in the tool docstrings and notices.
+    The model reads goal awareness from the injected goal-state notice rather
+    than a read tool: `before_model` persists a fresh notice into checkpointed
+    history when the latest one no longer matches authoritative state, and
+    `wrap_model_call` re-pins the notice into the (post-summarization) request
+    when the persisted one is out of view. The notice carries the objective and
+    acceptance criteria when actionable, so no `get_goal`/`get_rubric` lookup is
+    needed. Only the write-side `update_goal` tool is registered.
     """
 
     state_schema = GoalToolState
@@ -364,39 +223,6 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
     def __init__(self) -> None:
         """Initialize goal tools."""
         super().__init__()
-
-        @tool
-        def get_rubric(
-            state: Annotated[dict[str, Any], InjectedState],
-        ) -> RubricSnapshot:
-            """Read criteria when the latest state notice says a rubric is active.
-
-            Use this only when the latest goal/rubric state notice reports an active
-            rubric. Use `get_goal` when a goal is actionable; this tool only reports
-            whether criteria are active, the current criteria, and the latest grading
-            status.
-
-            Returns:
-                Rubric snapshot with `active`, `criteria`, and `grading_status` keys.
-            """
-            return _rubric_snapshot(state)
-
-        @tool
-        def get_goal(
-            state: Annotated[dict[str, Any], InjectedState],
-        ) -> GoalSnapshot:
-            """Read a goal when the latest state notice says it is actionable.
-
-            Use this only when the latest goal/rubric state notice reports an
-            actionable goal. It returns the objective, criteria, lifecycle status,
-            and any prior note from authoritative checkpoint state. Paused and
-            completed goals report `active=False` and must not drive work.
-
-            Returns:
-                Goal snapshot with `active`, `objective`, `status`, `criteria`,
-                and `note` keys.
-            """
-            return _goal_snapshot(state)
 
         @tool
         def update_goal(
@@ -423,6 +249,8 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         ) -> Command[Any]:
             """Update a goal only when the latest state notice says it is actionable.
 
+            Read the current objective and acceptance criteria from the latest
+            goal/rubric state notice in context; there is no read tool for them.
             Use `blocked` when you cannot proceed without user input. Goals complete
             automatically after a satisfied goal-backed grading turn, so `complete`
             is optional and only stages its evidence for that result. Do not create,
@@ -438,7 +266,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
                 state=state,
             )
 
-        self.tools = [get_rubric, get_goal, update_goal]
+        self.tools = [update_goal]
 
     @staticmethod
     def _notice_update(state: AgentState[Any]) -> dict[str, Any] | None:

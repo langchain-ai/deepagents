@@ -714,8 +714,8 @@ class ToolNotCalled(SuccessAssertion):
 
     The hard-fail counterpart to the efficiency `ToolCall` presence check.
     Use this when calling a tool at all is the failure mode — e.g. an agent
-    that reflexively calls `get_rubric` / `get_goal` when no goal or rubric was
-    ever set. Matching is shared with `ToolCall`: when `step` is `None`, all
+    that reflexively calls `update_goal` when no goal or rubric was ever set.
+    Matching is shared with `ToolCall`: when `step` is `None`, all
     steps are searched; `args_contains` / `args_equals` narrow the match to
     specific args and are mutually exclusive.
 

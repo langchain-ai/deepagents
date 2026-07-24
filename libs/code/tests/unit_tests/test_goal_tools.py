@@ -19,165 +19,8 @@ from deepagents_code.goal_state_notice import (
 from deepagents_code.goal_tools import (
     GoalToolsMiddleware,
     GoalToolState,
-    _goal_snapshot,
-    _rubric_snapshot,
     _update_goal_command,
 )
-
-
-def test_rubric_snapshot_without_rubric() -> None:
-    """`get_rubric` should report inactive state when no criteria are set."""
-    assert _rubric_snapshot({}) == {
-        "active": False,
-        "criteria": None,
-        "grading_status": None,
-    }
-
-
-def test_rubric_snapshot_prefers_current_invocation_rubric() -> None:
-    """The public `rubric` state is what `RubricMiddleware` grades this turn."""
-    assert _rubric_snapshot(
-        {
-            "rubric": "- one-shot criteria",
-            "_sticky_rubric": "- sticky criteria",
-            "_goal_objective": "ship it",
-            "_goal_rubric": "- goal criteria",
-            "_rubric_status": "needs_revision",
-        }
-    ) == {
-        "active": True,
-        "criteria": "- one-shot criteria",
-        "grading_status": "needs_revision",
-    }
-
-
-@pytest.mark.parametrize("status", ["active", "blocked"])
-def test_rubric_snapshot_uses_actionable_goal_rubric_without_public_input(
-    status: str,
-) -> None:
-    """Actionable goal criteria are returned when no public rubric is set."""
-    assert _rubric_snapshot(
-        {
-            "_goal_objective": "ship it",
-            "_goal_status": status,
-            "_goal_rubric": "- goal criteria",
-            "_sticky_rubric": "- sticky criteria",
-        }
-    ) == {
-        "active": True,
-        "criteria": "- goal criteria",
-        "grading_status": None,
-    }
-
-
-@pytest.mark.parametrize("status", ["paused", "complete"])
-def test_rubric_snapshot_suppresses_inactive_goal_rubric(status: str) -> None:
-    """Paused and completed goal criteria must not drive later work."""
-    assert _rubric_snapshot(
-        {
-            "_goal_objective": "ship it",
-            "_goal_status": status,
-            "_goal_rubric": "- tests pass",
-            "_sticky_rubric": "- tests pass",
-        }
-    ) == {
-        "active": False,
-        "criteria": None,
-        "grading_status": None,
-    }
-
-
-def test_rubric_snapshot_keeps_standalone_sticky_rubric_for_paused_goal() -> None:
-    """An unrelated sticky rubric remains active while a goal is paused."""
-    assert _rubric_snapshot(
-        {
-            "_goal_objective": "ship it",
-            "_goal_status": "paused",
-            "_goal_rubric": "- goal criteria",
-            "_sticky_rubric": "- standalone criteria",
-        }
-    ) == {
-        "active": True,
-        "criteria": "- standalone criteria",
-        "grading_status": None,
-    }
-
-
-def test_rubric_snapshot_restores_sticky_rubric_without_public_input() -> None:
-    """Persisted sticky rubric should be visible outside an active turn."""
-    assert _rubric_snapshot({"_sticky_rubric": "- sticky criteria"}) == {
-        "active": True,
-        "criteria": "- sticky criteria",
-        "grading_status": None,
-    }
-
-
-def test_goal_snapshot_without_goal_preserves_rubric() -> None:
-    """`get_goal` should report inactive state while still showing criteria."""
-    assert _goal_snapshot({"rubric": "- tests pass"}) == {
-        "active": False,
-        "objective": None,
-        "status": None,
-        "criteria": "- tests pass",
-        "note": None,
-    }
-
-
-def test_goal_snapshot_with_active_goal() -> None:
-    """`get_goal` should expose objective, status, criteria, and note."""
-    assert _goal_snapshot(
-        {
-            "_goal_objective": "add refresh tokens",
-            "_goal_status": "blocked",
-            "_goal_rubric": "- tests pass",
-            "_goal_status_note": "waiting on API docs",
-        }
-    ) == {
-        "active": True,
-        "objective": "add refresh tokens",
-        "status": "blocked",
-        "criteria": "- tests pass",
-        "note": "waiting on API docs",
-    }
-
-
-def test_goal_snapshot_paused_goal_is_inactive_but_persisted() -> None:
-    """A paused goal remains readable without being actionable."""
-    snapshot = _goal_snapshot(
-        {
-            "_goal_objective": "add refresh tokens",
-            "_goal_status": "paused",
-            "_goal_rubric": "- tests pass",
-        }
-    )
-
-    assert snapshot == {
-        "active": False,
-        "objective": "add refresh tokens",
-        "status": "paused",
-        "criteria": "- tests pass",
-        "note": None,
-    }
-
-
-def test_goal_snapshot_complete_goal_is_inactive() -> None:
-    """A completed goal must report `active=False` (status drives the flag)."""
-    snapshot = _goal_snapshot(
-        {
-            "_goal_objective": "add refresh tokens",
-            "_goal_status": "complete",
-            "_goal_status_note": "tests pass",
-        }
-    )
-    assert snapshot["active"] is False
-    assert snapshot["status"] == "complete"
-
-
-def test_goal_snapshot_objective_without_status_defaults_active() -> None:
-    """An objective with no recorded status reads as active, not contradictory."""
-    snapshot = _goal_snapshot({"_goal_objective": "add refresh tokens"})
-    assert snapshot["active"] is True
-    assert snapshot["status"] == "active"
 
 
 def test_update_goal_without_active_goal_returns_tool_message_only() -> None:
@@ -307,28 +150,6 @@ def test_update_goal_rejects_empty_note() -> None:
     message = command.update["messages"][0]
     assert "evidence" in message.content
     assert message.tool_call_id == "call-1"
-
-
-def test_get_rubric_tool_invokes_snapshot() -> None:
-    """The registered `get_rubric` tool should delegate to `_rubric_snapshot`."""
-    middleware = GoalToolsMiddleware()
-    get_rubric = next(t for t in middleware.tools if t.name == "get_rubric")
-    result = get_rubric.func(  # ty: ignore[unresolved-attribute]
-        state={"rubric": "- tests pass"}
-    )
-    assert result["criteria"] == "- tests pass"
-    assert result["active"] is True
-
-
-def test_get_goal_tool_invokes_snapshot() -> None:
-    """The registered `get_goal` tool should delegate to `_goal_snapshot`."""
-    middleware = GoalToolsMiddleware()
-    get_goal = next(t for t in middleware.tools if t.name == "get_goal")
-    result = get_goal.func(  # ty: ignore[unresolved-attribute]
-        state={"_goal_objective": "ship it", "_goal_status": "active"}
-    )
-    assert result["objective"] == "ship it"
-    assert result["active"] is True
 
 
 def test_update_goal_tool_invokes_command_builder() -> None:
@@ -622,16 +443,27 @@ def test_system_prompt_and_tool_schemas_are_byte_stable_across_states() -> None:
 
     assert all(system is base_system for system in system_refs)
     assert len(set(schema_bytes)) == 1
-    # The appended goal-state notice is the only model-visible surface this
-    # middleware adds, so it must stay coarse: the private objective, status
-    # note, and rubric criteria must never leak into it, while an
-    # objective-bearing state still produces a notice.
+    # The system prompt and tool schemas stay byte-stable across goal states (so
+    # the prompt-cache prefix is unaffected); the appended goal-state notice is
+    # the only model-visible surface that varies. An actionable state embeds the
+    # objective and criteria (so no read tool is needed), while inactive states
+    # keep them out and instruct the model not to act on a prior goal.
     for state, notice_text in zip(states, notice_texts, strict=True):
-        assert "ship it" not in notice_text
-        assert "tests pass" not in notice_text
-        assert "waiting" not in notice_text
-        if state.get("_goal_objective"):
-            assert "Goal status:" in notice_text
+        if not state.get("_goal_objective") and not state.get("rubric"):
+            # No goal or rubric engaged: no notice is appended at all.
+            assert notice_text == ""
+            continue
+        assert "Goal status:" in notice_text
+        actionable = state.get("_goal_status") in {"active", "blocked", None} and (
+            state.get("_goal_objective")
+        )
+        if actionable:
+            assert "ship it" in notice_text
+            assert "tests pass" in notice_text
+        else:
+            assert "ship it" not in notice_text
+            assert "tests pass" not in notice_text
+            assert "waiting" not in notice_text
 
 
 async def test_awrap_model_call_leaves_system_message_unchanged() -> None:
@@ -678,10 +510,6 @@ def test_goal_tool_state_marks_goal_fields_private() -> None:
 
 
 def test_goal_tools_middleware_registers_tools() -> None:
-    """Middleware should expose exactly the constrained rubric and goal tools."""
+    """Middleware should expose only the constrained write-side `update_goal` tool."""
     middleware = GoalToolsMiddleware()
-    assert [tool.name for tool in middleware.tools] == [
-        "get_rubric",
-        "get_goal",
-        "update_goal",
-    ]
+    assert [tool.name for tool in middleware.tools] == ["update_goal"]

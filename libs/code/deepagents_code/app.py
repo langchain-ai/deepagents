@@ -2573,9 +2573,13 @@ class DeepAgentsApp(App):
     CSS_PATH = "app.tcss"
     """Path to the Textual CSS stylesheet for the app layout."""
 
-    ENABLE_COMMAND_PALETTE = False
-    """Disable Textual's built-in command palette in favor of the custom slash
-    command system."""
+    ENABLE_COMMAND_PALETTE = True
+    """Enable Textual's built-in command palette."""
+
+    COMMANDS = {
+        "deepagents_code.tui.command_palette:ModelProvider",
+    }
+    """Command palette providers for deepagents-code."""
 
     SCROLL_SENSITIVITY_Y = 1.0
     """Vertical scroll speed (reduced from Textual default for finer control)."""

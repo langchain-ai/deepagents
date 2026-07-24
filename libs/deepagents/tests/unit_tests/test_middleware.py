@@ -2623,8 +2623,7 @@ class TestFilesystemMiddleware:
         assert "grep, glob tools to search" not in execute_tool.description
         assert "# Use glob tool instead" not in execute_tool.description
         assert "# Use grep tool instead" not in execute_tool.description
-        assert "# Use read_file tool instead" in execute_tool.description
-        assert "avoid read tools like cat, head, tail" in execute_tool.description
+        assert "Use read_file rather than cat/head/tail." in execute_tool.description
 
     def test_execute_description_references_only_visible_grep_tool(self):
         """Execute docs retain grep guidance when glob is hidden."""
@@ -2706,7 +2705,7 @@ class TestFilesystemMiddleware:
         assert original["description"] == default_description
         assert "# Use glob tool instead" not in rewritten_execute["description"]
         assert "# Use grep tool instead" not in rewritten_execute["description"]
-        assert "# Use read_file tool instead" in rewritten_execute["description"]
+        assert "Use read_file rather than cat/head/tail." in rewritten_execute["description"]
 
     def test_execute_description_rewrites_when_search_tools_are_filtered_from_request(self):
         """Runtime filtering corrects execute docs without mutating the registered tool."""

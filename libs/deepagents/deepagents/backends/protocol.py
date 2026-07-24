@@ -547,15 +547,31 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     def glob(self, pattern: str, path: str | None = None) -> "GlobResult":
         """Find files matching a glob pattern.
 
+        Pattern matching follows the shared backend contract (aligned with
+        grep include-glob, not classic non-recursive shell globbing):
+
+        - Patterns without `/` match the basename at any depth under `path`.
+
+            Example: `*.py` matches `src/app/main.py`.
+        - Patterns containing `/` match paths relative to the search root, with
+          `**` support.
+
+            Example: `src/**/*.py` matches `src/app/main.py`.
+        - A leading `/` anchors the pattern to the search root; it narrows the
+          match rather than widening it.
+
+            Example: `/*.py` matches `top.py` but not `src/app/main.py`.
+
         Args:
             pattern: Glob pattern with wildcards to match file paths.
 
-                Supports standard glob syntax:
+                Supports:
 
-                - `*` matches any characters within a filename/directory
+                - `*` matches any characters within a path segment
                 - `**` matches any directories recursively
                 - `?` matches a single character
-                - `[abc]` matches one character from set
+                - `[abc]` matches one character from a set
+                - `{a,b}` brace expansion where the backend supports it
 
             path: Optional base directory to search from.
 

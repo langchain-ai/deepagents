@@ -35,12 +35,13 @@ async def test_store_backend_async_crud_and_search():
     matches = (await be.agrep("hi", path="/")).matches
     assert matches is not None and any(m["path"] == "/docs/readme.md" for m in matches)
 
-    # aglob
+    # aglob: bare `*.md` and `**/*.md` both match nested files (shared contract)
     g = (await be.aglob("*.md", path="/")).matches
-    assert len(g) == 0
+    assert any(i["path"] == "/docs/readme.md" for i in g)
 
     g2 = (await be.aglob("**/*.md", path="/")).matches
     assert any(i["path"] == "/docs/readme.md" for i in g2)
+    assert {i["path"] for i in g} == {i["path"] for i in g2}
 
 
 async def test_store_backend_aread_supports_legacy_list_content() -> None:

@@ -126,7 +126,7 @@
   },
   {
     "function": {
-      "description": "Find files matching a glob pattern, returning absolute paths.\n\nSupports `*` (any characters), `**` (any directories), `?` (single character), e.g. `**/*.py`, `*.txt`, `/subdir/**/*.md`.",
+      "description": "Find files matching a glob pattern, returning absolute paths.\n\nSupports `*` (any characters), `**` (any directories), `?` (single character), e.g. `**/*.py`, `*.txt`, `/subdir/**/*.md`.\n\nA pattern without `/` matches the file name at any depth under the search root (`*.py` matches `src/app/main.py`). A pattern containing `/` matches the search-root-relative path (`src/**/*.py`). A leading `/` anchors to the search root (`/*.py` matches only top-level Python files).",
       "name": "glob",
       "parameters": {
         "properties": {
@@ -143,7 +143,7 @@
             "description": "Base directory to search from. Defaults to the backend's default root."
           },
           "pattern": {
-            "description": "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md').",
+            "description": "Glob pattern to match files (e.g., '**/*.py', '*.txt', '/subdir/**/*.md'). A pattern without '/' matches the file name at any depth; a pattern containing '/' matches the search-root-relative path.",
             "type": "string"
           }
         },

@@ -42,7 +42,7 @@ from deepagents.backends.protocol import (
     WriteResult,
     execute_accepts_timeout,
 )
-from deepagents.backends.utils import _get_backend_read_file_type
+from deepagents.backends.utils import _get_backend_read_file_type, expand_glob_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,9 @@ pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
 try:
     real_root = os.path.realpath(path)
     os.chdir(path)
+    # Host expands bare basename globs via expand_glob_pattern before encoding
+    # so *.py arrives as **/*.py. Defensive lstrip keeps residual leading /
+    # paths relative to the search root.
     rel_pattern = pattern.lstrip('/')
     if any(seg == '..' for seg in rel_pattern.replace(chr(92), '/').split('/')):
         print(json.dumps({{'error': 'invalid_pattern'}}))
@@ -87,7 +90,9 @@ except PermissionError:
 " 2>&1"""
 """Find files matching a pattern with metadata.
 
-Uses base64-encoded parameters to avoid shell escaping issues.
+Uses base64-encoded parameters to avoid shell escaping issues. The host expands
+bare basename globs via `expand_glob_pattern` before encoding so `*.py` matches
+nested files under the search root.
 """
 
 
@@ -714,7 +719,11 @@ def _parse_grep_output(result: ExecuteResponse, path: str | None, max_count: int
 
 
 def _build_glob_cmd(pattern: str, search_path: str) -> str:
-    pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
+    # Expand bare basename patterns on the host so remote stdlib `glob.glob`
+    # (which only treats `**` specially even with recursive=True) matches the
+    # shared backend contract used by Filesystem/Store/State.
+    effective_pattern = expand_glob_pattern(pattern)
+    pattern_b64 = base64.b64encode(effective_pattern.encode("utf-8")).decode("ascii")
     path_b64 = base64.b64encode(search_path.encode("utf-8")).decode("ascii")
     return _GLOB_COMMAND_TEMPLATE.format(path_b64=path_b64, pattern_b64=pattern_b64)
 

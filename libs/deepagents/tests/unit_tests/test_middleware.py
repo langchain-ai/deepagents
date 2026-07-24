@@ -315,8 +315,11 @@ class TestFilesystemMiddleware:
             }
         )
         result = result_raw.content
-        # Standard glob: *.py only matches files in root directory, not subdirectories
-        assert result == str(["/test.py"])
+        # Bare `*.py` matches the basename at any depth under the search root.
+        assert "/test.py" in result
+        assert "/pokemon/charmander.py" in result
+        assert "/test.txt" not in result
+        assert "/pokemon/squirtle.txt" not in result
 
     def test_glob_search_shortterm_wildcard_pattern(self):
         files = {
@@ -379,8 +382,9 @@ class TestFilesystemMiddleware:
             }
         )
         result = result_raw.content
+        # Path scopes the tree; bare patterns still match nested basenames under it.
         assert "/src/main.py" in result
-        assert "/src/utils/helper.py" not in result
+        assert "/src/utils/helper.py" in result
         assert "/tests/test_main.py" not in result
 
     def test_glob_search_shortterm_brace_expansion(self):

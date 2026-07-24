@@ -9475,13 +9475,42 @@ class DeepAgentsApp(App):
             )
             return
         if not project_name:
-            await self._mount_message(UserMessage(command))
-            await self._mount_message(
-                AppMessage(
-                    "LangSmith tracing is not configured. "
-                    "Run `/auth` and select LangSmith to enable tracing.",
-                ),
+            from deepagents_code.config import (
+                LangsmithShadowResult,
+                langsmith_key_shadowed_by_empty_override,
             )
+
+            await self._mount_message(UserMessage(command))
+            try:
+                shadow = await asyncio.to_thread(
+                    langsmith_key_shadowed_by_empty_override
+                )
+            except Exception:
+                # A best-effort diagnostic must never take down `/trace`; fall
+                # back to the generic hint if the shadow check itself fails.
+                logger.exception(
+                    "Failed to check for a shadowed LangSmith key for thread %s",
+                    thread_id,
+                )
+                shadow = LangsmithShadowResult()
+            if shadow.shadowing_var:
+                message = (
+                    f"A LangSmith key is available, but {shadow.shadowing_var} "
+                    "is set to an empty value and is shadowing it, so tracing is "
+                    f"off. Unset {shadow.shadowing_var} (and make sure LangSmith "
+                    "tracing is enabled) to start tracing."
+                )
+            elif shadow.store_unreadable:
+                message = (
+                    "Your stored LangSmith credential could not be read; the "
+                    "credential file may be corrupt. Re-add the key via `/auth`."
+                )
+            else:
+                message = (
+                    "LangSmith tracing is not configured. "
+                    "Run `/auth` and select LangSmith to enable tracing."
+                )
+            await self._mount_message(AppMessage(message))
             return
         try:
             project_url = await asyncio.to_thread(
@@ -18476,14 +18505,18 @@ class DeepAgentsApp(App):
         from deepagents_code._version import __version__
         from deepagents_code.tui.widgets.debug_console import SnapshotField
 
-        def _safe(label: str, fn: Callable[[], str]) -> SnapshotField:
+        def _safe(
+            label: str, fn: Callable[[], str], *, copyable: bool = False
+        ) -> SnapshotField:
             try:
-                return SnapshotField(label=label, value=fn())
+                return SnapshotField(label=label, value=fn(), copyable=copyable)
             except Exception as exc:  # a diagnostic must still open on a bad field
                 # WARNING (not DEBUG) so the traceback lands in the always-on
                 # in-memory buffer and is visible in the console itself; the
                 # package logger sits at INFO by default, which drops DEBUG.
                 logger.warning("Debug snapshot field %r failed", label, exc_info=True)
+                # A failed field degrades to a non-copyable ``(unavailable: ...)``
+                # placeholder regardless of the requested `copyable` flag.
                 return SnapshotField(
                     label=label, value=f"(unavailable: {type(exc).__name__})"
                 )
@@ -18499,6 +18532,24 @@ class DeepAgentsApp(App):
             return (
                 f"{stats.input_tokens} in / {stats.output_tokens} out "
                 f"/ {stats.request_count} req"
+            )
+
+        def _model_field() -> SnapshotField:
+            # Built directly (not via `_safe`) so the copyable metadata tracks
+            # whether a model is actually configured: the "(not configured)"
+            # placeholder is not worth copying. Degrades defensively like the
+            # other fields so the overlay still opens on a bad subsystem.
+            try:
+                model = self._effective_model_spec()
+            except Exception as exc:
+                logger.warning("Debug snapshot field 'Model' failed", exc_info=True)
+                return SnapshotField(
+                    label="Model", value=f"(unavailable: {type(exc).__name__})"
+                )
+            return SnapshotField(
+                label="Model",
+                value=model or "(not configured)",
+                copyable=bool(model),
             )
 
         def _thread_field() -> SnapshotField:
@@ -18532,10 +18583,10 @@ class DeepAgentsApp(App):
             return "in-memory only"
 
         return [
-            _safe("Version", lambda: __version__),
-            _safe("Model", lambda: self._effective_model_spec() or "(not configured)"),
+            _safe("Version", lambda: __version__, copyable=True),
+            _model_field(),
             _thread_field(),
-            _safe("CWD", lambda: self._cwd),
+            _safe("CWD", lambda: self._cwd, copyable=True),
             _safe("Approval mode", lambda: self._approval_mode.value),
             _safe(
                 "Experimental",

@@ -4429,6 +4429,40 @@ class TestSummarizeToolGroupPresentTense:
         )
 
 
+class TestSummarizeLiveToolGroup:
+    """Mixed past/present phrasing for an in-flight step's tool calls."""
+
+    def test_completed_and_pending_mixed_tense(self) -> None:
+        """Finished calls read past tense; still-running calls read present."""
+        from deepagents_code.tui.widgets.messages import summarize_live_tool_group
+
+        assert (
+            summarize_live_tool_group(["execute", "execute"], ["task"])
+            == "Ran 2 shell commands, running 1 agent"
+        )
+
+    def test_only_pending_is_present_tense(self) -> None:
+        """With nothing finished yet the line is purely present tense."""
+        from deepagents_code.tui.widgets.messages import summarize_live_tool_group
+
+        assert (
+            summarize_live_tool_group([], ["read_file", "read_file"])
+            == "Reading 2 files"
+        )
+
+    def test_only_completed_is_past_tense(self) -> None:
+        """With nothing left running the line is purely past tense."""
+        from deepagents_code.tui.widgets.messages import summarize_live_tool_group
+
+        assert summarize_live_tool_group(["execute"], []) == "Ran 1 shell command"
+
+    def test_empty_returns_blank(self) -> None:
+        """No members at all yields an empty string, not a fallback phrase."""
+        from deepagents_code.tui.widgets.messages import summarize_live_tool_group
+
+        assert summarize_live_tool_group([], []) == ""
+
+
 class _LiveToolGroupApp(App[None]):
     """Minimal app with an empty live group and two tools to add to it."""
 
@@ -4495,8 +4529,8 @@ class TestLiveToolGroupSummary:
             assert summary.is_attached
             assert bool(pilot.app.query(ToolGroupSummary))
 
-    async def test_live_line_counts_only_running_members(self) -> None:
-        """Finished tools drop out of the live line while others still run."""
+    async def test_live_line_keeps_completed_in_past_tense(self) -> None:
+        """Finished tools stay on the live line in past tense while others run."""
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
         async with _LiveToolGroupApp().run_test() as pilot:
@@ -4511,16 +4545,16 @@ class TestLiveToolGroupSummary:
             assert "Running 1 shell command, reading 1 file" in rendered.plain
 
             # The shell command finishes but the read is still in flight: the
-            # live line must stop advertising the completed command.
+            # completed command flips to past tense yet stays visible so the
+            # work already done in the step isn't lost.
             done.set_success("done")
             summary._render_line()
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "Reading 1 file" in rendered.plain
-            assert "shell command" not in rendered.plain
+            assert "Ran 1 shell command, reading 1 file" in rendered.plain
 
     async def test_live_line_decrements_same_category_count(self) -> None:
-        """One of two shell commands finishing drops the live count 2 -> 1."""
+        """One of two shell commands finishing splits the line by tense."""
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
         async with _LiveToolGroupSameCategoryApp().run_test() as pilot:
@@ -4537,11 +4571,12 @@ class TestLiveToolGroupSummary:
             # One command finishes; the surviving pending tuple shrinks from
             # ("execute", "execute") to ("execute",), which must invalidate the
             # cached line even though the category (and membership) is unchanged.
+            # The finished command is now reported in the past tense.
             done.set_success("done")
             summary._render_line()
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "Running 1 shell command" in rendered.plain
+            assert "Ran 1 shell command, running 1 shell command" in rendered.plain
             assert "2 shell commands" not in rendered.plain
 
     async def test_live_line_relayouts_only_when_summary_changes(self) -> None:
@@ -4685,8 +4720,8 @@ class TestLiveToolGroupSummary:
 
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "Reading 1 file" in rendered.plain
-            assert "shell command" not in rendered.plain
+            # The settled shell stays visible in past tense next to the new read.
+            assert "Ran 1 shell command, reading 1 file" in rendered.plain
             assert summary._timer is not None
 
             read.set_error("boom")

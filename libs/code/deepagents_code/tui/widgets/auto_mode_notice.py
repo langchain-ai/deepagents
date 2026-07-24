@@ -1,8 +1,8 @@
-"""First-enable education modal for Auto mode.
+"""First-enable confirmation modal for Auto mode.
 
-Shown at most once per install after Auto successfully becomes active. Auto is
-already on when this appears; the modal is informational, not a gate that can
-block or undo enablement.
+Shown at most once per install (per notice version) after Auto successfully
+becomes active. Enter keeps Auto and records the notice; Esc reverts to Manual
+and leaves the notice unsaved so it can appear again next time.
 """
 
 from __future__ import annotations
@@ -12,21 +12,44 @@ from typing import TYPE_CHECKING, ClassVar
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Static
+from textual.widgets import Markdown, Static
+
+from deepagents_code.tui.widgets._links import open_checked_url_async
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
+AUTO_MODE_DOCS_URL = (
+    "https://docs.langchain.com/oss/python/deepagents/code/approval-modes"
+)
+"""Canonical docs page for Manual / Auto / YOLO behavior."""
 
-class AutoModeNoticeScreen(ModalScreen[None]):
+AUTO_MODE_NOTICE_BODY = (
+    "You switched to **Auto**. In this mode, the agent can approve "
+    "**routine gated actions** without asking you first (for example ordinary "
+    "source edits and read-only Git commands).\n\n"
+    "Anything uncertain is reviewed by the **active model** against your "
+    "**literal request** — not a separate security reviewer. After repeated "
+    "denials or review failures, you get the normal approval prompt.\n\n"
+    "This is **not a sandbox**. The agent still runs on this machine and can "
+    "change files, run commands, and use tools when Auto allows them.\n\n"
+    "This notice appears **once** on this machine after you continue.\n\n"
+    f"[Learn more about approval modes]({AUTO_MODE_DOCS_URL})"
+)
+"""Default Markdown body shown on first successful Auto enable."""
+
+
+class AutoModeNoticeScreen(ModalScreen[bool]):
     """In-TUI first-run notice describing what Auto mode does.
 
-    Dismisses with `None` on Enter or Esc. Auto remains active either way.
+    Dismisses with `True` on Enter (keep Auto) and `False` on Esc (return to
+    Manual). Programmatic dismiss may yield `None`; callers treat that like
+    cancel so Auto is never left active without an explicit continue.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("enter", "dismiss_notice", "Continue", show=False, priority=True),
-        Binding("escape", "dismiss_notice", "Continue", show=False, priority=True),
+        Binding("enter", "confirm", "Keep Auto", show=False, priority=True),
+        Binding("escape", "cancel", "Manual", show=False, priority=True),
     ]
 
     CSS = """
@@ -35,7 +58,7 @@ class AutoModeNoticeScreen(ModalScreen[None]):
     }
 
     AutoModeNoticeScreen > Vertical {
-        width: 64;
+        width: 72;
         max-width: 90%;
         height: auto;
         background: $surface;
@@ -54,6 +77,15 @@ class AutoModeNoticeScreen(ModalScreen[None]):
         height: auto;
         color: $text;
         margin-bottom: 1;
+        padding: 0;
+    }
+
+    AutoModeNoticeScreen .auto-mode-notice-body > * {
+        margin: 0 0 1 0;
+    }
+
+    AutoModeNoticeScreen .auto-mode-notice-body > *:last-child {
+        margin-bottom: 0;
     }
 
     AutoModeNoticeScreen .auto-mode-notice-help {
@@ -61,6 +93,7 @@ class AutoModeNoticeScreen(ModalScreen[None]):
         color: $text-muted;
         text-style: italic;
         text-align: center;
+        margin-top: 1;
     }
     """
 
@@ -68,14 +101,15 @@ class AutoModeNoticeScreen(ModalScreen[None]):
     # bindings to fire (see `on_mount`); without this the keys reach no handler.
     can_focus = True
 
-    def __init__(self, body: str) -> None:
+    def __init__(self, body: str | None = None) -> None:
         """Initialize the notice.
 
         Args:
-            body: Explanatory copy under the title.
+            body: Optional Markdown body under the title. Defaults to
+                `AUTO_MODE_NOTICE_BODY`. Links open in a browser.
         """
         super().__init__()
-        self._body = body
+        self._body = AUTO_MODE_NOTICE_BODY if body is None else body
 
     def on_mount(self) -> None:
         """Take focus so priority bindings receive Enter/Esc."""
@@ -89,32 +123,38 @@ class AutoModeNoticeScreen(ModalScreen[None]):
         """
         with Vertical():
             yield Static(
-                "Auto is active",
+                "Auto mode",
                 classes="auto-mode-notice-title",
                 markup=False,
             )
-            yield Static(
+            # open_links=False so we own the click path (toast feedback + shared
+            # URL safety). Assistant message widgets use the same pattern.
+            yield Markdown(
                 self._body,
                 classes="auto-mode-notice-body",
-                markup=False,
+                open_links=False,
             )
             yield Static(
-                "Enter or Esc to continue",
+                "Enter to keep Auto · Esc for Manual",
                 classes="auto-mode-notice-help",
                 markup=False,
             )
 
-    def action_dismiss_notice(self) -> None:
-        """Dismiss the notice."""
-        self.dismiss(None)
+    async def on_markdown_link_clicked(self, event: Markdown.LinkClicked) -> None:
+        """Open docs (or any body link) with the shared URL helper."""
+        event.stop()
+        await open_checked_url_async(event.href, app=self.app, notify_on_success=True)
+
+    def action_confirm(self) -> None:
+        """Keep Auto and mark the notice dismissed without re-showing."""
+        self.dismiss(True)
 
     def action_cancel(self) -> None:
-        """Alias for Esc so app-level interrupt still dismisses the notice.
+        """Return to Manual without persisting the notice.
 
-        Defensive fallback: the screen's own priority Esc binding normally
-        handles dismissal. But the app's priority Escape handler
-        (`DeepAgentsApp.action_interrupt`) prefers `action_cancel` on modal
-        screens before falling through to a bare `dismiss(None)`, so this alias
-        keeps Esc working if that handler wins the binding race.
+        The method name must stay `cancel`: the app owns a priority `escape`
+        binding that, for an active `ModalScreen`, dispatches to
+        `action_cancel` if present and otherwise falls through to
+        `dismiss(None)`. Renaming this would silently regress Esc handling.
         """
-        self.action_dismiss_notice()
+        self.dismiss(False)

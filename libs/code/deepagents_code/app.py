@@ -129,10 +129,6 @@ _DEFERRED_START_NOTICE = (
     "Deep Agents will ask for credentials for the selected provider."
 )
 
-_AUTO_MODE_ENABLED_WARNING = (
-    "A classifier reviews gated actions. This is not a sandbox."
-)
-
 
 def _parse_rubric_max_iterations(raw: str) -> tuple[int | None, str | None]:
     """Parse a grader `max-iterations` argument shared by `/rubric` and `/goal`.
@@ -7508,12 +7504,12 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(self._approval_mode.value)
 
     def _notify_auto_mode_enabled_once(self) -> None:
-        """Show the Auto education modal at most once per install.
+        """Show the Auto first-enable modal at most once per install.
 
-        Auto is already active when this runs. The modal is informational only
-        (Enter/Esc continue); it is not a YOLO-style pre-enable gate. Persistence
-        is best-effort after dismiss so a failed write only re-shows on a later
-        successful enable path.
+        Auto is already active when this runs. Enter keeps Auto and records the
+        notice; Esc (or a non-true dismiss) reverts to Manual without saving so
+        the notice can appear again. Save is best-effort on accept so a failed
+        write only re-shows on a later successful enable path.
         """
         from deepagents_code.approval_mode import (
             has_auto_mode_notice,
@@ -7524,13 +7520,20 @@ class DeepAgentsApp(App):
         if has_auto_mode_notice() or getattr(self, "_auto_mode_notice_pending", False):
             return
 
-        def handle_result(_result: None) -> None:
+        def handle_result(accepted: bool | None) -> None:
             self._auto_mode_notice_pending = False
-            save_auto_mode_notice()
+            # Only an explicit continue persists "do not show again". Esc/None
+            # invert Auto back to Manual without recording the notice.
+            if accepted is True:
+                save_auto_mode_notice()
+                return
+            # `push_screen` callbacks are sync; schedule the Manual revert.
+            task = asyncio.create_task(self._revert_auto_mode_after_notice_cancel())
+            task.add_done_callback(_log_task_exception)
 
         try:
             self.push_screen(
-                AutoModeNoticeScreen(_AUTO_MODE_ENABLED_WARNING),
+                AutoModeNoticeScreen(),
                 handle_result,
             )
         except Exception:
@@ -7541,6 +7544,54 @@ class DeepAgentsApp(App):
         # Mark pending only after the push succeeds so a failed push can't
         # strand the guard True and suppress the notice for the whole session.
         self._auto_mode_notice_pending = True
+
+    async def _revert_auto_mode_after_notice_cancel(self) -> None:
+        """Leave Auto after the first-enable modal is cancelled with Esc.
+
+        Best-effort live Store write mirrors the Manual toggle path: local TUI
+        state always returns to Manual; a failed live write warns and blocks new
+        runs when a live session was already writing approval mode.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        # Already left Auto (e.g. a concurrent toggle) — nothing to undo.
+        if self._approval_mode is not ApprovalMode.AUTO:
+            return
+
+        should_persist_live = (
+            self._agent is not None and self._session_state is not None
+        )
+        if should_persist_live and not await self._write_live_approval_mode(
+            ApprovalMode.MANUAL
+        ):
+            self._approval_mode_blocked = True
+            self._warn_live_approval_mode_unavailable(
+                "Manual could not be persisted after declining Auto; active work "
+                "was cancelled and new runs are blocked."
+            )
+            if self._agent_running:
+                self._force_interrupt_active_work()
+            # Still flip the UI so the user is not left trusting a declined Auto.
+            self._approval_mode = ApprovalMode.MANUAL
+            self._auto_approve = False
+            if self._session_state:
+                self._session_state.approval_mode = ApprovalMode.MANUAL
+            if self._status_bar:
+                self._status_bar.set_approval_mode(ApprovalMode.MANUAL.value)
+            return
+
+        self._approval_mode_blocked = False
+        self._approval_mode = ApprovalMode.MANUAL
+        self._auto_approve = False
+        if self._session_state:
+            self._session_state.approval_mode = ApprovalMode.MANUAL
+        if self._status_bar:
+            self._status_bar.set_approval_mode(ApprovalMode.MANUAL.value)
+        self.notify(
+            "Returned to Manual approval.",
+            severity="information",
+            markup=False,
+        )
 
     async def _on_auto_approve_enabled(self) -> bool:
         """Enable Auto only after the live Store acknowledges it.

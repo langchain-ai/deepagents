@@ -26,7 +26,7 @@ APPROVAL_MODE_NAMESPACE: tuple[str, str] = ("deepagents_code", "approval_mode")
 YOLO_ACKNOWLEDGEMENT_POLICY_VERSION = "2026-07-14"
 """Version of the unrestricted-mode warning that must be acknowledged."""
 
-AUTO_NOTICE_VERSION = "2026-07-23"
+AUTO_NOTICE_VERSION = "2026-07-24"
 """Version of the first-run Auto mode education notice.
 
 Bump this string whenever the notice copy changes materially enough that

@@ -103,7 +103,7 @@ This environment supports curated Deep Agents Code release-note drafting.
 | --- | --- | --- | --- |
 | `DCODE_RELEASE_CLI_VERSION` | Variable | Environment | `deepagents-code` version to use. |
 | `DCODE_RELEASE_MODEL` | Variable | Environment | Model used for changelog generation. |
-| `DCODE_RELEASE_BOT_ID` | - | Repository | GitHub app ID. |
+| `DCODE_RELEASE_BOT_ID` | - | Repository | GitHub App bot account user ID. |
 | `DCODE_RELEASE_BOT_LOGIN` | `langchain-oss-automated-triage[bot]` | Repository | Login ID. |
 
 Of the model-provider credentials, only the credential for the configured provider is required. Prefer a provider project or service-account key limited to model inference, with model allowlists and spend limits where supported. The workflow also uses the repository GitHub App credentials for repository mutations.

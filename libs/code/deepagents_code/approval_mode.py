@@ -26,8 +26,12 @@ APPROVAL_MODE_NAMESPACE: tuple[str, str] = ("deepagents_code", "approval_mode")
 YOLO_ACKNOWLEDGEMENT_POLICY_VERSION = "2026-07-14"
 """Version of the unrestricted-mode warning that must be acknowledged."""
 
-AUTO_NOTICE_VERSION = "2026-03-26"
-"""Version of the first-run Auto mode education notice."""
+AUTO_NOTICE_VERSION = "2026-07-23"
+"""Version of the first-run Auto mode education notice.
+
+Bump this string whenever the notice copy changes materially enough that
+already-shown installs should see it again.
+"""
 
 
 class ApprovalMode(StrEnum):
@@ -280,8 +284,11 @@ def _approval_state_lock_path(path: Path) -> Path:
 def _approval_state_thread_lock(path: Path) -> threading.Lock:
     """Return the process-local mutation lock for an approval-state path.
 
-    OS file locks are per-process on some platforms, so two threads in one dcode
-    process could otherwise both pass filelock and race the read-merge-write.
+    Each `_approval_state_lock` builds a fresh `FileLock(thread_local=False)`, so
+    the cross-process lock alone does not serialize threads within one dcode
+    process. This threading lock guarantees only one in-process thread runs the
+    read-merge-write at a time, independent of the filelock backend's cross-thread
+    behavior.
 
     Args:
         path: Path to `approval.json`.
@@ -315,6 +322,9 @@ def _approval_state_lock(path: Path) -> Iterator[None]:
     Callers should handle `filelock.Timeout` (lock wait expired) and `OSError`
     (lock directory creation failure).
     """
+    # These run during __enter__, before the lock is held. Any OSError from
+    # mkdir/chmod propagates out of the `with` to the caller, which must catch
+    # it (the only caller, `_merge_approval_state`, does).
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.name != "nt":
         path.parent.chmod(0o700)
@@ -330,6 +340,11 @@ def _approval_state_lock(path: Path) -> Iterator[None]:
 def _load_approval_state(path: Path) -> dict[str, object]:
     """Load the install-local approval state file, or an empty dict.
 
+    A missing file is the normal first-run case and returns `{}` silently.
+    Unreadable, corrupt, or non-object state also returns `{}` (so callers fail
+    closed and re-prompt) but is logged: the next save overwrites the file, so
+    this warning is the only surviving evidence of the corruption.
+
     Args:
         path: Path to `approval.json`.
 
@@ -338,9 +353,24 @@ def _load_approval_state(path: Path) -> dict[str, object]:
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, UnicodeDecodeError, json.JSONDecodeError):
+    except FileNotFoundError:
         return {}
-    return data if isinstance(data, dict) else {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        logger.warning(
+            "Ignoring unreadable or corrupt approval state at %s; a re-prompt "
+            "may follow and the file will be overwritten on the next save",
+            path,
+            exc_info=True,
+        )
+        return {}
+    if not isinstance(data, dict):
+        logger.warning(
+            "Ignoring non-object approval state at %s; a re-prompt may follow "
+            "and the file will be overwritten on the next save",
+            path,
+        )
+        return {}
+    return data
 
 
 def _write_approval_state(
@@ -471,6 +501,10 @@ def save_yolo_acknowledgement(path: Path | None = None) -> bool:
 
 def has_auto_mode_notice(path: Path | None = None) -> bool:
     """Return whether the current Auto first-enable notice was already shown.
+
+    The notice self-versions on `auto_notice_version` and deliberately does not
+    gate on the top-level `version` (unlike `has_yolo_acknowledgement`), so the
+    two records can evolve independently within one `approval.json`.
 
     Args:
         path: Alternate approval-state path for tests.

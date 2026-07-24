@@ -25977,6 +25977,111 @@ class TestLiveApprovalModeWrites:
                 assert not isinstance(app.screen, AutoModeNoticeScreen)
                 save_notice.assert_not_called()
 
+    async def test_mount_auto_notice_dismisses_on_escape_and_saves(self) -> None:
+        """Esc dismisses the notice and persists, same as Enter."""
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
+
+        with (
+            patch(
+                "deepagents_code.approval_mode.has_auto_mode_notice",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.approval_mode.save_auto_mode_notice",
+                return_value=True,
+            ) as save_notice,
+        ):
+            app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert isinstance(app.screen, AutoModeNoticeScreen)
+                save_notice.assert_not_called()
+                await pilot.press("escape")
+                await pilot.pause()
+                save_notice.assert_called_once_with()
+                assert not isinstance(app.screen, AutoModeNoticeScreen)
+
+    async def test_mount_auto_notice_action_cancel_dismisses_and_saves(self) -> None:
+        """The `action_cancel` alias dismisses and persists.
+
+        Covers the app-interrupt path where the app's priority Escape handler
+        calls `action_cancel` on the modal rather than the screen's own binding.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
+
+        with (
+            patch(
+                "deepagents_code.approval_mode.has_auto_mode_notice",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.approval_mode.save_auto_mode_notice",
+                return_value=True,
+            ) as save_notice,
+        ):
+            app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert isinstance(app.screen, AutoModeNoticeScreen)
+                app.screen.action_cancel()
+                await pilot.pause()
+                save_notice.assert_called_once_with()
+                assert not isinstance(app.screen, AutoModeNoticeScreen)
+
+    async def test_notify_auto_mode_enabled_once_is_reentrant_safe(self) -> None:
+        """Two enables before dismiss push a single modal, saved once."""
+        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.approval_mode.has_auto_mode_notice",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.approval_mode.save_auto_mode_notice",
+                    return_value=True,
+                ) as save_notice,
+            ):
+                app._notify_auto_mode_enabled_once()
+                app._notify_auto_mode_enabled_once()
+                await pilot.pause()
+                notices = [
+                    screen
+                    for screen in app.screen_stack
+                    if isinstance(screen, AutoModeNoticeScreen)
+                ]
+                assert len(notices) == 1
+                await pilot.press("enter")
+                await pilot.pause()
+                save_notice.assert_called_once_with()
+
+    async def test_notify_auto_mode_enabled_once_survives_push_failure(self) -> None:
+        """A failed modal push never breaks the already-applied Auto enable."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.approval_mode.has_auto_mode_notice",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.approval_mode.save_auto_mode_notice"
+                ) as save_notice,
+                patch.object(app, "push_screen", side_effect=RuntimeError("boom")),
+            ):
+                # Must not raise despite the push failing.
+                app._notify_auto_mode_enabled_once()
+                await pilot.pause()
+            # The guard is reset so a later enable can retry the notice.
+            assert app._auto_mode_notice_pending is False
+            save_notice.assert_not_called()
+
     async def test_server_manual_fallback_updates_tui_mode_and_warns(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode
 

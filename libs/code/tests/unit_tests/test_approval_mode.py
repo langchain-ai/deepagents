@@ -336,3 +336,61 @@ def test_concurrent_yolo_and_auto_saves_preserve_both(tmp_path: Path) -> None:
     assert data["acknowledged"] is True
     assert data["auto_notice_version"] == AUTO_NOTICE_VERSION
     assert data["auto_notice_shown"] is True
+
+
+def test_save_fails_open_on_lock_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lock-wait timeout returns False without raising (fail open)."""
+    from filelock import Timeout
+
+    from deepagents_code import approval_mode
+
+    path = tmp_path / "approval.json"
+
+    class _TimingOutLock:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self) -> None:
+            raise Timeout(str(path))
+
+        def __exit__(self, *_exc: object) -> bool:
+            return False
+
+    monkeypatch.setattr(approval_mode, "FileLock", _TimingOutLock)
+
+    assert save_auto_mode_notice(path) is False
+    assert save_yolo_acknowledgement(path) is False
+    # The timed-out writes never touched disk, so nothing is recorded.
+    assert not path.exists()
+
+
+def test_load_corrupt_state_logs_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Corrupt state is treated as empty but logged (not silently swallowed)."""
+    import logging
+
+    path = tmp_path / "approval.json"
+    path.write_text("not-json\n", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.approval_mode"):
+        assert not has_auto_mode_notice(path)
+        assert not has_yolo_acknowledgement(path)
+
+    assert any("corrupt" in record.getMessage() for record in caplog.records)
+
+
+def test_load_missing_state_does_not_log(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A missing file is the normal first-run case and stays silent."""
+    import logging
+
+    path = tmp_path / "missing" / "approval.json"
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.approval_mode"):
+        assert not has_auto_mode_notice(path)
+
+    assert caplog.records == []

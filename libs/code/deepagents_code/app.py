@@ -7524,16 +7524,23 @@ class DeepAgentsApp(App):
         if has_auto_mode_notice() or getattr(self, "_auto_mode_notice_pending", False):
             return
 
-        self._auto_mode_notice_pending = True
-
         def handle_result(_result: None) -> None:
             self._auto_mode_notice_pending = False
             save_auto_mode_notice()
 
-        self.push_screen(
-            AutoModeNoticeScreen(_AUTO_MODE_ENABLED_WARNING),
-            handle_result,
-        )
+        try:
+            self.push_screen(
+                AutoModeNoticeScreen(_AUTO_MODE_ENABLED_WARNING),
+                handle_result,
+            )
+        except Exception:
+            # Cosmetic notice must never break an already-applied Auto enable.
+            logger.warning("Could not show Auto first-enable notice", exc_info=True)
+            return
+
+        # Mark pending only after the push succeeds so a failed push can't
+        # strand the guard True and suppress the notice for the whole session.
+        self._auto_mode_notice_pending = True
 
     async def _on_auto_approve_enabled(self) -> bool:
         """Enable Auto only after the live Store acknowledges it.

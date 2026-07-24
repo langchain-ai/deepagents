@@ -64,8 +64,8 @@ class AutoModeNoticeScreen(ModalScreen[None]):
     }
     """
 
-    # Let Textual focus the screen itself so Enter isn't swallowed by chat input
-    # sitting underneath on the main stack.
+    # The screen must be the focus target for its own priority Enter/Esc
+    # bindings to fire (see `on_mount`); without this the keys reach no handler.
     can_focus = True
 
     def __init__(self, body: str) -> None:
@@ -111,7 +111,10 @@ class AutoModeNoticeScreen(ModalScreen[None]):
     def action_cancel(self) -> None:
         """Alias for Esc so app-level interrupt still dismisses the notice.
 
-        The app's priority Escape binding prefers `action_cancel` on modal
-        screens before falling through to a bare `dismiss(None)`.
+        Defensive fallback: the screen's own priority Esc binding normally
+        handles dismissal. But the app's priority Escape handler
+        (`DeepAgentsApp.action_interrupt`) prefers `action_cancel` on modal
+        screens before falling through to a bare `dismiss(None)`, so this alias
+        keeps Esc working if that handler wins the binding race.
         """
         self.action_dismiss_notice()

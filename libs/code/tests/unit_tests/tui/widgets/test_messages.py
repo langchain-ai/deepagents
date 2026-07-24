@@ -904,6 +904,81 @@ class TestToolCallMessageTerminalStateGuards:
             assert app.msg._status == "skipped"
 
 
+class TestToolCallMessageStatusTint:
+    """The row tints itself green/red/amber to match its terminal outcome."""
+
+    async def test_success_applies_status_class(self) -> None:
+        """A successful call tags the row with `-status-success`."""
+        app = _tool_msg_app("edit_file", {"file_path": "a.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("done")
+            await pilot.pause()
+            assert app.msg.has_class("-status-success")
+            assert not app.msg.has_class("-status-error")
+
+    async def test_error_applies_status_class(self) -> None:
+        """A failed call tags the row with `-status-error`."""
+        app = _tool_msg_app("execute", {"command": "false"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_error("boom")
+            await pilot.pause()
+            assert app.msg.has_class("-status-error")
+            assert not app.msg.has_class("-status-success")
+
+    async def test_rejected_applies_status_class(self) -> None:
+        """A rejected call tags the row with `-status-rejected`."""
+        app = _tool_msg_app("execute", {"command": "rm -rf /"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_rejected()
+            await pilot.pause()
+            assert app.msg.has_class("-status-rejected")
+
+    async def test_skipped_applies_status_class(self) -> None:
+        """A skipped call tags the row with `-status-skipped`."""
+        app = _tool_msg_app("execute", {"command": "ls"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_skipped()
+            await pilot.pause()
+            assert app.msg.has_class("-status-skipped")
+
+    async def test_running_carries_no_status_class(self) -> None:
+        """A running call keeps the default accent (no `-status-*` class)."""
+        app = _tool_msg_app("execute", {"command": "sleep 1"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_running()
+            await pilot.pause()
+            assert not any(
+                app.msg.has_class(name)
+                for name in (
+                    "-status-success",
+                    "-status-error",
+                    "-status-rejected",
+                    "-status-skipped",
+                )
+            )
+
+    async def test_status_class_survives_rehydration(self) -> None:
+        """A virtualized error row restores its `-status-error` tint on rebuild."""
+        app = _tool_msg_app("execute", {"command": "false"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_error("boom")
+            data = MessageData.from_widget(app.msg)
+
+        restored = data.to_widget()
+        assert isinstance(restored, ToolCallMessage)
+        rehydrated_app = _tool_msg_app("execute")
+        rehydrated_app.msg = restored
+        async with rehydrated_app.run_test() as pilot:
+            await pilot.pause()
+            assert restored.has_class("-status-error")
+
+
 class TestToolCallMessageArgs:
     """The public `args` accessor must not expose internal widget state."""
 

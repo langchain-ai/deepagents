@@ -183,15 +183,38 @@ def test_transcript_revision_is_deterministic_and_thread_safe(tmp_path: Path) ->
     assert handle.revision == concurrent.revision("thread")
 
 
-def test_runtime_stores_transcripts_outside_workspace(tmp_path: Path) -> None:
+def test_runtime_stores_transcripts_outside_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     workspace = tmp_path / "workspace"
     config_dir = tmp_path / "config"
+    global_dir = tmp_path / "global-deepagents"
     workspace.mkdir()
+    monkeypatch.setattr(
+        "deepagents_code.hooks.runtime.DEFAULT_CONFIG_DIR",
+        global_dir,
+    )
 
     runtime = HooksRuntime.create(cwd=workspace, config_dir=config_dir)
 
-    assert runtime.transcripts.root == (config_dir / "transcripts").resolve()
+    assert runtime.transcripts.root == (global_dir / "transcripts").resolve()
     assert not (workspace / ".deepagents").exists()
+    assert not (config_dir / "transcripts").exists()
+
+
+def test_runtime_accepts_explicit_transcript_root(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    transcript_root = tmp_path / "isolated-transcripts"
+    workspace.mkdir()
+
+    runtime = HooksRuntime.create(
+        cwd=workspace,
+        config_dir=tmp_path / "config",
+        transcript_root=transcript_root,
+    )
+
+    assert runtime.transcripts.root == transcript_root.resolve()
+    assert not (tmp_path / "config" / "transcripts").exists()
 
 
 async def test_runtime_materializes_paths_and_invokes(tmp_path: Path) -> None:
@@ -229,7 +252,11 @@ async def test_runtime_materializes_paths_and_invokes(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    runtime = HooksRuntime.create(cwd=tmp_path, config_dir=config_dir)
+    runtime = HooksRuntime.create(
+        cwd=tmp_path,
+        config_dir=config_dir,
+        transcript_root=tmp_path / "transcripts",
+    )
     runtime.append_messages("thread-1", [HumanMessage(content="hi")])
     invocation = HookInvocation(
         context=HookContext(

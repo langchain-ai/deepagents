@@ -125,7 +125,11 @@ def test_apply_hooks_context_sets_server_events(tmp_path: Path) -> None:
         '{"hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"true"}]}]}}',
         encoding="utf-8",
     )
-    runtime = HooksRuntime.create(cwd=tmp_path, config_dir=config_dir)
+    runtime = HooksRuntime.create(
+        cwd=tmp_path,
+        config_dir=config_dir,
+        transcript_root=tmp_path / "transcripts",
+    )
     context: CLIContext = {}
     apply_hooks_context(context, runtime, prompt_id="prompt-1")
 
@@ -333,7 +337,11 @@ async def test_fulfill_hook_invocation_runs_engine(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     (config_dir / "hooks.json").write_text('{"hooks":{}}', encoding="utf-8")
-    runtime = HooksRuntime.create(cwd=tmp_path, config_dir=config_dir)
+    runtime = HooksRuntime.create(
+        cwd=tmp_path,
+        config_dir=config_dir,
+        transcript_root=tmp_path / "transcripts",
+    )
     request = _request()
     request = request.model_copy(update={"snapshot_id": runtime.snapshot_id})
 

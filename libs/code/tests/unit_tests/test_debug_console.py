@@ -895,13 +895,40 @@ class TestDebugConsoleScreen:
             app.push_screen(screen)
             await pilot.pause()
 
-            screen._copy_snapshot_value("thread-abc")
+            screen._copy_snapshot_value("thread-abc", "Thread")
             await pilot.pause()
 
         assert captured["text"] == "thread-abc"
         latest = list(app._notifications)[-1]
         assert latest.severity == "information"
         assert latest.message == "Thread ID copied"
+
+    async def test_snapshot_copy_toast_uses_field_label(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, str] = {}
+
+        def fake_copy(_app: App, text: str) -> tuple[bool, str | None]:
+            captured["text"] = text
+            return True, None
+
+        monkeypatch.setattr(debug_console_mod, "copy_text_to_clipboard", fake_copy)
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Version", "1.2.3", copyable=True)]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._copy_snapshot_value("1.2.3", "Version")
+            await pilot.pause()
+
+        assert captured["text"] == "1.2.3"
+        latest = list(app._notifications)[-1]
+        assert latest.severity == "information"
+        assert latest.message == "Version copied"
 
     async def test_langsmith_link_renders_after_resolution(self) -> None:
         app = _Harness()
@@ -1106,6 +1133,8 @@ class TestDebugConsoleScreen:
                 if isinstance(span.style, debug_console_mod.TStyle)
                 and span.style.meta.get(debug_console_mod._SNAPSHOT_COPY_META)
                 == "thread-abc"
+                and span.style.meta.get(debug_console_mod._SNAPSHOT_COPY_LABEL_META)
+                == "Thread"
             ]
             assert any(
                 content.plain[span.start : span.end] == "thread-abc"

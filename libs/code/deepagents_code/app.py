@@ -130,7 +130,7 @@ _DEFERRED_START_NOTICE = (
 )
 
 _AUTO_MODE_ENABLED_WARNING = (
-    "Auto is active: a classifier reviews gated actions (not a sandbox)."
+    "A classifier reviews gated actions. This is not a sandbox."
 )
 
 
@@ -3108,6 +3108,7 @@ class DeepAgentsApp(App):
             self._approval_mode = ApprovalMode.MANUAL
             self._auto_approve = False
         self._approval_mode_blocked = False
+        self._auto_mode_notice_pending = False
 
         if sub_title is None and self._sandbox_type is not None:
             display = _SANDBOX_DISPLAY_NAMES.get(
@@ -7507,25 +7508,32 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(self._approval_mode.value)
 
     def _notify_auto_mode_enabled_once(self) -> None:
-        """Show the Auto education toast at most once per install.
+        """Show the Auto education modal at most once per install.
 
-        Fail open when the install-local notice cannot be persisted: Auto still
-        enables and the toast may reappear on a later successful enable.
+        Auto is already active when this runs. The modal is informational only
+        (Enter/Esc continue); it is not a YOLO-style pre-enable gate. Persistence
+        is best-effort after dismiss so a failed write only re-shows on a later
+        successful enable path.
         """
         from deepagents_code.approval_mode import (
             has_auto_mode_notice,
             save_auto_mode_notice,
         )
+        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
 
-        if has_auto_mode_notice():
+        if has_auto_mode_notice() or getattr(self, "_auto_mode_notice_pending", False):
             return
-        self.notify(
-            _AUTO_MODE_ENABLED_WARNING,
-            severity="warning",
-            timeout=8,
-            markup=False,
+
+        self._auto_mode_notice_pending = True
+
+        def handle_result(_result: None) -> None:
+            self._auto_mode_notice_pending = False
+            save_auto_mode_notice()
+
+        self.push_screen(
+            AutoModeNoticeScreen(_AUTO_MODE_ENABLED_WARNING),
+            handle_result,
         )
-        save_auto_mode_notice()
 
     async def _on_auto_approve_enabled(self) -> bool:
         """Enable Auto only after the live Store acknowledges it.

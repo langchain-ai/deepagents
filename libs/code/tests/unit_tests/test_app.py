@@ -25768,10 +25768,13 @@ class TestLiveApprovalModeWrites:
         notify.assert_called_once()
         assert notify.call_args.kwargs["severity"] == "warning"
 
-    async def test_toggle_auto_first_enable_toasts_and_saves_notice(self) -> None:
-        """First successful Auto toggle shows the education toast once."""
+    async def test_toggle_auto_first_enable_shows_modal_and_saves_on_dismiss(
+        self,
+    ) -> None:
+        """First successful Auto toggle shows the education modal once."""
         from deepagents_code.app import _AUTO_MODE_ENABLED_WARNING
         from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
 
         app = DeepAgentsApp()
         app._auto_mode_eligible = True
@@ -25789,7 +25792,6 @@ class TestLiveApprovalModeWrites:
                     "_auto_accept_pending_goal_rubric",
                     new=AsyncMock(),
                 ),
-                patch.object(app, "notify") as notify,
                 patch(
                     "deepagents_code.approval_mode.has_auto_mode_notice",
                     return_value=False,
@@ -25800,19 +25802,20 @@ class TestLiveApprovalModeWrites:
                 ) as save_notice,
             ):
                 await app.action_toggle_auto_approve()
+                await pilot.pause()
+                assert app._approval_mode is ApprovalMode.AUTO
+                assert isinstance(app.screen, AutoModeNoticeScreen)
+                assert app.screen._body == _AUTO_MODE_ENABLED_WARNING
+                save_notice.assert_not_called()
+                await pilot.press("enter")
+                await pilot.pause()
+                save_notice.assert_called_once_with()
+                assert not isinstance(app.screen, AutoModeNoticeScreen)
 
-        assert app._approval_mode is ApprovalMode.AUTO
-        notify.assert_called_once_with(
-            _AUTO_MODE_ENABLED_WARNING,
-            severity="warning",
-            timeout=8,
-            markup=False,
-        )
-        save_notice.assert_called_once_with()
-
-    async def test_toggle_auto_skips_toast_when_notice_already_shown(self) -> None:
+    async def test_toggle_auto_skips_modal_when_notice_already_shown(self) -> None:
         """Later Auto enables stay quiet once the install-local notice exists."""
         from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
 
         app = DeepAgentsApp()
         app._auto_mode_eligible = True
@@ -25830,7 +25833,6 @@ class TestLiveApprovalModeWrites:
                     "_auto_accept_pending_goal_rubric",
                     new=AsyncMock(),
                 ),
-                patch.object(app, "notify") as notify,
                 patch(
                     "deepagents_code.approval_mode.has_auto_mode_notice",
                     return_value=True,
@@ -25842,95 +25844,100 @@ class TestLiveApprovalModeWrites:
                 # Manual -> Auto
                 await app.action_toggle_auto_approve()
                 assert app._approval_mode is ApprovalMode.AUTO
+                assert not isinstance(app.screen, AutoModeNoticeScreen)
                 # Auto -> Manual -> Auto
                 await app.action_toggle_auto_approve()
                 assert app._approval_mode is ApprovalMode.MANUAL
                 await app.action_toggle_auto_approve()
                 assert app._approval_mode is ApprovalMode.AUTO
+                assert not isinstance(app.screen, AutoModeNoticeScreen)
 
-        assert not any(
-            "Auto is active" in str(call.args[0]) for call in notify.call_args_list
-        )
         save_notice.assert_not_called()
 
-    async def test_on_auto_approve_enabled_first_toast_and_save(self) -> None:
+    async def test_on_auto_approve_enabled_first_modal_and_save(self) -> None:
         from deepagents_code.app import _AUTO_MODE_ENABLED_WARNING
         from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
 
         app = DeepAgentsApp(auto_approve=False)
         app._auto_mode_eligible = True
-        app._session_state = TextualSessionState(
-            thread_id="thread-1",
-            auto_approve=False,
-        )
-        with (
-            patch.object(
-                app,
-                "_write_live_approval_mode",
-                new=AsyncMock(return_value=True),
-            ),
-            patch.object(
-                app,
-                "_auto_accept_pending_goal_rubric",
-                new=AsyncMock(),
-            ),
-            patch.object(app, "notify") as notify,
-            patch(
-                "deepagents_code.approval_mode.has_auto_mode_notice",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.approval_mode.save_auto_mode_notice",
-                return_value=True,
-            ) as save_notice,
-        ):
-            assert await app._on_auto_approve_enabled() is True
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(
+                thread_id="thread-1",
+                auto_approve=False,
+            )
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch.object(
+                    app,
+                    "_auto_accept_pending_goal_rubric",
+                    new=AsyncMock(),
+                ),
+                patch(
+                    "deepagents_code.approval_mode.has_auto_mode_notice",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.approval_mode.save_auto_mode_notice",
+                    return_value=True,
+                ) as save_notice,
+            ):
+                assert await app._on_auto_approve_enabled() is True
+                await pilot.pause()
+                assert app._approval_mode is ApprovalMode.AUTO
+                assert isinstance(app.screen, AutoModeNoticeScreen)
+                assert app.screen._body == _AUTO_MODE_ENABLED_WARNING
+                save_notice.assert_not_called()
+                await pilot.press("enter")
+                await pilot.pause()
+                save_notice.assert_called_once_with()
 
-        assert app._approval_mode is ApprovalMode.AUTO
-        notify.assert_called_once_with(
-            _AUTO_MODE_ENABLED_WARNING,
-            severity="warning",
-            timeout=8,
-            markup=False,
-        )
-        save_notice.assert_called_once_with()
-
-    async def test_on_auto_approve_enabled_skips_toast_when_notice_shown(self) -> None:
+    async def test_on_auto_approve_enabled_skips_modal_when_notice_shown(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
 
         app = DeepAgentsApp(auto_approve=False)
         app._auto_mode_eligible = True
-        app._session_state = TextualSessionState(
-            thread_id="thread-1",
-            auto_approve=False,
-        )
-        with (
-            patch.object(
-                app,
-                "_write_live_approval_mode",
-                new=AsyncMock(return_value=True),
-            ),
-            patch.object(
-                app,
-                "_auto_accept_pending_goal_rubric",
-                new=AsyncMock(),
-            ),
-            patch.object(app, "notify") as notify,
-            patch(
-                "deepagents_code.approval_mode.has_auto_mode_notice",
-                return_value=True,
-            ),
-            patch("deepagents_code.approval_mode.save_auto_mode_notice") as save_notice,
-        ):
-            assert await app._on_auto_approve_enabled() is True
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(
+                thread_id="thread-1",
+                auto_approve=False,
+            )
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=True),
+                ),
+                patch.object(
+                    app,
+                    "_auto_accept_pending_goal_rubric",
+                    new=AsyncMock(),
+                ),
+                patch(
+                    "deepagents_code.approval_mode.has_auto_mode_notice",
+                    return_value=True,
+                ),
+                patch(
+                    "deepagents_code.approval_mode.save_auto_mode_notice"
+                ) as save_notice,
+            ):
+                assert await app._on_auto_approve_enabled() is True
+                await pilot.pause()
+                assert app._approval_mode is ApprovalMode.AUTO
+                assert not isinstance(app.screen, AutoModeNoticeScreen)
+                save_notice.assert_not_called()
 
-        assert app._approval_mode is ApprovalMode.AUTO
-        notify.assert_not_called()
-        save_notice.assert_not_called()
-
-    async def test_mount_auto_toasts_when_notice_unseen(self) -> None:
+    async def test_mount_auto_shows_modal_when_notice_unseen(self) -> None:
         from deepagents_code.app import _AUTO_MODE_ENABLED_WARNING
         from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
 
         with (
             patch(
@@ -25943,24 +25950,19 @@ class TestLiveApprovalModeWrites:
             ) as save_notice,
         ):
             app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
-            with patch.object(app, "notify") as notify:
-                async with app.run_test() as pilot:
-                    await pilot.pause()
-
-        education = [
-            call
-            for call in notify.call_args_list
-            if call.args and call.args[0] == _AUTO_MODE_ENABLED_WARNING
-        ]
-        assert len(education) == 1
-        assert education[0].kwargs["severity"] == "warning"
-        assert education[0].kwargs["timeout"] == 8
-        assert education[0].kwargs["markup"] is False
-        save_notice.assert_called_once_with()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert isinstance(app.screen, AutoModeNoticeScreen)
+                assert app.screen._body == _AUTO_MODE_ENABLED_WARNING
+                save_notice.assert_not_called()
+                await pilot.press("enter")
+                await pilot.pause()
+                save_notice.assert_called_once_with()
+                assert not isinstance(app.screen, AutoModeNoticeScreen)
 
     async def test_mount_auto_silent_when_notice_already_shown(self) -> None:
-        from deepagents_code.app import _AUTO_MODE_ENABLED_WARNING
         from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
 
         with (
             patch(
@@ -25970,15 +25972,10 @@ class TestLiveApprovalModeWrites:
             patch("deepagents_code.approval_mode.save_auto_mode_notice") as save_notice,
         ):
             app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
-            with patch.object(app, "notify") as notify:
-                async with app.run_test() as pilot:
-                    await pilot.pause()
-
-        assert not any(
-            call.args and call.args[0] == _AUTO_MODE_ENABLED_WARNING
-            for call in notify.call_args_list
-        )
-        save_notice.assert_not_called()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                assert not isinstance(app.screen, AutoModeNoticeScreen)
+                save_notice.assert_not_called()
 
     async def test_server_manual_fallback_updates_tui_mode_and_warns(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode

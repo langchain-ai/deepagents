@@ -11,13 +11,14 @@ on:
         description: "Comma list"
         type: string
         default: "autonomous,conversation,context"
-      agent_impl:
-        description: "Deep-agents harness for the autonomous and context categories (conversation always uses tau3). bare = SDK create_deep_agent; dcode = deep-agents-code product agent."
-        type: choice
+      agent_impls:
+        description: "Comma-separated deep-agents harnesses for the autonomous and context categories (conversation always uses tau3). Each must be bare (SDK create_deep_agent) or dcode (deep-agents-code product agent). Every listed config runs as its own (model, config) row."
+        type: string
         default: "bare"
-        options:
-          - bare
-          - dcode
+      branches_to_compare:
+        description: "Comma-separated git refs to pull the agent source (deepagents + deepagents-code + quickjs) from, one eval per (model, branch, config). Empty compares only the current checkout. Datasets, verifiers, and scoring always come from the workflow ref."
+        type: string
+        default: ""
       profile:
         description: "Task scope: 'full' (every task) or 'lite' (frozen high-signal subset from lite_tasks.py — fewer tasks, full rollouts)."
         type: choice
@@ -25,6 +26,10 @@ on:
         options:
           - full
           - lite
+      include_tasks:
+        description: "Optional comma-separated exact task names. Filters the tasks resolved by the selected categories and profile; unknown names fail during prep before evals start."
+        type: string
+        default: ""
       rollouts:
         type: string
         default: "3"
@@ -40,6 +45,10 @@ on:
         default: false
       harbor_package_override:
         description: "Optional: install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. One spec per line — e.g. `harbor @ git+…@<sha>` on the first line and `harbor-langsmith @ git+…@<sha>#subdirectory=packages/harbor-langsmith` on the second. Use a trusted package source. Prefer an immutable commit SHA, and never embed credentials in the package spec. Leave empty to use the pinned Harbor."
+        type: string
+        default: ""
+      judge_models:
+        description: "Optional: grader model(s) for LLM-judge verifiers (conversation/tau3, harbor-index), passed as JUDGE_MODELS with JUDGE_PROVIDER=openai. Use an independent grader to avoid self-grading (e.g. gpt-5.6-terra when testing gpt-5.6-luna). Empty defaults to gpt-5.6-luna."
         type: string
         default: ""
 
@@ -64,6 +73,10 @@ jobs:
       model_parallel: ${{ steps.p.outputs.model_parallel }}
       models: ${{ steps.p.outputs.models }}
       categories: ${{ steps.p.outputs.categories }}
+      configs: ${{ steps.p.outputs.configs }}
+      expected_leaves: ${{ steps.p.outputs.expected_leaves }}
+      branches: ${{ steps.p.outputs.branches }}
+      sources: ${{ steps.p.outputs.sources }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -168,8 +181,10 @@ jobs:
         env:
           UNIFIED_MODELS: ${{ inputs.models }}
           UNIFIED_CATEGORIES: ${{ inputs.categories }}
-          UNIFIED_AGENT_IMPL: ${{ inputs.agent_impl }}
+          UNIFIED_AGENT_IMPLS: ${{ inputs.agent_impls }}
+          UNIFIED_BRANCHES: ${{ inputs.branches_to_compare }}
           UNIFIED_PROFILE: ${{ inputs.profile }}
+          UNIFIED_INCLUDE_TASKS: ${{ inputs.include_tasks }}
           UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}
           UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}
           # Set by the enumerate step above for the full profile only; empty
@@ -189,8 +204,12 @@ jobs:
           RESOLVED_MODELS: ${{ steps.p.outputs.models }}
           IN_CATEGORIES: ${{ inputs.categories }}
           RESOLVED_CATEGORIES: ${{ steps.p.outputs.categories }}
-          IN_AGENT_IMPL: ${{ inputs.agent_impl }}
+          IN_AGENT_IMPLS: ${{ inputs.agent_impls }}
+          IN_BRANCHES: ${{ inputs.branches_to_compare }}
+          RESOLVED_SOURCES: ${{ steps.p.outputs.sources }}
+          RESOLVED_CONFIGS: ${{ steps.p.outputs.configs }}
           IN_PROFILE: ${{ inputs.profile }}
+          IN_INCLUDE_TASKS: ${{ inputs.include_tasks }}
           IN_ROLLOUTS: ${{ inputs.rollouts }}
           IN_CONCURRENCY: ${{ inputs.concurrency }}
           MAX_PARALLEL: ${{ steps.p.outputs.max_parallel }}
@@ -228,8 +247,11 @@ jobs:
             echo "| models (requested) | \`${IN_MODELS}\` |"
             echo "| models (resolved) | \`${resolved_models}\` |"
             echo "| categories | \`${IN_CATEGORIES}\` |"
-            echo "| agent_impl (autonomous/context) | \`${IN_AGENT_IMPL}\`${agent_impl_note} |"
+            echo "| agent_impls (autonomous/context) | \`${IN_AGENT_IMPLS}\`${agent_impl_note} |"
+            echo "| branches_to_compare | \`${IN_BRANCHES:-(current checkout)}\` |"
+            echo "| resolved branch commits | \`${RESOLVED_SOURCES:-(prep did not complete)}\` |"
             echo "| profile | \`${IN_PROFILE}\` |"
+            echo "| include_tasks | \`${IN_INCLUDE_TASKS:-(profile default)}\` |"
             echo "| rollouts | \`${IN_ROLLOUTS}\` |"
             echo "| concurrency | \`${IN_CONCURRENCY}\` |"
             echo "| shard pool (max_parallel / model_parallel) | \`${MAX_PARALLEL:-?}\` / \`${MODEL_PARALLEL:-?}\` |"
@@ -239,7 +261,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   eval:
-    name: "🚀 Evaluate (${{ matrix.model }})"
+    name: "🚀 Evaluate (${{ matrix.model }} / ${{ matrix.branch }})"
     needs: prep
     strategy:
       fail-fast: false
@@ -252,6 +274,8 @@ jobs:
     secrets: inherit
     with:
       model: ${{ matrix.model }}
+      branch: ${{ matrix.branch }}
+      branch_sha: ${{ matrix.branch_sha }}
       # The model's full multi-category, multi-shard matrix, pre-serialized by
       # unified_prep.py. _harbor_run.yml's own harbor job matrixes over these
       # entries directly instead of expanding a single-dataset shard axis.
@@ -262,12 +286,13 @@ jobs:
       category: ""
       dataset: ""
       dataset_path: ""
-      agent_impl: ${{ inputs.agent_impl }}
+      agent_impl: ""
       rollouts: ${{ inputs.rollouts }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
+      judge_models: ${{ inputs.judge_models }}
 
   combine:
     name: "📊 Combine cross-model results"
@@ -275,6 +300,9 @@ jobs:
       - prep
       - eval
     if: ${{ always() }}
+    # Aggregation and reporting happen after the paid eval work. Preserve their
+    # diagnostics without letting analysis failures fail the experiment workflow.
+    continue-on-error: true
     runs-on: ubuntu-latest
     # Every ref publishes to the same branch. Serialize the publishing jobs so
     # each one fetches the branch tip after the previous writer has pushed.
@@ -300,7 +328,13 @@ jobs:
           cache-suffix: unified-combine
           working-directory: libs/evals
 
+      - name: "🗂️ Prepare UV cache directory"
+        run: |
+          mkdir -p "$UV_CACHE_DIR"
+
       - name: "⬇️ Download leaf summaries"
+        id: download-leaves
+        continue-on-error: true
         run: |
           attempt=1
           while :; do
@@ -319,18 +353,23 @@ jobs:
             cat dl.log
             rm -rf "$attempt_dir"
             if [ "$attempt" -ge 3 ]; then
-              echo "::error::Leaf download failed after ${attempt} attempts (not an empty-artifact case)."
-              exit 1
+              echo "::warning::Leaf download failed after ${attempt} attempts; writing an incomplete diagnostic report."
+              mkdir -p _leaves
+              mv dl.log _leaves/artifact-download-error.log
+              break
             fi
             attempt=$((attempt + 1))
             sleep $((attempt * 5))
           done
 
       - name: "📊 Combine"
+        id: combine-results
+        if: ${{ always() }}
+        continue-on-error: true
         env:
-          # Expected grid, so a model whose leaf never uploaded is shown and
-          # flagged incomplete rather than silently ranking on fewer categories.
-          EXPECTED_MODELS: ${{ needs.prep.outputs.models }}
+          # Expected grid, so a leaf that never uploaded is shown and flagged
+          # incomplete rather than silently ranking on fewer categories.
+          EXPECTED_LEAVES: ${{ needs.prep.outputs.expected_leaves }}
           EXPECTED_CATEGORIES: ${{ needs.prep.outputs.categories }}
         run: |
           mkdir -p _leaves
@@ -352,7 +391,9 @@ jobs:
             --title "Deep Agents Unified Evals"
 
       - name: "📤 Upload combined results"
+        id: upload-combined
         if: ${{ always() && hashFiles('_combined/unified_summary.json') != '' }}
+        continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: unified-combined
@@ -469,3 +510,54 @@ jobs:
               done
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "🔀 Compare active branches and configs"
+        id: compare-results
+        if: ${{ always() && needs.prep.result == 'success' }}
+        continue-on-error: true
+        env:
+          SOURCES: ${{ needs.prep.outputs.sources }}
+          EXPECTED_LEAVES: ${{ needs.prep.outputs.expected_leaves }}
+          EXPECTED_CATEGORIES: ${{ needs.prep.outputs.categories }}
+        run: |
+          python3 .github/scripts/aggregate_unified_compare.py _leaves \
+            --sources-json "$SOURCES" \
+            --expected-leaves-json "$EXPECTED_LEAVES" \
+            --categories-json "$EXPECTED_CATEGORIES" \
+            --rollouts "$ROLLOUTS" \
+            --out-dir _comparison
+
+      - name: "📤 Upload deterministic comparisons"
+        id: upload-comparisons
+        if: ${{ always() && hashFiles('_comparison/comparison_summary.json') != '' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unified-comparison
+          path: _comparison/
+
+      - name: "⚠️ Summarize analysis step failures"
+        if: ${{ always() }}
+        env:
+          DOWNLOAD_OUTCOME: ${{ steps.download-leaves.outcome }}
+          COMBINE_OUTCOME: ${{ steps.combine-results.outcome }}
+          COMBINED_UPLOAD_OUTCOME: ${{ steps.upload-combined.outcome }}
+          COMPARE_OUTCOME: ${{ steps.compare-results.outcome }}
+          COMPARISON_UPLOAD_OUTCOME: ${{ steps.upload-comparisons.outcome }}
+        run: |
+          warnings=()
+          [ "$DOWNLOAD_OUTCOME" = "failure" ] && warnings+=("leaf artifact download step failed unexpectedly")
+          [ "$COMBINE_OUTCOME" = "failure" ] && warnings+=("unified aggregation step failed unexpectedly")
+          [ "$COMBINED_UPLOAD_OUTCOME" = "failure" ] && warnings+=("combined result upload step failed unexpectedly")
+          [ "$COMPARE_OUTCOME" = "failure" ] && warnings+=("deterministic comparison step failed unexpectedly")
+          [ "$COMPARISON_UPLOAD_OUTCOME" = "failure" ] && warnings+=("comparison upload step failed unexpectedly")
+          if [ "${#warnings[@]}" -gt 0 ]; then
+            {
+              echo ""
+              echo "## Analysis warnings"
+              echo ""
+              for warning in "${warnings[@]}"; do
+                echo "- ${warning}; inspect this job's logs for the exact error."
+              done
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi

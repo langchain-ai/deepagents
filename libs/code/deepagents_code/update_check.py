@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import uuid
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -497,6 +498,34 @@ def _write_release_prerelease_pins(version: str, pins: Sequence[str]) -> None:
         )
 
 
+def _pypi_request_kwargs(*, bypass_cache: bool) -> dict[str, Any]:
+    """Build `requests.get` keyword arguments for a PyPI metadata request.
+
+    PyPI's JSON API is served through a CDN (Fastly). Bypassing only the local
+    on-disk cache is not enough immediately after a release: an edge node can
+    keep serving a stale copy for a few seconds until the purge propagates, so
+    a forced check may still report "already on the latest version" until a
+    retry. When `bypass_cache` is set, send no-cache request headers and a
+    unique cache-busting query parameter so the CDN cache key misses and the
+    response is fetched fresh from origin.
+
+    Args:
+        bypass_cache: When `True`, defeat CDN edge caching as well as the local
+            cache.
+
+    Returns:
+        Keyword arguments to pass to `requests.get`. Callers still pass
+        `timeout` explicitly so the timeout lint rule can see it.
+    """
+    headers = {"User-Agent": USER_AGENT}
+    kwargs: dict[str, Any] = {"headers": headers}
+    if bypass_cache:
+        headers["Cache-Control"] = "no-cache"
+        headers["Pragma"] = "no-cache"
+        kwargs["params"] = {"_": uuid.uuid4().hex}
+    return kwargs
+
+
 def get_latest_version(
     *,
     bypass_cache: bool = False,
@@ -548,8 +577,8 @@ def get_latest_version(
     try:
         resp = requests.get(
             PYPI_URL,
-            headers={"User-Agent": USER_AGENT},
             timeout=3,
+            **_pypi_request_kwargs(bypass_cache=bypass_cache),
         )
         resp.raise_for_status()
         payload = resp.json()
@@ -690,8 +719,8 @@ def release_prerelease_pins(
         url = f"{PYPI_URL.removesuffix('/json')}/{version}/json"
         resp = requests.get(
             url,
-            headers={"User-Agent": USER_AGENT},
             timeout=3,
+            **_pypi_request_kwargs(bypass_cache=bypass_cache),
         )
         resp.raise_for_status()
         payload = resp.json()
@@ -955,8 +984,8 @@ def get_sdk_release_time(
     try:
         resp = requests.get(
             SDK_PYPI_URL,
-            headers={"User-Agent": USER_AGENT},
             timeout=3,
+            **_pypi_request_kwargs(bypass_cache=bypass_cache),
         )
         resp.raise_for_status()
         payload = resp.json()
@@ -2438,7 +2467,9 @@ def _uv_tool_with_packages(
             raise ToolRequirementIntrospectionError(msg)
         if canonicalize_name(name) == main:
             continue
-        unsupported_keys = sorted(set(entry) - {"name"})
+        unsupported_keys = sorted(
+            str(key) for key in entry if not isinstance(key, str) or key != "name"
+        )
         if unsupported_keys:
             msg = (
                 f"uv tool receipt requirement {name!r} cannot be preserved "

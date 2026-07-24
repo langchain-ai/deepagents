@@ -39,13 +39,15 @@ class CLIContextSchema:
 
     model_context_limit: int | None = None
 
+    approval_mode: str = "manual"
+
     auto_approve: bool = False
 
     approval_mode_key: str | None = None
 
     thread_id: str | None = None
 
-    blocked_goal_retry_context: str | None = None
+    turn_id: str | None = None
 
     offload_tool_call_id: str | None = None
 
@@ -73,14 +75,11 @@ class CLIContext(TypedDict, total=False):
     model_context_limit: int | None
     """Effective context-window limit for profile-aware middleware."""
 
-    auto_approve: bool
-    """Whether gated tool calls should skip the human-approval interrupt.
+    approval_mode: str
+    """`manual`, classifier-backed `auto`, or unrestricted `yolo`."""
 
-    Sourced from the client session (not graph state) so the model cannot
-    self-approve by writing state. The `interrupt_on` `when` predicate reads
-    this to suppress interrupts at the source when "approve always" is on,
-    avoiding the interrupt-then-auto-resolve round-trip.
-    """
+    auto_approve: bool
+    """Compatibility snapshot for clients predating the typed mode field."""
 
     approval_mode_key: str | None
     """Store key for the live approval-mode control record.
@@ -99,13 +98,8 @@ class CLIContext(TypedDict, total=False):
     session-affinity headers.
     """
 
-    blocked_goal_retry_context: str | None
-    """One-turn model context for retrying a previously blocked goal.
-
-    This is intentionally carried in runtime context instead of the user
-    message so it is not parsed as a file mention or checkpointed as human
-    input.
-    """
+    turn_id: str | None
+    """Current user-turn ID for binding trusted interactive responses."""
 
     offload_tool_call_id: str | None
     """The sole tool-call ID authorized during a server-driven `/offload` run.

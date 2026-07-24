@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -515,10 +515,10 @@ class FileExcludes(SuccessAssertion):
 class FileAbsent(SuccessAssertion):
     """Assert that a file path does not exist in the trajectory.
 
-    A successful deletion removes the path from state entirely (the ``files``
-    channel reducer drops keys whose update value is ``None``), so a deleted
-    path should not appear in ``trajectory.files`` at all. This is stricter
-    than ``FileExcludes``, which only checks for an absent substring and
+    A successful deletion removes the path from state entirely (the `files`
+    channel reducer drops keys whose update value is `None`), so a deleted
+    path should not appear in `trajectory.files` at all. This is stricter
+    than `FileExcludes`, which only checks for an absent substring and
     therefore passes even when the file is still present.
 
     Attributes:
@@ -528,7 +528,7 @@ class FileAbsent(SuccessAssertion):
     path: str
 
     def check(self, trajectory: AgentTrajectory) -> bool:
-        """Check that ``self.path`` is absent from the trajectory files.
+        """Check that `self.path` is absent from the trajectory files.
 
         Args:
             trajectory: The agent trajectory to check.
@@ -551,6 +551,236 @@ class FileAbsent(SuccessAssertion):
         return (
             f"Expected file {self.path!r} to be absent, but it still exists "
             f"with content:\n{actual!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Shared tool-call matching (used by `ToolCall` and `ToolNotCalled`)
+# ---------------------------------------------------------------------------
+
+
+def _validate_tool_call_selector(
+    step: int | None,
+    args_contains: dict[str, object] | None,
+    args_equals: dict[str, object] | None,
+) -> None:
+    """Validate a tool-call selector at construction time (fail fast).
+
+    Guards the two *construction-time* footguns both `ToolCall` and
+    `ToolNotCalled` depend on. This cannot catch every vacuous selector: an
+    unknown `name` or an out-of-range `step` still match nothing and are only
+    knowable against a concrete trajectory — see `ToolNotCalled` for that
+    caveat.
+
+    A non-positive `step` would silently index the wrong step (the matcher uses
+    `step - 1`, so `step=0` wraps to the last step). Setting both
+    `args_contains` and `args_equals` is rejected as ambiguous intent: the two
+    filters can conflict (an unsatisfiable match) and, even when they agree, one
+    is redundant. Either way, for the hard-fail `ToolNotCalled` a never-matching
+    filter would make the assertion vacuously pass and masquerade as coverage.
+
+    Args:
+        step: Optional 1-indexed step selector.
+        args_contains: Optional subset match on tool call args.
+        args_equals: Optional exact match on tool call args.
+
+    Raises:
+        ValueError: If `step` is not positive, or both `args_contains` and
+            `args_equals` are set.
+    """
+    if step is not None and step <= 0:
+        msg = f"step must be positive (1-indexed), got {step}"
+        raise ValueError(msg)
+    if args_contains is not None and args_equals is not None:
+        msg = "args_contains and args_equals are mutually exclusive"
+        raise ValueError(msg)
+
+
+def _tool_call_matches(
+    tc: Mapping[str, object],
+    *,
+    name: str,
+    args_contains: dict[str, object] | None,
+    args_equals: dict[str, object] | None,
+) -> bool:
+    """Check whether a single tool call dict matches the selector.
+
+    Args:
+        tc: A tool call dictionary with `name` and `args` keys.
+        name: Expected tool name.
+        args_contains: If set, the args must contain these key-value pairs.
+        args_equals: If set, the args must equal this dict exactly.
+
+    Returns:
+        Whether the tool call matches.
+    """
+    if tc.get("name") != name:
+        return False
+    if args_contains is not None:
+        args = tc.get("args")
+        if not isinstance(args, dict):
+            return False
+        if not all(k in args and args.get(k) == v for k, v in args_contains.items()):
+            return False
+    return args_equals is None or tc.get("args") == args_equals
+
+
+def _find_tool_call_matches(
+    trajectory: AgentTrajectory,
+    *,
+    name: str,
+    step: int | None,
+    args_contains: dict[str, object] | None,
+    args_equals: dict[str, object] | None,
+) -> list[Mapping[str, object]]:
+    """Find tool calls in `trajectory` matching the selector.
+
+    When `step` is `None`, all steps are searched. When `step` is given, only
+    that step (1-indexed) is checked. Shared by `ToolCall` (presence check) and
+    `ToolNotCalled` (absence check) so the two stay in lockstep.
+
+    Args:
+        trajectory: The agent trajectory to search.
+        name: Expected tool name.
+        step: Optional 1-indexed step to restrict the search to.
+        args_contains: If set, the args must contain these key-value pairs.
+        args_equals: If set, the args must equal this dict exactly.
+
+    Returns:
+        A list of matching tool call dicts.
+    """
+    if step is not None:
+        if step > len(trajectory.steps):
+            return []
+        steps_to_search = [trajectory.steps[step - 1]]
+    else:
+        steps_to_search = trajectory.steps
+    return [
+        tc
+        for s in steps_to_search
+        for tc in s.action.tool_calls
+        if _tool_call_matches(tc, name=name, args_contains=args_contains, args_equals=args_equals)
+    ]
+
+
+@dataclass(frozen=True)
+class ToolCalled(SuccessAssertion):
+    """Assert that a matching tool call exists in the trajectory."""
+
+    name: str
+    step: int | None = None
+    args_contains: dict[str, object] | None = None
+    args_equals: dict[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        """Reject wrong-index or ambiguous selectors at construction time."""
+        _validate_tool_call_selector(self.step, self.args_contains, self.args_equals)
+
+    def check(self, trajectory: AgentTrajectory) -> bool:
+        """Check that a matching tool call exists in the trajectory.
+
+        Args:
+            trajectory: The agent trajectory to check.
+
+        Returns:
+            Whether the required tool call is present.
+        """
+        return bool(
+            _find_tool_call_matches(
+                trajectory,
+                name=self.name,
+                step=self.step,
+                args_contains=self.args_contains,
+                args_equals=self.args_equals,
+            )
+        )
+
+    def describe_failure(self, trajectory: AgentTrajectory) -> str:
+        """Describe why the tool-called check failed.
+
+        Args:
+            trajectory: The agent trajectory that failed the check.
+
+        Returns:
+            A human-readable failure description.
+        """
+        step_desc = f" in step {self.step}" if self.step is not None else ""
+        return f"Expected a {self.name!r} tool call{step_desc}, but none matched."
+
+
+@dataclass(frozen=True)
+class ToolNotCalled(SuccessAssertion):
+    """Assert that a specific tool was NOT called in the trajectory.
+
+    The hard-fail counterpart to the efficiency `ToolCall` presence check.
+    Use this when calling a tool at all is the failure mode — e.g. an agent
+    that reflexively calls `get_rubric` / `get_goal` when no goal or rubric was
+    ever set. Matching is shared with `ToolCall`: when `step` is `None`, all
+    steps are searched; `args_contains` / `args_equals` narrow the match to
+    specific args and are mutually exclusive.
+
+    An out-of-range `step` fails the assertion. Callers using fixed tool-name
+    literals should also pin those names to the relevant tool registry so a
+    rename cannot make the absence check pass vacuously.
+
+    Attributes:
+        name: Tool name that must be absent.
+        step: Optional 1-indexed step to restrict the search to.
+        args_contains: If set, only calls whose args contain these key-value
+            pairs count as a (forbidden) match.
+        args_equals: If set, only calls whose args equal this dict exactly count
+            as a (forbidden) match.
+    """
+
+    name: str
+    step: int | None = None
+    args_contains: dict[str, object] | None = None
+    args_equals: dict[str, object] | None = None
+
+    def __post_init__(self) -> None:
+        """Reject wrong-index or ambiguous selectors at construction time."""
+        _validate_tool_call_selector(self.step, self.args_contains, self.args_equals)
+
+    def check(self, trajectory: AgentTrajectory) -> bool:
+        """Check that no matching tool call exists in the trajectory.
+
+        Args:
+            trajectory: The agent trajectory to check.
+
+        Returns:
+            Whether the forbidden tool call is absent.
+        """
+        if self.step is not None and self.step > len(trajectory.steps):
+            return False
+        return not _find_tool_call_matches(
+            trajectory,
+            name=self.name,
+            step=self.step,
+            args_contains=self.args_contains,
+            args_equals=self.args_equals,
+        )
+
+    def describe_failure(self, trajectory: AgentTrajectory) -> str:
+        """Describe why the tool-not-called check failed.
+
+        Args:
+            trajectory: The agent trajectory that failed the check.
+
+        Returns:
+            A human-readable failure description.
+        """
+        if self.step is not None and self.step > len(trajectory.steps):
+            return f"Cannot check step {self.step}; trajectory has {len(trajectory.steps)} step(s)."
+        step_desc = f" in step {self.step}" if self.step is not None else ""
+        matches = _find_tool_call_matches(
+            trajectory,
+            name=self.name,
+            step=self.step,
+            args_contains=self.args_contains,
+            args_equals=self.args_equals,
+        )
+        return (
+            f"Expected no {self.name!r} tool call{step_desc}, but found {len(matches)}: {matches!r}"
         )
 
 
@@ -686,6 +916,12 @@ class ToolCall(EfficiencyAssertion):
     args_contains: dict[str, object] | None = None
     args_equals: dict[str, object] | None = None
 
+    def __post_init__(self) -> None:
+        """Reject a non-positive step at construction time."""
+        if self.step is not None and self.step <= 0:
+            msg = f"step must be positive (1-indexed), got {self.step}"
+            raise ValueError(msg)
+
     def check(self, trajectory: AgentTrajectory) -> bool:
         """Check that a matching tool call exists in the trajectory.
 
@@ -695,7 +931,15 @@ class ToolCall(EfficiencyAssertion):
         Returns:
             Whether a matching tool call was found.
         """
-        return bool(self._find_matches(trajectory))
+        return bool(
+            _find_tool_call_matches(
+                trajectory,
+                name=self.name,
+                step=self.step,
+                args_contains=self.args_contains,
+                args_equals=self.args_equals,
+            )
+        )
 
     def describe_failure(self, trajectory: AgentTrajectory) -> str:
         """Describe why the tool-call check failed.
@@ -708,45 +952,6 @@ class ToolCall(EfficiencyAssertion):
         """
         step_desc = f" in step {self.step}" if self.step is not None else ""
         return f"Missing expected tool call{step_desc}: name={self.name!r}, args_contains={self.args_contains!r}, args_equals={self.args_equals!r}"
-
-    def _matches_tool_call(self, tc: dict[str, object]) -> bool:
-        """Check whether a single tool call dict matches this expectation.
-
-        Args:
-            tc: A tool call dictionary with `name` and `args` keys.
-
-        Returns:
-            Whether the tool call matches.
-        """
-        if tc.get("name") != self.name:
-            return False
-        if self.args_contains is not None:
-            args = tc.get("args")
-            if not isinstance(args, dict):
-                return False
-            if not all(args.get(k) == v for k, v in self.args_contains.items()):
-                return False
-        return self.args_equals is None or tc.get("args") == self.args_equals
-
-    def _find_matches(self, trajectory: AgentTrajectory) -> list[dict[str, object]]:
-        """Find tool calls matching this expectation.
-
-        Args:
-            trajectory: The agent trajectory to search.
-
-        Returns:
-            A list of matching tool call dicts.
-        """
-        if self.step is not None:
-            if self.step > len(trajectory.steps):
-                return []
-            steps_to_search = [trajectory.steps[self.step - 1]]
-        else:
-            steps_to_search = trajectory.steps
-
-        return [
-            tc for s in steps_to_search for tc in s.action.tool_calls if self._matches_tool_call(tc)
-        ]
 
 
 # ---------------------------------------------------------------------------
@@ -857,13 +1062,13 @@ def file_excludes(path: str, substring: str) -> FileExcludes:
 
 
 def file_absent(path: str) -> FileAbsent:
-    """Create a ``FileAbsent`` success assertion.
+    """Create a `FileAbsent` success assertion.
 
     Args:
         path: The file path that must not exist in the trajectory files.
 
     Returns:
-        A ``FileAbsent`` assertion instance.
+        A `FileAbsent` assertion instance.
     """
     return FileAbsent(path=path)
 
@@ -923,6 +1128,60 @@ def tool_call(
         A `ToolCall` assertion instance.
     """
     return ToolCall(
+        name=name,
+        step=step,
+        args_contains=args_contains,
+        args_equals=args_equals,
+    )
+
+
+def tool_called(
+    name: str,
+    *,
+    step: int | None = None,
+    args_contains: dict[str, object] | None = None,
+    args_equals: dict[str, object] | None = None,
+) -> ToolCalled:
+    """Create a `ToolCalled` success assertion (hard-fail).
+
+    Args:
+        name: Tool name that must be present in the trajectory.
+        step: Optional 1-indexed step to restrict the search to.
+        args_contains: If set, the tool call args must contain these key-value pairs.
+        args_equals: If set, the tool call args must equal this dict exactly.
+
+    Returns:
+        A `ToolCalled` assertion instance.
+    """
+    return ToolCalled(
+        name=name,
+        step=step,
+        args_contains=args_contains,
+        args_equals=args_equals,
+    )
+
+
+def tool_not_called(
+    name: str,
+    *,
+    step: int | None = None,
+    args_contains: dict[str, object] | None = None,
+    args_equals: dict[str, object] | None = None,
+) -> ToolNotCalled:
+    """Create a `ToolNotCalled` success assertion (hard-fail).
+
+    Args:
+        name: Tool name that must be absent from the trajectory.
+        step: Optional 1-indexed step to restrict the search to.
+        args_contains: If set, only calls whose args contain these key-value
+            pairs count as a forbidden match.
+        args_equals: If set, only calls whose args equal this dict exactly count
+            as a forbidden match.
+
+    Returns:
+        A `ToolNotCalled` assertion instance.
+    """
+    return ToolNotCalled(
         name=name,
         step=step,
         args_contains=args_contains,
@@ -1133,7 +1392,7 @@ def _assert_expectations(
 
 
 def _build_invoke_inputs(
-    query: str | list[AnyMessage],
+    query: str | Sequence[AnyMessage],
     initial_files: dict[str, str] | None,
     extra_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -1141,7 +1400,7 @@ def _build_invoke_inputs(
     if isinstance(query, str):
         invoke_inputs: dict[str, Any] = {"messages": [{"role": "user", "content": query}]}
     else:
-        invoke_inputs = {"messages": query}
+        invoke_inputs = {"messages": list(query)}
     if initial_files is not None:
         invoke_inputs["files"] = {
             path: create_file_data(content) for path, content in initial_files.items()
@@ -1186,7 +1445,7 @@ def _log_run_inputs(logged_inputs: dict[str, Any]) -> None:
 def run_agent(
     agent: CompiledStateGraph[Any, Any],
     *,
-    query: str | list[AnyMessage],
+    query: str | Sequence[AnyMessage],
     model: BaseChatModel,
     initial_files: dict[str, str] | None = None,
     scorer: TrajectoryScorer | None = None,
@@ -1237,7 +1496,7 @@ def run_agent(
 async def run_agent_async(
     agent: CompiledStateGraph[Any, Any],
     *,
-    query: str | list[AnyMessage],
+    query: str | Sequence[AnyMessage],
     model: BaseChatModel,
     initial_files: dict[str, str] | None = None,
     scorer: TrajectoryScorer | None = None,

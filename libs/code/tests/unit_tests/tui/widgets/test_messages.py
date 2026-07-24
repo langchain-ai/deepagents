@@ -3657,6 +3657,24 @@ class TestUserMessageModeRendering:
         content = _render_content(UserMessage(""))
         assert content.plain == "> "
 
+    def test_detect_mode_false_renders_leading_slash_as_plain(self) -> None:
+        """A `-m` file-path prompt should render `'> '` plus the full path.
+
+        `-m`/`--message` text is always literal agent input, so a leading slash
+        (like a file path) must not be treated as a slash command.
+        """
+        content = _render_content(
+            UserMessage("/etc/hosts explain this", detect_mode=False)
+        )
+        assert content.plain == "> /etc/hosts explain this"
+        first_span = content._spans[0]
+        assert theme.DARK_COLORS.primary in str(first_span.style)
+
+    def test_detect_mode_false_renders_leading_bang_as_plain(self) -> None:
+        """A leading `!` in literal agent text should not render as shell mode."""
+        content = _render_content(UserMessage("!important note", detect_mode=False))
+        assert content.plain == "> !important note"
+
 
 class TestModeColorsDrift:
     """Ensure `_mode_color` handles every mode in `MODE_PREFIXES`."""
@@ -3700,6 +3718,13 @@ class TestQueuedUserMessageModeRendering:
         """`QueuedUserMessage('')` should not crash and should render `'> '`."""
         content = _render_content(QueuedUserMessage(""))
         assert content.plain == "> "
+
+    def test_detect_mode_false_renders_leading_slash_as_plain(self) -> None:
+        """A queued `-m` file-path prompt should render dimmed `'> '` plus path."""
+        content = _render_content(
+            QueuedUserMessage("/etc/hosts explain this", detect_mode=False)
+        )
+        assert content.plain == "> /etc/hosts explain this"
 
 
 class TestStripPromptPrefix:
@@ -4404,6 +4429,40 @@ class TestSummarizeToolGroupPresentTense:
         )
 
 
+class TestSummarizeLiveToolGroup:
+    """Mixed past/present phrasing for an in-flight step's tool calls."""
+
+    def test_completed_and_pending_mixed_tense(self) -> None:
+        """Finished calls read past tense; still-running calls read present."""
+        from deepagents_code.tui.widgets.messages import summarize_live_tool_group
+
+        assert (
+            summarize_live_tool_group(["execute", "execute"], ["task"])
+            == "Ran 2 shell commands, running 1 agent"
+        )
+
+    def test_only_pending_is_present_tense(self) -> None:
+        """With nothing finished yet the line is purely present tense."""
+        from deepagents_code.tui.widgets.messages import summarize_live_tool_group
+
+        assert (
+            summarize_live_tool_group([], ["read_file", "read_file"])
+            == "Reading 2 files"
+        )
+
+    def test_only_completed_is_past_tense(self) -> None:
+        """With nothing left running the line is purely past tense."""
+        from deepagents_code.tui.widgets.messages import summarize_live_tool_group
+
+        assert summarize_live_tool_group(["execute"], []) == "Ran 1 shell command"
+
+    def test_empty_returns_blank(self) -> None:
+        """No members at all yields an empty string, not a fallback phrase."""
+        from deepagents_code.tui.widgets.messages import summarize_live_tool_group
+
+        assert summarize_live_tool_group([], []) == ""
+
+
 class _LiveToolGroupApp(App[None]):
     """Minimal app with an empty live group and two tools to add to it."""
 
@@ -4470,8 +4529,8 @@ class TestLiveToolGroupSummary:
             assert summary.is_attached
             assert bool(pilot.app.query(ToolGroupSummary))
 
-    async def test_live_line_counts_only_running_members(self) -> None:
-        """Finished tools drop out of the live line while others still run."""
+    async def test_live_line_keeps_completed_in_past_tense(self) -> None:
+        """Finished tools stay on the live line in past tense while others run."""
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
         async with _LiveToolGroupApp().run_test() as pilot:
@@ -4486,16 +4545,16 @@ class TestLiveToolGroupSummary:
             assert "Running 1 shell command, reading 1 file" in rendered.plain
 
             # The shell command finishes but the read is still in flight: the
-            # live line must stop advertising the completed command.
+            # completed command flips to past tense yet stays visible so the
+            # work already done in the step isn't lost.
             done.set_success("done")
             summary._render_line()
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "Reading 1 file" in rendered.plain
-            assert "shell command" not in rendered.plain
+            assert "Ran 1 shell command, reading 1 file" in rendered.plain
 
     async def test_live_line_decrements_same_category_count(self) -> None:
-        """One of two shell commands finishing drops the live count 2 -> 1."""
+        """One of two shell commands finishing splits the line by tense."""
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
         async with _LiveToolGroupSameCategoryApp().run_test() as pilot:
@@ -4512,11 +4571,12 @@ class TestLiveToolGroupSummary:
             # One command finishes; the surviving pending tuple shrinks from
             # ("execute", "execute") to ("execute",), which must invalidate the
             # cached line even though the category (and membership) is unchanged.
+            # The finished command is now reported in the past tense.
             done.set_success("done")
             summary._render_line()
             rendered = summary.render()
             assert isinstance(rendered, Content)
-            assert "Running 1 shell command" in rendered.plain
+            assert "Ran 1 shell command, running 1 shell command" in rendered.plain
             assert "2 shell commands" not in rendered.plain
 
     async def test_live_line_relayouts_only_when_summary_changes(self) -> None:
@@ -4607,6 +4667,106 @@ class TestLiveToolGroupSummary:
             rendered = summary.render()
             assert isinstance(rendered, Content)
             assert "Read 1 file" in rendered.plain
+
+    async def test_close_waits_for_pending_member_terminal_status(self) -> None:
+        """A stream boundary must not report a still-pending tool as having run."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            shell = pilot.app.query_one("#t1", ToolCallMessage)
+            read = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(shell)
+            summary.add_member(read)
+            summary.close()
+
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Running 1 shell command, reading 1 file" in rendered.plain
+            assert summary._finalized is False
+
+            shell.set_error("authorization classifier unavailable")
+            read.set_success("ok")
+            summary._tick()
+            await pilot.pause()
+
+            assert summary._finalized is True
+            assert shell.display is True
+            assert not shell.has_class("-grouped")
+            assert read.display is False
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Read 1 file" in rendered.plain
+            assert "shell command" not in rendered.plain
+
+    async def test_open_group_accepts_member_after_current_members_settle(self) -> None:
+        """Settled members leave the live line without finalizing the group."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            shell = pilot.app.query_one("#t1", ToolCallMessage)
+            read = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(shell)
+            shell.set_success("ok")
+            summary._tick()
+
+            assert summary._finalized is False
+            assert summary._timer is None
+
+            summary.add_member(read)
+
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            # The settled shell stays visible in past tense next to the new read.
+            assert "Ran 1 shell command, reading 1 file" in rendered.plain
+            assert summary._timer is not None
+
+            read.set_error("boom")
+            summary._tick()
+            await pilot.pause()
+
+            assert summary._tools == [shell]
+            assert read.display is True
+            assert not read.has_class("-grouped")
+            assert summary._finalized is False
+            assert summary._timer is None
+
+            summary.close()
+            assert summary._finalized is True
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Ran 1 shell command" in rendered.plain
+
+    async def test_reveal_pending_finalizes_closed_settled_members(self) -> None:
+        """Approval finalizes retained successes after pending calls leave."""
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        async with _LiveToolGroupApp().run_test() as pilot:
+            summary = pilot.app.query_one("#summary", ToolGroupSummary)
+            completed = pilot.app.query_one("#t1", ToolCallMessage)
+            pending = pilot.app.query_one("#t2", ToolCallMessage)
+
+            summary.add_member(completed)
+            summary.add_member(pending)
+            completed.set_success("ok")
+            summary.close()
+
+            assert summary._finalized is False
+            assert summary._timer is not None
+
+            summary.reveal_pending()
+            await pilot.pause()
+
+            assert summary._tools == [completed]
+            assert summary._finalized is True
+            assert summary._timer is None
+            assert pending.display is True
+            rendered = summary.render()
+            assert isinstance(rendered, Content)
+            assert "Ran 1 shell command" in rendered.plain
 
     async def test_rejected_member_is_evicted_on_close(self) -> None:
         """A rejected tool stays visible, mirroring the errored-tool path."""

@@ -33,6 +33,24 @@ class StatusBarApp(App):
         yield StatusBar(id="status-bar")
 
 
+class TestApprovalModeDisplay:
+    """Tests for the three-state approval indicator."""
+
+    @pytest.mark.parametrize(
+        ("mode", "label"),
+        [("manual", "manual"), ("auto", "auto"), ("yolo", "YOLO")],
+    )
+    async def test_displays_mode(self, mode: str, label: str) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_approval_mode(mode)
+            await pilot.pause()
+
+            indicator = pilot.app.query_one("#auto-approve-indicator", Static)
+            assert str(indicator.render()) == label
+            assert indicator.has_class(mode)
+
+
 class TestCwdDisplay:
     """Tests for the cwd display in the status bar."""
 
@@ -578,10 +596,10 @@ class TestModelLabelPrefixStripping:
         async with StatusBarApp().run_test() as pilot:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = "fireworks"
-            label.model = "accounts/fireworks/routers/glm-5p1-fast"
+            label.model = "accounts/fireworks/routers/glm-5p2-fast"
             await pilot.pause()
             rendered = str(label.render())
-            assert "fireworks:glm-5p1-fast" in rendered
+            assert "fireworks:glm-5p2-fast" in rendered
             assert "accounts/fireworks/routers/" not in rendered
 
     async def test_fireworks_prefix_stripped_case_insensitively(self) -> None:

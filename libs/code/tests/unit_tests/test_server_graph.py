@@ -201,6 +201,12 @@ class TestServerGraph:
         config = ServerConfig(
             no_mcp=False,
             profile_overrides={"max_input_tokens": 32000},
+            # Non-default allowlist so the `fs_tools=` assertion below is
+            # load-bearing: it round-trips through `to_env()`/`from_env()` and
+            # must reach `create_cli_agent`. With the `None` default this
+            # assertion passed whether or not `_make_graph` read
+            # `config.allow_fs_tools`, so a dropped read would go unnoticed.
+            allow_fs_tools=["ls", "read_file"],
         )
         env_overrides = {}
         for suffix, value in config.to_env().items():
@@ -258,13 +264,16 @@ class TestServerGraph:
             model=model_obj,
             assistant_id="agent",
             tools=[fetch_tool, thread_tool, web_tool, mcp_tool],
+            mcp_tools=[mcp_tool],
             sandbox=None,
             sandbox_type=None,
             system_prompt=None,
             interactive=True,
             auto_approve=False,
+            auto_mode_enabled=True,
             interrupt_shell_only=False,
             shell_allow_list=None,
+            fs_tools=["ls", "read_file"],
             enable_ask_user=False,
             enable_memory=True,
             memory_auto_save=True,
@@ -273,11 +282,13 @@ class TestServerGraph:
             enable_interpreter=False,
             rubric_model=None,
             rubric_max_iterations=None,
+            recursion_limit=None,
             mcp_server_info=mcp_server_info,
             cwd=None,
             project_context=None,
             async_subagents=None,
             goal_criteria_tools=[fetch_tool, web_tool, mcp_tool],
+            rubric_grader_tools=[fetch_tool, web_tool, mcp_tool],
         )
 
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:

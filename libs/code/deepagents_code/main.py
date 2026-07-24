@@ -23,12 +23,14 @@ import traceback
 from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NoReturn
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 if TYPE_CHECKING:
+    from deepagents import FsToolName
     from rich.console import Console
 
     from deepagents_code.app import AppResult
+    from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.config import Glyphs
     from deepagents_code.mcp_tools import MCPServerInfo, ProjectServerSummary
     from deepagents_code.notifications import PendingNotification
@@ -64,7 +66,8 @@ class _ProjectMcpTrustPromptOutcome(Enum):
     """The user pressed Ctrl+C; the caller aborts the run (exit 130)."""
 
     CANCELLED = "cancelled"
-    """The user backed out of a nested prompt; the caller aborts the launch."""
+    """The user backed out of the trust prompt (Esc in the action or remember
+    picker, or blank/EOF in the text fallback); the caller aborts the launch."""
 
 
 _PROJECT_MCP_PICKER_VISIBLE_ROWS = 8
@@ -127,7 +130,7 @@ def build_version_text() -> str:
     report = collect_version_report()
     cli_annotation = format_cli_version_annotation(report.cli)
     if report.sdk.status == "resolved":
-        sdk_version = report.sdk.primary_version
+        sdk_version = report.display_sdk_version
         sdk_annotation = format_sdk_version_annotation(report)
     else:
         sdk_version = "unknown"
@@ -696,6 +699,85 @@ def _parse_interpreter_tools_flag(
     return names
 
 
+# Aliased from the dependency-free `_constants` module (see its docstring for
+# why the set is hardcoded, how the drift guard pins it, and why importing it
+# here keeps the arg-parsing hot path free of a `deepagents` import).
+from deepagents_code._constants import FS_TOOL_NAMES as _FS_TOOL_NAMES
+
+
+def _parse_allow_fs_tools_flag(
+    raw: str | None,
+) -> "list[FsToolName] | None":
+    """Parse `--allow-fs-tools` into `FilesystemMiddleware`'s `tools` shape.
+
+    Args:
+        raw: Argparse value: `None` (flag absent), `"all"`, or a
+            comma-separated list of filesystem tool names.
+
+    Returns:
+        `None` when the flag is absent *or* the value is `"all"` (both mean
+            "leave the SDK default filesystem middleware in place — all tools"),
+            or a list of trimmed, lower-cased tool names.
+
+            Tool names are matched case-insensitively
+            (like the `"all"` sentinel), so `READ_FILE` and `read_file`
+            are equivalent.
+
+            Calls `sys.exit(2)` when the value is empty, contains only blank
+            tokens, combines the `"all"` sentinel with other tool names,
+            includes an unknown tool name, or is an explicit list that
+            omits `"read_file"` — `FilesystemMiddleware` requires it.
+    """
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        sys.stderr.write(
+            "Error: --allow-fs-tools requires a value: 'all', or a "
+            "comma-separated list of filesystem tool names.\n"
+        )
+        sys.exit(2)
+    normalized = text.lower()
+    if normalized == "all":
+        # `"all"` collapses to `None`: both mean "all filesystem tools". `None`
+        # leaves the SDK's own default `FilesystemMiddleware` untouched, which is
+        # strictly safer than reinstalling a hand-built unrestricted instance
+        # (that would have to re-derive descriptions/permissions and could drift
+        # from the SDK default). Only an explicit sub-list installs a
+        # replacement middleware.
+        return None
+    # Lower-case each token so tool names are case-insensitive, matching the
+    # `"all"` sentinel above. SDK `FsToolName` members are all lower-case.
+    names = [token.strip().lower() for token in text.split(",") if token.strip()]
+    if not names:
+        sys.stderr.write(
+            "Error: --allow-fs-tools list must contain at least one "
+            "non-empty tool name.\n"
+        )
+        sys.exit(2)
+    if "all" in names:  # `names` are already lower-cased above.
+        sys.stderr.write(
+            "Error: --allow-fs-tools 'all' cannot be combined with other tool "
+            "names; pass 'all' on its own.\n"
+        )
+        sys.exit(2)
+    unknown = [name for name in names if name not in _FS_TOOL_NAMES]
+    if unknown:
+        sys.stderr.write(
+            f"Error: --allow-fs-tools has unknown tool name(s): "
+            f"{', '.join(unknown)}. Valid names: "
+            f"{', '.join(sorted(_FS_TOOL_NAMES))}.\n"
+        )
+        sys.exit(2)
+    if "read_file" not in names:
+        sys.stderr.write(
+            "Error: --allow-fs-tools list must include 'read_file'; it is "
+            "required by FilesystemMiddleware.\n"
+        )
+        sys.exit(2)
+    return cast("list[FsToolName]", names)
+
+
 def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
     """Return whether the JS interpreter should run for these CLI args.
 
@@ -713,26 +795,175 @@ def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
     return _resolve_enable_interpreter(args.interpreter, args.sandbox)
 
 
-def _resolve_auto_approve(args: argparse.Namespace) -> bool:
-    """Return whether the interactive TUI should auto-approve tool calls.
+def _resolve_approval_mode(args: argparse.Namespace) -> "ApprovalMode":
+    """Resolve explicit flags and `[startup].mode` into a typed mode.
 
-    Headless mode uses `--shell-allow-list` instead and never calls this resolver.
-    An explicit `-y`/`--auto-approve` wins; when the flag is omitted
-    (`args.auto_approve is None`), the persistent `[startup].mode` config
-    default decides — `dangerously-auto` enables auto-approval, anything else
-    (including missing/invalid config) keeps human-in-the-loop approvals on.
+    Args:
+        args: Parsed CLI arguments.
 
-    Extracted from the `cli_main` body so it is unit-testable without
-    constructing the full arg tree, matching `_resolve_interpreter_enabled`.
+    Returns:
+        Explicit `--yolo`, explicit `-y`/`--auto-approve` as `auto`, or the
+        validated startup config value. Invalid config remains fail-closed.
     """
-    if args.auto_approve is not None:
-        return args.auto_approve
-    from deepagents_code.model_config import (
-        STARTUP_MODE_DANGEROUSLY_AUTO,
-        load_startup_mode,
+    from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
+    from deepagents_code.model_config import load_startup_mode
+
+    if getattr(args, "yolo", False):
+        return ApprovalMode.YOLO
+    if args.auto_approve is True:
+        return ApprovalMode.AUTO
+    return coerce_approval_mode(load_startup_mode())
+
+
+def _resolve_auto_approve(args: argparse.Namespace) -> bool:
+    """Return the compatibility Boolean for callers using the old resolver.
+
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        Whether startup resolves to either autonomous mode.
+    """
+    from deepagents_code.approval_mode import ApprovalMode
+
+    return _resolve_approval_mode(args) is not ApprovalMode.MANUAL
+
+
+def _prompt_yolo_acknowledgement(console: "Console") -> bool:
+    """Show an inline fail-closed selector for unrestricted execution.
+
+    Args:
+        console: Rich console used for warning and fallback text.
+
+    Returns:
+        Whether the user explicitly accepted the warning.
+    """
+    console.print()
+    console.print(
+        "[bold red]YOLO mode: the agent acts on its own, with no approval "
+        "prompts.[/bold red]"
+    )
+    console.print(
+        "It can run commands, change files, and use tools on your machine "
+        "without asking you first."
+    )
+    console.print('[dim]Not sure? Pick "Use Manual" below.[/dim]')
+    console.print()
+    if not (sys.stdin.isatty() and sys.stderr.isatty()):
+        return False
+    try:
+        from prompt_toolkit import Application
+        from prompt_toolkit.formatted_text import FormattedText
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.key_binding.key_processor import KeyPressEvent
+        from prompt_toolkit.layout import Layout
+        from prompt_toolkit.layout.containers import Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        from prompt_toolkit.output.defaults import create_output
+        from prompt_toolkit.styles import Style
+
+        from deepagents_code.config import get_glyphs
+
+        choices = [(False, "Use Manual"), (True, "Acknowledge and enable YOLO")]
+        selected_index = 0
+        glyphs = get_glyphs()
+
+        def rows() -> FormattedText:
+            fragments: list[tuple[str, str]] = [
+                (
+                    "class:prompt.help",
+                    (
+                        f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
+                        "Enter select · Esc Manual · Ctrl+C quit\n"
+                    ),
+                )
+            ]
+            for index, (_value, label) in enumerate(choices):
+                active = index == selected_index
+                cursor = glyphs.cursor if active else " "
+                style = "class:item.current" if active else "class:item"
+                suffix = "\n" if index < len(choices) - 1 else ""
+                fragments.append((style, f"{cursor} {label}{suffix}"))
+            return FormattedText(fragments)
+
+        bindings = KeyBindings()
+
+        @bindings.add("up")
+        @bindings.add("s-tab")
+        def move_up(_event: KeyPressEvent) -> None:
+            nonlocal selected_index
+            selected_index = (selected_index - 1) % len(choices)
+
+        @bindings.add("down")
+        @bindings.add("tab")
+        def move_down(_event: KeyPressEvent) -> None:
+            nonlocal selected_index
+            selected_index = (selected_index + 1) % len(choices)
+
+        @bindings.add("enter")
+        def choose(event: KeyPressEvent) -> None:
+            event.app.exit(result=choices[selected_index][0])
+
+        @bindings.add("escape")
+        def decline(event: KeyPressEvent) -> None:
+            event.app.exit(result=False)
+
+        @bindings.add("c-c")
+        @bindings.add("c-d")
+        def abort(event: KeyPressEvent) -> None:
+            # Quit the launch entirely rather than falling back to Manual; the
+            # top-level KeyboardInterrupt handler prints "Interrupted" and exits
+            # without starting the TUI.
+            event.app.exit(exception=KeyboardInterrupt())
+
+        app: Application[bool] = Application(
+            layout=Layout(
+                Window(
+                    FormattedTextControl(rows, show_cursor=False),
+                    height=len(choices) + 1,
+                    dont_extend_height=True,
+                )
+            ),
+            key_bindings=bindings,
+            style=Style.from_dict(
+                {"prompt.help": "ansibrightblack", "item.current": "reverse"}
+            ),
+            full_screen=False,
+            erase_when_done=True,
+            output=create_output(stdout=sys.stderr),
+        )
+        return bool(app.run())
+    except (EOFError, OSError, RuntimeError, ImportError):
+        logger.debug("YOLO acknowledgement selector unavailable", exc_info=True)
+        return False
+    # A KeyboardInterrupt (Ctrl+C/Ctrl+D) deliberately propagates so the launch
+    # aborts instead of falling back to Manual and starting the TUI.
+
+
+def _ensure_yolo_acknowledged(console: "Console") -> bool:
+    """Ensure the current local YOLO policy has been accepted and persisted.
+
+    Args:
+        console: Console used for the acknowledgement UI.
+
+    Returns:
+        `True` only when an existing or newly persisted acknowledgement exists.
+    """
+    from deepagents_code.approval_mode import (
+        has_yolo_acknowledgement,
+        save_yolo_acknowledgement,
     )
 
-    return load_startup_mode() == STARTUP_MODE_DANGEROUSLY_AUTO
+    if has_yolo_acknowledgement():
+        return True
+    if not _prompt_yolo_acknowledgement(console):
+        return False
+    if save_yolo_acknowledgement():
+        return True
+    console.print(
+        "[yellow]YOLO acknowledgement could not be saved; using Manual.[/yellow]"
+    )
+    return False
 
 
 def _warn_if_interpreter_disabled_by_sandbox(args: argparse.Namespace) -> None:
@@ -1757,6 +1988,15 @@ def parse_args() -> argparse.Namespace:
         help="Override grader iterations per rubric attempt before stopping "
         "(must be >= 1; defaults to the SDK setting).",
     )
+    parser.add_argument(
+        "--recursion-limit",
+        dest="recursion_limit",
+        type=positive_int,
+        metavar="N",
+        help="Override the main agent's LangGraph recursion_limit (graph step "
+        "budget; must be >= 1). Overrides DEEPAGENTS_CODE_RECURSION_LIMIT and "
+        "[runtime].recursion_limit; defaults to 2000.",
+    )
 
     parser.add_argument(
         "--stdin",
@@ -1766,20 +2006,20 @@ def parse_args() -> argparse.Namespace:
 
     add_json_output_arg(parser, default="text")
 
-    parser.add_argument(
+    approval_group = parser.add_mutually_exclusive_group()
+    approval_group.add_argument(
         "-y",
         "--auto-approve",
         action="store_true",
         default=None,
+        help="Interactive local TUI only: enable classifier-backed Auto mode.",
+    )
+    approval_group.add_argument(
+        "--yolo",
+        action="store_true",
         help=(
-            "Interactive mode only: auto-approve all tool calls without prompting "
-            "(disables human-in-the-loop). Affected tools: shell execution, file "
-            "writes/edits, web search, and URL fetch. Headless mode approves "
-            "non-shell tools; shell is disabled unless allowed via "
-            "--shell-allow-list. "
-            "Use with caution — the agent can execute arbitrary commands. When "
-            "omitted, the launch default comes from [startup].mode in "
-            "~/.deepagents/config.toml ('manual' or 'dangerously-auto')."
+            "Interactive mode only: run gated actions without review after the "
+            "one-time local risk acknowledgement."
         ),
     )
 
@@ -1856,6 +2096,17 @@ def parse_args() -> argparse.Namespace:
         help="PTC allowlist for `js_eval`: 'safe', 'all', or a comma-separated "
         "list of tool names (which may include the 'safe' preset, e.g. "
         "'safe,task'). Default is 'safe' (read-only file tools).",
+    )
+    parser.add_argument(
+        "--allow-fs-tools",
+        dest="allow_fs_tools",
+        metavar="LIST",
+        help="Allowlist of filesystem tools to expose to the agent: 'all', or "
+        "a comma-separated list of tool names (ls, read_file, write_file, "
+        "edit_file, delete, glob, grep, execute). 'read_file' must be "
+        "included in an explicit list. Note 'execute' is the shell tool: "
+        "omitting it from the list removes shell access even if shell is "
+        "otherwise enabled. Default is 'all'.",
     )
 
     parser.add_argument(
@@ -2010,7 +2261,8 @@ def _resolve_and_validate_sandbox(
 async def run_textual_cli_async(
     assistant_id: str,
     *,
-    auto_approve: bool = False,
+    approval_mode: "ApprovalMode | str" = "manual",
+    auto_approve: bool | None = None,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
     sandbox_snapshot_name: str | None = None,
@@ -2031,6 +2283,8 @@ async def run_textual_cli_async(
     interpreter_arg: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
+    allow_fs_tools: "list[FsToolName] | None" = None,
+    recursion_limit: int | None = None,
 ) -> "AppResult":
     """Run the Textual TUI interface (async version).
 
@@ -2038,8 +2292,10 @@ async def run_textual_cli_async(
     `langgraph-sdk` client.
 
     Args:
-        assistant_id: Agent identifier for memory storage
-        auto_approve: Whether to auto-approve tool usage
+        assistant_id: Agent identifier for memory storage.
+        approval_mode: Initial `manual`, `auto`, or `yolo` mode.
+        auto_approve: Compatibility input for callers using the previous Boolean
+            API. `True` maps to unrestricted `yolo`.
         sandbox_type: Type of sandbox
             ("none", "agentcore", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse.
@@ -2091,6 +2347,12 @@ async def run_textual_cli_async(
             for `js_eval`).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,
+            from `--allow-fs-tools`.
+
+            `None` leaves the SDK default (all tools).
+        recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+            from env / `config.toml` / default at agent-build time.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -2098,6 +2360,7 @@ async def run_textual_cli_async(
     from rich.text import Text
 
     from deepagents_code.app import AppResult, run_textual_app
+    from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
     from deepagents_code.config import (
         _get_default_model_spec,
         detect_provider,
@@ -2109,6 +2372,12 @@ async def run_textual_cli_async(
         NoCredentialsConfiguredError,
     )
     from deepagents_code.onboarding import should_run_onboarding
+
+    resolved_approval_mode = coerce_approval_mode(approval_mode)
+    if auto_approve is not None:
+        resolved_approval_mode = (
+            ApprovalMode.YOLO if auto_approve else ApprovalMode.MANUAL
+        )
 
     # Resolve display-name cheaply (<1ms, no langchain) so the status
     # bar can show the model on first paint. The expensive create_model()
@@ -2148,11 +2417,8 @@ async def run_textual_cli_async(
             "profile_overrides": profile_override,
         }
 
-    # Build kwargs for deferred server startup (runs inside the TUI).
-    # Never pass auto_approve to the server — the interactive server must
-    # always configure full HITL interrupts so that Shift+Tab can toggle
-    # approval mode mid-session. The -y flag is handled client-side via
-    # session_state.auto_approve in `tui.textual_adapter`.
+    # Build kwargs for deferred server startup. Approval mode remains a live
+    # per-thread Store record, so graph construction is independent of startup mode.
     server_kwargs: dict[str, Any] = {
         "assistant_id": assistant_id,
         "model_name": model_name or resolved_spec or None,
@@ -2166,10 +2432,12 @@ async def run_textual_cli_async(
         "enable_interpreter": enable_interpreter,
         "interpreter_ptc": interpreter_ptc,
         "interpreter_ptc_acknowledge_unsafe": interpreter_ptc_acknowledge_unsafe,
+        "allow_fs_tools": allow_fs_tools,
         "mcp_config_path": mcp_config_path,
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
         "interactive": True,
+        "recursion_limit": recursion_limit,
     }
 
     mcp_preload_kwargs: dict[str, Any] | None = None
@@ -2184,7 +2452,7 @@ async def run_textual_cli_async(
         result = await run_textual_app(
             assistant_id=assistant_id,
             backend=None,
-            auto_approve=auto_approve,
+            approval_mode=resolved_approval_mode,
             cwd=Path.cwd(),
             thread_id=thread_id,
             resume_thread=resume_thread,
@@ -2226,6 +2494,8 @@ async def _run_acp_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    allow_fs_tools: "list[FsToolName] | None" = None,
+    recursion_limit: int | None = None,
 ) -> int:
     """Run ACP server mode and return a process exit code.
 
@@ -2240,6 +2510,12 @@ async def _run_acp_cli_async(
         no_mcp: Disable all MCP tool loading.
         trust_project_mcp: Controls project-level server trust (stdio and
             remote alike).
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,
+            from `--allow-fs-tools`.
+
+            `None` leaves the SDK default (all tools).
+        recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+            from env/`config.toml`/default at agent-build time.
 
     Returns:
         Exit code for ACP mode.
@@ -2335,6 +2611,8 @@ async def _run_acp_cli_async(
             mcp_server_info=mcp_server_info,
             checkpointer=InMemorySaver(),
             async_subagents=async_subagents,
+            fs_tools=allow_fs_tools,
+            recursion_limit=recursion_limit,
             memory_auto_save=is_memory_auto_save_enabled(),
         )
     except Exception as exc:
@@ -2631,8 +2909,9 @@ def _run_project_mcp_trust_action_picker(
         console: Console to print fallback notices to (stderr).
 
     Returns:
-        The chosen action, `INTERRUPTED` for Ctrl+C, or `None` when the inline
-        picker cannot run and the caller should use the text fallback.
+        The chosen action, `CANCELLED` for Esc or Ctrl+D, `INTERRUPTED` for
+        Ctrl+C, or `None` when the inline picker cannot run and the caller should
+        use the text fallback.
     """
     if not _project_mcp_picker_has_terminal():
         return None
@@ -2671,7 +2950,7 @@ def _run_project_mcp_trust_action_picker(
                 "class:prompt.help",
                 (
                     f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
-                    "Enter select · Esc deny\n"
+                    "Enter select · Esc/Ctrl+D abort\n"
                 ),
             ),
         ]
@@ -2704,8 +2983,9 @@ def _run_project_mcp_trust_action_picker(
         event.app.exit(result=actions[selected_index][0])
 
     @key_bindings.add("escape")
-    def _deny(event: KeyPressEvent) -> None:
-        event.app.exit(result=_ProjectMcpTrustAction.DENY)
+    @key_bindings.add("c-d")
+    def _abort(event: KeyPressEvent) -> None:
+        event.app.exit(result=_ProjectMcpTrustPromptOutcome.CANCELLED)
 
     @key_bindings.add("c-c")
     def _interrupt(event: KeyPressEvent) -> None:
@@ -2715,7 +2995,7 @@ def _run_project_mcp_trust_action_picker(
         Application(
             layout=Layout(
                 Window(
-                    FormattedTextControl(_rows),
+                    FormattedTextControl(_rows, show_cursor=False),
                     height=len(actions) + 1,
                     dont_extend_height=True,
                 )
@@ -2756,7 +3036,8 @@ def _select_project_mcp_trust_action(
         console: Console used by the text fallback.
 
     Returns:
-        The selected trust action, or `INTERRUPTED` when the user presses Ctrl+C.
+        The selected trust action, `CANCELLED` when the user presses Esc or
+        Ctrl+D, or `INTERRUPTED` when the user presses Ctrl+C.
     """
     selected = _run_project_mcp_trust_action_picker(console)
     if selected is not None:
@@ -2788,7 +3069,7 @@ def _run_project_mcp_server_checkbox_picker(
 
     Returns:
         Selected server names. Empty means the user confirmed no selections;
-        `CANCELLED` means the user pressed Esc to cancel the approval;
+        `CANCELLED` means the user backed out (Esc or Ctrl+D) to abort the launch;
         `INTERRUPTED` means the user pressed Ctrl+C; `None` means the checkbox UI
         could not run and the caller should fall back to a simpler prompt.
     """
@@ -2837,7 +3118,7 @@ def _run_project_mcp_server_checkbox_picker(
                         f"{len(selected_names)} selected\n"
                         f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
                         "Space toggle · a select all · c clear · Enter confirm · "
-                        "Esc cancel\n"
+                        "Esc abort\n"
                     ),
                 ),
             ]
@@ -2907,12 +3188,12 @@ def _run_project_mcp_server_checkbox_picker(
             HSplit(
                 [
                     Window(
-                        FormattedTextControl(_help_text),
+                        FormattedTextControl(_help_text, show_cursor=False),
                         height=4,
                         dont_extend_height=True,
                     ),
                     Window(
-                        FormattedTextControl(_rows),
+                        FormattedTextControl(_rows, show_cursor=False),
                         height=visible_count,
                         dont_extend_height=True,
                     ),
@@ -2973,7 +3254,7 @@ def _select_project_servers_with_numbers(
             highlight=False,
         )
     try:
-        raw = input("Enter numbers to remember (e.g. 1,3), 'all', or blank to cancel: ")
+        raw = input("Enter numbers to remember (e.g. 1,3), 'all', or blank to abort: ")
     except KeyboardInterrupt:
         return _ProjectMcpTrustPromptOutcome.INTERRUPTED
     except EOFError:
@@ -3002,7 +3283,8 @@ def _select_project_servers_to_persist(
     Returns:
         The chosen server names. Empty when the user confirms no servers or
         makes no valid fallback selection. `CANCELLED` means the user backed out
-        and the caller should deny. `INTERRUPTED` means the user pressed Ctrl+C.
+        and the caller should abort the launch. `INTERRUPTED` means the user
+        pressed Ctrl+C.
     """
     names = [name for name, _kind, _summary in prompt_servers]
     if len(names) <= 1:
@@ -3036,8 +3318,8 @@ def _check_mcp_project_trust(
     returns `True`. Otherwise it shows an inline action selector for unresolved
     servers: allow once, remember selected servers, or deny. Remembered approvals
     are scoped to this project and each exact server definition. The remember
-    picker starts with nothing selected; Esc cancels the launch, and no server
-    loads without an explicit allow action.
+    picker starts with nothing selected; Esc or Ctrl+D in either picker aborts
+    the launch, and no server loads without an explicit allow action.
 
     Servers already resolved by the user's scoped approvals, the
     `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` env allowlist, or the
@@ -3055,8 +3337,8 @@ def _check_mcp_project_trust(
         `True` to allow project servers, `False` to deny (including when the
             user's trust policy could not be read), `None` when there are no
             project servers whose fate this prompt decides, `INTERRUPTED` when
-            the user presses Ctrl+C, or `CANCELLED` when the user backs out of
-            server selection.
+            the user presses Ctrl+C, or `CANCELLED` when the user presses Esc or
+            Ctrl+D to abort the launch.
     """
     from deepagents_code.mcp_tools import (
         ProjectServerSummary,
@@ -3169,6 +3451,8 @@ def _check_mcp_project_trust(
     action = _select_project_mcp_trust_action(prompt_console)
     if action is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
         return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+    if action is _ProjectMcpTrustPromptOutcome.CANCELLED:
+        return _ProjectMcpTrustPromptOutcome.CANCELLED
     if action is _ProjectMcpTrustAction.DENY:
         prompt_console.print(
             f"[dim]Denied {server_count} project MCP {noun}.[/dim]",
@@ -3189,10 +3473,6 @@ def _check_mcp_project_trust(
     if names is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
         return _ProjectMcpTrustPromptOutcome.INTERRUPTED
     if names is _ProjectMcpTrustPromptOutcome.CANCELLED:
-        prompt_console.print(
-            f"[dim]Cancelled; denied {server_count} project MCP {noun}.[/dim]",
-            highlight=False,
-        )
         return _ProjectMcpTrustPromptOutcome.CANCELLED
     if not names:
         prompt_console.print(
@@ -3274,6 +3554,9 @@ def cli_main() -> None:
 
     try:
         args = parse_args()
+        allow_fs_tools = _parse_allow_fs_tools_flag(
+            getattr(args, "allow_fs_tools", None)
+        )
 
         if _show_bare_command_group_help(args):
             return
@@ -3378,6 +3661,12 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
+            if getattr(args, "auto_approve", False) or getattr(args, "yolo", False):
+                flag = "--yolo" if getattr(args, "yolo", False) else "--auto-approve"
+                sys.stderr.write(
+                    f"Error: {flag} is only supported by the interactive Textual TUI.\n"
+                )
+                sys.exit(2)
             assistant_id = _resolve_agent_arg(args)
             try:
                 from acp import run_agent as run_acp_agent
@@ -3414,6 +3703,8 @@ def cli_main() -> None:
                     mcp_config_path=getattr(args, "mcp_config", None),
                     no_mcp=getattr(args, "no_mcp", False),
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
+                    allow_fs_tools=allow_fs_tools,
+                    recursion_limit=getattr(args, "recursion_limit", None),
                 )
             )
             sys.exit(exit_code)
@@ -3431,13 +3722,16 @@ def cli_main() -> None:
         # predicate that selects the headless branch below), so this reliably
         # rejects `--auto-approve` on both the `-n` and piped-stdin paths while
         # leaving interactive launches untouched.
-        if args.auto_approve and args.non_interactive_message:
+        if (
+            args.auto_approve or getattr(args, "yolo", False)
+        ) and args.non_interactive_message:
             from rich.console import Console as _Console
 
+            flag = "--yolo" if getattr(args, "yolo", False) else "--auto-approve"
             _Console(stderr=True).print(
-                "[bold red]Error:[/bold red] --auto-approve is only supported in "
-                "interactive mode. Headless mode already approves non-shell tools; "
-                "use --shell-allow-list to control shell access."
+                f"[bold red]Error:[/bold red] {flag} is only supported in "
+                "interactive mode. Headless mode uses fail-closed MCP routing and "
+                "--shell-allow-list for shell access."
             )
             sys.exit(2)
 
@@ -4259,12 +4553,14 @@ def cli_main() -> None:
                             trust_project_mcp=getattr(args, "trust_project_mcp", False),
                             enable_interpreter=enable_interpreter,
                             interpreter_ptc=interpreter_ptc,
+                            allow_fs_tools=allow_fs_tools,
                             max_turns=getattr(args, "max_turns", None),
                             rubric=rubric_text,
                             rubric_model=getattr(args, "rubric_model", None),
                             rubric_max_iterations=getattr(
                                 args, "rubric_max_iterations", None
                             ),
+                            recursion_limit=getattr(args, "recursion_limit", None),
                         ),
                         timeout=timeout,
                     )
@@ -4348,6 +4644,12 @@ def cli_main() -> None:
             if mcp_trust_decision is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
                 sys.exit(130)
             if mcp_trust_decision is _ProjectMcpTrustPromptOutcome.CANCELLED:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(
+                    "[dim]Aborted; no project MCP servers loaded.[/dim]",
+                    highlight=False,
+                )
                 return
 
             # Run Textual TUI
@@ -4361,14 +4663,31 @@ def cli_main() -> None:
                 # advisory as a startup notification instead (see
                 # `DeepAgentsApp._notify_interpreter_tools_without_interpreter`).
 
-                # An explicit -y/--auto-approve wins; otherwise the persistent
-                # [startup].mode config default decides the launch mode.
-                auto_approve = _resolve_auto_approve(args)
+                from deepagents_code.approval_mode import ApprovalMode
+
+                approval_mode = _resolve_approval_mode(args)
+                if (
+                    approval_mode is ApprovalMode.AUTO
+                    and args.sandbox
+                    and args.sandbox != "none"
+                ):
+                    console.print(
+                        "[yellow]Auto is unavailable with a sandbox. "
+                        "Using Manual.[/yellow]"
+                    )
+                    approval_mode = ApprovalMode.MANUAL
+                if approval_mode is ApprovalMode.YOLO and not _ensure_yolo_acknowledged(
+                    console
+                ):
+                    console.print(
+                        "[yellow]YOLO was not enabled; using Manual.[/yellow]"
+                    )
+                    approval_mode = ApprovalMode.MANUAL
 
                 result = asyncio.run(
                     run_textual_cli_async(
                         assistant_id=assistant_id,
-                        auto_approve=auto_approve,
+                        approval_mode=approval_mode,
                         sandbox_type=args.sandbox,
                         sandbox_id=args.sandbox_id,
                         sandbox_snapshot_name=args.sandbox_snapshot_name,
@@ -4388,6 +4707,8 @@ def cli_main() -> None:
                         enable_interpreter=enable_interpreter,
                         interpreter_arg=args.interpreter,
                         interpreter_ptc=interpreter_ptc,
+                        allow_fs_tools=allow_fs_tools,
+                        recursion_limit=getattr(args, "recursion_limit", None),
                     )
                 )
                 return_code = result.return_code
@@ -4458,13 +4779,13 @@ def cli_main() -> None:
             except Exception:
                 logger.warning("Failed to display exit update banner", exc_info=True)
     except KeyboardInterrupt:
-        # Clean exit on Ctrl+C — suppress ugly traceback.
+        # Suppress the traceback while preserving the conventional SIGINT status.
         # `console` may not be bound if Ctrl+C arrives during config import.
         try:
             console.print("\n\n[yellow]Interrupted[/yellow]")
         except NameError:
             sys.stderr.write("\n\nInterrupted\n")
-        sys.exit(0)
+        sys.exit(130)
 
 
 if __name__ == "__main__":

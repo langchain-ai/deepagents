@@ -22,7 +22,7 @@ from deepagents_code.skills.merge import merge_skill
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from deepagents.backends.protocol import BackendProtocol
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
 
@@ -240,7 +240,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
     def __init__(
         self,
         *,
-        backend: BACKEND_TYPES,
+        backend: BackendProtocol,
         sources: Sequence[CodeSkillSource],
         system_prompt: str | None = sdk_skills.SKILLS_SYSTEM_PROMPT,
     ) -> None:
@@ -282,8 +282,8 @@ class PluginSkillsMiddleware(SkillsMiddleware):
     def before_agent(
         self,
         state: sdk_skills.SkillsState,
-        runtime: Runtime,
-        config: RunnableConfig,
+        runtime: Runtime,  # noqa: ARG002
+        config: RunnableConfig,  # noqa: ARG002
     ) -> sdk_skills.SkillsStateUpdate | None:
         """Load and namespace plugin skills before collision resolution.
 
@@ -294,7 +294,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         if "skills_metadata" in state:
             return None
 
-        backend = self._get_backend(state, runtime, config)
+        backend = self._backend
         all_skills: dict[str, sdk_skills.SkillMetadata] = {}
         merged_source_labels: dict[str, str | None] = {}
         errors: list[str] = []
@@ -328,8 +328,8 @@ class PluginSkillsMiddleware(SkillsMiddleware):
     async def abefore_agent(
         self,
         state: sdk_skills.SkillsState,
-        runtime: Runtime,
-        config: RunnableConfig,
+        runtime: Runtime,  # noqa: ARG002
+        config: RunnableConfig,  # noqa: ARG002
     ) -> sdk_skills.SkillsStateUpdate | None:
         """Asynchronously load and namespace skills before collision resolution.
 
@@ -340,7 +340,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         if "skills_metadata" in state:
             return None
 
-        backend = self._get_backend(state, runtime, config)
+        backend = self._backend
         all_skills: dict[str, sdk_skills.SkillMetadata] = {}
         merged_source_labels: dict[str, str | None] = {}
         errors: list[str] = []

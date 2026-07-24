@@ -1051,6 +1051,23 @@ class TestAskUserMenu:
             help_text = menu.query_one(".ask-user-help").render()
             assert "Tab" not in str(help_text)
 
+    async def test_help_text_advertises_newline_shortcut(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Footer advertises the terminal-aware newline shortcut."""
+        from deepagents_code import config as config_module
+
+        # `newline_hint` resolves `newline_shortcut` via a call-time import from
+        # config, so patch the name on the config module it looks up.
+        monkeypatch.setattr(config_module, "newline_shortcut", lambda: "Ctrl+J")
+        app = _AskUserTestApp([{"question": "Q1?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+J newline" in str(help_text)
+
     async def test_required_label_shown_for_required_question(self) -> None:
         """Required questions display a (required) indicator."""
         app = _AskUserTestApp([{"question": "Name?", "type": "text", "required": True}])

@@ -8,6 +8,7 @@ and that secret-flagged options are never rendered by value.
 from __future__ import annotations
 
 import argparse
+import os
 
 import pytest
 
@@ -144,6 +145,117 @@ def test_is_memory_auto_save_enabled_reads_toml(monkeypatch) -> None:
         lambda: {"memory": {"auto_save": False}},
     )
     assert is_memory_auto_save_enabled() is False
+
+
+def test_is_openai_prompt_cache_key_enabled_reads_env(monkeypatch) -> None:
+    """`is_openai_prompt_cache_key_enabled` honors the env override."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import is_openai_prompt_cache_key_enabled
+
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+    monkeypatch.delenv(_env_vars.OPENAI_PROMPT_CACHE_KEY, raising=False)
+    assert is_openai_prompt_cache_key_enabled() is True
+
+    monkeypatch.setenv(_env_vars.OPENAI_PROMPT_CACHE_KEY, "false")
+    assert is_openai_prompt_cache_key_enabled() is False
+
+
+def test_is_openai_prompt_cache_key_enabled_reads_toml(monkeypatch) -> None:
+    """The helper honors `[models].openai_prompt_cache_key` when env is unset."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import is_openai_prompt_cache_key_enabled
+
+    monkeypatch.delenv(_env_vars.OPENAI_PROMPT_CACHE_KEY, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"openai_prompt_cache_key": False}},
+    )
+    assert is_openai_prompt_cache_key_enabled() is False
+
+
+def test_is_openai_prompt_cache_key_enabled_empty_env_opts_out(monkeypatch) -> None:
+    """An explicitly empty env value opts out (via `empty_env_is_false`)."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import is_openai_prompt_cache_key_enabled
+
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+    monkeypatch.setenv(_env_vars.OPENAI_PROMPT_CACHE_KEY, "")
+    assert is_openai_prompt_cache_key_enabled() is False
+
+
+def test_is_openai_prompt_cache_key_enabled_unrecognized_env_falls_through(
+    monkeypatch,
+) -> None:
+    """An unrecognized env token is ignored, so config.toml decides."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import is_openai_prompt_cache_key_enabled
+
+    monkeypatch.setenv(_env_vars.OPENAI_PROMPT_CACHE_KEY, "banana")
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"openai_prompt_cache_key": False}},
+    )
+    assert is_openai_prompt_cache_key_enabled() is False
+
+
+def test_goal_auto_accept_criteria_defaults_to_review(monkeypatch) -> None:
+    """Auto mode reviews generated goal criteria when no preference is set."""
+    option = get_option("goals.auto_accept_criteria")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+
+    assert resolve_scalar(option, toml_data={}) == (False, "default")
+
+
+def test_goal_auto_accept_criteria_reads_toml(monkeypatch) -> None:
+    """The goals table can opt Auto into applying criteria automatically."""
+    option = get_option("goals.auto_accept_criteria")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+
+    assert resolve_scalar(
+        option,
+        toml_data={"goals": {"auto_accept_criteria": True}},
+    ) == (True, "config.toml")
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("true", True), ("0", False)])
+def test_goal_auto_accept_criteria_env_overrides_toml(
+    monkeypatch,
+    raw: str,
+    expected: bool,
+) -> None:
+    """A recognized env value takes priority over config.toml."""
+    option = get_option("goals.auto_accept_criteria")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.GOAL_AUTO_ACCEPT_CRITERIA, raw)
+
+    assert resolve_scalar(
+        option,
+        toml_data={"goals": {"auto_accept_criteria": not expected}},
+    ) == (expected, f"env ({_env_vars.GOAL_AUTO_ACCEPT_CRITERIA})")
+
+
+@pytest.mark.parametrize(
+    ("toml_data", "expected"),
+    [
+        ({"goals": {"auto_accept_criteria": True}}, (True, "config.toml")),
+        ({}, (False, "default")),
+    ],
+)
+def test_invalid_goal_auto_accept_env_falls_through(
+    monkeypatch,
+    toml_data: dict[str, object],
+    expected: tuple[bool, str],
+) -> None:
+    """An invalid env value should not mask TOML or the safe default."""
+    option = get_option("goals.auto_accept_criteria")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.GOAL_AUTO_ACCEPT_CRITERIA, "maybe")
+
+    assert resolve_scalar(option, toml_data=toml_data) == expected
 
 
 def test_debug_log_level_resolves_dynamic_default(monkeypatch) -> None:
@@ -1207,6 +1319,33 @@ def test_run_get_unknown_key_returns_error_code(capsys) -> None:
     assert "config --verbose" in err
 
 
+def test_run_get_missing_key_hints_available_keys(capsys) -> None:
+    """Bare `config get` explains it needs a key and where to find one."""
+    args = argparse.Namespace(config_command="get", key=None, output_format="text")
+    assert run_config_command(args) == 2
+    err = capsys.readouterr().err
+    assert "needs an option key" in err
+    assert "dcode config" in err
+
+
+def test_run_get_missing_key_json_lists_keys(capsys) -> None:
+    """JSON output for a bare `config get` returns the full key list for tools."""
+    import json
+
+    args = argparse.Namespace(config_command="get", key=None, output_format="json")
+    assert run_config_command(args) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["data"]["error"] == "missing key"
+    assert payload["data"]["keys"] == list(option_keys())
+
+
+def test_missing_key_example_is_a_real_option() -> None:
+    """The hint's example key must stay a resolvable manifest key."""
+    from deepagents_code.client.commands.config import _GET_KEY_EXAMPLE
+
+    assert get_option(_GET_KEY_EXAMPLE) is not None
+
+
 def test_config_registered_as_bare_action_group() -> None:
     """Bare `config` must run its action instead of startup-fast-path help."""
     from deepagents_code import ui
@@ -1655,14 +1794,19 @@ def test_resolve_startup_mode_from_toml(caplog) -> None:
 
     opt = get_option("startup.mode")
     assert opt is not None
-    assert resolve_scalar(opt, toml_data={"startup": {"mode": "dangerously-auto"}}) == (
-        "dangerously-auto",
-        "config.toml",
-    )
+    for mode in ("auto", "yolo"):
+        assert resolve_scalar(opt, toml_data={"startup": {"mode": mode}}) == (
+            mode,
+            "config.toml",
+        )
     with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
-        value, source = resolve_scalar(opt, toml_data={"startup": {"mode": "yolo"}})
+        value, source = resolve_scalar(
+            opt, toml_data={"startup": {"mode": "dangerously-auto"}}
+        )
     assert (value, source) == (DEFAULT_STARTUP_MODE, "default")
-    assert any("[startup].mode='yolo'" in r.getMessage() for r in caplog.records)
+    assert any(
+        "[startup].mode='dangerously-auto'" in r.getMessage() for r in caplog.records
+    )
 
     for raw in (["manual"], {"name": "manual"}):
         caplog.clear()
@@ -1867,6 +2011,100 @@ def test_provider_dependency_metadata_is_exhaustive() -> None:
         "_PROVIDER_DEPENDENCIES must include every model-provider extra so the "
         "model selector can surface install-required recommended models"
     )
+
+
+# --- Recursion limit -------------------------------------------------------
+
+
+def test_recursion_limit_option_metadata() -> None:
+    """The recursion-limit option exposes the env/TOML/CLI override surface."""
+    opt = get_option("runtime.recursion_limit")
+    assert opt is not None
+    assert opt.kind is OptionKind.INT
+    assert opt.env_var == _env_vars.RECURSION_LIMIT
+    assert opt.toml_keys == ("runtime", "recursion_limit")
+    assert opt.cli_flag == "--recursion-limit"
+    assert "runtime.recursion_limit" in option_keys()
+
+
+def test_resolve_recursion_limit_default() -> None:
+    """With no override, the resolver returns the manifest default."""
+    from deepagents_code.config_manifest import (
+        RECURSION_LIMIT_DEFAULT,
+        resolve_recursion_limit,
+    )
+
+    assert resolve_recursion_limit(toml_data={}) == RECURSION_LIMIT_DEFAULT
+
+
+def test_resolve_recursion_limit_env_wins(monkeypatch) -> None:
+    """A valid env var overrides both TOML and the default."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "3000")
+    assert (
+        resolve_recursion_limit(toml_data={"runtime": {"recursion_limit": 1500}})
+        == 3000
+    )
+
+
+def test_resolve_recursion_limit_toml_when_env_unset(monkeypatch) -> None:
+    """`config.toml` is used when no env var is set."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    monkeypatch.delenv(_env_vars.RECURSION_LIMIT, raising=False)
+    assert (
+        resolve_recursion_limit(toml_data={"runtime": {"recursion_limit": 1500}})
+        == 1500
+    )
+
+
+@pytest.mark.parametrize("raw", ["0", "-5", "10", "999999999", "notanint"])
+def test_resolve_recursion_limit_out_of_range_falls_back(monkeypatch, raw) -> None:
+    """Non-positive, sub-floor, above-ceiling, or malformed values fall back."""
+    from deepagents_code.config_manifest import (
+        RECURSION_LIMIT_DEFAULT,
+        resolve_recursion_limit,
+    )
+
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, raw)
+    assert resolve_recursion_limit(toml_data={}) == RECURSION_LIMIT_DEFAULT
+
+
+def test_resolve_recursion_limit_invalid_env_falls_through_to_toml(
+    monkeypatch,
+) -> None:
+    """An out-of-range env value does not mask a valid TOML override."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "10")
+    assert (
+        resolve_recursion_limit(toml_data={"runtime": {"recursion_limit": 1500}})
+        == 1500
+    )
+
+
+def test_resolve_recursion_limit_invalid_env_leaves_env_intact(monkeypatch) -> None:
+    """Fall-through resolution must restore the rejected env var afterward."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "10")
+    resolve_recursion_limit(toml_data={"runtime": {"recursion_limit": 1500}})
+    assert os.environ[_env_vars.RECURSION_LIMIT] == "10"
+
+
+def test_resolve_recursion_limit_accepts_floor_and_ceiling(monkeypatch) -> None:
+    """The inclusive floor and ceiling are accepted verbatim."""
+    from deepagents_code.config_manifest import (
+        RECURSION_LIMIT_CEILING,
+        RECURSION_LIMIT_FLOOR,
+        resolve_recursion_limit,
+    )
+
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, str(RECURSION_LIMIT_FLOOR))
+    assert resolve_recursion_limit(toml_data={}) == RECURSION_LIMIT_FLOOR
+    monkeypatch.setenv(_env_vars.RECURSION_LIMIT, str(RECURSION_LIMIT_CEILING))
+    assert resolve_recursion_limit(toml_data={}) == RECURSION_LIMIT_CEILING
 
 
 def test_delegate_static_defaults_are_parseable() -> None:

@@ -74,6 +74,9 @@ class SnapshotField(NamedTuple):
 _SNAPSHOT_COPY_META = "snapshot_copy"
 """Meta key marking a snapshot span whose text is copied on click."""
 
+_SNAPSHOT_COPY_LABEL_META = "snapshot_copy_label"
+"""Meta key carrying the snapshot field label used in the copy toast."""
+
 
 _REFRESH_INTERVAL = 0.5
 """Seconds between log-tail refresh ticks."""
@@ -577,20 +580,41 @@ class _DebugLogView(ScrollView, can_focus=True):
             self._on_copy_record(record)
 
 
-def _snapshot_copy_text(style: object) -> str | None:
-    """Return the copy payload from a snapshot span style, if any.
+def _snapshot_copy_target(style: object) -> tuple[str, str] | None:
+    """Return the copy text and field label from a snapshot span style, if any.
 
     Args:
         style: The Textual event style under the pointer/click.
 
     Returns:
-        The text to copy when the span carries a copy marker, else `None`.
+        `(text, label)` when the span carries a copy marker, else `None`.
     """
     meta = getattr(style, "meta", None)
     if not isinstance(meta, dict):
         return None
     text = meta.get(_SNAPSHOT_COPY_META)
-    return text if isinstance(text, str) and text else None
+    if not isinstance(text, str) or not text:
+        return None
+    label = meta.get(_SNAPSHOT_COPY_LABEL_META)
+    if not isinstance(label, str) or not label:
+        return None
+    return text, label
+
+
+def _snapshot_copy_success_message(label: str) -> str:
+    """Build the toast shown after copying a snapshot field value.
+
+    Args:
+        label: The snapshot row label (e.g. `"Thread"`, `"Version"`).
+
+    Returns:
+        A short success toast for the copied field.
+    """
+    # The thread row is labeled "Thread" in the snapshot, but the value users
+    # copy is specifically the thread id — keep that wording for the toast.
+    if label == "Thread":
+        return "Thread ID copied"
+    return f"{label} copied"
 
 
 class _SnapshotView(Static):
@@ -602,14 +626,14 @@ class _SnapshotView(Static):
 
     def __init__(
         self,
-        on_copy: Callable[[str], None],
+        on_copy: Callable[[str, str], None],
         *,
         classes: str | None = None,
     ) -> None:
         """Initialize with a callback used to copy a clicked span's text.
 
         Args:
-            on_copy: Called with the span text when a copyable span is clicked.
+            on_copy: Called with `(text, label)` when a copyable span is clicked.
             classes: Optional space-separated CSS classes.
         """
         super().__init__(classes=classes)
@@ -625,15 +649,16 @@ class _SnapshotView(Static):
         if getattr(event.style, "link", None):
             open_style_link(event)
             return
-        text = _snapshot_copy_text(event.style)
-        if text is not None:
+        target = _snapshot_copy_target(event.style)
+        if target is not None:
             event.stop()
-            self._on_copy(text)
+            text, label = target
+            self._on_copy(text, label)
 
     def on_mouse_move(self, event: events.MouseMove) -> None:
         """Show a hand pointer over clickable spans and reset it elsewhere."""
         clickable = bool(getattr(event.style, "link", None)) or (
-            _snapshot_copy_text(event.style) is not None
+            _snapshot_copy_target(event.style) is not None
         )
         self.styles.pointer = "pointer" if clickable else "default"
 
@@ -1003,7 +1028,15 @@ class DebugConsoleScreen(ModalScreen[None]):
         ]
         if field.copyable and field.value:
             parts.append(
-                (field.value, TStyle.from_meta({_SNAPSHOT_COPY_META: field.value}))
+                (
+                    field.value,
+                    TStyle.from_meta(
+                        {
+                            _SNAPSHOT_COPY_META: field.value,
+                            _SNAPSHOT_COPY_LABEL_META: field.label,
+                        }
+                    ),
+                )
             )
         else:
             parts.append(field.value)
@@ -1144,12 +1177,17 @@ class DebugConsoleScreen(ModalScreen[None]):
         """Copy a clicked logical log record to the clipboard."""
         self._copy_lines([record.plain_line], empty_message="No log line to copy")
 
-    def _copy_snapshot_value(self, text: str) -> None:
-        """Copy a clicked snapshot value (e.g. the thread ID) to the clipboard."""
+    def _copy_snapshot_value(self, text: str, label: str) -> None:
+        """Copy a clicked snapshot value to the clipboard.
+
+        Args:
+            text: The field value to put on the clipboard.
+            label: The snapshot row label used to word the success toast.
+        """
         self._copy_lines(
             [text],
             empty_message="Nothing to copy",
-            success_message="Thread ID copied",
+            success_message=_snapshot_copy_success_message(label),
         )
 
     def _level_select(self) -> Select[FilterValue]:

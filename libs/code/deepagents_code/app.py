@@ -3557,6 +3557,7 @@ class DeepAgentsApp(App):
         """
         self._session_state_ready = asyncio.Event()
         self._session_init_started = False
+        self._session_init_lock = asyncio.Lock()
 
         self._startup_task: asyncio.Task[None] | None = None
         """Startup task reference (set in on_mount)."""
@@ -4289,53 +4290,59 @@ class DeepAgentsApp(App):
 
     async def _init_session_state(self) -> None:
         """Create session state in a thread (imports deepagents_code.sessions)."""
-        self._session_init_started = True
+        async with self._session_init_lock:
+            if self._session_state is not None:
+                self._session_state_ready.set()
+                return
+            self._session_init_started = True
 
-        def _create() -> TextualSessionState:
-            from pathlib import Path
+            def _create() -> TextualSessionState:
+                from pathlib import Path
 
-            from deepagents_code.hooks.runtime import HooksRuntime
+                from deepagents_code.hooks.runtime import HooksRuntime
 
-            state = TextualSessionState(
-                approval_mode=self._approval_mode,
-                thread_id=self._lc_thread_id,
-            )
-            try:
-                # Interactive sessions keep project hooks off until a dedicated
-                # workspace-trust prompt lands (design-doc security follow-up).
-                state.hooks_runtime = HooksRuntime.create(
-                    cwd=Path(self._cwd),
-                    workspace_trusted=False,
+                state = TextualSessionState(
+                    approval_mode=self._approval_mode,
+                    thread_id=self._lc_thread_id,
                 )
+                try:
+                    # Interactive sessions keep project hooks off until a dedicated
+                    # workspace-trust prompt lands (design-doc security follow-up).
+                    state.hooks_runtime = HooksRuntime.create(
+                        cwd=Path(self._cwd),
+                        workspace_trusted=False,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to create HooksRuntime; server hooks disabled"
+                    )
+                    state.hooks_runtime = None
+                return state
+
+            try:
+                session_state = await asyncio.to_thread(_create)
             except Exception:
-                logger.exception("Failed to create HooksRuntime; server hooks disabled")
-                state.hooks_runtime = None
-            return state
+                logger.exception("Failed to create session state")
+                self.notify(
+                    "Session initialization failed. Some features may be unavailable.",
+                    severity="error",
+                    timeout=10,
+                )
+                self._session_state_ready.set()
+                return
+            # A user can change the approval mode while session construction runs
+            # in the worker thread. Re-read the app-owned selection on the event
+            # loop so the newly assigned state cannot overwrite that newer choice.
+            session_state.approval_mode = self._approval_mode
+            if session_state.hooks_runtime is not None:
+                from deepagents_code.hooks.client_lifecycle import ClientHookService
 
-        try:
-            session_state = await asyncio.to_thread(_create)
-        except Exception:
-            logger.exception("Failed to create session state")
-            self.notify(
-                "Session initialization failed. Some features may be unavailable.",
-                severity="error",
-                timeout=10,
-            )
+                session_state.client_hooks = ClientHookService(
+                    session_state.hooks_runtime,
+                    notice=lambda message: self.notify(message, markup=False),
+                )
+            self._session_state = session_state
             self._session_state_ready.set()
-            return
-        # A user can change the approval mode while session construction runs
-        # in the worker thread. Re-read the app-owned selection on the event
-        # loop so the newly assigned state cannot overwrite that newer choice.
-        session_state.approval_mode = self._approval_mode
-        if session_state.hooks_runtime is not None:
-            from deepagents_code.hooks.client_lifecycle import ClientHookService
-
-            session_state.client_hooks = ClientHookService(
-                session_state.hooks_runtime,
-                notice=lambda message: self.notify(message, markup=False),
-            )
-        self._session_state = session_state
-        self._session_state_ready.set()
         await self._auto_accept_pending_goal_rubric()
 
     async def _refresh_client_hooks_runtime(self) -> None:
@@ -8196,8 +8203,11 @@ class DeepAgentsApp(App):
             self._schedule_session_start_after_launch_init(launch_init_task)
             return
 
-        if self._session_state is None and self._session_init_started:
-            await self._session_state_ready.wait()
+        if self._session_state is None:
+            # Initialize inline. Waiting on `_session_state_ready` while the
+            # session-init Textual worker is in-flight deadlocks under Textual's
+            # worker scheduling (the worker never progresses to set the Event).
+            await self._init_session_state()
 
         self._initial_session_started = True
         self._startup_sequence_running = True

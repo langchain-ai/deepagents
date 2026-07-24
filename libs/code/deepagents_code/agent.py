@@ -1911,6 +1911,14 @@ def _should_interrupt_tool_call(
     Returns:
         `True` to interrupt, or `False` for Auto/YOLO bypass.
     """
+    from deepagents_code.hooks.server_middleware import pre_tool_behavior
+
+    tool_call = getattr(request, "tool_call", None)
+    tool_call_id = str(tool_call.get("id") or "") if isinstance(tool_call, dict) else ""
+    hook_behavior = pre_tool_behavior(getattr(request, "state", None), tool_call_id)
+    if hook_behavior in {"allow", "deny"}:
+        return False
+
     runtime = getattr(request, "runtime", None)
     mode = _async_routing_mode(getattr(request, "state", None))
     if mode is None:
@@ -2436,7 +2444,13 @@ def create_cli_agent(
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
         hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
-        middleware.append(ServerHooksMiddleware(cwd=hooks_cwd, emit_stop=False))
+        middleware.append(
+            ServerHooksMiddleware(
+                cwd=hooks_cwd,
+                emit_stop=False,
+                mcp_tools=mcp_tools,
+            )
+        )
         # Subagents share the on-disk filesystem backend and can edit the user
         # AGENTS.md, so they get the same managed onboarding-name block guard as
         # the main agent. Gated on memory because the block only exists when
@@ -2727,7 +2741,9 @@ def create_cli_agent(
     from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
     hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
-    agent_middleware.append(ServerHooksMiddleware(cwd=hooks_cwd))
+    if resolved_interrupt_on is not None:
+        agent_middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
+    agent_middleware.append(ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools))
 
     # Get or use custom system prompt
     if system_prompt is None:
@@ -2739,24 +2755,19 @@ def create_cli_agent(
             fs_tools=fs_tools,
         )
 
-    interrupt_on: dict[str, bool | InterruptOnConfig] | None
+    interrupt_on: dict[str, bool | InterruptOnConfig] = {}
     auto_mode_config: tuple[Path, list[str]] | None = None
-    if resolved_interrupt_on is None:
-        interrupt_on = {}
-    else:
-        interrupt_on = resolved_interrupt_on  # ty: ignore[invalid-assignment]  # InterruptOnConfig is compatible at runtime
-        if auto_mode_enabled:
-            configured_allow_list = shell_allow_list or settings.shell_allow_list
-            narrow_allow_list = (
-                configured_allow_list if isinstance(configured_allow_list, list) else []
-            )
-            trusted_root = (
-                project_context.project_root
-                if project_context is not None
-                and project_context.project_root is not None
-                else effective_cwd or Path.cwd()
-            )
-            auto_mode_config = (Path(trusted_root), narrow_allow_list)
+    if resolved_interrupt_on is not None and auto_mode_enabled:
+        configured_allow_list = shell_allow_list or settings.shell_allow_list
+        narrow_allow_list = (
+            configured_allow_list if isinstance(configured_allow_list, list) else []
+        )
+        trusted_root = (
+            project_context.project_root
+            if project_context is not None and project_context.project_root is not None
+            else effective_cwd or Path.cwd()
+        )
+        auto_mode_config = (Path(trusted_root), narrow_allow_list)
 
     # Set up composite backend with routing.
     if sandbox is None:

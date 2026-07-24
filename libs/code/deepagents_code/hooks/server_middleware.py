@@ -7,12 +7,14 @@ matching handlers and return typed decisions.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, NotRequired, TypeVar, cast
-from uuid import UUID, uuid4
+from typing import TYPE_CHECKING, Any, Literal, NotRequired, TypeAlias, TypeVar, cast
+from uuid import UUID, uuid5
 
 from langchain.agents.middleware.human_in_the_loop import (
     ActionRequest,
@@ -64,19 +66,31 @@ if TYPE_CHECKING:
 
     from langchain.tools.tool_node import ToolCallRequest
     from langchain_core.messages.tool import ToolCall
+    from langchain_core.tools import BaseTool
     from langgraph.runtime import Runtime
 
     from deepagents_code.json_types import JsonObject
 
 _DEFAULT_DEADLINE = timedelta(seconds=600)
 _STOP_STATE_KEY = "_hooks_stop_continuation_count"
+_PRE_TOOL_STATE_KEY = "_hooks_pre_tool_outcomes"
 _TASK_TOOL_NAME = "task"
+_INVOCATION_NAMESPACE = UUID("f2896d18-cf2a-4e7d-b11a-d5b10fc0e335")
+
+PreToolBehavior: TypeAlias = Literal["allow", "deny", "none"]
+
+
+class _PreToolState(TypedDict):
+    behavior: PreToolBehavior
+    reason: str | None
+    context: list[str]
 
 
 class ServerHooksState(AgentState[Any]):
     """Agent state extensions for server-owned hook middleware."""
 
     _hooks_stop_continuation_count: NotRequired[int]
+    _hooks_pre_tool_outcomes: NotRequired[dict[str, _PreToolState]]
 
 
 class _SessionHookGate(TypedDict):
@@ -103,6 +117,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         cwd: Path,
         default_deadline: timedelta = _DEFAULT_DEADLINE,
         emit_stop: bool = True,
+        mcp_tools: Sequence[BaseTool] = (),
     ) -> None:
         """Initialize middleware.
 
@@ -112,11 +127,44 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             emit_stop: Whether to emit the main-agent `Stop` event from
                 `after_agent`. Subagent graphs set this to `False` so they still
                 wrap tools without firing parent `Stop` handlers.
+            mcp_tools: MCP tools whose server metadata is needed before tool
+                execution for compatible hook projection.
         """
         super().__init__()
         self._cwd = cwd
         self._default_deadline = default_deadline
         self._emit_stop = emit_stop
+        self._mcp_servers = {
+            name: server
+            for tool in mcp_tools
+            if (name := getattr(tool, "name", None))
+            and isinstance(name, str)
+            and (server := _mcp_server_from_tool(tool)) is not None
+        }
+
+    def after_model(
+        self,
+        state: ServerHooksState,
+        runtime: Runtime[ContextT],
+    ) -> dict[str, Any]:
+        """Run `PreToolUse` before downstream HITL middleware.
+
+        Returns:
+            State update carrying per-tool hook outcomes.
+        """
+        return self._after_model(state, runtime)
+
+    async def aafter_model(
+        self,
+        state: ServerHooksState,
+        runtime: Runtime[ContextT],
+    ) -> dict[str, Any]:
+        """Run the async graph path through the same interrupt sequence.
+
+        Returns:
+            State update carrying per-tool hook outcomes.
+        """
+        return self._after_model(state, runtime)
 
     def wrap_tool_call(
         self,
@@ -130,16 +178,16 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         """
         gate = _session_gate(request.runtime.context)
         call = _tool_call_data(request)
+        pre = _pre_tool_outcome(request.state, call)
         context = _hook_context(
             request.runtime.context, request.runtime.config, self._cwd
         )
+        if pre.blocked is not None:
+            return _append_message_text(pre.blocked, pre.context)
         started_or_blocked = self._maybe_subagent_start(request, call, context, gate)
         if isinstance(started_or_blocked, ToolMessage):
             return started_or_blocked
         request = started_or_blocked
-        pre = self._maybe_pre_tool_use(call, context, gate, request.runtime.config)
-        if pre.blocked is not None:
-            return _append_message_text(pre.blocked, pre.context)
         started = time.perf_counter()
         result = handler(request)
         duration_ms = int((time.perf_counter() - started) * 1000)
@@ -163,16 +211,16 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         """
         gate = _session_gate(request.runtime.context)
         call = _tool_call_data(request)
+        pre = _pre_tool_outcome(request.state, call)
         context = _hook_context(
             request.runtime.context, request.runtime.config, self._cwd
         )
+        if pre.blocked is not None:
+            return _append_message_text(pre.blocked, pre.context)
         started_or_blocked = self._maybe_subagent_start(request, call, context, gate)
         if isinstance(started_or_blocked, ToolMessage):
             return started_or_blocked
         request = started_or_blocked
-        pre = self._maybe_pre_tool_use(call, context, gate, request.runtime.config)
-        if pre.blocked is not None:
-            return _append_message_text(pre.blocked, pre.context)
         started = time.perf_counter()
         result = await handler(request)
         duration_ms = int((time.perf_counter() - started) * 1000)
@@ -240,45 +288,62 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             )
         return _inject_subagent_start_context(request, decision)
 
-    def _maybe_pre_tool_use(
+    def _after_model(
         self,
-        call: ToolCallData,
-        context: HookContext,
-        gate: _SessionHookGate | None,
-        config: Mapping[str, Any] | None,
-    ) -> _PreToolOutcome:
+        state: ServerHooksState,
+        runtime: Runtime[ContextT],
+    ) -> dict[str, Any]:
+        gate = _session_gate(runtime.context)
         if not _event_enabled(gate, HookEvent.PRE_TOOL_USE):
-            return _PreToolOutcome()
-        decision = _invoke_hook(
-            context,
-            PreToolUseEvent(event=HookEvent.PRE_TOOL_USE, call=call),
-            gate=gate,
-            config=config,
-            deadline=self._default_deadline,
-        )
-        decision = _require_decision(decision, PreToolUseDecision)
-        context_parts = tuple(decision.context)
-        if not decision.continue_processing:
-            return _PreToolOutcome(
-                blocked=_denied_tool_message(
-                    call,
-                    PermissionEffect(
-                        behavior="deny",
-                        reason=decision.stop_reason or "Stopped by PreToolUse hook",
-                    ),
-                ),
-                context=context_parts,
+            return {_PRE_TOOL_STATE_KEY: {}}
+        message = _last_ai_message(state.get("messages", ()))
+        if message is None:
+            return {_PRE_TOOL_STATE_KEY: {}}
+        context = _hook_context(runtime.context, None, self._cwd)
+        outcomes: dict[str, _PreToolState] = {}
+        for tool_call in message.tool_calls:
+            call = _tool_call_data_from_call(
+                tool_call,
+                mcp_server=self._mcp_servers.get(str(tool_call.get("name") or "")),
             )
-        behavior = decision.permission.behavior
-        if behavior == "deny":
-            return _PreToolOutcome(
-                blocked=_denied_tool_message(call, decision.permission),
-                context=context_parts,
+            decision = _invoke_hook(
+                context,
+                PreToolUseEvent(event=HookEvent.PRE_TOOL_USE, call=call),
+                gate=gate,
+                config=None,
+                deadline=self._default_deadline,
             )
-        if behavior == "ask":
-            blocked = _ask_permission_via_hitl(call, decision.permission)
-            return _PreToolOutcome(blocked=blocked, context=context_parts)
-        return _PreToolOutcome(context=context_parts)
+            decision = _require_decision(decision, PreToolUseDecision)
+            behavior: PreToolBehavior = "none"
+            reason: str | None = None
+            permission = decision.permission
+            if not decision.continue_processing or permission.behavior == "deny":
+                behavior = "deny"
+                reason = (
+                    permission.reason
+                    or decision.stop_reason
+                    or "Blocked by PreToolUse hook"
+                )
+            elif permission.behavior == "ask":
+                blocked = _ask_permission_via_hitl(call, permission)
+                if blocked is None:
+                    behavior = "allow"
+                else:
+                    behavior = "deny"
+                    blocked_content = blocked.content
+                    reason = (
+                        blocked_content
+                        if isinstance(blocked_content, str)
+                        else str(blocked_content)
+                    )
+            elif permission.behavior == "allow":
+                behavior = "allow"
+            outcomes[call.id] = {
+                "behavior": behavior,
+                "reason": reason,
+                "context": list(decision.context),
+            }
+        return {_PRE_TOOL_STATE_KEY: outcomes}
 
     def _maybe_post_tool_use(
         self,
@@ -291,7 +356,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
     ) -> ToolMessage | Command[Any]:
         if not _event_enabled(gate, HookEvent.POST_TOOL_USE):
             return result
-        if not isinstance(result, ToolMessage):
+        if _tool_result_failed(result):
             return result
         decision = _invoke_hook(
             context,
@@ -406,6 +471,56 @@ def _event_enabled(gate: _SessionHookGate | None, event: HookEvent) -> bool:
     return gate is not None and event.value in gate["events"]
 
 
+def pre_tool_behavior(state: object, tool_call_id: str) -> PreToolBehavior | None:
+    """Return the replayed PreToolUse permission behavior for one call."""
+    outcome = _pre_tool_state(state, tool_call_id)
+    if outcome is None:
+        return None
+    behavior = outcome.get("behavior")
+    if behavior == "allow":
+        return "allow"
+    if behavior == "deny":
+        return "deny"
+    if behavior == "none":
+        return "none"
+    return None
+
+
+def _pre_tool_state(state: object, tool_call_id: str) -> Mapping[str, object] | None:
+    if not isinstance(state, Mapping):
+        return None
+    raw = state.get(_PRE_TOOL_STATE_KEY)
+    if not isinstance(raw, Mapping):
+        return None
+    outcome = raw.get(tool_call_id)
+    if not isinstance(outcome, Mapping):
+        return None
+    return {str(key): value for key, value in outcome.items()}
+
+
+def _pre_tool_outcome(state: object, call: ToolCallData) -> _PreToolOutcome:
+    outcome = _pre_tool_state(state, call.id)
+    if outcome is None:
+        return _PreToolOutcome()
+    raw_context = outcome.get("context")
+    context = (
+        tuple(item for item in raw_context if isinstance(item, str))
+        if isinstance(raw_context, Sequence) and not isinstance(raw_context, str)
+        else ()
+    )
+    if outcome.get("behavior") != "deny":
+        return _PreToolOutcome(context=context)
+    raw_reason = outcome.get("reason")
+    reason = raw_reason if isinstance(raw_reason, str) else None
+    return _PreToolOutcome(
+        blocked=_denied_tool_message(
+            call,
+            PermissionEffect(behavior="deny", reason=reason),
+        ),
+        context=context,
+    )
+
+
 def _invoke_hook(
     context: HookContext,
     event: (
@@ -423,11 +538,18 @@ def _invoke_hook(
     if gate is None:
         msg = "hooks_snapshot_id is required to emit server-owned hook events"
         raise RuntimeError(msg)
+    run_id = _run_id(config, context.thread_id)
+    invocation_id = _invocation_id(
+        run_id=run_id,
+        snapshot_id=gate["snapshot_id"],
+        context=context,
+        event=event,
+    )
     request = HookInvocationRequest(
         protocol_version=1,
-        invocation_id=uuid4(),
+        invocation_id=invocation_id,
         snapshot_id=gate["snapshot_id"],
-        run_id=_run_id(config),
+        run_id=run_id,
         invocation=HookInvocation(context=context, event=event),
         deadline=datetime.now(UTC) + deadline,
     )
@@ -489,15 +611,64 @@ def _context_mapping(runtime_context: object) -> dict[str, Any]:
     return result
 
 
-def _run_id(config: Mapping[str, Any] | None) -> str:
+def _run_id(config: Mapping[str, Any] | None, thread_id: str) -> str:
     if isinstance(config, Mapping):
         configurable = config.get("configurable")
         if isinstance(configurable, Mapping):
             for key in ("run_id", "thread_id"):
                 value = configurable.get(key)
+                if isinstance(value, UUID):
+                    return str(value)
                 if isinstance(value, str) and value:
                     return value
-    return str(uuid4())
+    return thread_id
+
+
+def _invocation_id(
+    *,
+    run_id: str,
+    snapshot_id: str,
+    context: HookContext,
+    event: (
+        PreToolUseEvent
+        | PostToolUseEvent
+        | StopEvent
+        | SubagentStartEvent
+        | SubagentStopEvent
+    ),
+) -> UUID:
+    identity = {
+        "run_id": run_id,
+        "thread_id": context.thread_id,
+        "snapshot_id": snapshot_id,
+        "event": event.event.value,
+        "logical_event": _logical_event_identity(context, event),
+    }
+    return uuid5(
+        _INVOCATION_NAMESPACE,
+        json.dumps(identity, sort_keys=True, separators=(",", ":")),
+    )
+
+
+def _logical_event_identity(
+    context: HookContext,
+    event: (
+        PreToolUseEvent
+        | PostToolUseEvent
+        | StopEvent
+        | SubagentStartEvent
+        | SubagentStopEvent
+    ),
+) -> str:
+    if isinstance(event, PreToolUseEvent | PostToolUseEvent):
+        return event.call.id
+    if isinstance(event, SubagentStartEvent):
+        return event.agent.id
+    prompt_id = str(context.prompt_id) if context.prompt_id is not None else ""
+    if isinstance(event, SubagentStopEvent):
+        return f"{event.agent.id}:{event.continuation_count}:{prompt_id}"
+    message_hash = hashlib.sha256(event.last_assistant_message.encode()).hexdigest()
+    return f"{event.continuation_count}:{prompt_id}:{message_hash}"
 
 
 def _config_thread_id(config: Mapping[str, Any] | None) -> str | None:
@@ -511,7 +682,17 @@ def _config_thread_id(config: Mapping[str, Any] | None) -> str | None:
 
 
 def _tool_call_data(request: ToolCallRequest) -> ToolCallData:
-    tool_call = request.tool_call
+    return _tool_call_data_from_call(
+        request.tool_call,
+        mcp_server=_mcp_server_from_tool(request.tool),
+    )
+
+
+def _tool_call_data_from_call(
+    tool_call: Mapping[str, object],
+    *,
+    mcp_server: str | None,
+) -> ToolCallData:
     raw_args = tool_call.get("args")
     args: dict[str, Any]
     if isinstance(raw_args, dict):
@@ -522,7 +703,7 @@ def _tool_call_data(request: ToolCallRequest) -> ToolCallData:
         id=str(tool_call.get("id") or ""),
         name=str(tool_call.get("name") or ""),
         args=cast("JsonObject", args),
-        mcp_server=_mcp_server_from_tool(request.tool),
+        mcp_server=mcp_server,
     )
 
 
@@ -616,15 +797,15 @@ def _append_message_text(
     result: ToolMessage | Command[Any],
     parts: Sequence[str],
 ) -> ToolMessage | Command[Any]:
-    if not parts or not isinstance(result, ToolMessage):
+    if not parts:
         return result
-    return _merge_tool_message_content(result, "\n".join(parts))
+    return _append_tool_result_text(result, "\n".join(parts))
 
 
 def _apply_post_tool_use(
-    result: ToolMessage,
+    result: ToolMessage | Command[Any],
     decision: PostToolUseDecision,
-) -> ToolMessage:
+) -> ToolMessage | Command[Any]:
     extras: list[str] = []
     if decision.feedback:
         extras.append("\n".join(decision.feedback))
@@ -634,8 +815,9 @@ def _apply_post_tool_use(
         extras.append(decision.stop_reason)
     if not extras:
         return result
-    return _merge_tool_message_content(
-        result, "\n\n".join(part for part in extras if part)
+    return _append_tool_result_text(
+        result,
+        "\n\n".join(part for part in extras if part),
     )
 
 
@@ -643,9 +825,49 @@ def _apply_subagent_stop(
     result: ToolMessage | Command[Any],
     decision: SubagentStopDecision,
 ) -> ToolMessage | Command[Any]:
-    if not decision.context or not isinstance(result, ToolMessage):
+    if not decision.context:
         return result
-    return _merge_tool_message_content(result, "\n".join(decision.context))
+    return _append_tool_result_text(result, "\n".join(decision.context))
+
+
+def _append_tool_result_text(
+    result: ToolMessage | Command[Any],
+    suffix: str,
+) -> ToolMessage | Command[Any]:
+    if isinstance(result, ToolMessage):
+        return _merge_tool_message_content(result, suffix)
+    update = result.update
+    if not isinstance(update, Mapping):
+        return result
+    raw_messages = update.get("messages")
+    if not isinstance(raw_messages, Sequence) or isinstance(raw_messages, str):
+        return result
+    changed = False
+    messages: list[object] = []
+    for message in raw_messages:
+        if isinstance(message, ToolMessage):
+            messages.append(_merge_tool_message_content(message, suffix))
+            changed = True
+        else:
+            messages.append(message)
+    if not changed:
+        return result
+    return replace(result, update={**update, "messages": messages})
+
+
+def _tool_result_failed(result: ToolMessage | Command[Any]) -> bool:
+    if isinstance(result, ToolMessage):
+        return result.status == "error"
+    update = result.update
+    if not isinstance(update, Mapping):
+        return False
+    messages = update.get("messages")
+    if not isinstance(messages, Sequence) or isinstance(messages, str):
+        return False
+    return any(
+        isinstance(message, ToolMessage) and message.status == "error"
+        for message in messages
+    )
 
 
 def _merge_tool_message_content(result: ToolMessage, suffix: str) -> ToolMessage:
@@ -705,14 +927,27 @@ def _tool_result_text(result: ToolMessage | Command[Any]) -> str:
     if isinstance(result, ToolMessage):
         content = result.content
         return content if isinstance(content, str) else str(content)
-    return ""
+    update = result.update
+    if not isinstance(update, Mapping):
+        return ""
+    messages = update.get("messages")
+    if not isinstance(messages, Sequence) or isinstance(messages, str):
+        return ""
+    return "\n".join(
+        str(message.content) for message in messages if isinstance(message, ToolMessage)
+    )
+
+
+def _last_ai_message(messages: Sequence[Any]) -> AIMessage | None:
+    return next(
+        (message for message in reversed(messages) if isinstance(message, AIMessage)),
+        None,
+    )
 
 
 def _last_assistant_text(messages: Sequence[Any]) -> str:
-    for message in reversed(messages):
-        if isinstance(message, AIMessage):
-            content = message.content
-            if isinstance(content, str):
-                return content
-            return str(content)
-    return ""
+    message = _last_ai_message(messages)
+    if message is None:
+        return ""
+    content = message.content
+    return content if isinstance(content, str) else str(content)

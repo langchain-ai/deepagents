@@ -8,6 +8,7 @@ from pathlib import (  # noqa: TC003 - used in runtime fields and path joins
 )
 from typing import TYPE_CHECKING
 
+from deepagents_code.hooks.client import HookFulfillmentLedger
 from deepagents_code.hooks.engine import HookEngine
 from deepagents_code.hooks.loading import load_hooks_config, project_hooks_path
 from deepagents_code.hooks.models.domain import (
@@ -54,6 +55,7 @@ class HooksRuntime:
     cwd: Path
     workspace_trusted: bool
     project_hooks_loaded: bool
+    fulfillments: HookFulfillmentLedger
 
     @classmethod
     def create(
@@ -104,6 +106,7 @@ class HooksRuntime:
             cwd=project_context.user_cwd,
             workspace_trusted=workspace_trusted,
             project_hooks_loaded=project_path in loaded.sources,
+            fulfillments=HookFulfillmentLedger(),
         )
 
     @property

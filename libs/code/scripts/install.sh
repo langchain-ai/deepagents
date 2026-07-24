@@ -833,6 +833,12 @@ esac
 # tell whether an existing install is out of date before upgrading it.
 PYPI_JSON_URL="https://pypi.org/pypi/deepagents-code/json"
 
+# Base URL for a version-specific GitHub release, surfaced before the update
+# prompt so users can review what changed before agreeing to upgrade. Release
+# tags are `deepagents-code==X.Y.Z`; the `==` must be percent-encoded (%3D%3D)
+# for the tag URL to resolve.
+RELEASE_TAG_URL_BASE="https://github.com/langchain-ai/deepagents/releases/tag/deepagents-code%3D%3D"
+
 # Validate and normalize extras: accept bare CSV, wrap in brackets for pip
 if [[ -n "$EXTRAS" ]]; then
   # Strip brackets if the user passed them anyway
@@ -1257,6 +1263,7 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
   elif [ "$ASSUME_YES" = "1" ]; then
     log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
   elif can_prompt; then
+    log_info "What's new: ${RELEASE_TAG_URL_BASE}${LATEST_VERSION}"
     if prompt_yn "Update deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}?"; then
       log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
     else

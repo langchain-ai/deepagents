@@ -53,6 +53,43 @@ class TestGoalReviewMenu:
 
             assert menu.has_focus
 
+    async def test_border_uses_ascii_variant_in_ascii_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The shared border helper still renders an ascii border in ASCII mode.
+
+        `apply_inline_prompt_border` moved from an inline style to the `-ascii`
+        CSS class; this guards the goal-review side of that refactor so the
+        menu keeps a visible box border on terminals without box characters.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.tui.widgets._inline_prompt.is_ascii_mode",
+            lambda: True,
+        )
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            assert menu.has_class("-ascii")
+            assert menu.styles.border_top[0] == "ascii"
+
+    async def test_border_is_solid_in_unicode_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """In Unicode mode the menu keeps the solid box border, no `-ascii`."""
+        monkeypatch.setattr(
+            "deepagents_code.tui.widgets._inline_prompt.is_ascii_mode",
+            lambda: False,
+        )
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            assert not menu.has_class("-ascii")
+            assert menu.styles.border_top[0] == "solid"
+
     async def test_markdown_omits_goal_text(self) -> None:
         """The review widget should show criteria without restating the goal."""
         app = _GoalReviewTestApp()

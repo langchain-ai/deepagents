@@ -272,6 +272,10 @@ ToolCallMessage.-ascii:hover {
     border: solid $success;
 }
 
+.inline-prompt.-ascii {
+    border: ascii $success;
+}
+
 .inline-prompt .inline-prompt-title {
     text-style: bold;
     color: $success;
@@ -337,6 +341,29 @@ ToolCallMessage.-ascii:hover {
 }
 
 /* Ask user widget */
+/* Dim the border while focus is elsewhere (e.g. the chat input) and brighten
+   it while focus is within, so it is obvious when the menu's keyboard bindings
+   apply. These rules must stay declared *after* `.inline-prompt` above: the
+   menu carries both classes, and the dim/bright resolution relies on source
+   order to win the equal-specificity ties (`.ask-user-menu` vs `.inline-prompt`,
+   `.ask-user-menu.-ascii` vs `.inline-prompt.-ascii`). Reordering flips the
+   blurred border back to bright. */
+.ask-user-menu {
+    border: solid $success-darken-3;
+}
+
+.ask-user-menu:focus-within {
+    border: solid $success;
+}
+
+.ask-user-menu.-ascii {
+    border: ascii $success-darken-3;
+}
+
+.ask-user-menu.-ascii:focus-within {
+    border: ascii $success;
+}
+
 .ask-user-menu .ask-user-questions {
     height: auto;
     padding: 0 1;

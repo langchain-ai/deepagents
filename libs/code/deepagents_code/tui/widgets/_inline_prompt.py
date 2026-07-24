@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from textual import events
     from textual.widget import Widget
 
-from deepagents_code import theme
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.tui.widgets._paste_textarea import CollapsingPasteTextArea
 
@@ -241,14 +240,19 @@ def newline_hint() -> str:
 
 
 def apply_inline_prompt_border(widget: Widget) -> None:
-    """Use the ASCII border variant when the active terminal requires it.
+    """Flag the prompt shell for the ASCII border variant when required.
+
+    The border type and color live in CSS (`.inline-prompt`); adding the
+    `-ascii` class lets the stylesheet swap to an ASCII-safe border on terminals
+    that cannot render box-drawing characters. Keeping the border in CSS (rather
+    than an inline style) lets focus-driven rules (e.g. the `:focus-within`
+    styling on `.ask-user-menu`) restyle it, which an inline border would outrank.
 
     Args:
-        widget: Mounted prompt shell receiving the border style.
+        widget: Mounted prompt shell receiving the ASCII border class.
     """
     if is_ascii_mode():
-        colors = theme.get_theme_colors(widget)
-        widget.styles.border = ("ascii", colors.success)
+        widget.add_class("-ascii")
 
 
 def stop_inline_prompt_blur(event: events.Blur) -> None:

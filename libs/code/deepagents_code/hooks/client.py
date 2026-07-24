@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from deepagents_code.hooks.interrupt import (
     build_hook_resume_value,
@@ -13,13 +16,61 @@ from deepagents_code.hooks.interrupt import (
 from deepagents_code.hooks.models.transport import HookInvocationResponse
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
     from deepagents_code.hooks.models.domain import HookDecision
     from deepagents_code.hooks.models.transport import HookInvocationRequest
     from deepagents_code.hooks.runtime import HooksRuntime
 
 logger = logging.getLogger(__name__)
+
+_FulfillmentKey = tuple[str, UUID]
+_ResumePayload = dict[str, object]
+
+
+@dataclass(slots=True)
+class HookFulfillmentLedger:
+    """Deduplicate hook fulfillment for one client session."""
+
+    _in_flight: dict[_FulfillmentKey, asyncio.Task[HookInvocationResponse]] = field(
+        default_factory=dict
+    )
+    _completed: dict[_FulfillmentKey, HookInvocationResponse] = field(
+        default_factory=dict
+    )
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    async def fulfill(
+        self,
+        key: _FulfillmentKey,
+        operation: Callable[[], Awaitable[HookInvocationResponse]],
+    ) -> HookInvocationResponse:
+        """Return one shared result for concurrent and repeated delivery."""
+        async with self._lock:
+            completed = self._completed.get(key)
+            if completed is not None:
+                return completed
+            task = self._in_flight.get(key)
+            if task is None:
+                task = asyncio.create_task(self._run(key, operation))
+                self._in_flight[key] = task
+        return await asyncio.shield(task)
+
+    async def _run(
+        self,
+        key: _FulfillmentKey,
+        operation: Callable[[], Awaitable[HookInvocationResponse]],
+    ) -> HookInvocationResponse:
+        try:
+            result = await operation()
+        except BaseException:
+            async with self._lock:
+                self._in_flight.pop(key, None)
+            raise
+        async with self._lock:
+            self._completed[key] = result
+            self._in_flight.pop(key, None)
+        return result
 
 
 async def fulfill_hook_invocation(
@@ -45,13 +96,19 @@ async def fulfill_hook_invocation(
         )
         raise ValueError(msg)
 
-    decision = await runtime.invoke(request.invocation)
-    _apply_client_side_effects(decision)
-    response = HookInvocationResponse(
-        protocol_version=1,
-        invocation_id=request.invocation_id,
-        snapshot_id=request.snapshot_id,
-        decision=decision,
+    async def execute() -> HookInvocationResponse:
+        decision = await runtime.invoke(request.invocation)
+        _apply_client_side_effects(decision)
+        return HookInvocationResponse(
+            protocol_version=1,
+            invocation_id=request.invocation_id,
+            snapshot_id=request.snapshot_id,
+            decision=decision,
+        )
+
+    response = await runtime.fulfillments.fulfill(
+        (request.snapshot_id, request.invocation_id),
+        execute,
     )
     return build_hook_resume_value(response)
 

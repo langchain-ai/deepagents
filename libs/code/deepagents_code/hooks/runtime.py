@@ -8,6 +8,7 @@ from pathlib import (  # noqa: TC003 - used in runtime fields and path joins
 )
 from typing import TYPE_CHECKING
 
+from deepagents_code.hooks.client import HookFulfillmentLedger
 from deepagents_code.hooks.engine import HookEngine
 from deepagents_code.hooks.loading import load_hooks_config
 from deepagents_code.hooks.models.domain import (
@@ -51,6 +52,7 @@ class HooksRuntime:
     transcripts: TranscriptStore
     engine: HookEngine
     cwd: Path
+    fulfillments: HookFulfillmentLedger
 
     @classmethod
     def create(
@@ -91,7 +93,13 @@ class HooksRuntime:
             else DEFAULT_CONFIG_DIR / "transcripts"
         )
         engine = HookEngine(snapshot)
-        return cls(snapshot=snapshot, transcripts=store, engine=engine, cwd=cwd)
+        return cls(
+            snapshot=snapshot,
+            transcripts=store,
+            engine=engine,
+            cwd=cwd,
+            fulfillments=HookFulfillmentLedger(),
+        )
 
     @property
     def snapshot_id(self) -> str:

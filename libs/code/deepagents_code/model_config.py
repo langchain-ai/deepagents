@@ -1029,7 +1029,9 @@ def get_available_models() -> dict[str, list[str]]:
             )
             continue
         try:
-            profiles = _load_provider_profiles(module_path)
+            profiles = _with_builtin_profiles(
+                provider, _load_provider_profiles(module_path)
+            )
         except ImportError:
             logger.debug(
                 "Could not import profiles from %s (package may not be installed)",
@@ -1171,6 +1173,36 @@ def get_available_models() -> dict[str, list[str]]:
     return available
 
 
+_BUILTIN_MODEL_PROFILES: dict[str, dict[str, dict[str, Any]]] = {
+    "anthropic": {
+        "claude-opus-5": {
+            "tool_calling": True,
+            "text_inputs": True,
+            "text_outputs": True,
+            "reasoning_output": True,
+            "reasoning_effort_levels": ["low", "medium", "high", "xhigh", "max"],
+            "reasoning_effort_default": "high",
+        }
+    }
+}
+
+
+def _with_builtin_profiles(
+    provider: str, profiles: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Add missing profiles required by the current Deep Agents model catalog.
+
+    Args:
+        provider: Provider whose profiles are being loaded.
+        profiles: Profiles loaded from the provider integration.
+
+    Returns:
+        Provider profiles supplemented by built-in fallbacks.
+    """
+    builtins = _BUILTIN_MODEL_PROFILES.get(provider, {})
+    return {**builtins, **profiles}
+
+
 def _build_entry(
     base: dict[str, Any],
     overrides: dict[str, Any],
@@ -1251,7 +1283,9 @@ def get_model_profiles(
             )
             continue
         try:
-            profiles = _load_provider_profiles(module_path)
+            profiles = _with_builtin_profiles(
+                provider, _load_provider_profiles(module_path)
+            )
         except ImportError:
             logger.debug(
                 "Could not import profiles from %s for provider '%s'",

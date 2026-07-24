@@ -7285,6 +7285,32 @@ class TestGetModelProfiles:
         assert entry["profile"]["tool_calling"] is True
         assert entry["overridden_keys"] == frozenset()
 
+    def test_adds_opus_5_fallback_when_upstream_profile_is_missing(self) -> None:
+        """Opus 5 remains available before LangChain publishes its profile."""
+
+        def mock_load(module_path: str) -> dict[str, Any]:
+            if module_path == "langchain_anthropic.data._profiles":
+                return {}
+            msg = "not installed"
+            raise ImportError(msg)
+
+        with patch(
+            "deepagents_code.model_config._load_provider_profiles",
+            side_effect=mock_load,
+        ):
+            profiles = get_model_profiles()
+
+        profile = profiles["anthropic:claude-opus-5"]["profile"]
+        assert profile["reasoning_output"] is True
+        assert profile["reasoning_effort_levels"] == [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        ]
+        assert profile["reasoning_effort_default"] == "high"
+
     def test_merges_config_overrides(self, tmp_path: Path) -> None:
         """Config.toml profile overrides are merged and tracked."""
         config_path = tmp_path / "config.toml"

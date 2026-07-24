@@ -360,12 +360,14 @@ def test_openai_and_codex_use_mirrored_profile_contract() -> None:
 
 
 def test_anthropic_profile_contract() -> None:
-    assert supported_efforts_for_model("anthropic:claude-opus-4-5") == (
+    assert supported_efforts_for_model("anthropic:claude-opus-5") == (
         "low",
         "medium",
         "high",
+        "xhigh",
+        "max",
     )
-    assert default_effort_for_model("anthropic:claude-opus-4-5") == "high"
+    assert default_effort_for_model("anthropic:claude-opus-5") == "high"
 
 
 def test_openai_integration_translates_standard_effort_without_summary() -> None:
@@ -393,16 +395,16 @@ def test_anthropic_integration_translates_standard_effort() -> None:
     from langchain_core.messages import HumanMessage
 
     model = ChatAnthropic(
-        model="claude-opus-4-5",
+        model="claude-opus-5",
         api_key="test",
-        reasoning_effort="high",
+        reasoning_effort="xhigh",
         output_config={"format": {"type": "json_schema", "schema": {}}},
     )
     payload = model._get_request_payload([HumanMessage("hello")])
 
     assert payload["output_config"] == {
         "format": {"type": "json_schema", "schema": {}},
-        "effort": "high",
+        "effort": "xhigh",
     }
     assert "reasoning_effort" not in payload
 

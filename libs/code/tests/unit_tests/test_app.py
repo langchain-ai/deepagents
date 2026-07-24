@@ -10867,6 +10867,7 @@ class TestRubricCommand:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._active_rubric = "tests pass"
+            app._next_rubric = "diff is minimal"
             app._rubric_model = "anthropic:claude-sonnet-4-6"
 
             await app._handle_command("/rubric")
@@ -10874,7 +10875,10 @@ class TestRubricCommand:
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Current state:" in rendered
-            assert "Sticky rubric is set." in rendered
+            assert "Rubric is set." in rendered
+            assert "Next-turn rubric is set." in rendered
+            assert "Use /rubric show to view." in rendered
+            assert "Sticky rubric" not in rendered
             assert "Rubric grader model: anthropic:claude-sonnet-4-6" in rendered
 
     async def test_unknown_rubric_subcommand_shows_usage(self) -> None:
@@ -10918,7 +10922,60 @@ class TestRubricCommand:
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "No rubric set." in rendered
+            assert "/rubric set <criteria>" in rendered
             assert "Rubric grader model:" not in rendered
+
+    async def test_rubric_set_without_criteria_shows_usage_tip(self) -> None:
+        """Bare `/rubric set` should include a short example tip."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric set")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Usage: /rubric set <criteria>" in rendered
+            assert "Keep these acceptance criteria across turns." in rendered
+            assert (
+                "Graded after each agent response until you clear or replace them."
+                in rendered
+            )
+            assert "Example: /rubric set tests pass; keep the diff minimal" in rendered
+            assert app._active_rubric is None
+
+    async def test_rubric_next_without_criteria_shows_usage_tip(self) -> None:
+        """Bare `/rubric next` should include a one-turn tip and example."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric next")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Usage: /rubric next <criteria>" in rendered
+            assert (
+                "Use these acceptance criteria for the next agent turn only."
+                in rendered
+            )
+            assert "Example: /rubric next tests pass; no unrelated changes" in rendered
+            assert app._next_rubric is None
+
+    async def test_rubric_file_without_path_shows_usage_tip(self) -> None:
+        """Bare `/rubric file` should include a path example."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric file")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Usage: /rubric file <path>" in rendered
+            assert (
+                "Load acceptance criteria from a file (same as /rubric set)."
+                in rendered
+            )
+            assert "Example: /rubric file ./rubric.md" in rendered
+            assert app._active_rubric is None
 
     async def test_rubric_set_passes_sticky_rubric_to_turn(self) -> None:
         """`/rubric set` should apply to subsequent TUI agent turns."""
@@ -11508,6 +11565,7 @@ class TestRubricCommand:
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Usage: /rubric file <path>" in rendered
+            assert "Example: /rubric file ./rubric.md" in rendered
             assert app._active_rubric is None
 
     async def test_rubric_file_reports_missing_file(self, tmp_path: Path) -> None:
@@ -12184,6 +12242,64 @@ class TestRubricCommand:
             assert app._next_rubric is None
             assert app._status_bar is not None
             assert app._status_bar.rubric_label == ""
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Rubric cleared." in rendered
+
+    async def test_rubric_clear_without_rubric_is_noop(self) -> None:
+        """`/rubric clear` with no criteria should not claim a rubric was cleared."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric clear")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "No rubric set. Nothing to clear." in rendered
+            assert "Rubric cleared." not in rendered
+            assert app._active_rubric is None
+            assert app._next_rubric is None
+
+    async def test_rubric_clear_drops_pending_goal_when_no_visible_rubric(
+        self,
+    ) -> None:
+        """Pending goal criteria still clear even when sticky/next are empty."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_goal_objective = "ship login"
+            app._pending_goal_rubric = "- tests pass"
+            app._pending_goal_kind = "create"
+
+            await app._handle_command("/rubric clear")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Rubric cleared." in rendered
+            assert "No rubric set. Nothing to clear." not in rendered
+            assert app._pending_goal_objective is None
+            assert app._pending_goal_rubric is None
+            assert app._pending_goal_kind is None
+
+    async def test_rubric_clear_drops_queued_goal_when_no_visible_rubric(
+        self,
+    ) -> None:
+        """Accepted-but-queued goals still clear even when sticky/next are empty."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._queued_goal_application = _GoalApplication(
+                "ship login",
+                "- tests pass",
+                "create",
+            )
+
+            await app._handle_command("/rubric clear")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Rubric cleared." in rendered
+            assert "No rubric set. Nothing to clear." not in rendered
+            assert app._queued_goal_application is None
 
     async def test_clear_command_clears_rubric_state(self) -> None:
         """Starting a new thread should not carry hidden rubric behavior."""

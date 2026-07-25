@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import logging
 from typing import TYPE_CHECKING
@@ -71,7 +70,6 @@ class LangSmithSandbox(BaseSandbox):
         self._default_timeout: int = 30 * 60
         self._async_sandbox: AsyncSandbox | None = None
         self._async_client: AsyncSandboxClient | None = None
-        self._async_loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def id(self) -> str:
@@ -97,21 +95,19 @@ class LangSmithSandbox(BaseSandbox):
         return _execute_response(self._sandbox.run(command, timeout=effective_timeout))
 
     def _aget_sandbox(self) -> AsyncSandbox:
-        """Return a cached `AsyncSandbox` bound to the running event loop.
+        """Return the cached `AsyncSandbox`, creating it on first async use.
 
         `Sandbox.to_async()` builds a fresh client with its own connection pool
         on every call, so it is cached: rebuilding per command would add a TCP
-        and TLS handshake to each one. The cache is keyed on the running loop
-        because the underlying httpx client is bound to the loop that created
-        it.
+        and TLS handshake to each one. The client belongs to the event loop that
+        created it, as does this backend — reusing one instance across loops is
+        not supported.
         """
-        loop = asyncio.get_running_loop()
-        if self._async_sandbox is None or self._async_loop is not loop:
+        if self._async_sandbox is None:
             # The SDK exposes no public accessor for a sandbox's client, and
             # the async client is held here so `aclose()` can reach its pool.
             self._async_client = self._sandbox._client.to_async()
             self._async_sandbox = self._sandbox.to_async(client=self._async_client)
-            self._async_loop = loop
         return self._async_sandbox
 
     async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
@@ -138,7 +134,7 @@ class LangSmithSandbox(BaseSandbox):
     async def aclose(self) -> None:
         """Close the cached async client's connection pool, if one was created."""
         client = self._async_client
-        self._async_sandbox = self._async_client = self._async_loop = None
+        self._async_sandbox = self._async_client = None
         if client is not None:
             await client.aclose()
 

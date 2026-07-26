@@ -375,7 +375,10 @@ class TelegramChannel:
         Returns:
             Result indicating whether the send succeeded.
         """
-        for chunk in chunk_text(text, limit=MAX_TEXT_CHARS):
+        chunks = chunk_text(text, limit=MAX_TEXT_CHARS)
+        if not chunks:
+            return SendResult(success=True)
+        for chunk in chunks:
             payload = await self._transport.call(
                 "sendMessage",
                 chat_id=conversation_id,

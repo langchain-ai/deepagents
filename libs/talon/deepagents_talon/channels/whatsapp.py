@@ -318,7 +318,10 @@ class WhatsAppChannel:
         Returns:
             Result indicating whether the send succeeded.
         """
-        for chunk in _chunk_with_bot_header(text, bot_header=self.config.bot_header):
+        chunks = _chunk_with_bot_header(text, bot_header=self.config.bot_header)
+        if not chunks:
+            return SendResult(success=True)
+        for chunk in chunks:
             response = await self._post_result("/send", {"chatId": conversation_id, "text": chunk})
         return SendResult(success=True, message_id=_extract_message_id(response))
 

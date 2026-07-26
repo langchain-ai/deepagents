@@ -8,8 +8,13 @@ if TYPE_CHECKING:
     from runloop_api_client.sdk import Devbox
 
 from deepagents.backends.protocol import (
+    FILE_NOT_FOUND,
+    INVALID_PATH,
+    IS_DIRECTORY,
+    PERMISSION_DENIED,
     ExecuteResponse,
     FileDownloadResponse,
+    FileOperationError,
     FileUploadResponse,
 )
 from deepagents.backends.sandbox import BaseSandbox
@@ -63,7 +68,22 @@ class RunloopSandbox(BaseSandbox):
         """Download files from the devbox."""
         responses: list[FileDownloadResponse] = []
         for path in paths:
-            content = self._devbox.file.download(path=path)
+            if not path.startswith("/"):
+                responses.append(
+                    FileDownloadResponse(path=path, content=None, error=INVALID_PATH)
+                )
+                continue
+            try:
+                content = self._devbox.file.download(path=path)
+            except Exception as exc:  # noqa: BLE001  # Provider exceptions vary by SDK version
+                responses.append(
+                    FileDownloadResponse(
+                        path=path,
+                        content=None,
+                        error=_map_file_error(exc),
+                    )
+                )
+                continue
             responses.append(
                 FileDownloadResponse(path=path, content=content, error=None)
             )
@@ -73,6 +93,43 @@ class RunloopSandbox(BaseSandbox):
         """Upload files into the devbox."""
         responses: list[FileUploadResponse] = []
         for path, content in files:
-            self._devbox.file.upload(path=path, file=content)
+            if not path.startswith("/"):
+                responses.append(FileUploadResponse(path=path, error=INVALID_PATH))
+                continue
+            try:
+                self._devbox.file.upload(path=path, file=content)
+            except Exception as exc:  # noqa: BLE001  # Provider exceptions vary by SDK version
+                responses.append(
+                    FileUploadResponse(path=path, error=_map_file_error(exc))
+                )
+                continue
             responses.append(FileUploadResponse(path=path, error=None))
         return responses
+
+
+def _map_file_error(exc: Exception) -> FileOperationError | str:
+    """Map a provider filesystem failure to a Deep Agents file error.
+
+    Recognized failures map to a ``FileOperationError`` literal. Unrecognized
+    exceptions return their string representation rather than defaulting to
+    ``FILE_NOT_FOUND``, so that auth, network, or transient SDK failures are
+    surfaced to the agent instead of masquerading as a missing file.
+    """
+    if isinstance(exc, PermissionError):
+        return PERMISSION_DENIED
+    if isinstance(exc, IsADirectoryError):
+        return IS_DIRECTORY
+    if isinstance(exc, FileNotFoundError):
+        return FILE_NOT_FOUND
+
+    message = str(exc).lower()
+    substring_errors: tuple[tuple[tuple[str, ...], FileOperationError], ...] = (
+        (("permission", "forbidden", "access denied"), PERMISSION_DENIED),
+        (("is a directory",), IS_DIRECTORY),
+        (("invalid path",), INVALID_PATH),
+        (("no such file",), FILE_NOT_FOUND),
+    )
+    for needles, error in substring_errors:
+        if any(needle in message for needle in needles):
+            return error
+    return str(exc) or FILE_NOT_FOUND

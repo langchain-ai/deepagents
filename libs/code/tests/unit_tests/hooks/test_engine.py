@@ -15,6 +15,7 @@ from langgraph.types import Command
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks import dispatch_hook
 from deepagents_code.hooks.engine import HookEngine
+from deepagents_code.hooks.envelope import HookEnvelopeAdapter
 from deepagents_code.hooks.migration import migrate_legacy_hooks
 from deepagents_code.hooks.models.adapters import HOOK_WIRE_INPUT_ADAPTER
 from deepagents_code.hooks.models.config import HooksConfig
@@ -81,6 +82,42 @@ def _transcript_path(tmp_path: Path) -> Path:
 
 def _agent_transcript_path(tmp_path: Path) -> Path:
     return tmp_path / "agent.jsonl"
+
+
+def test_envelope_adapter_matches_projection_and_reduction(tmp_path: Path) -> None:
+    invocation = _invocation(
+        tmp_path,
+        UserPromptSubmitEvent(
+            event=HookEvent.USER_PROMPT_SUBMIT,
+            prompt="Keep compatibility",
+        ),
+    )
+    transcript_path = _transcript_path(tmp_path)
+    adapter = HookEnvelopeAdapter()
+    result = HandlerResult(
+        handler_id="handler-1",
+        output=HookWireOutput.model_validate(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": "legacy context",
+                }
+            }
+        ),
+    )
+
+    assert adapter.to_wire_input(
+        invocation,
+        transcript_path=transcript_path,
+    ) == project_hook_input(invocation, transcript_path=transcript_path)
+    assert adapter.serialize_input(
+        invocation,
+        transcript_path=transcript_path,
+    ) == serialize_hook_input(invocation, transcript_path=transcript_path)
+    assert adapter.to_domain_decision(invocation, [result]) == reduce_hook_results(
+        invocation,
+        [result],
+    )
 
 
 def _invocation(tmp_path: Path, event: HookDomainEvent) -> HookInvocation:
@@ -1527,19 +1564,22 @@ def test_permission_request_diagnoses_all_deferred_fields(tmp_path: Path) -> Non
     }
 
 
-async def test_engine_runs_handlers_concurrently(tmp_path: Path) -> None:
+async def test_engine_reduces_in_config_order_when_completion_is_reversed(
+    tmp_path: Path,
+) -> None:
     first = tmp_path / "first.txt"
     second = tmp_path / "second.txt"
     first_cmd = (
         "import json,pathlib,time; "
-        "time.sleep(0.05); "
+        "time.sleep(0.08); "
         f"pathlib.Path({str(first)!r}).write_text('first'); "
         "print(json.dumps({'continue': False, 'stopReason': 'stop'}))"
     )
     second_cmd = (
-        "import pathlib,time; "
-        "time.sleep(0.05); "
-        f"pathlib.Path({str(second)!r}).write_text('second')"
+        "import json,pathlib,time; "
+        "time.sleep(0.01); "
+        f"pathlib.Path({str(second)!r}).write_text('second'); "
+        "print(json.dumps({'continue': False, 'stopReason': 'later'}))"
     )
     snapshot = HooksSnapshot.from_config(
         _config(

@@ -16733,6 +16733,68 @@ class TestApprovalModeSlashCommands:
         assert "YOLO is disabled" in str(warn.call_args.args[0])
 
 
+class TestYoloActiveWarning:
+    """The recurring "YOLO is active" toast honors `[warnings].suppress`."""
+
+    @staticmethod
+    async def _enter_yolo(app: DeepAgentsApp) -> list[str]:
+        """Switch `app` into YOLO and return the toast messages it posted."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        with (
+            patch.object(
+                app,
+                "_write_live_approval_mode",
+                new=AsyncMock(return_value=True),
+            ),
+            patch.object(app, "_auto_accept_pending_goal_rubric", new=AsyncMock()),
+            patch.object(app, "notify") as notify,
+        ):
+            assert await app._set_approval_mode(ApprovalMode.YOLO) is True
+        return [str(call_args.args[0]) for call_args in notify.call_args_list]
+
+    async def test_warns_by_default(self) -> None:
+        """An unsuppressed install still gets the no-review warning."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = await self._enter_yolo(app)
+
+        assert any("YOLO is active" in message for message in messages)
+
+    async def test_suppressed_key_mutes_the_toast(self) -> None:
+        """The `yolo` suppression key silences the toast."""
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY
+        from deepagents_code.model_config import suppress_warning
+
+        assert suppress_warning(YOLO_WARNING_KEY) is True
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = await self._enter_yolo(app)
+
+        assert not any("YOLO is active" in message for message in messages)
+
+    async def test_suppression_does_not_weaken_the_mode_switch(self) -> None:
+        """Muting the toast is cosmetic: YOLO still applies and stays visible."""
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY, ApprovalMode
+        from deepagents_code.model_config import suppress_warning
+
+        assert suppress_warning(YOLO_WARNING_KEY) is True
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await self._enter_yolo(app)
+            await pilot.pause()
+
+            assert app._approval_mode is ApprovalMode.YOLO
+            assert app._auto_approve is True
+            indicator = app.query_one("#auto-approve-indicator", Static)
+            assert str(indicator.render()) == "YOLO"
+
+
 class TestToolsSlashCommand:
     """Tests for the `/tools` slash command."""
 

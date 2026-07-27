@@ -26,6 +26,14 @@ APPROVAL_MODE_NAMESPACE: tuple[str, str] = ("deepagents_code", "approval_mode")
 YOLO_ACKNOWLEDGEMENT_POLICY_VERSION = "2026-07-14"
 """Version of the unrestricted-mode warning that must be acknowledged."""
 
+YOLO_WARNING_KEY = "yolo"
+"""`[warnings].suppress` key that mutes the recurring "YOLO is active" toast.
+
+Suppression is cosmetic: the first-enable acknowledgement modal, the approval
+switcher policy, and the status-bar mode indicator are unaffected, so YOLO is
+still an explicit, visible opt-in.
+"""
+
 AUTO_NOTICE_VERSION = "2026-07-24"
 """Version of the first-run Auto mode education notice.
 

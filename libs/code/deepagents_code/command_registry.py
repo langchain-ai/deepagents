@@ -167,9 +167,9 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/notifications",
-        description="Configure startup warnings",
+        description="Configure warning notifications",
         bypass_tier=BypassTier.IMMEDIATE_UI,
-        hidden_keywords="warnings alerts suppress",
+        hidden_keywords="warnings alerts suppress startup yolo",
     ),
     SlashCommand(
         name="/offload",

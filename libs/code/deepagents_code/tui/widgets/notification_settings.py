@@ -15,20 +15,22 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 from deepagents_code import theme
+from deepagents_code.approval_mode import YOLO_WARNING_KEY
 from deepagents_code.config import get_glyphs, is_ascii_mode
 
 logger = logging.getLogger(__name__)
 
 # Warning keys and their user-facing labels.
-# Checked = warning is shown at startup (not suppressed). Unchecked = suppressed.
+# Checked = warning is shown (not suppressed). Unchecked = suppressed.
 WARNING_TOGGLES: list[tuple[str, str]] = [
     ("ripgrep", "Warn when ripgrep is not installed"),
     ("tavily", "Warn when TAVILY_API_KEY is not set (web search)"),
+    (YOLO_WARNING_KEY, "Warn when YOLO mode is active (no approval review)"),
 ]
 
 
 class NotificationSettingsScreen(ModalScreen[None]):
-    """Modal dialog for managing startup warning preferences.
+    """Modal dialog for managing warning preferences.
 
     Each checkbox maps to a key in `[warnings].suppress` in
     `~/.deepagents/config.toml`. Toggling a checkbox immediately

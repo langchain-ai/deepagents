@@ -3858,12 +3858,7 @@ class DeepAgentsApp(App):
         if self._approval_mode.value == "auto":
             self._notify_auto_mode_enabled_once()
         elif self._approval_mode.value == "yolo":
-            self.notify(
-                "YOLO is active: gated actions run without review.",
-                severity="warning",
-                timeout=10,
-                markup=False,
-            )
+            self._warn_yolo_active(timeout=10)
 
         # `Widget.focus()` defers the actual focus change by posting a callback.
         # Terminal keys may already be ahead of that callback in the app queue,
@@ -7487,6 +7482,30 @@ class DeepAgentsApp(App):
             self._session_state.approval_mode = self._approval_mode
         if self._status_bar:
             self._status_bar.set_approval_mode(self._approval_mode.value)
+
+    def _warn_yolo_active(self, *, timeout: float) -> None:
+        """Warn that YOLO runs gated actions without review.
+
+        Users who deliberately live in YOLO can mute the recurring toast from
+        `/notifications` (or by adding `YOLO_WARNING_KEY` to
+        `[warnings].suppress` in `config.toml`). Only the toast is muted: the
+        first-enable acknowledgement and the status-bar mode indicator still
+        make unrestricted mode explicit and visible.
+
+        Args:
+            timeout: Seconds the toast stays on screen.
+        """
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY
+        from deepagents_code.model_config import is_warning_suppressed
+
+        if is_warning_suppressed(YOLO_WARNING_KEY):
+            return
+        self.notify(
+            "YOLO is active: gated actions run without review.",
+            severity="warning",
+            timeout=timeout,
+            markup=False,
+        )
 
     def _notify_auto_mode_enabled_once(self) -> None:
         """Show the Auto first-enable modal at most once per install.
@@ -17082,12 +17101,7 @@ class DeepAgentsApp(App):
             # if goal-rubric auto-accept raises, YOLO is active and the "no
             # review" warning must have fired first. AUTO notifies before its
             # await for the same reason.
-            self.notify(
-                "YOLO is active: gated actions run without review.",
-                severity="warning",
-                timeout=8,
-                markup=False,
-            )
+            self._warn_yolo_active(timeout=8)
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
         return True

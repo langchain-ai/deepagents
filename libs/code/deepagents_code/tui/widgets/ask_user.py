@@ -463,7 +463,7 @@ class _QuestionWidget(Vertical):
         if self._q_type == "multi_select":
             # Distinguish toggleable multi-select from single-choice lists.
             markers.append("select all that apply")
-        suffix = f" *({' · '.join(markers)})*" if markers else ""
+        suffix = f" *({', '.join(markers)})*" if markers else ""
         # q_text is agent-authored; rendered as markdown intentionally so
         # agents can use inline formatting, links, and code spans in questions.
         yield Markdown(f"**{num}.** {q_text}{suffix}", classes="ask-user-question-text")

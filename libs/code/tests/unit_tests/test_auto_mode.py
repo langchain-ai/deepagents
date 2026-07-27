@@ -2898,28 +2898,28 @@ async def test_malformed_classifier_batch_blocks_call_and_increments_unavailable
 
 
 def test_classifier_unavailable_reason_specializes_timeouts() -> None:
-    assert classifier_unavailable_reason(
-        _ClassifierDeadlineExceededError(20.0), timeout_seconds=20.0
-    ) == (
-        "dcode cancelled the authorization classifier after its local "
-        "20s timeout (app-imposed, not a provider timeout)."
+    assert (
+        classifier_unavailable_reason(
+            _ClassifierDeadlineExceededError(20.0), timeout_seconds=20.0
+        )
+        == "no decision within Auto's 20s limit"
     )
-    assert classifier_unavailable_reason(
-        _ClassifierDeadlineExceededError(1.5), timeout_seconds=1.5
-    ) == (
-        "dcode cancelled the authorization classifier after its local "
-        "1.5s timeout (app-imposed, not a provider timeout)."
+    assert (
+        classifier_unavailable_reason(
+            _ClassifierDeadlineExceededError(1.5), timeout_seconds=1.5
+        )
+        == "no decision within Auto's 1.5s limit"
     )
-    # Provider exception type alone must not claim dcode cancelled the call.
+    # Provider exception type alone must not claim dcode's deadline fired.
     assert (
         classifier_unavailable_reason(TimeoutError(), timeout_seconds=20.0)
-        == "The authorization classifier was unavailable (TimeoutError)."
+        == "failed (TimeoutError)"
     )
     assert (
         classifier_unavailable_reason(
             RuntimeError("provider overloaded"), timeout_seconds=20.0
         )
-        == "The authorization classifier was unavailable (RuntimeError)."
+        == "failed (RuntimeError)"
     )
 
 
@@ -2955,10 +2955,7 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
     )
 
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
-    assert plan["decisions"][0]["reason"] == (
-        "dcode cancelled the authorization classifier after its local "
-        "0.05s timeout (app-imposed, not a provider timeout)."
-    )
+    assert plan["decisions"][0]["reason"] == "no decision within Auto's 0.05s limit"
 
 
 async def test_classifier_provider_timeout_stays_type_only(tmp_path: Path) -> None:
@@ -2979,9 +2976,7 @@ async def test_classifier_provider_timeout_stays_type_only(tmp_path: Path) -> No
     )
 
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
-    assert plan["decisions"][0]["reason"] == (
-        "The authorization classifier was unavailable (TimeoutError)."
-    )
+    assert plan["decisions"][0]["reason"] == "failed (TimeoutError)"
 
 
 async def test_classifier_unavailable_logs_underlying_error(
@@ -3007,9 +3002,7 @@ async def test_classifier_unavailable_logs_underlying_error(
 
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
     # Provider exception text stays out of agent/UI; logs keep the detail.
-    assert plan["decisions"][0]["reason"] == (
-        "The authorization classifier was unavailable (RuntimeError)."
-    )
+    assert plan["decisions"][0]["reason"] == "failed (RuntimeError)"
     assert "provider overloaded" not in plan["decisions"][0]["reason"]
     records = [
         record
@@ -3497,10 +3490,7 @@ async def test_classifier_unavailable_emits_single_event_for_batch(
         store=store,
         stream_writer=events.append,
     )
-    reason = (
-        "dcode cancelled the authorization classifier after its local "
-        "1s timeout (app-imposed, not a provider timeout)."
-    )
+    reason = "no decision within Auto's 1s limit"
     plan = {
         "batch_id": _batch_id(ai_message.tool_calls),
         "thread_key": key,

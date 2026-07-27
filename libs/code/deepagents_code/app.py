@@ -3161,8 +3161,14 @@ class DeepAgentsApp(App):
         )
         """Per-turn model params override set via startup or `/model` params."""
 
-        self._last_model_unchanged_message: str | None = None
-        """Most recent same-model notice, used to suppress duplicates."""
+        self._last_model_unchanged: tuple[str, float] | None = None
+        """Most recent same-model toast, as `(text, monotonic timestamp)`.
+
+        Used to suppress duplicates. Suppression only lasts for the toast
+        lifetime (`NOTIFICATION_TIMEOUT`); after expiry, a later identical
+        no-op selection can toast again. Text and timestamp are one field so
+        they cannot drift out of sync.
+        """
 
         self._model_install_switching = False
         """True while a provider extra install-then-switch flow is active."""
@@ -22263,7 +22269,7 @@ class DeepAgentsApp(App):
                 (e.g., `'anthropic:claude-sonnet-4-5'`) or just the model name
                 for auto-detection.
             extra_kwargs: Extra constructor kwargs from `--model-params`.
-            announce_unchanged: Whether to mount a message when the requested
+            announce_unchanged: Whether to toast a notice when the requested
                 model is already active.
             persist: Whether to write the model to the user's recent/default
                 config.
@@ -22390,9 +22396,21 @@ class DeepAgentsApp(App):
                 params_suffix = _format_model_params(extra_kwargs)
                 if announce_unchanged:
                     message = f"Already using {current}{params_suffix}"
-                    if message != self._last_model_unchanged_message:
-                        await self._mount_message(AppMessage(message))
-                        self._last_model_unchanged_message = message
+                    # Suppress only while the previous identical toast is
+                    # presumed still on-screen. Once it expires, a later
+                    # intentional no-op selection must be able to toast again.
+                    now = _monotonic()
+                    last = self._last_model_unchanged
+                    if (
+                        last is None
+                        or last[0] != message
+                        or (now - last[1]) >= self.NOTIFICATION_TIMEOUT
+                    ):
+                        # A no-op re-selection is transient feedback, not part
+                        # of the conversation, so surface it as a toast rather
+                        # than an inline chat message.
+                        self.notify(message, markup=False)
+                        self._last_model_unchanged = (message, now)
                 logger.info(
                     "Model unchanged (%s); model_params=%s",
                     current,
@@ -22444,7 +22462,7 @@ class DeepAgentsApp(App):
 
             self._sync_status_model()
 
-            self._last_model_unchanged_message = None
+            self._last_model_unchanged = None
             params_suffix = _format_model_params(extra_kwargs)
             if not persist:
                 # Session-only switch (e.g. adopting a resumed thread's model):

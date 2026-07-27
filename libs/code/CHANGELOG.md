@@ -4,19 +4,16 @@
 
 ## [0.1.48](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.47...deepagents-code==0.1.48) (2026-07-27)
 
-
 ### Features
 
-* **code:** add Fireworks `kimi-k3` to model switcher ([#5082](https://github.com/langchain-ai/deepagents/issues/5082)) ([82e799c](https://github.com/langchain-ai/deepagents/commit/82e799c7191adcb3bf96eb0435d55edd58cc1883))
-* **code:** add GLM-5.2-Fast and Kimi-K3 to recommended models ([#5072](https://github.com/langchain-ai/deepagents/issues/5072)) ([a33494e](https://github.com/langchain-ai/deepagents/commit/a33494ec580c289c58f725e19364fc21ef8cc26c))
-* **code:** migrate legacy hooks to v2 events ([#4971](https://github.com/langchain-ai/deepagents/issues/4971)) ([fdb585c](https://github.com/langchain-ai/deepagents/commit/fdb585c87b054979b8440bdc6ac97fc8ae628134))
-
+- Added Fireworks `kimi-k3`, GLM-5.2-Fast, and Kimi-K3 to model selection and recommended models. ([#5082](https://github.com/langchain-ai/deepagents/issues/5082), [#5072](https://github.com/langchain-ai/deepagents/issues/5072))
+- Migrated legacy hooks to v2 events. ([#4971](https://github.com/langchain-ai/deepagents/issues/4971))
 
 ### Bug Fixes
 
-* **code:** drop redundant `/restart` hint from restart prompt ([#5083](https://github.com/langchain-ai/deepagents/issues/5083)) ([b34899f](https://github.com/langchain-ai/deepagents/commit/b34899fccd051ab741000c771eef9a2dc4439d80))
-* **code:** remove plugin type-to-search caret flash ([#5078](https://github.com/langchain-ai/deepagents/issues/5078)) ([7d69e37](https://github.com/langchain-ai/deepagents/commit/7d69e379678d8491ab62c9e229426d50b7366c45))
-* **code:** require `AGENTS.md` marker for `/agent` discovery ([#5076](https://github.com/langchain-ai/deepagents/issues/5076)) ([aff1435](https://github.com/langchain-ai/deepagents/commit/aff1435ce8d56c623cfeffb2731adcd4bf057c30)), closes [#4991](https://github.com/langchain-ai/deepagents/issues/4991)
+- Require an `AGENTS.md` marker for `/agent` discovery, resolving unintended discovery behavior. ([#5076](https://github.com/langchain-ai/deepagents/issues/5076), closes [#4991](https://github.com/langchain-ai/deepagents/issues/4991))
+- Removed the redundant `/restart` hint from the restart prompt. ([#5083](https://github.com/langchain-ai/deepagents/issues/5083))
+- Removed the caret flash in plugin type-to-search. ([#5078](https://github.com/langchain-ai/deepagents/issues/5078))
 
 ## [0.1.47](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.46...deepagents-code==0.1.47) (2026-07-24)
 

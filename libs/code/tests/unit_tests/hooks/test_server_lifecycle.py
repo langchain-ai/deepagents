@@ -59,9 +59,9 @@ from deepagents_code.hooks.server_middleware import (
     _apply_subagent_stop,
     _ask_permission_via_hitl,
     _denied_tool_message,
+    _hook_events_for_snapshot,
     _invoke_hook,
     _merge_tool_message_content,
-    _session_gate,
     _tool_result_failed,
     _tool_result_text,
 )
@@ -147,20 +147,20 @@ def test_real_checkpointer_resume_replays_stable_hook_identity() -> None:
         event=HookEvent.PRE_TOOL_USE,
         call=ToolCallData(id="call-1", name="execute", args={"command": "ls"}),
     )
-    gate = _session_gate(
+    enabled_events = _hook_events_for_snapshot(
         {
             "hooks_snapshot_id": "snapshot-1",
             "hooks_server_events": [HookEvent.PRE_TOOL_USE.value],
         }
     )
-    assert gate is not None
+    assert enabled_events is not None
 
     def invoke_hook(state: _ReplayState) -> dict[str, bool]:
         assert state.completed is False
         decision = _invoke_hook(
             context,
             event,
-            gate=gate,
+            enabled_events=enabled_events,
             config={"configurable": {"thread_id": "thread-1"}},
             deadline=timedelta(minutes=1),
         )
@@ -209,18 +209,18 @@ def test_apply_hooks_context_sets_server_events(tmp_path: Path) -> None:
     assert runtime.configured_server_events() == ("PreToolUse",)
 
 
-def test_session_gate_requires_snapshot_and_events() -> None:
-    assert _session_gate(None) is None
-    assert _session_gate({"hooks_snapshot_id": "abc"}) is None
-    gate = _session_gate(
+def test_hook_events_for_snapshot_requires_snapshot_and_events() -> None:
+    assert _hook_events_for_snapshot(None) is None
+    assert _hook_events_for_snapshot({"hooks_snapshot_id": "abc"}) is None
+    enabled_events = _hook_events_for_snapshot(
         {
             "hooks_snapshot_id": "abc",
             "hooks_server_events": ["PreToolUse", "Stop"],
         }
     )
-    assert gate is not None
-    assert gate["snapshot_id"] == "abc"
-    assert gate["events"] == frozenset({"PreToolUse", "Stop"})
+    assert enabled_events is not None
+    assert enabled_events["snapshot_id"] == "abc"
+    assert enabled_events["events"] == frozenset({"PreToolUse", "Stop"})
 
 
 def test_denied_tool_message_for_deny() -> None:

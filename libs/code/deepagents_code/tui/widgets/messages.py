@@ -1016,7 +1016,7 @@ class SkillMessage(Vertical):
                     Content.styled(
                         f"{ellipsis} {remaining} more lines"
                         " — click or Ctrl+O to expand",
-                        "dim",
+                        "dim italic",
                     )
                 )
         else:
@@ -1083,7 +1083,7 @@ class SkillMessage(Vertical):
             self._hint_widget.update(
                 Content.styled(
                     f"{ellipsis} {remaining} more lines — click or Ctrl+O to expand",
-                    "dim",
+                    "dim italic",
                 )
             )
 
@@ -3021,7 +3021,7 @@ class ToolCallMessage(Vertical):
                 ellipsis = get_glyphs().ellipsis
                 self._hint_widget.update(
                     Content.styled(
-                        f"{ellipsis} {self._output_hint_keys()} to expand", "dim"
+                        f"{ellipsis} {self._output_hint_keys()} to expand", "dim italic"
                     )
                 )
                 self._hint_widget.display = True
@@ -3048,7 +3048,7 @@ class ToolCallMessage(Vertical):
                     Content.styled(
                         f"{ellipsis} {result.truncation} — "
                         f"{self._output_hint_keys()} to expand",
-                        "dim",
+                        "dim italic",
                     )
                 )
                 self._hint_widget.display = True

@@ -1577,6 +1577,37 @@ class TestToolCallMessageExpandHint:
             collapsed = app.msg._hint_widget._Static__content
             assert "collapse" in collapsed.plain
 
+    async def test_expand_and_collapse_hints_share_dim_italic_style(self) -> None:
+        """Expand and collapse hints must both render dim italic.
+
+        Every "click or Ctrl+O" affordance in this module is dim italic; the
+        collapsed expand hint must not drop the italic the collapse hint uses.
+        """
+        output = "\n".join(f"file.py:{index}:hit {index}" for index in range(8))
+        assert output.count("\n") + 1 > ToolCallMessage._PREVIEW_LINES
+
+        app = _tool_msg_app("grep", {"pattern": "hit"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._hint_widget is not None
+            expand_hint = app.msg._hint_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "expand" in expand_hint.plain
+            expand_style = str(expand_hint._spans[0].style)
+            assert "italic" in expand_style
+            assert "dim" in expand_style
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            collapse_hint = app.msg._hint_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "collapse" in collapse_hint.plain
+            collapse_style = str(collapse_hint._spans[0].style)
+            assert "italic" in collapse_style
+            assert "dim" in collapse_style
+
     async def test_short_non_todo_output_renders_full_without_hint(self) -> None:
         """Short non-todo output uses non-preview formatting and shows no hint.
 

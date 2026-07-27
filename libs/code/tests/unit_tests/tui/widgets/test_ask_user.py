@@ -685,14 +685,14 @@ class TestAskUserMenu:
             await pilot.press("space")
             await pilot.pause()
             assert [o.checked for o in options] == [True, False]
-            assert glyphs.circle_filled in str(options[0].render())
-            assert glyphs.circle_empty in str(options[1].render())
+            assert glyphs.checkbox_checked in str(options[0].render())
+            assert glyphs.checkbox_empty in str(options[1].render())
 
             # Moving the cursor off a checked option must not clear its glyph.
             await pilot.press("down")
             await pilot.pause()
             assert [o.checked for o in options] == [True, False]
-            assert glyphs.circle_filled in str(options[0].render())
+            assert glyphs.checkbox_checked in str(options[0].render())
 
     async def test_untoggling_confirmed_multi_select_reopens_with_toast(self) -> None:
         """Clearing an already-confirmed required question explains the bounce."""
@@ -755,7 +755,8 @@ class TestAskUserMenu:
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             await pilot.pause()
             help_text = str(menu.query_one(".ask-user-help").render())
-            assert "Space to toggle" in help_text
+            assert "Space toggle" in help_text
+            assert "Enter confirm selection" in help_text
             assert "newline" not in help_text
 
     async def test_help_text_keeps_newline_hint_when_text_question_present(
@@ -777,7 +778,8 @@ class TestAskUserMenu:
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             await pilot.pause()
             help_text = str(menu.query_one(".ask-user-help").render())
-            assert "Space to toggle" in help_text
+            assert "Space toggle" in help_text
+            assert "Enter confirm selection" in help_text
             assert "newline" in help_text
 
     async def test_space_still_types_in_text_question(self) -> None:
@@ -1632,6 +1634,34 @@ class TestAskUserMenu:
             qw = menu._question_widgets[0]
             md = qw.query_one(Markdown)
             assert "required" in md.source
+
+    async def test_multi_select_label_says_select_all_that_apply(self) -> None:
+        """Multi-select questions advertise that several options may be chosen."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                    "required": True,
+                },
+                {
+                    "question": "Optional extras",
+                    "type": "multi_select",
+                    "choices": [{"value": "docs"}],
+                    "required": False,
+                },
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            required_md = menu._question_widgets[0].query_one(Markdown)
+            optional_md = menu._question_widgets[1].query_one(Markdown)
+            assert "required · select all that apply" in required_md.source
+            assert "select all that apply" in optional_md.source
+            assert "required" not in optional_md.source
 
     async def test_required_label_hidden_for_optional_question(self) -> None:
         """Optional questions do not display a (required) indicator."""

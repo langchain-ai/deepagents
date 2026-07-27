@@ -204,10 +204,14 @@ class AskUserMenu(Container):
             The bullet-joined footer hint string.
         """
         glyphs = get_glyphs()
-        parts = [
-            f"{glyphs.arrow_up}/{glyphs.arrow_down} Select",
-            "Enter to continue",
-        ]
+        has_multi_select = any(
+            qw.question_type == "multi_select" for qw in self._question_widgets
+        )
+        parts = [f"{glyphs.arrow_up}/{glyphs.arrow_down} move"]
+        if has_multi_select:
+            parts.extend(("Space toggle", "Enter confirm selection"))
+        else:
+            parts.append("Enter to continue")
         if self._show_editor_hint():
             editor = editor_display_name()
             parts.append(
@@ -219,8 +223,6 @@ class AskUserMenu(Container):
         # of them has nowhere to insert a newline.
         if any(qw.has_text_input for qw in self._question_widgets):
             parts.append(newline_hint())
-        if any(qw.question_type == "multi_select" for qw in self._question_widgets):
-            parts.append("Space to toggle")
         if len(self._questions) > 1:
             parts.append("Tab/Shift+Tab switch question")
         parts.append("Esc to cancel")
@@ -405,10 +407,12 @@ class _ChoiceOption(InlinePromptOption):
 class _MultiSelectOption(_ChoiceOption):
     """A toggleable ask-user choice option for `multi_select` questions.
 
-    Renders a toggle glyph (`circle_filled`/`circle_empty`) before the label so
-    the user can see which options are toggled on, independent of the highlight
-    cursor. This is the source of truth for whether a choice is selected;
-    `_QuestionWidget` reads it back rather than tracking selection separately.
+    Renders a square checkbox glyph (`checkbox_checked`/`checkbox_empty`) before
+    the label so the user can see which options are toggled on, independent of
+    the highlight cursor. Squares distinguish multi-select from single-choice
+    lists and plain bullet points. This is the source of truth for whether a
+    choice is selected; `_QuestionWidget` reads it back rather than tracking
+    selection separately.
 
     Overriding `_render` is what keeps the glyph correct: the base class's
     `select`/`deselect`/`set_state` all re-render through it, so cursor movement
@@ -450,7 +454,7 @@ class _MultiSelectOption(_ChoiceOption):
     def _render(self) -> Content:
         glyphs = get_glyphs()
         cursor = f"{glyphs.cursor} " if self._cursor_visible else "  "
-        box = glyphs.circle_filled if self._checked else glyphs.circle_empty
+        box = glyphs.checkbox_checked if self._checked else glyphs.checkbox_empty
         return Content.from_markup(
             "$cursor$box $text", cursor=cursor, box=box, text=self._text
         )
@@ -527,7 +531,13 @@ class _QuestionWidget(Vertical):
     def compose(self) -> ComposeResult:
         q_text = _TRAILING_ANNOTATION_RE.sub("", self._question.get("question", ""))
         prefix = f"**{self._index + 1}.** " if self._show_number else ""
-        suffix = " *(required)*" if self._required else ""
+        markers: list[str] = []
+        if self._required:
+            markers.append("required")
+        if self._q_type == "multi_select":
+            # Distinguish toggleable multi-select from single-choice lists.
+            markers.append("select all that apply")
+        suffix = f" *({' · '.join(markers)})*" if markers else ""
         # q_text is agent-authored; rendered as markdown intentionally so
         # agents can use inline formatting, links, and code spans in questions.
         yield Markdown(f"{prefix}{q_text}{suffix}", classes="ask-user-question-text")

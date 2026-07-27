@@ -25,14 +25,12 @@ YOLO_MODE_DOCS_URL = (
 """Canonical docs page for Manual / Auto / YOLO behavior."""
 
 YOLO_MODE_NOTICE_BODY = (
-    "You are about to enable **YOLO**. The agent will run **gated actions "
-    "without asking first** — shell commands, file edits, network calls, and "
-    "other tools on this machine.\n\n"
-    "This is **not Auto**. There is **no classifier review** and **no approval "
-    "prompt** while YOLO is active. Prefer Auto unless you intend full "
-    "unrestricted execution.\n\n"
-    "This notice appears **once** on this machine after you continue. You can "
+    "You are about to enable **YOLO mode**. The agent will run shell commands, "
+    "edit files, make network calls, and use other tools on this machine "
+    "**without asking you first**.\n\n"
+    "Only continue if you're comfortable letting it act unsupervised. You can "
     "leave YOLO any time with **Shift+Tab**.\n\n"
+    "This notice appears **once** on this machine.\n\n"
     f"[Learn more about approval modes]({YOLO_MODE_DOCS_URL})"
 )
 """Default Markdown body shown before the first YOLO switcher enable."""

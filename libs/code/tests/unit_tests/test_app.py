@@ -20254,7 +20254,9 @@ class TestDeferredActions:
                 )
                 await pilot.pause()
 
-            mock_extra_for_package.assert_called_once_with("langchain-google-vertexai")
+            mock_extra_for_package.assert_called_once_with(
+                "langchain-google-vertexai", "deepagents-code"
+            )
             widget = app._startup_failure_widget
             assert isinstance(widget, ErrorMessage)
             rendered = str(widget._content)

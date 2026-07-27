@@ -34,6 +34,7 @@ from deepagents_code.tui.widgets._inline_prompt import (
 )
 
 OTHER_CHOICE_LABEL = "Other (type your answer)"
+MISSING_ANSWER_TOAST = "This question is required. Type an answer before continuing."
 logger = logging.getLogger(__name__)
 
 _TRAILING_ANNOTATION_RE = re.compile(
@@ -203,6 +204,12 @@ class AskUserMenu(Container):
                 answer = qw.get_answer()
                 if answer.strip() or not qw._required:
                     self.confirm_and_advance(qw._index)
+                else:
+                    self.app.notify(
+                        MISSING_ANSWER_TOAST,
+                        severity="warning",
+                        markup=False,
+                    )
                 return
 
     def confirm_and_advance(self, index: int) -> None:

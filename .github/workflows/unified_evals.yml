@@ -33,6 +33,14 @@ on:
       rollouts:
         type: string
         default: "3"
+      n_retries:
+        description: "Maximum additional attempts per trial after a Harbor-retryable exception when the recorded reward is below 1.0 or missing. AgentTimeoutError remains excluded."
+        type: string
+        default: "0"
+      agent_timeout_multiplier:
+        description: "Positive decimal multiplier for each task's agent execution timeout, such as 1.5 or 2.0."
+        type: string
+        default: "1.0"
       concurrency:
         type: string
         default: "4"
@@ -187,6 +195,8 @@ jobs:
           UNIFIED_INCLUDE_TASKS: ${{ inputs.include_tasks }}
           UNIFIED_CONCURRENCY: ${{ inputs.concurrency }}
           UNIFIED_ROLLOUTS: ${{ inputs.rollouts }}
+          UNIFIED_N_RETRIES: ${{ inputs.n_retries }}
+          UNIFIED_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier }}
           # Set by the enumerate step above for the full profile only; empty
           # (unset) for lite, which unified_prep.py never reads in that case.
           UNIFIED_TASKS_JSON: ${{ env.UNIFIED_TASKS_JSON }}
@@ -211,6 +221,8 @@ jobs:
           IN_PROFILE: ${{ inputs.profile }}
           IN_INCLUDE_TASKS: ${{ inputs.include_tasks }}
           IN_ROLLOUTS: ${{ inputs.rollouts }}
+          IN_N_RETRIES: ${{ inputs.n_retries }}
+          IN_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier }}
           IN_CONCURRENCY: ${{ inputs.concurrency }}
           MAX_PARALLEL: ${{ steps.p.outputs.max_parallel }}
           MODEL_PARALLEL: ${{ steps.p.outputs.model_parallel }}
@@ -253,6 +265,8 @@ jobs:
             echo "| profile | \`${IN_PROFILE}\` |"
             echo "| include_tasks | \`${IN_INCLUDE_TASKS:-(profile default)}\` |"
             echo "| rollouts | \`${IN_ROLLOUTS}\` |"
+            echo "| retries per eligible failed trial | \`${IN_N_RETRIES}\` |"
+            echo "| agent timeout multiplier | \`${IN_AGENT_TIMEOUT_MULTIPLIER}\` |"
             echo "| concurrency | \`${IN_CONCURRENCY}\` |"
             echo "| shard pool (max_parallel / model_parallel) | \`${MAX_PARALLEL:-?}\` / \`${MODEL_PARALLEL:-?}\` |"
             echo "| sandbox_env | \`${IN_SANDBOX_ENV}\` |"
@@ -288,6 +302,8 @@ jobs:
       dataset_path: ""
       agent_impl: ""
       rollouts: ${{ inputs.rollouts }}
+      n_retries: ${{ inputs.n_retries }}
+      agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       force_build: ${{ inputs.force_build }}

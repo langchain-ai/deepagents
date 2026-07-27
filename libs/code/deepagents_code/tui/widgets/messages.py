@@ -22,6 +22,7 @@ from textual.message import Message
 from textual.message_pump import NoActiveAppError
 from textual.reactive import var
 from textual.selection import Selection
+from textual.style import Style as TStyle
 from textual.widgets import Static
 
 from deepagents_code import theme
@@ -68,6 +69,7 @@ if TYPE_CHECKING:
     from textual.widgets._markdown import MarkdownStream
 
     from deepagents_code.input import MediaTracker
+    from deepagents_code.theme import ThemeColors
 
 logger = logging.getLogger(__name__)
 
@@ -241,13 +243,108 @@ def _select_prompt_body(widget: Static) -> None:
     }
 
 
+@dataclass(frozen=True, slots=True)
+class _UserMessageFull:
+    """A user message short enough to render verbatim."""
+
+    text: str
+    """The original body, unmodified."""
+
+
+@dataclass(frozen=True, slots=True)
+class _UserMessageCollapsed:
+    """A user message elided to head + tail for transcript display.
+
+    Each variant names only the fields that mean something for it, so states
+    like "not collapsed but 5 hidden lines" are unrepresentable and consumers
+    dispatch by `isinstance` rather than reading an overloaded flag.
+    """
+
+    head: str
+    """Leading slice kept verbatim, rendered above the elision marker."""
+
+    tail: str
+    """Trailing slice kept verbatim, rendered below the elision marker."""
+
+    hidden_lines: int
+    """Newlines in the elided middle."""
+
+    hidden_chars: int
+    """Characters in the elided middle.
+
+    Reported in place of `hidden_lines` for single-line bodies (base64 blobs,
+    minified JSON), where "+0 lines" would imply nothing was hidden.
+    """
+
+    @property
+    def text(self) -> str:
+        """Single-string collapsed form, for callers that cannot emit spans.
+
+        Returns:
+            Head and tail joined by an elision marker.
+        """
+        ellipsis = get_glyphs().ellipsis
+        return (
+            f"{self.head}\n{ellipsis} +{self.hidden_lines} lines {ellipsis}\n"
+            f"{self.tail}"
+        )
+
+
+_UserMessageDisplay = _UserMessageFull | _UserMessageCollapsed
+"""Either form a user-message body can take in the transcript."""
+
+
+def _will_collapse(text: str) -> bool:
+    """Return whether `text` exceeds the transcript display threshold.
+
+    Single source of truth for the threshold, shared by `_collapse_user_message`
+    and `UserMessage.will_truncate` so the render decision and the expand
+    affordance can never disagree.
+
+    Args:
+        text: Candidate body text.
+
+    Returns:
+        `True` when the body is long enough to collapse.
+    """
+    return len(text) > _USER_MSG_MAX_DISPLAY_CHARS
+
+
+def _collapse_user_message(text: str) -> _UserMessageDisplay:
+    """Collapse a very long user message for transcript display.
+
+    Keeps the first and last portions and elides the middle. This mirrors
+    Claude Code's `UserPromptMessage` head+tail truncation for rendering
+    performance.
+
+    Args:
+        text: Full message content.
+
+    Returns:
+        `_UserMessageCollapsed` when the body exceeds the display threshold,
+        otherwise `_UserMessageFull` carrying the original text.
+    """
+    if not _will_collapse(text):
+        return _UserMessageFull(text=text)
+    hidden_start = _USER_MSG_TRUNCATE_HEAD_CHARS
+    hidden_end = len(text) - _USER_MSG_TRUNCATE_TAIL_CHARS
+    return _UserMessageCollapsed(
+        head=text[:_USER_MSG_TRUNCATE_HEAD_CHARS],
+        tail=text[-_USER_MSG_TRUNCATE_TAIL_CHARS:],
+        # Counted over a range rather than a slice so a multi-megabyte paste
+        # does not allocate a copy of its own middle on every render.
+        hidden_lines=text.count("\n", hidden_start, hidden_end),
+        hidden_chars=hidden_end - hidden_start,
+    )
+
+
 def _truncate_for_display(text: str) -> str:
     """Truncate very long user message text for display in the conversation.
 
-    Keeps the first and last portions and replaces the middle with an elision
-    marker showing the number of newlines in the hidden region.  This mirrors
-    Claude Code's `UserPromptMessage` head+tail truncation for rendering
-    performance.
+    Thin string-returning wrapper around `_collapse_user_message` for
+    `QueuedUserMessage.render` and tests, which only need the joined text.
+    `UserMessage.render` consumes the head/tail fields directly so it can
+    interleave the clickable affordance between them.
 
     Args:
         text: Full message content.
@@ -256,17 +353,31 @@ def _truncate_for_display(text: str) -> str:
         Truncated text with an elision marker, or the original text when
         it does not exceed the display threshold.
     """
-    if len(text) <= _USER_MSG_MAX_DISPLAY_CHARS:
-        return text
-    head = text[:_USER_MSG_TRUNCATE_HEAD_CHARS]
-    tail = text[-_USER_MSG_TRUNCATE_TAIL_CHARS:]
-    hidden_text = text[_USER_MSG_TRUNCATE_HEAD_CHARS:-_USER_MSG_TRUNCATE_TAIL_CHARS]
-    hidden_lines = hidden_text.count("\n")
-    return f"{head}\n… +{hidden_lines} lines …\n{tail}"
+    return _collapse_user_message(text).text
 
 
 class UserMessage(Static):
-    """Widget displaying a user message."""
+    """Widget displaying a user message.
+
+    Very long messages are collapsed in the transcript by default (head+tail
+    elision) to protect scrollback performance. The full text remains on the
+    widget for copy/select, and the collapsed form is reversible via click or
+    Ctrl+O.
+    """
+
+    class ExpansionChanged(Message):
+        """Posted when the collapsed-body expansion state changes."""
+
+        def __init__(self, widget: UserMessage, expanded: bool) -> None:
+            """Initialize an expansion-state message.
+
+            Args:
+                widget: The user message whose expansion state changed.
+                expanded: Whether the full body is now shown.
+            """
+            super().__init__()
+            self.widget = widget
+            self.expanded = expanded
 
     DEFAULT_CSS = """
     UserMessage {
@@ -276,6 +387,16 @@ class UserMessage(Static):
         background: transparent;
         border-left: wide $primary;
         pointer: text;
+        /* The expand affordance carries `@click` meta, which Textual styles as
+           a link (underline, and bold on an accent block when hovered).
+           Neutralize both so the hint renders as plain inherited-colour dim
+           italic, matching every other "click or Ctrl+O" hint in this module.
+           Bold in particular has to go: it cancels dim in most terminals. */
+        link-color: $text;
+        link-style: not underline;
+        link-color-hover: $text;
+        link-background-hover: transparent;
+        link-style-hover: not bold not underline;
     }
 
     UserMessage.-cancelled {
@@ -283,6 +404,8 @@ class UserMessage(Static):
     }
     """
     """`-cancelled` dims a prompt whose turn was interrupted by the user."""
+
+    _expanded: var[bool] = var(False)
 
     def __init__(
         self,
@@ -309,6 +432,29 @@ class UserMessage(Static):
         self._content = content
         self._media_snapshot = media_snapshot
         self._detect_mode = detect_mode
+        self._deferred_expanded = False
+        # Last expansion value published to the message store. Deduping against
+        # it keeps the reactive's initialization watcher and the deferred
+        # restore from re-emitting a value the store already holds.
+        self._published_expanded = False
+
+    @staticmethod
+    def will_truncate(content: str) -> bool:
+        """Return whether `content` would collapse in the transcript.
+
+        Prefer the `has_expandable_body` property when a widget is in hand: it
+        applies the same mode-prefix stripping as `render()`, so it cannot
+        disagree with what is actually on screen. This static form is for
+        callers that only have the raw string and know no prefix applies.
+
+        Args:
+            content: Candidate user-message body (mode prefix already stripped
+                when applicable — matching what `render()` collapses).
+
+        Returns:
+            `True` when the body exceeds the display character threshold.
+        """
+        return _will_collapse(content)
 
     @property
     def raw_text(self) -> str:
@@ -325,9 +471,51 @@ class UserMessage(Static):
         """Media tracker state captured when the message was submitted."""
         return self._media_snapshot
 
+    def _body_for_display(self) -> str:
+        """Return the message body after stripping a detected mode trigger.
+
+        Unlike `_prefix_and_body`, this does not look up theme colors, so it is
+        safe to call before mount (e.g. `has_expandable_body` / Ctrl+O routing).
+
+        Returns:
+            Body text used for collapse decisions (`has_expandable_body`).
+        """
+        content = self._content
+        mode_match = detect_mode_prefix(content) if self._detect_mode else None
+        if mode_match:
+            prefix_text, _mode = mode_match
+            return content[len(prefix_text) :]
+        return content
+
+    @property
+    def has_expandable_body(self) -> bool:
+        """Whether this message is long enough to collapse/expand in display."""
+        return self.will_truncate(self._body_for_display())
+
     def set_cancelled(self) -> None:
         """Dim the message to mark its turn as interrupted by the user."""
         self.add_class("-cancelled")
+
+    def toggle_expanded(self) -> None:
+        """Toggle between collapsed and full-body transcript display."""
+        if not self.has_expandable_body:
+            return
+        self._expanded = not self._expanded
+
+    def action_toggle_expand(self) -> None:
+        """Textual `@click` target for the expand/collapse affordance."""
+        self.toggle_expanded()
+
+    def watch__expanded(self, expanded: bool) -> None:
+        """Relayout and publish user-driven expansion for virtualization."""
+        self.refresh(layout=True)
+        # Publish only genuine changes: dedupe against the store's known value
+        # to drop the reactive's initialization watcher and the deferred
+        # restore, and require `is_attached` so `_expanded` set in pre-mount
+        # test setup does not `post_message` on a detached widget.
+        if self.is_attached and expanded != self._published_expanded:
+            self._published_expanded = expanded
+            self.post_message(self.ExpansionChanged(self, expanded))
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Return selected text, preferring the full content over the render.
@@ -371,6 +559,11 @@ class UserMessage(Static):
     def _build_full_render(self) -> Content:
         """Build a Content from the full content without display truncation.
 
+        Omits the expand/collapse hint spans in both the collapsed and expanded
+        states, so select-all yields only the original message body. Drag
+        selections do not route here (see `get_selection`) and can still pick up
+        hint text along with the body.
+
         Returns:
             Content with the mode prefix glyph and the full message body.
         """
@@ -382,33 +575,34 @@ class UserMessage(Static):
         _select_prompt_body(self)
 
     def on_mount(self) -> None:
-        """Add CSS classes for mode-specific border and ASCII border type."""
+        """Add mode/ASCII CSS classes and restore deferred expansion state."""
         mode_match = detect_mode_prefix(self._content) if self._detect_mode else None
         if mode_match:
             _prefix, mode = mode_match
             self.add_class(f"-mode-{mode.replace('_', '-')}")
         if is_ascii_mode():
             self.add_class("-ascii")
+        # The store already holds the restored state, so record it as published
+        # first; the assignment below then dedupes instead of re-emitting it.
+        self._published_expanded = self._deferred_expanded
+        if self._deferred_expanded:
+            self._expanded = True
+            self._deferred_expanded = False
 
-    def render(self) -> Content:
-        """Render the styled user message.
+    def _append_highlighted_body(
+        self,
+        parts: list[str | tuple[str, str] | Content],
+        content: str,
+        *,
+        colors: ThemeColors,
+    ) -> None:
+        """Append body text to `parts`, highlighting @mentions and /commands.
 
-        Returns:
-            Styled Content with mode prefix and highlighted mentions.
+        Args:
+            parts: Accumulator for `Content.assemble`.
+            content: Body text to highlight and append.
+            colors: Active theme colors.
         """
-        colors = theme.get_theme_colors(self)
-
-        # Use mode-specific prefix indicator when content starts with a
-        # mode trigger character (e.g. "!" for shell, "/" for commands).
-        # The display glyph may differ from the trigger (e.g. "$" for shell).
-        prefix, content = self._prefix_and_body()
-        parts: list[str | tuple[str, str]] = [prefix]
-
-        # Truncate very long content for display so large pastes don't flood
-        # the conversation.  The full text is still available for copy/select.
-        content = _truncate_for_display(content)
-
-        # Highlight @mentions and /commands in the content
         last_end = 0
         for match in INPUT_HIGHLIGHT_PATTERN.finditer(content):
             start, end = match.span()
@@ -442,6 +636,87 @@ class UserMessage(Static):
         if last_end < len(content):
             parts.append(content[last_end:])
 
+    @staticmethod
+    def _hint_style() -> TStyle:
+        """Style for the expand/collapse affordance.
+
+        Returns:
+            Dim italic style carrying the `@click` hit-target meta.
+        """
+        # `@click` meta is what Textual uses for Markdown links; body text stays
+        # free of meta so regular clicks select/copy without toggling. The
+        # link-* rules in `DEFAULT_CSS` keep Textual's automatic link styling
+        # from overriding the dim italic.
+        return TStyle(dim=True, italic=True) + TStyle.from_meta(
+            {"@click": "toggle_expand"}
+        )
+
+    @classmethod
+    def _collapse_hint_content(cls, collapsed: _UserMessageCollapsed) -> Content:
+        """Build the clickable "show full message" affordance.
+
+        Args:
+            collapsed: The collapse result describing the elided middle.
+
+        Returns:
+            Dim hit-target Content wired to `action_toggle_expand`.
+        """
+        ellipsis = get_glyphs().ellipsis
+        # A single-line paste (base64 blob, minified JSON) hides no newlines, so
+        # "+0 lines" would read as "nothing is hidden" exactly when the most is.
+        if collapsed.hidden_lines:
+            amount = f"+{collapsed.hidden_lines:,} lines"
+        else:
+            amount = f"+{collapsed.hidden_chars:,} characters"
+        return Content.styled(
+            f"{ellipsis} {amount} · click or Ctrl+O to show full message",
+            cls._hint_style(),
+        )
+
+    @classmethod
+    def _expand_hint_content(cls) -> Content:
+        """Build the clickable "collapse" affordance shown when expanded.
+
+        Returns:
+            Dim hit-target Content wired to `action_toggle_expand`.
+        """
+        return Content.styled("click or Ctrl+O to collapse", cls._hint_style())
+
+    def render(self) -> Content:
+        """Render the styled user message.
+
+        Returns:
+            Styled Content with mode prefix and highlighted mentions. Long
+            messages are collapsed by default with a clickable expand
+            affordance; when expanded they show the full body plus a collapse
+            hint. Select-all still uses `_build_full_render` (no hints).
+        """
+        colors = theme.get_theme_colors(self)
+
+        # Use mode-specific prefix indicator when content starts with a
+        # mode trigger character (e.g. "!" for shell, "/" for commands).
+        # The display glyph may differ from the trigger (e.g. "$" for shell).
+        prefix, body = self._prefix_and_body()
+        parts: list[str | tuple[str, str] | Content] = [prefix]
+        collapse = _collapse_user_message(body)
+
+        if isinstance(collapse, _UserMessageFull):
+            self._append_highlighted_body(parts, body, colors=colors)
+            return Content.assemble(*parts)
+
+        if self._expanded:
+            self._append_highlighted_body(parts, body, colors=colors)
+            parts.extend(("\n", self._expand_hint_content()))
+            return Content.assemble(*parts)
+
+        # Collapsed: head + clickable elision line + tail. The middle marker is
+        # the affordance (not a second trailing line) so the collapse stays
+        # one glanceable region instead of an invisible middle ellipsis. Head
+        # and tail come from the collapse result rather than being re-sliced
+        # here, so the reported amount always describes the gap on screen.
+        self._append_highlighted_body(parts, collapse.head, colors=colors)
+        parts.extend(("\n", self._collapse_hint_content(collapse), "\n"))
+        self._append_highlighted_body(parts, collapse.tail, colors=colors)
         return Content.assemble(*parts)
 
 
@@ -741,7 +1016,7 @@ class SkillMessage(Vertical):
                     Content.styled(
                         f"{ellipsis} {remaining} more lines"
                         " — click or Ctrl+O to expand",
-                        "dim",
+                        "dim italic",
                     )
                 )
         else:
@@ -808,7 +1083,7 @@ class SkillMessage(Vertical):
             self._hint_widget.update(
                 Content.styled(
                     f"{ellipsis} {remaining} more lines — click or Ctrl+O to expand",
-                    "dim",
+                    "dim italic",
                 )
             )
 
@@ -2746,7 +3021,7 @@ class ToolCallMessage(Vertical):
                 ellipsis = get_glyphs().ellipsis
                 self._hint_widget.update(
                     Content.styled(
-                        f"{ellipsis} {self._output_hint_keys()} to expand", "dim"
+                        f"{ellipsis} {self._output_hint_keys()} to expand", "dim italic"
                     )
                 )
                 self._hint_widget.display = True
@@ -2773,7 +3048,7 @@ class ToolCallMessage(Vertical):
                     Content.styled(
                         f"{ellipsis} {result.truncation} — "
                         f"{self._output_hint_keys()} to expand",
-                        "dim",
+                        "dim italic",
                     )
                 )
                 self._hint_widget.display = True

@@ -287,9 +287,7 @@ class TestHasProviderCredentials:
         stand rather than reporting CONFIGURED off the gateway.
         """
         state_dir = tmp_path / ".state"
-        monkeypatch.setattr(
-            "deepagents_code.model_config.DEFAULT_STATE_DIR", state_dir
-        )
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_STATE_DIR", state_dir)
         config_path = tmp_path / "config.toml"
         config_path.write_text(
             "[models.providers.openai]\n"

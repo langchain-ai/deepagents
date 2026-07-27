@@ -1889,7 +1889,44 @@ def resolve_provider_credential(provider: str) -> str | None:
 
 
 def _resolve_gateway_configured(provider: str) -> ProviderAuthStatus | None:
-    """Return a configured status when LangSmith Gateway can authenticate."""
+    """Return `CONFIGURED` when LangSmith Gateway can authenticate a provider.
+
+    Credential preflight normally requires each provider's native API key
+    (for example `OPENAI_API_KEY`). Users who route traffic through the
+    LangSmith LLM Gateway often set only `LANGSMITH_GATEWAY` and
+    `LANGSMITH_GATEWAY_API_KEY`. Without this fallback, model selection and
+    startup treat those models as missing credentials even though the
+    gateway-aware chat integration will authenticate the request.
+
+    Example:
+        A user enables the gateway with:
+
+            LANGSMITH_GATEWAY=true
+            LANGSMITH_GATEWAY_API_KEY=lsv2_...
+
+        and has no `OPENAI_API_KEY`. Selecting `openai:gpt-5.5` should still
+        pass preflight because OpenAI is a gateway-supported provider and
+        both gateway env vars are present.
+
+    The gateway counts only when all of the following hold:
+
+    - `provider` is in `LANGSMITH_GATEWAY_PROVIDERS` (built-in chats that
+      actually read the gateway env vars)
+    - `LANGSMITH_GATEWAY` is set and is not a disable value
+      (`false` / `0` / `no`)
+    - `LANGSMITH_GATEWAY_API_KEY` is non-empty
+
+    Callers must still skip this path for `class_path` provider overrides:
+    those construct an arbitrary class that need not consume the gateway
+    variables, so their own `api_key_env` preflight has to stand alone.
+
+    Args:
+        provider: Provider name (e.g., `"openai"`, `"anthropic"`).
+
+    Returns:
+        A `CONFIGURED` status pointing at `LANGSMITH_GATEWAY_API_KEY`, or
+        `None` when the gateway cannot authenticate this provider.
+    """
     gateway = os.getenv(LANGSMITH_GATEWAY_ENV)
     gateway_key = os.getenv(LANGSMITH_GATEWAY_API_KEY_ENV)
     if (

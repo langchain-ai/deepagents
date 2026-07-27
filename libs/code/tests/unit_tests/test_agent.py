@@ -3528,17 +3528,18 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 isinstance(mw, ShellAllowListMiddleware) for mw in middleware
             ), f"Unexpected shell middleware on subagent {name!r}"
 
-    def test_subagent_middleware_combines_shell_and_configurable_model(
+    def test_subagent_middleware_combines_shell_configurable_model_and_cost(
         self, tmp_path: Path
     ) -> None:
-        """Restrictive shell + implicit model should yield both middlewares.
+        """Restrictive shell + implicit model should yield shell, model, and cost.
 
-        Explicitly pinned subagents keep shell restriction but must not gain
-        `ConfigurableModelMiddleware`, which would let a runtime `/model` switch
-        clobber the pinned model.
+        Explicitly pinned subagents keep shell restriction and cost tracking but
+        must not gain `ConfigurableModelMiddleware`, which would let a runtime
+        `/model` switch clobber the pinned model.
         """
         from deepagents_code.agent import ShellAllowListMiddleware
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
+        from deepagents_code.cost_tracking import CostTrackingMiddleware
 
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
@@ -3597,6 +3598,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
             ]
             assert middleware_types == [
                 ConfigurableModelMiddleware,
+                CostTrackingMiddleware,
                 ShellAllowListMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
 
@@ -3606,6 +3608,9 @@ class TestCreateCliAgentShellMiddlewareWiring:
         assert any(
             isinstance(mw, ShellAllowListMiddleware) for mw in pinned_middleware
         ), "Pinned subagent should retain shell middleware"
+        assert any(
+            isinstance(mw, CostTrackingMiddleware) for mw in pinned_middleware
+        ), "Pinned subagent should retain cost tracking"
         assert not any(
             isinstance(mw, ConfigurableModelMiddleware) for mw in pinned_middleware
         ), "Pinned subagent must not gain configurable model middleware"

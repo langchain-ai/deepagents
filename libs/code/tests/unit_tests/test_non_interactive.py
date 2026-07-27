@@ -36,6 +36,7 @@ from deepagents_code.client.non_interactive import (
     _make_stdio_encoding_safe,
     _process_ai_message,
     _process_message_chunk,
+    _record_usage_from_message,
     _run_agent_loop,
     _run_startup_command,
     _start_langsmith_thread_url_lookup,
@@ -1844,8 +1845,8 @@ class TestRunStartupCommand:
         assert buf.getvalue() == ""
 
 
-class TestProcessAiMessageStats:
-    """`_process_ai_message` threads the active provider into usage stats.
+class TestRecordUsageFromMessageStats:
+    """`_record_usage_from_message` threads the active provider into usage stats.
 
     Guards the wiring between `settings.model_provider` and
     `SessionStats.record_request` — the per-model API is unit-tested in
@@ -1853,7 +1854,7 @@ class TestProcessAiMessageStats:
     configured provider.
     """
 
-    def test_records_provider_from_settings(self, console: Console) -> None:
+    def test_records_provider_from_settings(self) -> None:
         """Split input/output usage records the configured provider."""
         state = StreamState()
         message = AIMessage(
@@ -1870,7 +1871,7 @@ class TestProcessAiMessageStats:
         ):
             mock_settings.model_name = "gpt-5.5"
             mock_settings.model_provider = "openai"
-            _process_ai_message(message, state, console)
+            _record_usage_from_message(message, state)
 
         model_stats = state.stats.per_model["openai", "gpt-5.5"]
         assert model_stats.input_tokens == 100
@@ -1878,7 +1879,7 @@ class TestProcessAiMessageStats:
         assert model_stats.cost_usd == pytest.approx(0.42)
         assert state.stats.total_cost_usd == pytest.approx(0.42)
 
-    def test_records_provider_on_total_only_fallback(self, console: Console) -> None:
+    def test_records_provider_on_total_only_fallback(self) -> None:
         """Total-only usage (no split) still forwards the provider."""
         state = StreamState()
         message = AIMessage(
@@ -1892,7 +1893,7 @@ class TestProcessAiMessageStats:
         with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
             mock_settings.model_name = "gpt-5.5"
             mock_settings.model_provider = "openai"
-            _process_ai_message(message, state, console)
+            _record_usage_from_message(message, state)
 
         assert state.stats.per_model["openai", "gpt-5.5"].input_tokens == 150
 

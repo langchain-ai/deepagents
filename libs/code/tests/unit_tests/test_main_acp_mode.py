@@ -215,6 +215,7 @@ def test_acp_mode_forwards_allow_fs_tools() -> None:
         model=model_obj,
         provider="anthropic",
         model_name="claude-sonnet-4-6",
+        model_retries=5,
         apply_to_settings=MagicMock(),
     )
     server = object()
@@ -258,6 +259,7 @@ def test_acp_mode_forwards_none_allow_fs_tools_by_default() -> None:
         model=object(),
         provider="anthropic",
         model_name="claude-sonnet-4-6",
+        model_retries=5,
         apply_to_settings=MagicMock(),
     )
     run_agent = AsyncMock(return_value=None)
@@ -301,6 +303,7 @@ def test_acp_mode_forwards_recursion_limit() -> None:
         model=object(),
         provider="anthropic",
         model_name="claude-sonnet-4-6",
+        model_retries=5,
         apply_to_settings=MagicMock(),
     )
     run_agent = AsyncMock(return_value=None)

@@ -183,9 +183,9 @@ class AskUserMenu(Container):
     def _render_help(self) -> str:
         """Build the footer hint text for the current menu state.
 
-        The `Ctrl+X external editor` hint is included only while the active
-        question shows a free-text entry field, since that is when the
-        app-level `ctrl+x` binding can route to the focused ask-user input.
+        The `Ctrl+X external editor` hint is included only while one of this
+        menu's text areas holds focus, matching the routing in
+        `App.action_open_editor`.
 
         Returns:
             The bullet-joined footer hint string.
@@ -204,22 +204,28 @@ class AskUserMenu(Container):
         return f" {glyphs.bullet} ".join(parts)
 
     def _show_editor_hint(self) -> bool:
-        """Whether the active question currently shows a free-text entry field.
+        """Whether `ctrl+x` would currently open one of this menu's text areas.
 
-        The app-level `ctrl+x` binding only opens an external editor for the
-        focused ask-user text area, so advertising the shortcut from another
-        question's still-visible field would be misleading.
+        `App.action_open_editor` routes `ctrl+x` to an ask-user text area only
+        when one is focused, and otherwise falls through to the chat input.
+        A visible-but-unfocused field therefore must not advertise the
+        shortcut: pressing it would open the user's chat draft instead. The
+        conditions here mirror `App._focused_ask_user_editor`.
 
         Returns:
-            `True` if the active question shows a free-text field.
+            `True` if a text area belonging to this menu holds focus.
         """
-        if not self._question_widgets:
-            return False
-        index = min(self._current_question, len(self._question_widgets) - 1)
-        return self._question_widgets[index].has_visible_text_input()
+        focused = self.app.focused
+        return (
+            isinstance(focused, AskUserTextArea)
+            and self in focused.ancestors
+            and focused.is_attached
+            and focused.display
+            and focused.visible
+        )
 
     def _update_help(self) -> None:
-        """Refresh the footer hint after free-text visibility or focus changes."""
+        """Refresh the footer hint after a focus or field-visibility change."""
         if self._help_widget is not None:
             self._help_widget.update(self._render_help())
 
@@ -285,7 +291,6 @@ class AskUserMenu(Container):
 
     def _highlight_question(self, index: int) -> None:
         """Highlight `index` and dim the rest without changing focus."""
-        previous = self._current_question
         self._current_question = index
         for i, qw in enumerate(self._question_widgets):
             if i == index:
@@ -294,9 +299,6 @@ class AskUserMenu(Container):
             else:
                 qw.remove_class("ask-user-question-active")
                 qw.add_class("ask-user-question-inactive")
-        # The Ctrl+X hint follows the active question, not any rendered field.
-        if previous != index:
-            self._update_help()
 
     def _submit(self) -> None:
         result: AskUserWidgetResult = {
@@ -336,6 +338,15 @@ class AskUserMenu(Container):
             node = node.parent
         if node is not None and node._index != self._current_question:
             self._highlight_question(node._index)
+        # Every focus change inside the menu can flip whether ctrl+x routes
+        # here, including clicks that land on a question container rather than
+        # its text area, so refresh regardless of which question is active.
+        self._update_help()
+
+    def on_descendant_blur(self, event: events.DescendantBlur) -> None:
+        """Retract the `Ctrl+X` hint when focus leaves a text area."""
+        del event  # Unused: the hint is recomputed from current focus.
+        self._update_help()
 
     def on_blur(self, event: events.Blur) -> None:  # noqa: PLR6301  # Textual event handler
         """Prevent blur from propagating and dismissing the menu."""
@@ -414,26 +425,6 @@ class _QuestionWidget(Vertical):
             self._text_input = AskUserTextArea(classes="ask-user-text-input")
             yield self._text_input
 
-    def has_visible_text_input(self) -> bool:
-        """Whether this question currently shows a free-text entry field.
-
-        Text questions (and multiple-choice questions with no choices, which
-        fall back to a text field) always show one. Multiple-choice questions
-        only show the "Other" field once that option is selected.
-
-        Returns:
-            `True` if a free-text entry field is currently shown.
-        """
-        if self._q_type == "text" or not self._choices:
-            return True
-        return self._is_other_selected and self._other_input is not None
-
-    def _notify_menu_help(self) -> None:
-        """Ask the enclosing menu to refresh its footer hint."""
-        menu = self._find_menu()
-        if menu is not None:
-            menu._update_help()
-
     def focus_input(self) -> None:
         """Focus the appropriate input for this question."""
         if self._text_input:
@@ -499,14 +490,12 @@ class _QuestionWidget(Vertical):
                 if self._other_input:
                     self._other_input.display = True
                     self._other_input.focus()
-                self._notify_menu_help()
             else:
                 self._is_other_selected = False
                 if self._other_input:
                     self._other_input.display = False
                 menu = self._find_menu()
                 if menu is not None:
-                    menu._update_help()
                     menu.confirm_and_advance(self._index)
 
     def _find_menu(self) -> AskUserMenu | None:
@@ -529,11 +518,8 @@ class _QuestionWidget(Vertical):
                 cw.deselect()
 
         is_other = self._selected_choice == len(self._choices)
-        was_other = self._is_other_selected
         self._is_other_selected = is_other
         if self._other_input:
             self._other_input.display = is_other
             if is_other:
                 self._other_input.focus()
-        if is_other != was_other:
-            self._notify_menu_help()

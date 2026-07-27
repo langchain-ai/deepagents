@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence, Set as AbstractSet
 
     from textual.app import ComposeResult
+    from textual.events import Key
     from textual.timer import Timer
 
     from deepagents_code.mcp_tools import MCPServerInfo
@@ -579,6 +580,31 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             except NoMatches:
                 return True
         return True
+
+    def on_key(self, event: Key) -> None:
+        """Focus plugin search when a letter is typed from another control."""
+        if not self._search_available():
+            return
+
+        search_input = self.query_one("#plugin-manager-search", Input)
+        if search_input.has_focus:
+            return
+
+        character = event.character
+        if not character or not character.isalpha():
+            return
+
+        search_input.focus()
+        search_input.insert_text_at_cursor(character)
+        self.set_timer(0.01, self._collapse_search_selection)
+        event.stop()
+
+    def _collapse_search_selection(self) -> None:
+        """Place the search cursor at the end without an active selection."""
+        search_input = self.query_one("#plugin-manager-search", Input)
+        search_input.selection = type(search_input.selection).cursor(
+            len(search_input.value)
+        )
 
     def on_plugin_tab_selected(self, event: PluginTabSelected) -> None:
         """Switch tabs from a mouse click on a tab label.

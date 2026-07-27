@@ -980,6 +980,39 @@ class TestAskUserMenu:
             help_text = menu.query_one(".ask-user-help").render()
             assert "Ctrl+X" in str(help_text)
 
+    async def test_help_text_editor_hint_follows_active_question(self) -> None:
+        """Mixed prompts only advertise Ctrl+X for the active free-text field."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick one",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                },
+                {"question": "Why?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+
+            # Initial focus is the multiple-choice question: no free-text field.
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+X" not in str(help_text)
+
+            # Move to the text question: the focused field can use Ctrl+X.
+            menu.action_next_question()
+            await pilot.pause()
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+X" in str(help_text)
+
+            # Move back: stop advertising the shortcut for the choice list.
+            menu.action_previous_question()
+            await pilot.pause()
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+X" not in str(help_text)
+
     async def test_required_label_shown_for_required_question(self) -> None:
         """Required questions display a (required) indicator."""
         app = _AskUserTestApp([{"question": "Name?", "type": "text", "required": True}])

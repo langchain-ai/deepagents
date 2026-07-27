@@ -182,9 +182,9 @@ class AskUserMenu(Container):
     def _render_help(self) -> str:
         """Build the footer hint text for the current menu state.
 
-        The `Ctrl+X external editor` hint is included only while a free-text
-        entry field is shown, since that is when the app-level `ctrl+x` binding
-        can route to the focused ask-user input.
+        The `Ctrl+X external editor` hint is included only while the active
+        question shows a free-text entry field, since that is when the
+        app-level `ctrl+x` binding can route to the focused ask-user input.
 
         Returns:
             The bullet-joined footer hint string.
@@ -203,15 +203,22 @@ class AskUserMenu(Container):
         return f" {glyphs.bullet} ".join(parts)
 
     def _show_editor_hint(self) -> bool:
-        """Whether any question currently shows a free-text entry field.
+        """Whether the active question currently shows a free-text entry field.
+
+        The app-level `ctrl+x` binding only opens an external editor for the
+        focused ask-user text area, so advertising the shortcut from another
+        question's still-visible field would be misleading.
 
         Returns:
-            `True` if at least one question shows a free-text field.
+            `True` if the active question shows a free-text field.
         """
-        return any(qw.has_visible_text_input() for qw in self._question_widgets)
+        if not self._question_widgets:
+            return False
+        index = min(self._current_question, len(self._question_widgets) - 1)
+        return self._question_widgets[index].has_visible_text_input()
 
     def _update_help(self) -> None:
-        """Refresh the footer hint after a free-text field is shown or hidden."""
+        """Refresh the footer hint after free-text visibility or focus changes."""
         if self._help_widget is not None:
             self._help_widget.update(self._render_help())
 
@@ -271,6 +278,7 @@ class AskUserMenu(Container):
 
     def _highlight_question(self, index: int) -> None:
         """Highlight `index` and dim the rest without changing focus."""
+        previous = self._current_question
         self._current_question = index
         for i, qw in enumerate(self._question_widgets):
             if i == index:
@@ -279,6 +287,9 @@ class AskUserMenu(Container):
             else:
                 qw.remove_class("ask-user-question-active")
                 qw.add_class("ask-user-question-inactive")
+        # The Ctrl+X hint follows the active question, not any rendered field.
+        if previous != index:
+            self._update_help()
 
     def _submit(self) -> None:
         result: AskUserWidgetResult = {

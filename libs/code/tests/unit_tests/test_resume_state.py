@@ -346,14 +346,23 @@ class TestCostDisplayCallbacks:
 
         assert app._session_cost_usd == pytest.approx(1.0)
 
-    def test_cost_summary_includes_total_and_per_model_breakdown(self) -> None:
+    def test_cost_summary_includes_total_and_type_model_breakdown(self) -> None:
         stats = SessionStats()
         stats.record_request(
             "gpt-5.5",
             1_000,
             100,
             provider="openai",
-            cost_usd=0.42,
+            cost_usd=0.32,
+            kind="assistant",
+        )
+        stats.record_request(
+            "gpt-5.5",
+            200,
+            20,
+            provider="openai",
+            cost_usd=0.10,
+            kind="offload",
         )
         process_stats = SessionStats()
         process_stats.record_request(
@@ -371,6 +380,9 @@ class TestCostDisplayCallbacks:
         summary = app._format_cost_summary()
 
         assert "Estimated thread cost: $0.42" in summary
+        assert "By type since this thread was loaded:" in summary
+        assert "Assistant: $0.32" in summary
+        assert "Offload: $0.10" in summary
         assert "openai:gpt-5.5: $0.42" in summary
         assert "claude-sonnet-4-6" not in summary
 
@@ -412,3 +424,36 @@ class TestCostDisplayCallbacks:
         assert "Estimated thread cost: $0.00" in summary
         assert "example:free-model: $0.00" in summary
         assert "Requests without known pricing are excluded." in summary
+
+    async def test_persist_displayed_cost_writes_gap_only(self) -> None:
+        """Live total above checkpoint is written as an additive delta."""
+        from unittest.mock import AsyncMock
+
+        app = DeepAgentsApp()
+        app._agent = object()
+        app._lc_thread_id = "thread-1"
+        app._session_cost_usd = 1.25
+        app._get_thread_state_values = AsyncMock(
+            return_value={"_session_cost_usd": 1.0}
+        )
+        app._aupdate_thread_state = AsyncMock()
+
+        await app._persist_displayed_cost_to_checkpoint()
+
+        app._aupdate_thread_state.assert_awaited_once_with({"_session_cost_usd": 0.25})
+
+    async def test_persist_displayed_cost_skips_when_checkpoint_caught_up(self) -> None:
+        from unittest.mock import AsyncMock
+
+        app = DeepAgentsApp()
+        app._agent = object()
+        app._lc_thread_id = "thread-1"
+        app._session_cost_usd = 1.0
+        app._get_thread_state_values = AsyncMock(
+            return_value={"_session_cost_usd": 1.0}
+        )
+        app._aupdate_thread_state = AsyncMock()
+
+        await app._persist_displayed_cost_to_checkpoint()
+
+        app._aupdate_thread_state.assert_not_awaited()

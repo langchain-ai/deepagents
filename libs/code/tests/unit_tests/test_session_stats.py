@@ -10,6 +10,7 @@ from rich.console import Console
 from deepagents_code._session_stats import (
     ModelStats,
     SessionStats,
+    classify_usage_kind,
     format_cost,
     format_token_count,
     print_usage_table,
@@ -242,12 +243,62 @@ class TestSessionStats:
         assert a.per_model["openai", "gpt-5.5"].input_tokens == 100
         assert a.per_model["azure", "gpt-5.5"].input_tokens == 200
 
+    def test_record_request_tracks_kind(self) -> None:
+        stats = SessionStats()
+        stats.record_request("gpt-5.5", 100, 50, cost_usd=0.01, kind="assistant")
+        stats.record_request("gpt-5.5", 20, 5, cost_usd=0.02, kind="offload")
+        assert stats.per_kind["assistant"].cost_usd == pytest.approx(0.01)
+        assert stats.per_kind["offload"].cost_usd == pytest.approx(0.02)
+        assert stats.per_kind["offload"].request_count == 1
+
+    def test_merge_combines_kinds(self) -> None:
+        first = SessionStats()
+        first.record_request("gpt-5.5", 100, 50, cost_usd=0.01, kind="subagent")
+        second = SessionStats()
+        second.record_request("gpt-5.5", 200, 75, cost_usd=0.03, kind="subagent")
+        first.merge(second)
+        assert first.per_kind["subagent"].cost_usd == pytest.approx(0.04)
+        assert first.per_kind["subagent"].request_count == 2
+
     def test_merge_empty_into_populated(self) -> None:
         a = SessionStats(request_count=5, input_tokens=500)
         b = SessionStats()
         a.merge(b)
         assert a.request_count == 5
         assert a.input_tokens == 500
+
+
+class TestClassifyUsageKind:
+    """Request classification for cost breakdowns."""
+
+    def test_nested_namespace_is_subagent(self) -> None:
+        assert (
+            classify_usage_kind(
+                is_main_agent=False,
+                metadata={"lc_source": "summarization"},
+            )
+            == "subagent"
+        )
+
+    def test_summarization_source_is_offload(self) -> None:
+        assert (
+            classify_usage_kind(
+                is_main_agent=True, metadata={"lc_source": "summarization"}
+            )
+            == "offload"
+        )
+
+    def test_auto_classifier_source(self) -> None:
+        assert (
+            classify_usage_kind(
+                is_main_agent=True,
+                metadata={"lc_source": "auto_mode_classifier"},
+            )
+            == "auto"
+        )
+
+    def test_default_is_assistant(self) -> None:
+        assert classify_usage_kind(is_main_agent=True, metadata=None) == "assistant"
 
 
 class TestPrintUsageTable:

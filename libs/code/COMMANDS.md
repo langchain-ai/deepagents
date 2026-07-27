@@ -18,7 +18,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/changelog` |  | Open the changelog in a browser |
 | `/clear` |  | Clear the chat and start a new thread |
 | `/copy` |  | Copy the latest assistant message to clipboard |
-| `/cost` |  | Show estimated session cost |
+| `/cost` |  | Show estimated thread cost |
 | `/docs` |  | Open the docs |
 | `/editor` |  | Open prompt in an external editor ($EDITOR) |
 | `/effort` |  | Set reasoning effort for the current model |

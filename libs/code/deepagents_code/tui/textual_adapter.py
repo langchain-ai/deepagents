@@ -1268,6 +1268,9 @@ async def execute_task_textual(
                             input_toks = usage.get("input_tokens", 0)
                             output_toks = usage.get("output_tokens", 0)
                             total_toks = usage.get("total_tokens", 0)
+                            from deepagents_code._session_stats import (
+                                classify_usage_kind,
+                            )
                             from deepagents_code.config import settings
                             from deepagents_code.cost_tracking import (
                                 estimate_cost,
@@ -1282,6 +1285,12 @@ async def execute_task_textual(
                             cost_usd = estimate_cost(
                                 usage, active_model, active_provider
                             )
+                            usage_kind = classify_usage_kind(
+                                is_main_agent=is_main_agent,
+                                metadata=(
+                                    metadata if isinstance(metadata, dict) else None
+                                ),
+                            )
                             recorded = False
                             if input_toks or output_toks:
                                 # Model gives split counts — preferred path
@@ -1291,6 +1300,7 @@ async def execute_task_textual(
                                     output_toks,
                                     active_provider,
                                     cost_usd=cost_usd,
+                                    kind=usage_kind,
                                 )
                                 captured_input_tokens = max(
                                     captured_input_tokens, input_toks + output_toks
@@ -1304,6 +1314,7 @@ async def execute_task_textual(
                                     0,
                                     active_provider,
                                     cost_usd=cost_usd,
+                                    kind=usage_kind,
                                 )
                                 captured_input_tokens = max(
                                     captured_input_tokens, total_toks

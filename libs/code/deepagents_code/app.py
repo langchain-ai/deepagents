@@ -65,6 +65,8 @@ from deepagents_code._git import (
     read_git_branch_via_subprocess,
 )
 from deepagents_code._session_stats import (
+    USAGE_KIND_LABELS,
+    USAGE_KIND_ORDER,
     SessionStats,
     SpinnerStatus,
     format_cost,
@@ -6715,7 +6717,7 @@ class DeepAgentsApp(App):
             self._seed_session_cost(self._session_cost_usd + request_cost_usd)
 
     def _format_cost_summary(self) -> str:
-        """Build the running total and per-model breakdown for `/cost`.
+        """Build the running total and type/model breakdown for `/cost`.
 
         Returns:
             User-facing estimated cost summary for the active thread.
@@ -6726,6 +6728,18 @@ class DeepAgentsApp(App):
             return "No estimated cost yet."
 
         lines = [f"Estimated thread cost: {format_cost(self._session_cost_usd)}"]
+        priced_kinds = [
+            (kind, self._thread_stats.per_kind[kind])
+            for kind in USAGE_KIND_ORDER
+            if kind in self._thread_stats.per_kind
+            and self._thread_stats.per_kind[kind].priced_request_count
+        ]
+        if priced_kinds:
+            lines.append("By type since this thread was loaded:")
+            for kind, kind_stats in priced_kinds:
+                lines.append(
+                    f"- {USAGE_KIND_LABELS[kind]}: {format_cost(kind_stats.cost_usd)}"
+                )
         priced_models = [
             model
             for model in self._thread_stats.per_model.values()
@@ -6740,14 +6754,49 @@ class DeepAgentsApp(App):
                     else model.model_name
                 )
                 lines.append(f"- {label}: {format_cost(model.cost_usd)}")
-        elif self._session_cost_usd > 0:
-            lines.append("Per-model details are unavailable for restored usage.")
+        elif self._session_cost_usd > 0 and not priced_kinds:
+            lines.append(
+                "Per-type and per-model details are unavailable for restored usage."
+            )
 
-        if priced_models and self._thread_restored_cost_usd > 0:
+        if (priced_kinds or priced_models) and self._thread_restored_cost_usd > 0:
             lines.append("Restored usage is included only in the total above.")
         if self._thread_stats.priced_request_count < self._thread_stats.request_count:
             lines.append("Requests without known pricing are excluded.")
         return "\n".join(lines)
+
+    async def _persist_displayed_cost_to_checkpoint(self) -> None:
+        """Write live-only cost (offload/auto) into `_session_cost_usd`.
+
+        Graph-side cost middleware records assistant and nested-agent model
+        calls. Direct model invokes used for offload and Auto mode do not run
+        through that channel, but their stream usage still updates the live
+        total. Persist any missing delta so resume does not under-report spend.
+        """
+        if not self._agent or not self._lc_thread_id:
+            return
+        try:
+            state_values = await self._get_thread_state_values(self._lc_thread_id)
+        except Exception:
+            logger.debug(
+                "Could not load thread state while persisting cost",
+                exc_info=True,
+            )
+            return
+        persisted_cost_usd = _coerce_session_cost_usd(
+            state_values.get("_session_cost_usd")
+        )
+        gap = self._session_cost_usd - persisted_cost_usd
+        if gap <= 0:
+            return
+        try:
+            await self._aupdate_thread_state({"_session_cost_usd": gap})
+        except Exception:
+            logger.warning(
+                "Failed to persist streamed cost gap for thread %s",
+                self._lc_thread_id,
+                exc_info=True,
+            )
 
     def _notify_hydration_failure(self) -> None:
         """Surface transcript hydration failures to the user, once per session.
@@ -13467,6 +13516,7 @@ class DeepAgentsApp(App):
                 new_state.get("_session_cost_usd")
             )
             self._seed_session_cost(max(self._session_cost_usd, persisted_cost_usd))
+            await self._persist_displayed_cost_to_checkpoint()
             new_event = new_state.get("_summarization_event")
             new_cutoff = _summarization_cutoff(new_event)
 
@@ -14595,6 +14645,8 @@ class DeepAgentsApp(App):
                     self._thread_stats.merge(turn_stats)
                 self._inflight_turn_stats = None
                 self._inflight_thread_id = None
+            if turn_completed and self._lc_thread_id is not None:
+                await self._persist_displayed_cost_to_checkpoint()
             # Finalize any subagent rows left "running" — an interrupt cancels
             # the worker before the bridge emits terminal events (a cancel is a
             # BaseException, which the bridge's `except Exception` skips), so the

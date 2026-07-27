@@ -82,6 +82,7 @@ from deepagents_code.unicode_security import (
 
 if TYPE_CHECKING:
     from asyncio.subprocess import Process
+    from collections.abc import Mapping
     from pathlib import Path
 
     from deepagents import FsToolName
@@ -447,7 +448,13 @@ def _process_interrupts(
             dispatch_hook_fire_and_forget("input.required", {})
 
 
-def _record_usage_from_message(message_obj: AIMessage, state: StreamState) -> None:
+def _record_usage_from_message(
+    message_obj: AIMessage,
+    state: StreamState,
+    *,
+    is_main_agent: bool = True,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
     """Record model usage and estimated cost from a streamed AI message."""
     usage = getattr(message_obj, "usage_metadata", None)
     if not usage:
@@ -456,6 +463,7 @@ def _record_usage_from_message(message_obj: AIMessage, state: StreamState) -> No
     input_toks = usage.get("input_tokens", 0)
     output_toks = usage.get("output_tokens", 0)
     total_toks = usage.get("total_tokens", 0)
+    from deepagents_code._session_stats import classify_usage_kind
     from deepagents_code.cost_tracking import estimate_cost, resolve_message_model
 
     active_model, active_provider = resolve_message_model(
@@ -464,6 +472,10 @@ def _record_usage_from_message(message_obj: AIMessage, state: StreamState) -> No
         fallback_provider=settings.model_provider or "",
     )
     cost_usd = estimate_cost(usage, active_model, active_provider)
+    usage_kind = classify_usage_kind(
+        is_main_agent=is_main_agent,
+        metadata=metadata,
+    )
     if input_toks or output_toks:
         state.stats.record_request(
             active_model,
@@ -471,6 +483,7 @@ def _record_usage_from_message(message_obj: AIMessage, state: StreamState) -> No
             output_toks,
             active_provider,
             cost_usd=cost_usd,
+            kind=usage_kind,
         )
     elif total_toks:
         state.stats.record_request(
@@ -479,6 +492,7 @@ def _record_usage_from_message(message_obj: AIMessage, state: StreamState) -> No
             0,
             active_provider,
             cost_usd=cost_usd,
+            kind=usage_kind,
         )
 
 
@@ -616,15 +630,21 @@ def _process_message_chunk(
         return
 
     message_obj, metadata = data
+    stream_metadata = metadata if isinstance(metadata, dict) else None
 
     # Account cost/tokens even for internal model calls whose text is hidden.
     if isinstance(message_obj, AIMessage):
-        _record_usage_from_message(message_obj, state)
+        _record_usage_from_message(
+            message_obj,
+            state,
+            is_main_agent=True,
+            metadata=stream_metadata,
+        )
 
     # The summarization middleware injects synthetic messages to compress
     # conversation history for the LLM. These are internal bookkeeping and
     # should not be rendered to the user.
-    if metadata and metadata.get("lc_source") == "summarization":
+    if stream_metadata and stream_metadata.get("lc_source") == "summarization":
         return
 
     if isinstance(message_obj, AIMessage):
@@ -843,9 +863,17 @@ def _process_stream_chunk(
             and isinstance(data, tuple)
             and len(data) == (_MESSAGE_DATA_LENGTH)
         ):
-            message_obj, _metadata = data
+            message_obj, nested_metadata = data
             if isinstance(message_obj, AIMessage):
-                _record_usage_from_message(message_obj, state)
+                _record_usage_from_message(
+                    message_obj,
+                    state,
+                    is_main_agent=False,
+                    metadata=cast(
+                        "Mapping[str, Any] | None",
+                        nested_metadata if isinstance(nested_metadata, dict) else None,
+                    ),
+                )
         return
 
     if stream_mode == "updates" and isinstance(data, dict) and "__interrupt__" in data:

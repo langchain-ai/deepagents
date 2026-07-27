@@ -2185,6 +2185,10 @@ class TestExecuteTaskTextualUsageStats:
         assert turn_stats.input_tokens == 65
         assert turn_stats.output_tokens == 15
         assert cost_updates == [0.1, 0.1]
+        assert turn_stats.per_kind["subagent"].request_count == 1
+        assert turn_stats.per_kind["offload"].request_count == 1
+        assert turn_stats.per_kind["subagent"].cost_usd == pytest.approx(0.1)
+        assert turn_stats.per_kind["offload"].cost_usd == pytest.approx(0.1)
 
 
 class TestExecuteTaskTextualAutoModeClassifier:
@@ -2269,6 +2273,7 @@ class TestExecuteTaskTextualAutoModeClassifier:
         assert turn_stats.request_count == 1
         assert turn_stats.input_tokens == 20
         assert turn_stats.output_tokens == 5
+        assert turn_stats.per_kind["auto"].request_count == 1
         # A lone classifier chunk must not masquerade as summarization: no
         # notification is mounted and the spinner never flips to "Offloading".
         assert not any(isinstance(widget, SummarizationMessage) for widget in mounted)

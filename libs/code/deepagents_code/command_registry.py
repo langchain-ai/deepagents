@@ -100,7 +100,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/cost",
-        description="Show estimated session cost",
+        description="Show estimated thread cost",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="price spend usage tokens dollars usd",
     ),

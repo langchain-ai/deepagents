@@ -11,11 +11,13 @@ config, no widget imports) so that `app.py` can import `SessionStats` and
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from deepagents_code.formatting import format_duration
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from rich.console import Console
 
 SpinnerStatus = (
@@ -28,6 +30,49 @@ SpinnerStatus = (
     | None
 )
 """Valid spinner display states, or `None` to hide."""
+
+UsageKind = Literal["assistant", "subagent", "offload", "auto"]
+"""Billing/display class for a model request."""
+
+USAGE_KIND_ORDER: tuple[UsageKind, ...] = (
+    "assistant",
+    "subagent",
+    "offload",
+    "auto",
+)
+"""Stable display order for per-type cost breakdowns."""
+
+USAGE_KIND_LABELS: dict[UsageKind, str] = {
+    "assistant": "Assistant",
+    "subagent": "Subagents",
+    "offload": "Offload",
+    "auto": "Auto mode",
+}
+"""User-facing labels for `UsageKind` values."""
+
+
+def classify_usage_kind(
+    *,
+    is_main_agent: bool,
+    metadata: Mapping[str, Any] | None = None,
+) -> UsageKind:
+    """Classify a streamed model request for cost and usage breakdowns.
+
+    Args:
+        is_main_agent: Whether the stream namespace is the top-level agent.
+        metadata: LangChain callback/stream metadata for the chunk.
+
+    Returns:
+        The usage kind used in `/cost` and session stats.
+    """
+    if not is_main_agent:
+        return "subagent"
+    source = metadata.get("lc_source") if metadata is not None else None
+    if source == "summarization":
+        return "offload"
+    if source == "auto_mode_classifier":
+        return "auto"
+    return "assistant"
 
 
 @dataclass
@@ -54,6 +99,26 @@ class ModelStats:
 
     model_name: str = ""
     """Model name displayed in usage output."""
+
+
+@dataclass
+class KindStats:
+    """Token and cost stats for one `UsageKind` bucket."""
+
+    request_count: int = 0
+    """Number of LLM API requests in this bucket."""
+
+    input_tokens: int = 0
+    """Cumulative input tokens in this bucket."""
+
+    output_tokens: int = 0
+    """Cumulative output tokens in this bucket."""
+
+    cost_usd: float = 0.0
+    """Cumulative estimated USD cost for priceable requests in this bucket."""
+
+    priced_request_count: int = 0
+    """Requests with a cost estimate, including estimates of literal zero."""
 
 
 ModelStatsKey = tuple[str, str]
@@ -99,6 +164,9 @@ class SessionStats:
     the model table in that case and shows only the wall-time line (if applicable).
     """
 
+    per_kind: dict[UsageKind, KindStats] = field(default_factory=dict)
+    """Per-type breakdown for assistant, nested, and hidden model spend."""
+
     def record_request(
         self,
         model_name: str,
@@ -106,10 +174,12 @@ class SessionStats:
         output_toks: int,
         provider: str = "",
         cost_usd: float | None = None,
+        *,
+        kind: UsageKind = "assistant",
     ) -> None:
         """Accumulate usage for one completed LLM request.
 
-        Updates both the session totals and the per-model breakdown.
+        Updates session totals plus the per-model and per-type breakdowns.
 
         Args:
             model_name: The model that served this request. Combined with
@@ -122,6 +192,7 @@ class SessionStats:
                 served by different providers is tracked separately.
             cost_usd: Estimated request cost, or `None` when no estimate exists.
                 Missing estimates leave monetary totals unchanged.
+            kind: Request class used for `/cost` type breakdowns.
         """
         self.request_count += 1
         self.input_tokens += input_toks
@@ -129,6 +200,13 @@ class SessionStats:
         if cost_usd is not None:
             self.total_cost_usd += cost_usd
             self.priced_request_count += 1
+        kind_entry = self.per_kind.setdefault(kind, KindStats())
+        kind_entry.request_count += 1
+        kind_entry.input_tokens += input_toks
+        kind_entry.output_tokens += output_toks
+        if cost_usd is not None:
+            kind_entry.cost_usd += cost_usd
+            kind_entry.priced_request_count += 1
         if model_name:
             key = (provider, model_name)
             entry = self.per_model.setdefault(
@@ -166,6 +244,13 @@ class SessionStats:
             entry.output_tokens += ms.output_tokens
             entry.cost_usd += ms.cost_usd
             entry.priced_request_count += ms.priced_request_count
+        for kind, kind_stats in other.per_kind.items():
+            entry = self.per_kind.setdefault(kind, KindStats())
+            entry.request_count += kind_stats.request_count
+            entry.input_tokens += kind_stats.input_tokens
+            entry.output_tokens += kind_stats.output_tokens
+            entry.cost_usd += kind_stats.cost_usd
+            entry.priced_request_count += kind_stats.priced_request_count
 
 
 def format_token_count(count: int) -> str:

@@ -21,7 +21,10 @@ from pydantic import BaseModel
 
 from deepagents_code.agent import _should_interrupt_tool_call, create_cli_agent
 from deepagents_code.approval_mode import ApprovalMode
-from deepagents_code.hooks.client import fulfill_hook_invocation
+from deepagents_code.hooks.client import (
+    HooksSnapshotChangedError,
+    fulfill_hook_invocation,
+)
 from deepagents_code.hooks.context import apply_hooks_context
 from deepagents_code.hooks.interrupt import (
     HOOK_INVOCATION_INTERRUPT_TYPE,
@@ -708,6 +711,17 @@ async def test_fulfill_hook_invocation_runs_engine(tmp_path: Path) -> None:
     )
     assert isinstance(response.decision, PreToolUseDecision)
     assert response.decision.permission.behavior in {"allow", "none"}
+
+
+async def test_fulfill_hook_invocation_rejects_stale_snapshot(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "hooks.json").write_text('{"hooks":{}}', encoding="utf-8")
+    runtime = HooksRuntime.create(cwd=tmp_path, config_dir=config_dir)
+    request = _request()  # snapshot_id "snapshot-1" != runtime.snapshot_id
+
+    with pytest.raises(HooksSnapshotChangedError, match="Hook snapshot mismatch"):
+        await fulfill_hook_invocation(runtime, request)
 
 
 async def test_fulfillment_is_idempotent_in_flight_and_after_completion(

@@ -28,6 +28,17 @@ _FulfillmentKey = tuple[str, UUID]
 _ResumePayload = dict[str, object]
 
 
+class HooksSnapshotChangedError(RuntimeError):
+    """A hook resume was attempted against a stale configuration snapshot.
+
+    Raised when a resumed interrupt carries a different `snapshot_id` than the
+    session's live runtime, which happens when a checkpoint is replayed after
+    the hooks configuration changed. The turn cannot be resumed safely; the
+    caller should surface this and restart rather than apply a decision made
+    against stale hooks.
+    """
+
+
 @dataclass(slots=True)
 class HookFulfillmentLedger:
     """Deduplicate hook fulfillment for one client session."""
@@ -87,14 +98,15 @@ async def fulfill_hook_invocation(
         JSON-compatible resume value for `Command(resume=...)`.
 
     Raises:
-        ValueError: If the request snapshot does not match this session.
+        HooksSnapshotChangedError: If the request snapshot does not match this
+            session.
     """
     if request.snapshot_id != runtime.snapshot_id:
         msg = (
             f"Hook snapshot mismatch: request {request.snapshot_id} != "
             f"runtime {runtime.snapshot_id}"
         )
-        raise ValueError(msg)
+        raise HooksSnapshotChangedError(msg)
 
     async def execute() -> HookInvocationResponse:
         decision = await runtime.invoke(request.invocation)

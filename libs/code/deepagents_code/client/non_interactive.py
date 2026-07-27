@@ -956,19 +956,28 @@ async def _fulfill_pending_hook_interrupts(state: StreamState) -> None:
     Raises:
         RuntimeError: If a hook interrupt arrives without a session runtime, or
             if a payload cannot be parsed.
+        HooksSnapshotChangedError: If a hook resume cannot be applied because it
+            was made against a stale configuration snapshot.
     """
     if not state.pending_hook_interrupts:
         return
-    from deepagents_code.hooks.client import fulfill_pending_hook_interrupts
+    from deepagents_code.hooks.client import (
+        HooksSnapshotChangedError,
+        fulfill_pending_hook_interrupts,
+    )
 
     if state.hooks_runtime is None:
         msg = "Received hook invocation interrupt without a HooksRuntime"
         raise RuntimeError(msg)
     pending = dict(state.pending_hook_interrupts)
     state.pending_hook_interrupts.clear()
-    state.hook_response.update(
-        await fulfill_pending_hook_interrupts(state.hooks_runtime, pending)
-    )
+    try:
+        state.hook_response.update(
+            await fulfill_pending_hook_interrupts(state.hooks_runtime, pending)
+        )
+    except ValueError as exc:
+        msg = f"Hook resume could not be applied: {exc}"
+        raise HooksSnapshotChangedError(msg) from exc
 
 
 def _process_hitl_interrupts(state: StreamState, console: Console) -> None:

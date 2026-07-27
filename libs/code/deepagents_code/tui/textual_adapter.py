@@ -754,6 +754,8 @@ async def execute_task_textual(
     Raises:
         ValidationError: If HITL request validation fails (re-raised).
         RuntimeError: If Manual cannot be persisted before graph execution.
+        HooksSnapshotChangedError: If a hook resume cannot be applied because it
+            was made against a stale configuration snapshot.
     """
     from langchain.agents.middleware.human_in_the_loop import (
         ApproveDecision,
@@ -1007,7 +1009,10 @@ async def execute_task_textual(
             context["approval_mode_key"] = live_key
             session_state.approval_mode_key = live_key
 
-            from deepagents_code.hooks.client import fulfill_hook_interrupt
+            from deepagents_code.hooks.client import (
+                HooksSnapshotChangedError,
+                fulfill_hook_interrupt,
+            )
             from deepagents_code.hooks.context import apply_hooks_context
             from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
 
@@ -1156,9 +1161,13 @@ async def execute_task_textual(
                                             "without a HooksRuntime"
                                         )
                                         raise RuntimeError(msg)
-                                    resume_value = await fulfill_hook_interrupt(
-                                        hooks_runtime, iv
-                                    )
+                                    try:
+                                        resume_value = await fulfill_hook_interrupt(
+                                            hooks_runtime, iv
+                                        )
+                                    except ValueError as exc:
+                                        msg = f"Hook resume could not be applied: {exc}"
+                                        raise HooksSnapshotChangedError(msg) from exc
                                     if resume_value is None:
                                         msg = "Failed to parse hook interrupt"
                                         raise RuntimeError(msg)

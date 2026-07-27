@@ -12,7 +12,7 @@ from urllib.parse import unquote, urlparse
 from rich.markup import escape as escape_markup
 
 from deepagents_code.config import console
-from deepagents_code.media_utils import ImageData, VideoData, is_media_path
+from deepagents_code.media_utils import ImageData, VideoData
 
 logger = logging.getLogger(__name__)
 
@@ -610,24 +610,51 @@ def parse_pasted_path_payload(
     return ParsedPastedPathPayload(paths=[path], token_end=token_end)
 
 
-def pasted_payload_media_paths(text: str) -> list[Path]:
-    """Return image/video file paths from a dropped-path payload.
+def _looks_like_dropped_payload(text: str) -> bool:
+    """Return whether a payload has the shape a terminal uses for a file drop.
 
-    Reuses `parse_pasted_path_payload` — the same dropped-path detection the chat
-    input uses, which only resolves paths that exist on disk — then keeps the
-    subset whose extension marks them as media. Text-only inputs use this to
-    detect a dragged image or video so it can be rejected with a toast.
+    Terminals deliver a dragged file as an absolute path, a `~/` path, or a
+    `file://` URL, so requiring that shape keeps a hand-typed relative path
+    (`assets/logo.png`) from being mistaken for a drop. Without this guard
+    `parse_pasted_file_paths` would resolve such a token against the working
+    directory, and a caller that rejects drops would swallow ordinary text.
 
     Args:
         text: Raw pasted/dropped text payload.
 
     Returns:
-        Resolved media file paths found in the payload, or an empty list.
+        `True` when the payload begins like a dropped path.
     """
+    value = text.strip().lstrip("<'\"")
+    return value.startswith(("/", "~/", "file://"))
+
+
+def dropped_payload_paths(text: str) -> list[Path]:
+    """Return resolved file paths from a payload that looks like a file drop.
+
+    Applies `parse_pasted_path_payload` — the same parser the chat input's drop
+    handling uses, which only resolves paths that exist on disk — behind a shape
+    guard that requires the drop form terminals actually emit (see
+    `_looks_like_dropped_payload`). Text-only inputs use this to detect a
+    dragged file so it can be rejected instead of inserted as a path.
+
+    Leading-path-plus-trailing-text payloads (`<path> what is this?`) are
+    deliberately out of scope: `allow_leading_path` stays off, matching the
+    chat input's own drop-time calls, which handle that shape later at submit
+    time instead.
+
+    Args:
+        text: Raw pasted/dropped text payload.
+
+    Returns:
+        Resolved file paths found in the payload, or an empty list.
+    """
+    if not _looks_like_dropped_payload(text):
+        return []
     parsed = parse_pasted_path_payload(text)
     if parsed is None:
         return []
-    return [path for path in parsed.paths if is_media_path(path)]
+    return list(parsed.paths)
 
 
 def parse_single_pasted_file_path(text: str) -> Path | None:
@@ -772,7 +799,13 @@ def _token_to_path(token: str) -> Path | None:
             return None
 
     if value.startswith("file://"):
-        parsed = urlparse(value)
+        try:
+            parsed = urlparse(value)
+        except ValueError as e:
+            # Malformed authority (e.g. `file://[::1/x.png`) raises rather than
+            # returning a partial result; treat it as ordinary text.
+            logger.debug("file:// URL parsing failed for %r: %s", value, e)
+            return None
         path_text = unquote(parsed.path or "")
         if parsed.netloc and parsed.netloc != "localhost":
             path_text = f"//{parsed.netloc}{path_text}"
@@ -907,8 +940,9 @@ def _safe_exists(path: Path) -> bool:
     swallows such an error is version-dependent (Python <=3.13 ignores only a
     small set of errnos and lets `ENAMETOOLONG` propagate; 3.14 routes these
     through `os.path.*`, which swallows more), so we guard unconditionally for
-    uniform behavior. Callers here only care whether the path is usable, so a
-    failed probe is equivalent to "not there".
+    uniform behavior. A path holding an embedded NUL raises `ValueError` rather
+    than `OSError`, so that is guarded too. Callers here only care whether the
+    path is usable, so a failed probe is equivalent to "not there".
 
     Args:
         path: Path candidate to probe.
@@ -918,7 +952,7 @@ def _safe_exists(path: Path) -> bool:
     """
     try:
         return path.exists()
-    except OSError as e:
+    except (OSError, ValueError) as e:
         logger.debug("exists() check failed for %r: %s", path, e)
         return False
 
@@ -936,7 +970,7 @@ def _safe_is_file(path: Path) -> bool:
     """
     try:
         return path.is_file()
-    except OSError as e:
+    except (OSError, ValueError) as e:
         logger.debug("is_file() check failed for %r: %s", path, e)
         return False
 
@@ -954,7 +988,7 @@ def _safe_is_dir(path: Path) -> bool:
     """
     try:
         return path.is_dir()
-    except OSError as e:
+    except (OSError, ValueError) as e:
         logger.debug("is_dir() check failed for %r: %s", path, e)
         return False
 
@@ -972,7 +1006,8 @@ def _resolve_existing_pasted_path(path: Path) -> Path | None:
     """
     try:
         resolved = path.expanduser().resolve()
-    except (OSError, RuntimeError) as e:
+    except (OSError, RuntimeError, ValueError) as e:
+        # ValueError covers an embedded NUL, which `resolve()` rejects outright.
         logger.debug("Path resolution failed for %r: %s", path, e)
         return None
     if _safe_is_file(resolved):
@@ -983,7 +1018,7 @@ def _resolve_existing_pasted_path(path: Path) -> Path | None:
         return None
     try:
         resolved_fuzzy = fuzzy.resolve()
-    except (OSError, RuntimeError) as e:
+    except (OSError, RuntimeError, ValueError) as e:
         logger.debug("Unicode-space resolution failed for %r: %s", fuzzy, e)
         return None
     if _safe_is_file(resolved_fuzzy):

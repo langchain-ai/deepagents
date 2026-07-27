@@ -12,6 +12,8 @@ from textual.message import Message
 from textual.widgets import Static
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from textual import events
     from textual.widget import Widget
 
@@ -25,10 +27,31 @@ ResultT = TypeVar("ResultT")
 
 _UNSET: Any = object()
 
-_MEDIA_UNSUPPORTED_TOAST = (
-    "Only text is supported here; images and other media can't be attached."
-)
-"""Toast shown when a media file is dragged into a text-only inline prompt."""
+MEDIA_UNSUPPORTED_TOAST_PREFIX = "Only text is supported here"
+"""Leading clause of the toast shown when media is dropped on an inline prompt.
+
+Public so tests and callers can assert on the toast without duplicating the
+whole message, which names the discarded files (see `_media_unsupported_toast`).
+"""
+
+
+def _media_unsupported_toast(paths: list[Path]) -> str:
+    """Build the toast for a rejected media drop.
+
+    Names every discarded file rather than only the media ones, because the
+    whole payload is swallowed — a mixed drop otherwise loses its non-media
+    paths with nothing to explain where they went.
+
+    Args:
+        paths: All resolved paths in the rejected payload. Never empty — the
+            caller only builds a toast once it has found media.
+
+    Returns:
+        Toast text naming the files that were not inserted.
+    """
+    names = ", ".join(dict.fromkeys(path.name for path in paths))
+    noun = "file" if len(paths) == 1 else "files"
+    return f"{MEDIA_UNSUPPORTED_TOAST_PREFIX}; {noun} not inserted: {names}."
 
 
 class InlinePromptCompletion(Generic[ResultT]):
@@ -176,25 +199,38 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
 
     async def _on_paste(self, event: events.Paste) -> None:
         """Reject a dragged media file, else defer to shared paste handling."""
+        # Flush first, matching the base handler: a rejection returns early, and
+        # leaving a pending burst behind would let its timer insert the buffered
+        # keystrokes after the paste was already refused.
+        if self._paste_burst_buffer:
+            await self._flush_paste_burst()
+
         if await self._reject_dropped_media(event.text):
             event.prevent_default()
             event.stop()
             return
-        await super()._on_paste(event)
+
+        # Don't call super() here — Textual's MRO dispatch already runs
+        # CollapsingPasteTextArea._on_paste and TextArea._on_paste after this
+        # handler returns, so calling super() would invoke them a second time.
 
     async def _dispatch_burst_payload(self, payload: str) -> None:
-        """Reject a media file replayed as a key burst, else insert as usual."""
+        """Reject a media file replayed as a key burst, else defer to the base."""
         if await self._reject_dropped_media(payload):
             return
         await super()._dispatch_burst_payload(payload)
 
     async def _reject_dropped_media(self, text: str) -> bool:
-        """Toast and swallow a dropped image/video payload.
+        """Toast and swallow a dropped payload containing an image or video.
 
-        Free-text prompts accept only text, so a dragged media file (which the
-        chat input would attach) is rejected here instead of inserting its path.
-        Reuses the chat input's dropped-path detection, which only resolves
-        files that exist on disk, so ordinary typed or pasted text is unaffected.
+        Free-text prompts accept only text, so a dragged media file is rejected
+        here instead of inserting its path. Detection requires the payload to
+        resolve to files that exist on disk in the shape a terminal emits for a
+        drop, so free-form prose is unaffected (see `dropped_payload_paths`).
+
+        The whole payload is swallowed when any path is media, so a mixed drop
+        does not half-insert; the toast names every discarded file to make that
+        visible.
 
         Args:
             text: Raw pasted/dropped text payload.
@@ -202,20 +238,29 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
         Returns:
             `True` when a media payload was detected and swallowed.
         """
-        from deepagents_code.input import pasted_payload_media_paths
+        from deepagents_code.input import dropped_payload_paths
+        from deepagents_code.media_utils import is_media_path
 
         try:
-            media_paths = await asyncio.to_thread(pasted_payload_media_paths, text)
+            paths = await asyncio.to_thread(dropped_payload_paths, text)
         except Exception:
-            logger.debug(
+            # The parser absorbs OSError/RuntimeError/ValueError internally, so
+            # reaching here signals an unexpected regression. Log at warning
+            # (not debug) so it surfaces without DEEPAGENTS_CODE_DEBUG, since
+            # falling through re-inserts the path this method exists to reject.
+            # Never log the payload itself.
+            logger.warning(
                 "Media-payload detection failed; treating paste as text",
                 exc_info=True,
             )
             return False
-        if not media_paths:
+        if not any(is_media_path(path) for path in paths):
             return False
         self.app.notify(
-            _MEDIA_UNSUPPORTED_TOAST, severity="warning", timeout=5, markup=False
+            _media_unsupported_toast(paths),
+            severity="warning",
+            timeout=5,
+            markup=False,
         )
         return True
 

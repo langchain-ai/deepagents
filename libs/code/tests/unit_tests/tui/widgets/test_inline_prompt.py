@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING
 
 import pytest
 from textual.app import App
 from textual.events import Key, Paste
 
-from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
+from deepagents_code import input as input_module
+from deepagents_code.tui.widgets import (
+    _inline_prompt as inline_prompt_module,
+    _paste_textarea as paste_textarea_module,
+)
 from deepagents_code.tui.widgets._inline_prompt import (
-    _MEDIA_UNSUPPORTED_TOAST,
+    MEDIA_UNSUPPORTED_TOAST_PREFIX,
     InlinePromptCompletion,
     InlinePromptTextArea,
 )
@@ -21,6 +26,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from textual.app import ComposeResult
+    from textual.pilot import Pilot
 
 
 class _PromptApp(App[None]):
@@ -37,6 +43,24 @@ class _PromptApp(App[None]):
         self, event: InlinePromptTextArea.Submitted
     ) -> None:
         self.submissions.append(event.value)
+
+
+async def _paste(pilot: Pilot[None], payload: str) -> None:
+    """Deliver a bracketed paste the way a terminal does, through the App.
+
+    Posting to the App is what makes these tests meaningful: `App.on_event`
+    forwards `Paste` to the focused widget, and Textual's MRO dispatch then runs
+    every ancestor's `_on_paste` — including `TextArea._on_paste`, which performs
+    the actual insert. Calling `widget._on_paste(...)` directly skips that walk,
+    so the text never lands and assertions on it pass no matter what the
+    override does (notably whether it calls `prevent_default()`).
+
+    Args:
+        pilot: Pilot driving the running test app.
+        payload: Raw paste payload to deliver.
+    """
+    pilot.app.post_message(Paste(payload))
+    await pilot.pause()
 
 
 class TestInlinePromptPaste:
@@ -56,8 +80,7 @@ class TestInlinePromptPaste:
             await pilot.pause()
 
             big = "line\n" * 10
-            await ta._on_paste(Paste(big))
-            await pilot.pause()
+            await _paste(pilot, big)
 
             assert ta.text == "[Pasted text #1 +10 lines]"
             assert ta.submitted_value == big
@@ -108,8 +131,7 @@ class TestInlinePromptPaste:
             ta.focus()
             await pilot.pause()
 
-            await ta._on_paste(Paste("a\nb\nc\nd"))
-            await pilot.pause()
+            await _paste(pilot, "a\nb\nc\nd")
             assert ta.text == "[Pasted text #1 +3 lines]"
 
             await pilot.press("backspace")
@@ -132,8 +154,7 @@ class TestInlinePromptPaste:
                 ta.focus()
                 await pilot.pause()
 
-                await ta._on_paste(Paste("a\nb\nc\nd"))
-                await pilot.pause()
+                await _paste(pilot, "a\nb\nc\nd")
                 assert ta.text == "[Pasted text #1 +3 lines]"
 
                 await pilot.press(key)
@@ -156,7 +177,7 @@ class TestInlinePromptPaste:
                 ta.focus()
                 await pilot.pause()
 
-                await ta._on_paste(Paste("a\nb\nc\nd"))
+                await _paste(pilot, "a\nb\nc\nd")
                 ta.insert("\t")
                 await pilot.pause()
                 assert ta.text == "[Pasted text #1 +3 lines]\t"
@@ -307,15 +328,13 @@ class TestInlinePromptPaste:
             await pilot.pause()
 
             big = "line\n" * 10
-            await ta._on_paste(Paste(big))
-            await pilot.pause()
+            await _paste(pilot, big)
             assert ta.text == "[Pasted text #1 +10 lines]"
 
             # Pasting the same content again is treated as a request to see it in
             # full: the existing placeholder expands in place rather than a
             # second `#2` placeholder being added.
-            await ta._on_paste(Paste(big))
-            await pilot.pause()
+            await _paste(pilot, big)
             assert ta.text == big
             assert "[Pasted text #2" not in ta.text
             assert ta.submitted_value == big
@@ -333,8 +352,7 @@ class TestInlinePromptPaste:
             ta.focus()
             await pilot.pause()
 
-            await ta._on_paste(Paste("a\nb\nc\nd"))
-            await pilot.pause()
+            await _paste(pilot, "a\nb\nc\nd")
             assert ta.text == "[Pasted text #1 +3 lines]"
 
             ta.move_cursor((0, 0))
@@ -362,8 +380,7 @@ class TestInlinePromptPaste:
             ta.focus()
             await pilot.pause()
 
-            await ta._on_paste(Paste("a\nb\nc\nd"))
-            await pilot.pause()
+            await _paste(pilot, "a\nb\nc\nd")
             assert ta.text == "[Pasted text #1 +3 lines]"
 
             ta.insert("\n")
@@ -458,8 +475,7 @@ class TestInlinePromptPaste:
             ta.focus()
             await pilot.pause()
 
-            await ta._on_paste(Paste("line\n" * 10))
-            await pilot.pause()
+            await _paste(pilot, "line\n" * 10)
 
             # Only the deferral branch is asserted: no placeholder, no stored
             # content. The verbatim insert is Textual's base handler's job.
@@ -480,12 +496,12 @@ class TestInlinePromptMediaDrop:
             ta.focus()
             await pilot.pause()
 
-            await ta._on_paste(Paste(str(img)))
-            await pilot.pause()
+            await _paste(pilot, str(img))
 
             assert ta.text == ""
             latest = list(app._notifications)[-1]
-            assert latest.message == _MEDIA_UNSUPPORTED_TOAST
+            assert latest.message.startswith(MEDIA_UNSUPPORTED_TOAST_PREFIX)
+            assert "shot.png" in latest.message
             assert latest.severity == "warning"
 
     async def test_key_burst_of_video_is_rejected(self, tmp_path: Path) -> None:
@@ -498,15 +514,23 @@ class TestInlinePromptMediaDrop:
             ta.focus()
             await pilot.pause()
 
+            # `_dispatch_burst_payload` takes a payload rather than an event, so
+            # its whole contract is the early return; a direct call is faithful.
             await ta._dispatch_burst_payload(str(clip))
             await pilot.pause()
 
             assert ta.text == ""
             latest = list(app._notifications)[-1]
-            assert latest.message == _MEDIA_UNSUPPORTED_TOAST
+            assert latest.message.startswith(MEDIA_UNSUPPORTED_TOAST_PREFIX)
+            assert "clip.mp4" in latest.message
 
-    async def test_non_media_path_burst_is_inserted(self, tmp_path: Path) -> None:
+    async def test_non_media_path_burst_is_inserted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A dropped non-media file path falls through and inserts as text."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: False
+        )
         doc = tmp_path / "notes.txt"
         doc.write_text("hello")
         app = _PromptApp()
@@ -520,6 +544,118 @@ class TestInlinePromptMediaDrop:
 
             assert ta.text == str(doc)
             assert not list(app._notifications)
+
+    async def test_non_media_path_bracketed_paste_is_inserted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-media path delivered as a real paste still inserts as text."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: False
+        )
+        doc = tmp_path / "notes.txt"
+        doc.write_text("hello")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await _paste(pilot, str(doc))
+
+            assert ta.text == str(doc)
+            assert not list(app._notifications)
+
+    async def test_mixed_drop_is_rejected_and_names_every_file(
+        self, tmp_path: Path
+    ) -> None:
+        """A drop mixing media and non-media names both discarded files."""
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"img")
+        doc = tmp_path / "notes.txt"
+        doc.write_text("hello")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await _paste(pilot, f"{img} {doc}")
+
+            # The whole payload is swallowed, so the toast has to account for the
+            # non-media path too or it silently disappears.
+            assert ta.text == ""
+            latest = list(app._notifications)[-1]
+            assert "shot.png" in latest.message
+            assert "notes.txt" in latest.message
+
+    async def test_relative_media_path_is_inserted_as_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A typed relative media path is text, not a drop, so it is kept.
+
+        Regression guard: resolving relative tokens against the working
+        directory meant a user answering a free-text prompt could not paste
+        `assets/logo.png` as their answer — it was swallowed by the toast.
+        """
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: False
+        )
+        (tmp_path / "assets").mkdir()
+        (tmp_path / "assets" / "logo.png").write_bytes(b"img")
+        monkeypatch.chdir(tmp_path)
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await _paste(pilot, "assets/logo.png")
+
+            assert ta.text == "assets/logo.png"
+            assert not list(app._notifications)
+
+    async def test_detection_failure_inserts_text_and_logs_warning(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A parser regression falls back to text and surfaces at warning level.
+
+        The fallback re-inserts the path this feature exists to reject, so the
+        log level is the only signal that it happened — pin it, not just the
+        fall-through.
+        """
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: False
+        )
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"img")
+
+        def _boom(_text: str) -> list[Path]:
+            msg = "simulated parser regression"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(input_module, "dropped_payload_paths", _boom)
+
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            with caplog.at_level(logging.WARNING, logger=inline_prompt_module.__name__):
+                await _paste(pilot, str(img))
+
+            assert ta.text == str(img)
+            assert not list(app._notifications)
+            failures = [
+                record
+                for record in caplog.records
+                if "Media-payload detection failed" in record.getMessage()
+            ]
+            assert failures, "expected a breadcrumb for the detection failure"
+            assert failures[0].levelno == logging.WARNING
 
 
 class TestSharedBindings:

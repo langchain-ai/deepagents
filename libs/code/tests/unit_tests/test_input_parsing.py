@@ -5,13 +5,13 @@ from pathlib import Path
 import pytest
 
 from deepagents_code.input import (
+    dropped_payload_paths,
     extract_leading_pasted_file_path,
     normalize_pasted_path,
     parse_file_mentions,
     parse_pasted_file_paths,
     parse_pasted_path_payload,
     parse_single_pasted_file_path,
-    pasted_payload_media_paths,
 )
 
 
@@ -385,33 +385,106 @@ def test_parse_pasted_path_payload_leading_path_with_suffix(tmp_path: Path) -> N
     assert payload[parsed.token_end :] == " what's in this image?"
 
 
-def test_pasted_payload_media_paths_detects_image(tmp_path: Path) -> None:
-    """A dropped image path is returned as media."""
+def test_dropped_payload_paths_resolves_image(tmp_path: Path) -> None:
+    """A dropped image path is resolved."""
     img = tmp_path / "shot.png"
     img.write_bytes(b"img")
 
-    assert pasted_payload_media_paths(str(img)) == [img.resolve()]
+    assert dropped_payload_paths(str(img)) == [img.resolve()]
 
 
-def test_pasted_payload_media_paths_detects_video(tmp_path: Path) -> None:
-    """A dropped video path is returned as media."""
+def test_dropped_payload_paths_resolves_video(tmp_path: Path) -> None:
+    """A dropped video path is resolved."""
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"vid")
 
-    assert pasted_payload_media_paths(str(clip)) == [clip.resolve()]
+    assert dropped_payload_paths(str(clip)) == [clip.resolve()]
 
 
-def test_pasted_payload_media_paths_ignores_non_media(tmp_path: Path) -> None:
-    """A dropped non-media file path is not treated as media."""
+def test_dropped_payload_paths_resolves_non_media(tmp_path: Path) -> None:
+    """Classification is left to the caller, so non-media paths resolve too."""
     doc = tmp_path / "notes.txt"
     doc.write_text("hello")
 
-    assert pasted_payload_media_paths(str(doc)) == []
+    assert dropped_payload_paths(str(doc)) == [doc.resolve()]
 
 
-def test_pasted_payload_media_paths_ignores_plain_text() -> None:
-    """Ordinary typed text that is not an existing path yields no media."""
-    assert pasted_payload_media_paths("just some words") == []
+def test_dropped_payload_paths_resolves_multiple(tmp_path: Path) -> None:
+    """A multi-file drop returns every resolved path."""
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"img")
+    doc = tmp_path / "notes.txt"
+    doc.write_text("hello")
+
+    assert dropped_payload_paths(f"{img} {doc}") == [img.resolve(), doc.resolve()]
+
+
+def test_dropped_payload_paths_resolves_file_url(tmp_path: Path) -> None:
+    """A `file://` drop payload resolves like a plain path."""
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"img")
+
+    assert dropped_payload_paths(img.as_uri()) == [img.resolve()]
+
+
+def test_dropped_payload_paths_ignores_plain_text() -> None:
+    """Ordinary typed text that is not an existing path yields nothing."""
+    assert dropped_payload_paths("just some words") == []
+
+
+def test_dropped_payload_paths_ignores_relative_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A relative path is typed text, not a drop, so it is not resolved.
+
+    Terminals deliver a dragged file as an absolute path, so accepting relative
+    tokens here only misfires: it would swallow a hand-typed `assets/logo.png`
+    that resolves against the working directory.
+    """
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "logo.png").write_bytes(b"img")
+    monkeypatch.chdir(tmp_path)
+
+    assert dropped_payload_paths("assets/logo.png") == []
+
+
+def test_dropped_payload_paths_ignores_leading_path_with_suffix(
+    tmp_path: Path,
+) -> None:
+    """`<path> <question>` is out of scope, matching drop-time chat-input calls."""
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"img")
+
+    assert dropped_payload_paths(f"{img} what's in this image?") == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "/tmp/a\x00b.png",
+        "file://[::1/x.png",
+        "file://[bad",
+    ],
+)
+def test_dropped_payload_paths_tolerates_unparseable_payloads(payload: str) -> None:
+    """Payloads the OS or URL parser rejects fall back to text, never raise.
+
+    `Path.resolve` raises `ValueError` on an embedded NUL and `urlparse` raises
+    on a malformed authority, neither of which is an `OSError`.
+    """
+    assert dropped_payload_paths(payload) == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "/tmp/a\x00b.png",
+        "file://[::1/x.png",
+    ],
+)
+def test_parse_pasted_file_paths_tolerates_unparseable_payloads(payload: str) -> None:
+    """The strict parser's documented "returns an empty list" contract holds."""
+    assert parse_pasted_file_paths(payload) == []
 
 
 def test_extract_leading_pasted_file_path_with_trailing_text(tmp_path: Path) -> None:

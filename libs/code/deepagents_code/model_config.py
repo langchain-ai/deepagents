@@ -2962,6 +2962,78 @@ def _save_toml_field(
         return True
 
 
+def set_config_toml_value(
+    toml_keys: tuple[str, ...],
+    value: str | bool | float,
+    config_path: Path | None = None,
+) -> bool:
+    """Read-modify-write an arbitrary nested `config.toml` key, atomically.
+
+    Generic sibling of `_save_toml_field` used by the `config set` CLI command.
+    Walks (creating as needed) every table in `toml_keys` except the last,
+    assigns the leaf, and atomically replaces the file. The full parsed document
+    is preserved, so unrelated keys and nested tables are never dropped.
+
+    Args:
+        toml_keys: Dotted table/key path (e.g. `("startup", "mode")`). Must be
+            non-empty.
+        value: Scalar value to persist. Callers are responsible for validating
+            it against the option's manifest type before calling.
+        config_path: Path to config file. Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        `True` when the write succeeded, `False` on I/O or serialization error.
+
+    Raises:
+        ValueError: When `toml_keys` is empty.
+    """
+    if not toml_keys:
+        msg = "toml_keys must be non-empty"
+        raise ValueError(msg)
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    *sections, leaf = toml_keys
+    try:
+        with _config_write_lock:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+
+            if config_path.exists():
+                with config_path.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
+
+            # Walk/create the nested tables, preserving everything already there.
+            node = data
+            for section in sections:
+                existing = node.get(section)
+                if not isinstance(existing, dict):
+                    existing = {}
+                    node[section] = existing
+                node = existing
+            node[leaf] = value
+
+            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(config_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
+    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+        # See `_save_toml_field` for why `TypeError` / `ValueError` are folded
+        # into the bool return contract.
+        logger.exception("Could not save %s config value", ".".join(toml_keys))
+        return False
+    else:
+        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
+        _default_config_cache = None
+        return True
+
+
 def save_goal_auto_accept_criteria(
     enabled: bool,
     config_path: Path | None = None,
@@ -4650,8 +4722,13 @@ def load_startup_mode(config_path: Path | None = None) -> str:
         if isinstance(value, str) and value in VALID_STARTUP_MODES:
             return value
         if value is not None:
+            # The removed `dangerously-auto` spelling (and any other invalid
+            # value) stays fail-closed at `manual`; it is never auto-migrated.
+            # Point at the supported remediation so the fix is copy-pasteable.
             logger.warning(
-                "Ignoring [startup].mode=%r (expected 'manual', 'auto', or 'yolo')",
+                "Ignoring [startup].mode=%r (expected 'manual', 'auto', or 'yolo'); "
+                "falling back to 'manual'. Set a supported mode with "
+                "`dcode config set startup.mode yolo`.",
                 value,
             )
     except (OSError, tomllib.TOMLDecodeError):

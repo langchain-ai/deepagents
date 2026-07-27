@@ -107,6 +107,33 @@ def setup_config_parser(
     )
     add_output_args(get_parser)
 
+    set_parser = config_sub.add_parser(
+        "set",
+        help="Persist a config option to config.toml",
+        add_help=False,
+    )
+    # `key`/`value` are optional so a bare `config set` (or a key with no value)
+    # reaches our handler with an actionable hint rather than argparse's terse
+    # "the following arguments are required" error.
+    set_parser.add_argument(
+        "key",
+        nargs="?",
+        default=None,
+        help="Option key (e.g. startup.mode)",
+    )
+    set_parser.add_argument(
+        "value",
+        nargs="?",
+        default=None,
+        help="New value (e.g. yolo)",
+    )
+    set_parser.add_argument(
+        "-h",
+        "--help",
+        action=make_help_action(_lazy_ui_help("show_config_help")),
+    )
+    add_output_args(set_parser)
+
     path_parser = config_sub.add_parser(
         "path",
         help="Show config file locations",
@@ -622,6 +649,137 @@ def _run_get(key: str | None, output_format: OutputFormat) -> int:
     return 0
 
 
+_SET_KEY_EXAMPLE = "startup.mode"
+"""Illustrative writable key shown in the missing-arg hint for `config set`."""
+
+
+def _report_missing_set_args(output_format: OutputFormat) -> int:
+    """Explain that `config set` needs a key and value, pointing at how to find one.
+
+    Returns:
+        Exit code `2`, matching argparse's usage-error convention.
+    """
+    if output_format == "json":
+        write_json(
+            "config set",
+            {"error": "missing key or value", "example": f"{_SET_KEY_EXAMPLE} yolo"},
+        )
+        return 2
+
+    print(  # noqa: T201
+        f"`dcode config set` needs a key and value, e.g. `dcode config set "
+        f"{_SET_KEY_EXAMPLE} yolo`. Run `dcode config` to list options and their "
+        "effective values.",
+        file=sys.stderr,
+    )
+    return 2
+
+
+def _set_error(key: str, message: str, output_format: OutputFormat) -> int:
+    """Emit an actionable `config set` failure and return exit code `1`.
+
+    Returns:
+        Exit code `1`.
+    """
+    if output_format == "json":
+        write_json("config set", {"key": key, "error": message})
+        return 1
+    print(f"{message}", file=sys.stderr)  # noqa: T201
+    return 1
+
+
+def _run_set(key: str | None, value: str | None, output_format: OutputFormat) -> int:
+    """Validate and persist a single option to `config.toml`.
+
+    Rejects unknown keys, credential/secret options, options with no TOML
+    location, unsupported value types, and values that fail the option's
+    manifest validation — none of which mutate the file. On success the value
+    is written atomically and the effective value/source is reported, flagging
+    when a higher-precedence source (e.g. an env var) still overrides the write.
+
+    Returns:
+        Process exit code (`0` success, `1` rejected/invalid, `2` missing args).
+    """
+    if key is None or value is None:
+        return _report_missing_set_args(output_format)
+
+    from deepagents_code.config_manifest import (
+        ConfigWriteError,
+        get_option,
+        parse_config_write_value,
+        writable_rejection,
+    )
+
+    option = get_option(key)
+    if option is None:
+        return _set_error(
+            key,
+            f"Unknown config option: {key!r}. Run `dcode config --verbose` to see "
+            "available keys.",
+            output_format,
+        )
+
+    rejection = writable_rejection(option)
+    if rejection is not None:
+        return _set_error(key, rejection, output_format)
+
+    try:
+        parsed = parse_config_write_value(option, value)
+    except ConfigWriteError as exc:
+        # The message is actionable and secret-free by construction; the file is
+        # untouched because parsing/validation precedes any write.
+        return _set_error(key, str(exc), output_format)
+
+    from deepagents_code.model_config import set_config_toml_value
+
+    assert option.toml_keys is not None  # noqa: S101  # guaranteed by writable_rejection
+    if not set_config_toml_value(option.toml_keys, parsed.toml_value):
+        return _set_error(
+            key,
+            f"Could not write {key} to config.toml (see logs for details).",
+            output_format,
+        )
+
+    # Re-resolve with full precedence so the user learns whether an env override
+    # still shadows the value they just stored.
+    from deepagents_code.config_manifest import load_config_toml
+
+    toml_data = load_config_toml()
+    is_set, source, effective = _resolve(option, toml_data)
+    overridden = source != "config.toml"
+
+    if output_format == "json":
+        payload: dict[str, Any] = {
+            "key": option.key,
+            "stored_value": parsed.effective_value,
+            "source": source,
+            "effective_value": effective,
+            "overridden": overridden,
+            "set": is_set,
+        }
+        write_json("config set", payload)
+        return 0
+
+    from rich.markup import escape
+
+    from deepagents_code.config import console
+
+    console.print(
+        f"Set [cyan]{option.key}[/cyan] = {escape(str(parsed.effective_value))} "
+        f"[dim](config.toml)[/dim]",
+        highlight=False,
+    )
+    if overridden:
+        console.print(
+            f"[yellow]Note:[/yellow] the effective value is still "
+            f"{escape(_display_value(option, is_set=is_set, value=effective))} "
+            f"from {escape(_source_label(source, option=option))}, which takes "
+            "precedence over config.toml.",
+            highlight=False,
+        )
+    return 0
+
+
 def _run_path(output_format: OutputFormat) -> int:
     """Print the on-disk config file locations and whether they exist.
 
@@ -665,6 +823,8 @@ def run_config_command(args: argparse.Namespace) -> int:
         return _run_config(output_format, verbose=verbose)
     if command == "get":
         return _run_get(args.key, output_format)
+    if command == "set":
+        return _run_set(args.key, args.value, output_format)
     if command == "path":
         return _run_path(output_format)
 

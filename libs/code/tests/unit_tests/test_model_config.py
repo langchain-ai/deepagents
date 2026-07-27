@@ -8057,10 +8057,19 @@ class TestLoadStartupMode:
         config.write_text(f"[startup]\nmode = '{value}'\n")
         assert load_startup_mode(config) == expected
 
-    def test_dangerously_auto_is_rejected(self, tmp_path: Path) -> None:
+    def test_dangerously_auto_is_rejected(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
         config = tmp_path / "config.toml"
         config.write_text("[startup]\nmode = 'dangerously-auto'\n")
-        assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.model_config"):
+            # Legacy value stays fail-closed at manual; never auto-migrated.
+            assert load_startup_mode(config) == STARTUP_MODE_MANUAL
+        # The warning surfaces an actionable remediation command.
+        assert any(
+            "dcode config set startup.mode yolo" in r.getMessage()
+            for r in caplog.records
+        )
 
     def test_invalid_value_returns_default(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

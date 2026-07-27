@@ -35,7 +35,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any, Literal, assert_never, cast, get_args
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, assert_never, cast, get_args
 
 from deepagents_code import _env_vars
 from deepagents_code._env_vars import classify_env_bool
@@ -694,6 +694,162 @@ def resolve_scalar(
         return ("DEBUG" if is_env_truthy(DEBUG) else "INFO"), "default"
 
     return option.default, "default"
+
+
+# --- Writing (`config set`) -------------------------------------------------
+
+_WRITABLE_KINDS: frozenset[OptionKind] = frozenset(
+    {
+        OptionKind.BOOL,
+        OptionKind.BOOL_PRESENCE,
+        OptionKind.INT,
+        OptionKind.FLOAT,
+        OptionKind.STR,
+        OptionKind.CURSOR_STYLE_DELEGATE,
+        OptionKind.STARTUP_MODE_DELEGATE,
+    }
+)
+"""Option kinds `config set` can parse from a CLI string and persist to TOML.
+
+List/path/PTC/theme/structured delegates are intentionally excluded: their
+values do not compress into a single scalar CLI argument, so `config set`
+reports them as unsupported rather than guessing a serialization."""
+
+
+class ConfigWriteError(ValueError):
+    """Raised when an option cannot be written or its new value is invalid.
+
+    A `ValueError` subclass so callers that only care about "bad input" can
+    catch the base type, while the `config set` command surfaces the message
+    verbatim as an actionable, secret-free error.
+    """
+
+
+def writable_rejection(option: ConfigOption) -> str | None:
+    """Return why `option` cannot be written by `config set`, or `None`.
+
+    Returns:
+        An actionable, secret-free message when the option is a credential,
+            has no `config.toml` location, or has an unsupported value type;
+            `None` when the option is writable.
+    """
+    if option.group == "Credentials" or option.redacted:
+        return (
+            f"{option.key} is a credential and cannot be set with `config set`. "
+            "Use `dcode auth set` so the value is stored securely and never "
+            "printed."
+        )
+    if not option.toml_keys:
+        hint = (
+            f" Set it via the {option.env_var} environment variable."
+            if option.env_var
+            else ""
+        )
+        return (
+            f"{option.key} is not backed by config.toml and cannot be persisted "
+            f"with `config set`.{hint}"
+        )
+    if option.kind not in _WRITABLE_KINDS:
+        return (
+            f"{option.key} has type '{option.type}', which `config set` cannot "
+            "write. Edit config.toml directly for this option."
+        )
+    return None
+
+
+def _invalid_value_message(option: ConfigOption, raw: str) -> str:
+    """Build an actionable, secret-free error for a rejected `config set` value.
+
+    Returns:
+        A one-line message naming the option, the rejected raw value, and the
+            values the option accepts.
+    """
+    kind = option.kind
+    if kind is OptionKind.STARTUP_MODE_DELEGATE:
+        expected = "one of 'manual', 'auto', or 'yolo'"
+    elif kind is OptionKind.CURSOR_STYLE_DELEGATE:
+        expected = "'block' or 'underline'"
+    elif kind in {OptionKind.BOOL, OptionKind.BOOL_PRESENCE}:
+        expected = "a boolean (true/false, yes/no, on/off, 1/0)"
+    elif kind is OptionKind.INT:
+        expected = "an integer"
+    elif kind is OptionKind.FLOAT:
+        expected = "a number"
+    else:
+        expected = f"a valid {option.type} value"
+    return f"invalid value {raw!r} for {option.key}; expected {expected}."
+
+
+class ParsedWrite(NamedTuple):
+    """A validated `config set` value in both its stored and logical forms."""
+
+    toml_value: Any
+    """The literal to persist under the option's `toml_keys`."""
+
+    effective_value: Any
+    """The logical value a later read resolves the stored literal to.
+
+    Equals `toml_value` for every option except an `invert_toml_bool` one,
+    whose stored literal is the negation of the requested logical value.
+    """
+
+
+def parse_config_write_value(option: ConfigOption, raw: str) -> ParsedWrite:
+    """Parse and validate a CLI string for `config set`, per the option's kind.
+
+    Values are parsed to the option's TOML-native type and then run through the
+    same `_coerce_toml` validation the runtime resolver uses, so `config set`
+    can never persist a value the resolver would later reject (e.g. a
+    `startup.mode` outside `VALID_STARTUP_MODES`). Parsing and validation happen
+    before any file write, so invalid input never mutates `config.toml`.
+
+    Args:
+        option: The option being written. Assumed already accepted by
+            `writable_rejection` (writable kind with `toml_keys`).
+        raw: The raw CLI value string.
+
+    Returns:
+        A `ParsedWrite` pairing the literal to store with the logical value a
+            later read resolves it to.
+
+    Raises:
+        ConfigWriteError: When `raw` cannot be parsed/validated for the kind.
+    """
+    kind = option.kind
+    if kind in {OptionKind.BOOL, OptionKind.BOOL_PRESENCE}:
+        classified = classify_env_bool(raw)
+        if classified is None:
+            raise ConfigWriteError(_invalid_value_message(option, raw))
+        candidate: Any = classified
+    elif kind is OptionKind.INT:
+        try:
+            candidate = int(raw.strip())
+        except ValueError:
+            raise ConfigWriteError(_invalid_value_message(option, raw)) from None
+    elif kind is OptionKind.FLOAT:
+        try:
+            candidate = float(raw.strip())
+        except ValueError:
+            raise ConfigWriteError(_invalid_value_message(option, raw)) from None
+    else:
+        # STR and the string-valued delegates (cursor_style, startup_mode) keep
+        # the raw string; `_coerce_toml` performs any allowlist validation.
+        candidate = raw
+
+    # For an inverting bool the TOML literal is the negation of the requested
+    # logical value, so a later read negates it back. Store that literal.
+    if option.invert_toml_bool and isinstance(candidate, bool):
+        toml_value: Any = not candidate
+    else:
+        toml_value = candidate
+
+    # `_coerce_toml` validates the stored literal exactly as the runtime
+    # resolver reads it and returns the logical value (undoing any inversion),
+    # so `config set` can never persist a value the resolver would reject.
+    effective = _coerce_toml(option, toml_value)
+    if effective is _INVALID:
+        raise ConfigWriteError(_invalid_value_message(option, raw))
+    return ParsedWrite(toml_value=toml_value, effective_value=effective)
 
 
 def resolve_interpreter_kwargs(

@@ -752,12 +752,14 @@ def show_config_help() -> None:
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print("  dcode config [options]", markup=False)
     console.print("  dcode config get <key> [--json]", markup=False)
+    console.print("  dcode config set <key> <value> [--json]", markup=False)
     console.print("  dcode config path [--json]", markup=False)
     console.print()
     console.print("Show effective configuration values and their source.")
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  get <key>         Show one option's value and source")
+    console.print("  set <key> <val>   Persist a writable option to config.toml")
     console.print("  path              Show config file locations")
     console.print()
     _print_option_section(
@@ -768,11 +770,17 @@ def show_config_help() -> None:
         "  Credentials are reported as set/not set only; values are never printed.",
         style=theme.MUTED,
     )
+    console.print(
+        "  `set` only writes safe, non-credential options; use `dcode auth set` "
+        "for credentials.",
+        style=theme.MUTED,
+    )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode config")
     console.print("  dcode config --verbose")
     console.print("  dcode config get interpreter.memory_limit_mb")
+    console.print("  dcode config set startup.mode yolo")
     console.print("  dcode config path")
     console.print()
 

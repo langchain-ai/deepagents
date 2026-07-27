@@ -34,7 +34,7 @@ from deepagents_code.tui.widgets._inline_prompt import (
 )
 
 OTHER_CHOICE_LABEL = "Other (type your answer)"
-MISSING_ANSWER_TOAST = "This question is required. Type an answer before continuing."
+MISSING_ANSWER_TOAST = "Please provide an answer before continuing."
 logger = logging.getLogger(__name__)
 
 _TRAILING_ANNOTATION_RE = re.compile(

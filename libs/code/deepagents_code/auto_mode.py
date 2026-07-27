@@ -506,9 +506,10 @@ def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float)
 
     Provider exception text stays out of the reason (it can carry secrets or
     noisy HTML). Only real local deadline expiry
-    (`_ClassifierDeadlineExceededError`) includes the configured wait budget; a
-    bare provider `TimeoutError` stays type-only so we do not claim dcode's
-    deadline fired when the model failed first.
+    (`_ClassifierDeadlineExceededError`) says the classifier did not respond
+    within the configured wait budget; a bare provider `TimeoutError` stays
+    type-only so we do not claim dcode's deadline fired when the model failed
+    first.
 
     Args:
         exc: Failure raised while invoking or validating the classifier.
@@ -518,7 +519,7 @@ def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float)
         Compact single-line reason for tool messages and TUI events.
     """
     if isinstance(exc, _ClassifierDeadlineExceededError):
-        return f"no decision within Auto's {timeout_seconds:g}s limit"
+        return f"classifier did not respond within {timeout_seconds:g}s"
     return f"failed ({type(exc).__name__})"
 
 

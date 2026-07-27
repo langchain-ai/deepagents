@@ -12,7 +12,7 @@ from urllib.parse import unquote, urlparse
 from rich.markup import escape as escape_markup
 
 from deepagents_code.config import console
-from deepagents_code.media_utils import ImageData, VideoData
+from deepagents_code.media_utils import ImageData, VideoData, is_media_path
 
 logger = logging.getLogger(__name__)
 
@@ -608,6 +608,26 @@ def parse_pasted_path_payload(
 
     path, token_end = leading
     return ParsedPastedPathPayload(paths=[path], token_end=token_end)
+
+
+def pasted_payload_media_paths(text: str) -> list[Path]:
+    """Return image/video file paths from a dropped-path payload.
+
+    Reuses `parse_pasted_path_payload` — the same dropped-path detection the chat
+    input uses, which only resolves paths that exist on disk — then keeps the
+    subset whose extension marks them as media. Text-only inputs use this to
+    detect a dragged image or video so it can be rejected with a toast.
+
+    Args:
+        text: Raw pasted/dropped text payload.
+
+    Returns:
+        Resolved media file paths found in the payload, or an empty list.
+    """
+    parsed = parse_pasted_path_payload(text)
+    if parsed is None:
+        return []
+    return [path for path in parsed.paths if is_media_path(path)]
 
 
 def parse_single_pasted_file_path(text: str) -> Path | None:

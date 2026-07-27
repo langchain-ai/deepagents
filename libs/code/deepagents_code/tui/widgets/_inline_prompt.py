@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
@@ -10,8 +12,6 @@ from textual.message import Message
 from textual.widgets import Static
 
 if TYPE_CHECKING:
-    import asyncio
-
     from textual import events
     from textual.widget import Widget
 
@@ -19,9 +19,16 @@ from deepagents_code import theme
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.tui.widgets._paste_textarea import CollapsingPasteTextArea
 
+logger = logging.getLogger(__name__)
+
 ResultT = TypeVar("ResultT")
 
 _UNSET: Any = object()
+
+_MEDIA_UNSUPPORTED_TOAST = (
+    "Only text is supported here; images and other media can't be attached."
+)
+"""Toast shown when a media file is dragged into a text-only inline prompt."""
 
 
 class InlinePromptCompletion(Generic[ResultT]):
@@ -166,6 +173,51 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
             return
 
         await super()._on_key(event)
+
+    async def _on_paste(self, event: events.Paste) -> None:
+        """Reject a dragged media file, else defer to shared paste handling."""
+        if await self._reject_dropped_media(event.text):
+            event.prevent_default()
+            event.stop()
+            return
+        await super()._on_paste(event)
+
+    async def _dispatch_burst_payload(self, payload: str) -> None:
+        """Reject a media file replayed as a key burst, else insert as usual."""
+        if await self._reject_dropped_media(payload):
+            return
+        await super()._dispatch_burst_payload(payload)
+
+    async def _reject_dropped_media(self, text: str) -> bool:
+        """Toast and swallow a dropped image/video payload.
+
+        Free-text prompts accept only text, so a dragged media file (which the
+        chat input would attach) is rejected here instead of inserting its path.
+        Reuses the chat input's dropped-path detection, which only resolves
+        files that exist on disk, so ordinary typed or pasted text is unaffected.
+
+        Args:
+            text: Raw pasted/dropped text payload.
+
+        Returns:
+            `True` when a media payload was detected and swallowed.
+        """
+        from deepagents_code.input import pasted_payload_media_paths
+
+        try:
+            media_paths = await asyncio.to_thread(pasted_payload_media_paths, text)
+        except Exception:
+            logger.debug(
+                "Media-payload detection failed; treating paste as text",
+                exc_info=True,
+            )
+            return False
+        if not media_paths:
+            return False
+        self.app.notify(
+            _MEDIA_UNSUPPORTED_TOAST, severity="warning", timeout=5, markup=False
+        )
+        return True
 
 
 class InlinePromptOption(Static):

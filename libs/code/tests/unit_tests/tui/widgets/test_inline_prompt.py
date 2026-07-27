@@ -11,12 +11,15 @@ from textual.events import Key, Paste
 
 from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
 from deepagents_code.tui.widgets._inline_prompt import (
+    _MEDIA_UNSUPPORTED_TOAST,
     InlinePromptCompletion,
     InlinePromptTextArea,
 )
 from deepagents_code.tui.widgets._paste_textarea import PasteBurstTextArea
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from textual.app import ComposeResult
 
 
@@ -462,6 +465,61 @@ class TestInlinePromptPaste:
             # content. The verbatim insert is Textual's base handler's job.
             assert "[Pasted text #1" not in ta.text
             assert ta._pasted_contents == {}
+
+
+class TestInlinePromptMediaDrop:
+    """Dragging a media file into a text-only prompt is rejected with a toast."""
+
+    async def test_bracketed_paste_of_image_is_rejected(self, tmp_path: Path) -> None:
+        """A dropped image path toasts and is not inserted as text."""
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"img")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await ta._on_paste(Paste(str(img)))
+            await pilot.pause()
+
+            assert ta.text == ""
+            latest = list(app._notifications)[-1]
+            assert latest.message == _MEDIA_UNSUPPORTED_TOAST
+            assert latest.severity == "warning"
+
+    async def test_key_burst_of_video_is_rejected(self, tmp_path: Path) -> None:
+        """A dropped video path replayed as a burst toasts and is not inserted."""
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"vid")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await ta._dispatch_burst_payload(str(clip))
+            await pilot.pause()
+
+            assert ta.text == ""
+            latest = list(app._notifications)[-1]
+            assert latest.message == _MEDIA_UNSUPPORTED_TOAST
+
+    async def test_non_media_path_burst_is_inserted(self, tmp_path: Path) -> None:
+        """A dropped non-media file path falls through and inserts as text."""
+        doc = tmp_path / "notes.txt"
+        doc.write_text("hello")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await ta._dispatch_burst_payload(str(doc))
+            await pilot.pause()
+
+            assert ta.text == str(doc)
+            assert not list(app._notifications)
 
 
 class TestSharedBindings:

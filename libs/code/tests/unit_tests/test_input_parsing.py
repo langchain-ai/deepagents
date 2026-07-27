@@ -11,6 +11,7 @@ from deepagents_code.input import (
     parse_pasted_file_paths,
     parse_pasted_path_payload,
     parse_single_pasted_file_path,
+    pasted_payload_media_paths,
 )
 
 
@@ -382,6 +383,35 @@ def test_parse_pasted_path_payload_leading_path_with_suffix(tmp_path: Path) -> N
     assert parsed.paths == [img.resolve()]
     assert parsed.token_end is not None
     assert payload[parsed.token_end :] == " what's in this image?"
+
+
+def test_pasted_payload_media_paths_detects_image(tmp_path: Path) -> None:
+    """A dropped image path is returned as media."""
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"img")
+
+    assert pasted_payload_media_paths(str(img)) == [img.resolve()]
+
+
+def test_pasted_payload_media_paths_detects_video(tmp_path: Path) -> None:
+    """A dropped video path is returned as media."""
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"vid")
+
+    assert pasted_payload_media_paths(str(clip)) == [clip.resolve()]
+
+
+def test_pasted_payload_media_paths_ignores_non_media(tmp_path: Path) -> None:
+    """A dropped non-media file path is not treated as media."""
+    doc = tmp_path / "notes.txt"
+    doc.write_text("hello")
+
+    assert pasted_payload_media_paths(str(doc)) == []
+
+
+def test_pasted_payload_media_paths_ignores_plain_text() -> None:
+    """Ordinary typed text that is not an existing path yields no media."""
+    assert pasted_payload_media_paths("just some words") == []
 
 
 def test_extract_leading_pasted_file_path_with_trailing_text(tmp_path: Path) -> None:

@@ -196,19 +196,50 @@ async def _make_graph() -> Any:  # noqa: ANN401
         Compiled LangGraph agent graph.
     """
     config = ServerConfig.from_env()
-    project_context = get_server_project_context()
 
-    from deepagents_code.agent import create_cli_agent, load_async_subagents
-    from deepagents_code.config import (
-        configure_langsmith_secret_redaction,
+    # Offload cwd/path resolution and the lazy settings bootstrap off the event
+    # loop. On Windows, `Path.resolve()` / `Path.cwd()` call `os.getcwd()`, which
+    # `blockbuster` rejects when invoked directly from the server loop (see
+    # issue #5043). Importing `deepagents_code.agent` / first `settings` access
+    # can also trigger `find_project_root()` -> `Path.cwd()`.
+    def _resolve_project_context_and_settings() -> tuple[
+        ProjectContext | None,
+        Any,
+        Any,
+        Any,
+        Any,
+        Any,
+    ]:
+        project_context = get_server_project_context()
+
+        from deepagents_code.agent import create_cli_agent, load_async_subagents
+        from deepagents_code.config import (
+            configure_langsmith_secret_redaction,
+            create_model,
+            is_memory_auto_save_enabled,
+            settings,
+        )
+
+        if project_context is not None:
+            settings.reload_from_environment(start_path=project_context.user_cwd)
+        configure_langsmith_secret_redaction()
+        return (
+            project_context,
+            create_cli_agent,
+            load_async_subagents,
+            create_model,
+            is_memory_auto_save_enabled,
+            settings,
+        )
+
+    (
+        project_context,
+        create_cli_agent,
+        load_async_subagents,
         create_model,
         is_memory_auto_save_enabled,
         settings,
-    )
-
-    if project_context is not None:
-        settings.reload_from_environment(start_path=project_context.user_cwd)
-    configure_langsmith_secret_redaction()
+    ) = await asyncio.to_thread(_resolve_project_context_and_settings)
 
     # Offload to a worker thread: `create_model` does blocking disk IO for some
     # providers (e.g. the `openai_codex` token store currently acquires a file

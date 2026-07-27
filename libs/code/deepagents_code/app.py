@@ -5052,37 +5052,20 @@ class DeepAgentsApp(App):
             and self._server_kwargs is not None
         ):
             missing = self._server_startup_missing_provider_package
-            from deepagents_code.extras_info import extra_for_package
+            from deepagents_code.extras_info import resolve_install_hint
 
-            extra = extra_for_package(missing.package)
-            if extra is not None:
+            hint = resolve_install_hint(missing.package)
+            if hint.extra is not None:
                 text += (
-                    f"\n\nHint: install the package with `/install {extra}`, "
+                    f"\n\nHint: install the package with `/install {hint.extra}`, "
                     f"then run `/model {missing.provider}:<model>` to retry. "
                     "Or pick a different provider with `/model`."
                 )
             else:
-                from deepagents_code.extras_info import ExtrasIntrospectionError
-                from deepagents_code.update_check import (
-                    ToolRequirementIntrospectionError,
-                    install_package_command,
-                )
-
-                try:
-                    install_cmd = install_package_command(missing.package)
-                except (
-                    ValueError,
-                    ExtrasIntrospectionError,
-                    ToolRequirementIntrospectionError,
-                ) as exc:
-                    logger.debug(
-                        "install_package_command failed; falling back to "
-                        "manual hint: %s",
-                        exc,
-                    )
-                    install_hint = f"install the `{missing.package}` package manually"
+                if hint.command is not None:
+                    install_hint = f"run `{hint.command}`"
                 else:
-                    install_hint = f"run `{install_cmd}`"
+                    install_hint = f"install the `{missing.package}` package manually"
                 text += (
                     f"\n\nHint: {install_hint}, then run "
                     f"`/model {missing.provider}:<model>` "
@@ -6034,9 +6017,9 @@ class DeepAgentsApp(App):
                 create_update_log_path,
                 editable_extra_hint,
                 install_extra_command,
-                install_extra_recovery_command,
                 is_valid_extra_name,
                 perform_install_extra,
+                safe_install_extra_recovery_command,
             )
         except ImportError as exc:
             logger.warning("/install command import failed", exc_info=True)
@@ -6121,19 +6104,9 @@ class DeepAgentsApp(App):
             # already bound above so the hint is never empty. `manual_cmd` is
             # rendered into a Textual `Content` (literal, not Rich markup), so no
             # bracket escaping is needed here.
-            try:
-                manual_cmd = await asyncio.to_thread(
-                    install_extra_recovery_command, extra
-                )
-            except (
-                ExtrasIntrospectionError,
-                ToolRequirementIntrospectionError,
-                ValueError,
-            ):
-                logger.warning(
-                    "/install recovery command failed (install raised)",
-                    exc_info=True,
-                )
+            manual_cmd = await asyncio.to_thread(
+                safe_install_extra_recovery_command, extra, fallback=manual_cmd
+            )
             await self._mount_message(
                 ErrorMessage(
                     f"Install failed: {type(exc).__name__}: {exc}\n"
@@ -6149,19 +6122,9 @@ class DeepAgentsApp(App):
             detail = f": {output[-200:]}" if output else ""
             # See the OSError branch above: best-effort recovery command, falling
             # back to the already-bound install-script command on failure.
-            try:
-                manual_cmd = await asyncio.to_thread(
-                    install_extra_recovery_command, extra
-                )
-            except (
-                ExtrasIntrospectionError,
-                ToolRequirementIntrospectionError,
-                ValueError,
-            ):
-                logger.warning(
-                    "/install recovery command failed (install reported failure)",
-                    exc_info=True,
-                )
+            manual_cmd = await asyncio.to_thread(
+                safe_install_extra_recovery_command, extra, fallback=manual_cmd
+            )
             await self._mount_message(
                 ErrorMessage(
                     f"Install failed{detail}\n"

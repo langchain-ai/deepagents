@@ -1105,6 +1105,64 @@ async def test_offer_restart_survives_missing_restart_prompt_module() -> None:
         restart.assert_not_awaited()
 
 
+async def test_install_restart_prompt_responsive_through_message_pump() -> None:
+    """The post-install restart modal must accept keys via the real submit path.
+
+    Regression test: `/install <extra>` is dispatched from the App's
+    `on_chat_input_submitted` handler, which is awaited inline on the App
+    message pump. Previously the restart offer was `await`ed in that chain, so
+    the pump stayed blocked while the modal was open and the modal never
+    received the Enter/Esc key events it needs to resolve — it appeared frozen.
+    The offer now runs off the pump (`_schedule_restart_offer`), so submitting
+    through the real `ChatInput.Submitted` path and pressing Enter must resolve
+    the modal and trigger the restart rather than wedging the UI.
+    """
+    from deepagents_code.tui.widgets.chat_input import ChatInput
+    from deepagents_code.tui.widgets.restart_prompt import RestartPromptScreen
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Pretend dcode owns an idle server so the one-keypress prompt is offered.
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+        app._agent_running = False
+        app._connecting = False
+        restart = AsyncMock(return_value=True)
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ),
+            patch.object(app, "_restart_after_install", new=restart),
+        ):
+            # Submit through the message pump, exactly as the ChatInput widget
+            # would, rather than awaiting `_handle_command` directly (which would
+            # not exercise the pump-blocking path).
+            assert app._chat_input is not None
+            app._chat_input.post_message(
+                ChatInput.Submitted("/install fireworks", "command")
+            )
+            # Wait for the detached offer to mount the modal.
+            for _ in range(50):
+                await pilot.pause()
+                if isinstance(app.screen, RestartPromptScreen):
+                    break
+            assert isinstance(app.screen, RestartPromptScreen)
+
+            # With the pump free, Enter must reach the modal and resolve it.
+            # Before the fix this raised `WaitForScreenTimeout`.
+            await pilot.press("enter")
+            for _ in range(50):
+                await pilot.pause()
+                if not isinstance(app.screen, RestartPromptScreen):
+                    break
+        assert not isinstance(app.screen, RestartPromptScreen)
+        restart.assert_awaited_once_with("fireworks")
+
+
 def test_ensure_restart_prompt_loaded_caches_module() -> None:
     """Preloading leaves the restart modal resident in `sys.modules`.
 

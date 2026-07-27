@@ -1,12 +1,14 @@
 """First-enable confirmation modal before Shift+Tab enters YOLO.
 
 Shown when the user cycles into unrestricted YOLO without a persisted
-acknowledgement. Enter acknowledges YOLO and records the policy version; Esc
-keeps the previous approval mode and leaves the acknowledgement unsaved.
+acknowledgement. Enter acknowledges YOLO and records the policy version; `m`
+switches to Manual instead; Esc keeps the previous approval mode. Only Enter
+persists the acknowledgement.
 """
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
@@ -19,36 +21,51 @@ from deepagents_code.tui.widgets._links import open_checked_url_async
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
+
+class YoloModeNoticeResult(StrEnum):
+    """Outcome of the YOLO first-enable notice.
+
+    `ACKNOWLEDGE` enables YOLO (and records the acknowledgement); `MANUAL`
+    switches to Manual instead; `CANCEL` keeps the previous mode. A
+    programmatic dismiss may still yield `None`, which callers treat like
+    `CANCEL` so YOLO is never left active without an explicit acknowledge.
+    """
+
+    ACKNOWLEDGE = "acknowledge"
+    MANUAL = "manual"
+    CANCEL = "cancel"
+
+
 YOLO_MODE_DOCS_URL = (
     "https://docs.langchain.com/oss/python/deepagents/code/approval-modes"
 )
 """Canonical docs page for Manual / Auto / YOLO behavior."""
 
 YOLO_MODE_NOTICE_BODY = (
-    "You are about to enable **YOLO**. The agent will run **gated actions "
-    "without asking first** — shell commands, file edits, network calls, and "
-    "other tools on this machine.\n\n"
-    "This is **not Auto**. There is **no classifier review** and **no approval "
-    "prompt** while YOLO is active. Prefer Auto unless you intend full "
-    "unrestricted execution.\n\n"
-    "This notice appears **once** on this machine after you continue. You can "
-    "leave YOLO any time with **Shift+Tab**.\n\n"
+    "You are about to enable **YOLO mode**. The agent may run shell commands, "
+    "edit files, make network calls, and use other tools on this machine "
+    "**without asking you first**.\n\n"
+    "Only continue if you're comfortable letting it act unsupervised. Leave "
+    "YOLO any time with **Shift+Tab**.\n\n"
+    "This notice appears **once** on this machine.\n\n"
     f"[Learn more about approval modes]({YOLO_MODE_DOCS_URL})"
 )
 """Default Markdown body shown before the first YOLO switcher enable."""
 
 
-class YoloModeNoticeScreen(ModalScreen[bool]):
+class YoloModeNoticeScreen(ModalScreen[YoloModeNoticeResult]):
     """In-TUI acknowledgement shown before unrestricted YOLO becomes active.
 
-    Dismisses with `True` on Enter (acknowledge and enable) and `False` on Esc
-    (keep the previous mode). Programmatic dismiss may yield `None`; callers
-    treat that like cancel so YOLO is never left active without an explicit
-    acknowledge.
+    Dismisses with `YoloModeNoticeResult.ACKNOWLEDGE` on Enter (acknowledge and
+    enable), `YoloModeNoticeResult.MANUAL` on `m` (switch to Manual), and
+    `YoloModeNoticeResult.CANCEL` on Esc (keep the previous mode). Programmatic
+    dismiss may yield `None`; callers treat that like cancel so YOLO is never
+    left active without an explicit acknowledge.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "confirm", "Enable YOLO", show=False, priority=True),
+        Binding("m", "switch_to_manual", "Switch to Manual", show=False, priority=True),
         Binding("escape", "cancel", "Keep previous", show=False, priority=True),
     ]
 
@@ -136,7 +153,7 @@ class YoloModeNoticeScreen(ModalScreen[bool]):
                 open_links=False,
             )
             yield Static(
-                "Enter to acknowledge and enable YOLO · Esc to keep current mode",
+                "Enter to enable YOLO · m for Manual · Esc to keep current mode",
                 classes="yolo-mode-notice-help",
                 markup=False,
             )
@@ -148,7 +165,11 @@ class YoloModeNoticeScreen(ModalScreen[bool]):
 
     def action_confirm(self) -> None:
         """Acknowledge YOLO and mark the notice dismissed without re-showing."""
-        self.dismiss(True)
+        self.dismiss(YoloModeNoticeResult.ACKNOWLEDGE)
+
+    def action_switch_to_manual(self) -> None:
+        """Switch to Manual instead of YOLO, without persisting acknowledgement."""
+        self.dismiss(YoloModeNoticeResult.MANUAL)
 
     def action_cancel(self) -> None:
         """Keep the previous approval mode without persisting acknowledgement.
@@ -158,4 +179,4 @@ class YoloModeNoticeScreen(ModalScreen[bool]):
         `action_cancel` if present and otherwise falls through to
         `dismiss(None)`. Renaming this would silently regress Esc handling.
         """
-        self.dismiss(False)
+        self.dismiss(YoloModeNoticeResult.CANCEL)

@@ -138,7 +138,6 @@ async def _serve_example_agent() -> None:
         {"value": "openai:gpt-5.6-terra", "name": "GPT-5.6-Terra"},
         {"value": "openai:gpt-5.6-luna", "name": "GPT-5.6-Luna"},
         {"value": "openai:gpt-5.5", "name": "GPT-5.5"},
-        {"value": "openai:gpt-5.4-pro", "name": "GPT-5.4 Pro"},
     ]
     models = baseten_models + anthropic_models + openai_models
 

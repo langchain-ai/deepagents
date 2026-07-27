@@ -16,6 +16,49 @@ def test_parse_int_input_enforces_inclusive_range():
             up.parse_int_input("UNIFIED_CONCURRENCY", raw, minimum=1, maximum=40)
 
 
+def test_retry_and_timeout_inputs_are_strictly_validated():
+    import pytest
+
+    assert up.parse_nonnegative_integer_input("UNIFIED_N_RETRIES", "0") == 0
+    assert up.parse_nonnegative_integer_input("UNIFIED_N_RETRIES", "2") == 2
+    for raw in ("", "-1", "+1", "1.5", "many"):
+        with pytest.raises(SystemExit, match=r"UNIFIED_N_RETRIES.*non-negative"):
+            up.parse_nonnegative_integer_input("UNIFIED_N_RETRIES", raw)
+
+    for raw in ("1", "1.0", "1.5", "2.0", "0.1"):
+        assert (
+            up.parse_positive_decimal_input("UNIFIED_AGENT_TIMEOUT_MULTIPLIER", raw)
+            == raw
+        )
+    for raw in ("", "0", "0.0", "-1", "+1", ".5", "1e2", "many"):
+        with pytest.raises(
+            SystemExit, match=r"UNIFIED_AGENT_TIMEOUT_MULTIPLIER.*positive"
+        ):
+            up.parse_positive_decimal_input("UNIFIED_AGENT_TIMEOUT_MULTIPLIER", raw)
+
+
+def test_main_rejects_invalid_retry_controls_before_building_matrix(
+    tmp_path, monkeypatch
+):
+    import pytest
+
+    monkeypatch.setenv("UNIFIED_MODELS", "openai:gpt")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "context")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+
+    monkeypatch.setenv("UNIFIED_AGENT_TIMEOUT_MULTIPLIER", "1.0")
+    for raw in ("-1", "1.5", "many"):
+        monkeypatch.setenv("UNIFIED_N_RETRIES", raw)
+        with pytest.raises(SystemExit, match=r"UNIFIED_N_RETRIES"):
+            up.main([])
+
+    monkeypatch.setenv("UNIFIED_N_RETRIES", "0")
+    for raw in ("0", "-1", "1e2", "many"):
+        monkeypatch.setenv("UNIFIED_AGENT_TIMEOUT_MULTIPLIER", raw)
+        with pytest.raises(SystemExit, match=r"UNIFIED_AGENT_TIMEOUT_MULTIPLIER"):
+            up.main([])
+
+
 def test_provider_of_uses_prefix_and_falls_back_to_other():
     known = {"anthropic", "openai"}
     assert up.provider_of("anthropic:claude-opus-4-7", known) == "anthropic"

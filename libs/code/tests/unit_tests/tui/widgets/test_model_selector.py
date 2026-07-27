@@ -2004,6 +2004,22 @@ class TestAvailabilityOrdering:
 class TestCuratedModelSelection:
     """Tests for onboarding curated model selection."""
 
+    def test_opus_5_is_recommended(self) -> None:
+        """Opus 5 should be discoverable in the frontier picker subset."""
+        from deepagents_code.tui.widgets import model_selector
+
+        all_models = [
+            ("anthropic:claude-opus-5", "anthropic"),
+            ("anthropic:claude-opus-4-5", "anthropic"),
+        ]
+
+        curated = ModelSelectorScreen._curate_models(all_models)
+
+        assert model_selector._RECOMMENDED_MODELS["anthropic:claude-opus-5"] == (
+            "Claude Opus 5"
+        )
+        assert curated == all_models[:1]
+
     def test_sonnet_5_is_recommended(self) -> None:
         """Sonnet 5 should be part of the frontier picker subset."""
         from deepagents_code.tui.widgets import model_selector

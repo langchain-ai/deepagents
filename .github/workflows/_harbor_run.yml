@@ -123,7 +123,7 @@ jobs:
       aggregate_matrix: ${{ steps.agg-matrix.outputs.aggregate_matrix }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🔀 Expand matrix by shard"
         id: shard-matrix
@@ -361,7 +361,7 @@ jobs:
           echo "All required credentials present for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -585,6 +585,10 @@ jobs:
           if ! [[ "$HARBOR_N_RETRIES" =~ ^[0-9]+$ ]]; then
             echo "::error::Invalid n_retries (non-negative integer): $HARBOR_N_RETRIES"
             exit 1
+          fi
+          retry_reward_flag=()
+          if [ "$HARBOR_N_RETRIES" -ne 0 ]; then
+            retry_reward_flag=(--retry-if-reward-below 1.0)
           fi
           if ! [[ "$HARBOR_CATEGORY" =~ ^[A-Za-z0-9_.-]+$ ]]; then
             echo "::error::Invalid Harbor category: $HARBOR_CATEGORY"
@@ -852,6 +856,7 @@ jobs:
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
             --max-retries "$HARBOR_N_RETRIES" \
+            "${retry_reward_flag[@]}" \
             --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
             --environment-build-timeout-multiplier "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" \
             "${verification_flag[@]}" \
@@ -884,6 +889,20 @@ jobs:
           PY
           )
           echo "job_dir=$latest_job" >> "$GITHUB_OUTPUT"
+          actual_retries=$(python - "$latest_job/result.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          try:
+              result = json.loads(Path(sys.argv[1]).read_text())
+              retries = (result.get("stats") or {}).get("n_retries")
+          except (OSError, ValueError, AttributeError):
+              retries = None
+          print(retries if type(retries) is int and retries >= 0 else "unknown")
+          PY
+          )
+          echo "actual_retries=$actual_retries" >> "$GITHUB_OUTPUT"
 
       - name: "📝 Write workflow summary"
         if: always()
@@ -892,6 +911,7 @@ jobs:
           HARBOR_AGENT_GRAPH: ${{ env.HARBOR_AGENT_GRAPH }}
           HARBOR_LANGSMITH_DATASET: ${{ env.HARBOR_LANGSMITH_DATASET }}
           HARBOR_LANGSMITH_EXPERIMENT: ${{ env.HARBOR_LANGSMITH_EXPERIMENT }}
+          ACTUAL_RETRIES: ${{ steps.latest-job.outputs.actual_retries }}
           LATEST_JOB_OUTCOME: ${{ steps.latest-job.outcome }}
           SHARD_EMPTY: ${{ env.SHARD_EMPTY }}
         run: |
@@ -916,6 +936,13 @@ jobs:
               echo "- Included tasks: all"
             fi
             echo "- Rollouts per task: ${HARBOR_ROLLOUTS_PER_TASK}"
+            echo "- Configured retries per eligible failed trial: ${HARBOR_N_RETRIES}"
+            echo "- Agent timeout multiplier: ${HARBOR_AGENT_TIMEOUT_MULTIPLIER}"
+            if [ "$SHARD_EMPTY" = "true" ]; then
+              echo "- Actual retries: 0"
+            else
+              echo "- Actual retries: ${ACTUAL_RETRIES:-unknown}"
+            fi
             echo "- Agent: Harbor LangGraph ${HARBOR_AGENT_GRAPH}"
             echo "- LangSmith dataset: ${HARBOR_LANGSMITH_DATASET}"
             echo "- LangSmith experiment: ${HARBOR_LANGSMITH_EXPERIMENT}"
@@ -1015,7 +1042,7 @@ jobs:
       HARBOR_RESULT: ${{ needs.harbor.result }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🔖 Compute leaf slug"
         id: slug

@@ -80,7 +80,7 @@ class RestartPromptScreen(ModalScreen[RestartChoice]):
     }
     """
 
-    _DEFAULT_BODY = "Restart the server to load it now, or defer with `/restart`."
+    _DEFAULT_BODY = "Restart the server to load it now."
 
     def __init__(
         self,

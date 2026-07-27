@@ -217,6 +217,101 @@ class TestHasProviderCredentials:
         ):
             assert has_provider_credentials("anthropic") is True
 
+    @pytest.mark.parametrize(
+        "provider", ["anthropic", "baseten", "fireworks", "google_genai", "openai"]
+    )
+    def test_returns_true_with_langsmith_gateway(self, provider: str) -> None:
+        """Returns True for providers supported by LangSmith Gateway."""
+        with patch.dict(
+            "os.environ",
+            {
+                "LANGSMITH_GATEWAY": "true",
+                "LANGSMITH_GATEWAY_API_KEY": "gateway-key",
+            },
+            clear=True,
+        ):
+            assert has_provider_credentials(provider) is True
+
+    def test_returns_true_with_custom_langsmith_gateway_url(self) -> None:
+        """Returns True when the gateway setting is a custom URL."""
+        with patch.dict(
+            "os.environ",
+            {
+                "LANGSMITH_GATEWAY": "https://gateway.example.com",
+                "LANGSMITH_GATEWAY_API_KEY": "gateway-key",
+            },
+            clear=True,
+        ):
+            status = get_provider_auth_status("openai")
+
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.ENV
+        assert status.env_var == "LANGSMITH_GATEWAY_API_KEY"
+
+    @pytest.mark.parametrize("gateway", ["false", "0", "no", ""])
+    def test_returns_false_when_langsmith_gateway_disabled(self, gateway: str) -> None:
+        """Returns False when the gateway setting is disabled."""
+        with patch.dict(
+            "os.environ",
+            {
+                "LANGSMITH_GATEWAY": gateway,
+                "LANGSMITH_GATEWAY_API_KEY": "gateway-key",
+            },
+            clear=True,
+        ):
+            assert has_provider_credentials("anthropic") is False
+
+    def test_returns_false_when_langsmith_gateway_key_missing(self) -> None:
+        """Returns False when the enabled gateway has no API key."""
+        with patch.dict("os.environ", {"LANGSMITH_GATEWAY": "true"}, clear=True):
+            assert has_provider_credentials("openai") is False
+
+    def test_returns_false_for_unsupported_gateway_provider(self) -> None:
+        """Returns False when the provider integration lacks gateway support."""
+        with patch.dict(
+            "os.environ",
+            {
+                "LANGSMITH_GATEWAY": "true",
+                "LANGSMITH_GATEWAY_API_KEY": "gateway-key",
+            },
+            clear=True,
+        ):
+            assert has_provider_credentials("groq") is False
+
+    def test_class_path_override_does_not_borrow_gateway(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `class_path` override must not report gateway auth.
+
+        Overriding a built-in gateway provider name with a custom `class_path`
+        builds an arbitrary class (via `_create_model_from_class`) that need not
+        consume the gateway variables, so its own `api_key_env` preflight must
+        stand rather than reporting CONFIGURED off the gateway.
+        """
+        state_dir = tmp_path / ".state"
+        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_STATE_DIR", state_dir)
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[models.providers.openai]\n"
+            'class_path = "my_package:CustomChat"\n'
+            'api_key_env = "CUSTOM_KEY"\n'
+        )
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+        with patch.dict(
+            "os.environ",
+            {
+                "LANGSMITH_GATEWAY": "true",
+                "LANGSMITH_GATEWAY_API_KEY": "gateway-key",
+            },
+            clear=True,
+        ):
+            status = get_provider_auth_status("openai")
+
+        assert status.state is ProviderAuthState.MISSING
+        assert status.env_var == "CUSTOM_KEY"
+
 
 @pytest.fixture
 def fake_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -7284,6 +7379,26 @@ class TestGetModelProfiles:
         assert entry["profile"]["max_input_tokens"] == 200000
         assert entry["profile"]["tool_calling"] is True
         assert entry["overridden_keys"] == frozenset()
+
+    def test_returns_upstream_opus_5_profile(self, tmp_path: Path) -> None:
+        """Uses the provider package's Opus 5 profile without a local fallback."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            profiles = get_model_profiles()
+
+        profile = profiles["anthropic:claude-opus-5"]["profile"]
+        assert profile["tool_calling"] is True
+        assert profile["max_output_tokens"] == 128000
+        assert profile["reasoning_effort_levels"] == [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        ]
+        assert profile["reasoning_effort_default"] == "high"
 
     def test_merges_config_overrides(self, tmp_path: Path) -> None:
         """Config.toml profile overrides are merged and tracked."""

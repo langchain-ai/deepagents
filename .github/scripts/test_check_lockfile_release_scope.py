@@ -1,14 +1,17 @@
-"""Tests for check_lockfile_release_scope (lockfile-only release fan-out guard)."""
+"""Tests for check_lockfile_release_scope (release fan-out guard)."""
 
 import json
-import tomllib
 
+import tomllib
 from check_lockfile_release_scope import (
     DEFAULT_CONFIG,
     bump_worthy_types,
+    find_fanout,
     find_offenders,
+    is_bump_worthy,
     main,
     parse_title,
+    touched_components,
 )
 
 # A minimal config mirroring the real release-please-config.json shape: two
@@ -26,6 +29,7 @@ CONFIG = {
     "packages": {
         "libs/deepagents": {"component": "deepagents"},
         "libs/cli": {"component": "deepagents-cli"},
+        "libs/code": {"component": "deepagents-code"},
         "libs/partners/quickjs": {"component": "langchain-quickjs"},
     },
 }
@@ -41,18 +45,34 @@ def test_lockfile_only_dependent_is_flagged() -> None:
     ]
     offenders = find_offenders("feat(sdk): surface subagents", changed, CONFIG)
     assert offenders == ["deepagents-cli", "langchain-quickjs"]
+    fanout = find_fanout("feat(sdk): surface subagents", changed, CONFIG)
+    assert fanout["lockfile_only"] == ["deepagents-cli", "langchain-quickjs"]
+    # Owner has real source — not multi-component (only one package with real files).
+    assert fanout["multi_component"] == []
 
 
 def test_owner_with_source_changes_not_flagged() -> None:
     """The package that owns real source edits is never flagged."""
     changed = ["libs/deepagents/deepagents/graph.py", "libs/deepagents/uv.lock"]
     assert find_offenders("feat(sdk): real change", changed, CONFIG) == []
+    assert find_fanout("feat(sdk): real change", changed, CONFIG) == {
+        "lockfile_only": [],
+        "multi_component": [],
+    }
 
 
 def test_non_bump_title_skipped() -> None:
     """A hidden type (chore) does not cut a release, so nothing is flagged."""
-    changed = ["libs/cli/uv.lock", "libs/partners/quickjs/uv.lock"]
-    assert find_offenders("chore(deps): relock", changed, CONFIG) == []
+    changed = [
+        "libs/cli/uv.lock",
+        "libs/partners/quickjs/uv.lock",
+        "libs/cli/pyproject.toml",
+        "libs/code/pyproject.toml",
+    ]
+    assert find_fanout("chore(deps): relock", changed, CONFIG) == {
+        "lockfile_only": [],
+        "multi_component": [],
+    }
 
 
 def test_breaking_bang_is_flagged() -> None:
@@ -75,6 +95,64 @@ def test_mixed_lock_and_source_in_dependent_not_flagged() -> None:
     assert find_offenders("feat(cli): real cli change", changed, CONFIG) == []
 
 
+def test_multi_component_real_files_flagged() -> None:
+    """A bump-worthy PR that edits real files in 2+ components is multi-component."""
+    changed = [
+        "libs/code/deepagents_code/models.py",
+        "libs/code/pyproject.toml",
+        "libs/code/uv.lock",
+        "libs/cli/pyproject.toml",
+        "libs/cli/uv.lock",
+        "libs/deepagents/pyproject.toml",
+        "libs/deepagents/uv.lock",
+    ]
+    fanout = find_fanout("feat(code): add model support", changed, CONFIG)
+    assert fanout["multi_component"] == [
+        "deepagents",
+        "deepagents-cli",
+        "deepagents-code",
+    ]
+    # Every touched package has a non-lockfile edit — none are lockfile-only.
+    assert fanout["lockfile_only"] == []
+
+
+def test_multi_component_plus_lockfile_only_dependent() -> None:
+    """Real multi-component edits and a lockfile-only dependent are both reported."""
+    changed = [
+        "libs/code/deepagents_code/models.py",
+        "libs/code/pyproject.toml",
+        "libs/cli/pyproject.toml",
+        "libs/partners/quickjs/uv.lock",
+    ]
+    fanout = find_fanout("feat(code): add model support", changed, CONFIG)
+    assert fanout["multi_component"] == ["deepagents-cli", "deepagents-code"]
+    assert fanout["lockfile_only"] == ["langchain-quickjs"]
+
+
+def test_single_package_real_files_not_multi() -> None:
+    """One package with real files does not trip multi-component, even with many files."""
+    changed = [
+        "libs/code/deepagents_code/models.py",
+        "libs/code/pyproject.toml",
+        "libs/code/uv.lock",
+        "README.md",
+    ]
+    assert find_fanout("feat(code): models", changed, CONFIG) == {
+        "lockfile_only": [],
+        "multi_component": [],
+    }
+
+
+def test_touched_components_lists_all_package_hits() -> None:
+    """`touched_components` reports every managed package path hit, bump or not."""
+    changed = [
+        "libs/cli/uv.lock",
+        "libs/code/pyproject.toml",
+        "README.md",
+    ]
+    assert touched_components(changed, CONFIG) == ["deepagents-cli", "deepagents-code"]
+
+
 def test_parse_title_variants() -> None:
     """Type and breaking marker are extracted across common title shapes."""
     assert parse_title("feat(sdk): x") == ("feat", False)
@@ -82,6 +160,14 @@ def test_parse_title_variants() -> None:
     assert parse_title("feat(sdk)!: x") == ("feat", True)
     assert parse_title("revert!: x") == ("revert", True)
     assert parse_title("not a conventional title") == (None, False)
+
+
+def test_is_bump_worthy() -> None:
+    """Bump-worthy covers visible types and the `!` shorthand only."""
+    assert is_bump_worthy("feat(sdk): x", CONFIG)
+    assert is_bump_worthy("refactor(cli)!: x", CONFIG)
+    assert not is_bump_worthy("chore(deps): x", CONFIG)
+    assert not is_bump_worthy("not conventional", CONFIG)
 
 
 def test_bump_types_derived_from_visible_sections() -> None:
@@ -146,7 +232,7 @@ def test_uppercase_title_is_not_bump_worthy() -> None:
 
 
 def test_main_happy_path_stdout_is_json_stderr_is_summary(capsys, tmp_path) -> None:
-    """main() prints the offenders JSON to stdout and the summary to stderr.
+    """main() prints the fan-out JSON to stdout and the summary to stderr.
 
     The workflow parses stdout as JSON; the stdout/stderr split is load-bearing.
     """
@@ -157,12 +243,34 @@ def test_main_happy_path_stdout_is_json_stderr_is_summary(capsys, tmp_path) -> N
     captured = capsys.readouterr()
 
     assert rc == 0
-    assert json.loads(captured.out) == ["deepagents-cli"]
-    assert "Lockfile-only release scope" in captured.err
+    assert json.loads(captured.out) == {
+        "lockfile_only": ["deepagents-cli"],
+        "multi_component": [],
+    }
+    assert "lockfile-only release scope" in captured.err
 
 
-def test_main_no_offenders_stdout_is_empty_json_array(capsys, tmp_path) -> None:
-    """A clean run still prints `[]` to stdout (never empty output)."""
+def test_main_multi_component_stdout_shape(capsys, tmp_path) -> None:
+    """Multi-component fan-out is reported under the multi_component key."""
+    config_path = tmp_path / "release-please-config.json"
+    config_path.write_text(json.dumps(CONFIG), encoding="utf-8")
+
+    rc = main(
+        "feat(code): model",
+        ["libs/code/pyproject.toml", "libs/cli/pyproject.toml"],
+        config_path=config_path,
+    )
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert json.loads(captured.out) == {
+        "lockfile_only": [],
+        "multi_component": ["deepagents-cli", "deepagents-code"],
+    }
+    assert "multi-component" in captured.err
+
+
+def test_main_no_offenders_stdout_is_empty_result(capsys, tmp_path) -> None:
+    """A clean run still prints empty lists (never empty output)."""
     config_path = tmp_path / "release-please-config.json"
     config_path.write_text(json.dumps(CONFIG), encoding="utf-8")
 
@@ -170,7 +278,7 @@ def test_main_no_offenders_stdout_is_empty_json_array(capsys, tmp_path) -> None:
     captured = capsys.readouterr()
 
     assert rc == 0
-    assert json.loads(captured.out) == []
+    assert json.loads(captured.out) == {"lockfile_only": [], "multi_component": []}
 
 
 def test_main_missing_config_returns_2(capsys, tmp_path) -> None:

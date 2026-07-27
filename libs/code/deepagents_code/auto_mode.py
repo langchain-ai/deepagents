@@ -506,9 +506,10 @@ def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float)
 
     Provider exception text stays out of the reason (it can carry secrets or
     noisy HTML). Only real local deadline expiry
-    (`_ClassifierDeadlineExceededError`) gets app-timeout wording; a bare
-    provider `TimeoutError` stays type-only so we do not claim dcode
-    cancelled a call the model failed first.
+    (`_ClassifierDeadlineExceededError`) says the classifier did not respond
+    within the configured wait budget; a bare provider `TimeoutError` stays
+    type-only so we do not claim dcode's deadline fired when the model failed
+    first.
 
     Args:
         exc: Failure raised while invoking or validating the classifier.
@@ -518,11 +519,8 @@ def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float)
         Compact single-line reason for tool messages and TUI events.
     """
     if isinstance(exc, _ClassifierDeadlineExceededError):
-        return (
-            "dcode cancelled the authorization classifier after its local "
-            f"{timeout_seconds:g}s timeout (app-imposed, not a provider timeout)."
-        )
-    return f"The authorization classifier was unavailable ({type(exc).__name__})."
+        return f"classifier did not respond within {timeout_seconds:g}s"
+    return f"failed ({type(exc).__name__})"
 
 
 def _default_counters(mode: ApprovalMode) -> AutoModeCounters:

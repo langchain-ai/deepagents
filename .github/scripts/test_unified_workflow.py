@@ -234,6 +234,64 @@ def test_unified_dispatch_forwards_exact_task_filter() -> None:
     assert "IN_INCLUDE_TASKS: ${{ inputs.include_tasks }}" in prep
 
 
+def test_unified_dispatch_forwards_retry_and_timeout_controls() -> None:
+    workflow = UNIFIED_WORKFLOW.read_text()
+    dispatch = _indented_block(workflow, "  workflow_dispatch:")
+    prep = _indented_block(workflow, "  prep:")
+    eval_job = _indented_block(workflow, "  eval:")
+    reusable = HARBOR_WORKFLOW.read_text()
+    harbor = _indented_block(reusable, "  harbor:")
+    run_harbor = _indented_block(harbor, '      - name: "⚓ Run Harbor"')
+    latest_job = _indented_block(harbor, '      - name: "🔍 Find latest Harbor job"')
+    summary = _indented_block(harbor, '      - name: "📝 Write workflow summary"')
+
+    retries = _indented_block(dispatch, "      n_retries:")
+    timeout = _indented_block(dispatch, "      agent_timeout_multiplier:")
+    assert 'default: "0"' in retries
+    assert 'default: "1.0"' in timeout
+    assert "UNIFIED_N_RETRIES: ${{ inputs.n_retries }}" in prep
+    assert (
+        "UNIFIED_AGENT_TIMEOUT_MULTIPLIER: ${{ inputs.agent_timeout_multiplier }}"
+        in prep
+    )
+    assert "n_retries: ${{ inputs.n_retries }}" in eval_job
+    assert (
+        "agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}" in eval_job
+    )
+
+    assert "retry_reward_flag=(--retry-if-reward-below 1.0)" in run_harbor
+    assert '"${retry_reward_flag[@]}"' in run_harbor
+    assert "retry_include_exceptions" not in workflow
+    assert "retry_exclude_exceptions" not in workflow
+    assert "--retry-include" not in reusable
+    assert "--retry-exclude" not in reusable
+    assert "actual_retries=" in latest_job
+    assert "Configured retries per eligible failed trial" in summary
+    assert "Agent timeout multiplier" in summary
+    assert "Actual retries" in summary
+
+
+def test_latest_harbor_job_reports_actual_retry_count(tmp_path: Path) -> None:
+    reusable = HARBOR_WORKFLOW.read_text()
+    harbor = _indented_block(reusable, "  harbor:")
+    latest_job = _indented_block(harbor, '      - name: "🔍 Find latest Harbor job"')
+    job = tmp_path / "harbor-jobs" / "terminal-bench" / "2026-07-21__12-00-00"
+    job.mkdir(parents=True)
+    (job / "result.json").write_text('{"stats":{"n_retries":2}}')
+    output = tmp_path / "github-output"
+    env = {**os.environ, "GITHUB_OUTPUT": str(output)}
+
+    subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", _step_script(latest_job)],
+        cwd=tmp_path,
+        env=env,
+        check=True,
+    )
+
+    values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert values == {"job_dir": str(job.relative_to(tmp_path)), "actual_retries": "2"}
+
+
 def test_combine_generates_allocation_driven_comparison_report() -> None:
     workflow = UNIFIED_WORKFLOW.read_text()
     combine = _indented_block(workflow, "  combine:")

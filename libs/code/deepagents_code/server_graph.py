@@ -202,8 +202,16 @@ async def _make_graph() -> Any:  # noqa: ANN401
     # `blockbuster` rejects when invoked directly from the server loop (see
     # issue #5043). Importing `deepagents_code.agent` / first `settings` access
     # can also trigger `find_project_root()` -> `Path.cwd()`.
+    #
+    # Keep LangSmith redaction configuration on the server task: its fail-closed
+    # path calls `langsmith.configure(enabled=False)`, which sets both a global
+    # fallback and the current `_TRACING_ENABLED` ContextVar. `asyncio.to_thread`
+    # only updates a copied worker context, so a ContextVar disable there would
+    # not reach a parent tracing context that already has `enabled=True` (ContextVar
+    # wins over the global flag).
     def _resolve_project_context_and_settings() -> tuple[
         ProjectContext | None,
+        Any,
         Any,
         Any,
         Any,
@@ -222,7 +230,6 @@ async def _make_graph() -> Any:  # noqa: ANN401
 
         if project_context is not None:
             settings.reload_from_environment(start_path=project_context.user_cwd)
-        configure_langsmith_secret_redaction()
         return (
             project_context,
             create_cli_agent,
@@ -230,6 +237,7 @@ async def _make_graph() -> Any:  # noqa: ANN401
             create_model,
             is_memory_auto_save_enabled,
             settings,
+            configure_langsmith_secret_redaction,
         )
 
     (
@@ -239,7 +247,9 @@ async def _make_graph() -> Any:  # noqa: ANN401
         create_model,
         is_memory_auto_save_enabled,
         settings,
+        configure_langsmith_secret_redaction,
     ) = await asyncio.to_thread(_resolve_project_context_and_settings)
+    configure_langsmith_secret_redaction()
 
     # Offload to a worker thread: `create_model` does blocking disk IO for some
     # providers (e.g. the `openai_codex` token store currently acquires a file

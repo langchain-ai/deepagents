@@ -146,6 +146,7 @@ class TestServerGraph:
         create_cli_agent_thread_ids: list[int] = []
         create_model_thread_ids: list[int] = []
         setup_thread_ids: list[int] = []
+        redaction_thread_ids: list[int] = []
         repository_backend = object()
         user_cwd = object()
         project_context = SimpleNamespace(user_cwd=user_cwd, project_root=object())
@@ -170,6 +171,9 @@ class TestServerGraph:
             assert kwargs.get("start_path") is user_cwd
             return []
 
+        def configure_redaction_side_effect() -> None:
+            redaction_thread_ids.append(threading.get_ident())
+
         reload_from_environment.side_effect = reload_from_environment_side_effect
 
         create_cli_agent = MagicMock(side_effect=create_cli_agent_side_effect)
@@ -184,9 +188,7 @@ class TestServerGraph:
             model=model_obj,
             apply_to_settings=MagicMock(),
         )
-        configure_redaction = MagicMock(
-            side_effect=lambda: setup_thread_ids.append(threading.get_ident())
-        )
+        configure_redaction = MagicMock(side_effect=configure_redaction_side_effect)
         create_model = MagicMock(side_effect=create_model_side_effect)
         config_module = _module_with_attrs(
             "deepagents_code.config",
@@ -274,6 +276,10 @@ class TestServerGraph:
         # `Path.cwd()`, which `blockbuster` rejects on the server event loop.
         assert setup_thread_ids
         assert all(thread_id != loop_thread_id for thread_id in setup_thread_ids)
+        # Redaction fail-closed must run on the server task so
+        # `configure(enabled=False)` updates this task's tracing ContextVar,
+        # not only a worker-thread copy left behind by `asyncio.to_thread`.
+        assert redaction_thread_ids == [loop_thread_id]
         # `create_model` must run off the loop thread: it does blocking disk IO
         # for some providers (e.g. the `openai_codex` token store calls
         # `os.mkdir`), which `blockbuster` rejects on the server event loop.

@@ -12400,6 +12400,10 @@ class DeepAgentsApp(App):
             await self._handle_version_command()
         elif cmd == "/agents":
             await self._show_agent_selector()
+        elif cmd in {"/manual", "/auto", "/yolo"}:
+            from deepagents_code.approval_mode import ApprovalMode
+
+            await self._handle_approval_mode_command(ApprovalMode(cmd.lstrip("/")))
         elif cmd == "/goal" or cmd.startswith("/goal "):
             await self._handle_goal_command(command)
         elif cmd in {"/rubric", "/criteria"} or cmd.startswith(
@@ -17088,25 +17092,82 @@ class DeepAgentsApp(App):
                 await self._auto_accept_pending_goal_rubric()
         return True
 
+    async def _handle_approval_mode_command(self, target: ApprovalMode) -> None:
+        """Switch approval mode from a slash command (`/manual`, `/auto`, `/yolo`).
+
+        Mirrors the Shift+Tab switcher: Auto is refused with a sandbox, YOLO
+        honors the `startup.yolo_switcher` policy and prompts the first-run
+        acknowledgement modal before unrestricted mode becomes active. Feedback
+        is delivered via toasts and the status bar, not chat messages, so the
+        command stays quiet like the keybinding.
+
+        Args:
+            target: The approval mode requested by the command.
+        """
+        from deepagents_code.approval_mode import (
+            ApprovalMode,
+            has_yolo_acknowledgement,
+        )
+        from deepagents_code.config import is_yolo_switcher_enabled
+
+        if self._approval_mode is target:
+            self.notify(
+                f"Already in {target.value.capitalize()} mode.",
+                severity="information",
+                markup=False,
+            )
+            return
+
+        if target is ApprovalMode.AUTO and not self._auto_mode_eligible:
+            self._warn_live_approval_mode_unavailable(
+                "Auto is unavailable with a sandbox."
+            )
+            return
+
+        if target is ApprovalMode.YOLO:
+            if not is_yolo_switcher_enabled():
+                self._warn_live_approval_mode_unavailable(
+                    "YOLO is disabled in the approval switcher."
+                )
+                return
+            if not has_yolo_acknowledgement():
+                self._prompt_yolo_switcher_acknowledgement()
+                return
+
+        await self._set_approval_mode(target)
+
     def _prompt_yolo_switcher_acknowledgement(self) -> None:
         """Show the first-run YOLO acknowledgement before entering unrestricted mode.
 
         YOLO stays inactive until Enter persists the acknowledgement and the
-        follow-up mode write succeeds. Esc (or a non-true dismiss) leaves the
-        current mode untouched and does not store the acknowledgement.
+        follow-up mode write succeeds. `m` switches to Manual instead. Esc (or a
+        non-acknowledge dismiss) leaves the current mode untouched and does not
+        store the acknowledgement.
         """
         from deepagents_code.approval_mode import (
             ApprovalMode,
             save_yolo_acknowledgement,
         )
-        from deepagents_code.tui.widgets.yolo_mode_notice import YoloModeNoticeScreen
+        from deepagents_code.tui.widgets.yolo_mode_notice import (
+            YoloModeNoticeResult,
+            YoloModeNoticeScreen,
+        )
 
         if getattr(self, "_yolo_mode_notice_pending", False):
             return
 
-        def handle_result(accepted: bool | None) -> None:
+        def handle_result(result: YoloModeNoticeResult | None) -> None:
             self._yolo_mode_notice_pending = False
-            if accepted is not True:
+            if result is YoloModeNoticeResult.MANUAL:
+                # Already-Manual is a no-op: skip the live store write so a
+                # failed redundant write cannot flip `_approval_mode_blocked`
+                # and cancel an active run after the user declined YOLO.
+                if self._approval_mode is ApprovalMode.MANUAL:
+                    return
+                task = asyncio.create_task(self._set_approval_mode(ApprovalMode.MANUAL))
+                task.add_done_callback(_log_task_exception)
+                return
+            if result is not YoloModeNoticeResult.ACKNOWLEDGE:
                 self.notify(
                     "Stayed in the current approval mode.",
                     severity="information",

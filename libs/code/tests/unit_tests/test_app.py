@@ -16614,6 +16614,125 @@ class TestEditorSlashCommand:
         mock.assert_awaited_once()
 
 
+class TestApprovalModeSlashCommands:
+    """Tests for the `/manual`, `/auto`, and `/yolo` slash commands."""
+
+    async def test_auto_command_sets_auto_when_eligible(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.MANUAL
+        with patch.object(
+            app, "_set_approval_mode", new_callable=AsyncMock
+        ) as set_mode:
+            await app._handle_command("/auto")
+        set_mode.assert_awaited_once_with(ApprovalMode.AUTO)
+
+    async def test_manual_command_sets_manual(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.AUTO
+        with patch.object(
+            app, "_set_approval_mode", new_callable=AsyncMock
+        ) as set_mode:
+            await app._handle_command("/manual")
+        set_mode.assert_awaited_once_with(ApprovalMode.MANUAL)
+
+    async def test_auto_command_warns_when_ineligible(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = False
+        app._approval_mode = ApprovalMode.MANUAL
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch.object(app, "_warn_live_approval_mode_unavailable") as warn,
+        ):
+            await app._handle_command("/auto")
+        set_mode.assert_not_awaited()
+        warn.assert_called_once()
+        assert "Auto is unavailable" in str(warn.call_args.args[0])
+
+    async def test_already_in_mode_notifies_and_skips(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.MANUAL
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch.object(app, "notify") as notify,
+        ):
+            await app._handle_command("/manual")
+        set_mode.assert_not_awaited()
+        notify.assert_called_once()
+        assert "Already in Manual mode" in str(notify.call_args.args[0])
+
+    async def test_yolo_command_sets_yolo_when_acknowledged(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.AUTO
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch(
+                "deepagents_code.config.is_yolo_switcher_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                return_value=True,
+            ),
+        ):
+            await app._handle_command("/yolo")
+        set_mode.assert_awaited_once_with(ApprovalMode.YOLO)
+
+    async def test_yolo_command_prompts_when_not_acknowledged(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.AUTO
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch.object(app, "_prompt_yolo_switcher_acknowledgement") as prompt,
+            patch(
+                "deepagents_code.config.is_yolo_switcher_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                return_value=False,
+            ),
+        ):
+            await app._handle_command("/yolo")
+        set_mode.assert_not_awaited()
+        prompt.assert_called_once_with()
+
+    async def test_yolo_command_warns_when_switcher_disabled(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.AUTO
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch.object(app, "_warn_live_approval_mode_unavailable") as warn,
+            patch(
+                "deepagents_code.config.is_yolo_switcher_enabled",
+                return_value=False,
+            ),
+        ):
+            await app._handle_command("/yolo")
+        set_mode.assert_not_awaited()
+        warn.assert_called_once()
+        assert "YOLO is disabled" in str(warn.call_args.args[0])
+
+
 class TestToolsSlashCommand:
     """Tests for the `/tools` slash command."""
 
@@ -26257,6 +26376,102 @@ class TestLiveApprovalModeWrites:
                     "Stayed in the current approval mode" in str(call.args[0])
                     for call in notify.call_args_list
                 )
+
+    async def test_toggle_into_yolo_m_switches_to_manual(self) -> None:
+        """`m` on the switcher YOLO notice switches to Manual without ack."""
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.yolo_mode_notice import YoloModeNoticeScreen
+
+        app = DeepAgentsApp()
+        app._auto_mode_eligible = True
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = object()
+            app._approval_mode = ApprovalMode.AUTO
+            if app._session_state is not None:
+                app._session_state.approval_mode = ApprovalMode.AUTO
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=True),
+                ) as write_mode,
+                patch(
+                    "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.approval_mode.save_yolo_acknowledgement"
+                ) as save_ack,
+                patch(
+                    "deepagents_code.config.is_yolo_switcher_enabled",
+                    return_value=True,
+                ),
+                patch.object(app, "notify"),
+            ):
+                await app.action_toggle_auto_approve()
+                await pilot.pause()
+                assert isinstance(app.screen, YoloModeNoticeScreen)
+                await pilot.press("m")
+                await pilot.pause()
+                # Manual chosen: never persist the YOLO ack, land in Manual.
+                save_ack.assert_not_called()
+                assert app._approval_mode is ApprovalMode.MANUAL
+                assert app._auto_approve is False
+                write_mode.assert_awaited_with(ApprovalMode.MANUAL)
+
+    async def test_yolo_notice_m_skips_write_when_already_manual(self) -> None:
+        """`m` from Manual (via `/yolo`) does not rewrite Manual on the live store.
+
+        A failed redundant Manual write would set `_approval_mode_blocked` and
+        could cancel active work even though the user only declined YOLO.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.yolo_mode_notice import YoloModeNoticeScreen
+
+        app = DeepAgentsApp()
+        app._auto_mode_eligible = True
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = object()
+            app._approval_mode = ApprovalMode.MANUAL
+            app._approval_mode_blocked = False
+            if app._session_state is not None:
+                app._session_state.approval_mode = ApprovalMode.MANUAL
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=False),
+                ) as write_mode,
+                patch.object(
+                    app, "_set_approval_mode", wraps=app._set_approval_mode
+                ) as set_mode,
+                patch(
+                    "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.approval_mode.save_yolo_acknowledgement"
+                ) as save_ack,
+                patch(
+                    "deepagents_code.config.is_yolo_switcher_enabled",
+                    return_value=True,
+                ),
+                patch.object(app, "_warn_live_approval_mode_unavailable") as warn,
+                patch.object(app, "notify"),
+            ):
+                await app._handle_approval_mode_command(ApprovalMode.YOLO)
+                await pilot.pause()
+                assert isinstance(app.screen, YoloModeNoticeScreen)
+                await pilot.press("m")
+                await pilot.pause()
+                save_ack.assert_not_called()
+                set_mode.assert_not_awaited()
+                write_mode.assert_not_awaited()
+                warn.assert_not_called()
+                assert app._approval_mode is ApprovalMode.MANUAL
+                assert app._approval_mode_blocked is False
 
     async def test_toggle_skips_yolo_when_switcher_disabled(self) -> None:
         """Disabling the switcher restores Manual ↔ Auto only."""

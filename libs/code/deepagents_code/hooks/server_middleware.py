@@ -107,6 +107,25 @@ class _SessionHookGate(TypedDict):
     events: frozenset[str]
 
 
+class _HooksContextFields(TypedDict, total=False):
+    """Hook-relevant fields projected from LangGraph run context."""
+
+    hooks_snapshot_id: str
+    hooks_server_events: list[str]
+    thread_id: str
+    approval_mode: str
+    prompt_id: str
+
+
+_HOOKS_CONTEXT_KEYS: tuple[str, ...] = (
+    "hooks_snapshot_id",
+    "hooks_server_events",
+    "thread_id",
+    "approval_mode",
+    "prompt_id",
+)
+
+
 @dataclass(slots=True)
 class _PreToolOutcome:
     """PreToolUse gate result for the tool-call wrapper."""
@@ -466,13 +485,11 @@ def _session_gate(runtime_context: object) -> _SessionHookGate | None:
     fields = _context_mapping(runtime_context)
     snapshot_id = fields.get("hooks_snapshot_id")
     events = fields.get("hooks_server_events")
-    if not isinstance(snapshot_id, str) or not snapshot_id:
-        return None
-    if not isinstance(events, list) or not events:
+    if snapshot_id is None or not events:
         return None
     return {
         "snapshot_id": snapshot_id,
-        "events": frozenset(str(item) for item in events),
+        "events": frozenset(events),
     }
 
 
@@ -578,11 +595,9 @@ def _hook_context(
 ) -> HookContext:
     fields = _context_mapping(runtime_context)
     thread_id = fields.get("thread_id") or _config_thread_id(config) or "unknown"
-    if not isinstance(thread_id, str):
-        thread_id = "unknown"
     approval = coerce_approval_mode(fields.get("approval_mode", "manual"))
     prompt_raw = fields.get("prompt_id")
-    prompt_id = UUID(prompt_raw) if isinstance(prompt_raw, str) and prompt_raw else None
+    prompt_id = UUID(prompt_raw) if prompt_raw else None
     return HookContext(
         thread_id=thread_id,
         cwd=cwd,
@@ -593,30 +608,50 @@ def _hook_context(
     )
 
 
-def _context_mapping(runtime_context: object) -> dict[str, Any]:
-    """Project LangGraph run context (dataclass or mapping) into a plain dict.
+def _context_mapping(runtime_context: object) -> _HooksContextFields:
+    """Project LangGraph run context into the typed hook field subset.
 
     In-process graphs coerce `context=` into `CLIContextSchema`; RemoteGraph
-    delivers a plain mapping. Both shapes are accepted here.
+    delivers a plain mapping. Both shapes are accepted here. Values that are
+    missing or mistyped are omitted so callers can rely on the TypedDict
+    without re-checking field types.
 
     Returns:
-        A shallow string-keyed dict of the hook-relevant context fields.
+        Only the recognized hook context fields with validated value types.
     """
     if runtime_context is None:
         return {}
+
+    raw: dict[str, object]
     if isinstance(runtime_context, Mapping):
-        return {str(key): value for key, value in runtime_context.items()}
-    result: dict[str, Any] = {}
-    for key in (
-        "hooks_snapshot_id",
-        "hooks_server_events",
-        "thread_id",
-        "approval_mode",
-        "prompt_id",
-    ):
-        value = getattr(runtime_context, key, None)
-        if value is not None:
-            result[key] = value
+        raw = {
+            key: value
+            for key, value in runtime_context.items()
+            if isinstance(key, str) and key in _HOOKS_CONTEXT_KEYS
+        }
+    else:
+        raw = {}
+        for key in _HOOKS_CONTEXT_KEYS:
+            value = getattr(runtime_context, key, None)
+            if value is not None:
+                raw[key] = value
+
+    result: _HooksContextFields = {}
+    snapshot_id = raw.get("hooks_snapshot_id")
+    if isinstance(snapshot_id, str) and snapshot_id:
+        result["hooks_snapshot_id"] = snapshot_id
+    events = raw.get("hooks_server_events")
+    if isinstance(events, Sequence) and not isinstance(events, (str, bytes)):
+        result["hooks_server_events"] = [str(item) for item in events]
+    thread_id = raw.get("thread_id")
+    if isinstance(thread_id, str) and thread_id:
+        result["thread_id"] = thread_id
+    approval_mode = raw.get("approval_mode")
+    if isinstance(approval_mode, str) and approval_mode:
+        result["approval_mode"] = approval_mode
+    prompt_id = raw.get("prompt_id")
+    if isinstance(prompt_id, str) and prompt_id:
+        result["prompt_id"] = prompt_id
     return result
 
 

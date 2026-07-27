@@ -1788,6 +1788,74 @@ def test_startup_mode_option_definition() -> None:
     assert opt.env_var is None
 
 
+def test_startup_yolo_switcher_defaults_enabled(monkeypatch) -> None:
+    """`startup.yolo_switcher` resolves to enabled when nothing overrides it."""
+    option = get_option("startup.yolo_switcher")
+    assert option is not None
+    assert option.group == "Startup"
+    assert option.default is True
+    assert option.env_var == _env_vars.YOLO_SWITCHER
+    assert option.toml_keys == ("startup", "yolo_switcher")
+    monkeypatch.delenv(_env_vars.YOLO_SWITCHER, raising=False)
+    assert resolve_scalar(option, toml_data={}) == (True, "default")
+
+
+def test_startup_yolo_switcher_env_disables(monkeypatch) -> None:
+    """A falsy `DEEPAGENTS_CODE_YOLO_SWITCHER` removes YOLO from the switcher."""
+    option = get_option("startup.yolo_switcher")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.YOLO_SWITCHER, "0")
+    value, _ = resolve_scalar(option, toml_data={})
+    assert value is False
+
+
+def test_startup_yolo_switcher_empty_env_disables(monkeypatch) -> None:
+    """An explicitly empty env override disables the YOLO switcher entry."""
+    option = get_option("startup.yolo_switcher")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.YOLO_SWITCHER, "")
+    assert resolve_scalar(option, toml_data={}) == (
+        False,
+        f"env ({_env_vars.YOLO_SWITCHER})",
+    )
+
+
+def test_startup_yolo_switcher_toml_disables(monkeypatch) -> None:
+    """`[startup].yolo_switcher = false` disables the YOLO switcher entry."""
+    option = get_option("startup.yolo_switcher")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.YOLO_SWITCHER, raising=False)
+    value, _ = resolve_scalar(option, toml_data={"startup": {"yolo_switcher": False}})
+    assert value is False
+
+
+def test_is_yolo_switcher_enabled_reads_env(monkeypatch) -> None:
+    """The `config.is_yolo_switcher_enabled` helper honors the env override."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import is_yolo_switcher_enabled
+
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+    monkeypatch.delenv(_env_vars.YOLO_SWITCHER, raising=False)
+    assert is_yolo_switcher_enabled() is True
+
+    monkeypatch.setenv(_env_vars.YOLO_SWITCHER, "false")
+    assert is_yolo_switcher_enabled() is False
+
+
+def test_is_yolo_switcher_enabled_reads_toml(monkeypatch) -> None:
+    """The helper honors `[startup].yolo_switcher` when env is unset."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import is_yolo_switcher_enabled
+
+    monkeypatch.delenv(_env_vars.YOLO_SWITCHER, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"startup": {"yolo_switcher": False}},
+    )
+    assert is_yolo_switcher_enabled() is False
+
+
 def test_resolve_startup_mode_from_toml(caplog) -> None:
     """`startup.mode` resolves only valid runtime modes from config.toml."""
     import logging

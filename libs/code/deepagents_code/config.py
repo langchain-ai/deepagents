@@ -112,6 +112,7 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "BASH_ENV",
         "BASHOPTS",
         "CDPATH",
+        "COMSPEC",
         "DYLD_INSERT_LIBRARIES",
         "DYLD_LIBRARY_PATH",
         "ENV",
@@ -128,6 +129,8 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "PYTHONSTARTUP",
         "SHELLOPTS",
         "SSH_ASKPASS",
+        "SYSTEMROOT",
+        "WINDIR",
         _INHERITED_PYTHONPATH_ENV,
     }
 )
@@ -3395,6 +3398,27 @@ def is_memory_auto_save_enabled() -> bool:
     )
 
     option = get_option("memory.auto_save")
+    if option is None:
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
+def is_yolo_switcher_enabled() -> bool:
+    """Return whether Shift+Tab may enter unrestricted YOLO mode.
+
+    Resolves the `startup.yolo_switcher` option from env/`config.toml`,
+    defaulting to enabled. When disabled, the interactive cycle stays Manual /
+    Auto only (or Manual alone when Auto is ineligible). Sessions already in
+    YOLO (for example via `--yolo`) can still leave it with Shift+Tab.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("startup.yolo_switcher")
     if option is None:
         return True
     value, _ = resolve_scalar(option, toml_data=load_config_toml())

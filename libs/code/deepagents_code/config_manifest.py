@@ -1464,6 +1464,19 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("startup", "mode"),
         cli_flag="--auto-approve",
     ),
+    ConfigOption(
+        key="startup.yolo_switcher",
+        group="Startup",
+        summary=(
+            "Include YOLO in the Shift+Tab approval-mode cycle "
+            "(Manual → Auto → YOLO); disable to keep the cycle Manual/Auto only."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.YOLO_SWITCHER,
+        empty_env_is_false=True,
+        toml_keys=("startup", "yolo_switcher"),
+    ),
     # --- Debug / Development -------------------------------------------
     ConfigOption(
         key="debug.enabled",

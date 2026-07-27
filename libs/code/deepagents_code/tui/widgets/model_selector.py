@@ -78,6 +78,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "fireworks:accounts/fireworks/models/deepseek-v4-pro": "DeepSeek V4 Pro",
     "fireworks:accounts/fireworks/models/glm-5p2": "GLM 5.2",
     "fireworks:accounts/fireworks/models/kimi-k2p7-code": "Kimi K2.7 Code",
+    "fireworks:accounts/fireworks/models/kimi-k3": "Kimi K3",
     "fireworks:accounts/fireworks/models/minimax-m3": "MiniMax-M3",
     "fireworks:accounts/fireworks/models/qwen3p7-plus": "Qwen 3.7 Plus",
     "google_genai:gemini-3.6-flash": "Gemini 3.6 Flash",

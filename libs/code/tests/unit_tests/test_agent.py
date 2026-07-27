@@ -41,6 +41,7 @@ from deepagents_code.agent import (
     _format_web_search_description,
     _format_write_file_description,
     _interrupt_predicate,
+    _reserved_agent_dir_names,
     _rubric_grader_system_prompt,
     _sanitize_agent_message_name,
     _should_interrupt_tool_call,
@@ -4674,8 +4675,6 @@ class TestGetAvailableAgentNames:
     def test_ignores_app_owned_dirs_without_marker(self, tmp_path: Path) -> None:
         """App-owned dirs under `~/.deepagents/` are not agents without a marker.
 
-        Fail-closed discovery means `bin/`, `plugins/`, and
-        `conversation_history/` stay out of the picker without a name denylist.
         Names are taken from the owning modules so renames stay covered.
         """
         agents_dir = tmp_path / "agents"
@@ -4690,6 +4689,29 @@ class TestGetAvailableAgentNames:
 
         with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
             assert get_available_agent_names() == ["agent"]
+
+    def test_ignores_app_owned_dirs_even_with_marker(self, tmp_path: Path) -> None:
+        """Reserved app dirs stay out of the picker even if stamped with `AGENTS.md`.
+
+        A invocation like `dcode -a plugins` creates the memory marker inside
+        the app-owned directory. The reserved-name denylist must still exclude
+        it so the picker never offers app state as a switchable agent
+        (which would also invite destructive `agents reset`).
+        """
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        _seed_agent(agents_dir, "agent")
+        for name in _reserved_agent_dir_names():
+            _seed_agent(agents_dir, name)
+
+        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["agent"]
+
+    def test_reserved_agent_dir_names_includes_app_dirs(self) -> None:
+        """The reserved-name set is sourced from each owning module."""
+        assert _reserved_agent_dir_names() == frozenset(
+            {BIN_DIR.name, DEFAULT_PLUGIN_DIRNAME, CONVERSATION_HISTORY_DIRNAME},
+        )
 
     def test_permission_error_returns_empty(self, tmp_path: Path) -> None:
         """PermissionError on iterdir → logged + empty list, not raised."""

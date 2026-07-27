@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
 import logging
 import os
@@ -1111,30 +1112,56 @@ _AGENT_DIR_MARKER = "AGENTS.md"
 
 Discovery is fail-closed: only directories containing this marker are listed by
 the `/agent` picker. Real agents always create it (empty on first use when
-memory is enabled), so empty folders and app-owned state directories under
-`~/.deepagents/` stay out of the picker without a name denylist.
+memory is enabled), so empty folders stay out of the picker without being
+named. Known app-owned directory names are still denylisted so a forced
+invocation such as `dcode -a plugins` cannot stamp the marker into app state
+and surface that directory as a selectable agent.
 """
+
+
+@functools.lru_cache(maxsize=1)
+def _reserved_agent_dir_names() -> frozenset[str]:
+    """Return non-agent directory names reserved by the app under `~/.deepagents/`.
+
+    These directories are created by the app for its own use and must never
+    appear in the agent picker — even if they contain an `AGENTS.md` file
+    (e.g. after `dcode -a plugins` stamps the marker via memory setup):
+
+    - `bin/` holds the managed `rg` binary (`managed_tools.BIN_DIR`).
+    - `plugins/` holds installed plugin state (`plugins.store`).
+    - `conversation_history/` holds offloaded per-thread archives (`offload`).
+
+    Each name is derived from its owning module so it stays a single source of
+    truth rather than being hardcoded here. The result is cached since the
+    reserved set is constant for the process.
+    """
+    from deepagents_code.managed_tools import BIN_DIR
+    from deepagents_code.offload import CONVERSATION_HISTORY_DIRNAME
+    from deepagents_code.plugins.store import DEFAULT_PLUGIN_DIRNAME
+
+    return frozenset(
+        {BIN_DIR.name, DEFAULT_PLUGIN_DIRNAME, CONVERSATION_HISTORY_DIRNAME},
+    )
 
 
 def _is_agent_dir_entry(entry: Path) -> bool:
     """Return whether a `~/.deepagents/` entry should be listed as an agent.
 
     Fail-closed on the `AGENTS.md` marker: a directory is an agent only when
-    that file exists as a regular (non-symlink) file inside it. App-owned
-    siblings under `~/.deepagents/` — `bin/`, `plugins/`,
-    `conversation_history/`, `.state/`, future state dirs — are never listed
-    unless they accidentally gain the marker.
+    that file exists as a regular (non-symlink) file inside it.
 
     Also rejects:
 
     - Dot-prefixed names (hidden dirs such as `.state/`)
+    - Reserved app-owned names (`bin/`, `plugins/`, `conversation_history/`),
+      even if they contain the marker
     - Symlinked directories (including dangling links)
     - Non-directories
 
     `OSError` from `is_dir`/`is_symlink`/`is_file` propagates so callers can
     log with the failing entry's name as context.
     """
-    if entry.name.startswith("."):
+    if entry.name.startswith(".") or entry.name in _reserved_agent_dir_names():
         return False
     if entry.is_symlink() or not entry.is_dir():
         return False
@@ -1148,9 +1175,10 @@ def get_available_agent_names() -> list[str]:
     """Return a sorted list of available agent names from `~/.deepagents/`.
 
     Scans the user's `.deepagents` directory and returns each real
-    subdirectory that contains the `AGENTS.md` agent marker.
-    Fail-closed: bare directories, app-owned state (`bin/`, `plugins/`,
-    `conversation_history/`, …), symlinks, and hidden entries are not agents.
+    subdirectory that contains the `AGENTS.md` agent marker and is not an
+    app-reserved name. Fail-closed: bare directories, reserved app state
+    (`bin/`, `plugins/`, `conversation_history/`), symlinks, and hidden
+    entries are not agents.
 
     Filesystem errors (missing parent, permission denied, broken entries) are
     logged and surfaced as an empty list rather than raised — the caller shows

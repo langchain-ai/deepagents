@@ -160,7 +160,7 @@ class TestFormatModelParams:
 class TestModelSwitchNoOp:
     """Tests for no-op when switching to the same model."""
 
-    async def test_no_message_when_switching_to_same_model(self) -> None:
+    async def test_same_model_toasts_instead_of_inline_message(self) -> None:
         """Switching to the already-active model should toast 'Already using'.
 
         This is a regression test for the bug where selecting the same model
@@ -169,9 +169,11 @@ class TestModelSwitchNoOp:
         toast rather than an inline chat message.
         """
         app = DeepAgentsApp()
-        # Replace methods with mocks to track calls (hence ignore)
-        app._mount_message = AsyncMock()  # ty: ignore
-        app.notify = Mock()  # ty: ignore
+        mount_mock = AsyncMock()
+        notify_mock = Mock()
+        # Type checker doesn't track that the methods were replaced with mocks
+        app._mount_message = mount_mock  # ty: ignore
+        app.notify = notify_mock  # ty: ignore
         app._agent = _make_remote_agent()
 
         # Set current model
@@ -186,44 +188,130 @@ class TestModelSwitchNoOp:
             await app._switch_model("anthropic:claude-opus-4-5")
 
         # Should toast "Already using", not mount an inline "Switched to" message.
-        # Type checker doesn't track that the methods were replaced with mocks
-        app._mount_message.assert_not_called()  # ty: ignore
-        app.notify.assert_called_once()  # ty: ignore
-        message = app.notify.call_args.args[0]  # ty: ignore
+        mount_mock.assert_not_called()
+        notify_mock.assert_called_once()
+        message = notify_mock.call_args.args[0]
         assert "Already using" in message
         assert "Switched to" not in message
-        assert app.notify.call_args.kwargs["markup"] is False  # ty: ignore
+        # Model specs and `--model-params` values can contain square brackets,
+        # which Textual's markup parser would swallow or reject.
+        assert notify_mock.call_args.kwargs["markup"] is False
         assert app._model_switching is False
 
-    async def test_duplicate_same_model_message_is_suppressed(self) -> None:
-        """Repeated same-model switches should only toast one unchanged notice."""
+    async def test_duplicate_same_model_toast_is_suppressed(self) -> None:
+        """Repeated no-ops within the toast lifetime should toast only once."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore
-        app.notify = Mock()  # ty: ignore
+        mount_mock = AsyncMock()
+        notify_mock = Mock()
+        app._mount_message = mount_mock  # ty: ignore
+        app.notify = notify_mock  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "claude-opus-4-5"
         settings.model_provider = "anthropic"
 
-        with patch(
-            "deepagents_code.model_config.get_provider_auth_status",
-            return_value=_CONFIGURED_AUTH_STATUS,
+        # Pin the clock inside the toast lifetime so suppression is asserted
+        # deterministically rather than relying on real elapsed time.
+        clock = {"now": 100.0}
+
+        with (
+            patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
+            ),
+            patch(
+                "deepagents_code.app._monotonic",
+                side_effect=lambda: clock["now"],
+            ),
         ):
             await app._switch_model("anthropic:claude-opus-4-5")
+            clock["now"] = 100.0 + app.NOTIFICATION_TIMEOUT / 2
             await app._switch_model("anthropic:claude-opus-4-5")
 
-        app.notify.assert_called_once()  # ty: ignore
+        notify_mock.assert_called_once()
         assert (
-            app.notify.call_args.args[0]  # ty: ignore
-            == "Already using anthropic:claude-opus-4-5"
+            notify_mock.call_args.args[0] == "Already using anthropic:claude-opus-4-5"
         )
+        mount_mock.assert_not_called()
         assert app._model_switching is False
 
-    async def test_same_model_changed_params_emit_new_message(self) -> None:
+    async def test_expired_same_model_toast_can_reemit(self) -> None:
+        """After the toast lifetime elapses, identical no-ops toast again."""
+        app = DeepAgentsApp()
+        mount_mock = AsyncMock()
+        notify_mock = Mock()
+        app._mount_message = mount_mock  # ty: ignore
+        app.notify = notify_mock  # ty: ignore
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "claude-opus-4-5"
+        settings.model_provider = "anthropic"
+
+        # Advance past NOTIFICATION_TIMEOUT between the two no-ops so the
+        # second selection re-toasts instead of staying suppressed forever.
+        clock = {"now": 100.0}
+
+        with (
+            patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
+            ),
+            patch(
+                "deepagents_code.app._monotonic",
+                side_effect=lambda: clock["now"],
+            ),
+        ):
+            await app._switch_model("anthropic:claude-opus-4-5")
+            clock["now"] = 100.0 + app.NOTIFICATION_TIMEOUT + 0.1
+            await app._switch_model("anthropic:claude-opus-4-5")
+
+        assert [call.args[0] for call in notify_mock.call_args_list] == [
+            "Already using anthropic:claude-opus-4-5",
+            "Already using anthropic:claude-opus-4-5",
+        ]
+        assert app._model_switching is False
+
+    async def test_same_model_toast_reemits_at_exact_lifetime_boundary(self) -> None:
+        """At exactly `NOTIFICATION_TIMEOUT`, the previous toast has expired.
+
+        Pins the boundary comparison: the elapsed check is `>=`, so a no-op
+        landing exactly on the timeout must re-toast rather than stay
+        suppressed.
+        """
+        app = DeepAgentsApp()
+        notify_mock = Mock()
+        app._mount_message = AsyncMock()  # ty: ignore
+        app.notify = notify_mock  # ty: ignore
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "claude-opus-4-5"
+        settings.model_provider = "anthropic"
+
+        clock = {"now": 100.0}
+
+        with (
+            patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
+            ),
+            patch(
+                "deepagents_code.app._monotonic",
+                side_effect=lambda: clock["now"],
+            ),
+        ):
+            await app._switch_model("anthropic:claude-opus-4-5")
+            clock["now"] = 100.0 + app.NOTIFICATION_TIMEOUT
+            await app._switch_model("anthropic:claude-opus-4-5")
+
+        assert notify_mock.call_count == 2
+
+    async def test_same_model_changed_params_emit_new_toast(self) -> None:
         """A changed same-model notice should still be shown to the user."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore
-        app.notify = Mock()  # ty: ignore
+        mount_mock = AsyncMock()
+        notify_mock = Mock()
+        app._mount_message = mount_mock  # ty: ignore
+        app.notify = notify_mock  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "claude-opus-4-5"
@@ -239,23 +327,68 @@ class TestModelSwitchNoOp:
                 extra_kwargs={"temperature": 0.2},
             )
 
-        assert app.notify.call_count == 2  # ty: ignore
-        assert [
-            call.args[0]  # ty: ignore
-            for call in app.notify.call_args_list  # ty: ignore
-        ] == [
+        assert [call.args[0] for call in notify_mock.call_args_list] == [
             "Already using anthropic:claude-opus-4-5",
             (
                 "Already using anthropic:claude-opus-4-5 "
                 'with model params {"temperature": 0.2}'
             ),
         ]
+        mount_mock.assert_not_called()
         assert app._model_switching is False
 
-    async def test_same_model_can_skip_unchanged_message(self) -> None:
-        """Onboarding can re-select the active model without adding chat noise."""
+    async def test_real_switch_resets_unchanged_toast_suppression(self) -> None:
+        """A real switch clears suppression so the next no-op toasts again.
+
+        Without the reset, re-selecting A after an A -> B -> A round trip
+        would be swallowed by the stale suppression entry left by the first
+        no-op.
+        """
         app = DeepAgentsApp()
+        notify_mock = Mock()
         app._mount_message = AsyncMock()  # ty: ignore
+        app.notify = notify_mock  # ty: ignore
+        app._agent = _make_remote_agent()
+
+        settings.model_name = "claude-opus-4-5"
+        settings.model_provider = "anthropic"
+
+        # Hold the clock still so a second toast is attributable to the reset
+        # rather than to the toast lifetime quietly expiring.
+        with (
+            patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=_CONFIGURED_AUTH_STATUS,
+            ),
+            patch("deepagents_code.model_config.save_recent_model", return_value=True),
+            patch("deepagents_code.app._monotonic", return_value=100.0),
+        ):
+            # No-op records the suppression entry.
+            await app._switch_model("anthropic:claude-opus-4-5")
+            # Real switches away and back must clear it.
+            await app._switch_model("anthropic:claude-sonnet-4-5")
+            await app._switch_model("anthropic:claude-opus-4-5")
+            # Identical message, same instant on the clock: only the reset can
+            # let this through.
+            await app._switch_model("anthropic:claude-opus-4-5")
+
+        unchanged_toasts = [
+            call.args[0]
+            for call in notify_mock.call_args_list
+            if call.args[0].startswith("Already using")
+        ]
+        assert unchanged_toasts == [
+            "Already using anthropic:claude-opus-4-5",
+            "Already using anthropic:claude-opus-4-5",
+        ]
+
+    async def test_same_model_can_skip_unchanged_message(self) -> None:
+        """Onboarding can re-select the active model without any notice."""
+        app = DeepAgentsApp()
+        mount_mock = AsyncMock()
+        notify_mock = Mock()
+        app._mount_message = mount_mock  # ty: ignore
+        app.notify = notify_mock  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "claude-opus-4-5"
@@ -271,7 +404,10 @@ class TestModelSwitchNoOp:
 
         assert app._model_override == "anthropic:claude-opus-4-5"
         assert app._model_params_override is None
-        app._mount_message.assert_not_called()  # ty: ignore
+        # `announce_unchanged=False` must suppress the toast, not just the
+        # inline message the notice used to use.
+        mount_mock.assert_not_called()
+        notify_mock.assert_not_called()
         assert app._model_switching is False
 
     async def test_same_model_with_new_params_applies_overrides(self) -> None:
@@ -282,8 +418,9 @@ class TestModelSwitchNoOp:
         leaving `_model_params_override` unset.
         """
         app = DeepAgentsApp()
+        notify_mock = Mock()
         app._mount_message = AsyncMock()  # ty: ignore
-        app.notify = Mock()  # ty: ignore
+        app.notify = notify_mock  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "claude-opus-4-5"
@@ -303,8 +440,8 @@ class TestModelSwitchNoOp:
             "num_ctx": 16384,
             "temperature": 0.2,
         }
-        app.notify.assert_called_once()  # ty: ignore
-        message = app.notify.call_args.args[0]  # ty: ignore
+        notify_mock.assert_called_once()
+        message = notify_mock.call_args.args[0]
         assert message.startswith("Already using anthropic:claude-opus-4-5")
         # Stable, key-sorted JSON in the echoed suffix.
         assert 'with model params {"num_ctx": 16384, "temperature": 0.2}' in message
@@ -1127,8 +1264,10 @@ class TestModelSwitchBareModelName:
     async def test_bare_model_name_already_using(self) -> None:
         """Bare model name matching current model toasts 'Already using'."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore
-        app.notify = Mock()  # ty: ignore
+        mount_mock = AsyncMock()
+        notify_mock = Mock()
+        app._mount_message = mount_mock  # ty: ignore
+        app.notify = notify_mock  # ty: ignore
         app._agent = _make_remote_agent()
 
         settings.model_name = "gpt-5.5"
@@ -1143,9 +1282,9 @@ class TestModelSwitchBareModelName:
         ):
             await app._switch_model("gpt-5.5")
 
-        app._mount_message.assert_not_called()  # ty: ignore
-        app.notify.assert_called_once()  # ty: ignore
-        assert "Already using" in app.notify.call_args.args[0]  # ty: ignore
+        mount_mock.assert_not_called()
+        notify_mock.assert_called_once()
+        assert "Already using" in notify_mock.call_args.args[0]
 
 
 class TestExtractModelParamsFlag:

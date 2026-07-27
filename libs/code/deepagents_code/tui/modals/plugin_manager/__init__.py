@@ -172,6 +172,7 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
             )
             yield Input(
                 placeholder="Search plugins...",
+                select_on_focus=False,
                 id="plugin-manager-search",
             )
             yield OptionList(id="plugin-manager-options")
@@ -582,7 +583,12 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         return True
 
     def on_key(self, event: Key) -> None:
-        """Focus plugin search when a letter is typed from another control."""
+        """Focus plugin search when a letter is typed from another control.
+
+        Seed the character into the filter before focusing so the input never
+        paints empty with a caret flash (and so `select_on_focus` cannot leave
+        the inserted text selected for the next keypress).
+        """
         if not self._search_available():
             return
 
@@ -594,17 +600,13 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
         if not character or not character.isalpha():
             return
 
+        # Mutate first, then focus, so the first focused frame already shows the
+        # typed letter — matching type-to-search in the thread filter.
+        new_value = f"{search_input.value}{character}"
+        search_input.value = new_value
+        search_input.selection = type(search_input.selection).cursor(len(new_value))
         search_input.focus()
-        search_input.insert_text_at_cursor(character)
-        self.set_timer(0.01, self._collapse_search_selection)
         event.stop()
-
-    def _collapse_search_selection(self) -> None:
-        """Place the search cursor at the end without an active selection."""
-        search_input = self.query_one("#plugin-manager-search", Input)
-        search_input.selection = type(search_input.selection).cursor(
-            len(search_input.value)
-        )
 
     def on_plugin_tab_selected(self, event: PluginTabSelected) -> None:
         """Switch tabs from a mouse click on a tab label.

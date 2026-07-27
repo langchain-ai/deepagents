@@ -68,6 +68,12 @@ class TestValidateQuestions:
                 ]
             )
 
+    def test_rejects_multi_select_without_choices(self) -> None:
+        with pytest.raises(ValueError, match="requires a non-empty 'choices'"):
+            _validate_questions(
+                [{"question": "Pick some", "type": "multi_select", "choices": []}]
+            )
+
     def test_accepts_valid_question_set(self) -> None:
         _validate_questions(
             [
@@ -76,6 +82,11 @@ class TestValidateQuestions:
                     "question": "Color?",
                     "type": "multiple_choice",
                     "choices": [{"value": "red"}, {"value": "blue"}],
+                },
+                {
+                    "question": "Toppings?",
+                    "type": "multi_select",
+                    "choices": [{"value": "cheese"}, {"value": "olives"}],
                 },
             ]
         )

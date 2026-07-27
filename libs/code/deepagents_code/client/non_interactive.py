@@ -88,6 +88,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
 
     from deepagents_code.hooks.runtime import HooksRuntime
+    from deepagents_code.json_types import JsonObject
 
 logger = logging.getLogger(__name__)
 
@@ -359,7 +360,7 @@ class StreamState:
     pending_hook_interrupts: dict[str, object] = field(default_factory=dict)
     """Raw Hooks v2 invocation interrupt payloads awaiting client fulfillment."""
 
-    hook_response: dict[str, Any] = field(default_factory=dict)
+    hook_response: dict[str, JsonObject] = field(default_factory=dict)
     """Resume values for fulfilled Hooks v2 interrupts, keyed by interrupt id."""
 
     hooks_runtime: HooksRuntime | None = None

@@ -21,11 +21,11 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.models.domain import HookDecision
     from deepagents_code.hooks.models.transport import HookInvocationRequest
     from deepagents_code.hooks.runtime import HooksRuntime
+    from deepagents_code.json_types import JsonObject
 
 logger = logging.getLogger(__name__)
 
 _FulfillmentKey = tuple[str, UUID]
-_ResumePayload = dict[str, object]
 
 
 class HooksSnapshotChangedError(RuntimeError):
@@ -87,7 +87,7 @@ class HookFulfillmentLedger:
 async def fulfill_hook_invocation(
     runtime: HooksRuntime,
     request: HookInvocationRequest,
-) -> dict[str, object]:
+) -> JsonObject:
     """Execute a server-owned hook request and return a resume payload.
 
     Args:
@@ -128,7 +128,7 @@ async def fulfill_hook_invocation(
 async def fulfill_hook_interrupt(
     runtime: HooksRuntime,
     interrupt_value: object,
-) -> dict[str, object] | None:
+) -> JsonObject | None:
     """Fulfill a raw interrupt value when it is a hook invocation.
 
     Args:
@@ -147,7 +147,7 @@ async def fulfill_hook_interrupt(
 async def fulfill_pending_hook_interrupts(
     runtime: HooksRuntime,
     pending: Mapping[str, object],
-) -> dict[str, dict[str, object]]:
+) -> dict[str, JsonObject]:
     """Fulfill pending hook interrupts into a resume map keyed by interrupt id.
 
     Args:
@@ -160,7 +160,7 @@ async def fulfill_pending_hook_interrupts(
     Raises:
         RuntimeError: If a payload is not a valid hook interrupt.
     """
-    resumes: dict[str, dict[str, object]] = {}
+    resumes: dict[str, JsonObject] = {}
     for interrupt_id, payload in pending.items():
         resume_value = await fulfill_hook_interrupt(runtime, payload)
         if resume_value is None:

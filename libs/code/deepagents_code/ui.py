@@ -668,10 +668,14 @@ def show_install_help() -> None:
         "binaries such as ripgrep.",
     )
     console.print()
-    _print_option_section(
-        "  --package               Treat NAME as a package added via `uv --with`",
-        "  --yes                   Skip interactive confirmation prompts",
+    # Do not use `_print_option_section` here: it appends the shared `--json`
+    # line, and `dcode install` does not accept that flag.
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
+    console.print(
+        "  --package               Treat NAME as a package added via `uv --with`"
     )
+    console.print("  --yes                   Skip interactive confirmation prompts")
+    console.print(_HELP_OPTION_LINE)
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode install daytona")

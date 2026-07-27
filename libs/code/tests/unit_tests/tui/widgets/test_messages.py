@@ -1652,6 +1652,37 @@ class TestToolCallMessageExpandHint:
             collapsed = app.msg._hint_widget._Static__content
             assert "collapse" in collapsed.plain
 
+    async def test_expand_and_collapse_hints_share_dim_italic_style(self) -> None:
+        """Expand and collapse hints must both render dim italic.
+
+        Every "click or Ctrl+O" affordance in this module is dim italic; the
+        collapsed expand hint must not drop the italic the collapse hint uses.
+        """
+        output = "\n".join(f"file.py:{index}:hit {index}" for index in range(8))
+        assert output.count("\n") + 1 > ToolCallMessage._PREVIEW_LINES
+
+        app = _tool_msg_app("grep", {"pattern": "hit"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(output)
+            await pilot.pause()
+
+            assert app.msg._hint_widget is not None
+            expand_hint = app.msg._hint_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "expand" in expand_hint.plain
+            expand_style = str(expand_hint._spans[0].style)
+            assert "italic" in expand_style
+            assert "dim" in expand_style
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            collapse_hint = app.msg._hint_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "collapse" in collapse_hint.plain
+            collapse_style = str(collapse_hint._spans[0].style)
+            assert "italic" in collapse_style
+            assert "dim" in collapse_style
+
     async def test_short_non_todo_output_renders_full_without_hint(self) -> None:
         """Short non-todo output uses non-preview formatting and shows no hint.
 
@@ -4932,26 +4963,30 @@ class TestUserMessageTruncation:
 
     def test_long_message_truncated_with_elision(self) -> None:
         """Messages over 10k chars should get head+tail+elision marker."""
+        from deepagents_code.config import get_glyphs
         from deepagents_code.tui.widgets.messages import _truncate_for_display
 
+        ellipsis = get_glyphs().ellipsis
         text = "A" * 12_000
         result = _truncate_for_display(text)
-        assert "… +" in result
-        assert " lines …" in result
+        assert f"{ellipsis} +" in result
+        assert f" lines {ellipsis}" in result
         # Head and tail are preserved
         assert result.startswith("A" * 2500)
         assert result.endswith("A" * 2500)
 
     def test_truncation_counts_hidden_lines(self) -> None:
         """The elision marker should report the correct hidden line count."""
+        from deepagents_code.config import get_glyphs
         from deepagents_code.tui.widgets.messages import _truncate_for_display
 
+        ellipsis = get_glyphs().ellipsis
         lines = [f"line {i:04d} " + "x" * 20 for i in range(600)]
         text = "\n".join(lines)
         assert len(text) > 10_000
         result = _truncate_for_display(text)
-        assert "… +" in result
-        assert " lines …" in result
+        assert f"{ellipsis} +" in result
+        assert f" lines {ellipsis}" in result
 
     def test_full_content_preserved_in_widget(self) -> None:
         """The widget should store full content even when display is truncated."""
@@ -4992,11 +5027,13 @@ class TestUserMessageTruncation:
 
     def test_truncation_reports_exact_hidden_newline_count(self) -> None:
         """The elision marker reports the exact number of hidden newlines."""
+        from deepagents_code.config import get_glyphs
         from deepagents_code.tui.widgets.messages import _truncate_for_display
 
+        ellipsis = get_glyphs().ellipsis
         text = "H" * 6000 + "\n" * 50 + "T" * 6000
         result = _truncate_for_display(text)
-        assert "… +50 lines …" in result
+        assert f"{ellipsis} +50 lines {ellipsis}" in result
 
     async def test_partial_selection_uses_visible_render(self) -> None:
         """A partial selection defers to the on-screen (truncated) render.
@@ -5029,9 +5066,11 @@ class TestUserMessageTruncation:
 
     def test_queued_message_render_truncates(self) -> None:
         """QueuedUserMessage render truncates long content with an elision marker."""
+        from deepagents_code.config import get_glyphs
+
         content = _render_content(QueuedUserMessage("Q" * 12_000))
         assert content.plain.startswith("> ")
-        assert "… +" in content.plain
+        assert f"{get_glyphs().ellipsis} +" in content.plain
         assert len(content.plain) < 12_000
 
     async def test_queued_selection_returns_full_content(self) -> None:
@@ -5054,6 +5093,184 @@ class TestUserMessageTruncation:
             text, _ending = result
             assert text == big
             assert "…" not in text
+
+    def test_will_truncate_boundary(self) -> None:
+        """`will_truncate` is false at the threshold and true above it."""
+        assert UserMessage.will_truncate("C" * 10_000) is False
+        assert UserMessage.will_truncate("C" * 10_001) is True
+
+    def test_collapsed_render_includes_expand_hint(self) -> None:
+        """Collapsed long messages show a clickable expand affordance."""
+        content = _render_content(UserMessage("A" * 12_000))
+        plain = content.plain
+        assert plain.startswith("> ")
+        assert "show full message" in plain
+        assert "click or Ctrl+O" in plain
+        # Head and tail are both preserved verbatim around the elision.
+        assert plain[2:].startswith("A" * 2500)
+        assert plain.endswith("A" * 2500)
+        # ...and nothing beyond them is shown.
+        assert plain.count("A") == 5000
+
+        # Click meta is on the affordance span only
+        def _has_toggle_click(style: object) -> bool:
+            meta = getattr(style, "meta", None)
+            return isinstance(meta, dict) and meta.get("@click") == "toggle_expand"
+
+        assert any(_has_toggle_click(span.style) for span in content.spans)
+
+    def test_collapsed_hint_action_exists_on_widget(self) -> None:
+        """The `@click` meta names a real action method.
+
+        Guards the rename path: the meta is a string, so renaming
+        `action_toggle_expand` would otherwise leave the click silently dead.
+        """
+        msg = UserMessage("A" * 12_000)
+        content = _render_content(msg)
+        actions: set[str] = set()
+        for span in content.spans:
+            style = span.style
+            if isinstance(style, str):
+                continue
+            if "@click" in style.meta:
+                actions.add(style.meta["@click"])
+        assert actions
+        for action in actions:
+            assert callable(getattr(msg, f"action_{action}", None))
+
+    def test_collapsed_hint_reports_characters_for_single_line_body(self) -> None:
+        """A single-line paste reports hidden characters, never "+0 lines"."""
+        plain = _render_content(UserMessage("x" * 12_000)).plain
+        assert "+0 lines" not in plain
+        assert "+7,000 characters" in plain
+
+    def test_collapsed_hint_reports_lines_for_multiline_body(self) -> None:
+        """A body with hidden newlines reports the line count."""
+        text = "H" * 6000 + "\n" * 50 + "T" * 6000
+        plain = _render_content(UserMessage(text)).plain
+        assert "+50 lines" in plain
+        assert "characters" not in plain
+
+    async def test_click_on_hint_expands_message(self) -> None:
+        """Clicking the affordance row actually toggles expansion."""
+        from textual.geometry import Offset
+
+        msg = UserMessage("A" * 12_000)
+
+        class _TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield msg
+
+        app = _TestApp()
+        # Wide and tall enough that the 2500-char head, the affordance, and the
+        # tail all fit on screen — `pilot.click` refuses off-screen targets.
+        async with app.run_test(size=(200, 50)) as pilot:
+            await pilot.pause()
+            # Locate the affordance in the wrapped output rather than computing
+            # it from the body length, which depends on terminal width.
+            hint_row = next(
+                y
+                for y in range(msg.size.height)
+                if "show full message" in msg.render_line(y).text
+            )
+            await pilot.click(UserMessage, offset=Offset(4, hint_row))
+            await pilot.pause()
+            assert msg._expanded is True
+
+    async def test_expand_hint_is_not_styled_as_a_link(self) -> None:
+        """The affordance stays dim italic despite carrying `@click` meta.
+
+        Textual adds `link_style` to any span whose meta has `@click`, which by
+        default underlines it, drops `dim`, and turns it bold on an accent block
+        when hovered. `UserMessage.DEFAULT_CSS` neutralizes that; without those
+        rules the hint stops matching every other hint in this module.
+        """
+        msg = UserMessage("A" * 12_000)
+
+        class _TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield msg
+
+        app = _TestApp()
+        async with app.run_test(size=(200, 50)) as pilot:
+            await pilot.pause()
+            row = next(
+                y
+                for y in range(msg.size.height)
+                if "show full message" in msg.render_line(y).text
+            )
+            styles = [
+                seg.style
+                for seg in msg.render_line(row)
+                if "show full message" in seg.text and seg.style is not None
+            ]
+            assert styles
+            for style in styles:
+                assert style.dim is True
+                assert style.italic is True
+                assert not style.underline
+                assert not style.bold
+
+    def test_expanded_render_includes_full_body_and_collapse_hint(self) -> None:
+        """Toggling expansion shows the full body plus a collapse hint."""
+        msg = UserMessage("B" * 12_000)
+        msg.toggle_expanded()
+        content = _render_content(msg)
+        plain = content.plain
+        assert "B" * 12_000 in plain
+        assert "click or Ctrl+O to collapse" in plain
+        assert "show full message" not in plain
+
+    def test_toggle_round_trips_back_to_collapsed(self) -> None:
+        """Expanding then collapsing restores the original collapsed render."""
+        msg = UserMessage("A" * 12_000)
+        collapsed = _render_content(msg).plain
+        msg.toggle_expanded()
+        msg.toggle_expanded()
+        assert msg._expanded is False
+        assert _render_content(msg).plain == collapsed
+
+    async def test_selection_on_expanded_message_excludes_hint(self) -> None:
+        """Select-all on an expanded message copies the body without the hint."""
+        from textual.geometry import Offset
+        from textual.selection import Selection
+
+        big = "X" * 12_000
+        msg = UserMessage(big)
+
+        class _TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield msg
+
+        app = _TestApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            msg.toggle_expanded()
+            await pilot.pause()
+            result = msg.get_selection(Selection(Offset(2, 0), None))
+            assert result is not None
+            text, _ending = result
+            assert text == big
+            assert "Ctrl+O" not in text
+
+    def test_toggle_is_noop_for_short_messages(self) -> None:
+        """Short messages are not expandable."""
+        msg = UserMessage("short")
+        assert msg.has_expandable_body is False
+        msg.toggle_expanded()
+        assert msg._expanded is False
+
+    def test_has_expandable_body_accounts_for_mode_prefix(self) -> None:
+        """The threshold applies to the body, after any mode trigger is stripped."""
+        # With detection on, the leading "/" is a prefix glyph, not body text,
+        # so the body lands exactly on the threshold and stays inline.
+        assert UserMessage("/" + "x" * 10_000).has_expandable_body is False
+        assert UserMessage("/" + "x" * 10_001).has_expandable_body is True
+        # With detection off the slash is literal body text and counts.
+        assert (
+            UserMessage("/" + "x" * 10_000, detect_mode=False).has_expandable_body
+            is True
+        )
 
 
 class _RubricResultApp(App[None]):

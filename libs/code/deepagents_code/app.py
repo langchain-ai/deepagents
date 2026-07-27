@@ -571,7 +571,13 @@ class _ConfigWriteResult:
 ScreenResultT = TypeVar("ScreenResultT")
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+    from collections.abc import (
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Coroutine,
+        Mapping,
+    )
 
     from deepagents.backends import CompositeBackend
     from langchain_core.messages import BaseMessage
@@ -3161,8 +3167,14 @@ class DeepAgentsApp(App):
         )
         """Per-turn model params override set via startup or `/model` params."""
 
-        self._last_model_unchanged_message: str | None = None
-        """Most recent same-model notice, used to suppress duplicates."""
+        self._last_model_unchanged: tuple[str, float] | None = None
+        """Most recent same-model toast, as `(text, monotonic timestamp)`.
+
+        Used to suppress duplicates. Suppression only lasts for the toast
+        lifetime (`NOTIFICATION_TIMEOUT`); after expiry, a later identical
+        no-op selection can toast again. Text and timestamp are one field so
+        they cannot drift out of sync.
+        """
 
         self._model_install_switching = False
         """True while a provider extra install-then-switch flow is active."""
@@ -5052,37 +5064,20 @@ class DeepAgentsApp(App):
             and self._server_kwargs is not None
         ):
             missing = self._server_startup_missing_provider_package
-            from deepagents_code.extras_info import extra_for_package
+            from deepagents_code.extras_info import resolve_install_hint
 
-            extra = extra_for_package(missing.package)
-            if extra is not None:
+            hint = resolve_install_hint(missing.package)
+            if hint.extra is not None:
                 text += (
-                    f"\n\nHint: install the package with `/install {extra}`, "
+                    f"\n\nHint: install the package with `/install {hint.extra}`, "
                     f"then run `/model {missing.provider}:<model>` to retry. "
                     "Or pick a different provider with `/model`."
                 )
             else:
-                from deepagents_code.extras_info import ExtrasIntrospectionError
-                from deepagents_code.update_check import (
-                    ToolRequirementIntrospectionError,
-                    install_package_command,
-                )
-
-                try:
-                    install_cmd = install_package_command(missing.package)
-                except (
-                    ValueError,
-                    ExtrasIntrospectionError,
-                    ToolRequirementIntrospectionError,
-                ) as exc:
-                    logger.debug(
-                        "install_package_command failed; falling back to "
-                        "manual hint: %s",
-                        exc,
-                    )
-                    install_hint = f"install the `{missing.package}` package manually"
+                if hint.command is not None:
+                    install_hint = f"run `{hint.command}`"
                 else:
-                    install_hint = f"run `{install_cmd}`"
+                    install_hint = f"install the `{missing.package}` package manually"
                 text += (
                     f"\n\nHint: {install_hint}, then run "
                     f"`/model {missing.provider}:<model>` "
@@ -6034,9 +6029,9 @@ class DeepAgentsApp(App):
                 create_update_log_path,
                 editable_extra_hint,
                 install_extra_command,
-                install_extra_recovery_command,
                 is_valid_extra_name,
                 perform_install_extra,
+                safe_install_extra_recovery_command,
             )
         except ImportError as exc:
             logger.warning("/install command import failed", exc_info=True)
@@ -6121,19 +6116,9 @@ class DeepAgentsApp(App):
             # already bound above so the hint is never empty. `manual_cmd` is
             # rendered into a Textual `Content` (literal, not Rich markup), so no
             # bracket escaping is needed here.
-            try:
-                manual_cmd = await asyncio.to_thread(
-                    install_extra_recovery_command, extra
-                )
-            except (
-                ExtrasIntrospectionError,
-                ToolRequirementIntrospectionError,
-                ValueError,
-            ):
-                logger.warning(
-                    "/install recovery command failed (install raised)",
-                    exc_info=True,
-                )
+            manual_cmd = await asyncio.to_thread(
+                safe_install_extra_recovery_command, extra, fallback=manual_cmd
+            )
             await self._mount_message(
                 ErrorMessage(
                     f"Install failed: {type(exc).__name__}: {exc}\n"
@@ -6149,19 +6134,9 @@ class DeepAgentsApp(App):
             detail = f": {output[-200:]}" if output else ""
             # See the OSError branch above: best-effort recovery command, falling
             # back to the already-bound install-script command on failure.
-            try:
-                manual_cmd = await asyncio.to_thread(
-                    install_extra_recovery_command, extra
-                )
-            except (
-                ExtrasIntrospectionError,
-                ToolRequirementIntrospectionError,
-                ValueError,
-            ):
-                logger.warning(
-                    "/install recovery command failed (install reported failure)",
-                    exc_info=True,
-                )
+            manual_cmd = await asyncio.to_thread(
+                safe_install_extra_recovery_command, extra, fallback=manual_cmd
+            )
             await self._mount_message(
                 ErrorMessage(
                     f"Install failed{detail}\n"
@@ -6216,9 +6191,14 @@ class DeepAgentsApp(App):
         # restart. `_offer_restart_after_install` owns all follow-up messaging
         # (the prompt's button is the call to action when shown; it mounts a
         # `/restart`-or-relaunch hint itself when it can't show the prompt), so
-        # a redundant "Run /restart" line is never appended here.
+        # a redundant "Run /restart" line is never appended here. The offer is
+        # scheduled off the message pump so the modal stays responsive (see
+        # `_schedule_restart_offer`); the interactive offer never affects this
+        # method's return value, so detaching it does not change the contract.
         await self._mount_message(AppMessage(f"Installed extra '{extra}'."))
-        await self._offer_restart_after_install(extra)
+        self._schedule_restart_offer(
+            self._offer_restart_after_install(extra), context=f"extra:{extra}"
+        )
         return True
 
     async def _handle_install_package(self, package: str, *, force: bool) -> None:
@@ -6309,7 +6289,11 @@ class DeepAgentsApp(App):
                 "now, or relaunch dcode.",
             ),
         )
-        await self._offer_restart_after_install(package)
+        # Scheduled off the message pump so the restart modal stays responsive
+        # to Enter/Esc (see `_schedule_restart_offer`).
+        self._schedule_restart_offer(
+            self._offer_restart_after_install(package), context=f"package:{package}"
+        )
 
     async def _confirm_install_package(self, package: str) -> bool:
         """Ask the user to confirm installing an arbitrary package.
@@ -13858,6 +13842,24 @@ class DeepAgentsApp(App):
         )
         await self._mount_message(user_message)
         self._active_user_message = user_message
+        # Toast only on submit when the transcript will collapse the body —
+        # the model still receives the full text; the UI is head+tail until
+        # the user expands. Asking the widget (rather than re-deriving from
+        # `message`) keeps this in step with what `render()` actually collapses,
+        # including its mode-prefix handling.
+        if user_message.has_expandable_body:
+            # "Shortened", not "collapsed": a large paste already toasted
+            # "Large paste collapsed" in the composer (see chat_input), and
+            # that means something different (a placeholder chip, not a
+            # head+tail elision in the transcript).
+            self.notify(
+                "Long message shortened in the transcript — click "
+                "'show full message' to expand it. The full text was still "
+                "sent to the model.",
+                severity="information",
+                markup=False,
+                timeout=8,
+            )
         await self._send_to_agent(message)
 
     async def _send_to_agent(
@@ -15760,6 +15762,23 @@ class DeepAgentsApp(App):
             )
             self._schedule_message_height_measurement(event.widget.id)
 
+    def on_user_message_expansion_changed(
+        self,
+        event: UserMessage.ExpansionChanged,
+    ) -> None:
+        """Keep long-prompt expansion state across transcript virtualization.
+
+        Also re-measures the row: expanding a collapsed prompt can add hundreds
+        of lines, and the spacer math that sizes the scrollbar reads a cached
+        height that `refresh(layout=True)` alone does not update.
+        """
+        if event.widget.id:
+            self._message_store.update_message(
+                event.widget.id,
+                user_expanded=event.expanded,
+            )
+            self._schedule_message_height_measurement(event.widget.id)
+
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""
         # Drop buffered `!` shell output so it never leaks across a thread
@@ -16901,7 +16920,9 @@ class DeepAgentsApp(App):
         elif kind == "denial":
             text = f"Auto denied [{event.get('category', 'policy')}]: {reason}"
         elif kind == "unavailable":
-            text = f"Auto classifier unavailable: {reason}"
+            # Reason is a short cause fragment from the server; keep the UI
+            # line outcome-focused so fail-closed denial is obvious.
+            text = f"Auto classifier unavailable: {reason} — tool not executed"
         else:
             text = f"Auto warning: {reason}"
         await self._mount_message(AppMessage(text))
@@ -17174,6 +17195,13 @@ class DeepAgentsApp(App):
                 if child.has_output:
                     child.toggle_output()
                     return
+            # Long UserMessages are collapsible. This scan is newest-first and
+            # first-match-wins, so any later tool/skill/group row claims Ctrl+O
+            # and the prompt is then reachable only by click. Assistant rows are
+            # not in the chain, so they do not block it.
+            if isinstance(child, UserMessage) and child.has_expandable_body:
+                child.toggle_expanded()
+                return
 
     # Approval menu action handlers (delegated from App-level bindings)
     # NOTE: These only activate when approval widget is pending
@@ -20794,6 +20822,28 @@ class DeepAgentsApp(App):
         except ModuleNotFoundError:
             logger.warning("Could not preload restart_prompt modal", exc_info=True)
 
+    def _schedule_restart_offer(
+        self, coro: Coroutine[Any, Any, None], *, context: str
+    ) -> None:
+        """Run a post-install restart offer as a detached background task.
+
+        The `/install` slash command reaches the restart offer through the App's
+        `on_chat_input_submitted` handler, which is awaited inline on the App
+        message pump. Awaiting the restart modal there blocks the pump, so the
+        modal never receives the Enter/Esc key events it needs to resolve and
+        appears frozen. Detaching the offer onto its own task lets the command
+        handler return and frees the pump to route keys to the modal — the same
+        reason the post-`/auth` web-search offer is scheduled rather than
+        awaited (see `_launch_web_search_restart_prompt`).
+
+        Args:
+            coro: The restart-offer coroutine to run off the message pump.
+            context: Short description used if the task is logged on failure.
+        """
+        task = asyncio.create_task(coro, name=f"restart-offer:{context}")
+        self._track_server_restart_task(task)
+        task.add_done_callback(_log_task_exception)
+
     async def _offer_restart_after_install(self, label: str) -> None:
         """Offer a one-keypress restart after a restart-capable install.
 
@@ -22298,7 +22348,7 @@ class DeepAgentsApp(App):
                 (e.g., `'anthropic:claude-sonnet-4-5'`) or just the model name
                 for auto-detection.
             extra_kwargs: Extra constructor kwargs from `--model-params`.
-            announce_unchanged: Whether to mount a message when the requested
+            announce_unchanged: Whether to toast a notice when the requested
                 model is already active.
             persist: Whether to write the model to the user's recent/default
                 config.
@@ -22425,9 +22475,21 @@ class DeepAgentsApp(App):
                 params_suffix = _format_model_params(extra_kwargs)
                 if announce_unchanged:
                     message = f"Already using {current}{params_suffix}"
-                    if message != self._last_model_unchanged_message:
-                        await self._mount_message(AppMessage(message))
-                        self._last_model_unchanged_message = message
+                    # Suppress only while the previous identical toast is
+                    # presumed still on-screen. Once it expires, a later
+                    # intentional no-op selection must be able to toast again.
+                    now = _monotonic()
+                    last = self._last_model_unchanged
+                    if (
+                        last is None
+                        or last[0] != message
+                        or (now - last[1]) >= self.NOTIFICATION_TIMEOUT
+                    ):
+                        # A no-op re-selection is transient feedback, not part
+                        # of the conversation, so surface it as a toast rather
+                        # than an inline chat message.
+                        self.notify(message, markup=False)
+                        self._last_model_unchanged = (message, now)
                 logger.info(
                     "Model unchanged (%s); model_params=%s",
                     current,
@@ -22479,7 +22541,7 @@ class DeepAgentsApp(App):
 
             self._sync_status_model()
 
-            self._last_model_unchanged_message = None
+            self._last_model_unchanged = None
             params_suffix = _format_model_params(extra_kwargs)
             if not persist:
                 # Session-only switch (e.g. adopting a resumed thread's model):

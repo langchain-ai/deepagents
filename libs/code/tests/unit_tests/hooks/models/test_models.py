@@ -49,6 +49,11 @@ _WIRE_INPUTS = [
     },
     {
         **_COMMON_WIRE_INPUT,
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "Review this change",
+    },
+    {
+        **_COMMON_WIRE_INPUT,
         "hook_event_name": "SessionEnd",
         "reason": "other",
     },
@@ -79,6 +84,12 @@ _WIRE_INPUTS = [
         "tool_response": {"stdout": "/workspace"},
         "tool_use_id": "call-2",
         "duration_ms": 12,
+    },
+    {
+        **_COMMON_WIRE_INPUT,
+        "hook_event_name": "PreCompact",
+        "trigger": "manual",
+        "custom_instructions": "Keep the implementation plan",
     },
     {
         **_COMMON_WIRE_INPUT,
@@ -143,6 +154,11 @@ _SPECIFIC_OUTPUTS = [
         "hookEventName": "SessionStart",
         "additionalContext": "Use the project environment",
         "watchPaths": ["/workspace/src"],
+    },
+    {
+        "hookEventName": "UserPromptSubmit",
+        "additionalContext": "Apply the repository conventions",
+        "suppressOriginalPrompt": True,
     },
     {
         "hookEventName": "PreToolUse",
@@ -347,6 +363,7 @@ def test_hooks_config_validates_event_keys_and_aliases() -> None:
             mode="json",
             by_alias=True,
             exclude_none=True,
+            exclude_defaults=True,
         )
         == payload
     )

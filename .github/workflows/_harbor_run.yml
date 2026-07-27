@@ -123,7 +123,7 @@ jobs:
       aggregate_matrix: ${{ steps.agg-matrix.outputs.aggregate_matrix }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🔀 Expand matrix by shard"
         id: shard-matrix
@@ -361,7 +361,7 @@ jobs:
           echo "All required credentials present for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -1042,7 +1042,7 @@ jobs:
       HARBOR_RESULT: ${{ needs.harbor.result }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🔖 Compute leaf slug"
         id: slug

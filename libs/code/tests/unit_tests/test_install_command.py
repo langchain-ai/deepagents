@@ -1141,6 +1141,7 @@ async def test_install_restart_prompt_responsive_through_message_pump() -> None:
             # Submit through the message pump, exactly as the ChatInput widget
             # would, rather than awaiting `_handle_command` directly (which would
             # not exercise the pump-blocking path).
+            assert app._chat_input is not None
             app._chat_input.post_message(
                 ChatInput.Submitted("/install fireworks", "command")
             )

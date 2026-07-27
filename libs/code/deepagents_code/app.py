@@ -16901,7 +16901,9 @@ class DeepAgentsApp(App):
         elif kind == "denial":
             text = f"Auto denied [{event.get('category', 'policy')}]: {reason}"
         elif kind == "unavailable":
-            text = f"Auto classifier unavailable: {reason}"
+            # Reason is a short cause fragment from the server; keep the UI
+            # line outcome-focused so the blocked action is obvious.
+            text = f"Auto classifier unavailable: {reason} (action blocked)"
         else:
             text = f"Auto warning: {reason}"
         await self._mount_message(AppMessage(text))

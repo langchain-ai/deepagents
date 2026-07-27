@@ -4036,7 +4036,7 @@ class TestSelectProjectServersToPersist:
 
         monkeypatch.setattr(
             "deepagents_code.main._run_project_mcp_trust_action_picker",
-            lambda _console: _ProjectMcpTrustPromptOutcome.CANCELLED,
+            lambda _console, **_kwargs: _ProjectMcpTrustPromptOutcome.CANCELLED,
         )
 
         result = _select_project_mcp_trust_action(Console(stderr=True))

@@ -26245,8 +26245,11 @@ class TestLiveApprovalModeWrites:
 
         app = DeepAgentsApp(approval_mode=ApprovalMode.MANUAL)
 
-        def change_mode_during_construction(**_kwargs: object) -> None:
+        def change_mode_during_construction(
+            *_args: object, **_kwargs: object
+        ) -> MagicMock:
             app._approval_mode = ApprovalMode.AUTO
+            return MagicMock()
 
         with patch(
             "deepagents_code.hooks.runtime.HooksRuntime.create",

@@ -2318,6 +2318,7 @@ async def run_textual_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    trust_project_hooks: bool = False,
     enable_interpreter: bool | None = None,
     interpreter_arg: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
@@ -2376,6 +2377,7 @@ async def run_textual_cli_async(
             `True` to allow, `False` to deny, `None` to fall back to the
             user's per-server scoped approvals (equivalent to `False` for the
             whole-config decision).
+        trust_project_hooks: Whether project-scoped hook commands may run.
         enable_interpreter: Enable `CodeInterpreterMiddleware` (`js_eval`) on
             the main agent. `None` defers to the sandbox-aware/config default.
         interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state,
@@ -2507,6 +2509,7 @@ async def run_textual_cli_async(
             model_explicitly_set=model_name is not None,
             interpreter_arg=interpreter_arg,
             defer_server_start=defer_server_start,
+            trust_project_hooks=trust_project_hooks,
         )
     except Exception as e:
         logger.debug("App error", exc_info=True)
@@ -2941,11 +2944,16 @@ def _project_mcp_picker_has_terminal() -> bool:
 
 def _run_project_mcp_trust_action_picker(
     console: "Console",
+    *,
+    remember_label: str = "Allow for this project — until changed",
 ) -> _ProjectMcpTrustAction | _ProjectMcpTrustPromptOutcome | None:
     """Show the inline project MCP trust action picker.
 
     Args:
         console: Console to print fallback notices to (stderr).
+        remember_label: Label for the persistent-trust option. Callers that
+            remember broader or narrower scope than MCP should override this so
+            the UI matches what is actually persisted.
 
     Returns:
         The chosen action, `CANCELLED` for Esc or Ctrl+D, `INTERRUPTED` for
@@ -2978,7 +2986,7 @@ def _run_project_mcp_trust_action_picker(
     glyphs = get_glyphs()
     actions = [
         (_ProjectMcpTrustAction.ALLOW_ONCE, "Allow once"),
-        (_ProjectMcpTrustAction.REMEMBER, "Allow for this project — until changed"),
+        (_ProjectMcpTrustAction.REMEMBER, remember_label),
         (_ProjectMcpTrustAction.DENY, "Deny"),
     ]
     selected_index = len(actions) - 1
@@ -3068,17 +3076,24 @@ def _run_project_mcp_trust_action_picker(
 
 def _select_project_mcp_trust_action(
     console: "Console",
+    *,
+    remember_label: str = "Allow for this project — until changed",
 ) -> _ProjectMcpTrustAction | _ProjectMcpTrustPromptOutcome:
     """Choose whether to allow once, remember selected servers, or deny.
 
     Args:
         console: Console used by the text fallback.
+        remember_label: Label for the persistent-trust option forwarded to the
+            inline picker.
 
     Returns:
         The selected trust action, `CANCELLED` when the user presses Esc or
         Ctrl+D, or `INTERRUPTED` when the user presses Ctrl+C.
     """
-    selected = _run_project_mcp_trust_action_picker(console)
+    selected = _run_project_mcp_trust_action_picker(
+        console,
+        remember_label=remember_label,
+    )
     if selected is not None:
         return selected
 
@@ -3539,6 +3554,97 @@ def _check_mcp_project_trust(
         highlight=False,
     )
     return True
+
+
+_PROJECT_HOOKS_REMEMBER_LABEL = "Always allow hooks in this workspace"
+
+
+def _check_project_hooks_trust(
+    *,
+    trust_flag: bool = False,
+) -> (
+    bool
+    | Literal[
+        _ProjectMcpTrustPromptOutcome.INTERRUPTED,
+        _ProjectMcpTrustPromptOutcome.CANCELLED,
+    ]
+):
+    """Resolve interactive trust for project-scoped hook commands.
+
+    Args:
+        trust_flag: Whether the CLI explicitly trusted project hooks.
+
+    Returns:
+        Whether project hooks may run, `INTERRUPTED` when the user presses
+        Ctrl+C, or `CANCELLED` when the user presses Esc or Ctrl+D to abort
+        startup.
+    """
+    from rich.console import Console
+    from rich.text import Text
+
+    from deepagents_code.hooks.loading import project_hooks_path
+    from deepagents_code.hooks.trust import (
+        is_project_hooks_trusted,
+        trust_project_hooks,
+    )
+    from deepagents_code.project_utils import ProjectContext
+
+    try:
+        context = ProjectContext.from_user_cwd(Path.cwd())
+        project_root = context.project_root or context.user_cwd
+        config_path = project_hooks_path(project_root)
+        if not config_path.is_file():
+            return False
+    except OSError:
+        logger.warning("Could not inspect project hooks configuration", exc_info=True)
+        return False
+
+    if trust_flag or is_project_hooks_trusted(project_root):
+        return True
+
+    prompt_console = Console(stderr=True)
+    prompt_console.print()
+    title = Text("Project hooks can execute commands from ", style="bold yellow")
+    title.append(str(config_path))
+    prompt_console.print(title, highlight=False)
+    prompt_console.print(
+        "Only allow hooks for projects you trust. Future edits to this file "
+        "will run without asking again if you always allow.",
+        style="yellow",
+        highlight=False,
+    )
+    action = _select_project_mcp_trust_action(
+        prompt_console,
+        remember_label=_PROJECT_HOOKS_REMEMBER_LABEL,
+    )
+    if action is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
+        return action
+    if action is _ProjectMcpTrustPromptOutcome.CANCELLED:
+        return action
+    if action is _ProjectMcpTrustAction.ALLOW_ONCE:
+        prompt_console.print(
+            "[dim]Allowing project hooks for this session.[/dim]",
+            highlight=False,
+        )
+        return True
+    if action is _ProjectMcpTrustAction.REMEMBER:
+        if not trust_project_hooks(project_root):
+            prompt_console.print(
+                "[yellow]Project hook trust could not be remembered; "
+                "allowing this session only.[/yellow]",
+                highlight=False,
+            )
+        else:
+            prompt_console.print(
+                "[dim]Project hooks trusted for this workspace.[/dim]",
+                highlight=False,
+            )
+        return True
+    prompt_console.print(
+        "[dim]Project hooks skipped.[/dim]",
+        highlight=False,
+    )
+    return False
 
 
 def _verify_interpreter_or_exit() -> None:
@@ -4473,6 +4579,20 @@ def cli_main() -> None:
                 )
                 return
 
+            hooks_trust_decision = _check_project_hooks_trust(
+                trust_flag=getattr(args, "trust_project_hooks", False),
+            )
+            if hooks_trust_decision is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
+                sys.exit(130)
+            if hooks_trust_decision is _ProjectMcpTrustPromptOutcome.CANCELLED:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(
+                    "[dim]Aborted; project hooks not loaded.[/dim]",
+                    highlight=False,
+                )
+                return
+
             # Run Textual TUI
             return_code = 0
             try:
@@ -4525,6 +4645,7 @@ def cli_main() -> None:
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
+                        trust_project_hooks=hooks_trust_decision,
                         enable_interpreter=enable_interpreter,
                         interpreter_arg=args.interpreter,
                         interpreter_ptc=interpreter_ptc,

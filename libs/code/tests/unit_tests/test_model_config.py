@@ -217,7 +217,9 @@ class TestHasProviderCredentials:
         ):
             assert has_provider_credentials("anthropic") is True
 
-    @pytest.mark.parametrize("provider", ["anthropic", "fireworks", "openai"])
+    @pytest.mark.parametrize(
+        "provider", ["anthropic", "baseten", "fireworks", "google_genai", "openai"]
+    )
     def test_returns_true_with_langsmith_gateway(self, provider: str) -> None:
         """Returns True for providers supported by LangSmith Gateway."""
         with patch.dict(

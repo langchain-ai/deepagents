@@ -541,7 +541,7 @@ pushing the rest of the catalog off-screen on a typical terminal.
 """
 
 LANGSMITH_GATEWAY_PROVIDERS: frozenset[str] = frozenset(
-    {"anthropic", "fireworks", "openai"}
+    {"anthropic", "baseten", "fireworks", "google_genai", "openai"}
 )
 """Providers whose LangChain integrations support LangSmith LLM Gateway env vars."""
 

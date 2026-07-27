@@ -210,9 +210,14 @@ def test_resolve_install_hint_falls_back_to_package_command() -> None:
         patch(
             "deepagents_code.update_check.install_package_command",
             return_value="uv tool install --with langchain-custom deepagents-code",
-        ),
+        ) as mock_install_package_command,
     ):
-        hint = resolve_install_hint("langchain-custom")
+        hint = resolve_install_hint(
+            "langchain-custom", distribution_name="deepagents-code-dev"
+        )
+    mock_install_package_command.assert_called_once_with(
+        "langchain-custom", distribution_name="deepagents-code-dev"
+    )
     assert hint == InstallHint(
         extra=None,
         command="uv tool install --with langchain-custom deepagents-code",
@@ -230,6 +235,12 @@ def test_resolve_install_hint_degrades_to_manual_on_error() -> None:
     ):
         hint = resolve_install_hint("bad package")
     assert hint == InstallHint(extra=None, command=None)
+
+
+def test_install_hint_rejects_both_extra_and_command() -> None:
+    """Dual-action resolutions are impossible and must fail construction."""
+    with pytest.raises(ValueError, match="both extra and command"):
+        InstallHint(extra="vertex", command="uv tool install deepagents-code")
 
 
 def test_skips_composite_self_referencing_extras() -> None:

@@ -4210,10 +4210,12 @@ def cli_main() -> None:
                 # Tail the last 200 chars — uv resolver prints the resolved
                 # error at the end, not the beginning.
                 detail = f": {output[-200:]}" if output else ""
-                # Keep the install-script command bound above; fall back to a
-                # bare extras command only if that was never set.
+                # Best-effort upgrade of `manual_cmd` (set above via
+                # `install_extra_command`) to the install-method-specific
+                # recovery command. On failure, keep that already-bound
+                # install-script command so the hint is never empty.
                 manual_cmd = safe_install_extra_recovery_command(
-                    extra, fallback=manual_cmd or install_extras_command((extra,))
+                    extra, fallback=manual_cmd
                 )
                 console.print(
                     f"[bold red]Install failed[/bold red]{escape(detail)}\n"
@@ -4229,10 +4231,11 @@ def cli_main() -> None:
             except Exception as exc:
                 logger.warning("--install failed", exc_info=True)
                 log_line = f"\nLog: {log_path}" if log_path else ""
-                # This is the catch-all for any unexpected install failure, so
-                # the recovery hint must never raise a second error over the
-                # original one. `manual_cmd` may be unset here (the failure could
-                # predate its assignment), so fall back to a bare extras command.
+                # Catch-all for any unexpected install failure: never let
+                # recovery-hint generation raise a second error over the
+                # original one. `manual_cmd` may still be unset if the failure
+                # predated `install_extra_command`, so fall back to a bare
+                # extras command in that case.
                 fallback_cmd = safe_install_extra_recovery_command(
                     extra, fallback=manual_cmd or install_extras_command((extra,))
                 )

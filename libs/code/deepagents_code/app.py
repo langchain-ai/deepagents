@@ -22426,7 +22426,12 @@ class DeepAgentsApp(App):
                 if announce_unchanged:
                     message = f"Already using {current}{params_suffix}"
                     if message != self._last_model_unchanged_message:
-                        await self._mount_message(AppMessage(message))
+                        # A no-op re-selection is transient feedback, not part
+                        # of the conversation, so surface it as a toast rather
+                        # than an inline chat message. `markup=False` because
+                        # the model spec and params suffix contain `:` / `=`
+                        # that Textual would otherwise parse as Rich markup.
+                        self.notify(message, markup=False)
                         self._last_model_unchanged_message = message
                 logger.info(
                     "Model unchanged (%s); model_params=%s",

@@ -25,7 +25,6 @@ from deepagents_code.hooks.models.domain import HookEvent
 from deepagents_code.hooks.permissions import (
     PermissionHookOutcome,
     PermissionPlan,
-    permission_hook_outcome,
 )
 from deepagents_code.hooks.trust import WorkspaceTrust
 
@@ -38,6 +37,7 @@ if TYPE_CHECKING:
 
     from deepagents_code._cli_context import CLIContext
     from deepagents_code.approval_mode import ApprovalMode
+    from deepagents_code.hooks.feedback import HookFeedback
     from deepagents_code.hooks.models.domain import (
         CompactTrigger,
         DcodeNotificationKind,
@@ -121,6 +121,7 @@ class HooksManager:
         identity: SessionIdentityProvider,
         notice: Callable[[str], None],
         trust: WorkspaceTrust | None = None,
+        feedback: HookFeedback | None = None,
     ) -> HooksManager:
         """Load hook configuration and return a ready manager.
 
@@ -133,12 +134,16 @@ class HooksManager:
             notice: Surfaces hook `systemMessage` notices to the user.
             trust: Project-hook trust policy. Defaults to trusting nothing
                 beyond what the persisted trust store already records.
+            feedback: Shared presenter for notices, diagnostics, and progress.
+                When omitted, feedback is logged rather than surfaced.
 
         Returns:
             A manager owning the loaded runtime, or an inert one on failure.
         """
         policy = trust if trust is not None else WorkspaceTrust.none()
-        return cls(identity, notice, _load_runtime(cwd, trust=policy), policy)
+        runtime = _load_runtime(cwd, trust=policy, feedback=feedback)
+        _present_load_diagnostics(runtime)
+        return cls(identity, notice, runtime, policy)
 
     @classmethod
     def adopting(
@@ -175,6 +180,24 @@ class HooksManager:
             None,
         )
 
+    def attach_feedback(self, feedback: HookFeedback) -> None:
+        """Route hook notices, diagnostics, and progress through `feedback`.
+
+        For callers handed a manager that was loaded before their UI existed.
+        Load diagnostics are re-presented so anything the earlier load could
+        only log now reaches the user.
+
+        Args:
+            feedback: Presenter to adopt.
+        """
+        runtime = self._runtime
+        if runtime is None:
+            return
+        runtime.feedback.notice = feedback.notice
+        runtime.feedback.status = feedback.status
+        self._service = self._build_service()
+        _present_load_diagnostics(runtime)
+
     @property
     def enabled(self) -> bool:
         """Whether hook configuration loaded successfully for this session."""
@@ -192,7 +215,12 @@ class HooksManager:
         service = self._service
         return service is not None and service.has_handlers(event)
 
-    async def reload(self, *, cwd: Path) -> None:
+    async def reload(
+        self,
+        *,
+        cwd: Path,
+        feedback: HookFeedback | None = None,
+    ) -> None:
         """Rebuild the runtime after the session working directory changes.
 
         Workspace trust is re-resolved for `cwd`, so moving from a trusted
@@ -204,15 +232,22 @@ class HooksManager:
 
         Args:
             cwd: New session working directory.
+            feedback: Shared presenter for notices, diagnostics, and progress.
+                When omitted, the previous runtime's presenter is preserved.
         """
         import asyncio
 
+        existing_feedback = (
+            self._runtime.feedback if self._runtime is not None else None
+        )
         self._runtime = await asyncio.to_thread(
             _load_runtime,
             cwd,
             trust=self.trust,
+            feedback=feedback if feedback is not None else existing_feedback,
         )
         self._service = self._build_service()
+        _present_load_diagnostics(self._runtime)
 
     async def on_session_start(
         self,
@@ -358,7 +393,7 @@ class HooksManager:
                 outcomes.append(PermissionHookOutcome(None))
                 continue
             try:
-                decision = await service.permission_request(context, call)
+                outcome = await service.resolve_permission(context, call)
             except Exception:
                 logger.warning(
                     "PermissionRequest hook invocation failed",
@@ -366,7 +401,7 @@ class HooksManager:
                 )
                 outcomes.append(PermissionHookOutcome(None))
                 continue
-            outcomes.append(permission_hook_outcome(decision))
+            outcomes.append(outcome)
         return PermissionPlan(tuple(outcomes))
 
     async def notify(
@@ -521,7 +556,11 @@ class HooksManager:
         runtime = self._runtime
         if runtime is None:
             return None
-        return ClientHookService(runtime, notice=self.notice)
+        # Prefer the shared presenter so notices keep their severity and hook
+        # progress reaches the status bar. `notice` remains the fallback for
+        # callers that never supplied one.
+        presenter = runtime.feedback if runtime.feedback.notice is not None else None
+        return ClientHookService(runtime, notice=self.notice, feedback=presenter)
 
     def _context(self, *, thread_id: str | None = None) -> ClientHookContext:
         identity = self.identity()
@@ -532,7 +571,23 @@ class HooksManager:
         )
 
 
-def _load_runtime(cwd: Path, *, trust: WorkspaceTrust) -> HooksRuntime | None:
+def _present_load_diagnostics(runtime: HooksRuntime | None) -> None:
+    """Surface configuration diagnostics collected while loading the snapshot.
+
+    Args:
+        runtime: Freshly loaded runtime, or `None` when loading failed.
+    """
+    if runtime is None:
+        return
+    runtime.feedback.present_diagnostics(runtime.snapshot.diagnostics)
+
+
+def _load_runtime(
+    cwd: Path,
+    *,
+    trust: WorkspaceTrust,
+    feedback: HookFeedback | None = None,
+) -> HooksRuntime | None:
     """Resolve workspace trust for `cwd` and load a runtime under it.
 
     Trust is resolved here rather than by the caller so that a reload after a
@@ -541,6 +596,7 @@ def _load_runtime(cwd: Path, *, trust: WorkspaceTrust) -> HooksRuntime | None:
     Args:
         cwd: Session working directory.
         trust: Policy deciding whether project hooks may load.
+        feedback: Shared presenter for notices, diagnostics, and progress.
 
     Returns:
         The loaded runtime, or `None` when configuration could not be loaded.
@@ -548,7 +604,11 @@ def _load_runtime(cwd: Path, *, trust: WorkspaceTrust) -> HooksRuntime | None:
     from deepagents_code.hooks.runtime import HooksRuntime
 
     try:
-        return HooksRuntime.create(cwd=cwd, workspace_trusted=trust.allows(cwd))
+        return HooksRuntime.create(
+            cwd=cwd,
+            workspace_trusted=trust.allows(cwd),
+            feedback=feedback,
+        )
     except Exception:
         logger.exception("Failed to load hook configuration; hooks disabled")
         return None

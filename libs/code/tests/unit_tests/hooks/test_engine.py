@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import sys
@@ -62,6 +63,7 @@ from deepagents_code.hooks.tools import to_wire_call
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from deepagents_code.hooks.feedback import HookProgress
     from deepagents_code.hooks.models.domain import HookDomainEvent
     from deepagents_code.json_types import JsonObject
 
@@ -1622,6 +1624,181 @@ async def test_engine_reduces_in_config_order_when_completion_is_reversed(
     assert decision.stop_reason == "stop"
     assert first.read_text() == "first"
     assert second.read_text() == "second"
+
+
+async def test_engine_reports_configured_handler_status(tmp_path: Path) -> None:
+    snapshot = HooksSnapshot.from_config(
+        _config(
+            {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "unused",
+                                "argv": [sys.executable, "-c", "pass"],
+                                "statusMessage": "Loading project context",
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+    )
+    invocation = _invocation(
+        tmp_path,
+        SessionStartEvent(
+            event=HookEvent.SESSION_START,
+            cause=SessionStartCause.STARTUP,
+        ),
+    )
+    progress: list[HookProgress] = []
+
+    await HookEngine(snapshot).run(
+        invocation,
+        transcript_path=_transcript_path(tmp_path),
+        progress=progress.append,
+    )
+
+    assert [update.active for update in progress] == [True, False]
+    assert {update.message for update in progress} == {"Loading project context"}
+
+
+async def test_engine_default_progress_uses_charset_glyphs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.config import get_glyphs, reset_glyphs_cache
+
+    monkeypatch.setenv("UI_CHARSET_MODE", "ascii")
+    reset_glyphs_cache()
+    snapshot = HooksSnapshot.from_config(
+        _config(
+            {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "unused",
+                                "argv": [sys.executable, "-c", "pass"],
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+    )
+    progress: list[HookProgress] = []
+
+    await HookEngine(snapshot).run(
+        _invocation(
+            tmp_path,
+            SessionStartEvent(
+                event=HookEvent.SESSION_START,
+                cause=SessionStartCause.STARTUP,
+            ),
+        ),
+        transcript_path=_transcript_path(tmp_path),
+        progress=progress.append,
+    )
+
+    expected = f"Running SessionStart hook{get_glyphs().ellipsis}"
+    assert {update.message for update in progress} == {expected}
+    assert "…" not in expected
+    reset_glyphs_cache()
+
+
+async def test_engine_progress_callback_raise_does_not_break_execution(
+    tmp_path: Path,
+) -> None:
+    snapshot = HooksSnapshot.from_config(
+        _config(
+            {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "unused",
+                                "argv": [sys.executable, "-c", "pass"],
+                                "statusMessage": "Loading",
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+    )
+
+    def boom(_update: HookProgress) -> None:
+        msg = "progress sink failed"
+        raise RuntimeError(msg)
+
+    decision = await HookEngine(snapshot).run(
+        _invocation(
+            tmp_path,
+            SessionStartEvent(
+                event=HookEvent.SESSION_START,
+                cause=SessionStartCause.STARTUP,
+            ),
+        ),
+        transcript_path=_transcript_path(tmp_path),
+        progress=boom,
+    )
+
+    assert isinstance(decision, SessionStartDecision)
+    assert decision.continue_processing is True
+
+
+async def test_engine_clears_progress_on_cancellation(tmp_path: Path) -> None:
+    script = (
+        "import sys,time; time.sleep(30); sys.stdout.write('{}'); sys.stdout.flush()"
+    )
+    snapshot = HooksSnapshot.from_config(
+        _config(
+            {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "unused",
+                                "argv": [sys.executable, "-c", script],
+                                "statusMessage": "Slow hook",
+                                "timeout": 60,
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+    )
+    progress: list[HookProgress] = []
+    task = asyncio.create_task(
+        HookEngine(snapshot).run(
+            _invocation(
+                tmp_path,
+                SessionStartEvent(
+                    event=HookEvent.SESSION_START,
+                    cause=SessionStartCause.STARTUP,
+                ),
+            ),
+            transcript_path=_transcript_path(tmp_path),
+            progress=progress.append,
+        )
+    )
+    for _ in range(50):
+        if progress and progress[-1].active:
+            break
+        await asyncio.sleep(0.01)
+    assert progress
+    assert progress[-1].active is True
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert progress[-1].active is False
+    assert progress[-1].message == "Slow hook"
 
 
 async def test_engine_uses_captured_snapshot(tmp_path: Path) -> None:

@@ -1,0 +1,13 @@
+{
+  "custom_instructions": "Keep the plan",
+  "cwd": "/workspace",
+  "effort": {
+    "level": "high"
+  },
+  "hook_event_name": "PreCompact",
+  "permission_mode": "default",
+  "prompt_id": "00000000-0000-4000-8000-000000000001",
+  "session_id": "thread-1",
+  "transcript_path": "/tmp/thread.jsonl",
+  "trigger": "manual"
+}

@@ -6,6 +6,7 @@ import asyncio
 import json
 import sys
 from datetime import UTC, datetime, timedelta
+from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
@@ -23,6 +24,7 @@ from deepagents_code.agent import _should_interrupt_tool_call, create_cli_agent
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.client import fulfill_hook_invocation
 from deepagents_code.hooks.context import apply_hooks_context
+from deepagents_code.hooks.feedback import HookFeedback
 from deepagents_code.hooks.interrupt import (
     HOOK_INVOCATION_INTERRUPT_TYPE,
     build_hook_interrupt_payload,
@@ -828,11 +830,35 @@ async def test_async_task_tool_scopes_subagent_transcript_identity() -> None:
 async def test_fulfill_hook_invocation_runs_engine(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    (config_dir / "hooks.json").write_text('{"hooks":{}}', encoding="utf-8")
+    command = "import json; print(json.dumps({'systemMessage': 'visible notice'}))"
+    (config_dir / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "unused",
+                                    "argv": [sys.executable, "-c", command],
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    notices: list[tuple[str, str]] = []
     runtime = HooksRuntime.create(
         cwd=tmp_path,
         config_dir=config_dir,
         transcript_root=tmp_path / "transcripts",
+        feedback=HookFeedback(
+            notice=lambda message, severity: notices.append((message, severity))
+        ),
     )
     request = _request()
     request = request.model_copy(update={"snapshot_id": runtime.snapshot_id})
@@ -845,11 +871,12 @@ async def test_fulfill_hook_invocation_runs_engine(tmp_path: Path) -> None:
     )
     assert isinstance(response.decision, PreToolUseDecision)
     assert response.decision.permission.behavior in {"allow", "none"}
+    assert notices == [("visible notice", "information")]
 
 
 async def test_fulfillment_is_idempotent_in_flight_and_after_completion(
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -858,7 +885,14 @@ async def test_fulfillment_is_idempotent_in_flight_and_after_completion(
         "import json,pathlib,time; "
         f"pathlib.Path({str(marker)!r}).write_text('x'); "
         "time.sleep(0.05); "
-        "print(json.dumps({'systemMessage':'once'}))"
+        "print(json.dumps({"
+        "'systemMessage':'once',"
+        "'terminalSequence':'\\u0007',"
+        "'hookSpecificOutput':{"
+        "'hookEventName':'PreToolUse',"
+        "'permissionDecision':'allow'"
+        "}"
+        "}))"
     )
     (config_dir / "hooks.json").write_text(
         json.dumps(
@@ -881,21 +915,30 @@ async def test_fulfillment_is_idempotent_in_flight_and_after_completion(
         ),
         encoding="utf-8",
     )
-    runtime = HooksRuntime.create(cwd=tmp_path, config_dir=config_dir)
+    notices: list[tuple[str, str]] = []
+    output = StringIO()
+    monkeypatch.setattr("deepagents_code.hooks.feedback.sys.stdout", output)
+    # Force a terminal sequence through a decision that includes one by patching
+    # after invoke would be heavy; instead assert notice exactly-once via sink.
+    runtime = HooksRuntime.create(
+        cwd=tmp_path,
+        config_dir=config_dir,
+        feedback=HookFeedback(
+            notice=lambda message, severity: notices.append((message, severity))
+        ),
+    )
     request = _request().model_copy(update={"snapshot_id": runtime.snapshot_id})
 
-    with caplog.at_level("WARNING", logger="deepagents_code.hooks.client"):
-        first, second = await asyncio.gather(
-            fulfill_hook_invocation(runtime, request),
-            fulfill_hook_invocation(runtime, request),
-        )
-        third = await fulfill_hook_invocation(runtime, request)
+    first, second = await asyncio.gather(
+        fulfill_hook_invocation(runtime, request),
+        fulfill_hook_invocation(runtime, request),
+    )
+    third = await fulfill_hook_invocation(runtime, request)
 
     assert first == second == third
     assert marker.read_text() == "x"
-    assert [record.message for record in caplog.records].count(
-        "Hook user notice: once"
-    ) == 1
+    assert notices.count(("once", "information")) == 1
+    assert output.getvalue() == "\a"
 
 
 def test_snapshot_configured_server_events() -> None:

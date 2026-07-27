@@ -601,6 +601,7 @@ if TYPE_CHECKING:
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.goal_rubric import GoalCreateRequest, GoalCriteriaRequest
+    from deepagents_code.hooks.feedback import HookFeedback, HookFeedbackSeverity
     from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
     from deepagents_code.hooks.models.domain import (
         SessionStartCause,
@@ -4367,6 +4368,26 @@ class DeepAgentsApp(App):
                 lambda: asyncio.create_task(self._run_session_start_sequence()),
             )
 
+    def _create_hook_feedback(self) -> HookFeedback:
+        from deepagents_code.hooks.feedback import HookFeedback
+
+        return HookFeedback(
+            notice=self._notify_hook_feedback,
+            status=self._update_hook_status,
+        )
+
+    def _notify_hook_feedback(
+        self,
+        message: str,
+        severity: HookFeedbackSeverity,
+    ) -> None:
+        self.notify(message, severity=severity, markup=False)
+
+    def _update_hook_status(self, message: str) -> None:
+        """Update the status bar with hook-owned progress text."""
+        if self._status_bar:
+            self._status_bar.set_status_message(message, source="hooks")
+
     async def _init_session_state(self) -> None:
         """Create session state and load its Hooks v2 manager.
 
@@ -4404,6 +4425,7 @@ class DeepAgentsApp(App):
             identity=session_state.hook_identity,
             notice=lambda message: self.notify(message, markup=False),
             trust=self._hook_trust,
+            feedback=self._create_hook_feedback(),
         )
         # Re-read the app-owned selection last so a mode change during
         # construction cannot be overwritten by the freshly built state.
@@ -4443,7 +4465,10 @@ class DeepAgentsApp(App):
         """
         from pathlib import Path
 
-        await self._hooks.reload(cwd=Path(self._cwd))
+        await self._hooks.reload(
+            cwd=Path(self._cwd),
+            feedback=self._create_hook_feedback(),
+        )
 
     async def _run_session_start_hook(self, cause: SessionStartCause) -> bool:
         """Run `SessionStart`, surfacing a stop as a chat message.

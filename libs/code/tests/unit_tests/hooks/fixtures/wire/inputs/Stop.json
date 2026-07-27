@@ -1,0 +1,15 @@
+{
+  "background_tasks": [],
+  "cwd": "/workspace",
+  "effort": {
+    "level": "high"
+  },
+  "hook_event_name": "Stop",
+  "last_assistant_message": "Done",
+  "permission_mode": "default",
+  "prompt_id": "00000000-0000-4000-8000-000000000001",
+  "session_crons": [],
+  "session_id": "thread-1",
+  "stop_hook_active": false,
+  "transcript_path": "/tmp/thread.jsonl"
+}

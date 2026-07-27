@@ -15,6 +15,7 @@ from deepagents_code.hooks.client_lifecycle import (
     ClientHookService,
     ClientHookStopError,
 )
+from deepagents_code.hooks.feedback import HookFeedback
 from deepagents_code.hooks.models.domain import (
     DcodeNotificationKind,
     HookDecision,
@@ -40,6 +41,7 @@ class _Runtime:
     cwd: Path
     decisions: deque[HookDecision]
     invocations: list[HookInvocation] = field(default_factory=list)
+    feedback: HookFeedback = field(default_factory=HookFeedback)
 
     def configured_events(self) -> frozenset[HookEvent]:
         return frozenset(decision.event for decision in self.decisions)
@@ -90,7 +92,7 @@ async def test_common_effects_context_and_live_hook_fields(
 
     invocation = runtime.invocations[0]
     assert decision.context == ["hook context"]
-    assert notices == ["visible notice"]
+    assert notices == ["Hook warning: diagnostic", "visible notice"]
     assert capsys.readouterr().out == "\a"
     assert "test_warning" in caplog.text
     assert invocation.context.thread_id == "thread-1"

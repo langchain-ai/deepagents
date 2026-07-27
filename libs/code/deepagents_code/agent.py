@@ -2186,7 +2186,7 @@ def create_cli_agent(
     project_context: ProjectContext | None = None,
     async_subagents: list[AsyncSubAgent] | None = None,
     goal_criteria_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
-    model_retries: int = DEFAULT_MODEL_RETRIES,
+    model_retries: int | None = None,
     rubric_grader_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
@@ -2323,8 +2323,11 @@ def create_cli_agent(
         goal_criteria_tools: External read-only context tools available to server-side
             goal criteria generation. `None` disables goal criteria requests.
         model_retries: Startup model-node retry attempts after the first call.
-            Runtime-selected models may carry a different provider-specific
-            count. Resolved upstream from config/CLI.
+            `None` (default) means unspecified: resolve from the model when it
+            was built via `create_model`, or from model metadata / the default
+            budget for a prebuilt model. An explicit value (including `0`) is
+            honored end-to-end for the main agent, subagents, summarization,
+            auto-mode, goal criteria, and rubric grading.
         rubric_grader_tools: External read-only context tools available to rubric
             grading for verifying work completed in MCP-backed or web-accessible
             systems.
@@ -2348,19 +2351,29 @@ def create_cli_agent(
         # Public callers may pass a model spec directly. Resolve it through
         # dcode's constructor so provider retries are disabled and the matching
         # outer retry budget is attached before any agent path can use it.
-        from deepagents_code.config import create_model
+        from deepagents_code.config import CLI_MAX_RETRIES_KEY, create_model
 
-        model_result = create_model(model)
+        retry_kwargs = (
+            {CLI_MAX_RETRIES_KEY: model_retries} if model_retries is not None else None
+        )
+        model_result = create_model(model, extra_kwargs=retry_kwargs)
         model = model_result.model
-        # Preserve an explicitly non-default public argument. The default value
-        # is treated as "unspecified" so direct callers still receive provider-
-        # specific config resolved by `create_model`.
-        if model_retries == DEFAULT_MODEL_RETRIES:
-            model_retries = model_result.model_retries
-        else:
-            from deepagents_code.config import set_model_retry_metadata
+        # `None` means unspecified so provider/config retries from `create_model`
+        # win. An explicit integer (including 0) is already attached as both the
+        # request budget and CLI override carrier.
+        model_retries = model_result.model_retries
+    else:
+        from deepagents_code.config import get_model_retries, set_model_retry_metadata
 
-            set_model_retry_metadata(model, retries=model_retries, cli_override=None)
+        if model_retries is None:
+            model_retries = get_model_retries(model, DEFAULT_MODEL_RETRIES)
+        else:
+            # Explicit caller budget, including disabling retries with 0. Treat
+            # it as an authoritative override so nested graders/subagents and
+            # checkpoint carriers observe the same value.
+            set_model_retry_metadata(
+                model, retries=model_retries, cli_override=model_retries
+            )
     if auto_mode_enabled and (not interactive or sandbox is not None):
         logger.warning(
             "Classifier-backed Auto is unavailable outside the local interactive "
@@ -2507,9 +2520,7 @@ def create_cli_agent(
                 get_model_retry_override,
             )
 
-            retry_override = (
-                None if isinstance(model, str) else get_model_retry_override(model)
-            )
+            retry_override = get_model_retry_override(model)
             retry_kwargs = (
                 {CLI_MAX_RETRIES_KEY: retry_override}
                 if retry_override is not None
@@ -3059,15 +3070,10 @@ def create_cli_agent(
             "tools": grader_tools,
             "grader_middleware": grader_middleware,
             "grader_context_schema": CLIContextSchema,
-            "model_retry_override": (
-                None if isinstance(model, str) else get_model_retry_override(model)
-            ),
-            "model_retry_fallback": (
-                model_retries
-                if isinstance(model, str)
-                or (rubric_model is not None and not isinstance(rubric_model, str))
-                else None
-            ),
+            "model_retry_override": get_model_retry_override(model),
+            # Always pass the resolved startup budget so explicit `0` disables
+            # nested grader retries instead of falling back to DEFAULT_MODEL_RETRIES.
+            "model_retry_fallback": model_retries,
         }
         if rubric_max_iterations is not None:
             rubric_kwargs["max_iterations"] = rubric_max_iterations

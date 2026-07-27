@@ -651,3 +651,60 @@ class TestRubricRetryContext:
         assert result.result == "satisfied"
         context = grader.ainvoke.call_args.kwargs["context"]
         assert context["model_params"] == {CLI_MAX_RETRIES_KEY: 1}
+
+    def test_cli_context_schema_preserves_sibling_fields_with_retry_override(
+        self,
+    ) -> None:
+        """Launch override must not wipe CLIContextSchema sibling fields."""
+        from deepagents_code._cli_context import CLIContextSchema
+
+        middleware = ReliableRubricMiddleware(
+            model="fake-model",
+            model_retry_override=2,
+        )
+        grader = MagicMock()
+        grader.invoke.return_value = _satisfied_result()
+        middleware._grader = grader
+        parent = CLIContextSchema(
+            model="openai:gpt-5.5",
+            model_params={"temperature": 0.1},
+            profile_overrides={"max_input_tokens": 1000},
+            model_context_limit=128_000,
+            approval_mode="auto",
+            auto_approve=True,
+            approval_mode_key="approval-key",
+            thread_id="thread-123",
+            turn_id="turn-9",
+        )
+
+        middleware._grade(_state(retries=9), 0, context=parent)
+
+        context = grader.invoke.call_args.kwargs["context"]
+        assert isinstance(context, CLIContextSchema)
+        assert context is not parent
+        assert context.model == "openai:gpt-5.5"
+        assert context.approval_mode == "auto"
+        assert context.auto_approve is True
+        assert context.thread_id == "thread-123"
+        assert context.turn_id == "turn-9"
+        assert context.approval_mode_key == "approval-key"
+        assert context.profile_overrides == {"max_input_tokens": 1000}
+        assert context.model_context_limit == 128_000
+        assert context.model_params == {
+            "temperature": 0.1,
+            CLI_MAX_RETRIES_KEY: 2,
+        }
+
+    def test_typed_context_without_replace_path_fails_loudly(self) -> None:
+        """Unknown typed contexts must not silently collapse to a bare dict."""
+
+        class _OpaqueContext:
+            def __init__(self) -> None:
+                self.model_params: dict[str, object] = {}
+
+        middleware = ReliableRubricMiddleware(
+            model="fake-model",
+            model_retry_override=1,
+        )
+        with pytest.raises(TypeError, match="Cannot apply model_params"):
+            middleware._grader_context(_state(), _OpaqueContext())

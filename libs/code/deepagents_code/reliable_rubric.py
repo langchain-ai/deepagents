@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Mapping, MutableMapping
+from dataclasses import is_dataclass, replace
 from typing import TYPE_CHECKING, Any, NotRequired, cast
 
 import httpx
@@ -19,9 +21,10 @@ from langchain_core.messages import HumanMessage
 from langgraph.errors import GraphBubbleUp
 
 from deepagents_code.goal_state_notice import is_conversation_control_message
+from deepagents_code.model_retry import exception_chain
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Sequence
 
     from deepagents.middleware.rubric import RubricEvaluation
     from langchain_core.language_models import BaseChatModel
@@ -32,29 +35,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _exception_chain(exc: BaseException) -> Iterator[BaseException]:
-    """Yield an exception, its explicit/implicit causes, and group members once.
-
-    Descends into `BaseExceptionGroup` members as well as `__cause__` and
-    `__context__`, so a transient transport error wrapped in an async task group
-    is still discovered. Each exception is yielded at most once.
-    """
-    pending = [exc]
-    seen: set[int] = set()
-    while pending:
-        current = pending.pop()
-        if id(current) in seen:
-            continue
-        seen.add(id(current))
-        yield current
-        if isinstance(current, BaseExceptionGroup):
-            pending.extend(current.exceptions)
-        if current.__cause__ is not None:
-            pending.append(current.__cause__)
-        elif current.__context__ is not None:
-            pending.append(current.__context__)
-
-
 def _is_transient_grader_transport_error(exc: BaseException) -> bool:
     """Return whether a grader failure is a retryable transport/read error.
 
@@ -63,7 +43,7 @@ def _is_transient_grader_transport_error(exc: BaseException) -> bool:
     `TransferEncodingError`). Connect/timeout errors are intentionally excluded
     so only mid-response transport failures trigger the retry.
     """
-    for current in _exception_chain(exc):
+    for current in exception_chain(exc):
         if isinstance(current, (httpx.ReadError, httpx.RemoteProtocolError)):
             return True
         error_type = type(current)
@@ -121,9 +101,12 @@ def _with_model_params(
     """Return a context carrying `params` without mutating the original object.
 
     Prefers the caller's context type when it exposes replaceable `model_params`:
-    mappings are shallow-copied, while dataclass-like / pydantic-style objects are
-    rebuilt through their constructor. Falls back to a plain mapping when no
-    context is provided.
+    mappings are shallow-copied, dataclasses are updated via `dataclasses.replace`,
+    and pydantic-style models use `model_copy(update=...)`. A bare mapping is only
+    returned when no typed context was provided.
+
+    Raises:
+        TypeError: If a typed context cannot preserve sibling fields safely.
     """
     if context is None:
         return {"model_params": dict(params)}
@@ -131,10 +114,16 @@ def _with_model_params(
         updated = dict(context)
         updated["model_params"] = dict(params)
         return updated
-    try:
-        return type(context)(model_params=dict(params))
-    except TypeError:
-        return {"model_params": dict(params)}
+    if is_dataclass(context) and not isinstance(context, type):
+        return replace(context, model_params=dict(params))
+    model_copy = getattr(context, "model_copy", None)
+    if callable(model_copy):
+        return model_copy(update={"model_params": dict(params)})
+    msg = (
+        "Cannot apply model_params to context of type "
+        f"{type(context).__name__} without losing sibling fields"
+    )
+    raise TypeError(msg)
 
 
 class RubricGraderState(AgentState[GraderResponse]):
@@ -299,24 +288,18 @@ class ReliableRubricMiddleware(RubricMiddleware):
             iteration,
         )
 
-    def _ensure_grader(self) -> Any:  # noqa: ANN401
-        """Create the grader with model-node retries and nested middleware.
+    def _resolve_grader_model(self) -> BaseChatModel:
+        """Resolve the nested grader model and attach retry metadata.
 
         Returns:
-            The cached or newly constructed grader agent.
+            Concrete chat model used by the nested grader agent.
         """
-        if self._grader is not None:
-            return self._grader
-
-        from langchain.agents import create_agent
-
         from deepagents_code.config import (
             CLI_MAX_RETRIES_KEY,
             DEFAULT_MODEL_RETRIES,
             create_model,
             set_model_retry_metadata,
         )
-        from deepagents_code.model_retry import CodeModelRetryMiddleware
 
         retry_fallback = (
             self._model_retry_override
@@ -344,9 +327,27 @@ class ReliableRubricMiddleware(RubricMiddleware):
                     retries=retry_fallback,
                     cli_override=self._model_retry_override,
                 )
-        else:
-            grader_model = self._model
+            return grader_model
+        return self._model
 
+    def _build_grader(self, grader_model: BaseChatModel) -> Any:  # noqa: ANN401
+        """Construct and cache the nested grader agent.
+
+        Returns:
+            The newly constructed grader agent.
+        """
+        from langchain.agents import create_agent
+
+        from deepagents_code.config import DEFAULT_MODEL_RETRIES
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        retry_fallback = (
+            self._model_retry_override
+            if self._model_retry_override is not None
+            else self._model_retry_fallback
+            if self._model_retry_fallback is not None
+            else DEFAULT_MODEL_RETRIES
+        )
         self._resolved_model = grader_model
         middleware: list[AgentMiddleware[Any, Any]] = [
             CodeModelRetryMiddleware(max_retries=retry_fallback),
@@ -363,6 +364,30 @@ class ReliableRubricMiddleware(RubricMiddleware):
             context_schema=self._grader_context_schema,
         )
         return self._grader
+
+    def _ensure_grader(self) -> Any:  # noqa: ANN401
+        """Create the grader with model-node retries and nested middleware.
+
+        Returns:
+            The cached or newly constructed grader agent.
+        """
+        if self._grader is not None:
+            return self._grader
+        return self._build_grader(self._resolve_grader_model())
+
+    async def _aensure_grader(self) -> Any:  # noqa: ANN401
+        """Async grader construction that offloads blocking model setup.
+
+        Returns:
+            The cached or newly constructed grader agent.
+        """
+        if self._grader is not None:
+            return self._grader
+        if isinstance(self._model, str):
+            grader_model = await asyncio.to_thread(self._resolve_grader_model)
+        else:
+            grader_model = self._resolve_grader_model()
+        return self._build_grader(grader_model)
 
     def _grader_context(
         self,
@@ -451,7 +476,7 @@ class ReliableRubricMiddleware(RubricMiddleware):
         *,
         context: object | None,
     ) -> GraderResponse:
-        grader = self._ensure_grader()
+        grader = await self._aensure_grader()
         metadata = self._grader_trace_metadata()
         self._record_grader_trace_metadata(metadata)
         result = await grader.ainvoke(

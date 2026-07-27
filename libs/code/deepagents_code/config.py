@@ -2002,7 +2002,16 @@ def _read_config_toml_retries() -> dict[str, Any] | None:
         return None
 
     section = data.get("retries")
+    if section is None:
+        return None
     if not isinstance(section, dict):
+        # A bare `retries = 9` (or other scalar) is a common mistype of
+        # `[retries].max_retries = 9`. Warn instead of silently defaulting.
+        logger.warning(
+            "Ignoring retries=%r in config.toml (expected a [retries] table with "
+            "max_retries / per-provider subtables)",
+            section,
+        )
         return None
 
     known_providers = (
@@ -2131,12 +2140,30 @@ def _resolve_config_retry_count(
     return resolved
 
 
+# Providers verified to have no integer constructor knobs for nested SDK
+# retries. Absence from both this set and `RETRY_PARAM_BY_PROVIDER` is the
+# unknown case that may still multiply retries.
+_PROVIDERS_WITHOUT_RETRY_KNOB: frozenset[str] = frozenset(
+    {
+        "cohere",
+        "huggingface",
+        "ibm",
+        "nvidia",
+        "ollama",
+    }
+)
+
+
 def _provider_retry_disable_kwargs(
     section: dict[str, Any] | None,
     provider: str,
     model_kwargs: dict[str, Any],
 ) -> dict[str, int]:
     """Return the constructor kwarg that disables provider-owned retries.
+
+    Built-in registry entries win over a mistyped `[retries.<provider>].param`
+    for known providers so an invalid config cannot re-enable nested SDK
+    retries or ship a bad body field. Custom providers still respect config.
 
     Args:
         section: Raw `[retries]` mapping from `config.toml`, or `None`.
@@ -2149,31 +2176,49 @@ def _provider_retry_disable_kwargs(
     """
     from deepagents_code.model_config import RETRY_PARAM_BY_PROVIDER
 
-    retry_param: str | None = None
+    registry_param = RETRY_PARAM_BY_PROVIDER.get(provider)
+    configured_param: str | None = None
     if section:
         provider_section = section.get(provider)
         if isinstance(provider_section, dict) and "param" in provider_section:
-            configured = _coerce_retry_param(
+            configured_param = _coerce_retry_param(
                 provider_section["param"],
                 source=f"[retries.{provider}].param",
             )
-            if configured is not None:
-                retry_param = configured
+            if (
+                configured_param is not None
+                and registry_param is not None
+                and configured_param != registry_param
+            ):
+                logger.warning(
+                    "Ignoring [retries.%s].param=%r; built-in retry control is %r",
+                    provider,
+                    configured_param,
+                    registry_param,
+                )
+                configured_param = None
 
-    # An explicit integration-specific override is authoritative. Fall back to
-    # the built-in registry only when config does not supply a valid parameter.
-    if retry_param is None:
-        retry_param = RETRY_PARAM_BY_PROVIDER.get(provider)
+    # Built-in registry wins for known providers; config is for custom ones.
+    retry_param = registry_param if registry_param is not None else configured_param
 
     # A custom provider that already exposes the conventional parameter has
     # positively identified its retry control through model configuration.
+    # Do not treat a user `--model-params max_retries=N` as proof of control on
+    # its own when the provider is known to lack that knob — that value is a
+    # mistaken attempt to set dcode's budget (see create_model).
     if retry_param is None and "max_retries" in model_kwargs:
-        retry_param = "max_retries"
+        if provider in _PROVIDERS_WITHOUT_RETRY_KNOB:
+            retry_param = None
+        else:
+            retry_param = "max_retries"
     if retry_param is None:
-        # The provider's own SDK retry loop can't be identified, so it stays
-        # active and may multiply the middleware's attempts. Surface this at
-        # `warning` so a configured budget silently amplifying is diagnosable;
-        # register the provider in `RETRY_PARAM_BY_PROVIDER` or set
+        if provider in _PROVIDERS_WITHOUT_RETRY_KNOB:
+            # Verified: no integer retry-disabling constructor kwarg exists.
+            return {}
+        # Unknown provider — its own SDK retry loop can't be identified, so it
+        # stays active and may multiply the middleware's attempts. Surface this
+        # at `warning` so a configured budget silently amplifying is
+        # diagnosable; register the provider in `RETRY_PARAM_BY_PROVIDER` or set
         # `[retries.<provider>].param` to fix it.
         logger.warning(
             "No retry-disable kwarg for provider %r; its SDK retries stay active "
@@ -5008,7 +5053,35 @@ def create_model(
     reasoning_override: object = None
     if extra_kwargs:
         extra_kwargs = dict(extra_kwargs)
-        cli_max_retries = extra_kwargs.pop(CLI_MAX_RETRIES_KEY, None)
+        raw_cli_retries = extra_kwargs.pop(CLI_MAX_RETRIES_KEY, None)
+        if is_valid_retry_count(raw_cli_retries):
+            cli_max_retries = raw_cli_retries
+        elif raw_cli_retries is not None:
+            logger.warning(
+                "Ignoring invalid %s=%r in model params",
+                CLI_MAX_RETRIES_KEY,
+                raw_cli_retries,
+            )
+        # User-facing `--model-params '{"max_retries": N}'` is not a provider
+        # SDK knob under dcode: the middleware owns the budget and the SDK
+        # loop is forced off. Map a valid value onto the dcode budget (same
+        # precedence as `--max-retries` only when the CLI carrier is absent)
+        # and continue to disable nested SDK retries below.
+        if "max_retries" in extra_kwargs:
+            raw_user_retries = extra_kwargs.pop("max_retries")
+            if is_valid_retry_count(raw_user_retries):
+                if cli_max_retries is None:
+                    cli_max_retries = raw_user_retries
+                logger.warning(
+                    "`max_retries` in --model-params sets dcode's model-node "
+                    "retry budget; provider SDK retries stay disabled. Prefer "
+                    "`--max-retries` or [retries] config for the same effect."
+                )
+            else:
+                logger.warning(
+                    "Ignoring invalid max_retries=%r in model params",
+                    raw_user_retries,
+                )
         reasoning_effort_override = extra_kwargs.get("reasoning_effort")
         reasoning_override = extra_kwargs.get("reasoning")
         kwargs.update(extra_kwargs)

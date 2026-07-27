@@ -3051,8 +3051,16 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
 
 
 async def test_classifier_provider_timeout_stays_type_only(tmp_path: Path) -> None:
+    # Provider TimeoutError is retryable; set fallback 0 so this stays a unit
+    # test of classifier_unavailable_reason wording rather than the retry budget.
     model = _StructuredModel(error=TimeoutError("socket timed out"))
-    middleware = _middleware(tmp_path)
+    config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+    middleware = AutoModeHITLMiddleware(
+        {"delete": config},
+        worktree_root=tmp_path,
+        classifier_timeout_seconds=1,
+        model_retry_fallback=0,
+    )
     request, _store, _key = _request(
         tmp_path,
         model=model,
@@ -3656,3 +3664,63 @@ async def test_headless_guard_rejects_gated_mcp_without_execution() -> None:
     assert isinstance(result, ToolMessage)
     assert result.status == "error"
     assert not executed
+
+
+def test_classifier_local_deadline_is_not_model_retryable() -> None:
+    from deepagents_code.model_retry import _should_retry_after_failure
+
+    exc = _ClassifierDeadlineExceededError(20.0)
+    assert exc.dcode_model_retryable is False
+    assert _should_retry_after_failure(exc) is False
+
+
+async def test_classifier_local_deadline_does_not_retry_or_sleep(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pure local wait-budget expiry must not enter model-retry backoff."""
+    delay_calls: list[int] = []
+
+    def _no_delay(self, attempt: int) -> float:  # noqa: ARG001
+        delay_calls.append(attempt)
+        return 0.0
+
+    monkeypatch.setattr(
+        "deepagents_code.model_retry.CodeModelRetryMiddleware._compute_delay",
+        _no_delay,
+    )
+
+    class _SlowModel(_StructuredModel):
+        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+            self.calls.append(messages)
+            self.call_kwargs.append(kwargs)
+            await asyncio.sleep(5)
+            return self.result
+
+    model = _SlowModel()
+    config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+    middleware = AutoModeHITLMiddleware(
+        {
+            "delete": config,
+        },
+        worktree_root=tmp_path,
+        classifier_timeout_seconds=0.05,
+        model_retry_fallback=5,
+    )
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    assert len(model.calls) == 1
+    assert delay_calls == []

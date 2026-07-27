@@ -503,7 +503,10 @@ def _persisted_model_params(
         ctx: Runtime context carrying user and checkpoint params.
         model: Model that handled the completed request.
         include_context_params: Whether params targeting the requested model
-            completed successfully and may be persisted.
+            completed successfully and may be persisted. When `False` (failed
+            switch), user temperature/params for the failed target are not
+            written; only the CLI retry carrier is retained via the same
+            two-tier read used for materializing model-switch kwargs.
 
     Returns:
         Params to persist, or `None` when no params or override are active.
@@ -511,10 +514,18 @@ def _persisted_model_params(
     from deepagents_code.config import (
         CLI_MAX_RETRIES_KEY,
         get_model_retry_override,
+        is_valid_retry_count,
     )
 
     params = dict(ctx.model_params) if include_context_params else {}
+    # Two-tier read matches `_model_creation_kwargs`: runtime model attr wins,
+    # then the checkpoint/context carrier. Always apply on failure paths so a
+    # known-null model attr cannot wipe a resumed `--max-retries` carrier.
     retry_override = get_model_retry_override(model)
+    if retry_override is None:
+        raw_override = ctx.model_params.get(CLI_MAX_RETRIES_KEY)
+        if is_valid_retry_count(raw_override):
+            retry_override = raw_override
     if retry_override is not None:
         params[CLI_MAX_RETRIES_KEY] = retry_override
     return params or None

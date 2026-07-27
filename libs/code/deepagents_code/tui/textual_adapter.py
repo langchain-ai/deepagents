@@ -1043,12 +1043,25 @@ async def execute_task_textual(
                 # never raise into the stream loop.
                 if current_stream_mode == "custom":
                     if isinstance(data, dict) and data.get("type") == "model_retry":
-                        if is_main_agent and adapter._set_spinner is not None:
+                        if adapter._set_spinner is not None:
                             retry_status = str(data.get("message", "Reconnecting"))
+                            # Nested graders/subagents/summarizers can spend the
+                            # full retry budget silently if only the main
+                            # namespace updates the spinner. Keep main wording
+                            # unchanged; prefix nested streams so the stall is
+                            # visible without changing main-agent UX.
+                            if not is_main_agent:
+                                retry_status = f"nested {retry_status}"
                             # LoadingWidget accepts text beyond the built-in statuses.
-                            await adapter._set_spinner(
-                                cast("SpinnerStatus", retry_status)
-                            )
+                            try:
+                                await adapter._set_spinner(
+                                    cast("SpinnerStatus", retry_status)
+                                )
+                            except Exception:
+                                logger.debug(
+                                    "model_retry spinner update failed",
+                                    exc_info=True,
+                                )
                         continue
                     rubric_message = data if isinstance(data, dict) else None
                     formatted_rubric_event = (

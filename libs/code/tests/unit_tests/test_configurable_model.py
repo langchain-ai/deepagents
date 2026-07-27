@@ -1596,3 +1596,106 @@ class TestModelIdentityPatch:
         assert "may not be available" not in patched
         assert "`deepseek-r1`" not in patched
         assert "### Skills Directory" in patched
+
+
+class TestFailedSwitchRetryPersistence:
+    """Failed model switches must keep the checkpoint CLI retry carrier."""
+
+    def test_failed_switch_preserves_checkpoint_retry_override(self) -> None:
+        from deepagents_code.model_config import ModelConfigError
+
+        original = _make_model("claude-sonnet-4-6")
+        original._get_ls_params.return_value = {"ls_provider": "anthropic"}
+        request = _make_request(
+            original,
+            context=CLIContextSchema(
+                model="unknown:bad-model",
+                model_params={CLI_MAX_RETRIES_KEY: 3, "temperature": 0.7},
+            ),
+        )
+        with patch(_PATCH_CREATE, side_effect=ModelConfigError("no such provider")):
+            result = _mw.wrap_model_call(request, lambda _r: _make_response())
+
+        # Failed target temperature must not be persisted; retry carrier must.
+        assert _checkpoint_update(result) == {
+            "_model_spec": "anthropic:claude-sonnet-4-6",
+            "_model_params": {CLI_MAX_RETRIES_KEY: 3},
+        }
+
+    async def test_async_failed_switch_preserves_checkpoint_retry_override(
+        self,
+    ) -> None:
+        from deepagents_code.model_config import ModelConfigError
+
+        original = _make_model("claude-sonnet-4-6")
+        original._get_ls_params.return_value = {"ls_provider": "anthropic"}
+        request = _make_request(
+            original,
+            context=CLIContextSchema(
+                model="unknown:bad-model",
+                model_params={CLI_MAX_RETRIES_KEY: 4, "temperature": 0.9},
+            ),
+        )
+
+        async def handler(_r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+            return _make_response()
+
+        async def fake_to_thread(
+            _func: object, /, *_args: object, **_kwargs: object
+        ) -> object:
+            await asyncio.sleep(0)
+            msg = "no such provider"
+            raise ModelConfigError(msg)
+
+        with patch(
+            "deepagents_code.configurable_model.asyncio.to_thread",
+            fake_to_thread,
+        ):
+            result = await _mw.awrap_model_call(request, handler)
+
+        assert _checkpoint_update(result) == {
+            "_model_spec": "anthropic:claude-sonnet-4-6",
+            "_model_params": {CLI_MAX_RETRIES_KEY: 4},
+        }
+
+    @pytest.mark.parametrize("use_async", [False, True])
+    async def test_retry_override_reaches_create_model_sync_and_async(
+        self, use_async: bool
+    ) -> None:
+        original = _make_model("claude-sonnet-4-6")
+        setattr(original, MODEL_RETRY_OVERRIDE_ATTR, 2)
+        override = _make_model("gpt-5.5")
+        setattr(override, MODEL_RETRY_OVERRIDE_ATTR, 2)
+        request = _make_request(
+            original,
+            context=CLIContextSchema(model="openai:gpt-5.5"),
+        )
+
+        with patch(_PATCH_CREATE, return_value=_make_model_result(override)) as create:
+            if use_async:
+
+                async def handler(_r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
+                    return _make_response()
+
+                async def fake_to_thread(
+                    func: Callable[..., object],
+                    /,
+                    *args: object,
+                    **kwargs: object,
+                ) -> object:
+                    await asyncio.sleep(0)
+                    return func(*args, **kwargs)
+
+                with patch(
+                    "deepagents_code.configurable_model.asyncio.to_thread",
+                    fake_to_thread,
+                ):
+                    result = await _mw.awrap_model_call(request, handler)
+            else:
+                result = _mw.wrap_model_call(request, lambda _r: _make_response())
+
+        create.assert_called_once_with(
+            "openai:gpt-5.5",
+            extra_kwargs={CLI_MAX_RETRIES_KEY: 2},
+        )
+        assert _checkpoint_update(result)["_model_params"] == {CLI_MAX_RETRIES_KEY: 2}

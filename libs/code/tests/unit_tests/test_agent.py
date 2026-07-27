@@ -3622,13 +3622,15 @@ class TestCreateCliAgentShellMiddlewareWiring:
         # model switches to replace it.
         pinned = subagents_by_name["pinned"]
         assert pinned["model"] is pinned_model
+        # Explicit create_cli_agent(model_retries=...) stamps the CLI override
+        # carrier onto the main model, so pinned subagents inherit it even when
+        # the incoming model object initially had no override attr.
+        expected_override = (
+            retry_override if retry_override is not None else model_retries
+        )
         create_pinned_model.assert_called_once_with(
             "anthropic:claude-haiku-4-5",
-            extra_kwargs=(
-                {CLI_MAX_RETRIES_KEY: retry_override}
-                if retry_override is not None
-                else None
-            ),
+            extra_kwargs={CLI_MAX_RETRIES_KEY: expected_override},
         )
         pinned_middleware = pinned["middleware"]
         retry_middleware = next(
@@ -5015,6 +5017,7 @@ class TestCreateCliAgentInterpreterWiring:
         assert len(rubrics) == 1
         assert rubrics[0]._model == "custom-grader-model"
         assert rubrics[0]._model_retry_override == 2
+        assert rubrics[0]._model_retry_fallback == 5
         assert rubrics[0].max_iterations == 5
         assert "use the `read_file` tool" in rubrics[0]._system_prompt
         assert "read-only `ls`, `read_file`, `glob`, and `grep`" in (
@@ -5033,6 +5036,105 @@ class TestCreateCliAgentInterpreterWiring:
             isinstance(middleware, AsyncApprovalHITLMiddleware)
             for middleware in rubrics[0]._grader_middleware
         )
+
+    def test_model_retries_zero_honored_for_string_model(self, tmp_path: Path) -> None:
+        """Explicit model_retries=0 must disable main and rubric retries for specs."""
+        from deepagents.middleware.rubric import RubricMiddleware
+
+        from deepagents_code.config import CLI_MAX_RETRIES_KEY, set_model_retry_metadata
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        result = SimpleNamespace(model=fake_model, model_retries=0)
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+            patch(
+                "deepagents_code.config.create_model",
+                return_value=result,
+            ) as mock_create_model,
+        ):
+            set_model_retry_metadata(fake_model, retries=0, cli_override=0)
+            create_cli_agent(
+                model="openai:gpt-5.5",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                model_retries=0,
+            )
+
+        mock_create_model.assert_called_once()
+        _, create_kwargs = mock_create_model.call_args
+        assert create_kwargs.get("extra_kwargs") == {CLI_MAX_RETRIES_KEY: 0}
+        _, kwargs = mock_create.call_args
+        main_retry = next(
+            mw
+            for mw in kwargs["middleware"]
+            if isinstance(mw, CodeModelRetryMiddleware)
+        )
+        assert main_retry.max_retries == 0
+        rubrics = [
+            mw for mw in kwargs["middleware"] if isinstance(mw, RubricMiddleware)
+        ]
+        assert rubrics[0]._model_retry_override == 0
+        assert rubrics[0]._model_retry_fallback == 0
+
+    def test_model_retries_zero_honored_for_prebuilt_model(
+        self, tmp_path: Path
+    ) -> None:
+        """Explicit model_retries=0 on a prebuilt model forces zero end-to-end."""
+        from deepagents.middleware.rubric import RubricMiddleware
+
+        from deepagents_code.config import MODEL_RETRIES_ATTR, MODEL_RETRY_OVERRIDE_ATTR
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+        ):
+            create_cli_agent(
+                model=fake_model,
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                model_retries=0,
+            )
+
+        assert getattr(fake_model, MODEL_RETRIES_ATTR) == 0
+        assert getattr(fake_model, MODEL_RETRY_OVERRIDE_ATTR) == 0
+        _, kwargs = mock_create.call_args
+        main_retry = next(
+            mw
+            for mw in kwargs["middleware"]
+            if isinstance(mw, CodeModelRetryMiddleware)
+        )
+        assert main_retry.max_retries == 0
+        rubrics = [
+            mw for mw in kwargs["middleware"] if isinstance(mw, RubricMiddleware)
+        ]
+        assert rubrics[0]._model_retry_override == 0
+        assert rubrics[0]._model_retry_fallback == 0
 
     def test_auto_approve_disables_rubric_context_hitl(self, tmp_path: Path) -> None:
         from deepagents.middleware.rubric import RubricMiddleware

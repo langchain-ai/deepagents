@@ -103,7 +103,14 @@ class _ClassifierDeadlineExceededError(TimeoutError):
 
     Distinct from a provider-raised `TimeoutError` so agent/UI text can name
     the app-imposed deadline without mislabeling socket-level failures.
+
+    Opted out of model-node retries via `dcode_model_retryable = False`: the
+    local budget has already elapsed, so spreading more attempts would only
+    multiply wall time under a misleading "model call failed, retrying…"
+    status.
     """
+
+    dcode_model_retryable = False
 
     def __init__(self, timeout_seconds: float) -> None:
         self.timeout_seconds = timeout_seconds

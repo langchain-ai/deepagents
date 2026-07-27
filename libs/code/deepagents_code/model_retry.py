@@ -52,8 +52,14 @@ __all__ = [
     "CodeModelRetryMiddleware",
     "ModelRetryEvent",
     "build_retry_event",
+    "exception_chain",
     "format_retry_status",
 ]
+
+# Marker attribute that typed local faults can set to opt out of model-node
+# retries (for example Auto's classifier wait-budget deadline). Prefer this over
+# message matching so classification stays reliable across wrappers.
+DCODE_MODEL_RETRYABLE_ATTR = "dcode_model_retryable"
 
 
 class ModelRetryEvent(TypedDict):
@@ -303,8 +309,10 @@ def _extract_status_code(exc: Exception) -> int | None:
     if isinstance(status, int):
         return status
 
-    # Google API Core exceptions (including Vertex AI's `ResourceExhausted`
-    # and `ServiceUnavailable`) expose their HTTP status on `code`. Check it
+    # Google API Core exceptions often expose an int HTTP status on `code`
+    # (REST/HTTP: ResourceExhausted→429, ServiceUnavailable→503, Aborted→409).
+    # Over pure gRPC the same attribute is a non-int StatusCode enum and is
+    # ignored here so name-based classification can run. Check int `code`
     # before `response`, which may be absent or may contain a gRPC call object.
     code = getattr(exc, "code", None)
     if isinstance(code, int) and not isinstance(code, bool):
@@ -344,6 +352,40 @@ def _is_transient_sdk_error(exc: Exception) -> bool:
     return any(base.__name__ in _TRANSIENT_SDK_EXC_NAMES for base in type(exc).__mro__)
 
 
+def _is_marked_non_retryable(exc: BaseException) -> bool:
+    """Return whether `exc` opted out of model-node retries via marker attr."""
+    return getattr(exc, DCODE_MODEL_RETRYABLE_ATTR, None) is False
+
+
+def _is_status_retryable(status: int, *, error_code: str | None) -> bool:
+    """Return whether an HTTP status (plus optional provider code) is retryable."""
+    if error_code in _THROTTLING_ERROR_CODES:
+        return True
+    return status in _RETRYABLE_STATUS_CODES or (
+        _HTTP_SERVER_ERROR_FLOOR <= status < _HTTP_SERVER_ERROR_CEILING
+    )
+
+
+def _is_definitive_non_retryable(exc: Exception) -> bool:
+    """Return whether `exc` is a permanent client/auth/billing failure.
+
+    Used as a top-level (and top-level ExceptionGroup member) guard so a
+    deterministic failure wins over sibling or chained transient faults.
+    """
+    if _is_marked_non_retryable(exc):
+        return True
+    error_code = _provider_error_code(exc)
+    if error_code in _NONRETRYABLE_ERROR_CODES:
+        return True
+    status = _extract_status_code(exc)
+    if status is None:
+        return False
+    if _is_status_retryable(status, error_code=error_code):
+        return False
+    # Known-transient SDK types (Google Aborted→409, etc.) are not definitive.
+    return not _is_transient_sdk_error(exc)
+
+
 def _is_retryable_model_error(exc: Exception) -> bool:
     """Return whether a model-node exception is a transient error worth retrying.
 
@@ -361,6 +403,10 @@ def _is_retryable_model_error(exc: Exception) -> bool:
     Returns:
         `True` when the error is transient and should be retried.
     """
+    # Explicit local opt-out (for example the Auto classifier wait budget).
+    if _is_marked_non_retryable(exc):
+        return False
+
     # A permanent quota/billing error rides a retryable status (429); its string
     # error code is the only signal that retrying is futile, so check it first.
     error_code = _provider_error_code(exc)
@@ -400,14 +446,15 @@ def _is_retryable_model_error(exc: Exception) -> bool:
     if error_code in _THROTTLING_ERROR_CODES:
         return True
 
-    # A status-bearing provider error is decided solely by its code: retry only
-    # 408/429/5xx, and never fall through to broader heuristics for a 4xx that
-    # would otherwise be misclassified as a bare connection error.
+    # Status-bearing provider errors: retry 408/429/5xx, then allow known
+    # transient SDK types whose status would otherwise look permanent (Google
+    # Aborted → HTTP 409). Do not fall through to bare TimeoutError heuristics
+    # for other 4xx codes.
     status = _extract_status_code(exc)
     if status is not None:
-        return status in _RETRYABLE_STATUS_CODES or (
-            _HTTP_SERVER_ERROR_FLOOR <= status < _HTTP_SERVER_ERROR_CEILING
-        )
+        if _is_status_retryable(status, error_code=error_code):
+            return True
+        return _is_transient_sdk_error(exc)
 
     if _is_transient_sdk_error(exc):
         return True
@@ -416,8 +463,14 @@ def _is_retryable_model_error(exc: Exception) -> bool:
     return isinstance(exc, (TimeoutError, ConnectionError))
 
 
-def _exception_chain(exc: BaseException) -> Iterator[BaseException]:
-    """Yield an exception, its causes, contexts, and group members once."""
+def exception_chain(exc: BaseException) -> Iterator[BaseException]:
+    """Yield an exception, its causes, contexts, and group members once.
+
+    Walks both `__cause__` and `__context__` (with cycle protection), plus
+    `BaseExceptionGroup` members, so transient transport faults stay
+    discoverable whether they are explicit causes, implicit contexts, or
+    sibling tasks under asyncio/anyio.
+    """
     pending = [exc]
     seen: set[int] = set()
     while pending:
@@ -430,15 +483,22 @@ def _exception_chain(exc: BaseException) -> Iterator[BaseException]:
             pending.extend(current.exceptions)
         if current.__cause__ is not None:
             pending.append(current.__cause__)
-        elif current.__context__ is not None:
+        if (
+            current.__context__ is not None
+            and current.__context__ is not current.__cause__
+        ):
             pending.append(current.__context__)
+
+
+# Back-compat private alias used by internal callers/tests.
+_exception_chain = exception_chain
 
 
 def _contains_retryable_model_error(exc: BaseException) -> bool:
     """Return whether an exception chain contains a transient model failure."""
     return any(
         isinstance(current, Exception) and _is_retryable_model_error(current)
-        for current in _exception_chain(exc)
+        for current in exception_chain(exc)
     )
 
 
@@ -446,13 +506,12 @@ def _should_retry_after_failure(exc: BaseException) -> bool:
     """Decide whether a failed model call is worth retrying.
 
     The top-level exception's own classification wins when it is definitively
-    non-transient: a permanent provider error code, or a status-bearing
+    non-transient: a permanent provider error code, a status-bearing
     deterministic client error (a 4xx other than 408/429 that is not an AWS
-    throttle). This stops a transient error buried in the `__cause__` /
-    `__context__` chain -- or grouped alongside it in a `BaseExceptionGroup`
-    (common under asyncio/anyio task groups) -- from flipping an actionable
-    auth/permission/validation failure to "retryable" and delaying it by the
-    full backoff budget with a misleading retry status.
+    throttle or known-transient SDK type), or a typed local opt-out marker.
+    The same guard applies to each **top-level member** of a
+    `BaseExceptionGroup`, so a grouped `group[401, ReadError]` is not retried
+    just because a sibling is transient.
 
     When the top-level error carries no such definitive verdict, fall back to
     scanning the chain so a genuinely transient fault wrapped in an opaque
@@ -464,17 +523,16 @@ def _should_retry_after_failure(exc: BaseException) -> bool:
     Returns:
         `True` when the failure should be retried.
     """
-    if isinstance(exc, Exception):
-        if _provider_error_code(exc) in _NONRETRYABLE_ERROR_CODES:
-            return False
-        status = _extract_status_code(exc)
-        if (
-            status is not None
-            and status not in _RETRYABLE_STATUS_CODES
-            and not (_HTTP_SERVER_ERROR_FLOOR <= status < _HTTP_SERVER_ERROR_CEILING)
-            and _provider_error_code(exc) not in _THROTTLING_ERROR_CODES
+    if _is_marked_non_retryable(exc):
+        return False
+    if isinstance(exc, BaseExceptionGroup):
+        if any(
+            isinstance(member, Exception) and _is_definitive_non_retryable(member)
+            for member in exc.exceptions
         ):
             return False
+    elif isinstance(exc, Exception) and _is_definitive_non_retryable(exc):
+        return False
     return _contains_retryable_model_error(exc)
 
 

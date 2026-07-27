@@ -275,8 +275,10 @@ def test_create_model_disables_provider_retries(
         )
     model_config.clear_caches()
 
-    assert init.call_args.kwargs["num_retries"] == 0
-    assert init.call_args.kwargs["max_retries"] == 99
+    # Built-in registry wins over mistyped config param; user max_retries is
+    # mapped onto dcode's budget (CLI carrier wins here) and SDK loop is zeroed.
+    assert init.call_args.kwargs["max_retries"] == 0
+    assert "num_retries" not in init.call_args.kwargs
     assert result.model_retries == cli_retries
     assert getattr(result.model, MODEL_RETRIES_ATTR) == cli_retries
     assert getattr(result.model, MODEL_RETRY_OVERRIDE_ATTR) == cli_retries
@@ -314,12 +316,21 @@ max_retries = 6
     assert result.model_retries == 6
 
 
-def test_configured_retry_param_overrides_known_provider_registry() -> None:
-    """An explicit integration kwarg wins over the provider default."""
+def test_built_in_retry_param_wins_over_config_for_known_provider() -> None:
+    """Known providers ignore mistyped `[retries.<provider>].param` values."""
     assert _provider_retry_disable_kwargs(
         {"anthropic": {"param": "num_retries"}},
         "anthropic",
         {"max_retries": 12},
+    ) == {"max_retries": 0}
+
+
+def test_custom_provider_config_param_still_disables_retries() -> None:
+    """Custom providers can still declare their retry-disable constructor kwarg."""
+    assert _provider_retry_disable_kwargs(
+        {"custom": {"param": "num_retries"}},
+        "custom",
+        {},
     ) == {"num_retries": 0}
 
 
@@ -355,7 +366,7 @@ def test_string_startup_model_uses_retry_aware_creation(tmp_path: Path) -> None:
             cwd=tmp_path,
         )
 
-    create.assert_called_once_with("provider:model")
+    create.assert_called_once_with("provider:model", extra_kwargs=None)
     assert build.call_args.kwargs["model"] is model
     main_middleware = build.call_args.kwargs["middleware"]
     main_retry = next(
@@ -1153,3 +1164,56 @@ def test_create_model_does_not_mutate_caller_extra_kwargs(
 
     assert extra_kwargs == {CLI_MAX_RETRIES_KEY: 2, "temperature": 0.1}
     assert result.model_retries == 2
+
+
+class Aborted(Exception):  # noqa: N818  # mirrors Google's real class name
+    """Google api_core Aborted with real HTTP 409 on `.code`."""
+
+    def __init__(self) -> None:
+        super().__init__("aborted")
+        self.code = 409
+
+
+def test_google_aborted_http_409_is_retryable() -> None:
+    """Aborted→409 must still retry via the known-transient name allowlist."""
+    assert _is_retryable_model_error(Aborted()) is True
+    assert _should_retry_after_failure(Aborted()) is True
+
+
+def test_exception_chain_walks_context_even_when_cause_set() -> None:
+    from deepagents_code.model_retry import exception_chain
+
+    outer = RuntimeError("outer")
+    cause = ValueError("cause")
+    context = _READ_ERROR
+    outer.__cause__ = cause
+    outer.__context__ = context
+    names = [type(item).__name__ for item in exception_chain(outer)]
+    assert "RuntimeError" in names
+    assert "ValueError" in names
+    assert "ReadError" in names
+
+
+def test_should_retry_exception_group_top_level_auth_wins() -> None:
+    """A top-level group member that is definitive non-retryable blocks retry."""
+    group = ExceptionGroup(
+        "model graph failed",
+        [AuthenticationError(), _READ_ERROR],
+    )
+    assert _should_retry_after_failure(group) is False
+
+
+def test_should_retry_exception_group_all_transient_still_retries() -> None:
+    group = ExceptionGroup(
+        "model graph failed",
+        [_READ_ERROR, _StatusError(503)],
+    )
+    assert _should_retry_after_failure(group) is True
+
+
+def test_explicit_non_retryable_marker_opts_out_of_timeout_fallback() -> None:
+    class _LocalDeadlineError(TimeoutError):
+        dcode_model_retryable = False
+
+    assert _is_retryable_model_error(_LocalDeadlineError()) is False
+    assert _should_retry_after_failure(_LocalDeadlineError()) is False

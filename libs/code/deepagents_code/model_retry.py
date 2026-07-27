@@ -75,14 +75,78 @@ class ModelRetryEvent(TypedDict):
     message: str
 
 
+_HIDDEN_LC_SOURCES = frozenset({"summarization", "auto_mode_classifier"})
+"""`lc_source` metadata values marking model output the user never sees.
+
+Producers invoke their model with `config={"metadata": {"lc_source": ...}}`:
+`_create_summary_with_retry` / `_acreate_summary_with_retry` in
+`offload_middleware` (and upstream `SummarizationMiddleware._create_summary`)
+tag `"summarization"`; `AutoModeHITLMiddleware._classify` tags
+`"auto_mode_classifier"`. Both streams are filtered out of the transcript by
+the renderers (`_is_summarization_chunk` / `_is_auto_mode_classifier_chunk` in
+`tui/textual_adapter`, and `client/non_interactive`), so their tokens must not
+count as user-visible output when deciding whether a retry is safe.
+"""
+
+
 class _StreamOutputTracker(BaseCallbackHandler):
-    """Record whether a model attempt emitted any streamed output."""
+    """Record whether a model attempt emitted any *user-visible* output.
+
+    The tracker is installed on the ambient callback config, so it observes
+    every model run inside the retried handler -- not only the model node being
+    guarded. Inner middleware runs its own model calls there (the summarizer
+    runs inside `SummarizationMiddleware.wrap_model_call`, which this middleware
+    wraps), and their tokens are hidden from the user. Counting them would latch
+    `emitted` before the guarded call even starts and silently veto every retry
+    on summarizing turns, so runs tagged with a `_HIDDEN_LC_SOURCES` marker are
+    tracked by run id and ignored.
+
+    Runs that arrive without a recognized marker still count, keeping the
+    duplicate-output guard fail-safe for anything not positively identified as
+    internal.
+    """
 
     run_inline = True
 
     def __init__(self) -> None:
         """Initialize request-local streaming state."""
         self.emitted = False
+        self._hidden_runs: set[UUID] = set()
+
+    def _note_run_start(self, run_id: UUID, metadata: dict[str, Any] | None) -> None:
+        """Record `run_id` when its metadata marks the run as non-user-facing."""
+        if metadata is not None and metadata.get("lc_source") in _HIDDEN_LC_SOURCES:
+            self._hidden_runs.add(run_id)
+
+    def on_llm_start(
+        self,
+        serialized: dict[str, Any],
+        prompts: list[str],
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Track whether this completion run is hidden from the user."""
+        del serialized, prompts, parent_run_id, tags, kwargs
+        self._note_run_start(run_id, metadata)
+
+    def on_chat_model_start(
+        self,
+        serialized: dict[str, Any],
+        messages: list[list[Any]],
+        *,
+        run_id: UUID,
+        parent_run_id: UUID | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Track whether this chat run is hidden from the user."""
+        del serialized, messages, parent_run_id, tags, kwargs
+        self._note_run_start(run_id, metadata)
 
     def on_llm_new_token(
         self,
@@ -95,7 +159,9 @@ class _StreamOutputTracker(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Mark a legacy chunk as externally visible, including empty chunks."""
-        del token, chunk, run_id, parent_run_id, tags, kwargs
+        del token, chunk, parent_run_id, tags, kwargs
+        if run_id in self._hidden_runs:
+            return
         self.emitted = True
 
     def on_stream_event(
@@ -108,7 +174,9 @@ class _StreamOutputTracker(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         """Mark a protocol-stream event as externally visible."""
-        del event, run_id, parent_run_id, tags, kwargs
+        del event, parent_run_id, tags, kwargs
+        if run_id in self._hidden_runs:
+            return
         self.emitted = True
 
 

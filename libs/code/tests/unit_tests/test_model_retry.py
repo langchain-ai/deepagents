@@ -7,6 +7,7 @@ import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -17,6 +18,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from langchain_core.runnables import RunnableConfig
 
 from deepagents_code import model_config
 from deepagents_code._cli_context import CLIContext
@@ -39,6 +42,7 @@ from deepagents_code.model_retry import (
     _is_retryable_model_error,
     _runtime_model_retry_override,
     _should_retry_after_failure,
+    _StreamOutputTracker,
     build_retry_event,
     format_retry_status,
 )
@@ -1217,3 +1221,133 @@ def test_explicit_non_retryable_marker_opts_out_of_timeout_fallback() -> None:
 
     assert _is_retryable_model_error(_LocalDeadlineError()) is False
     assert _should_retry_after_failure(_LocalDeadlineError()) is False
+
+
+def _stream_from(model: BaseChatModel, *, lc_source: str | None = None) -> None:
+    """Consume one streamed token, optionally tagged as internal output."""
+    config: RunnableConfig | None = (
+        {"metadata": {"lc_source": lc_source}} if lc_source else None
+    )
+    next(iter(model.stream("prompt", config=config)))
+
+
+def test_hidden_summarizer_output_does_not_veto_retry() -> None:
+    """An inner summarizer's tokens must not suppress the guarded call's retry.
+
+    The tracker rides the ambient callback config, so it sees every model run
+    inside the handler. Summarizer output is filtered out of the transcript, so
+    retrying after it cannot duplicate anything the user saw.
+    """
+    summarizer = FakeListChatModel(responses=["a summary"])
+    model = FakeListChatModel(responses=["real"])
+    setattr(model, MODEL_RETRIES_ATTR, 3)
+    request = _req().override(model=model)
+    calls = {"n": 0}
+
+    def handler(selected: ModelRequest) -> ModelResponse[Any]:
+        calls["n"] += 1
+        assert selected.model is model
+        _stream_from(summarizer, lc_source="summarization")
+        raise _READ_ERROR
+
+    middleware = CodeModelRetryMiddleware(max_retries=3)
+    with (
+        patch.object(middleware, "_compute_delay", return_value=0.0),
+        pytest.raises(httpx.ReadError),
+    ):
+        middleware.wrap_model_call(request, handler)
+
+    assert calls["n"] == 4
+
+
+async def test_async_hidden_summarizer_output_does_not_veto_retry() -> None:
+    """Async twin: hidden inner output must not suppress retries."""
+    summarizer = FakeListChatModel(responses=["a summary"])
+    model = FakeListChatModel(responses=["real"])
+    setattr(model, MODEL_RETRIES_ATTR, 3)
+    request = _req().override(model=model)
+    calls = {"n": 0}
+
+    async def handler(selected: ModelRequest) -> ModelResponse[Any]:
+        calls["n"] += 1
+        assert selected.model is model
+        async for _ in summarizer.astream(
+            "prompt", config={"metadata": {"lc_source": "summarization"}}
+        ):
+            break
+        raise _READ_ERROR
+
+    middleware = CodeModelRetryMiddleware(max_retries=3)
+    with (
+        patch.object(middleware, "_compute_delay", return_value=0.0),
+        pytest.raises(httpx.ReadError),
+    ):
+        await middleware.awrap_model_call(request, handler)
+
+    assert calls["n"] == 4
+
+
+def test_hidden_classifier_output_does_not_veto_retry() -> None:
+    """Auto mode's classifier output is hidden too, so it must not veto."""
+    classifier = FakeListChatModel(responses=["allow"])
+    model = FakeListChatModel(responses=["real"])
+    request = _req().override(model=model)
+    calls = {"n": 0}
+
+    def handler(selected: ModelRequest) -> ModelResponse[Any]:
+        calls["n"] += 1
+        assert selected.model is model
+        _stream_from(classifier, lc_source="auto_mode_classifier")
+        raise _READ_ERROR
+
+    middleware = CodeModelRetryMiddleware(max_retries=2)
+    with (
+        patch.object(middleware, "_compute_delay", return_value=0.0),
+        pytest.raises(httpx.ReadError),
+    ):
+        middleware.wrap_model_call(request, handler)
+
+    assert calls["n"] == 3
+
+
+def test_untagged_inner_output_still_vetoes_retry() -> None:
+    """Unrecognized runs stay fail-safe: they still count as visible output."""
+    other = FakeListChatModel(responses=["something"])
+    model = FakeListChatModel(responses=["real"])
+    request = _req().override(model=model)
+    calls = {"n": 0}
+
+    def handler(selected: ModelRequest) -> ModelResponse[Any]:
+        calls["n"] += 1
+        assert selected.model is model
+        _stream_from(other)
+        raise _READ_ERROR
+
+    middleware = CodeModelRetryMiddleware(max_retries=3)
+    with pytest.raises(httpx.ReadError):
+        middleware.wrap_model_call(request, handler)
+
+    assert calls["n"] == 1
+
+
+def test_on_stream_event_marks_output_visible() -> None:
+    """The protocol-stream callback must veto retries like token streaming.
+
+    Real providers dispatch `on_stream_event` rather than `on_llm_new_token`,
+    so this path is what actually guards duplicate output in production.
+    """
+    tracker = _StreamOutputTracker()
+    assert tracker.emitted is False
+    tracker.on_stream_event(object(), run_id=uuid4())
+    assert tracker.emitted is True
+
+
+def test_on_stream_event_ignores_hidden_run() -> None:
+    """Hidden runs must not latch `emitted` via the protocol-stream path."""
+    tracker = _StreamOutputTracker()
+    run_id = uuid4()
+    tracker.on_chat_model_start(
+        {}, [], run_id=run_id, metadata={"lc_source": "summarization"}
+    )
+    tracker.on_stream_event(object(), run_id=run_id)
+    assert tracker.emitted is False

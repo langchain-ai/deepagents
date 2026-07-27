@@ -1469,7 +1469,6 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "mcp": ("mcp_command", "show_mcp_help"),
     "auth": ("auth_command", "show_auth_help"),
     "tools": ("tools_command", "show_tools_help"),
-    "extras": ("extras_command", "show_extras_help"),
 }
 """Maps top-level command names to their startup-fast-path help dispatch.
 
@@ -1808,37 +1807,31 @@ def parse_args() -> argparse.Namespace:
     )
     add_json_output_arg(tools_list)
 
-    extras_parser = subparsers.add_parser(
-        "extras",
-        help="Manage optional deepagents-code extras (providers, sandboxes)",
-        add_help=False,
-        parents=help_parent(_lazy_help("show_extras_help")),
-    )
-    extras_sub = extras_parser.add_subparsers(dest="extras_command")
-
-    extras_install = extras_sub.add_parser(
+    install_parser = subparsers.add_parser(
         "install",
         help="Install an optional extra (e.g. daytona, fireworks)",
         add_help=False,
-        parents=help_parent(_lazy_help("show_extras_install_help")),
+        parents=help_parent(_lazy_help("show_install_help")),
     )
-    extras_install.add_argument(
-        "extras_target",
+    install_parser.add_argument(
+        "install_target",
+        nargs="?",
+        default=None,
         metavar="NAME",
         help="Extra name, or package name when --package is set",
     )
-    extras_install.add_argument(
+    install_parser.add_argument(
         "--package",
-        dest="extras_package",
+        dest="install_package",
         action="store_true",
         help=(
             "Treat NAME as a package added via `uv --with` "
             "(for a custom provider package), not a deepagents-code extra"
         ),
     )
-    extras_install.add_argument(
+    install_parser.add_argument(
         "--yes",
-        dest="extras_yes",
+        dest="install_yes",
         action="store_true",
         help="Skip interactive confirmation prompts",
     )
@@ -2164,7 +2157,7 @@ def parse_args() -> argparse.Namespace:
         "--install",
         metavar="NAME",
         help=(
-            "Alias for `extras install NAME`. Install an optional extra "
+            "Alias for `install NAME`. Install an optional extra "
             "(e.g. daytona, fireworks), then exit"
         ),
     )
@@ -2172,18 +2165,15 @@ def parse_args() -> argparse.Namespace:
         "--package",
         action="store_true",
         help=(
-            "With --install or `extras install`, treat NAME as a package "
-            "added via `uv --with` (for a custom provider package), not a "
+            "With --install or `install`, treat NAME as a package added via "
+            "`uv --with` (for a custom provider package), not a "
             "deepagents-code extra"
         ),
     )
     parser.add_argument(
         "--yes",
         action="store_true",
-        help=(
-            "Skip interactive confirmation prompts "
-            "(e.g., for --install / extras install)"
-        ),
+        help=("Skip interactive confirmation prompts (e.g., for --install / install)"),
     )
     parser.add_argument(
         "--acp",
@@ -3632,10 +3622,10 @@ def cli_main() -> None:
 
             sys.exit(run_tools_command(args))
 
-        if command == "extras":
-            from deepagents_code.client.commands.extras import run_extras_command
+        if command == "install":
+            from deepagents_code.client.commands.extras import run_install_command
 
-            sys.exit(run_extras_command(args))
+            sys.exit(run_install_command(args))
 
         # Best-effort, idempotent migration. Placed after parse_args and the
         # bare-help fast path so --help / --version / `deepagents <group>`
@@ -4069,13 +4059,13 @@ def cli_main() -> None:
         if args.package and not args.install:
             console.print(
                 "[bold red]Error:[/bold red] --package requires "
-                "`dcode extras install <package> --package` "
+                "`dcode install <package> --package` "
                 "(or the `--install <package>` alias).",
             )
             sys.exit(2)
 
         # Handle --install <name> [--package] flag (headless, no session).
-        # Alias for `dcode extras install`. Always exits.
+        # Alias for `dcode install`. Always exits.
         if args.install:
             from deepagents_code.client.commands.extras import run_install_request
 

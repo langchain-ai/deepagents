@@ -577,13 +577,13 @@ class TestHelpScreenDriftExtended:
             show_help()
         assert "dcode tools" in buf.getvalue()
 
-    def test_show_help_includes_extras_subcommand(self) -> None:
-        """show_help should mention the extras subcommand."""
+    def test_show_help_includes_install_subcommand(self) -> None:
+        """show_help should mention the install subcommand."""
         buf = io.StringIO()
         test_console = Console(file=buf, highlight=False, width=200)
         with patch("deepagents_code.ui.console", test_console):
             show_help()
-        assert "dcode extras" in buf.getvalue()
+        assert "dcode install" in buf.getvalue()
 
     def test_show_help_includes_stdin(self) -> None:
         """show_help should mention --stdin."""

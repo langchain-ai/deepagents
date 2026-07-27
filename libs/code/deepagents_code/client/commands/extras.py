@@ -1,18 +1,15 @@
-"""The `dcode extras` command group: manage optional deepagents-code extras.
+"""CLI install path for optional deepagents-code extras.
 
-`dcode extras install <name>` installs a curated optional extra (for example a
-sandbox or model-provider dependency) into the current `dcode` environment. The
-legacy global flags `dcode --install <name>` / `--package` / `--yes` remain as
+`dcode install <name>` installs a curated optional extra (for example a sandbox
+or model-provider dependency) into the current `dcode` environment. The legacy
+global flags `dcode --install <name>` / `--package` / `--yes` remain as
 compatible aliases and call the same implementation.
 
 `tools install` is intentionally separate: that group provisions managed host
-binaries (ripgrep), while `extras` manages Python package extras for dcode.
-Leave room here for later verbs such as `list` / `info` without colliding with
-`tools`.
+binaries (ripgrep), while this command manages Python package extras for dcode.
 
-Help rendering for `dcode extras -h` / `dcode extras install -h` is served by
-`ui.show_extras_help` / `ui.show_extras_install_help`, which do not import this
-module, so the help path stays light.
+Help rendering for `dcode install -h` is served by `ui.show_install_help`, which
+does not import this module, so the help path stays light.
 """
 
 from __future__ import annotations
@@ -35,8 +32,8 @@ def _tail_log_command(log_path: Path | str) -> str:
     return f"tail -f {shlex.quote(str(log_path))}"
 
 
-def run_extras_command(args: argparse.Namespace) -> int:
-    """Dispatch a `dcode extras` subcommand.
+def run_install_command(args: argparse.Namespace) -> int:
+    """Dispatch `dcode install <name>`.
 
     Args:
         args: Parsed CLI namespace.
@@ -44,35 +41,25 @@ def run_extras_command(args: argparse.Namespace) -> int:
     Returns:
         Process exit code.
     """
-    subcommand = getattr(args, "extras_command", None)
-    if subcommand == "install":
-        name = getattr(args, "extras_target", None)
-        if not isinstance(name, str) or not name:
-            from deepagents_code import ui
+    name = getattr(args, "install_target", None)
+    if not isinstance(name, str) or not name:
+        from deepagents_code import ui
 
-            ui.show_extras_install_help()
-            return 2
-        # Accept flag-style modifiers either on the subcommand or (for
-        # compatibility) as global root flags that precede the group name,
-        # e.g. `dcode --yes extras install daytona`.
-        package = bool(
-            getattr(args, "extras_package", False) or getattr(args, "package", False)
-        )
-        yes = bool(getattr(args, "extras_yes", False) or getattr(args, "yes", False))
-        return run_install_request(name=name, package=package, yes=yes)
-
-    # `cli_main`'s bare-group help fast path handles `dcode extras` with no
-    # subcommand, so this is only reached for an unexpected value.
-    from deepagents_code import ui
-
-    ui.show_extras_help()
-    return 0
+        ui.show_install_help()
+        return 2
+    # Accept modifiers on the subcommand or as global root flags that precede
+    # it, e.g. `dcode --yes install daytona`.
+    package = bool(
+        getattr(args, "install_package", False) or getattr(args, "package", False)
+    )
+    yes = bool(getattr(args, "install_yes", False) or getattr(args, "yes", False))
+    return run_install_request(name=name, package=package, yes=yes)
 
 
 def run_install_request(*, name: str, package: bool, yes: bool) -> int:
     """Install an optional extra or an arbitrary package via `uv --with`.
 
-    Shared by `dcode extras install` and the legacy `dcode --install` flag.
+    Shared by `dcode install` and the legacy `dcode --install` flag.
 
     Args:
         name: Extra or package name to install.
@@ -179,7 +166,7 @@ def _run_install_package(*, name: str, yes: bool) -> int:
         console.print("\nAborted.", style="dim")
         return 130
     except Exception as exc:
-        logger.warning("extras install --package failed", exc_info=True)
+        logger.warning("install --package failed", exc_info=True)
         log_line = f"\nLog: {pkg_log_path}" if pkg_log_path else ""
         console.print(
             f"[bold red]Error:[/bold red] "
@@ -295,7 +282,7 @@ def _run_install_extra(*, name: str, yes: bool) -> int:
         console.print("\nAborted.", style="dim")
         return 130
     except Exception as exc:
-        logger.warning("extras install failed", exc_info=True)
+        logger.warning("install failed", exc_info=True)
         log_line = f"\nLog: {log_path}" if log_path else ""
         # Catch-all for any unexpected install failure: never let recovery-hint
         # generation raise a second error over the original one. `manual_cmd`

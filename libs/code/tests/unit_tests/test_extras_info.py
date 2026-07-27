@@ -335,7 +335,7 @@ def test_extras_taxonomy_covers_pyproject() -> None:
 def test_known_extras_is_union_of_categories() -> None:
     """`KNOWN_EXTRAS` must be the union of the three category frozensets.
 
-    `dcode extras install <extra>` and `/install <extra>` consult `KNOWN_EXTRAS`
+    `dcode install <extra>` and `/install <extra>` consult `KNOWN_EXTRAS`
     to decide whether to prompt for confirmation on unknown values, so this
     set has to stay aligned with the taxonomy or callers will see spurious
     prompts for real extras.

@@ -291,7 +291,11 @@ jobs:
                 'Touched package dir(s) not covered by those scopes:',
                 offenderLines,
                 '',
+                '**Release-please consequence:** if this PR title is bump-worthy (`feat`/`fix`/etc.), release-please scopes by **changed file path**, not the title scope — so it can still open a **separate release PR for every managed component this PR touches**, even when the title names only one package. Prefer splitting into one package-scoped feature/fix PR and one `chore(deps):` PR for cross-package churn.',
+                '',
                 'Remove the label to re-enable the block.',
+                '',
+                '📖 [Multi-component fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#multi-component-fan-out)',
               ].join('\n'));
               core.info(`Bypassed via ${BYPASS_LABEL} label.`);
               return;
@@ -308,12 +312,21 @@ jobs:
               '',
               'This check is **blocking** because the PR title declares one package scope while the changed files live in a different package directory.',
               '',
+              '**Release-please consequence:** release-please attributes commits by **file path**, not title scope. A bump-worthy title (`feat`/`fix`/etc.) that touches multiple managed packages opens a **separate release PR per package**. Bypassing this gate does **not** stop that fan-out.',
+              '',
               '### To resolve',
               '',
               'Edit the PR title scope so it covers the changed package directory (for example, use `fix(code): ...` for `libs/code/**`), or move the files so they match the declared scope.',
               '',
+              'If this is a feature plus incidental cross-package dependency/lock churn, split into:',
+              '',
+              '1. One feature/fix PR scoped to the single package that owns the user-facing change.',
+              '2. One `chore(deps): ...` PR for the cross-package dependency / lockfile churn (`chore` is hidden and does not open release PRs).',
+              '',
               '### If intentional',
               '',
-              `Apply the \`${BYPASS_LABEL}\` label. The check re-runs and passes with an informational note.`,
+              `Apply the \`${BYPASS_LABEL}\` label. The check re-runs and passes with an informational note — confirm you still want a release PR for every managed component the diff touches.`,
+              '',
+              '📖 [Multi-component fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#multi-component-fan-out)',
             ].join('\n'));
             core.setFailed(`PR title scope(s) ${titleScopes.join(', ') || '(none)'} do not cover touched package dir(s): ${offenderSummary}. Fix the title scope/files, or apply the '${BYPASS_LABEL}' label if intentional.`);

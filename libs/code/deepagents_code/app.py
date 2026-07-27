@@ -35,6 +35,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.dom import NoScreen
 from textual.events import Click
 from textual.message import Message
 from textual.notifications import Notification as _Notification, Notify as _Notify
@@ -2519,6 +2520,35 @@ class _ChatScroll(VerticalScroll):
         return self.max_scroll_y > 0
 
 
+_MIN_TOAST_ROWS = 6
+"""Rows the toast rack keeps for itself above the bottom chrome.
+
+On a short terminal — or with a tall composed message in the chat input — the
+chrome can claim the whole screen, and anchoring above it would leave the rack
+no room at all. The anchor stops at this floor, and `_anchor_toast_rack` caps
+the rack's height to whatever space is left so a taller toast scrolls inside the
+rack instead of being docked off the top of the screen.
+"""
+
+
+class _BottomChrome(Container):
+    """Bottom container the toast rack is anchored above.
+
+    Textual docks `ToastRack` to the bottom of the screen, where it covers the
+    chat input. This container's height changes whenever the chat input grows,
+    or the startup tip / goal status / subagent panels appear, so it announces
+    its own resizes and lets the app re-anchor the rack (see
+    `DeepAgentsApp._anchor_toast_rack`).
+    """
+
+    class Resized(Message, namespace="bottom_chrome"):
+        """Posted whenever the bottom chrome's geometry changes."""
+
+    def on_resize(self, _event: Resize) -> None:
+        """Announce the new geometry so the app can re-anchor toasts."""
+        self.post_message(self.Resized())
+
+
 class _MainScreen(Screen[None]):
     """Default screen containing the main chat interface.
 
@@ -3789,7 +3819,7 @@ class DeepAgentsApp(App):
                 id="welcome-banner",
             )
             yield Container(id="messages")
-        with Container(id="bottom-app-container"):
+        with _BottomChrome(id="bottom-app-container"):
             # Live fan-out panel for subagents spawned from js_eval. Hidden
             # until the first spawn event; sits at the top of the bottom
             # container, above the startup tip and input.
@@ -6551,6 +6581,9 @@ class DeepAgentsApp(App):
 
     def on_resize(self, _event: Resize) -> None:
         """Scale cached message heights when terminal width changes."""
+        # A terminal resize moves the bottom chrome even when its height is
+        # unchanged, so re-anchor before the early returns below.
+        self._anchor_toast_rack()
         try:
             chat = self.query_one("#chat", VerticalScroll)
         except NoMatches:
@@ -6565,6 +6598,42 @@ class DeepAgentsApp(App):
         self._message_store.invalidate_height_hints(scale=previous / width)
         self._message_measure_width = width
         self._sync_transcript_spacers()
+
+    def on_bottom_chrome_resized(self, _event: _BottomChrome.Resized) -> None:
+        """Re-anchor toasts when the chat input (or a bottom panel) resizes."""
+        self._anchor_toast_rack()
+
+    def _anchor_toast_rack(self) -> None:
+        """Float toasts above the chat input instead of on top of it.
+
+        Textual docks its `ToastRack` to the bottom of the screen, so toasts
+        cover the chat input the user is typing into. Growing the rack's bottom
+        margin to the height of the bottom chrome (panels, chat input, and
+        status bar) lifts toasts to just above the input box.
+        """
+        try:
+            chrome = self.query_one("#bottom-app-container", _BottomChrome)
+            # Resolve the rack from the chrome's own screen: every screen
+            # composes its own rack, and modals must not retune the main one.
+            screen = chrome.screen
+            rack = screen.get_child_by_id("textual-toastrack")
+        except (NoMatches, NoScreen):
+            return
+        region = chrome.region
+        if not region:
+            # Not laid out yet; the chrome's first resize re-anchors.
+            return
+        screen_height = screen.size.height
+        headroom = max(screen_height - _MIN_TOAST_ROWS, 0)
+        margin_bottom = min(max(screen_height - region.y, 0), headroom)
+        # Inline style writes already no-op when the value is unchanged, so
+        # re-running this on every resize costs nothing.
+        rack.styles.margin = (0, 0, margin_bottom, 0)
+        # `ToastRack` is `height: auto` with no maximum, so a tall (or heavily
+        # wrapped) toast would be docked past the top of the screen and lose its
+        # first lines. Bound the rack to the space this anchor leaves it; the
+        # rack already scrolls to its end, keeping the newest toast in view.
+        rack.styles.max_height = screen_height - margin_bottom
 
     def _update_status(self, message: str) -> None:
         """Update the status bar with a message."""

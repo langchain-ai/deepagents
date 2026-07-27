@@ -112,6 +112,7 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "BASH_ENV",
         "BASHOPTS",
         "CDPATH",
+        "COMSPEC",
         "DYLD_INSERT_LIBRARIES",
         "DYLD_LIBRARY_PATH",
         "ENV",
@@ -128,6 +129,8 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "PYTHONSTARTUP",
         "SHELLOPTS",
         "SSH_ASKPASS",
+        "SYSTEMROOT",
+        "WINDIR",
         _INHERITED_PYTHONPATH_ENV,
     }
 )
@@ -3255,6 +3258,27 @@ def is_memory_auto_save_enabled() -> bool:
     return bool(value)
 
 
+def is_yolo_switcher_enabled() -> bool:
+    """Return whether Shift+Tab may enter unrestricted YOLO mode.
+
+    Resolves the `startup.yolo_switcher` option from env/`config.toml`,
+    defaulting to enabled. When disabled, the interactive cycle stays Manual /
+    Auto only (or Manual alone when Auto is ineligible). Sessions already in
+    YOLO (for example via `--yolo`) can still leave it with Shift+Tab.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("startup.yolo_switcher")
+    if option is None:
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
 def is_openai_prompt_cache_key_enabled() -> bool:
     """Return whether OpenAI model calls should carry a per-thread cache key.
 
@@ -4513,36 +4537,19 @@ def _create_model_via_init(
                 f"import for provider '{provider}': {e}"
             )
         else:
-            from deepagents_code.extras_info import extra_for_package
+            from deepagents_code.extras_info import resolve_install_hint
 
-            extra = extra_for_package(package)
-            if extra is not None:
+            hint = resolve_install_hint(package)
+            if hint.extra is not None:
                 msg = (
                     f"Missing package for provider '{provider}'. "
-                    f"Install: /install {extra}"
+                    f"Install: /install {hint.extra}"
                 )
             else:
-                from deepagents_code.extras_info import ExtrasIntrospectionError
-                from deepagents_code.update_check import (
-                    ToolRequirementIntrospectionError,
-                    install_package_command,
-                )
-
-                try:
-                    install_cmd = install_package_command(package)
-                except (
-                    ValueError,
-                    ExtrasIntrospectionError,
-                    ToolRequirementIntrospectionError,
-                ) as exc:
-                    logger.debug(
-                        "install_package_command failed; falling back to "
-                        "manual hint: %s",
-                        exc,
-                    )
-                    install_hint = f"Install the '{package}' package manually"
+                if hint.command is not None:
+                    install_hint = f"Install with: {hint.command}"
                 else:
-                    install_hint = f"Install with: {install_cmd}"
+                    install_hint = f"Install the '{package}' package manually"
                 msg = (
                     f"Missing package for provider '{provider}'. "
                     f"{install_hint}, then retry with `/model`."

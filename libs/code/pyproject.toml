@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-code"
-version = "0.1.46"
+version = "0.1.47"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
@@ -37,7 +37,7 @@ dependencies = [
     "httpx>=0.28.1,<1.0.0",
 
     # Core model providers - others are added as optional
-    "langchain-anthropic>=1.5.1,<2.0.0",
+    "langchain-anthropic>=1.5.2,<2.0.0",
     "langchain-google-genai>=4.3.1,<5.0.0",
     "langchain-openai>=1.4.1,<2.0.0",
     "pydantic>=2.12.5,<2.14.0a0",
@@ -97,7 +97,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Model providers
-anthropic = ["langchain-anthropic>=1.5.1,<2.0.0"]
+anthropic = ["langchain-anthropic>=1.5.2,<2.0.0"]
 baseten = ["langchain-baseten>=0.2.1,<1.0.0"]
 bedrock = ["langchain-aws>=1.6.3,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]

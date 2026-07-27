@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code._repository_bounds import REPOSITORY_TOOL_CALL_LIMIT
 from deepagents_code.agent import (
+    _AGENT_DIR_MARKER,
     _MEMORY_READONLY_SYSTEM_PROMPT,
     DEFAULT_AGENT_NAME,
     AsyncApprovalHITLMiddleware,
@@ -1935,10 +1936,14 @@ class TestListAgentsJson:
 
         default_dir = agents_dir / DEFAULT_AGENT_NAME
         default_dir.mkdir()
-        (default_dir / "AGENTS.md").touch()
+        (default_dir / _AGENT_DIR_MARKER).touch()
 
         other_dir = agents_dir / "researcher"
         other_dir.mkdir()
+        (other_dir / _AGENT_DIR_MARKER).touch()
+
+        # Bare directory without the marker is not an agent.
+        (agents_dir / "not-an-agent").mkdir()
 
         mock_settings = Mock()
         mock_settings.user_deepagents_dir = agents_dir
@@ -1962,7 +1967,7 @@ class TestListAgentsJson:
 
         researcher = next(a for a in agents if a["name"] == "researcher")
         assert researcher["is_default"] is False
-        assert researcher["has_agents_md"] is False
+        assert researcher["has_agents_md"] is True
 
     def test_json_output_empty(self, tmp_path: Path) -> None:
         """JSON output returns empty array when no agents exist."""
@@ -4586,8 +4591,16 @@ def _mock_agents_dir(agents_dir: Path) -> Mock:
     return mock_settings
 
 
+def _seed_agent(agents_dir: Path, name: str) -> Path:
+    """Create an agent profile directory with the `AGENTS.md` marker."""
+    agent_dir = agents_dir / name
+    agent_dir.mkdir()
+    (agent_dir / _AGENT_DIR_MARKER).touch()
+    return agent_dir
+
+
 class TestGetAvailableAgentNames:
-    """Tests for `get_available_agent_names`."""
+    """Tests for fail-closed `get_available_agent_names` discovery."""
 
     def test_returns_empty_when_dir_missing(self, tmp_path: Path) -> None:
         """No ~/.deepagents directory → empty list, no error."""
@@ -4596,20 +4609,32 @@ class TestGetAvailableAgentNames:
             assert get_available_agent_names() == []
 
     def test_returns_sorted_agent_names(self, tmp_path: Path) -> None:
-        """Subdirectories are returned sorted."""
+        """Marker-bearing subdirectories are returned sorted."""
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
         for name in ("zebra", "alpha", "mango"):
-            (agents_dir / name).mkdir()
+            _seed_agent(agents_dir, name)
 
         with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
             assert get_available_agent_names() == ["alpha", "mango", "zebra"]
+
+    def test_requires_agents_md_marker(self, tmp_path: Path) -> None:
+        """Bare directories without `AGENTS.md` are not agents (fail-closed)."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        _seed_agent(agents_dir, "agent")
+        (agents_dir / "empty-dir").mkdir()
+        (agents_dir / "skills-only").mkdir()
+        (agents_dir / "skills-only" / "skills").mkdir()
+
+        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["agent"]
 
     def test_ignores_files_and_non_dirs(self, tmp_path: Path) -> None:
         """Files sitting next to agent directories are excluded."""
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
-        (agents_dir / "agent").mkdir()
+        _seed_agent(agents_dir, "agent")
         (agents_dir / "config.toml").write_text("")
         (agents_dir / ".DS_Store").write_text("")
 
@@ -4620,11 +4645,11 @@ class TestGetAvailableAgentNames:
         """Symlinked directories are excluded — a dangling link must not show up."""
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
-        (agents_dir / "real").mkdir()
-        # Symlink to a real dir — still excluded because we only want files
-        # that live inside `~/.deepagents/` directly.
+        _seed_agent(agents_dir, "real")
+        # Symlink to a real agent dir — still excluded because discovery only
+        # accepts directories that live inside `~/.deepagents/` directly.
         real_target = tmp_path / "outside"
-        real_target.mkdir()
+        _seed_agent(tmp_path, "outside")
         (agents_dir / "linked").symlink_to(real_target, target_is_directory=True)
         # Dangling symlink (target doesn't exist).
         (agents_dir / "broken").symlink_to(tmp_path / "ghost")
@@ -4632,44 +4657,64 @@ class TestGetAvailableAgentNames:
         with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
             assert get_available_agent_names() == ["real"]
 
-    def test_ignores_dot_prefixed_dirs(self, tmp_path: Path) -> None:
-        """`.state/` and other hidden dirs are excluded from the agent list."""
+    def test_ignores_symlink_marker_file(self, tmp_path: Path) -> None:
+        """A symlink named `AGENTS.md` does not count as the agent marker."""
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
-        (agents_dir / "agent").mkdir()
-        (agents_dir / ".state").mkdir()
+        _seed_agent(agents_dir, "agent")
+        fake = agents_dir / "linked-marker"
+        fake.mkdir()
+        target = tmp_path / "external-AGENTS.md"
+        target.write_text("external")
+        (fake / _AGENT_DIR_MARKER).symlink_to(target)
+
+        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+            assert get_available_agent_names() == ["agent"]
+
+    def test_ignores_dot_prefixed_dirs(self, tmp_path: Path) -> None:
+        """`.state/` and other hidden dirs are excluded even with a marker."""
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        _seed_agent(agents_dir, "agent")
+        state = agents_dir / ".state"
+        state.mkdir()
+        (state / _AGENT_DIR_MARKER).touch()
         (agents_dir / ".cache").mkdir()
 
         with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
             assert get_available_agent_names() == ["agent"]
 
-    def test_ignores_reserved_bin_dir(self, tmp_path: Path) -> None:
-        """The managed-binary install dir is excluded from the agent list.
+    def test_ignores_app_owned_dirs_without_marker(self, tmp_path: Path) -> None:
+        """App-owned dirs under `~/.deepagents/` are not agents without a marker.
 
-        The reserved dir name is derived from `BIN_DIR.name` rather than the
-        literal `bin` so a future rename of `BIN_DIR` keeps this test exercising
-        the actual reserved name instead of a stale string.
+        Names are taken from the owning modules so renames stay covered.
         """
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
-        (agents_dir / "agent").mkdir()
-        (agents_dir / BIN_DIR.name).mkdir()
+        _seed_agent(agents_dir, "agent")
+        for name in (
+            BIN_DIR.name,
+            DEFAULT_PLUGIN_DIRNAME,
+            CONVERSATION_HISTORY_DIRNAME,
+        ):
+            (agents_dir / name).mkdir()
 
         with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
             assert get_available_agent_names() == ["agent"]
 
-    def test_ignores_reserved_app_dirs(self, tmp_path: Path) -> None:
-        """App-owned `plugins/` and `conversation_history/` are not agents.
+    def test_ignores_app_owned_dirs_even_with_marker(self, tmp_path: Path) -> None:
+        """Reserved app dirs stay out of the picker even if stamped with `AGENTS.md`.
 
-        These directories are created by the app under `~/.deepagents/` for
-        plugin state and offloaded conversation archives, so they must never
-        surface in the `/agent` picker alongside real agents.
+        A invocation like `dcode -a plugins` creates the memory marker inside
+        the app-owned directory. The reserved-name denylist must still exclude
+        it so the picker never offers app state as a switchable agent
+        (which would also invite destructive `agents reset`).
         """
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
-        (agents_dir / "agent").mkdir()
-        for reserved in _reserved_agent_dir_names():
-            (agents_dir / reserved).mkdir()
+        _seed_agent(agents_dir, "agent")
+        for name in _reserved_agent_dir_names():
+            _seed_agent(agents_dir, name)
 
         with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
             assert get_available_agent_names() == ["agent"]

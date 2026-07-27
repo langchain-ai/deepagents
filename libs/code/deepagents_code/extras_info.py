@@ -1129,6 +1129,88 @@ def extra_for_package(
     return None
 
 
+@dataclass(frozen=True)
+class InstallHint:
+    """Resolved recovery action for a missing provider package.
+
+    Exactly one of three outcomes:
+
+    - `extra` set, `command` `None` — prefer installing the extra that declares
+      the package (callers format this for their UI surface).
+    - `command` set, `extra` `None` — no declared extra; use this raw install
+      command.
+    - both `None` — neither could be derived; caller should fall back to
+      "install the package manually" phrasing.
+
+    Attributes:
+        extra: Preferred `deepagents-code` extra name, or `None`.
+        command: Ready-to-run install command for the raw package, or `None`.
+            Never set when `extra` is set.
+    """
+
+    extra: str | None
+    command: str | None
+
+    def __post_init__(self) -> None:
+        """Reject impossible dual-action resolutions.
+
+        Raises:
+            ValueError: If both `extra` and `command` are set.
+        """
+        if self.extra is not None and self.command is not None:
+            msg = "InstallHint cannot set both extra and command"
+            raise ValueError(msg)
+
+
+def resolve_install_hint(
+    package: str,
+    distribution_name: str = "deepagents-code",
+) -> InstallHint:
+    """Resolve how to recover from a missing provider package.
+
+    Centralizes the `extra_for_package` -> `install_package_command` fallback so
+    the TUI startup hint and the model-initialization error path render
+    consistent recovery data without each re-implementing the branching and
+    error handling. Prefers the installable extra; otherwise derives a raw
+    package install command, degrading to a manual hint (both fields `None`)
+    when that cannot be determined.
+
+    Callers own sentence wording and command framing (for example interactive
+    `/install` / `/model` copy). This helper only resolves the recovery action.
+
+    Args:
+        package: Distribution package name that failed to import.
+        distribution_name: Name of the installed distribution to inspect when
+            mapping the package to an extra and when building a raw package
+            install command that preserves already-installed extras.
+
+    Returns:
+        An `InstallHint` describing the recommended recovery action.
+    """
+    extra = extra_for_package(package, distribution_name)
+    if extra is not None:
+        return InstallHint(extra=extra, command=None)
+
+    from deepagents_code.update_check import (
+        ToolRequirementIntrospectionError,
+        install_package_command,
+    )
+
+    try:
+        command = install_package_command(package, distribution_name=distribution_name)
+    except (
+        ValueError,
+        ExtrasIntrospectionError,
+        ToolRequirementIntrospectionError,
+    ) as exc:
+        logger.debug(
+            "install_package_command failed; falling back to manual hint: %s",
+            exc,
+        )
+        return InstallHint(extra=None, command=None)
+    return InstallHint(extra=None, command=command)
+
+
 def verify_interpreter_deps() -> None:
     """Check that `langchain-quickjs` is installed for the interpreter.
 

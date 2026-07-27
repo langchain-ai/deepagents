@@ -26,9 +26,13 @@ from pydantic import Field
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
     ASK_USER_CANCELLED_ANSWER,
+    CHOICE_QUESTION_TYPES,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
+    MULTI_SELECT_ANSWER_SEPARATOR,
+    QUESTION_TYPES,
     AskUserAuthorizationReceipt,
     AskUserRequest,
+    Choice,
     Question,
     format_ask_user_error_answer,
     format_ask_user_transcript,
@@ -44,7 +48,9 @@ Each question can be one of:
 - "multiple_choice": User selects exactly one of the predefined options (an "Other" option is always available)
 - "multi_select": User selects one or more of the predefined options (no "Other" option)
 
-For "multiple_choice" and "multi_select" questions, provide a list of choices. For "multiple_choice" the user picks one option or types a custom answer via the "Other" option; for "multi_select" the user toggles any number of the provided options.
+For "multiple_choice" and "multi_select" questions, provide a list of choices, each with a non-empty "value". For "multiple_choice" the user picks one option or types a custom answer via the "Other" option; for "multi_select" the user toggles one or more of the provided options.
+
+A "multi_select" answer is returned as the selected values joined with ", " (an optional question the user leaves untouched returns an empty string). Because of that joining, "multi_select" choice values must not themselves contain a comma.
 
 By default all questions are required. Set "required" to false for optional questions that the user can skip. Do not include "(required)", "(optional)", "- optional", or similar annotations in the question text — the UI renders that separately based on the "required" field.
 
@@ -73,6 +79,46 @@ When using `ask_user`:
 - Never ask questions you can answer yourself from the available context"""  # noqa: E501
 
 
+def _validate_choices(
+    choices: list[Choice], *, question_text: str, question_type: str
+) -> None:
+    """Validate the choice list of a choice-type question.
+
+    Rejects blank values, which would otherwise render as an unlabelled option
+    the user can select but whose answer reads as "no answer". For
+    `multi_select`, also rejects values containing the separator used to join
+    the selected values, since that would make the answer ambiguous.
+
+    Args:
+        choices: Candidate `choices` value from a question definition.
+        question_text: Question text, for error messages.
+        question_type: Question type, for error messages.
+
+    Raises:
+        ValueError: If any choice is malformed, blank, or ambiguous.
+    """
+    # `choices` is already a `list[Choice]` by the time pydantic has parsed the
+    # tool args; this only guards the contents.
+    for choice in choices:
+        value = choice.get("value") if isinstance(choice, Mapping) else None
+        if not isinstance(value, str) or not value.strip():
+            msg = (
+                f"{question_type} question {question_text!r} has a choice with a "
+                f"missing or blank 'value': {choice!r}"
+            )
+            raise ValueError(msg)
+        if (
+            question_type == "multi_select"
+            and MULTI_SELECT_ANSWER_SEPARATOR.strip() in value
+        ):
+            msg = (
+                f"multi_select question {question_text!r} has a choice value "
+                f"containing {MULTI_SELECT_ANSWER_SEPARATOR.strip()!r}, which "
+                f"would make the joined answer ambiguous: {value!r}"
+            )
+            raise ValueError(msg)
+
+
 def _validate_questions(questions: list[Question]) -> None:
     """Validate ask_user question structure before interrupting.
 
@@ -93,19 +139,24 @@ def _validate_questions(questions: list[Question]) -> None:
             raise ValueError(msg)
 
         question_type = q.get("type")
-        if question_type not in {"text", "multiple_choice", "multi_select"}:
+        if question_type not in QUESTION_TYPES:
             msg = f"unsupported ask_user question type: {question_type!r}"
             raise ValueError(msg)
 
-        if question_type in {"multiple_choice", "multi_select"} and not q.get(
-            "choices"
-        ):
-            msg = (
-                f"{question_type} question "
-                f"{q.get('question')!r} requires a "
-                f"non-empty 'choices' list"
+        if question_type in CHOICE_QUESTION_TYPES:
+            choices = q.get("choices")
+            if not choices:
+                msg = (
+                    f"{question_type} question "
+                    f"{q.get('question')!r} requires a "
+                    f"non-empty 'choices' list"
+                )
+                raise ValueError(msg)
+            _validate_choices(
+                choices,
+                question_text=question_text,
+                question_type=question_type,
             )
-            raise ValueError(msg)
 
         if question_type == "text" and q.get("choices"):
             msg = f"text question {q.get('question')!r} must not define 'choices'"
@@ -353,7 +404,8 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     """Middleware that provides an ask_user tool for interactive questioning.
 
     This middleware adds an `ask_user` tool that allows agents to ask the user
-    questions during execution. Questions can be free-form text or multiple choice.
+    questions during execution. Questions can be free-form text, multiple choice
+    (pick exactly one), or multi-select (pick one or more).
     The tool uses LangGraph interrupts to pause execution and wait for user input.
     """
 

@@ -12,7 +12,9 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
+    CHOICE_QUESTION_TYPES,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
+    QUESTION_TYPES,
     Question,
 )
 from deepagents_code.ask_user import (
@@ -70,10 +72,75 @@ class TestValidateQuestions:
             )
 
     def test_rejects_multi_select_without_choices(self) -> None:
-        with pytest.raises(ValueError, match="requires a non-empty 'choices'"):
+        with pytest.raises(ValueError, match=r"multi_select question .* non-empty"):
             _validate_questions(
                 [{"question": "Pick some", "type": "multi_select", "choices": []}]
             )
+
+    def test_rejects_blank_choice_value(self) -> None:
+        """A blank label would render as a selectable option with no answer."""
+        with pytest.raises(ValueError, match="missing or blank 'value'"):
+            _validate_questions(
+                [
+                    {
+                        "question": "Pick some",
+                        "type": "multi_select",
+                        "choices": [{"value": "logs"}, {"value": "  "}],
+                    }
+                ]
+            )
+
+    def test_rejects_non_string_choice_value(self) -> None:
+        # Deliberately ill-typed: guards the runtime check against payloads that
+        # never passed through the tool's pydantic schema.
+        questions = cast(
+            "list[Question]",
+            [
+                {
+                    "question": "Color?",
+                    "type": "multiple_choice",
+                    "choices": [{"value": 1}],
+                }
+            ],
+        )
+        with pytest.raises(ValueError, match="missing or blank 'value'"):
+            _validate_questions(questions)
+
+    def test_rejects_multi_select_choice_containing_separator(self) -> None:
+        """Commas in values would make the joined answer ambiguous."""
+        with pytest.raises(ValueError, match="would make the joined answer ambiguous"):
+            _validate_questions(
+                [
+                    {
+                        "question": "Where?",
+                        "type": "multi_select",
+                        "choices": [{"value": "Boston, MA"}, {"value": "Austin"}],
+                    }
+                ]
+            )
+
+    def test_allows_comma_in_multiple_choice_value(self) -> None:
+        """Single-selection answers are unambiguous, so commas are fine there."""
+        _validate_questions(
+            [
+                {
+                    "question": "Where?",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "Boston, MA"}],
+                }
+            ]
+        )
+
+    def test_accepts_every_declared_question_type(self) -> None:
+        """Guards against a new `QuestionType` member the validator rejects."""
+        for question_type in sorted(QUESTION_TYPES):
+            question: dict[str, Any] = {
+                "question": "Q?",
+                "type": question_type,
+            }
+            if question_type in CHOICE_QUESTION_TYPES:
+                question["choices"] = [{"value": "a"}, {"value": "b"}]
+            _validate_questions([cast("Question", question)])
 
     def test_accepts_valid_question_set(self) -> None:
         _validate_questions(

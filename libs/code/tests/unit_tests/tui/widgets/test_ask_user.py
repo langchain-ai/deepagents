@@ -12,6 +12,7 @@ from textual.binding import Binding
 from textual.widgets import Markdown, Static
 
 import deepagents_code
+from deepagents_code.config import get_glyphs
 from deepagents_code.tool_display import format_tool_display
 from deepagents_code.tui.widgets.ask_user import (
     _TRAILING_ANNOTATION_RE,
@@ -19,6 +20,7 @@ from deepagents_code.tui.widgets.ask_user import (
     AskUserMenu,
     AskUserTextArea,
     _ChoiceOption,
+    _MultiSelectOption,
     _QuestionWidget,
 )
 
@@ -504,6 +506,7 @@ class TestAskUserMenu:
                     "question": "Pick some",
                     "type": "multi_select",
                     "choices": [{"value": "red"}, {"value": "blue"}],
+                    "required": True,
                 }
             ]
         )
@@ -516,10 +519,12 @@ class TestAskUserMenu:
             menu.set_future(future)
 
             await pilot.pause()
-            # Enter with nothing selected on a required question is a no-op.
+            # Enter with nothing selected on a required question blocks, and
+            # explains why rather than looking like a frozen UI.
             await pilot.press("enter")
             await pilot.pause()
             assert not future.done()
+            assert MISSING_ANSWER_TOAST in [n.message for n in app._notifications]
 
             # Selecting one option then Enter submits.
             await pilot.press("space")
@@ -528,6 +533,276 @@ class TestAskUserMenu:
 
             assert future.done()
             assert future.result() == {"type": "answered", "answers": ["red"]}
+
+    async def test_multi_select_untoggle_clears_choice(self) -> None:
+        """Space is a toggle: pressing it twice deselects the choice again."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            # Check both, then un-check "blue" again.
+            await pilot.press("space")
+            await pilot.press("down")
+            await pilot.press("space")
+            await pilot.press("space")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {"type": "answered", "answers": ["red"]}
+
+    async def test_multi_select_required_blocks_after_untoggling_all(self) -> None:
+        """Un-toggling the last choice re-blocks a required question."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                    "required": True,
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            await pilot.press("space")
+            await pilot.press("space")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert not future.done()
+            assert MISSING_ANSWER_TOAST in [n.message for n in app._notifications]
+
+    async def test_multi_select_answer_uses_choice_order_not_toggle_order(self) -> None:
+        """Answers are joined in choice-list order regardless of toggle order."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [
+                        {"value": "red"},
+                        {"value": "blue"},
+                        {"value": "green"},
+                    ],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            # Toggle "green" (index 2) first, then "red" (index 0).
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.press("space")
+            await pilot.press("up")
+            await pilot.press("up")
+            await pilot.press("space")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {
+                "type": "answered",
+                "answers": ["red, green"],
+            }
+
+    async def test_multi_select_optional_submits_empty_answer(self) -> None:
+        """An optional multi-select with nothing toggled submits an empty answer."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                    "required": False,
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {"type": "answered", "answers": [""]}
+            assert MISSING_ANSWER_TOAST not in [n.message for n in app._notifications]
+
+    async def test_multi_select_toggle_glyphs_survive_cursor_move(self) -> None:
+        """The toggle glyph tracks `checked`, independent of the highlight cursor."""
+        glyphs = get_glyphs()
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            await pilot.pause()
+
+            options = list(menu.query(_MultiSelectOption))
+            assert [o.checked for o in options] == [False, False]
+
+            await pilot.press("space")
+            await pilot.pause()
+            assert [o.checked for o in options] == [True, False]
+            assert glyphs.circle_filled in str(options[0].render())
+            assert glyphs.circle_empty in str(options[1].render())
+
+            # Moving the cursor off a checked option must not clear its glyph.
+            await pilot.press("down")
+            await pilot.pause()
+            assert [o.checked for o in options] == [True, False]
+            assert glyphs.circle_filled in str(options[0].render())
+
+    async def test_untoggling_confirmed_multi_select_reopens_with_toast(self) -> None:
+        """Clearing an already-confirmed required question explains the bounce."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                    "required": True,
+                },
+                {"question": "Name?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            # Confirm "red", advancing to the text question.
+            await pilot.press("space")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            # Navigate back and un-toggle the only selection.
+            menu.action_previous_question()
+            await pilot.pause()
+            await pilot.press("space")
+            await pilot.pause()
+
+            # Answer the text question and submit; the empty required
+            # multi-select must re-open with an explanation.
+            menu.action_next_question()
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.text = "Alice"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert not future.done()
+            assert MISSING_ANSWER_TOAST in [n.message for n in app._notifications]
+
+    async def test_help_text_omits_newline_hint_for_multi_select_only(self) -> None:
+        """A prompt with no text area advertises no newline shortcut."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            await pilot.pause()
+            help_text = str(menu.query_one(".ask-user-help").render())
+            assert "Space to toggle" in help_text
+            assert "newline" not in help_text
+
+    async def test_help_text_keeps_newline_hint_when_text_question_present(
+        self,
+    ) -> None:
+        """A mixed prompt still advertises the newline shortcut."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                },
+                {"question": "Name?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            await pilot.pause()
+            help_text = str(menu.query_one(".ask-user-help").render())
+            assert "Space to toggle" in help_text
+            assert "newline" in help_text
+
+    async def test_space_still_types_in_text_question(self) -> None:
+        """The multi-select `space` binding must not swallow spaces in text input."""
+        app = _AskUserTestApp(
+            [
+                {"question": "Name?", "type": "text"},
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}],
+                },
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            await pilot.pause()
+            await pilot.press("a")
+            await pilot.press("space")
+            await pilot.press("b")
+            await pilot.pause()
+
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            assert text_input.text == "a b"
 
     async def test_multi_select_mixed_with_other_question_types(self) -> None:
         app = _AskUserTestApp(

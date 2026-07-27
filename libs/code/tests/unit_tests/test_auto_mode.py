@@ -42,7 +42,9 @@ from pydantic import BaseModel, Field
 
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
+    CHOICE_QUESTION_TYPES,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
+    QUESTION_TYPES,
 )
 from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL, CLIContextSchema
 from deepagents_code._fake_models import _ToolBindingFakeModel
@@ -5121,6 +5123,29 @@ class TestAskUserQuestionCount:
                     "choices": [{"value": 1}],
                 }
             ]
+        )
+        assert _ask_user_question_count(cast("Any", call)) is None
+
+    def test_counts_every_declared_question_type(self) -> None:
+        """Guards the drift that would silently drop same-turn authorization.
+
+        An unrecognized type makes this return `None`, which makes
+        `_same_turn_user_answers` yield no trusted directives — with no error.
+        """
+        for question_type in sorted(QUESTION_TYPES):
+            question: dict[str, Any] = {"question": "Q?", "type": question_type}
+            if question_type in CHOICE_QUESTION_TYPES:
+                question["choices"] = [{"value": "a"}]
+            call = _ask_user_call([question])
+            assert _ask_user_question_count(cast("Any", call)) == 1
+
+    def test_rejects_unknown_question_type(self) -> None:
+        call = _ask_user_call([{"question": "Q?", "type": "multiselect"}])
+        assert _ask_user_question_count(cast("Any", call)) is None
+
+    def test_rejects_text_question_carrying_choices(self) -> None:
+        call = _ask_user_call(
+            [{"question": "Name?", "type": "text", "choices": [{"value": "a"}]}]
         )
         assert _ask_user_question_count(cast("Any", call)) is None
 

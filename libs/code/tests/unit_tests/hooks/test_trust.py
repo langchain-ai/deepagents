@@ -22,6 +22,7 @@ from deepagents_code.hooks.models.domain import (
 )
 from deepagents_code.hooks.runtime import HooksRuntime
 from deepagents_code.hooks.trust import (
+    HooksTrustStore,
     is_project_hooks_trusted,
     trust_project_hooks,
 )
@@ -511,7 +512,7 @@ def test_trust_store_lock_serializes_in_process_mutations(
     release = threading.Event()
     original_write = trust_mod._write_store
 
-    def _gated_write(path: object, store_model: object) -> None:
+    def _gated_write(path: Path, store_model: HooksTrustStore) -> None:
         if not hold.is_set():
             hold.set()
             assert release.wait(timeout=5)

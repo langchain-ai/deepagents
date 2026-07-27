@@ -22,6 +22,7 @@ from textual.message import Message
 from textual.message_pump import NoActiveAppError
 from textual.reactive import var
 from textual.selection import Selection
+from textual.style import Style as TStyle
 from textual.widgets import Static
 
 from deepagents_code import theme
@@ -68,6 +69,7 @@ if TYPE_CHECKING:
     from textual.widgets._markdown import MarkdownStream
 
     from deepagents_code.input import MediaTracker
+    from deepagents_code.theme import ThemeColors
 
 logger = logging.getLogger(__name__)
 
@@ -241,13 +243,52 @@ def _select_prompt_body(widget: Static) -> None:
     }
 
 
+@dataclass(frozen=True, slots=True)
+class _UserMessageCollapse:
+    """Result of collapsing a long user message for transcript display."""
+
+    text: str
+    """Collapsed body (or the original when under the threshold)."""
+
+    truncated: bool
+    """Whether the body exceeded the display threshold and was elided."""
+
+    hidden_lines: int
+    """Newlines in the elided middle, or `0` when not truncated."""
+
+
+def _collapse_user_message(text: str) -> _UserMessageCollapse:
+    """Collapse a very long user message for transcript display.
+
+    Keeps the first and last portions and replaces the middle with an elision
+    marker showing the number of newlines in the hidden region. This mirrors
+    Claude Code's `UserPromptMessage` head+tail truncation for rendering
+    performance.
+
+    Args:
+        text: Full message content.
+
+    Returns:
+        Collapse result with the display text, whether truncation applied, and
+        the hidden middle newline count.
+    """
+    if len(text) <= _USER_MSG_MAX_DISPLAY_CHARS:
+        return _UserMessageCollapse(text=text, truncated=False, hidden_lines=0)
+    head = text[:_USER_MSG_TRUNCATE_HEAD_CHARS]
+    tail = text[-_USER_MSG_TRUNCATE_TAIL_CHARS:]
+    hidden_text = text[_USER_MSG_TRUNCATE_HEAD_CHARS:-_USER_MSG_TRUNCATE_TAIL_CHARS]
+    hidden_lines = hidden_text.count("\n")
+    collapsed = f"{head}\n… +{hidden_lines} lines …\n{tail}"
+    return _UserMessageCollapse(
+        text=collapsed, truncated=True, hidden_lines=hidden_lines
+    )
+
+
 def _truncate_for_display(text: str) -> str:
     """Truncate very long user message text for display in the conversation.
 
-    Keeps the first and last portions and replaces the middle with an elision
-    marker showing the number of newlines in the hidden region.  This mirrors
-    Claude Code's `UserPromptMessage` head+tail truncation for rendering
-    performance.
+    Thin string-returning wrapper around `_collapse_user_message` for call
+    sites (e.g. `QueuedUserMessage`) and tests that only need the text.
 
     Args:
         text: Full message content.
@@ -256,17 +297,17 @@ def _truncate_for_display(text: str) -> str:
         Truncated text with an elision marker, or the original text when
         it does not exceed the display threshold.
     """
-    if len(text) <= _USER_MSG_MAX_DISPLAY_CHARS:
-        return text
-    head = text[:_USER_MSG_TRUNCATE_HEAD_CHARS]
-    tail = text[-_USER_MSG_TRUNCATE_TAIL_CHARS:]
-    hidden_text = text[_USER_MSG_TRUNCATE_HEAD_CHARS:-_USER_MSG_TRUNCATE_TAIL_CHARS]
-    hidden_lines = hidden_text.count("\n")
-    return f"{head}\n… +{hidden_lines} lines …\n{tail}"
+    return _collapse_user_message(text).text
 
 
 class UserMessage(Static):
-    """Widget displaying a user message."""
+    """Widget displaying a user message.
+
+    Very long submitted messages are collapsed in the transcript by default
+    (head+tail elision) to protect scrollback performance. The full text remains
+    on the widget for copy/select and is what the model receives; the collapsed
+    form is reversible via click or Ctrl+O.
+    """
 
     DEFAULT_CSS = """
     UserMessage {
@@ -283,6 +324,8 @@ class UserMessage(Static):
     }
     """
     """`-cancelled` dims a prompt whose turn was interrupted by the user."""
+
+    _expanded: var[bool] = var(False)
 
     def __init__(
         self,
@@ -310,6 +353,19 @@ class UserMessage(Static):
         self._media_snapshot = media_snapshot
         self._detect_mode = detect_mode
 
+    @staticmethod
+    def will_truncate(content: str) -> bool:
+        """Return whether `content` would collapse in the transcript.
+
+        Args:
+            content: Candidate user-message body (mode prefix already stripped
+                when applicable — matching what `render()` collapses).
+
+        Returns:
+            `True` when the body exceeds the display character threshold.
+        """
+        return len(content) > _USER_MSG_MAX_DISPLAY_CHARS
+
     @property
     def raw_text(self) -> str:
         """The original, untruncated message text as the user submitted it.
@@ -325,9 +381,45 @@ class UserMessage(Static):
         """Media tracker state captured when the message was submitted."""
         return self._media_snapshot
 
+    def _body_for_display(self) -> str:
+        """Return the message body after stripping a detected mode trigger.
+
+        Unlike `_prefix_and_body`, this does not look up theme colors, so it is
+        safe to call before mount (e.g. `has_expandable_body` / Ctrl+O routing).
+
+        Returns:
+            Body text used for collapse decisions and expanded copy selection
+            offline helpers.
+        """
+        content = self._content
+        mode_match = detect_mode_prefix(content) if self._detect_mode else None
+        if mode_match:
+            prefix_text, _mode = mode_match
+            return content[len(prefix_text) :]
+        return content
+
+    @property
+    def has_expandable_body(self) -> bool:
+        """Whether this message is long enough to collapse/expand in display."""
+        return self.will_truncate(self._body_for_display())
+
     def set_cancelled(self) -> None:
         """Dim the message to mark its turn as interrupted by the user."""
         self.add_class("-cancelled")
+
+    def toggle_expanded(self) -> None:
+        """Toggle between collapsed and full-body transcript display."""
+        if not self.has_expandable_body:
+            return
+        self._expanded = not self._expanded
+
+    def action_toggle_expand(self) -> None:
+        """Textual `@click` target for the expand/collapse affordance."""
+        self.toggle_expanded()
+
+    def watch__expanded(self, _expanded: bool) -> None:
+        """Refresh layout when expansion changes (height can grow/shrink)."""
+        self.refresh(layout=True)
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Return selected text, preferring the full content over the render.
@@ -371,6 +463,9 @@ class UserMessage(Static):
     def _build_full_render(self) -> Content:
         """Build a Content from the full content without display truncation.
 
+        Does not include expand/collapse hint spans so select-all yields only
+        the original message body.
+
         Returns:
             Content with the mode prefix glyph and the full message body.
         """
@@ -390,25 +485,20 @@ class UserMessage(Static):
         if is_ascii_mode():
             self.add_class("-ascii")
 
-    def render(self) -> Content:
-        """Render the styled user message.
+    def _append_highlighted_body(
+        self,
+        parts: list[str | tuple[str, str] | Content],
+        content: str,
+        *,
+        colors: ThemeColors,
+    ) -> None:
+        """Append body text to `parts`, highlighting @mentions and /commands.
 
-        Returns:
-            Styled Content with mode prefix and highlighted mentions.
+        Args:
+            parts: Accumulator for `Content.assemble`.
+            content: Body text to highlight and append.
+            colors: Active theme colors.
         """
-        colors = theme.get_theme_colors(self)
-
-        # Use mode-specific prefix indicator when content starts with a
-        # mode trigger character (e.g. "!" for shell, "/" for commands).
-        # The display glyph may differ from the trigger (e.g. "$" for shell).
-        prefix, content = self._prefix_and_body()
-        parts: list[str | tuple[str, str]] = [prefix]
-
-        # Truncate very long content for display so large pastes don't flood
-        # the conversation.  The full text is still available for copy/select.
-        content = _truncate_for_display(content)
-
-        # Highlight @mentions and /commands in the content
         last_end = 0
         for match in INPUT_HIGHLIGHT_PATTERN.finditer(content):
             start, end = match.span()
@@ -442,6 +532,81 @@ class UserMessage(Static):
         if last_end < len(content):
             parts.append(content[last_end:])
 
+    @staticmethod
+    def _expand_hint_content(*, expanded: bool, hidden_lines: int) -> Content:
+        """Build the clickable expand/collapse affordance.
+
+        Args:
+            expanded: Whether the full body is currently shown.
+            hidden_lines: Newlines in the collapsed middle (0 when expanded).
+
+        Returns:
+            Dim hit-target Content wired to `action_toggle_expand`.
+        """
+        ellipsis = get_glyphs().ellipsis
+        if expanded:
+            label = "click or Ctrl+O to collapse"
+        else:
+            label = (
+                f"{ellipsis} +{hidden_lines} lines"
+                " · click or Ctrl+O to show full message"
+            )
+        # `@click` meta is what Textual uses for Markdown links; body text stays
+        # free of meta so regular clicks select/copy without toggling.
+        return Content.styled(
+            label,
+            TStyle(dim=True, italic=True)
+            + TStyle.from_meta({"@click": "toggle_expand"}),
+        )
+
+    def render(self) -> Content:
+        """Render the styled user message.
+
+        Returns:
+            Styled Content with mode prefix and highlighted mentions. Long
+            messages are collapsed by default with a clickable expand
+            affordance; when expanded they show the full body plus a collapse
+            hint. Select-all still uses `_build_full_render` (no hints).
+        """
+        colors = theme.get_theme_colors(self)
+
+        # Use mode-specific prefix indicator when content starts with a
+        # mode trigger character (e.g. "!" for shell, "/" for commands).
+        # The display glyph may differ from the trigger (e.g. "$" for shell).
+        prefix, body = self._prefix_and_body()
+        parts: list[str | tuple[str, str] | Content] = [prefix]
+        collapse = _collapse_user_message(body)
+
+        if not collapse.truncated:
+            self._append_highlighted_body(parts, body, colors=colors)
+            return Content.assemble(*parts)
+
+        if self._expanded:
+            self._append_highlighted_body(parts, body, colors=colors)
+            parts.extend(
+                (
+                    "\n",
+                    self._expand_hint_content(expanded=True, hidden_lines=0),
+                )
+            )
+            return Content.assemble(*parts)
+
+        # Collapsed: head + clickable elision line + tail. The middle marker is
+        # the affordance (not a second trailing line) so the collapse stays
+        # one glanceable region instead of an invisible middle ellipsis.
+        head = body[:_USER_MSG_TRUNCATE_HEAD_CHARS]
+        tail = body[-_USER_MSG_TRUNCATE_TAIL_CHARS:]
+        self._append_highlighted_body(parts, head, colors=colors)
+        parts.extend(
+            (
+                "\n",
+                self._expand_hint_content(
+                    expanded=False, hidden_lines=collapse.hidden_lines
+                ),
+                "\n",
+            )
+        )
+        self._append_highlighted_body(parts, tail, colors=colors)
         return Content.assemble(*parts)
 
 

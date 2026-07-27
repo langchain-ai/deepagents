@@ -13858,6 +13858,19 @@ class DeepAgentsApp(App):
         )
         await self._mount_message(user_message)
         self._active_user_message = user_message
+        # Toast only on submit when the transcript will collapse the body —
+        # the model still receives the full text; the UI is head+tail until
+        # the user expands. Detect mode is off for this path, so the body is
+        # the full `message` string.
+        if UserMessage.will_truncate(message):
+            self.notify(
+                "Long message collapsed in the transcript — click "
+                "'show full message' or press Ctrl+O to expand. The full "
+                "text was still sent to the model.",
+                severity="information",
+                markup=False,
+                timeout=8,
+            )
         await self._send_to_agent(message)
 
     async def _send_to_agent(
@@ -17174,6 +17187,12 @@ class DeepAgentsApp(App):
                 if child.has_output:
                     child.toggle_output()
                     return
+            # Long UserMessages are collapsible; click is the primary
+            # affordance once later tool/assistant rows exist, but Ctrl+O
+            # still reaches a most-recent expandable user prompt.
+            if isinstance(child, UserMessage) and child.has_expandable_body:
+                child.toggle_expanded()
+                return
 
     # Approval menu action handlers (delegated from App-level bindings)
     # NOTE: These only activate when approval widget is pending

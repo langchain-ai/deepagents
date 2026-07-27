@@ -4980,6 +4980,45 @@ class TestUserMessageTruncation:
             assert text == big
             assert "…" not in text
 
+    def test_will_truncate_boundary(self) -> None:
+        """`will_truncate` is false at the threshold and true above it."""
+        assert UserMessage.will_truncate("C" * 10_000) is False
+        assert UserMessage.will_truncate("C" * 10_001) is True
+
+    def test_collapsed_render_includes_expand_hint(self) -> None:
+        """Collapsed long messages show a clickable expand affordance."""
+        content = _render_content(UserMessage("A" * 12_000))
+        plain = content.plain
+        assert plain.startswith("> ")
+        assert "show full message" in plain
+        assert "click or Ctrl+O" in plain
+        # Full body is not shown by default
+        assert plain.count("A") < 12_000
+
+        # Click meta is on the affordance span only
+        def _has_toggle_click(style: object) -> bool:
+            meta = getattr(style, "meta", None)
+            return isinstance(meta, dict) and meta.get("@click") == "toggle_expand"
+
+        assert any(_has_toggle_click(span.style) for span in content.spans)
+
+    def test_expanded_render_includes_full_body_and_collapse_hint(self) -> None:
+        """Toggling expansion shows the full body plus a collapse hint."""
+        msg = UserMessage("B" * 12_000)
+        msg.toggle_expanded()
+        content = _render_content(msg)
+        plain = content.plain
+        assert "B" * 12_000 in plain
+        assert "click or Ctrl+O to collapse" in plain
+        assert "show full message" not in plain
+
+    def test_toggle_is_noop_for_short_messages(self) -> None:
+        """Short messages are not expandable."""
+        msg = UserMessage("short")
+        assert msg.has_expandable_body is False
+        msg.toggle_expanded()
+        assert msg._expanded is False
+
 
 class _RubricResultApp(App[None]):
     """Minimal app mounting a rubric result."""

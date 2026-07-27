@@ -5263,6 +5263,43 @@ class TestAskUserLifecycle:
 
         menu.scroll_visible.assert_called_once_with()
 
+    def test_ctrl_o_toggles_most_recent_expandable_user_message(self) -> None:
+        """Ctrl+O expands a most-recent long UserMessage when nothing else owns it."""
+        from deepagents_code.tui.widgets.messages import UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        user = MagicMock(spec=UserMessage)
+        user.has_expandable_body = True
+        container = MagicMock()
+        container.children = [user]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        user.toggle_expanded.assert_called_once_with()
+
+    async def test_long_user_message_submit_toasts_once(self) -> None:
+        """Submitting a >threshold message posts an information toast."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._image_tracker = MagicMock()
+        app._image_tracker.snapshot.return_value = None
+        app.notify = MagicMock()
+        app._mount_message = AsyncMock()
+        app._send_to_agent = AsyncMock()
+
+        long_msg = "L" * 12_000
+        await app._handle_user_message(long_msg)
+        app.notify.assert_called_once()
+        kwargs = app.notify.call_args.kwargs
+        assert kwargs.get("severity") == "information"
+        assert kwargs.get("markup") is False
+        assert "collapsed" in app.notify.call_args.args[0].lower()
+
+        app.notify.reset_mock()
+        await app._handle_user_message("short")
+        app.notify.assert_not_called()
+
     def test_ctrl_o_targets_pending_ask_user_tool_row(self) -> None:
         """App-level Ctrl+O should toggle the active ask_user tool row."""
         app = DeepAgentsApp(agent=MagicMock())

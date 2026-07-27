@@ -3,14 +3,16 @@
 Post-merge safety net for the pre-merge gates in
 `release_please_scope_check.yml`. Even when a bump-worthy multi-package PR
 slips through, this report surfaces open `release(<component>):` PRs whose
-component path — relative to the last-released git SHA in
+component path — relative to the last *released package version* in
 `.release-please-manifest.json` — only changed lockfiles on `main`.
 
 What counts as lockfile-only unreleased delta:
-    For each managed package path, take `git diff --name-only <baseline> HEAD`
-    restricted to that path. If the component has an open release-please PR and
-    every changed path under the package is a lockfile name (`uv.lock`), the
-    component is reported.
+    For each managed package path, resolve the manifest version to the package
+    release tag (e.g. `deepagents-cli==0.2.2`, matching `tag-separator` /
+    `include-component-in-tag` in `release-please-config.json`), then take
+    `git diff --name-only <tag> HEAD` restricted to that path. If the component
+    has an open release-please PR and every changed path under the package is a
+    lockfile name (`uv.lock`), the component is reported.
 
     Files that only exist because the open release PR rewrote version metadata
     on its branch are *not* considered here: the diff is against `main` at the
@@ -32,6 +34,7 @@ DEFAULT_CONFIG = REPO_ROOT / "release-please-config.json"
 DEFAULT_MANIFEST = REPO_ROOT / ".release-please-manifest.json"
 
 LOCKFILE_NAMES = frozenset({"uv.lock"})
+DEFAULT_TAG_SEPARATOR = "=="
 
 
 def _run_git(args: list[str], *, cwd: Path) -> str:
@@ -52,18 +55,44 @@ def _run_git(args: list[str], *, cwd: Path) -> str:
     return completed.stdout
 
 
+def tag_separator(config: dict) -> str:
+    """Return the release-please tag separator (default `==`)."""
+    sep = config.get("tag-separator", DEFAULT_TAG_SEPARATOR)
+    if not isinstance(sep, str) or not sep:
+        return DEFAULT_TAG_SEPARATOR
+    return sep
+
+
+def release_tag(component: str, version: str, *, separator: str = DEFAULT_TAG_SEPARATOR) -> str:
+    """Build the git tag name for a released component version.
+
+    Matches release-please settings used in this repo:
+    `include-component-in-tag: true`, `include-v-in-tag: false`,
+    `tag-separator: "=="` → `{component}=={version}`.
+
+    Args:
+        component: release-please component name (e.g. `deepagents-cli`).
+        version: Manifest version string (e.g. `0.2.2`).
+        separator: Tag separator from config.
+
+    Returns:
+        Tag name such as `deepagents-cli==0.2.2`.
+    """
+    return f"{component}{separator}{version}"
+
+
 def package_unreleased_files(
     path: str,
-    baseline: str,
+    baseline_ref: str,
     *,
     repo_root: Path,
     head: str = "HEAD",
 ) -> list[str]:
-    """Return repo-root-relative files under `path` changed since `baseline`.
+    """Return repo-root-relative files under `path` changed since `baseline_ref`.
 
     Args:
         path: Managed package directory from `release-please-config.json`.
-        baseline: Last-released git SHA recorded in the manifest.
+        baseline_ref: Git ref for the last released tip (usually a release tag).
         repo_root: Repository root used as the git cwd.
         head: Tip ref to diff against (default `HEAD`).
 
@@ -76,7 +105,7 @@ def package_unreleased_files(
     # `path` is a directory; trailing slash keeps the path filter tight.
     filter_path = path if path.endswith("/") else f"{path}/"
     out = _run_git(
-        ["diff", "--name-only", f"{baseline}..{head}", "--", filter_path],
+        ["diff", "--name-only", f"{baseline_ref}..{head}", "--", filter_path],
         cwd=repo_root,
     )
     return sorted(line.strip() for line in out.splitlines() if line.strip())
@@ -98,31 +127,41 @@ def find_lockfile_only_components(
 
     Args:
         config: Parsed `release-please-config.json`.
-        manifest: Parsed `.release-please-manifest.json` (path -> baseline SHA).
+        manifest: Parsed `.release-please-manifest.json` (path -> version).
         repo_root: Repository root for git diffs.
         head: Tip ref to diff against.
 
     Returns:
-        Sorted list of dicts with `component`, `path`, `baseline`, and `files`.
+        Sorted list of dicts with `component`, `path`, `version`, `baseline`
+        (resolved release tag), and `files`.
+
+    Raises:
+        RuntimeError: If a release tag cannot be resolved or git fails.
     """
     packages = config.get("packages", {})
+    sep = tag_separator(config)
     offenders: list[dict[str, object]] = []
     for path, meta in packages.items():
         if not isinstance(path, str) or not isinstance(meta, dict):
             continue
-        baseline = manifest.get(path)
-        if not baseline:
+        version = manifest.get(path)
+        if not version or not isinstance(version, str):
             continue
-        # Baseline SHA missing from shallow clones raises RuntimeError so CI
-        # fails closed rather than silently skipping a package.
+        component = meta.get("component") or meta.get("package-name") or path
+        if not isinstance(component, str) or not component:
+            continue
+        baseline = release_tag(component, version, separator=sep)
+        # Missing tags (never published, deleted, shallow-without-tags) raise so
+        # CI fails closed rather than silently skipping a package.
         files = package_unreleased_files(
             path, baseline, repo_root=repo_root, head=head
         )
         if is_lockfile_only(files):
             offenders.append(
                 {
-                    "component": meta.get("component", path),
+                    "component": component,
                     "path": path,
+                    "version": version,
                     "baseline": baseline,
                     "files": files,
                 }
@@ -141,7 +180,7 @@ def main(
 
     Returns:
         `0` on successful analysis.
-        `2` on missing/invalid config, manifesto or git failure.
+        `2` on missing/invalid config, manifest, or git failure.
     """
     try:
         config = json.loads(config_path.read_text(encoding="utf-8"))

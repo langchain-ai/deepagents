@@ -189,10 +189,13 @@ jobs:
             const RELEASING_MULTI = '📖 [Multi-component fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#multi-component-fan-out)';
             const { number, labels } = context.payload.pull_request;
 
-            // Strict, fail-closed parse. The detector always prints a JSON object
-            // with two arrays, so empty/non-object/malformed output means the
-            // detector didn't run as expected — block rather than silently coalesce
-            // a missing result into "no offenders → pass."
+            // Strict, fail-closed parse. Prefer the object shape with two arrays.
+            // During the bootstrap merge of this workflow (and any time base still
+            // has the pre-object detector), the trusted base checkout may print a
+            // legacy JSON array of lockfile-only component names ("[]" when clean).
+            // Accept that shape so the PR introducing the object detector is not
+            // blocked by its own rollout; multi_component is unavailable until
+            // the new detector is on base.
             const raw = process.env.RESULT;
             if (raw === undefined || raw.trim() === '') {
               core.setFailed('Detector produced no output; cannot determine release scope. Failing closed.');
@@ -205,7 +208,16 @@ jobs:
               core.setFailed(`Detector output was not valid JSON: ${JSON.stringify(raw)} (${parseErr.message})`);
               return;
             }
-            if (
+            if (Array.isArray(result)) {
+              if (result.some(c => typeof c !== 'string')) {
+                core.setFailed(`Legacy detector array contained a non-string entry: ${JSON.stringify(raw)}`);
+                return;
+              }
+              core.notice(
+                'Detector returned legacy lockfile-only array shape; multi_component fan-out is not enforceable until the object-shaped detector is on the PR base.',
+              );
+              result = { lockfile_only: result, multi_component: [] };
+            } else if (
               !result ||
               typeof result !== 'object' ||
               !Array.isArray(result.lockfile_only) ||

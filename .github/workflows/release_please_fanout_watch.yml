@@ -54,9 +54,11 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: main
-          # Baseline SHAs in the manifest can be arbitrarily old; need full
-          # history so `git diff <baseline>..HEAD` resolves.
+          # Full history so package churn since the prior release is visible.
+          # Tags are required separately: the manifest stores versions; the
+          # detector resolves them to release tags (`component==version`).
           fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
 
       - name: "🐍 Setup Python 3.11"
@@ -160,7 +162,7 @@ jobs:
                 STICKY_MARKER,
                 '⚠️ **Possible accidental release fan-out.**',
                 '',
-                `Open release PR for \`${off.component}\`, but on \`main\` the only changes under \`${off.path}\` since the last released SHA (\`${off.baseline}\`) are lockfiles: ${files}.`,
+                `Open release PR for \`${off.component}\`, but on \`main\` the only changes under \`${off.path}\` since the last released tag (\`${off.baseline}\`${off.version ? `, version ${off.version}` : ''}) are lockfiles: ${files}.`,
                 '',
                 'release-please scopes by path and has no "this is just a lockfile" notion — a bump-worthy commit that only churned this package\'s `uv.lock` still opens this release PR.',
                 '',

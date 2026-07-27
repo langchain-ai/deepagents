@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import inspect
 import logging
 import os
@@ -1107,55 +1106,51 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     return agents
 
 
-@functools.lru_cache(maxsize=1)
-def _reserved_agent_dir_names() -> frozenset[str]:
-    """Return non-agent directory names reserved by the app under `~/.deepagents/`.
+_AGENT_DIR_MARKER = "AGENTS.md"
+"""Filename that marks a `~/.deepagents/<name>/` directory as an agent profile.
 
-    These directories are created by the app for its own use and must never
-    appear in the agent picker:
-
-    - `bin/` holds the managed `rg` binary (`managed_tools.BIN_DIR`).
-    - `plugins/` holds installed plugin state (`plugins.store`).
-    - `conversation_history/` holds offloaded per-thread archives (`offload`).
-
-    Each name is derived from its owning module so it stays a single source of
-    truth rather than being hardcoded here. The result is cached since the
-    reserved set is constant for the process.
-    """
-    from deepagents_code.managed_tools import BIN_DIR
-    from deepagents_code.offload import CONVERSATION_HISTORY_DIRNAME
-    from deepagents_code.plugins.store import DEFAULT_PLUGIN_DIRNAME
-
-    return frozenset(
-        {BIN_DIR.name, DEFAULT_PLUGIN_DIRNAME, CONVERSATION_HISTORY_DIRNAME},
-    )
+Discovery is fail-closed: only directories containing this marker are listed by
+the `/agent` picker. Real agents always create it (empty on first use when
+memory is enabled), so empty folders and app-owned state directories under
+`~/.deepagents/` stay out of the picker without a name denylist.
+"""
 
 
 def _is_agent_dir_entry(entry: Path) -> bool:
     """Return whether a `~/.deepagents/` entry should be listed as an agent.
 
-    Filters out symlinks (so dangling links don't masquerade as agents),
-    dot-prefixed names — `.state/` (app internal state) plus any other
-    hidden directory the user may have placed there — and reserved names
-    the app owns (`bin/`, `plugins/`, and `conversation_history/`).
+    Fail-closed on the `AGENTS.md` marker: a directory is an agent only when
+    that file exists as a regular (non-symlink) file inside it. App-owned
+    siblings under `~/.deepagents/` — `bin/`, `plugins/`,
+    `conversation_history/`, `.state/`, future state dirs — are never listed
+    unless they accidentally gain the marker.
 
-    `OSError` from `is_dir`/`is_symlink` propagates so callers can log
-    with the failing entry's name as context.
+    Also rejects:
+
+    - Dot-prefixed names (hidden dirs such as `.state/`)
+    - Symlinked directories (including dangling links)
+    - Non-directories
+
+    `OSError` from `is_dir`/`is_symlink`/`is_file` propagates so callers can
+    log with the failing entry's name as context.
     """
-    if entry.name.startswith(".") or entry.name in _reserved_agent_dir_names():
+    if entry.name.startswith("."):
         return False
-    return entry.is_dir() and not entry.is_symlink()
+    if entry.is_symlink() or not entry.is_dir():
+        return False
+    marker = entry / _AGENT_DIR_MARKER
+    # `is_file()` is True for a symlink-to-file; reject those so a dangling or
+    # external link cannot mint an agent entry.
+    return marker.is_file() and not marker.is_symlink()
 
 
 def get_available_agent_names() -> list[str]:
     """Return a sorted list of available agent names from `~/.deepagents/`.
 
     Scans the user's `.deepagents` directory and returns each real
-    subdirectory found there. Symlinks excluded so a dangling link does not
-    masquerade as an agent. Dot-prefixed entries (e.g., `.state/`) and
-    reserved app-owned directories (`bin/`, `plugins/`, and
-    `conversation_history/`) are skipped so internal state never appears as an
-    agent.
+    subdirectory that contains the `AGENTS.md` agent marker.
+    Fail-closed: bare directories, app-owned state (`bin/`, `plugins/`,
+    `conversation_history/`, …), symlinks, and hidden entries are not agents.
 
     Filesystem errors (missing parent, permission denied, broken entries) are
     logged and surfaced as an empty list rather than raised — the caller shows
@@ -1222,7 +1217,9 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
                 {
                     "name": name,
                     "path": str(agent_path),
-                    "has_agents_md": (agent_path / "AGENTS.md").exists(),
+                    # Always True for names from `get_available_agent_names`
+                    # (fail-closed marker). Kept for JSON schema stability.
+                    "has_agents_md": (agent_path / _AGENT_DIR_MARKER).is_file(),
                     "is_default": name == DEFAULT_AGENT_NAME,
                 }
             )
@@ -1240,17 +1237,10 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
         is_default = name == DEFAULT_AGENT_NAME
         default_label = " [dim](default)[/dim]" if is_default else ""
 
-        if (agent_path / "AGENTS.md").exists():
-            console.print(
-                f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
-                style=theme.PRIMARY,
-            )
-        else:
-            console.print(
-                f"  {bullet} [bold]{agent_name}[/bold]{default_label}"
-                " [dim](incomplete)[/dim]",
-                style=theme.WARNING,
-            )
+        console.print(
+            f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
+            style=theme.PRIMARY,
+        )
         console.print(
             f"    {escape_markup(str(agent_path))}",
             style=theme.MUTED,

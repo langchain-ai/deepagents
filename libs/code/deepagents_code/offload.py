@@ -16,8 +16,8 @@ _FALLBACK_ARTIFACTS_ROOT = "/dcode-artifacts-fallback"
 CONVERSATION_HISTORY_DIRNAME = "conversation_history"
 """Subdirectory of the offload root that holds per-thread conversation archives.
 
-Lives directly under `~/.deepagents/` in local mode, so it is reserved and must
-never be listed as an agent by the `/agent` picker.
+Lives directly under `~/.deepagents/` in local mode. The `/agent` picker is
+fail-closed on `AGENTS.md`, so this directory is never listed as an agent.
 """
 
 

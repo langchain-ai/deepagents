@@ -33,7 +33,11 @@ SUPPORTED_MARKETPLACE_SOURCE_TYPES: frozenset[MarketplaceSourceType] = frozenset
 )
 
 DEFAULT_PLUGIN_DIRNAME = "plugins"
-"""Default directory name for plugin storage under `~/.deepagents/`."""
+"""Default directory name for plugin storage under `~/.deepagents/`.
+
+Not an agent profile. The `/agent` picker is fail-closed on `AGENTS.md`, so
+this directory is never listed as a selectable agent.
+"""
 
 
 class PluginStateError(OSError):

@@ -24809,16 +24809,28 @@ class TestToastAnchoring:
             assert after > before
             assert after == app.screen.size.height - self._chrome(app).region.y
 
-    async def test_short_terminal_keeps_the_rack_onscreen(self) -> None:
-        """A chrome taller than the terminal must not push toasts offscreen."""
+    async def test_short_terminal_keeps_toasts_onscreen(self) -> None:
+        """A chrome taller than the terminal must not dock toasts off the top.
+
+        The anchor stops at `_MIN_TOAST_ROWS`, and the rack is capped to the
+        space that leaves, so even a heavily wrapped toast stays on screen
+        instead of losing its opening lines above row zero.
+        """
+        from textual.widgets._toast import Toast as _Toast
+
         app = DeepAgentsApp()
         async with app.run_test(notifications=True, size=(80, 12)) as pilot:
             await pilot.pause()
             app.query_one("#input-area", ChatInput).styles.height = 20
             await pilot.pause()
+            app.notify("word " * 60, timeout=60)
+            await pilot.pause()
 
             margin_bottom = self._rack(app).styles.margin.bottom
             assert 0 <= margin_bottom <= 12 - _MIN_TOAST_ROWS
+            toasts = list(app.screen.query(_Toast))
+            assert toasts
+            assert all(toast.region.y >= 0 for toast in toasts)
 
 
 class TestFatalErrorRedaction:

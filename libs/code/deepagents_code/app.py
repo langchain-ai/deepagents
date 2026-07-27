@@ -2519,12 +2519,13 @@ class _ChatScroll(VerticalScroll):
 
 
 _MIN_TOAST_ROWS = 6
-"""Rows kept clear above the bottom chrome so a toast is never pushed offscreen.
+"""Rows the toast rack keeps for itself above the bottom chrome.
 
-A toast is at most a few rows tall (1 row of margin, 1 of padding either side,
-and the wrapped body). On a short terminal — or with a tall composed message in
-the chat input — anchoring above the chrome would otherwise leave the rack no
-room at all, which is worse than overlapping the input.
+On a short terminal — or with a tall composed message in the chat input — the
+chrome can claim the whole screen, and anchoring above it would leave the rack
+no room at all. The anchor stops at this floor, and `_anchor_toast_rack` caps
+the rack's height to whatever space is left so a taller toast scrolls inside the
+rack instead of being docked off the top of the screen.
 """
 
 
@@ -6608,9 +6609,14 @@ class DeepAgentsApp(App):
         screen_height = screen.size.height
         headroom = max(screen_height - _MIN_TOAST_ROWS, 0)
         margin_bottom = min(max(screen_height - region.y, 0), headroom)
-        if rack.styles.margin.bottom == margin_bottom:
-            return
+        # Inline style writes already no-op when the value is unchanged, so
+        # re-running this on every resize costs nothing.
         rack.styles.margin = (0, 0, margin_bottom, 0)
+        # `ToastRack` is `height: auto` with no maximum, so a tall (or heavily
+        # wrapped) toast would be docked past the top of the screen and lose its
+        # first lines. Bound the rack to the space this anchor leaves it; the
+        # rack already scrolls to its end, keeping the newest toast in view.
+        rack.styles.max_height = screen_height - margin_bottom
 
     def _update_status(self, message: str) -> None:
         """Update the status bar with a message."""

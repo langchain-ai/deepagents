@@ -5263,6 +5263,133 @@ class TestAskUserLifecycle:
 
         menu.scroll_visible.assert_called_once_with()
 
+    def test_ctrl_o_toggles_most_recent_expandable_user_message(self) -> None:
+        """Ctrl+O expands a most-recent long UserMessage when nothing else owns it."""
+        from deepagents_code.tui.widgets.messages import UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        user = MagicMock(spec=UserMessage)
+        user.has_expandable_body = True
+        container = MagicMock()
+        container.children = [user]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        user.toggle_expanded.assert_called_once_with()
+
+    def test_ctrl_o_prefers_a_later_tool_row_over_a_long_user_message(self) -> None:
+        """A tool row after the prompt claims Ctrl+O; the prompt needs a click."""
+        from deepagents_code.tui.widgets.messages import ToolCallMessage, UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        user = MagicMock(spec=UserMessage)
+        user.has_expandable_body = True
+        tool = MagicMock(spec=ToolCallMessage)
+        tool.has_class.return_value = False
+        tool.has_output = True
+        tool.has_expandable_output = True
+        tool.has_expandable_task_desc = False
+        tool.has_expandable_args = False
+        container = MagicMock()
+        container.children = [user, tool]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        tool.toggle_output.assert_called_once_with()
+        user.toggle_expanded.assert_not_called()
+
+    def test_ctrl_o_skips_unexpandable_user_messages(self) -> None:
+        """A short prompt is transparent, so Ctrl+O reaches the older long one."""
+        from deepagents_code.tui.widgets.messages import UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        long_user = MagicMock(spec=UserMessage)
+        long_user.has_expandable_body = True
+        short_user = MagicMock(spec=UserMessage)
+        short_user.has_expandable_body = False
+        container = MagicMock()
+        container.children = [long_user, short_user]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        long_user.toggle_expanded.assert_called_once_with()
+        short_user.toggle_expanded.assert_not_called()
+
+    def test_user_message_expansion_is_persisted_and_remeasured(self) -> None:
+        """Expanding a prompt updates the store and re-measures the row height."""
+        from deepagents_code.tui.widgets.messages import UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._message_store = MagicMock()
+        widget = MagicMock(spec=UserMessage)
+        widget.id = "msg-1"
+
+        with patch.object(app, "_schedule_message_height_measurement") as measure:
+            app.on_user_message_expansion_changed(
+                UserMessage.ExpansionChanged(widget, expanded=True)
+            )
+
+        app._message_store.update_message.assert_called_once_with(
+            "msg-1", user_expanded=True
+        )
+        measure.assert_called_once_with("msg-1")
+
+    async def test_long_user_message_submit_toasts(self) -> None:
+        """Submitting a >threshold message posts an information toast."""
+        from deepagents_code.tui.widgets.messages import UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._image_tracker = MagicMock()
+        app._image_tracker.snapshot.return_value = None
+        app.notify = MagicMock()
+        app._mount_message = AsyncMock()
+        app._send_to_agent = AsyncMock()
+
+        long_msg = "L" * 12_000
+        await app._handle_user_message(long_msg)
+        app.notify.assert_called_once()
+        kwargs = app.notify.call_args.kwargs
+        assert kwargs.get("severity") == "information"
+        assert kwargs.get("markup") is False
+        message = app.notify.call_args.args[0]
+        assert "shortened" in message.lower()
+        # Points at the affordance's literal label so the user can find it.
+        assert "show full message" in message
+
+        # The toast must describe the widget that was actually mounted, not a
+        # separately re-derived guess about the raw string.
+        mounted = app._mount_message.call_args.args[0]
+        assert isinstance(mounted, UserMessage)
+        assert mounted.has_expandable_body is True
+
+        app.notify.reset_mock()
+        await app._handle_user_message("short")
+        app.notify.assert_not_called()
+
+    async def test_literal_slash_message_toasts_at_its_own_length(self) -> None:
+        """A `-m` path-like prompt is measured as literal text, prefix included.
+
+        `_handle_user_message` builds the widget with mode detection off, so a
+        leading slash is body text. The toast must agree with what renders.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        app._image_tracker = MagicMock()
+        app._image_tracker.snapshot.return_value = None
+        app.notify = MagicMock()
+        app._mount_message = AsyncMock()
+        app._send_to_agent = AsyncMock()
+
+        await app._handle_user_message("/" + "x" * 10_000)
+
+        app.notify.assert_called_once()
+        assert app._mount_message.call_args.args[0].has_expandable_body is True
+
     def test_ctrl_o_targets_pending_ask_user_tool_row(self) -> None:
         """App-level Ctrl+O should toggle the active ask_user tool row."""
         app = DeepAgentsApp(agent=MagicMock())

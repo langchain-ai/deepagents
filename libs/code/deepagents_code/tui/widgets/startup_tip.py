@@ -33,6 +33,7 @@ _TIPS: dict[str, int] = {
     "Use /skill-creator to build reusable agent skills": 1,
     "Ask for a workflow to fan work out to subagents in parallel": 3,
     "Use /timestamps to show or hide message timestamp footers": 1,
+    "Click a collapsed message or press Ctrl+O to expand it": 1,
     "Use /agents to browse and switch between your available agents": 2,
     _TIP_SHIFT_TAB_WITH_YOLO: 2,
     "Use !! for incognito shell commands that stay out of model context": 1,

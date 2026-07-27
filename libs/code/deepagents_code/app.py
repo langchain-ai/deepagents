@@ -13827,6 +13827,24 @@ class DeepAgentsApp(App):
         )
         await self._mount_message(user_message)
         self._active_user_message = user_message
+        # Toast only on submit when the transcript will collapse the body —
+        # the model still receives the full text; the UI is head+tail until
+        # the user expands. Asking the widget (rather than re-deriving from
+        # `message`) keeps this in step with what `render()` actually collapses,
+        # including its mode-prefix handling.
+        if user_message.has_expandable_body:
+            # "Shortened", not "collapsed": a large paste already toasted
+            # "Large paste collapsed" in the composer (see chat_input), and
+            # that means something different (a placeholder chip, not a
+            # head+tail elision in the transcript).
+            self.notify(
+                "Long message shortened in the transcript — click "
+                "'show full message' to expand it. The full text was still "
+                "sent to the model.",
+                severity="information",
+                markup=False,
+                timeout=8,
+            )
         await self._send_to_agent(message)
 
     async def _send_to_agent(
@@ -15729,6 +15747,23 @@ class DeepAgentsApp(App):
             )
             self._schedule_message_height_measurement(event.widget.id)
 
+    def on_user_message_expansion_changed(
+        self,
+        event: UserMessage.ExpansionChanged,
+    ) -> None:
+        """Keep long-prompt expansion state across transcript virtualization.
+
+        Also re-measures the row: expanding a collapsed prompt can add hundreds
+        of lines, and the spacer math that sizes the scrollbar reads a cached
+        height that `refresh(layout=True)` alone does not update.
+        """
+        if event.widget.id:
+            self._message_store.update_message(
+                event.widget.id,
+                user_expanded=event.expanded,
+            )
+            self._schedule_message_height_measurement(event.widget.id)
+
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""
         # Drop buffered `!` shell output so it never leaks across a thread
@@ -17145,6 +17180,13 @@ class DeepAgentsApp(App):
                 if child.has_output:
                     child.toggle_output()
                     return
+            # Long UserMessages are collapsible. This scan is newest-first and
+            # first-match-wins, so any later tool/skill/group row claims Ctrl+O
+            # and the prompt is then reachable only by click. Assistant rows are
+            # not in the chain, so they do not block it.
+            if isinstance(child, UserMessage) and child.has_expandable_body:
+                child.toggle_expanded()
+                return
 
     # Approval menu action handlers (delegated from App-level bindings)
     # NOTE: These only activate when approval widget is pending

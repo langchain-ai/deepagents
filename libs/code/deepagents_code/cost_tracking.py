@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Annotated, Any, NotRequired
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ContextT,
+    PrivateStateAttr,
 )
 from langchain_core.messages import AIMessage
 from langgraph.types import Overwrite
@@ -200,12 +201,14 @@ def resolve_message_model(
 class CostState(ResumeState):
     """Agent state extended with the cumulative thread-cost channel."""
 
-    _session_cost_usd: Annotated[NotRequired[float], operator.add]
+    _session_cost_usd: Annotated[NotRequired[float], PrivateStateAttr, operator.add]
     """Cumulative estimated USD cost for all priceable calls in this thread.
 
-    Uses an additive reducer so each model call contributes only its own
-    estimate, and so nested agents can return their local total into the
-    parent without replacing the parent's prior spend.
+    Kept schema-private so cost is not part of public graph input/output, while
+    still using an additive reducer so each model call contributes only its own
+    estimate and nested agents can return their local total into the parent
+    without replacing the parent's prior spend. `operator.add` is last so
+    LangGraph still detects the reducer.
     """
 
 

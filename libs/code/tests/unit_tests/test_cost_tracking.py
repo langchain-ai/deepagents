@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
 
 import pytest
+from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Overwrite
 
@@ -231,10 +232,13 @@ class TestEstimateCost:
 class TestCostTrackingMiddleware:
     """Tests for cumulative cost writes on the model checkpoint path."""
 
-    def test_cost_channel_uses_additive_reducer(self) -> None:
+    def test_cost_channel_is_private_and_additive(self) -> None:
         hints = get_type_hints(CostState, include_extras=True)
-        metadata = getattr(hints["_session_cost_usd"], "__metadata__", ())
-        assert any(getattr(item, "__name__", None) == "add" for item in metadata)
+        metadata = tuple(getattr(hints["_session_cost_usd"], "__metadata__", ()))
+        assert PrivateStateAttr in metadata
+        assert metadata
+        last = metadata[-1]
+        assert getattr(last, "__name__", None) == "add"
 
     def test_returns_request_cost_as_delta(self) -> None:
         middleware = CostTrackingMiddleware()

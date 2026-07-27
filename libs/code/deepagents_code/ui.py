@@ -120,8 +120,9 @@ def show_help() -> None:
         "  dcode doctor                              Print install diagnostics"
     )
     console.print(
-        "  dcode tools <install>                     Manage managed tools (ripgrep)"
+        "  dcode tools <install|list>                Manage managed tools (ripgrep)"
     )
+    console.print("  dcode extras install NAME                 Install optional extras")
     console.print()
 
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
@@ -644,6 +645,75 @@ def show_tools_install_help() -> None:
     )
     console.print(
         "DEEPAGENTS_CODE_RIPGREP_INSTALLER=system to use your package manager.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print()
+
+
+def show_extras_help() -> None:
+    """Show help information for the `extras` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode extras <command> [options]")
+    console.print()
+    console.print(
+        "Manage optional deepagents-code extras (sandbox providers, model",
+    )
+    console.print(
+        "providers, and other opt-in dependencies). Distinct from "
+        "`dcode tools`, which provisions managed host binaries such as ripgrep.",
+    )
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print(
+        "  install NAME       Install an optional extra (or package with --package)"
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode extras install daytona")
+    console.print("  dcode extras install fireworks")
+    console.print("  dcode extras install langchain-custom --package --yes")
+    console.print()
+    console.print(
+        "Legacy alias: `dcode --install NAME` still works.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print()
+
+
+def show_extras_install_help() -> None:
+    """Show help information for the `extras install` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode extras install NAME [options]")
+    console.print()
+    console.print(
+        "Install an optional deepagents-code extra into the current dcode",
+    )
+    console.print(
+        "environment (for example a sandbox provider or model provider).",
+    )
+    console.print()
+    _print_option_section(
+        "  --package               Treat NAME as a package added via `uv --with`",
+        "  --yes                   Skip interactive confirmation prompts",
+    )
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode extras install daytona")
+    console.print("  dcode extras install fireworks")
+    console.print("  dcode extras install not-listed-yet --yes")
+    console.print("  dcode extras install langchain-custom --package --yes")
+    console.print()
+    console.print(
+        "In-session equivalent: `/install NAME`. Legacy CLI alias:",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print(
+        "`dcode --install NAME`.",
         style=theme.MUTED,
         highlight=False,
     )

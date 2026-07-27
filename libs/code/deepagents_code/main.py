@@ -1469,6 +1469,7 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "mcp": ("mcp_command", "show_mcp_help"),
     "auth": ("auth_command", "show_auth_help"),
     "tools": ("tools_command", "show_tools_help"),
+    "extras": ("extras_command", "show_extras_help"),
 }
 """Maps top-level command names to their startup-fast-path help dispatch.
 
@@ -1807,6 +1808,41 @@ def parse_args() -> argparse.Namespace:
     )
     add_json_output_arg(tools_list)
 
+    extras_parser = subparsers.add_parser(
+        "extras",
+        help="Manage optional deepagents-code extras (providers, sandboxes)",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_extras_help")),
+    )
+    extras_sub = extras_parser.add_subparsers(dest="extras_command")
+
+    extras_install = extras_sub.add_parser(
+        "install",
+        help="Install an optional extra (e.g. daytona, fireworks)",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_extras_install_help")),
+    )
+    extras_install.add_argument(
+        "extras_target",
+        metavar="NAME",
+        help="Extra name, or package name when --package is set",
+    )
+    extras_install.add_argument(
+        "--package",
+        dest="extras_package",
+        action="store_true",
+        help=(
+            "Treat NAME as a package added via `uv --with` "
+            "(for a custom provider package), not a deepagents-code extra"
+        ),
+    )
+    extras_install.add_argument(
+        "--yes",
+        dest="extras_yes",
+        action="store_true",
+        help="Skip interactive confirmation prompts",
+    )
+
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
     parser.add_argument(
@@ -2127,20 +2163,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--install",
         metavar="NAME",
-        help="Install an optional extra (e.g. daytona, fireworks), then exit",
+        help=(
+            "Alias for `extras install NAME`. Install an optional extra "
+            "(e.g. daytona, fireworks), then exit"
+        ),
     )
     parser.add_argument(
         "--package",
         action="store_true",
         help=(
-            "With --install, treat NAME as a package added via `uv --with` "
-            "(for a custom provider package), not a deepagents-code extra"
+            "With --install or `extras install`, treat NAME as a package "
+            "added via `uv --with` (for a custom provider package), not a "
+            "deepagents-code extra"
         ),
     )
     parser.add_argument(
         "--yes",
         action="store_true",
-        help="Skip interactive confirmation prompts (e.g., for --install)",
+        help=(
+            "Skip interactive confirmation prompts "
+            "(e.g., for --install / extras install)"
+        ),
     )
     parser.add_argument(
         "--acp",
@@ -3589,6 +3632,11 @@ def cli_main() -> None:
 
             sys.exit(run_tools_command(args))
 
+        if command == "extras":
+            from deepagents_code.client.commands.extras import run_extras_command
+
+            sys.exit(run_extras_command(args))
+
         # Best-effort, idempotent migration. Placed after parse_args and the
         # bare-help fast path so --help / --version / `deepagents <group>`
         # exit before any I/O. Wrapped broadly so an unexpected non-OSError
@@ -4020,234 +4068,24 @@ def cli_main() -> None:
 
         if args.package and not args.install:
             console.print(
-                "[bold red]Error:[/bold red] --package requires --install <package>.",
+                "[bold red]Error:[/bold red] --package requires "
+                "`dcode extras install <package> --package` "
+                "(or the `--install <package>` alias).",
             )
             sys.exit(2)
 
-        # Handle --install <package> --package flag (headless, no session).
-        # Installs an arbitrary package via `uv --with` for a custom provider,
-        # rather than a deepagents-code extra. Always exits.
-        if args.install and args.package:
-            from rich.markup import escape
-
-            from deepagents_code.config import _is_editable_install
-            from deepagents_code.update_check import (
-                create_update_log_path,
-                editable_package_hint,
-                is_valid_package_name,
-                perform_install_package,
-            )
-
-            package: str = args.install
-            pkg_log_path: Path | None = None
-            try:
-                if not is_valid_package_name(package):
-                    # Defense in depth — the package is interpolated into a
-                    # shell command. Reject malformed names before any prompt
-                    # or uv call, even with --yes.
-                    console.print(
-                        f"[bold red]Error:[/bold red] "
-                        f"Invalid package name '{escape(package)}'. "
-                        "Package names must be alphanumeric with `-`, `_`, "
-                        "or `.` (PEP 508).",
-                        highlight=False,
-                    )
-                    sys.exit(2)
-                if _is_editable_install():
-                    console.print(
-                        "[bold yellow]Warning:[/bold yellow] "
-                        "--install --package is not supported on editable "
-                        "installs.\n" + escape(editable_package_hint(package)),
-                        highlight=False,
-                    )
-                    sys.exit(1)
-
-                # Arbitrary packages have no curated allowlist to vet against,
-                # so confirm before pulling third-party code into the tool env.
-                console.print(
-                    f"This will install the package '{escape(package)}' into "
-                    "the dcode environment (this runs third-party "
-                    "code).",
-                    highlight=False,
-                )
-                if not args.yes:
-                    if not sys.stdin.isatty():
-                        console.print(
-                            "[bold red]Error:[/bold red] "
-                            "Refusing package install in non-interactive mode. "
-                            "Pass --yes to proceed."
-                        )
-                        sys.exit(2)
-                    try:
-                        reply = input(f"Install package '{package}'? [y/N] ")
-                    except EOFError:
-                        console.print("\nAborted.", style="dim")
-                        sys.exit(130)
-                    if reply.strip().lower() not in {"y", "yes"}:
-                        console.print("Aborted.", style="dim")
-                        sys.exit(1)
-
-                console.print(f"Installing package '{package}'...")
-                pkg_log_path = create_update_log_path()
-                console.print(
-                    f"Install log: {_tail_log_command(pkg_log_path)}",
-                    style="dim",
-                    highlight=False,
-                    markup=False,
-                )
-                success, output = asyncio.run(
-                    perform_install_package(package, log_path=pkg_log_path)
-                )
-                if success:
-                    console.print(f"[green]Installed package '{package}'.[/green]")
-                    sys.exit(0)
-                # Tail the last 200 chars — uv prints the resolved error at the
-                # end. The full output is in the log.
-                detail = f": {output[-200:]}" if output else ""
-                console.print(
-                    f"[bold red]Install failed[/bold red]{escape(detail)}\n"
-                    f"Log: {pkg_log_path}",
-                    markup=True,
-                    highlight=False,
-                )
-                sys.exit(1)
-            except KeyboardInterrupt:
-                console.print("\nAborted.", style="dim")
-                sys.exit(130)
-            except Exception as exc:
-                logger.warning("--install --package failed", exc_info=True)
-                log_line = f"\nLog: {pkg_log_path}" if pkg_log_path else ""
-                console.print(
-                    f"[bold red]Error:[/bold red] "
-                    f"{type(exc).__name__}: {escape(str(exc))}"
-                    f"{escape(log_line)}",
-                    markup=True,
-                    highlight=False,
-                )
-                sys.exit(1)
-
-        # Handle --install <extra> flag (headless, no session)
+        # Handle --install <name> [--package] flag (headless, no session).
+        # Alias for `dcode extras install`. Always exits.
         if args.install:
-            from rich.markup import escape
+            from deepagents_code.client.commands.extras import run_install_request
 
-            from deepagents_code.config import _is_editable_install
-            from deepagents_code.extras_info import KNOWN_EXTRAS
-            from deepagents_code.update_check import (
-                create_update_log_path,
-                editable_extra_hint,
-                install_extra_command,
-                install_extras_command,
-                is_valid_extra_name,
-                perform_install_extra,
-                safe_install_extra_recovery_command,
+            sys.exit(
+                run_install_request(
+                    name=args.install,
+                    package=bool(args.package),
+                    yes=bool(args.yes),
+                )
             )
-
-            extra: str = args.install
-            log_path: Path | None = None
-            manual_cmd: str | None = None
-            try:
-                if not is_valid_extra_name(extra):
-                    # Defense in depth — the extra is interpolated into a
-                    # shell command. Reject malformed names before any
-                    # confirmation prompt, even with --yes.
-                    console.print(
-                        f"[bold red]Error:[/bold red] "
-                        f"Invalid extra name '{escape(extra)}'. "
-                        "Extra names must be alphanumeric with `-`, `_`, "
-                        "or `.` (PEP 508).",
-                        highlight=False,
-                    )
-                    sys.exit(2)
-                if _is_editable_install():
-                    console.print(
-                        "[bold yellow]Warning:[/bold yellow] "
-                        "--install is not supported on editable installs.\n"
-                        + escape(editable_extra_hint(extra)),
-                        highlight=False,
-                    )
-                    sys.exit(1)
-
-                manual_cmd = install_extra_command(extra)
-                # KNOWN_EXTRAS is a curated "did you mean" list, not the
-                # authoritative set (that's pyproject, resolved by uv): warn and
-                # confirm rather than refuse, since valid-but-unlisted names
-                # exist (e.g. all-providers). Malformed names blocked above.
-                if extra not in KNOWN_EXTRAS:
-                    known = ", ".join(sorted(KNOWN_EXTRAS))
-                    console.print(
-                        f"[bold yellow]Warning:[/bold yellow] "
-                        f"'{extra}' is not a known extra.\n"
-                        f"Known extras: {known}",
-                        highlight=False,
-                    )
-                    if not args.yes:
-                        if not sys.stdin.isatty():
-                            console.print(
-                                "[bold red]Error:[/bold red] "
-                                "Refusing unknown extra in non-interactive "
-                                "mode. Pass --yes to override."
-                            )
-                            sys.exit(2)
-                        reply = input("Continue anyway? [y/N] ").strip().lower()
-                        if reply not in {"y", "yes"}:
-                            console.print("Aborted.", style="dim")
-                            sys.exit(1)
-
-                console.print(f"Installing extra '{extra}'...")
-                log_path = create_update_log_path()
-                console.print(
-                    f"Install log: {_tail_log_command(log_path)}",
-                    style="dim",
-                    highlight=False,
-                    markup=False,
-                )
-                success, output = asyncio.run(
-                    perform_install_extra(extra, log_path=log_path)
-                )
-                if success:
-                    console.print(f"[green]Installed extra '{extra}'.[/green]")
-                    sys.exit(0)
-                # Tail the last 200 chars — uv resolver prints the resolved
-                # error at the end, not the beginning.
-                detail = f": {output[-200:]}" if output else ""
-                # Best-effort upgrade of `manual_cmd` (set above via
-                # `install_extra_command`) to the install-method-specific
-                # recovery command. On failure, keep that already-bound
-                # install-script command so the hint is never empty.
-                manual_cmd = safe_install_extra_recovery_command(
-                    extra, fallback=manual_cmd
-                )
-                console.print(
-                    f"[bold red]Install failed[/bold red]{escape(detail)}\n"
-                    f"Log: {log_path}\n"
-                    f"Run manually: [cyan]{escape(manual_cmd)}[/cyan]",
-                    markup=True,
-                    highlight=False,
-                )
-                sys.exit(1)
-            except KeyboardInterrupt:
-                console.print("\nAborted.", style="dim")
-                sys.exit(130)
-            except Exception as exc:
-                logger.warning("--install failed", exc_info=True)
-                log_line = f"\nLog: {log_path}" if log_path else ""
-                # Catch-all for any unexpected install failure: never let
-                # recovery-hint generation raise a second error over the
-                # original one. `manual_cmd` may still be unset if the failure
-                # predated `install_extra_command`, so fall back to a bare
-                # extras command in that case.
-                fallback_cmd = safe_install_extra_recovery_command(
-                    extra, fallback=manual_cmd or install_extras_command((extra,))
-                )
-                console.print(
-                    f"[bold red]Error:[/bold red] "
-                    f"{type(exc).__name__}: {escape(str(exc))}"
-                    f"{escape(log_line)}\n"
-                    f"Run manually: [cyan]{escape(fallback_cmd)}[/cyan]",
-                    markup=True,
-                    highlight=False,
-                )
-                sys.exit(1)
 
         # Handle --auto-update flag (headless toggle: reads current state
         # and inverts it, no session)

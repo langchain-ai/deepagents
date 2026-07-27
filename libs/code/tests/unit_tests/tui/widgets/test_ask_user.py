@@ -928,6 +928,58 @@ class TestAskUserMenu:
             help_text = menu.query_one(".ask-user-help").render()
             assert "Ctrl+J newline" in str(help_text)
 
+    async def test_help_text_shows_editor_hint_for_text_question(self) -> None:
+        """Footer advertises Ctrl+X while a free-text field is shown."""
+        app = _AskUserTestApp([{"question": "Q1?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+X" in str(help_text)
+
+    async def test_help_text_omits_editor_hint_for_multiple_choice(self) -> None:
+        """Footer omits Ctrl+X when only choices (no free-text field) are shown."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick one",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+X" not in str(help_text)
+
+    async def test_help_text_shows_editor_hint_when_other_selected(self) -> None:
+        """Selecting Other reveals the free-text field and the Ctrl+X hint."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick one",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+
+            # Navigate down to the "Other" option, revealing its text field.
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.pause()
+
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+X" in str(help_text)
+
     async def test_required_label_shown_for_required_question(self) -> None:
         """Required questions display a (required) indicator."""
         app = _AskUserTestApp([{"question": "Name?", "type": "text", "required": True}])

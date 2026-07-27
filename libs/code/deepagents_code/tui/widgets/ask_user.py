@@ -147,6 +147,7 @@ class AskUserMenu(Container):
             InlinePromptCompletion()
         )
         self._question_widgets: list[_QuestionWidget] = []
+        self._help_widget: Static | None = None
 
     def set_future(self, future: asyncio.Future[AskUserWidgetResult]) -> None:
         """Set the future to resolve when user answers."""
@@ -172,18 +173,47 @@ class AskUserMenu(Container):
                 yield qw
 
         yield Static("")
+        self._help_widget = Static(
+            self._render_help(),
+            classes="inline-prompt-help ask-user-help",
+        )
+        yield self._help_widget
+
+    def _render_help(self) -> str:
+        """Build the footer hint text for the current menu state.
+
+        The `Ctrl+X external editor` hint is included only while a free-text
+        entry field is shown, since that is when the app-level `ctrl+x` binding
+        can route to the focused ask-user input.
+
+        Returns:
+            The bullet-joined footer hint string.
+        """
+        glyphs = get_glyphs()
         parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} Select",
             "Enter to continue",
             newline_hint(),
         ]
+        if self._show_editor_hint():
+            parts.append("Ctrl+X external editor")
         if len(self._questions) > 1:
             parts.append("Tab/Shift+Tab switch question")
         parts.append("Esc to cancel")
-        yield Static(
-            f" {glyphs.bullet} ".join(parts),
-            classes="inline-prompt-help ask-user-help",
-        )
+        return f" {glyphs.bullet} ".join(parts)
+
+    def _show_editor_hint(self) -> bool:
+        """Whether any question currently shows a free-text entry field.
+
+        Returns:
+            `True` if at least one question shows a free-text field.
+        """
+        return any(qw.has_visible_text_input() for qw in self._question_widgets)
+
+    def _update_help(self) -> None:
+        """Refresh the footer hint after a free-text field is shown or hidden."""
+        if self._help_widget is not None:
+            self._help_widget.update(self._render_help())
 
     async def on_mount(self) -> None:  # noqa: D102
         apply_inline_prompt_border(self)
@@ -366,6 +396,26 @@ class _QuestionWidget(Vertical):
             self._text_input = AskUserTextArea(classes="ask-user-text-input")
             yield self._text_input
 
+    def has_visible_text_input(self) -> bool:
+        """Whether this question currently shows a free-text entry field.
+
+        Text questions (and multiple-choice questions with no choices, which
+        fall back to a text field) always show one. Multiple-choice questions
+        only show the "Other" field once that option is selected.
+
+        Returns:
+            `True` if a free-text entry field is currently shown.
+        """
+        if self._q_type == "text" or not self._choices:
+            return True
+        return self._is_other_selected and self._other_input is not None
+
+    def _notify_menu_help(self) -> None:
+        """Ask the enclosing menu to refresh its footer hint."""
+        menu = self._find_menu()
+        if menu is not None:
+            menu._update_help()
+
     def focus_input(self) -> None:
         """Focus the appropriate input for this question."""
         if self._text_input:
@@ -431,12 +481,14 @@ class _QuestionWidget(Vertical):
                 if self._other_input:
                     self._other_input.display = True
                     self._other_input.focus()
+                self._notify_menu_help()
             else:
                 self._is_other_selected = False
                 if self._other_input:
                     self._other_input.display = False
                 menu = self._find_menu()
                 if menu is not None:
+                    menu._update_help()
                     menu.confirm_and_advance(self._index)
 
     def _find_menu(self) -> AskUserMenu | None:
@@ -459,8 +511,11 @@ class _QuestionWidget(Vertical):
                 cw.deselect()
 
         is_other = self._selected_choice == len(self._choices)
+        was_other = self._is_other_selected
         self._is_other_selected = is_other
         if self._other_input:
             self._other_input.display = is_other
             if is_other:
                 self._other_input.focus()
+        if is_other != was_other:
+            self._notify_menu_help()

@@ -6686,8 +6686,10 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.show_pending_tokens()
 
-    def _seed_session_cost(self, cost_usd: float) -> None:
-        """Replace the active thread's cumulative cost with a restored value.
+    def _set_session_cost(self, cost_usd: float) -> None:
+        """Set the active thread's displayed cumulative cost.
+
+        Used for both restored totals and live updates after each priced request.
 
         Args:
             cost_usd: Non-negative cumulative estimated cost in US dollars.
@@ -6704,7 +6706,7 @@ class DeepAgentsApp(App):
         """
         self._thread_stats = SessionStats()
         self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
-        self._seed_session_cost(self._thread_restored_cost_usd)
+        self._set_session_cost(self._thread_restored_cost_usd)
 
     def _on_cost_update(self, cost_usd: float) -> None:
         """Add one streamed request estimate to the active thread display.
@@ -6714,7 +6716,7 @@ class DeepAgentsApp(App):
         """
         request_cost_usd = _coerce_session_cost_usd(cost_usd)
         if request_cost_usd > 0:
-            self._seed_session_cost(self._session_cost_usd + request_cost_usd)
+            self._set_session_cost(self._session_cost_usd + request_cost_usd)
 
     def _format_cost_summary(self) -> str:
         """Build the running total and type/model breakdown for `/cost`.
@@ -13515,7 +13517,7 @@ class DeepAgentsApp(App):
             persisted_cost_usd = _coerce_session_cost_usd(
                 new_state.get("_session_cost_usd")
             )
-            self._seed_session_cost(max(self._session_cost_usd, persisted_cost_usd))
+            self._set_session_cost(max(self._session_cost_usd, persisted_cost_usd))
             await self._persist_displayed_cost_to_checkpoint()
             new_event = new_state.get("_summarization_event")
             new_cutoff = _summarization_cutoff(new_event)

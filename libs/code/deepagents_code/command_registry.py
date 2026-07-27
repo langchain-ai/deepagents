@@ -79,6 +79,24 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="switch profile persona",
     ),
     SlashCommand(
+        name="/auto",
+        description="Switch to Auto approval mode",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="approval mode classifier automatic auto-approve shift+tab",
+    ),
+    SlashCommand(
+        name="/manual",
+        description="Switch to Manual approval mode",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="approval mode approve prompt review shift+tab",
+    ),
+    SlashCommand(
+        name="/yolo",
+        description="Switch to YOLO approval mode (no review)",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="approval mode unrestricted auto-approve dangerous shift+tab",
+    ),
+    SlashCommand(
         name="/auth",
         description="Connect and manage provider and service credentials",
         bypass_tier=BypassTier.IMMEDIATE_UI,

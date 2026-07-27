@@ -25,7 +25,7 @@ YOLO_MODE_DOCS_URL = (
 """Canonical docs page for Manual / Auto / YOLO behavior."""
 
 YOLO_MODE_NOTICE_BODY = (
-    "You are about to enable **YOLO mode**. The agent will run shell commands, "
+    "You are about to enable **YOLO mode**. The agent may run shell commands, "
     "edit files, make network calls, and use other tools on this machine "
     "**without asking you first**.\n\n"
     "Only continue if you're comfortable letting it act unsupervised. You can "

@@ -14,6 +14,7 @@ from rich.style import Style
 from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.content import Content
+from textual.geometry import Offset
 from textual.widgets import Markdown, Static
 
 from deepagents_code import theme
@@ -4951,6 +4952,105 @@ class TestUserMessageTruncation:
             assert result == expected
             assert result is not None
             assert result[0] != big
+
+    def test_will_truncate_boundary(self) -> None:
+        """`will_truncate` is false at the threshold and true just past it."""
+        assert UserMessage.will_truncate("C" * 10_000) is False
+        assert UserMessage.will_truncate("C" * 10_001) is True
+
+    def test_collapsed_render_has_clickable_expand_hint(self) -> None:
+        """A collapsed message renders a dim, clickable expand affordance."""
+        content = _render_content(UserMessage("Z" * 12_000))
+        assert "show full message" in content.plain
+        # The hint carries a Textual @click action span so a click toggles it.
+        assert any("@click=toggle_expand" in str(span.style) for span in content.spans)
+
+    def test_short_message_has_no_expand_hint(self) -> None:
+        """A short message renders no affordance and no click action span."""
+        content = _render_content(UserMessage("hello world"))
+        assert "show full message" not in content.plain
+        assert not any(
+            "@click=toggle_expand" in str(span.style) for span in content.spans
+        )
+
+    async def test_toggle_expands_to_full_body_and_flips_hint(self) -> None:
+        """Toggling shows the full body and swaps the hint to a collapse label."""
+        big = "H" * 6000 + "\n" * 40 + "T" * 6000
+        msg = UserMessage(big)
+
+        class _TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield msg
+
+        app = _TestApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert msg.is_truncated is True
+            assert msg.has_expandable_body is True
+            collapsed = _render_content(msg)
+            assert "show full message" in collapsed.plain
+            assert len(collapsed.plain) < len(big)
+
+            msg.toggle_expanded()
+            await pilot.pause()
+            expanded = _render_content(msg)
+            assert "to collapse" in expanded.plain
+            assert big in expanded.plain
+
+            msg.toggle_expanded()
+            await pilot.pause()
+            assert "show full message" in _render_content(msg).plain
+
+    async def test_short_message_toggle_is_a_noop(self) -> None:
+        """A message that never collapses cannot be toggled."""
+        msg = UserMessage("tiny")
+
+        class _TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield msg
+
+        app = _TestApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert msg.has_expandable_body is False
+            msg.toggle_expanded()
+            await pilot.pause()
+            assert msg._expanded is False
+
+    async def test_click_hint_toggles_but_body_click_does_not(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Clicking the hint span expands; clicking body text leaves it collapsed."""
+        import deepagents_code.tui.widgets.messages as messages_module
+
+        # Shrink thresholds so the whole widget (body + hint) fits on screen and
+        # the hint row is reachable by a click at a stable coordinate.
+        monkeypatch.setattr(messages_module, "_USER_MSG_MAX_DISPLAY_CHARS", 20)
+        monkeypatch.setattr(messages_module, "_USER_MSG_TRUNCATE_HEAD_CHARS", 6)
+        monkeypatch.setattr(messages_module, "_USER_MSG_TRUNCATE_TAIL_CHARS", 6)
+
+        content = "AAAAAA" + "X" * 10 + "\n\n" + "Y" * 10 + "BBBBBB"
+        msg = UserMessage(content)
+
+        class _TestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield msg
+
+        app = _TestApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            assert msg.is_truncated is True
+            assert msg._expanded is False
+
+            # Body text sits on the first row; a click there must not toggle.
+            await pilot.click(UserMessage, offset=Offset(4, 0))
+            await pilot.pause()
+            assert msg._expanded is False
+
+            # The hint renders on the last content row (head, marker, tail, hint).
+            await pilot.click(UserMessage, offset=Offset(4, 3))
+            await pilot.pause()
+            assert msg._expanded is True
 
     def test_queued_message_render_truncates(self) -> None:
         """QueuedUserMessage render truncates long content with an elision marker."""

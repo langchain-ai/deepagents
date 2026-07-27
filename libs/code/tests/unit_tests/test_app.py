@@ -5516,6 +5516,67 @@ class TestAskUserLifecycle:
         rubric.toggle_details.assert_not_called()
         group.toggle.assert_called_once_with()
 
+    def test_ctrl_o_toggles_recent_expandable_user_message(self) -> None:
+        """Ctrl+O expands the most-recent collapsed user message."""
+        from deepagents_code.tui.widgets.messages import UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        user_msg = MagicMock(spec=UserMessage)
+        user_msg.has_expandable_body = True
+        container = MagicMock()
+        container.children = [user_msg]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        user_msg.toggle_expanded.assert_called_once_with()
+
+    def test_ctrl_o_skips_user_message_without_expandable_body(self) -> None:
+        """A short user message is not toggleable, so Ctrl+O leaves it alone."""
+        from deepagents_code.tui.widgets.messages import UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        user_msg = MagicMock(spec=UserMessage)
+        user_msg.has_expandable_body = False
+        container = MagicMock()
+        container.children = [user_msg]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        user_msg.toggle_expanded.assert_not_called()
+
+    async def test_long_user_message_posts_collapse_toast(self) -> None:
+        """Submitting a message past the display threshold announces the collapse."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(app, "_send_to_agent", new_callable=AsyncMock),
+                patch.object(app, "notify") as mock_notify,
+            ):
+                await app._handle_user_message("L" * 12_000)
+
+            assert mock_notify.call_count == 1
+            _args, kwargs = mock_notify.call_args
+            assert kwargs["severity"] == "information"
+            assert kwargs["markup"] is False
+
+    async def test_short_user_message_posts_no_collapse_toast(self) -> None:
+        """A short message must not trigger the collapse toast."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(app, "_send_to_agent", new_callable=AsyncMock),
+                patch.object(app, "notify") as mock_notify,
+            ):
+                await app._handle_user_message("short and sweet")
+
+            mock_notify.assert_not_called()
+
     async def test_request_ask_user_timeout_cleans_old_widget(self) -> None:
         """Timeout cleanup should cancel then remove the previous widget."""
         app = DeepAgentsApp()

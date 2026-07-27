@@ -241,8 +241,26 @@ def _select_prompt_body(widget: Static) -> None:
     }
 
 
-def _truncate_for_display(text: str) -> str:
-    """Truncate very long user message text for display in the conversation.
+@dataclass(frozen=True, slots=True)
+class _CollapsedMessage:
+    """Result of collapsing a long user message for display.
+
+    Attributes:
+        text: The display text — head+tail elision when truncated, otherwise
+            the original content unchanged.
+        truncated: Whether the content exceeded the display threshold and was
+            collapsed.
+        hidden_lines: Number of newlines hidden in the elided middle region
+            (0 when not truncated).
+    """
+
+    text: str
+    truncated: bool
+    hidden_lines: int
+
+
+def _collapse_user_message(text: str) -> _CollapsedMessage:
+    """Collapse very long user message text for display in the conversation.
 
     Keeps the first and last portions and replaces the middle with an elision
     marker showing the number of newlines in the hidden region.  This mirrors
@@ -253,20 +271,48 @@ def _truncate_for_display(text: str) -> str:
         text: Full message content.
 
     Returns:
-        Truncated text with an elision marker, or the original text when
-        it does not exceed the display threshold.
+        A `_CollapsedMessage` carrying the display text plus whether truncation
+        occurred and how many newlines were hidden.
     """
     if len(text) <= _USER_MSG_MAX_DISPLAY_CHARS:
-        return text
+        return _CollapsedMessage(text=text, truncated=False, hidden_lines=0)
     head = text[:_USER_MSG_TRUNCATE_HEAD_CHARS]
     tail = text[-_USER_MSG_TRUNCATE_TAIL_CHARS:]
     hidden_text = text[_USER_MSG_TRUNCATE_HEAD_CHARS:-_USER_MSG_TRUNCATE_TAIL_CHARS]
     hidden_lines = hidden_text.count("\n")
-    return f"{head}\n… +{hidden_lines} lines …\n{tail}"
+    return _CollapsedMessage(
+        text=f"{head}\n… +{hidden_lines} lines …\n{tail}",
+        truncated=True,
+        hidden_lines=hidden_lines,
+    )
+
+
+def _truncate_for_display(text: str) -> str:
+    """Return the collapsed display text for a long user message.
+
+    Thin string-returning wrapper over `_collapse_user_message` for callers
+    (e.g. `QueuedUserMessage`) that only need the display string.
+
+    Args:
+        text: Full message content.
+
+    Returns:
+        Truncated text with an elision marker, or the original text when
+        it does not exceed the display threshold.
+    """
+    return _collapse_user_message(text).text
 
 
 class UserMessage(Static):
-    """Widget displaying a user message."""
+    """Widget displaying a user message.
+
+    Very long messages are collapsed to a head+tail preview at render time so
+    huge pastes don't flood the transcript. The collapse is reversible: a dim
+    `… +N lines — click or Ctrl+O to show full message` affordance toggles the
+    full body inline (click via a Textual `@click` action span, or Ctrl+O via
+    `App.action_toggle_tool_output`). The full untruncated text is always kept
+    for copy/select regardless of the visible state.
+    """
 
     DEFAULT_CSS = """
     UserMessage {
@@ -283,6 +329,24 @@ class UserMessage(Static):
     }
     """
     """`-cancelled` dims a prompt whose turn was interrupted by the user."""
+
+    _expanded: var[bool] = var(False)
+    """Whether the full body is shown instead of the head+tail preview."""
+
+    @staticmethod
+    def will_truncate(content: str) -> bool:
+        """Return whether `content` would be collapsed at render time.
+
+        Lets the app decide (before mounting) whether to announce the collapse,
+        without duplicating the threshold logic.
+
+        Args:
+            content: The message content that would be submitted.
+
+        Returns:
+            `True` when the content exceeds the display threshold.
+        """
+        return _collapse_user_message(content).truncated
 
     def __init__(
         self,
@@ -328,6 +392,31 @@ class UserMessage(Static):
     def set_cancelled(self) -> None:
         """Dim the message to mark its turn as interrupted by the user."""
         self.add_class("-cancelled")
+
+    @property
+    def is_truncated(self) -> bool:
+        """Whether the body is long enough to be collapsed at render time."""
+        _prefix, body = self._prefix_and_body()
+        return _collapse_user_message(body).truncated
+
+    @property
+    def has_expandable_body(self) -> bool:
+        """Whether Ctrl+O / click can toggle a collapsed body on this message."""
+        return self.is_truncated
+
+    def toggle_expanded(self) -> None:
+        """Toggle between the collapsed preview and the full body."""
+        if not self.is_truncated:
+            return
+        self._expanded = not self._expanded
+
+    def action_toggle_expand(self) -> None:
+        """Toggle expansion from the clickable `@click` hint affordance."""
+        self.toggle_expanded()
+
+    def watch__expanded(self, expanded: bool) -> None:  # noqa: ARG002  # reactive watcher repaints on state change
+        """Repaint when the expanded state changes."""
+        self.refresh(layout=True)
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Return selected text, preferring the full content over the render.
@@ -394,7 +483,9 @@ class UserMessage(Static):
         """Render the styled user message.
 
         Returns:
-            Styled Content with mode prefix and highlighted mentions.
+            Styled Content with mode prefix and highlighted mentions. When the
+            body is long it is collapsed to a head+tail preview with a dim,
+            clickable expand affordance (unless already expanded).
         """
         colors = theme.get_theme_colors(self)
 
@@ -404,9 +495,11 @@ class UserMessage(Static):
         prefix, content = self._prefix_and_body()
         parts: list[str | tuple[str, str]] = [prefix]
 
-        # Truncate very long content for display so large pastes don't flood
-        # the conversation.  The full text is still available for copy/select.
-        content = _truncate_for_display(content)
+        # Collapse very long content for display so large pastes don't flood
+        # the conversation, unless the user expanded it.  The full text is
+        # always available for copy/select and was sent to the model verbatim.
+        collapsed = _collapse_user_message(content)
+        content = content if self._expanded else collapsed.text
 
         # Highlight @mentions and /commands in the content
         last_end = 0
@@ -442,7 +535,34 @@ class UserMessage(Static):
         if last_end < len(content):
             parts.append(content[last_end:])
 
-        return Content.assemble(*parts)
+        body = Content.assemble(*parts)
+        if not collapsed.truncated:
+            return body
+        return Content.assemble(body, "\n", self._expand_hint(collapsed.hidden_lines))
+
+    def _expand_hint(self, hidden_lines: int) -> Content:
+        """Build the dim, clickable expand/collapse affordance.
+
+        The hint carries a Textual `@click` action span so clicking it toggles
+        the body via `action_toggle_expand`, while ordinary clicks on the body
+        text still select/copy.  User content never reaches the markup parser:
+        the hint text is static and interpolated with `$var` auto-escaping.
+
+        Args:
+            hidden_lines: Number of newlines hidden in the collapsed middle.
+
+        Returns:
+            A dim `Content` affordance with an attached click action.
+        """
+        if self._expanded:
+            hint = "click or Ctrl+O to collapse"
+        else:
+            ellipsis = get_glyphs().ellipsis
+            hint = (
+                f"{ellipsis} +{hidden_lines} lines"
+                " — click or Ctrl+O to show full message"
+            )
+        return Content.from_markup("[dim][@click=toggle_expand]$hint[/][/]", hint=hint)
 
 
 class QueuedUserMessage(Static):

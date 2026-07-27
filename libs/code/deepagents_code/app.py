@@ -13856,6 +13856,18 @@ class DeepAgentsApp(App):
         user_message = UserMessage(
             message, media_snapshot=media_snapshot, detect_mode=False
         )
+        # Long messages are collapsed to a head+tail preview in the transcript.
+        # Announce it once at submit time so the collapse isn't silent, and
+        # point at the expand affordance. The full text still went to the model.
+        if UserMessage.will_truncate(message):
+            self.notify(
+                "Long message collapsed in the transcript. Click "
+                "'show full message' or press Ctrl+O to expand it — the full "
+                "text was still sent to the model.",
+                severity="information",
+                markup=False,
+                timeout=6,
+            )
         await self._mount_message(user_message)
         self._active_user_message = user_message
         await self._send_to_agent(message)
@@ -17151,6 +17163,9 @@ class DeepAgentsApp(App):
                 return
             if isinstance(child, SkillMessage) and child._stripped_body.strip():
                 child.toggle_body()
+                return
+            if isinstance(child, UserMessage) and child.has_expandable_body:
+                child.toggle_expanded()
                 return
             if isinstance(child, ToolCallMessage) and (
                 not child.has_class("-grouped") or child.display

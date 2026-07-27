@@ -17159,6 +17159,11 @@ class DeepAgentsApp(App):
         def handle_result(result: YoloModeNoticeResult | None) -> None:
             self._yolo_mode_notice_pending = False
             if result is YoloModeNoticeResult.MANUAL:
+                # Already-Manual is a no-op: skip the live store write so a
+                # failed redundant write cannot flip `_approval_mode_blocked`
+                # and cancel an active run after the user declined YOLO.
+                if self._approval_mode is ApprovalMode.MANUAL:
+                    return
                 task = asyncio.create_task(self._set_approval_mode(ApprovalMode.MANUAL))
                 task.add_done_callback(_log_task_exception)
                 return

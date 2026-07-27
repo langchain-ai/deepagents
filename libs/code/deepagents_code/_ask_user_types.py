@@ -29,11 +29,12 @@ class Question(TypedDict):
     question: Annotated[str, Field(description="The question text to display.")]
 
     type: Annotated[
-        Literal["text", "multiple_choice"],
+        Literal["text", "multiple_choice", "multi_select"],
         Field(
             description=(
                 "Question type. 'text' for free-form input, 'multiple_choice' for "
-                "predefined options."
+                "picking exactly one predefined option, 'multi_select' for picking "
+                "one or more predefined options."
             )
         ),
     ]
@@ -43,8 +44,9 @@ class Question(TypedDict):
             list[Choice],
             Field(
                 description=(
-                    "Options for multiple_choice questions. An 'Other' free-form "
-                    "option is always appended automatically."
+                    "Options for 'multiple_choice' and 'multi_select' questions. "
+                    "For 'multiple_choice', an 'Other' free-form option is always "
+                    "appended automatically; 'multi_select' has no 'Other' option."
                 )
             ),
         ]

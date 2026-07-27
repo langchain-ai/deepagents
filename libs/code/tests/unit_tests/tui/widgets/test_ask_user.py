@@ -457,6 +457,118 @@ class TestAskUserMenu:
             assert future.done()
             assert future.result() == {"type": "answered", "answers": [big]}
 
+    async def test_multi_select_toggles_and_joins_answers(self) -> None:
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [
+                        {"value": "red"},
+                        {"value": "blue"},
+                        {"value": "green"},
+                    ],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            # Toggle "red" (index 0), move to "blue" (index 1) and toggle it.
+            await pilot.press("space")
+            await pilot.press("down")
+            await pilot.press("space")
+            await pilot.pause()
+            # Confirm the selection with Enter.
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {
+                "type": "answered",
+                "answers": ["red, blue"],
+            }
+
+    async def test_multi_select_required_enter_without_selection_does_not_submit(
+        self,
+    ) -> None:
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            # Enter with nothing selected on a required question is a no-op.
+            await pilot.press("enter")
+            await pilot.pause()
+            assert not future.done()
+
+            # Selecting one option then Enter submits.
+            await pilot.press("space")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {"type": "answered", "answers": ["red"]}
+
+    async def test_multi_select_mixed_with_other_question_types(self) -> None:
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Toppings?",
+                    "type": "multi_select",
+                    "choices": [{"value": "cheese"}, {"value": "olives"}],
+                },
+                {"question": "Name?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            # Q1: toggle both choices, confirm, advancing to the text question.
+            await pilot.press("space")
+            await pilot.press("down")
+            await pilot.press("space")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            assert text_input.has_focus
+            text_input.text = "Alice"
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {
+                "type": "answered",
+                "answers": ["cheese, olives", "Alice"],
+            }
+
     async def test_enter_advances_sequentially_through_mc_questions(self) -> None:
         """Enter on a MC question should advance to the next, not skip."""
         app = _AskUserTestApp(

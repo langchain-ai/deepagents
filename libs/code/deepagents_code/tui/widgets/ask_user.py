@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical
+from textual.content import Content
 from textual.message import Message
 from textual.widgets import Markdown, Static
 
@@ -208,6 +209,8 @@ class AskUserMenu(Container):
                 if editor is not None
                 else "Ctrl+X external editor"
             )
+        if any(q.get("type") == "multi_select" for q in self._questions):
+            parts.append("Space to toggle")
         if len(self._questions) > 1:
             parts.append("Tab/Shift+Tab switch question")
         parts.append("Esc to cancel")
@@ -383,6 +386,40 @@ class _ChoiceOption(InlinePromptOption):
         )
 
 
+class _MultiSelectOption(_ChoiceOption):
+    """A toggleable ask-user choice option for `multi_select` questions.
+
+    Renders a checkbox glyph (`circle_filled`/`circle_empty`) before the label so
+    the user can see which options are toggled on, independent of the highlight
+    cursor.
+    """
+
+    def __init__(
+        self, text: str, index: int, *, selected: bool = False, **kwargs: Any
+    ) -> None:
+        """Initialize an unchecked multi-select choice option."""
+        self._checked = False
+        super().__init__(text, index, selected=selected, **kwargs)
+
+    @property
+    def checked(self) -> bool:
+        """Whether this option is currently toggled on."""
+        return self._checked
+
+    def set_checked(self, checked: bool) -> None:
+        """Update the checkbox state and re-render the option."""
+        self._checked = checked
+        self.update(self._render())
+
+    def _render(self) -> Content:
+        glyphs = get_glyphs()
+        cursor = f"{glyphs.cursor} " if self._cursor_visible else "  "
+        box = glyphs.circle_filled if self._checked else glyphs.circle_empty
+        return Content.from_markup(
+            "$cursor$box $text", cursor=cursor, box=box, text=self._text
+        )
+
+
 class _QuestionWidget(Vertical):
     """Widget for a single question (text or multiple choice)."""
 
@@ -391,6 +428,7 @@ class _QuestionWidget(Vertical):
         Binding("k", "move_up", "Up", show=False),
         Binding("down", "move_down", "Down", show=False),
         Binding("j", "move_down", "Down", show=False),
+        Binding("space", "toggle_choice", "Toggle", show=False),
         Binding("enter", "select_or_submit", "Select", show=False),
     ]
 
@@ -410,13 +448,16 @@ class _QuestionWidget(Vertical):
         self._question: Question = question
         self._index: int = index
         self._show_number = show_number
-        self._q_type: Literal["text", "multiple_choice"] = (
-            "multiple_choice" if question_type == "multiple_choice" else "text"
-        )
+        self._q_type: Literal["text", "multiple_choice", "multi_select"]
+        if question_type in {"multiple_choice", "multi_select"}:
+            self._q_type = question_type
+        else:
+            self._q_type = "text"
         self._choices: list[Choice] = question.get("choices", [])
         self._required: bool = question.get("required", True)
         self._choice_widgets: list[_ChoiceOption] = []
         self._selected_choice: int = 0
+        self._selected: set[int] = set()
         self._text_input: AskUserTextArea | None = None
         self._other_input: AskUserTextArea | None = None
         self._is_other_selected: bool = False
@@ -443,6 +484,12 @@ class _QuestionWidget(Vertical):
             self._other_input = AskUserTextArea(classes="ask-user-other-input")
             self._other_input.display = False
             yield self._other_input
+        elif self._q_type == "multi_select" and self._choices:
+            for i, choice in enumerate(self._choices):
+                label = choice.get("value", str(choice))
+                msw = _MultiSelectOption(label, index=i, selected=(i == 0))
+                self._choice_widgets.append(msw)
+                yield msw
         else:
             self._text_input = AskUserTextArea(classes="ask-user-text-input")
             yield self._text_input
@@ -465,6 +512,13 @@ class _QuestionWidget(Vertical):
         if self._q_type == "text" or not self._choices:
             return self._text_input.submitted_value if self._text_input else ""
 
+        if self._q_type == "multi_select":
+            return ", ".join(
+                self._choices[i].get("value", "")
+                for i in sorted(self._selected)
+                if i < len(self._choices)
+            )
+
         if self._is_other_selected and self._other_input:
             return self._other_input.submitted_value
 
@@ -475,7 +529,10 @@ class _QuestionWidget(Vertical):
 
     def action_move_up(self) -> None:
         """Move selection up in the choice list."""
-        if self._q_type != "multiple_choice" or not self._choice_widgets:
+        if (
+            self._q_type not in {"multiple_choice", "multi_select"}
+            or not self._choice_widgets
+        ):
             return
         if (
             self._is_other_selected
@@ -495,7 +552,10 @@ class _QuestionWidget(Vertical):
 
     def action_move_down(self) -> None:
         """Move selection down in the choice list."""
-        if self._q_type != "multiple_choice" or not self._choice_widgets:
+        if (
+            self._q_type not in {"multiple_choice", "multi_select"}
+            or not self._choice_widgets
+        ):
             return
         max_idx = len(self._choice_widgets) - 1
         old = self._selected_choice
@@ -503,8 +563,32 @@ class _QuestionWidget(Vertical):
         if old != self._selected_choice:
             self._update_choice_selection()
 
+    def action_toggle_choice(self) -> None:
+        """Toggle the highlighted choice for `multi_select` questions."""
+        if self._q_type != "multi_select" or not self._choice_widgets:
+            return
+        index = self._selected_choice
+        if index >= len(self._choices):
+            return
+        checked = index not in self._selected
+        if checked:
+            self._selected.add(index)
+        else:
+            self._selected.discard(index)
+        widget = self._choice_widgets[index]
+        if isinstance(widget, _MultiSelectOption):
+            widget.set_checked(checked)
+
     def action_select_or_submit(self) -> None:
         """Confirm current choice or open the Other input."""
+        if self._q_type == "multi_select" and self._choice_widgets:
+            if not self.get_answer().strip() and self._required:
+                # Keep the question open until at least one option is selected.
+                return
+            menu = self._find_menu()
+            if menu is not None:
+                menu.confirm_and_advance(self._index)
+            return
         if self._q_type == "multiple_choice" and self._choice_widgets:
             is_other = self._selected_choice == len(self._choices)
             if is_other:

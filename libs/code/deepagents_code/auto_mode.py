@@ -1057,11 +1057,11 @@ def _ask_user_question_count(call: ToolCall) -> int | None:
         if (
             not isinstance(question, str)
             or not question.strip()
-            or question_type not in {"text", "multiple_choice"}
+            or question_type not in {"text", "multiple_choice", "multi_select"}
             or (required is not None and not isinstance(required, bool))
         ):
             return None
-        if question_type == "multiple_choice":
+        if question_type in {"multiple_choice", "multi_select"}:
             if not isinstance(choices, list) or not choices:
                 return None
             if not all(

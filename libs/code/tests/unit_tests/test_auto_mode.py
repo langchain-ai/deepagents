@@ -64,6 +64,7 @@ from deepagents_code.auto_mode import (
     AutoModeState,
     HeadlessMCPGuardMiddleware,
     _active_user_directives,
+    _ask_user_question_count,
     _batch_id,
     _ClassifierConstructionDeadlineExceededError,
     _ClassifierDeadlineExceededError,
@@ -5078,6 +5079,50 @@ def test_resolved_scopes_evict_least_recently_used(tmp_path: Path) -> None:
     assert len(middleware._emitted_events) == _MAX_EMITTED_EVENT_SCOPES
     assert "scope-0" in middleware._emitted_events
     assert "scope-1" not in middleware._emitted_events
+
+
+def _ask_user_call(questions: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "name": "ask_user",
+        "args": {"questions": questions},
+        "id": "ask-1",
+        "type": "tool_call",
+    }
+
+
+class TestAskUserQuestionCount:
+    """Tests for `_ask_user_question_count` shape validation."""
+
+    def test_counts_multi_select_question(self) -> None:
+        call = _ask_user_call(
+            [
+                {
+                    "question": "Toppings?",
+                    "type": "multi_select",
+                    "choices": [{"value": "cheese"}, {"value": "olives"}],
+                },
+                {"question": "Name?", "type": "text"},
+            ]
+        )
+        assert _ask_user_question_count(cast("Any", call)) == 2
+
+    def test_rejects_multi_select_without_choices(self) -> None:
+        call = _ask_user_call(
+            [{"question": "Toppings?", "type": "multi_select", "choices": []}]
+        )
+        assert _ask_user_question_count(cast("Any", call)) is None
+
+    def test_rejects_multi_select_with_non_string_choice(self) -> None:
+        call = _ask_user_call(
+            [
+                {
+                    "question": "Toppings?",
+                    "type": "multi_select",
+                    "choices": [{"value": 1}],
+                }
+            ]
+        )
+        assert _ask_user_question_count(cast("Any", call)) is None
 
 
 async def test_headless_guard_rejects_gated_mcp_without_execution() -> None:

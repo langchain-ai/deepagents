@@ -39,11 +39,12 @@ logger = logging.getLogger(__name__)
 
 ASK_USER_TOOL_DESCRIPTION = """Ask the user one or more questions when you need clarification or input before proceeding.
 
-Each question can be either:
+Each question can be one of:
 - "text": Free-form text response from the user
-- "multiple_choice": User selects from predefined options (an "Other" option is always available)
+- "multiple_choice": User selects exactly one of the predefined options (an "Other" option is always available)
+- "multi_select": User selects one or more of the predefined options (no "Other" option)
 
-For multiple choice questions, provide a list of choices. The user can pick one or type a custom answer via the "Other" option.
+For "multiple_choice" and "multi_select" questions, provide a list of choices. For "multiple_choice" the user picks one option or types a custom answer via the "Other" option; for "multi_select" the user toggles any number of the provided options.
 
 By default all questions are required. Set "required" to false for optional questions that the user can skip. Do not include "(required)", "(optional)", "- optional", or similar annotations in the question text — the UI renders that separately based on the "required" field.
 
@@ -65,7 +66,8 @@ Use this tool sparingly - only when you genuinely need information from the user
 
 When using `ask_user`:
 - Be concise and specific with your questions
-- Use multiple choice when there are clear options to choose from
+- Use multiple choice when there are clear options and exactly one applies
+- Use multi-select when the user may legitimately pick several of the options
 - Use text input when you need free-form responses
 - Group related questions into a single ask_user call rather than making multiple calls
 - Never ask questions you can answer yourself from the available context"""  # noqa: E501
@@ -91,13 +93,15 @@ def _validate_questions(questions: list[Question]) -> None:
             raise ValueError(msg)
 
         question_type = q.get("type")
-        if question_type not in {"text", "multiple_choice"}:
+        if question_type not in {"text", "multiple_choice", "multi_select"}:
             msg = f"unsupported ask_user question type: {question_type!r}"
             raise ValueError(msg)
 
-        if question_type == "multiple_choice" and not q.get("choices"):
+        if question_type in {"multiple_choice", "multi_select"} and not q.get(
+            "choices"
+        ):
             msg = (
-                f"multiple_choice question "
+                f"{question_type} question "
                 f"{q.get('question')!r} requires a "
                 f"non-empty 'choices' list"
             )

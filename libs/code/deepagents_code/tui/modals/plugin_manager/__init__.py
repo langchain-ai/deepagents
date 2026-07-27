@@ -596,7 +596,15 @@ class PluginManagerScreen(ModalScreen[None]):  # noqa: RUF067
 
         search_input.focus()
         search_input.insert_text_at_cursor(character)
+        self.set_timer(0.01, self._collapse_search_selection)
         event.stop()
+
+    def _collapse_search_selection(self) -> None:
+        """Place the search cursor at the end without an active selection."""
+        search_input = self.query_one("#plugin-manager-search", Input)
+        search_input.selection = type(search_input.selection).cursor(
+            len(search_input.value)
+        )
 
     def on_plugin_tab_selected(self, event: PluginTabSelected) -> None:
         """Switch tabs from a mouse click on a tab label.

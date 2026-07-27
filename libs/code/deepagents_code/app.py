@@ -571,7 +571,13 @@ class _ConfigWriteResult:
 ScreenResultT = TypeVar("ScreenResultT")
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+    from collections.abc import (
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Coroutine,
+        Mapping,
+    )
 
     from deepagents.backends import CompositeBackend
     from langchain_core.messages import BaseMessage
@@ -6179,9 +6185,14 @@ class DeepAgentsApp(App):
         # restart. `_offer_restart_after_install` owns all follow-up messaging
         # (the prompt's button is the call to action when shown; it mounts a
         # `/restart`-or-relaunch hint itself when it can't show the prompt), so
-        # a redundant "Run /restart" line is never appended here.
+        # a redundant "Run /restart" line is never appended here. The offer is
+        # scheduled off the message pump so the modal stays responsive (see
+        # `_schedule_restart_offer`); the interactive offer never affects this
+        # method's return value, so detaching it does not change the contract.
         await self._mount_message(AppMessage(f"Installed extra '{extra}'."))
-        await self._offer_restart_after_install(extra)
+        self._schedule_restart_offer(
+            self._offer_restart_after_install(extra), context=f"extra:{extra}"
+        )
         return True
 
     async def _handle_install_package(self, package: str, *, force: bool) -> None:
@@ -6272,7 +6283,11 @@ class DeepAgentsApp(App):
                 "now, or relaunch dcode.",
             ),
         )
-        await self._offer_restart_after_install(package)
+        # Scheduled off the message pump so the restart modal stays responsive
+        # to Enter/Esc (see `_schedule_restart_offer`).
+        self._schedule_restart_offer(
+            self._offer_restart_after_install(package), context=f"package:{package}"
+        )
 
     async def _confirm_install_package(self, package: str) -> bool:
         """Ask the user to confirm installing an arbitrary package.
@@ -20758,6 +20773,28 @@ class DeepAgentsApp(App):
             import deepagents_code.tui.widgets.restart_prompt  # noqa: F401
         except ModuleNotFoundError:
             logger.warning("Could not preload restart_prompt modal", exc_info=True)
+
+    def _schedule_restart_offer(
+        self, coro: Coroutine[Any, Any, None], *, context: str
+    ) -> None:
+        """Run a post-install restart offer as a detached background task.
+
+        The `/install` slash command reaches the restart offer through the App's
+        `on_chat_input_submitted` handler, which is awaited inline on the App
+        message pump. Awaiting the restart modal there blocks the pump, so the
+        modal never receives the Enter/Esc key events it needs to resolve and
+        appears frozen. Detaching the offer onto its own task lets the command
+        handler return and frees the pump to route keys to the modal — the same
+        reason the post-`/auth` web-search offer is scheduled rather than
+        awaited (see `_launch_web_search_restart_prompt`).
+
+        Args:
+            coro: The restart-offer coroutine to run off the message pump.
+            context: Short description used if the task is logged on failure.
+        """
+        task = asyncio.create_task(coro, name=f"restart-offer:{context}")
+        self._track_server_restart_task(task)
+        task.add_done_callback(_log_task_exception)
 
     async def _offer_restart_after_install(self, label: str) -> None:
         """Offer a one-keypress restart after a restart-capable install.

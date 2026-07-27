@@ -52,8 +52,6 @@ Additional guidelines:
 
   - We ask that if you use generative AI for your contribution, you include a disclaimer.
   - PRs should not touch more than one package unless absolutely necessary.
-  - **One PR = one release-please component** for bump-worthy titles (`feat`/`fix`/etc.). release-please opens a release PR per touched package path. Cross-package dependency / lockfile churn goes in a separate `chore(deps):` PR. See [`.github/RELEASING.md` → Multi-component fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#multi-component-fan-out).
-  - [ ] This PR touches only one release-please component (or the fan-out is intentional and the appropriate bypass label is applied).
   - Do not update the `uv.lock` files or add dependencies to `pyproject.toml` files (even optional ones) unless you have explicit permission to do so by a maintainer.
 
 ## Social handles (optional)

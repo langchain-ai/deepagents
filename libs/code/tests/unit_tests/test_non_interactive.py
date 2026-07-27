@@ -24,6 +24,7 @@ from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
 )
+from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.client.non_interactive import (
     _MAX_HITL_ITERATIONS,
     HITLIterationLimitError,
@@ -40,10 +41,18 @@ from deepagents_code.client.non_interactive import (
     _run_agent_loop,
     _run_startup_command,
     _start_langsmith_thread_url_lookup,
+    _summarization_stream_status,
     run_non_interactive,
 )
 from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult
 from deepagents_code.file_ops import FileOpTracker
+from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+from deepagents_code.hooks.models.domain import (
+    HookEvent,
+    SessionEndDecision,
+    SessionStartDecision,
+    UserPromptSubmitDecision,
+)
 from deepagents_code.tool_display import format_tool_message_content
 
 
@@ -51,6 +60,32 @@ from deepagents_code.tool_display import format_tool_message_content
 def console() -> Console:
     """Console that captures output."""
     return Console(quiet=True)
+
+
+def test_summarization_status_ignores_subagent_namespaces() -> None:
+    assert (
+        _summarization_stream_status(
+            (
+                ("tools:subagent",),
+                "messages",
+                (
+                    AIMessage(content="summary"),
+                    {"lc_source": "summarization"},
+                ),
+            )
+        )
+        is None
+    )
+    assert (
+        _summarization_stream_status(
+            (
+                ("tools:subagent",),
+                "messages",
+                (AIMessage(content="continued"), {}),
+            )
+        )
+        is None
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -320,6 +355,61 @@ class TestSandboxTypeForwarding:
         assert kwargs["sandbox_type"] == "modal"
         assert kwargs["profile_overrides"] == {"max_input_tokens": 32_000}
         assert kwargs["enable_interpreter"] is None
+
+    async def test_permission_hooks_override_headless_yolo_bypass(self) -> None:
+        """Permission hooks force client resolution while retaining YOLO context."""
+        runtime = MagicMock()
+        runtime.configured_events.return_value = frozenset(
+            {HookEvent.PERMISSION_REQUEST}
+        )
+        mock_agent = MagicMock()
+        mock_server_proc = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
+            patch(
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.hooks.runtime.HooksRuntime.create",
+                return_value=runtime,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive._run_agent_loop",
+                new_callable=AsyncMock,
+            ) as mock_loop,
+            patch(
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, mock_server_proc, None),
+            ) as mock_start_server,
+        ):
+            mock_settings.shell_allow_list = SHELL_ALLOW_ALL
+            mock_settings.has_tavily = False
+            mock_settings.model_name = None
+
+            await run_non_interactive(message="test task")
+
+        _, server_kwargs = mock_start_server.call_args
+        assert server_kwargs["auto_approve"] is False
+        assert server_kwargs["interrupt_shell_only"] is False
+        _, loop_kwargs = mock_loop.call_args
+        assert loop_kwargs["hooks_runtime"] is runtime
+        assert loop_kwargs["approval_mode"] is ApprovalMode.YOLO
+        assert loop_kwargs["prompt_id"] is not None
 
     async def test_sandbox_snapshot_name_passed_to_server(self) -> None:
         """`sandbox_snapshot_name` must reach `start_server_and_get_agent`."""
@@ -1310,6 +1400,208 @@ class TestMaxTurns:
 
         _, kwargs = agent.astream.call_args
         assert kwargs["context"]["thread_id"] == "t1"
+
+    async def test_user_prompt_hook_suppresses_legacy_duplicate_and_prompt(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        runtime = MagicMock()
+        runtime.cwd = tmp_path
+        runtime.snapshot_id = "snapshot"
+        runtime.configured_server_events.return_value = ()
+        runtime.configured_events.return_value = frozenset(
+            {HookEvent.USER_PROMPT_SUBMIT}
+        )
+        runtime.invoke = AsyncMock(
+            return_value=UserPromptSubmitDecision(
+                event=HookEvent.USER_PROMPT_SUBMIT,
+                context=["replacement"],
+                suppress_original_prompt=True,
+            )
+        )
+        agent = MagicMock()
+        agent.astream = MagicMock(return_value=_async_iter([]))
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+
+        with patch(
+            "deepagents_code.client.non_interactive.dispatch_hook",
+            new_callable=AsyncMock,
+        ) as legacy:
+            await _run_agent_loop(
+                agent,
+                "secret",
+                config,
+                Console(quiet=True),
+                MagicMock(),
+                quiet=True,
+                hooks_runtime=runtime,
+            )
+
+        stream_input = agent.astream.call_args.args[0]
+        assert stream_input["messages"] == [
+            {"role": "system", "content": "replacement"}
+        ]
+        assert not any(
+            call.args and call.args[0] in {"session.start", "user.prompt"}
+            for call in legacy.await_args_list
+        )
+        runtime.append_messages.assert_called_once()
+
+    async def test_user_prompt_stop_ends_headless_session_once(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        runtime = MagicMock()
+        runtime.cwd = tmp_path
+        runtime.snapshot_id = "snapshot"
+        runtime.configured_server_events.return_value = ()
+        runtime.configured_events.return_value = frozenset(
+            {
+                HookEvent.SESSION_START,
+                HookEvent.USER_PROMPT_SUBMIT,
+                HookEvent.SESSION_END,
+            }
+        )
+        runtime.invoke = AsyncMock(
+            side_effect=[
+                SessionStartDecision(event=HookEvent.SESSION_START),
+                UserPromptSubmitDecision(
+                    event=HookEvent.USER_PROMPT_SUBMIT,
+                    continue_processing=False,
+                    stop_reason="blocked",
+                ),
+                SessionEndDecision(event=HookEvent.SESSION_END),
+            ]
+        )
+        agent = MagicMock()
+
+        with pytest.raises(ClientHookStopError, match="blocked"):
+            await _run_agent_loop(
+                agent,
+                "secret",
+                {"configurable": {"thread_id": "t1"}},
+                Console(quiet=True),
+                MagicMock(),
+                quiet=True,
+                hooks_runtime=runtime,
+            )
+
+        events = [call.args[0].event.event for call in runtime.invoke.await_args_list]
+        assert events == [
+            HookEvent.SESSION_START,
+            HookEvent.USER_PROMPT_SUBMIT,
+            HookEvent.SESSION_END,
+        ]
+        agent.astream.assert_not_called()
+
+    async def test_headless_transcript_records_main_and_identified_subagent(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        runtime = MagicMock()
+        runtime.cwd = tmp_path
+        runtime.snapshot_id = "snapshot"
+        runtime.configured_server_events.return_value = ()
+        runtime.configured_events.return_value = frozenset()
+        chunks = [
+            (
+                ("subagent",),
+                "messages",
+                (
+                    AIMessage(id="sub-1", content="research"),
+                    {"dcode_subagent_id": "agent-1"},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (AIMessage(id="main-1", content="answer"), {}),
+            ),
+        ]
+        agent = MagicMock()
+        agent.astream = MagicMock(return_value=_async_iter(chunks))
+
+        with patch(
+            "deepagents_code.client.non_interactive.dispatch_hook",
+            new_callable=AsyncMock,
+        ):
+            await _run_agent_loop(
+                agent,
+                "question",
+                {"configurable": {"thread_id": "t1"}},
+                Console(quiet=True),
+                MagicMock(),
+                quiet=True,
+                hooks_runtime=runtime,
+            )
+
+        calls = runtime.append_messages.call_args_list
+        assert calls[0].args[1][0].content == "question"
+        assert calls[1].kwargs == {"agent_id": "agent-1"}
+        assert calls[1].args[1][0].content == "research"
+        assert calls[2].kwargs == {"agent_id": None}
+        assert calls[2].args[1][0].content == "answer"
+
+    async def test_compact_session_start_uses_active_model_before_continuation(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        runtime = MagicMock()
+        runtime.cwd = tmp_path
+        runtime.snapshot_id = "snapshot"
+        runtime.configured_server_events.return_value = ()
+        runtime.configured_events.return_value = frozenset(
+            {HookEvent.SESSION_START, HookEvent.PRE_COMPACT}
+        )
+        runtime.invoke = AsyncMock(
+            side_effect=[
+                SessionStartDecision(event=HookEvent.SESSION_START),
+                SessionStartDecision(event=HookEvent.SESSION_START),
+            ]
+        )
+        chunks = [
+            (
+                (),
+                "messages",
+                (
+                    AIMessage(id="summary", content="summary"),
+                    {"lc_source": "summarization"},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (AIMessage(id="answer", content="continued"), {}),
+            ),
+        ]
+        agent = MagicMock()
+        agent.astream = MagicMock(return_value=_async_iter(chunks))
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
+        ):
+            mock_settings.model_name = "test:model"
+            mock_settings.model_provider = "test"
+            await _run_agent_loop(
+                agent,
+                "question",
+                {"configurable": {"thread_id": "t1"}},
+                Console(quiet=True),
+                MagicMock(),
+                quiet=True,
+                hooks_runtime=runtime,
+            )
+
+        invocations = [call.args[0] for call in runtime.invoke.await_args_list]
+        assert [invocation.event.event for invocation in invocations] == [
+            HookEvent.SESSION_START,
+            HookEvent.SESSION_START,
+        ]
+        assert invocations[-1].event.model == "test:model"
 
     async def test_run_agent_loop_defaults_project_hooks_untrusted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

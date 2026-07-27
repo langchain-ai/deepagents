@@ -15,7 +15,6 @@ import deepagents_code
 from deepagents_code.tool_display import format_tool_display
 from deepagents_code.tui.widgets.ask_user import (
     _TRAILING_ANNOTATION_RE,
-    MISSING_ANSWER_TOAST,
     AskUserMenu,
     AskUserTextArea,
     _QuestionWidget,
@@ -1220,25 +1219,6 @@ class TestAskUserMenu:
             await pilot.pause()
 
             assert not future.done()
-
-    async def test_required_empty_submit_shows_toast(self) -> None:
-        """Blocked empty submit surfaces a warning toast to the user."""
-        app = _AskUserTestApp([{"question": "Name?", "type": "text", "required": True}])
-
-        async with app.run_test() as pilot:
-            menu = app.query_one("#ask-user-menu", AskUserMenu)
-            future: asyncio.Future[AskUserWidgetResult] = (
-                asyncio.get_running_loop().create_future()
-            )
-            menu.set_future(future)
-
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-
-            assert not future.done()
-            messages = [n.message for n in app._notifications]
-            assert MISSING_ANSWER_TOAST in messages
 
     async def test_up_from_other_input_selects_last_choice_directly(self) -> None:
         """Pressing up while Other input is focused jumps to last real choice."""

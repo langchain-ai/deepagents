@@ -35,6 +35,13 @@ from deepagents_code.client.non_interactive import (
     _process_message_chunk,
 )
 from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
+from deepagents_code.hooks.models.domain import (
+    HookEvent,
+    PermissionEffect,
+    PermissionRequestDecision,
+    SessionStartDecision,
+    UserPromptSubmitDecision,
+)
 from deepagents_code.tui.textual_adapter import (
     RubricEvaluationEnd,
     SessionStats,
@@ -51,6 +58,7 @@ from deepagents_code.tui.textual_adapter import (
 )
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
+    AssistantMessage,
     RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -1808,6 +1816,257 @@ class TestExecuteTaskTextualTurnMarkers:
             )
 
         assert "dcode_auto_approve" not in agent.configs[0]["metadata"]
+
+
+class TestExecuteTaskTextualClientLifecycle:
+    async def test_transcript_records_completed_main_and_subagent_messages(
+        self,
+    ) -> None:
+        from deepagents_code.app import TextualSessionState
+
+        runtime = MagicMock()
+        agent = _SequencedAgent(
+            [
+                [
+                    (
+                        ("subagent",),
+                        "messages",
+                        (
+                            AIMessage(id="sub-1", content="research"),
+                            {"dcode_subagent_id": "agent-1"},
+                        ),
+                    ),
+                    (
+                        (),
+                        "messages",
+                        (AIMessage(id="main-1", content="answer"), {}),
+                    ),
+                ]
+            ]
+        )
+        state = TextualSessionState(thread_id="thread-1")
+        state.hooks_runtime = runtime
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="question",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=state,
+            adapter=adapter,
+        )
+
+        calls = runtime.append_messages.call_args_list
+        assert calls[0].args[1][0].content == "question"
+        assert calls[1].kwargs == {"agent_id": "agent-1"}
+        assert calls[1].args[1][0].content == "research"
+        assert calls[2].kwargs == {"agent_id": None}
+        assert calls[2].args[1][0].content == "answer"
+
+    async def test_user_prompt_hook_applies_context_and_suppression_once(self) -> None:
+        from deepagents_code.app import TextualSessionState
+
+        agent = _SequencedAgent([[]])
+        hooks = MagicMock()
+        hooks.has_handlers.side_effect = lambda event: (
+            event is HookEvent.USER_PROMPT_SUBMIT
+        )
+        hooks.user_prompt_submit = AsyncMock(
+            return_value=UserPromptSubmitDecision(
+                event=HookEvent.USER_PROMPT_SUBMIT,
+                context=["replacement context"],
+                suppress_original_prompt=True,
+            )
+        )
+        hooks.take_session_context.return_value = ()
+        state = TextualSessionState(thread_id="thread-1")
+        state.client_hooks = hooks
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with patch(
+            "deepagents_code.tui.textual_adapter.dispatch_hook",
+            new_callable=AsyncMock,
+        ) as legacy:
+            await execute_task_textual(
+                user_input="secret prompt",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=state,
+                adapter=adapter,
+            )
+
+        hooks.user_prompt_submit.assert_awaited_once()
+        stream_input = agent.stream_inputs[0]
+        assert isinstance(stream_input, dict)
+        assert stream_input["messages"] == [
+            {"role": "system", "content": "replacement context"}
+        ]
+        assert not any(
+            call.args and call.args[0] in {"session.start", "user.prompt"}
+            for call in legacy.await_args_list
+        )
+
+    async def test_user_prompt_hook_block_prevents_stream(self) -> None:
+        from deepagents_code.app import TextualSessionState
+        from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+
+        agent = _SequencedAgent([[]])
+        hooks = MagicMock()
+        hooks.has_handlers.side_effect = lambda event: (
+            event is HookEvent.USER_PROMPT_SUBMIT
+        )
+        hooks.user_prompt_submit = AsyncMock(
+            return_value=UserPromptSubmitDecision(
+                event=HookEvent.USER_PROMPT_SUBMIT,
+                continue_processing=False,
+                stop_reason="blocked prompt",
+            )
+        )
+        state = TextualSessionState(thread_id="thread-1")
+        state.client_hooks = hooks
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        with pytest.raises(ClientHookStopError, match="blocked prompt"):
+            await execute_task_textual(
+                user_input="blocked",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=state,
+                adapter=adapter,
+            )
+
+        assert agent.stream_inputs == []
+
+    async def test_compact_session_start_precedes_continuation_with_model(
+        self,
+    ) -> None:
+        from deepagents_code.app import TextualSessionState
+
+        order: list[str] = []
+        agent = _SequencedAgent(
+            [
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            AIMessage(content="summary"),
+                            {"lc_source": "summarization"},
+                        ),
+                    ),
+                    ((), "messages", (_text_message("continued"), {})),
+                ]
+            ]
+        )
+        hooks = MagicMock()
+        hooks.has_handlers.return_value = False
+        hooks.take_session_context.return_value = ()
+        hooks.pre_compact = AsyncMock()
+        hooks.session_start = AsyncMock(
+            side_effect=lambda *_args, **_kwargs: (
+                order.append("start"),
+                SessionStartDecision(event=HookEvent.SESSION_START),
+            )[1]
+        )
+        state = TextualSessionState(thread_id="thread-1")
+        state.client_hooks = hooks
+
+        async def mount(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, AssistantMessage):
+                order.append("continuation")
+
+        adapter = TextualUIAdapter(
+            mount_message=mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        with patch("deepagents_code.config.settings") as mock_settings:
+            mock_settings.model_name = "test:model"
+            mock_settings.model_provider = "test"
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=state,
+                adapter=adapter,
+            )
+
+        assert order[:2] == ["start", "continuation"]
+        hooks.pre_compact.assert_not_awaited()
+        await_args = hooks.session_start.await_args
+        assert await_args is not None
+        assert await_args.kwargs["model"] == "test:model"
+
+    async def test_compact_permission_does_not_redispatch_precompact(self) -> None:
+        from deepagents_code.app import TextualSessionState
+
+        order: list[str] = []
+        request = {"name": "compact_conversation", "args": {}}
+        agent = _SequencedAgent(
+            [
+                [
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": [request],
+                            "review_configs": [],
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        hooks = MagicMock()
+        hooks.has_handlers.side_effect = lambda event: (
+            event
+            in {
+                HookEvent.PRE_COMPACT,
+                HookEvent.PERMISSION_REQUEST,
+            }
+        )
+        hooks.take_session_context.return_value = ()
+        hooks.pre_compact = AsyncMock()
+        hooks.permission_request = AsyncMock(
+            side_effect=lambda *_args: (
+                order.append("permission"),
+                PermissionRequestDecision(
+                    event=HookEvent.PERMISSION_REQUEST,
+                    permission=PermissionEffect(behavior="allow"),
+                ),
+            )[1]
+        )
+        state = TextualSessionState(thread_id="thread-1")
+        state.client_hooks = hooks
+        approval = AsyncMock()
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=approval,
+        )
+
+        await execute_task_textual(
+            user_input="compact",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=state,
+            adapter=adapter,
+        )
+
+        assert order == ["permission"]
+        hooks.pre_compact.assert_not_awaited()
+        approval.assert_not_awaited()
 
 
 class TestExecuteTaskTextualAutoApproveInput:
@@ -6264,6 +6523,65 @@ class TestToolHooksTextual:
             "tool_status": "error",
             "tool_output": "Tool approval rejected",
         }
+
+    async def test_yolo_permission_hook_can_reject_before_auto_approval(self) -> None:
+        """YOLO still invokes configured permission hooks before resolution."""
+        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": action_requests,
+                            "review_configs": [],
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        client_hooks = MagicMock()
+        client_hooks.has_handlers.side_effect = lambda event: (
+            event is HookEvent.PERMISSION_REQUEST
+        )
+        client_hooks.permission_request = AsyncMock(
+            return_value=PermissionRequestDecision(
+                event=HookEvent.PERMISSION_REQUEST,
+                permission=PermissionEffect(
+                    behavior="deny",
+                    reason="blocked by hook",
+                ),
+            )
+        )
+        request_approval = AsyncMock()
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(
+                thread_id="thread-1",
+                approval_mode=ApprovalMode.YOLO,
+                auto_approve=True,
+                turn_id=None,
+                client_hooks=client_hooks,
+            ),
+            adapter=adapter,
+        )
+
+        request_approval.assert_not_awaited()
+        client_hooks.permission_request.assert_awaited_once()
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        assert resume_payload["interrupt-1"]["decisions"] == [
+            {"type": "reject", "message": "blocked by hook"}
+        ]
 
     async def test_hitl_reasoned_reject_preserves_tool_args_for_result(self) -> None:
         """A reasoned HITL reject keeps args until the resumed ToolMessage."""

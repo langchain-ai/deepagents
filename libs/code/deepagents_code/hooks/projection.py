@@ -10,6 +10,7 @@ from langchain_core.messages import ToolMessage
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.models.adapters import HOOK_WIRE_INPUT_ADAPTER
 from deepagents_code.hooks.models.domain import (
+    DcodeNotificationKind,
     HookEvent,
     NotificationEvent,
     PermissionRequestEvent,
@@ -183,7 +184,7 @@ def _project_notification(
         hook_event_name=HookEvent.NOTIFICATION,
         message=event.notification.message,
         title=event.notification.title,
-        notification_type=_notification_type(event.notification.type),
+        notification_type=to_wire_notification_type(event.notification.type),
     )
 
 
@@ -360,10 +361,29 @@ def _permission_mode(mode: ApprovalMode) -> WirePermissionMode:
     }[mode]
 
 
-def _notification_type(value: str) -> WireNotificationType:
+def to_wire_notification_type(value: str) -> WireNotificationType:
+    """Return the compatible notification matcher and wire value.
+
+    Args:
+        value: Domain or wire notification type.
+
+    Returns:
+        Canonical wire notification type.
+
+    Raises:
+        ValueError: If the notification type is unsupported.
+    """
+    mappings: dict[str, WireNotificationType] = {
+        DcodeNotificationKind.PERMISSION_REQUIRED: (
+            WireNotificationType.PERMISSION_PROMPT
+        ),
+        WireNotificationType.PERMISSION_PROMPT: WireNotificationType.PERMISSION_PROMPT,
+        DcodeNotificationKind.AGENT_NEEDS_INPUT: WireNotificationType.AGENT_NEEDS_INPUT,
+        DcodeNotificationKind.AGENT_COMPLETED: WireNotificationType.AGENT_COMPLETED,
+    }
     try:
-        return WireNotificationType(value)
-    except ValueError as exc:
+        return mappings[value]
+    except KeyError as exc:
         msg = f"Unsupported notification type: {value}"
         raise ValueError(msg) from exc
 

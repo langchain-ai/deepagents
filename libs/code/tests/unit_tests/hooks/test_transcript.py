@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.models.domain import (
@@ -24,7 +24,12 @@ from deepagents_code.hooks.models.domain import (
     SubagentStopEvent,
 )
 from deepagents_code.hooks.runtime import HooksRuntime
-from deepagents_code.hooks.transcript import TranscriptStore, redact_transcript_value
+from deepagents_code.hooks.transcript import (
+    SUBAGENT_TRANSCRIPT_ID_METADATA_KEY,
+    TranscriptRecorder,
+    TranscriptStore,
+    redact_transcript_value,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -183,15 +188,103 @@ def test_transcript_revision_is_deterministic_and_thread_safe(tmp_path: Path) ->
     assert handle.revision == concurrent.revision("thread")
 
 
-def test_runtime_stores_transcripts_outside_workspace(tmp_path: Path) -> None:
+def test_transcript_deduplicates_stable_message_identity(tmp_path: Path) -> None:
+    store = TranscriptStore(tmp_path / "transcripts")
+    message = HumanMessage(id="user-1", content="hello")
+
+    store.append_messages("thread", [message, message])
+    store.append_messages("thread", [message])
+
+    records = store.materialize("thread").path.read_text(encoding="utf-8").splitlines()
+    assert len(records) == 1
+
+
+def test_stream_recorder_collects_completed_main_and_identified_subagent(
+    tmp_path: Path,
+) -> None:
+    runtime = HooksRuntime.create(
+        cwd=tmp_path,
+        config_dir=tmp_path / "config",
+        transcript_root=tmp_path / "transcripts",
+    )
+    recorder = TranscriptRecorder(runtime, "thread")
+    recorder.record(
+        AIMessageChunk(id="main-1", content="hel"),
+        {},
+        main_agent=True,
+    )
+    recorder.record(
+        AIMessageChunk(id="main-1", content="lo", chunk_position="last"),
+        {},
+        main_agent=True,
+    )
+    recorder.record(
+        AIMessage(id="sub-1", content="research"),
+        {SUBAGENT_TRANSCRIPT_ID_METADATA_KEY: "agent-1"},
+        main_agent=False,
+    )
+    recorder.record(
+        AIMessage(id="unstable", content="skip"),
+        {},
+        main_agent=False,
+    )
+    recorder.record(
+        AIMessage(id="summary", content="hidden summary"),
+        {"lc_source": "summarization"},
+        main_agent=True,
+    )
+    recorder.record(
+        AIMessage(id="classifier", content="hidden classifier"),
+        {"lc_source": "auto_mode_classifier"},
+        main_agent=True,
+    )
+
+    main = runtime.transcripts.materialize("thread").path.read_text(encoding="utf-8")
+    agent = runtime.transcripts.materialize(
+        "thread",
+        agent_id="agent-1",
+    ).path.read_text(encoding="utf-8")
+
+    assert '"content":"hello"' in main
+    assert '"content":"research"' in agent
+    assert "skip" not in main
+    assert "skip" not in agent
+    assert "hidden summary" not in main
+    assert "hidden classifier" not in main
+
+
+def test_runtime_stores_transcripts_outside_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     workspace = tmp_path / "workspace"
     config_dir = tmp_path / "config"
+    global_dir = tmp_path / "global-deepagents"
     workspace.mkdir()
+    monkeypatch.setattr(
+        "deepagents_code.hooks.runtime.DEFAULT_CONFIG_DIR",
+        global_dir,
+    )
 
     runtime = HooksRuntime.create(cwd=workspace, config_dir=config_dir)
 
-    assert runtime.transcripts.root == (config_dir / "transcripts").resolve()
+    assert runtime.transcripts.root == (global_dir / "transcripts").resolve()
     assert not (workspace / ".deepagents").exists()
+    assert not (config_dir / "transcripts").exists()
+
+
+def test_runtime_accepts_explicit_transcript_root(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    transcript_root = tmp_path / "isolated-transcripts"
+    workspace.mkdir()
+
+    runtime = HooksRuntime.create(
+        cwd=workspace,
+        config_dir=tmp_path / "config",
+        transcript_root=transcript_root,
+    )
+
+    assert runtime.transcripts.root == transcript_root.resolve()
+    assert not (tmp_path / "config" / "transcripts").exists()
 
 
 async def test_runtime_materializes_paths_and_invokes(tmp_path: Path) -> None:
@@ -229,7 +322,11 @@ async def test_runtime_materializes_paths_and_invokes(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    runtime = HooksRuntime.create(cwd=tmp_path, config_dir=config_dir)
+    runtime = HooksRuntime.create(
+        cwd=tmp_path,
+        config_dir=config_dir,
+        transcript_root=tmp_path / "transcripts",
+    )
     runtime.append_messages("thread-1", [HumanMessage(content="hi")])
     invocation = HookInvocation(
         context=HookContext(

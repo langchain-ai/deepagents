@@ -87,6 +87,7 @@ Follow Conventional Commits. See `.github/workflows/pr_lint.yml` for allowed typ
 - Keep titles short and descriptive — save detail for the body.
 - Do not include Linear issue-closing markers such as `[closes DCD-52]` in PR titles. Put issue references and closing metadata in the PR description instead.
 - For version-branch sync PRs, use a title like `chore(repo): sync main into vX.Y`. Do not use `release` as the scope; PR title lint reserves `release` for the type and disallows it as a scope.
+- **One PR = one releasable component.** release-please scopes commits by **changed file path**, not title scope. A bump-worthy title (`feat`/`fix`/etc.) that touches files under multiple managed packages opens a **separate release PR per package**. Keep the user-facing change in a single package-scoped PR; ship cross-package dependency / lockfile churn as a separate `chore(deps):` PR (`chore` is hidden and does not cut releases). See [Multi-component fan-out](.github/RELEASING.md#multi-component-fan-out) and [Lockfile churn fan-out](.github/RELEASING.md#lockfile-churn-fan-out).
 
 Examples:
 
@@ -381,6 +382,8 @@ See [Developing a new version line](.github/RELEASING.md#developing-a-new-versio
 **Title linting** (`.github/workflows/pr_lint.yml`) – Enforces Conventional Commits format with required scope on PR titles
 
 **Release-please parse check** (`.github/workflows/release_please_parse_check.yml`) – Runs `@conventional-commits/parser` on the would-be squash-merge message (`<title> (#<num>)\n\n<body>`) at PR time. Fails the check and posts a sticky comment with a paste-ready `BEGIN_COMMIT_OVERRIDE` block when the parser would reject the body, preventing silent changelog drops. Mirrors release-please's `preprocessCommitMessage` and `splitMessages` so per-sub-message parse failures are caught the same way release-please catches them. The parser is exact-pinned (not a semver range) and must stay in lock-step with `release-please/package.json`.
+
+**Release-please fan-out guards** – `release_please_scope_check.yml` blocks bump-worthy PRs that touch real files in more than one managed component or only lockfiles inside a managed package; `release_fanout_bypass_warn.yml` posts a loud sticky when `allow-lockfile-release` / `allow-scope-mismatch` is applied; `release_please_fanout_watch.yml` is a post-merge safety net that comments on open release PRs whose package delta is lockfile-only. See [`.github/RELEASING.md`](./.github/RELEASING.md#multi-component-fan-out).
 
 **Auto-labeling:**
 

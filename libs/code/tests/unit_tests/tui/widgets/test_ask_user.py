@@ -1659,7 +1659,7 @@ class TestAskUserMenu:
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             required_md = menu._question_widgets[0].query_one(Markdown)
             optional_md = menu._question_widgets[1].query_one(Markdown)
-            assert "required · select all that apply" in required_md.source
+            assert "required, select all that apply" in required_md.source
             assert "select all that apply" in optional_md.source
             assert "required" not in optional_md.source
 

@@ -2041,9 +2041,15 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
             configured = _resolve_configured(provider, env_var)
             if configured:
                 return configured
-            gateway_configured = _resolve_gateway_configured(provider)
-            if gateway_configured:
-                return gateway_configured
+            # The gateway fallback is only valid when the built-in,
+            # gateway-aware integration will actually be constructed. A
+            # `class_path` override builds an arbitrary custom class via
+            # `_create_model_from_class` that need not consume the gateway
+            # variables, so its own `api_key_env` preflight must stand.
+            if not provider_config.get("class_path"):
+                gateway_configured = _resolve_gateway_configured(provider)
+                if gateway_configured:
+                    return gateway_configured
             return ProviderAuthStatus(
                 state=ProviderAuthState.MISSING,
                 provider=provider,

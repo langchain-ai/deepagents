@@ -276,6 +276,42 @@ class TestHasProviderCredentials:
         ):
             assert has_provider_credentials("groq") is False
 
+    def test_class_path_override_does_not_borrow_gateway(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `class_path` override must not report gateway auth.
+
+        Overriding a built-in gateway provider name with a custom `class_path`
+        builds an arbitrary class (via `_create_model_from_class`) that need not
+        consume the gateway variables, so its own `api_key_env` preflight must
+        stand rather than reporting CONFIGURED off the gateway.
+        """
+        state_dir = tmp_path / ".state"
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", state_dir
+        )
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[models.providers.openai]\n"
+            'class_path = "my_package:CustomChat"\n'
+            'api_key_env = "CUSTOM_KEY"\n'
+        )
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+        with patch.dict(
+            "os.environ",
+            {
+                "LANGSMITH_GATEWAY": "true",
+                "LANGSMITH_GATEWAY_API_KEY": "gateway-key",
+            },
+            clear=True,
+        ):
+            status = get_provider_auth_status("openai")
+
+        assert status.state is ProviderAuthState.MISSING
+        assert status.env_var == "CUSTOM_KEY"
+
 
 @pytest.fixture
 def fake_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:

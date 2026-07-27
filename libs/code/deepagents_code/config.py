@@ -1138,6 +1138,8 @@ class Glyphs:
     error: str  # ✗ vs [X]
     circle_empty: str  # ○ vs [ ]
     circle_filled: str  # ● vs [*]
+    checkbox_empty: str  # ☐ vs [ ]
+    checkbox_checked: str  # ☑ vs [x]
     output_prefix: str  # ⎿ vs L
     spinner_frames: tuple[str, ...]  # Braille vs ASCII spinner
     pause: str  # ⏸ vs ||
@@ -1172,6 +1174,8 @@ UNICODE_GLYPHS = Glyphs(
     error="✗",
     circle_empty="○",
     circle_filled="●",
+    checkbox_empty="☐",
+    checkbox_checked="☑",
     output_prefix="⎿",
     spinner_frames=("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"),
     pause="⏸",
@@ -1202,6 +1206,8 @@ ASCII_GLYPHS = Glyphs(
     error="[X]",
     circle_empty="[ ]",
     circle_filled="[*]",
+    checkbox_empty="[ ]",
+    checkbox_checked="[x]",
     output_prefix="L",
     spinner_frames=("(-)", "(\\)", "(|)", "(/)"),
     pause="||",

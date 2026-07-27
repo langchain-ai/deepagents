@@ -4514,6 +4514,64 @@ class TestExecuteTaskTextualAskUser:
         # Answered cleanup pops the row from `_current_tool_messages`.
         assert "tool-1" not in adapter._current_tool_messages
 
+    async def test_ask_user_row_keeps_answer_transcript(self) -> None:
+        """The answered row records the Q&A transcript, not just a summary.
+
+        The inline question widget is unmounted once answered, so the tool row
+        is the only place the answers stay inspectable.
+        """
+        mounted: list[object] = []
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+        future.set_result({"type": "answered", "answers": ["Alice", "blue"]})
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [
+                                {"question": "Name?", "type": "text"},
+                                {"question": "Color?", "type": "text"},
+                            ],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+        )
+
+        tool_row = next(
+            widget for widget in mounted if isinstance(widget, ToolCallMessage)
+        )
+        assert tool_row._output == "Q: Name?\nA: Alice\n\nQ: Color?\nA: blue"
+        assert tool_row.is_success is True
+
     async def test_ask_user_mount_failure_does_not_register_tool_id(self) -> None:
         """Mount failure should not poison `displayed_tool_ids` on the adapter."""
 

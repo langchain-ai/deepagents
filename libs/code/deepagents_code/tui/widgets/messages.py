@@ -26,6 +26,10 @@ from textual.style import Style as TStyle
 from textual.widgets import Static
 
 from deepagents_code import theme
+from deepagents_code._ask_user_types import (
+    ASK_USER_ANSWERED_SUMMARY,
+    ASK_USER_CANCELLED_ANSWER,
+)
 from deepagents_code.config import (
     MODE_DISPLAY_GLYPHS,
     detect_mode_prefix,
@@ -158,6 +162,13 @@ _COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
 }
 
 
+# Tools whose collapsed body is always the formatter's compact preview, no
+# matter how short the raw output is. `write_todos` renders a per-item summary;
+# `ask_user` renders a one-line "User answered" summary so the transcript stays
+# quiet while the answers remain one click away.
+_ALWAYS_PREVIEW_TOOLS: frozenset[str] = frozenset({"write_todos", "ask_user"})
+
+
 # Long-running tools whose completed status row reports how long they ran
 # ("Took <duration>") when a run was timed, instead of being hidden. `execute`
 # shells and `task` subagent dispatches can both run for a while, so the elapsed
@@ -204,6 +215,35 @@ def _strip_success_exit_line(text: str) -> str:
         Text with the success exit-code trailer removed, if present.
     """
     return _SUCCESS_EXIT_RE.sub("", text)
+
+
+_ASK_USER_BLOCK_SPLIT_RE = re.compile(r"\n\n(?=Q: )")
+"""Split an `ask_user` transcript into its per-question blocks."""
+
+_ASK_USER_PAIR_RE = re.compile(
+    r"\AQ: (?P<question>.*?)\nA: (?P<answer>.*)\Z", re.DOTALL
+)
+"""Match one `Q: ...\\nA: ...` block, produced by `format_ask_user_transcript`."""
+
+
+def _parse_ask_user_transcript(output: str) -> list[tuple[str, str]]:
+    """Split an `ask_user` tool result into question/answer pairs.
+
+    Args:
+        output: Raw tool output; the `Q:`/`A:` transcript on success, or an
+            arbitrary error body otherwise.
+
+    Returns:
+        One `(question, answer)` pair per block, or an empty list when the
+        output is not a transcript (e.g. an error message).
+    """
+    pairs: list[tuple[str, str]] = []
+    for block in _ASK_USER_BLOCK_SPLIT_RE.split(output.strip()):
+        match = _ASK_USER_PAIR_RE.match(block)
+        if match is None:
+            return []
+        pairs.append((match["question"], match["answer"]))
+    return pairs
 
 
 # Visual width of the prompt prefix (glyph + trailing space, e.g. "> ", "$ ").
@@ -2104,6 +2144,7 @@ class ToolCallMessage(Vertical):
             "web_search": self._format_web_output,
             "fetch_url": self._format_web_output,
             "task": self._format_task_output,
+            "ask_user": self._format_ask_user_output,
         }
 
         formatter = formatters.get(self._tool_name)
@@ -2182,7 +2223,11 @@ class ToolCallMessage(Vertical):
         if self._tool_name == "edit_file" and self._status == "success":
             return True
 
-        if self._tool_name == "write_todos":
+        # `_ALWAYS_PREVIEW_TOOLS` render a compact preview at any size, so their
+        # expandability is decided by the formatter rather than the raw size
+        # thresholds below: a two-line `ask_user` transcript still hides its
+        # answers behind the summary line.
+        if self._tool_name in _ALWAYS_PREVIEW_TOOLS:
             return self._format_output(output, is_preview=True).truncation is not None
 
         lines = output.split("\n")
@@ -2990,6 +3035,46 @@ class ToolCallMessage(Vertical):
 
         return FormattedOutput(content=content, truncation=truncation)
 
+    def _format_ask_user_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
+        self, output: str, *, is_preview: bool = False
+    ) -> FormattedOutput:
+        """Format an `ask_user` result as its question/answer transcript.
+
+        The inline question widget is unmounted once answered, so the tool row
+        is the only place the answers survive. Collapsed, the row keeps its
+        one-line summary; expanded, it shows what was sent back.
+
+        Returns:
+            FormattedOutput with the summary line (preview) or the full Q&A
+                transcript, and the answer count as truncation info. Output that
+                is not a transcript (an error body) renders verbatim.
+        """
+        pairs = _parse_ask_user_transcript(output)
+        if not pairs:
+            return FormattedOutput(content=Content(output))
+
+        if is_preview:
+            cancelled = all(
+                answer == ASK_USER_CANCELLED_ANSWER for _question, answer in pairs
+            )
+            summary = "Question cancelled" if cancelled else ASK_USER_ANSWERED_SUMMARY
+            noun = "answer" if len(pairs) == 1 else "answers"
+            return FormattedOutput(
+                content=Content.styled(summary, "dim"),
+                truncation=None if cancelled else f"{len(pairs)} {noun}",
+            )
+
+        blocks = [
+            Content("\n").join(
+                (
+                    Content.from_markup("[dim]Q: $question[/dim]", question=question),
+                    Content.assemble(("A: ", "dim"), answer),
+                )
+            )
+            for question, answer in pairs
+        ]
+        return FormattedOutput(content=Content("\n\n").join(blocks))
+
     def _update_output_display(self) -> None:
         """Update the output display based on expanded state."""
         # Guard: all widgets must be initialized before updating display state
@@ -3078,9 +3163,9 @@ class ToolCallMessage(Vertical):
                 self._hint_widget.display = True
                 return
             # Truncate the preview only when the output is large enough to
-            # warrant it; `write_todos` always uses its compact per-item preview
-            # regardless of size.
-            is_preview = needs_truncation or self._tool_name == "write_todos"
+            # warrant it; `_ALWAYS_PREVIEW_TOOLS` use their compact preview
+            # (per-item todos, `ask_user` summary line) regardless of size.
+            is_preview = needs_truncation or self._tool_name in _ALWAYS_PREVIEW_TOOLS
             # Pass the raw output, not `output_stripped`: `_format_output`
             # normalizes whitespace while preserving the first line's leading
             # indentation. Pre-stripping here flattens that indent on line 0 only,

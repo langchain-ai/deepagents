@@ -102,3 +102,35 @@ class AskUserCancelled(TypedDict):
 
 AskUserWidgetResult = AskUserAnswered | AskUserCancelled
 """Discriminated union for the ask_user widget Future result."""
+
+
+ASK_USER_NO_ANSWER = "(no answer)"
+"""Placeholder recorded when a question received no answer at all."""
+
+ASK_USER_CANCELLED_ANSWER = "(cancelled)"
+"""Placeholder recorded for every question when the user cancels the prompt."""
+
+ASK_USER_ANSWERED_SUMMARY = "User answered"
+"""One-line summary shown for an answered `ask_user` row before it is expanded."""
+
+
+def format_ask_user_transcript(questions: list[Question], answers: list[str]) -> str:
+    r"""Render questions and answers as the `Q:`/`A:` transcript.
+
+    This is the text the `ask_user` tool returns to the model, and the same text
+    the TUI shows on the tool row, so the two cannot drift.
+
+    Args:
+        questions: Questions that were asked.
+        answers: Answers, positionally matched to `questions`. A missing entry
+            falls back to `ASK_USER_NO_ANSWER`.
+
+    Returns:
+        Blank-line separated `Q: ...\nA: ...` blocks, one per question.
+    """
+    blocks = [
+        f"Q: {question.get('question', '')}\n"
+        f"A: {answers[i] if i < len(answers) else ASK_USER_NO_ANSWER}"
+        for i, question in enumerate(questions)
+    ]
+    return "\n\n".join(blocks)

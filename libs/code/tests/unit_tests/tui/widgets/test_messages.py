@@ -3,6 +3,7 @@
 import asyncio
 from time import time
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1964,6 +1965,100 @@ class TestToolCallMessageExpandHint:
             await pilot.pause()
             event.stop.assert_called_once()
             assert app.msg._expanded is True
+
+
+class TestToolCallMessageAskUserOutput:
+    """`ask_user` rows summarize the answer and expand to the full transcript."""
+
+    _TRANSCRIPT = "Q: What is your name?\nA: Alice\n\nQ: Favorite color?\nA: blue"
+    _ARGS: ClassVar[dict[str, list[dict[str, str]]]] = {
+        "questions": [
+            {"question": "What is your name?", "type": "text"},
+            {"question": "Favorite color?", "type": "text"},
+        ]
+    }
+
+    def test_preview_summarizes_answers(self) -> None:
+        """Collapsed output keeps the one-line summary and advertises a count."""
+        msg = ToolCallMessage("ask_user", self._ARGS)
+
+        result = msg._format_ask_user_output(self._TRANSCRIPT, is_preview=True)
+
+        assert result.content.plain == "User answered"
+        assert result.truncation == "2 answers"
+
+    def test_preview_of_cancelled_prompt_is_not_expandable(self) -> None:
+        """An all-cancelled transcript has no answers worth revealing."""
+        msg = ToolCallMessage("ask_user", self._ARGS)
+
+        result = msg._format_ask_user_output(
+            "Q: What is your name?\nA: (cancelled)", is_preview=True
+        )
+
+        assert result.content.plain == "Question cancelled"
+        assert result.truncation is None
+
+    def test_full_output_renders_question_and_answer(self) -> None:
+        """Expanded output pairs each question with what was sent back."""
+        msg = ToolCallMessage("ask_user", self._ARGS)
+
+        result = msg._format_ask_user_output(self._TRANSCRIPT, is_preview=False)
+
+        assert result.content.plain == (
+            "Q: What is your name?\nA: Alice\n\nQ: Favorite color?\nA: blue"
+        )
+        assert result.truncation is None
+
+    def test_non_transcript_output_renders_verbatim(self) -> None:
+        """An error body is not a transcript, so it renders unchanged."""
+        msg = ToolCallMessage("ask_user", self._ARGS)
+
+        result = msg._format_ask_user_output(
+            "ask_user interaction failed", is_preview=True
+        )
+
+        assert result.content.plain == "ask_user interaction failed"
+        assert result.truncation is None
+
+    async def test_short_transcript_collapses_and_expands(self) -> None:
+        """End to end: a short answer still hides behind the summary line."""
+        app = _tool_msg_app("ask_user", self._ARGS)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(self._TRANSCRIPT)
+            await pilot.pause()
+
+            assert app.msg._preview_widget is not None
+            assert app.msg._preview_row is not None
+            assert app.msg._hint_widget is not None
+            assert app.msg._preview_row.display is True
+            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert preview.plain == "User answered"
+            assert app.msg.has_expandable_output is True
+            hint = app.msg._hint_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "2 answers" in hint.plain
+            assert "expand" in hint.plain
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._full_row is not None
+            assert app.msg._full_row.display is True
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "A: Alice" in full.plain
+            assert "A: blue" in full.plain
+
+    async def test_answer_with_markup_is_not_interpreted(self) -> None:
+        """User-typed square brackets render literally, not as Rich markup."""
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Tag?"}]})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("Q: Tag?\nA: [bold]not markup[/bold]")
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "[bold]not markup[/bold]" in full.plain
 
 
 class TestToolCallMessageEmptyResult:

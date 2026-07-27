@@ -25,10 +25,12 @@ from pydantic import Field
 
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
+    ASK_USER_CANCELLED_ANSWER,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
     AskUserAuthorizationReceipt,
     AskUserRequest,
     Question,
+    format_ask_user_transcript,
 )
 
 logger = logging.getLogger(__name__)
@@ -219,7 +221,7 @@ def _parse_answers(
             if isinstance(response_error, str) and response_error:
                 error_text = response_error
         elif status == "cancelled":
-            answers = ["(cancelled)" for _ in questions]
+            answers = [ASK_USER_CANCELLED_ANSWER for _ in questions]
         elif status == "answered":
             if len(answers) != len(questions):
                 logger.warning(
@@ -260,11 +262,7 @@ def _parse_answers(
         )
         additional_kwargs[ASK_USER_AUTHORIZATION_METADATA_KEY] = receipt
 
-    formatted_answers = []
-    for i, question in enumerate(questions):
-        answer = answers[i] if i < len(answers) else "(no answer)"
-        formatted_answers.append(f"Q: {question['question']}\nA: {answer}")
-    result_text = "\n\n".join(formatted_answers)
+    result_text = format_ask_user_transcript(questions, answers)
     return Command(
         update={
             "messages": [

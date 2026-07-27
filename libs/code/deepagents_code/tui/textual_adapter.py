@@ -45,7 +45,11 @@ if TYPE_CHECKING:
         def __call__(self, *, approximate: bool = False) -> None: ...
 
 
-from deepagents_code._ask_user_types import AskUserRequest
+from deepagents_code._ask_user_types import (
+    ASK_USER_ANSWERED_SUMMARY,
+    AskUserRequest,
+    format_ask_user_transcript,
+)
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
 from deepagents_code._session_stats import (
@@ -1793,7 +1797,17 @@ async def execute_task_textual(
                             answers = result.get("answers", [])
                             if isinstance(answers, list):
                                 resume_payload[interrupt_id] = {"answers": answers}
-                                output = "User answered"
+                                output = ASK_USER_ANSWERED_SUMMARY
+                                # The tool row carries the full Q&A transcript
+                                # (the same text the tool returns to the model,
+                                # and what a rehydrated thread renders) so the
+                                # answers stay inspectable after the question
+                                # widget is unmounted. The hook payload keeps the
+                                # summary so user-typed answers are not forwarded
+                                # to hook scripts.
+                                transcript = format_ask_user_transcript(
+                                    questions, [str(answer) for answer in answers]
+                                )
                                 tool_msg = adapter._current_tool_messages.pop(
                                     tool_id, None
                                 )
@@ -1803,7 +1817,7 @@ async def execute_task_textual(
                                 completed_tool_result_ids.add(tool_id)
                                 if tool_msg is not None:
                                     try:
-                                        tool_msg.set_success(output)
+                                        tool_msg.set_success(transcript)
                                         adapter._sync_tool_widget(tool_msg)
                                     except Exception:
                                         logger.exception(

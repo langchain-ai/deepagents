@@ -2902,13 +2902,13 @@ def test_classifier_unavailable_reason_specializes_timeouts() -> None:
         classifier_unavailable_reason(
             _ClassifierDeadlineExceededError(20.0), timeout_seconds=20.0
         )
-        == "timed out after 20s"
+        == "no decision within Auto's 20s limit"
     )
     assert (
         classifier_unavailable_reason(
             _ClassifierDeadlineExceededError(1.5), timeout_seconds=1.5
         )
-        == "timed out after 1.5s"
+        == "no decision within Auto's 1.5s limit"
     )
     # Provider exception type alone must not claim dcode's deadline fired.
     assert (
@@ -2955,7 +2955,7 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
     )
 
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
-    assert plan["decisions"][0]["reason"] == "timed out after 0.05s"
+    assert plan["decisions"][0]["reason"] == "no decision within Auto's 0.05s limit"
 
 
 async def test_classifier_provider_timeout_stays_type_only(tmp_path: Path) -> None:
@@ -3490,7 +3490,7 @@ async def test_classifier_unavailable_emits_single_event_for_batch(
         store=store,
         stream_writer=events.append,
     )
-    reason = "timed out after 1s"
+    reason = "no decision within Auto's 1s limit"
     plan = {
         "batch_id": _batch_id(ai_message.tool_calls),
         "thread_key": key,

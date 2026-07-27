@@ -518,7 +518,7 @@ def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float)
         Compact single-line reason for tool messages and TUI events.
     """
     if isinstance(exc, _ClassifierDeadlineExceededError):
-        return f"timed out after {timeout_seconds:g}s"
+        return f"no decision within Auto's {timeout_seconds:g}s limit"
     return f"failed ({type(exc).__name__})"
 
 

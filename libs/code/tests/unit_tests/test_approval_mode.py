@@ -21,6 +21,7 @@ from deepagents_code.approval_mode import (
     awrite_approval_mode,
     has_auto_mode_notice,
     has_yolo_acknowledgement,
+    next_approval_mode,
     read_approval_mode_from_store,
     save_auto_mode_notice,
     save_yolo_acknowledgement,
@@ -90,6 +91,38 @@ def test_approval_mode_payload_shape(mode: ApprovalMode) -> None:
 
     assert payload == {"mode": mode.value}
     assert "auto_approve" not in payload
+
+
+@pytest.mark.parametrize(
+    ("current", "auto_eligible", "yolo_switcher_enabled", "expected"),
+    [
+        (ApprovalMode.MANUAL, True, True, ApprovalMode.AUTO),
+        (ApprovalMode.AUTO, True, True, ApprovalMode.YOLO),
+        (ApprovalMode.YOLO, True, True, ApprovalMode.MANUAL),
+        (ApprovalMode.MANUAL, True, False, ApprovalMode.AUTO),
+        (ApprovalMode.AUTO, True, False, ApprovalMode.MANUAL),
+        (ApprovalMode.YOLO, True, False, ApprovalMode.MANUAL),
+        (ApprovalMode.MANUAL, False, True, ApprovalMode.YOLO),
+        (ApprovalMode.YOLO, False, True, ApprovalMode.MANUAL),
+        (ApprovalMode.MANUAL, False, False, None),
+        ("auto", True, True, ApprovalMode.YOLO),
+        ("not-a-mode", True, True, ApprovalMode.AUTO),
+    ],
+)
+def test_next_approval_mode_cycle(
+    current: ApprovalMode | str,
+    auto_eligible: bool,
+    yolo_switcher_enabled: bool,
+    expected: ApprovalMode | None,
+) -> None:
+    assert (
+        next_approval_mode(
+            current,
+            auto_eligible=auto_eligible,
+            yolo_switcher_enabled=yolo_switcher_enabled,
+        )
+        is expected
+    )
 
 
 def test_read_approval_mode_from_store_accepts_mapping_item() -> None:

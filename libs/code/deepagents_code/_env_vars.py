@@ -401,6 +401,17 @@ THEME = "DEEPAGENTS_CODE_THEME"
 USER_ID = "DEEPAGENTS_CODE_USER_ID"
 """Attach a user identifier to LangSmith trace metadata."""
 
+YOLO_SWITCHER = "DEEPAGENTS_CODE_YOLO_SWITCHER"
+"""Include YOLO in the Shift+Tab approval-mode cycle.
+
+Enabled by default so an interactive session can cycle Manual → Auto → YOLO
+without restarting with `--yolo`. Set to a falsy value (`0`, `false`, `no`,
+`off`, or empty) to leave Shift+Tab limited to Manual/Auto. Also settable via
+`[startup].yolo_switcher` in config.toml so orgs can distribute the opt-out.
+Parsed by `classify_env_bool` through the config resolver (unrecognized values
+fall through rather than forcing the default).
+"""
+
 _TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSY_VALUES = frozenset({"0", "false", "no", "off", ""})
 

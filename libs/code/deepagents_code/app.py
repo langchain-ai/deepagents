@@ -3105,6 +3105,7 @@ class DeepAgentsApp(App):
             self._auto_approve = False
         self._approval_mode_blocked = False
         self._auto_mode_notice_pending = False
+        self._yolo_mode_notice_pending = False
 
         if sub_title is None and self._sandbox_type is not None:
             display = _SANDBOX_DISPLAY_NAMES.get(
@@ -16912,10 +16913,12 @@ class DeepAgentsApp(App):
             panel.toggle()
 
     async def action_toggle_auto_approve(self) -> None:
-        """Toggle between Manual and Auto after Store acknowledgement.
+        """Cycle Manual → Auto → YOLO (when enabled) after Store acknowledgement.
 
-        A session launched in YOLO moves to Manual; normal key navigation never
-        enters unrestricted mode.
+        YOLO is included by default (`startup.yolo_switcher` / env). Auto is
+        skipped when a sandbox makes classifier-backed Auto ineligible. The
+        first Shift+Tab into YOLO prompts for the same install-local
+        acknowledgement used by `--yolo` before unrestricted mode becomes active.
         """
         from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
         from deepagents_code.tui.widgets.agent_selector import AgentSelectorScreen
@@ -16969,17 +16972,47 @@ class DeepAgentsApp(App):
         if self._pending_ask_user_widget is not None:
             self._pending_ask_user_widget.action_previous_question()
             return
-        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.approval_mode import (
+            ApprovalMode,
+            has_yolo_acknowledgement,
+            next_approval_mode,
+        )
+        from deepagents_code.config import is_yolo_switcher_enabled
 
-        if self._approval_mode is ApprovalMode.MANUAL:
-            if not self._auto_mode_eligible:
-                self._warn_live_approval_mode_unavailable(
-                    "Auto is unavailable with a sandbox."
-                )
-                return
-            target = ApprovalMode.AUTO
-        else:
-            target = ApprovalMode.MANUAL
+        yolo_switcher_enabled = is_yolo_switcher_enabled()
+        target = next_approval_mode(
+            self._approval_mode,
+            auto_eligible=self._auto_mode_eligible,
+            yolo_switcher_enabled=yolo_switcher_enabled,
+        )
+        if target is None:
+            # `next_approval_mode` returns None only from Manual when neither
+            # Auto (sandbox-ineligible) nor the YOLO switcher entry is available,
+            # so this is the only reachable case.
+            self._warn_live_approval_mode_unavailable(
+                "Auto is unavailable with a sandbox, and YOLO is disabled "
+                "in the approval switcher."
+            )
+            return
+
+        # Gate the first YOLO switcher entry on the same policy acknowledgement
+        # as `--yolo`. Do not activate YOLO until the user continues.
+        if target is ApprovalMode.YOLO and not has_yolo_acknowledgement():
+            self._prompt_yolo_switcher_acknowledgement()
+            return
+
+        await self._set_approval_mode(target)
+
+    async def _set_approval_mode(self, target: ApprovalMode) -> bool:
+        """Apply an approval-mode change after optional live Store acknowledgement.
+
+        Args:
+            target: Mode to select.
+
+        Returns:
+            `True` when local UI state was updated to `target`.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
 
         # With no usable agent/session pair there is no running graph to update.
         # Stage the selection locally; `execute_task_textual` persists it before
@@ -16993,7 +17026,12 @@ class DeepAgentsApp(App):
                 self._warn_live_approval_mode_unavailable(
                     "Auto could not be persisted; remaining in Manual."
                 )
-                return
+                return False
+            if target is ApprovalMode.YOLO:
+                self._warn_live_approval_mode_unavailable(
+                    "YOLO could not be persisted; remaining in the previous mode."
+                )
+                return False
             self._approval_mode_blocked = True
             self._warn_live_approval_mode_unavailable(
                 "Manual could not be persisted; active work was cancelled and "
@@ -17001,7 +17039,7 @@ class DeepAgentsApp(App):
             )
             if self._agent_running:
                 self._force_interrupt_active_work()
-            return
+            return False
 
         self._approval_mode_blocked = False
         self._approval_mode = target
@@ -17014,6 +17052,73 @@ class DeepAgentsApp(App):
             self._notify_auto_mode_enabled_once()
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
+        elif target is ApprovalMode.YOLO:
+            # Warn before the await below. State is already committed above, so
+            # if goal-rubric auto-accept raises, YOLO is active and the "no
+            # review" warning must have fired first. AUTO notifies before its
+            # await for the same reason.
+            self.notify(
+                "YOLO is active: gated actions run without review.",
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
+            if should_persist_live:
+                await self._auto_accept_pending_goal_rubric()
+        return True
+
+    def _prompt_yolo_switcher_acknowledgement(self) -> None:
+        """Show the first-run YOLO acknowledgement before entering unrestricted mode.
+
+        YOLO stays inactive until Enter persists the acknowledgement and the
+        follow-up mode write succeeds. Esc (or a non-true dismiss) leaves the
+        current mode untouched and does not store the acknowledgement.
+        """
+        from deepagents_code.approval_mode import (
+            ApprovalMode,
+            save_yolo_acknowledgement,
+        )
+        from deepagents_code.tui.widgets.yolo_mode_notice import YoloModeNoticeScreen
+
+        if getattr(self, "_yolo_mode_notice_pending", False):
+            return
+
+        def handle_result(accepted: bool | None) -> None:
+            self._yolo_mode_notice_pending = False
+            if accepted is not True:
+                self.notify(
+                    "Stayed in the current approval mode.",
+                    severity="information",
+                    markup=False,
+                )
+                return
+            if not save_yolo_acknowledgement():
+                self._warn_live_approval_mode_unavailable(
+                    "YOLO acknowledgement could not be saved; staying in the "
+                    "current mode."
+                )
+                return
+            task = asyncio.create_task(self._set_approval_mode(ApprovalMode.YOLO))
+            task.add_done_callback(_log_task_exception)
+
+        try:
+            self.push_screen(YoloModeNoticeScreen(), handle_result)
+        except Exception:
+            # This modal *is* the YOLO gate (unlike Auto's post-hoc notice), so
+            # a failed push leaves the mode unchanged. Surface it, or Shift+Tab
+            # looks dead. Leaving `_yolo_mode_notice_pending` unset (it is set
+            # only below, after a successful push) lets a later Shift+Tab retry.
+            logger.warning(
+                "Could not show YOLO switcher acknowledgement", exc_info=True
+            )
+            self._warn_live_approval_mode_unavailable(
+                "Could not open the YOLO confirmation; approval mode unchanged."
+            )
+            return
+
+        # Mark pending only after the push succeeds so a failed push cannot
+        # suppress a later try for the whole session.
+        self._yolo_mode_notice_pending = True
 
     def action_toggle_tool_output(self) -> None:
         """Toggle the most recent collapsible transcript unit."""

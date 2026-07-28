@@ -5,6 +5,7 @@ import io
 import signal
 import sys
 from collections.abc import AsyncIterator, Iterator, Sequence
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -1310,6 +1311,74 @@ class TestMaxTurns:
 
         _, kwargs = agent.astream.call_args
         assert kwargs["context"]["thread_id"] == "t1"
+
+    async def test_run_agent_loop_defaults_project_hooks_untrusted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Headless mode does not load project hooks without explicit trust."""
+        monkeypatch.chdir(tmp_path)
+        project_hooks = tmp_path / ".deepagents"
+        project_hooks.mkdir()
+        (project_hooks / "hooks.json").write_text(
+            '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo x"}]}]}}',
+            encoding="utf-8",
+        )
+        agent = MagicMock()
+        agent.astream = MagicMock(return_value=_async_iter([]))
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+
+        with patch(
+            "deepagents_code.client.non_interactive.dispatch_hook",
+            new_callable=AsyncMock,
+        ):
+            await _run_agent_loop(
+                agent,
+                "task",
+                config,
+                console,
+                file_op_tracker,
+                quiet=True,
+            )
+
+        _, kwargs = agent.astream.call_args
+        # Untrusted workspaces omit project Stop handlers from the gate.
+        assert "Stop" not in (kwargs["context"].get("hooks_server_events") or [])
+
+    async def test_run_agent_loop_trusts_project_hooks_when_opted_in(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`--trust-project-hooks` loads repository hook handlers."""
+        monkeypatch.chdir(tmp_path)
+        project_hooks = tmp_path / ".deepagents"
+        project_hooks.mkdir()
+        (project_hooks / "hooks.json").write_text(
+            '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo x"}]}]}}',
+            encoding="utf-8",
+        )
+        agent = MagicMock()
+        agent.astream = MagicMock(return_value=_async_iter([]))
+        console = Console(quiet=True)
+        file_op_tracker = MagicMock()
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+
+        with patch(
+            "deepagents_code.client.non_interactive.dispatch_hook",
+            new_callable=AsyncMock,
+        ):
+            await _run_agent_loop(
+                agent,
+                "task",
+                config,
+                console,
+                file_op_tracker,
+                quiet=True,
+                trust_project_hooks=True,
+            )
+
+        _, kwargs = agent.astream.call_args
+        assert "Stop" in (kwargs["context"].get("hooks_server_events") or [])
 
     async def test_raises_after_user_limit(self) -> None:
         """HITLIterationLimitError is raised after max_turns HITL iterations."""

@@ -1,21 +1,23 @@
-"""Flag PRs that would create a release PR for a package whose only change is its lockfile.
+"""Flag PRs that would fan out release-please releases across managed packages.
 
 Why this exists:
     release-please scopes a commit to a package by the file *paths* it touches,
-    with no notion of "this file is just a lockfile." When a bump-worthy commit
-    (e.g. a `feat:` in `libs/deepagents`) also regenerates the `uv.lock` of every
-    dependent package, release-please attributes the bump-worthy commit to those
-    dependents too — and opens a release PR for each, even though their only
-    change is a lockfile. This is the lockfile-churn sibling of the empty-commit
-    fan-out that `guard-empty-commit` (in release-please.yml) already blocks. See
-    the "Empty commit fan-out" entry in `.github/RELEASING.md` for the related case.
+    with no notion of "this file is just a lockfile" or "this dependency bound is
+    only machinery for another package's feature." When a bump-worthy commit
+    (e.g. a `feat:` in `libs/code`) also touches files under other managed
+    package paths — lockfiles, `pyproject.toml` lower-bound bumps, etc. —
+    release-please attributes the bump-worthy commit to those packages too and
+    opens a separate release PR for each.
 
 What it detects:
-    Given a PR's conventional-commit title type and its list of changed files,
-    report every release-please-managed package whose changed files inside the
-    package path are *exclusively* lockfiles, when the title type is one that
-    release-please would cut a release for. The package that legitimately owns
-    the change has source edits too, so its lockfile change is never flagged.
+    Given a PR's conventional-commit title type and its list of changed files:
+
+    1. **multi_component** — two or more managed packages have at least one
+       non-lockfile change. A single `feat`/`fix` (etc.) PR that edits real
+       files across components will open a release PR per component.
+    2. **lockfile_only** — one or more managed packages whose changed files
+       inside the package path are *exclusively* lockfiles. The package that
+       owns real source edits is never listed here (it has source too).
 
 How it stays faithful to release-please:
     - Package path -> component map is read straight from `release-please-config.json`
@@ -24,8 +26,9 @@ How it stays faithful to release-please:
         config's `changelog-sections`. This is a deliberately conservative *superset*
         of release-please's actual bump triggers (`feat`/`fix` + breaking): `perf` and
         `revert` are visible sections that may not always bump. We accept the rare
-        false positive on a `perf`/`revert`-only lockfile PR to avoid missing a real
-        fan-out; such a PR can be cleared with the `allow-lockfile-release` label.
+        false positive on a `perf`/`revert`-only multi-package/lockfile PR to avoid
+        missing a real fan-out; such a PR can be cleared with the
+        `allow-lockfile-release` label.
 
     This script only *reports* offenders (and always exits 0 on success). The
     blocking decision — failing the check — lives in the workflow that calls it
@@ -38,10 +41,13 @@ Limitations:
         catches at release-please time, so acceptable.
 """
 
+from __future__ import annotations
+
 import json
 import re
 import sys
 from pathlib import Path
+from typing import TypedDict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG = REPO_ROOT / "release-please-config.json"
@@ -52,6 +58,13 @@ LOCKFILE_NAMES = frozenset({"uv.lock"})
 
 # Conventional-commit title: lowercase type, optional (scope), optional `!`.
 _TITLE_RE = re.compile(r"^([a-z]+)(?:\([^)]*\))?(!)?:\s")
+
+
+class FanoutResult(TypedDict):
+    """Structured fan-out report consumed by the CI workflow."""
+
+    lockfile_only: list[str]
+    multi_component: list[str]
 
 
 def bump_worthy_types(config: dict) -> frozenset[str]:
@@ -89,10 +102,46 @@ def parse_title(title: str) -> tuple[str | None, bool]:
     return match.group(1), bool(match.group(2))
 
 
+def is_bump_worthy(title: str, config: dict) -> bool:
+    """Return whether the PR title would cut a release under our configuration.
+
+    Args:
+        title: The PR title.
+        config: Parsed `release-please-config.json`.
+
+    Returns:
+        `True` when the title is breaking or uses a non-hidden changelog type.
+    """
+    ttype, breaking = parse_title(title)
+    return bool(breaking or (ttype is not None and ttype in bump_worthy_types(config)))
+
+
 def _package_files(changed: list[str], path: str) -> list[str]:
     """Return the subset of `changed` that lives inside package directory `path`."""
     prefix = f"{path}/"
     return [f for f in changed if f == path or f.startswith(prefix)]
+
+
+def _is_lockfile(file: str) -> bool:
+    """Return whether `file` is a lockfile we treat as non-author churn."""
+    return Path(file).name in LOCKFILE_NAMES
+
+
+def touched_components(changed: list[str], config: dict) -> list[str]:
+    """Return sorted component names whose package paths appear in `changed`.
+
+    Args:
+        changed: Changed file paths, repo-root-relative (forward slashes).
+        config: Parsed `release-please-config.json`.
+
+    Returns:
+        Sorted list of component names touched by any changed file.
+    """
+    components: list[str] = []
+    for path, meta in config.get("packages", {}).items():
+        if _package_files(changed, path):
+            components.append(meta.get("component", path))
+    return sorted(components)
 
 
 def find_offenders(title: str, changed: list[str], config: dict) -> list[str]:
@@ -107,20 +156,46 @@ def find_offenders(title: str, changed: list[str], config: dict) -> list[str]:
         Sorted list of offending component names. Empty when the title type is
         not bump-worthy or no managed package is lockfile-only.
     """
-    ttype, breaking = parse_title(title)
-    if not breaking and ttype not in bump_worthy_types(config):
-        return []
+    return find_fanout(title, changed, config)["lockfile_only"]
 
-    offenders: list[str] = []
+
+def find_fanout(title: str, changed: list[str], config: dict) -> FanoutResult:
+    """Return lockfile-only and multi-component fan-out offenders, if the PR bumps.
+
+    Args:
+        title: The PR title.
+        changed: Changed file paths, repo-root-relative (forward slashes).
+        config: Parsed `release-please-config.json`.
+
+    Returns:
+        `FanoutResult` with sorted component lists. Both lists are empty when
+        the title type is not bump-worthy.
+    """
+    empty: FanoutResult = {"lockfile_only": [], "multi_component": []}
+    if not is_bump_worthy(title, config):
+        return empty
+
+    lockfile_only: list[str] = []
+    real_change: list[str] = []
     for path, meta in config.get("packages", {}).items():
         pkg_files = _package_files(changed, path)
-        if pkg_files and all(Path(f).name in LOCKFILE_NAMES for f in pkg_files):
-            offenders.append(meta.get("component", path))
-    return sorted(offenders)
+        if not pkg_files:
+            continue
+        component = meta.get("component", path)
+        if all(_is_lockfile(f) for f in pkg_files):
+            lockfile_only.append(component)
+        elif any(not _is_lockfile(f) for f in pkg_files):
+            real_change.append(component)
+
+    multi = sorted(real_change) if len(real_change) >= 2 else []
+    return {
+        "lockfile_only": sorted(lockfile_only),
+        "multi_component": multi,
+    }
 
 
 def main(title: str, changed: list[str], config_path: Path = DEFAULT_CONFIG) -> int:
-    """Print offending components as a JSON array to stdout.
+    """Print a fan-out report as JSON to stdout.
 
     Errors are surfaced loudly (not swallowed) and exit non-zero so a broken
     config or unreadable input fails the CI step visibly rather than silently
@@ -158,12 +233,20 @@ def main(title: str, changed: list[str], config_path: Path = DEFAULT_CONFIG) -> 
         )
         return 2
 
-    offenders = find_offenders(title, changed, config)
-    if offenders:
-        print(
-            f"Lockfile-only release scope for: {', '.join(offenders)}", file=sys.stderr
+    result = find_fanout(title, changed, config)
+    parts: list[str] = []
+    if result["multi_component"]:
+        parts.append(
+            "multi-component real-file fan-out for: "
+            + ", ".join(result["multi_component"])
         )
-    print(json.dumps(offenders))
+    if result["lockfile_only"]:
+        parts.append(
+            "lockfile-only release scope for: " + ", ".join(result["lockfile_only"])
+        )
+    if parts:
+        print("; ".join(parts), file=sys.stderr)
+    print(json.dumps(result))
     return 0
 
 

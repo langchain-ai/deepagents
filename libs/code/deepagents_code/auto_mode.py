@@ -506,9 +506,10 @@ def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float)
 
     Provider exception text stays out of the reason (it can carry secrets or
     noisy HTML). Only real local deadline expiry
-    (`_ClassifierDeadlineExceededError`) includes the configured wait budget; a
-    bare provider `TimeoutError` stays type-only so we do not claim dcode's
-    deadline fired when the model failed first.
+    (`_ClassifierDeadlineExceededError`) says the classifier did not respond
+    within the configured wait budget; a bare provider `TimeoutError` stays
+    type-only so we do not claim dcode's deadline fired when the model failed
+    first.
 
     Args:
         exc: Failure raised while invoking or validating the classifier.
@@ -518,7 +519,7 @@ def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float)
         Compact single-line reason for tool messages and TUI events.
     """
     if isinstance(exc, _ClassifierDeadlineExceededError):
-        return f"no decision within Auto's {timeout_seconds:g}s limit"
+        return f"classifier did not respond within {timeout_seconds:g}s"
     return f"failed ({type(exc).__name__})"
 
 
@@ -2565,6 +2566,13 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         )
         if ai_message is None or not ai_message.tool_calls:
             return {"_auto_decision_plan": None}
+        from deepagents_code.hooks.server_middleware import pre_tool_behavior
+
+        hook_bypass_ids = {
+            _tool_call_id(call)
+            for call in ai_message.tool_calls
+            if pre_tool_behavior(state, _tool_call_id(call)) in {"allow", "deny"}
+        }
         thread_key = _thread_key(runtime)
         plan = self._validated_plan(state, ai_message, thread_key)
         current_mode, current_mode_unavailable = await _live_mode(runtime)
@@ -2572,6 +2580,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             _tool_call_id(call)
             for call in ai_message.tool_calls
             if call["name"] in self.interrupt_on
+            and _tool_call_id(call) not in hook_bypass_ids
         }
         if plan is None:
             if not manual_ids:
@@ -2621,6 +2630,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 current_mode = ApprovalMode.MANUAL
 
         if proposal_mode is ApprovalMode.MANUAL or current_mode is ApprovalMode.MANUAL:
+            review_ids = set(plan["manual_gated_ids"]) - hook_bypass_ids
+            if not review_ids:
+                return {"_auto_decision_plan": None}
             manual_fallback = plan["fallback_reason"] in {
                 "approval_mode_unavailable",
                 "control_state_unavailable",
@@ -2634,7 +2646,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 state,
                 runtime,
                 ai_message,
-                set(plan["manual_gated_ids"]),
+                review_ids,
                 fallback=manual_fallback,
                 counters=counters,
                 all_manual_ids=manual_ids,
@@ -2649,7 +2661,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             return {"_auto_decision_plan": None}
 
         decision_by_id = {
-            decision["tool_call_id"]: decision for decision in plan["decisions"]
+            decision["tool_call_id"]: decision
+            for decision in plan["decisions"]
+            if decision["tool_call_id"] not in hook_bypass_ids
         }
         human_ids = {
             tool_id

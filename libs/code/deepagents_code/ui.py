@@ -120,8 +120,9 @@ def show_help() -> None:
         "  dcode doctor                              Print install diagnostics"
     )
     console.print(
-        "  dcode tools <install>                     Manage managed tools (ripgrep)"
+        "  dcode tools <install|list>                Manage managed tools (ripgrep)"
     )
+    console.print("  dcode install NAME                        Install optional extras")
     console.print()
 
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
@@ -170,6 +171,9 @@ def show_help() -> None:
     console.print("  --no-mcp                   Disable all MCP tool loading")
     console.print(
         "  --trust-project-mcp        Trust project MCP configs (skip approval prompt)"
+    )
+    console.print(
+        "  --trust-project-hooks      Trust project hooks.json command handlers"
     )
     console.print(
         "  --interpreter, --no-interpreter"
@@ -235,14 +239,12 @@ def show_help() -> None:
     console.print(
         "  --auto-update              Toggle automatic updates on or off, then exit"
     )
+    console.print("  --install NAME             Alias for `install NAME`")
     console.print(
-        "  --install NAME             Install an optional extra (e.g. daytona)"
+        "  --package                  With install/--install, treat NAME as a "
+        "package (uv --with), not an extra"
     )
-    console.print(
-        "  --package                  With --install, treat NAME as a package "
-        "(uv --with), not an extra"
-    )
-    console.print("  --yes                      Skip --install confirmation prompts")
+    console.print("  --yes                      Skip install confirmation prompts")
     console.print("  --acp                      Run as an ACP server over stdio")
     console.print("  -v, --version              Show dcode and SDK versions")
     console.print("  -h, --help                 Show this help message and exit")
@@ -644,6 +646,53 @@ def show_tools_install_help() -> None:
     )
     console.print(
         "DEEPAGENTS_CODE_RIPGREP_INSTALLER=system to use your package manager.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print()
+
+
+def show_install_help() -> None:
+    """Show help information for the `install` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode install NAME [options]")
+    console.print()
+    console.print(
+        "Install an optional deepagents-code extra into the current dcode",
+    )
+    console.print(
+        "environment (for example a sandbox provider or model provider).",
+    )
+    console.print(
+        "Distinct from `dcode tools install`, which provisions managed host",
+    )
+    console.print(
+        "binaries such as ripgrep.",
+    )
+    console.print()
+    # Do not use `_print_option_section` here: it appends the shared `--json`
+    # line, and `dcode install` does not accept that flag.
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
+    console.print(
+        "  --package               Treat NAME as a package added via `uv --with`"
+    )
+    console.print("  --yes                   Skip interactive confirmation prompts")
+    console.print(_HELP_OPTION_LINE)
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode install daytona")
+    console.print("  dcode install fireworks")
+    console.print("  dcode install not-listed-yet --yes")
+    console.print("  dcode install langchain-custom --package --yes")
+    console.print()
+    console.print(
+        "In-session equivalent: `/install NAME`. Legacy CLI alias:",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print(
+        "`dcode --install NAME`.",
         style=theme.MUTED,
         highlight=False,
     )

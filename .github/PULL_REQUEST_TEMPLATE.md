@@ -2,11 +2,11 @@ Fixes #
 
 <!-- Update the relationship and number above, or remove the line when none applies. Only `Closes`, `Fixes`, and `Resolves` auto-close the referenced GitHub issue on merge. -->
 
-<!-- For a net new feature or behavior-changing bugfix, replace this comment with a high-level, plain-English summary of the user-visible change. Do not add a heading or label. Remove this comment for chores, refactors, or test-only changes. -->
+<!-- For a net new feature or behavior-changing bugfix, replace this comment with a high-level, plain-English summary of the user-visible change. That paragraph is the release note — no heading or label, and do not repeat it later. Remove this comment for chores, refactors, or test-only changes. -->
 
 ---
 
-<!-- Explain the motivation and why this solution is the right one. Do not add a `# Summary` or `## Release note` heading. -->
+<!-- Explain the motivation and why this solution is the right one. Do not add a `# Summary`, `## Release note`, or `## Release Note` heading; the plain summary above `---` already is the release note. -->
 
 Read the full contributing guidelines: https://docs.langchain.com/oss/python/contributing/overview
 
@@ -28,7 +28,7 @@ Thank you for contributing to Deep Agents! Follow these steps to have your pull 
 2. PR description:
 
   - Keep an optional issue or PR relationship and, when required, the user-facing summary above the `---`; put the rest of the body below it.
-  - For net new features or behavior-changing bugfixes, write a high-level, plain-English summary of the user-visible change without a heading or label.
+  - For net new features or behavior-changing bugfixes, write a high-level, plain-English summary of the user-visible change above `---` without a heading or label. That summary is the release note — do not also add a `## Release note` / `## Release Note` section.
   - If this PR addresses a specific issue, use `Fixes #ISSUE_NUMBER`, `Closes #ISSUE_NUMBER`, or `Resolves #ISSUE_NUMBER` to automatically close it when the PR is merged.
   - If there are any breaking changes, please clearly describe them.
   - If this PR depends on another PR being merged first, please include `Depends on #PR_NUMBER` in the description.

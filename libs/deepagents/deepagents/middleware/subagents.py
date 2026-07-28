@@ -405,7 +405,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
     *,
     private_state_keys: frozenset[str] = frozenset(),
     state_schema: type | None = None,
-) -> BaseTool:
+) -> tuple[BaseTool, dict[str, Runnable]]:
     """Create a task tool from subagent specs.
 
     Args:
@@ -595,13 +595,16 @@ def _build_task_tool(  # noqa: C901, PLR0915
             result = await subagent.ainvoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
 
-    return StructuredTool.from_function(
-        name="task",
-        func=task,
-        coroutine=atask,
-        description=description,
-        infer_schema=False,
-        args_schema=TaskToolSchema,
+    return (
+        StructuredTool.from_function(
+            name="task",
+            func=task,
+            coroutine=atask,
+            description=description,
+            infer_schema=False,
+            args_schema=TaskToolSchema,
+        ),
+        subagent_graphs,
     )
 
 
@@ -687,12 +690,19 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         """Declared subagent names. Public so streamers can discover them
         without introspecting the `task` tool's closure."""
 
-        task_tool = _build_task_tool(
+        task_tool, subagent_graphs = _build_task_tool(
             self._subagents,
             task_description,
             private_state_keys=self._private_state_keys,
             state_schema=self._state_schema,
         )
+
+        self.subagent_graphs: dict[str, Runnable] = subagent_graphs
+        """Compiled subagent graphs, keyed by name. Public for the same reason
+        as `subagent_names`: a subagent lives in the `task` tool's closure, so
+        nothing outside can find it by introspection. `create_deep_agent`
+        declares these on the tools node, which is what makes a subagent's
+        checkpoints addressable in history."""
 
         # Build system prompt with available agents
         if system_prompt and subagents:
@@ -711,7 +721,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     @private_state_keys.setter
     def private_state_keys(self, value: frozenset[str]) -> None:
         self._private_state_keys = value
-        task_tool = _build_task_tool(
+        task_tool, self.subagent_graphs = _build_task_tool(
             self._subagents,
             task_description=self._task_description,
             private_state_keys=value,

@@ -26,6 +26,7 @@ from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
 from langgraph.channels.delta import DeltaChannel
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.pregel import Pregel
 from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 from langgraph.typing import ContextT
@@ -263,6 +264,27 @@ _REQUIRED_MIDDLEWARE_NAMES: frozenset[str] = frozenset(name for cls, aliases in 
 
 Derived from `_REQUIRED_MIDDLEWARE` and used for quick membership testing.
 """
+
+
+def _declare_subagent_subgraphs(agent: Pregel, middleware: Sequence[AgentMiddleware]) -> None:
+    """Declare `task` subagents on the tools node so history can find them.
+
+    `Pregel.get_subgraphs()` — which `get_state_history` uses to resolve a
+    namespace — reads `node.subgraphs`, auto-detected by scanning the node's
+    bound runnable. A subagent lives in the `task` tool's *closure*, so that
+    scan cannot see it: the tools node ends up with no subgraphs and reading a
+    subagent's own namespace raises `Subgraph tools not found`, even though its
+    checkpoints were written.
+
+    Declaring the graphs here makes them addressable. Note `get_subgraphs`
+    yields only the first, so with several subagent types the "wrong" one may
+    resolve; shared channels (notably `messages`) still read correctly, which is
+    what a history/inspection UI needs.
+    """
+    graphs = [g for m in middleware for g in getattr(m, "subagent_graphs", {}).values()]
+    node = agent.nodes.get("tools") if hasattr(agent, "nodes") else None
+    if graphs and node is not None and not getattr(node, "subgraphs", None):
+        node.subgraphs = graphs
 
 
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
@@ -919,7 +941,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     else:
         final_system_prompt = system_prompt + (f"\n\n{base_prompt}" if base_prompt else "")
 
-    return create_agent(
+    agent = create_agent(
         model,
         system_prompt=final_system_prompt,
         tools=_tools,
@@ -932,7 +954,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         name=name,
         cache=cache,
         state_schema=state_schema if state_schema is not None else DeepAgentState,
-    ).with_config(
+    )
+    # Before `.with_config()`, which copies the graph.
+    _declare_subagent_subgraphs(agent, deepagent_middleware)
+    return agent.with_config(
         {
             "recursion_limit": 9_999,
             "metadata": {

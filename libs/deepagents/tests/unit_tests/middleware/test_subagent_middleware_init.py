@@ -197,7 +197,7 @@ class TestSubagentMiddlewareInit:
 
         runnable = RunnableLambda(lambda _state, _config: (_ for _ in ()).throw(AssertionError("compiled runnable should not be invoked")))
 
-        task_tool = _build_task_tool(
+        task_tool, _ = _build_task_tool(
             [
                 {
                     "name": "worker",

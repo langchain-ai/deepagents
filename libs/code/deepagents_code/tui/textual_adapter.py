@@ -1841,7 +1841,9 @@ async def execute_task_textual(
                         tool_id = ask_req["tool_call_id"]
                         if result_type == "answered":
                             answers = result.get("answers", [])
-                            if isinstance(answers, list):
+                            if isinstance(answers, list) and len(answers) == len(
+                                questions
+                            ):
                                 resume_payload[interrupt_id] = {"answers": answers}
                                 output = ASK_USER_ANSWERED_SUMMARY
                                 tool_msg = adapter._current_tool_messages.pop(
@@ -1911,18 +1913,31 @@ async def execute_task_textual(
                                         tool_id,
                                     )
                             else:
-                                logger.error(
-                                    "ask_user answered payload had non-list "
-                                    "answers: %s",
-                                    type(answers).__name__,
-                                )
+                                if isinstance(answers, list):
+                                    output = (
+                                        "ask_user answer count mismatch "
+                                        f"(expected {len(questions)}, "
+                                        f"got {len(answers)})"
+                                    )
+                                    logger.error(
+                                        "ask_user answered payload had mismatched "
+                                        "answer count: expected %d, got %d",
+                                        len(questions),
+                                        len(answers),
+                                    )
+                                else:
+                                    output = "invalid ask_user answers payload"
+                                    logger.error(
+                                        "ask_user answered payload had non-list "
+                                        "answers: %s",
+                                        type(answers).__name__,
+                                    )
                                 resume_payload[interrupt_id] = {
                                     "status": "error",
-                                    "error": "invalid ask_user answers payload",
+                                    "error": output,
                                     "answers": ["" for _ in questions],
                                 }
                                 any_rejected = True
-                                output = "invalid ask_user answers payload"
                                 tool_msg = adapter._current_tool_messages.pop(
                                     tool_id, None
                                 )

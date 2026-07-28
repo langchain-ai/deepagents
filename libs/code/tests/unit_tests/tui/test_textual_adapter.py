@@ -7420,6 +7420,89 @@ class TestToolHooksTextual:
         assert payload["tool_status"] == "error"
         assert payload["tool_output"] == "invalid ask_user answers payload"
 
+    @pytest.mark.parametrize("answers", [[], ["Alice", "blue"]])
+    async def test_ask_user_answer_count_mismatch_dispatches_error(
+        self, answers: list[str]
+    ) -> None:
+        """Short and long answer lists fail consistently across live surfaces."""
+        mounted: list[ToolCallMessage] = []
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+        future.set_result({"type": "answered", "answers": answers})
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                mounted.append(widget)
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            return future
+
+        questions: list[Question] = [{"question": "Name?", "type": "text"}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": questions,
+                            "tool_call_id": "ask-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        with (
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        error = f"ask_user answer count mismatch (expected 1, got {len(answers)})"
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        assert resume_payload["interrupt-1"] == {
+            "status": "error",
+            "error": error,
+            "answers": [""],
+        }
+        assert len(mounted) == 1
+        assert mounted[0]._status == "error"
+        assert mounted[0]._output == error
+        assert "tool.error" in [
+            call[0][0] for call in mock_dispatch_background.call_args_list
+        ]
+        result_payloads = [
+            call[0][1]
+            for call in mock_dispatch_background.call_args_list
+            if call[0][0] == "tool.result"
+        ]
+        assert len(result_payloads) == 1
+        assert result_payloads[0]["tool_status"] == "error"
+        assert result_payloads[0]["tool_output"] == error
+
     async def test_tool_use_not_dispatched_without_id(self) -> None:
         """tool.use waits for a tool id even when name and args are complete.
 

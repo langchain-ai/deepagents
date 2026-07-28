@@ -183,6 +183,11 @@ jobs:
           FLAT_MATRIX: ${{ inputs.flat_matrix }}
           SINGLE_CATEGORY: ${{ inputs.category }}
           SINGLE_DATASET: ${{ inputs.dataset }}
+          # A local-dataset run leaves `dataset` at its registry default while
+          # actually running `--path`, so the path has to win here or the results
+          # get labelled with a dataset that never ran. Mirrors the flat_matrix
+          # branch above, which already prefers `dataset_path`.
+          SINGLE_DATASET_PATH: ${{ inputs.dataset_path }}
           SINGLE_AGENT_IMPL: ${{ inputs.agent_impl }}
           SINGLE_EXPECTED_SHARDS: ${{ steps.shard-matrix.outputs.n_shards }}
         run: |
@@ -232,7 +237,10 @@ jobs:
                   {
                       "category": os.environ.get("SINGLE_CATEGORY", ""),
                       "agent_impl": os.environ.get("SINGLE_AGENT_IMPL", ""),
-                      "dataset": os.environ.get("SINGLE_DATASET", ""),
+                      "dataset": (
+                          os.environ.get("SINGLE_DATASET_PATH", "").strip()
+                          or os.environ.get("SINGLE_DATASET", "")
+                      ),
                       "expected_shards": int(raw_expected) if raw_expected.isdigit() else "",
                   }
               ]

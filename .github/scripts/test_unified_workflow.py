@@ -906,3 +906,20 @@ def test_langsmith_experiment_name_is_category_scoped() -> None:
     """Each category gets its own experiment inside its dataset."""
     reusable = HARBOR_WORKFLOW.read_text()
     assert "${experiment_category:+-$experiment_category}" in reusable
+
+
+def test_single_dataset_aggregate_labels_local_runs_by_path() -> None:
+    """A local-dataset run must not be labelled with the registry default.
+
+    `dataset` keeps its `terminal-bench/terminal-bench-2` default while the run
+    actually executes `--path`, so the aggregate matrix has to prefer
+    `dataset_path`. Otherwise summary.json — which feeds the scorecard — records
+    a dataset that never ran.
+    """
+    reusable = HARBOR_WORKFLOW.read_text()
+    step = _indented_block(reusable, '      - name: "🗂️ Derive aggregate matrix"')
+
+    assert "SINGLE_DATASET_PATH: ${{ inputs.dataset_path }}" in step
+    assert 'os.environ.get("SINGLE_DATASET_PATH", "").strip()' in step
+    # The multi-category branch already preferred the path; keep it that way.
+    assert 'entry.get("dataset") or entry.get("dataset_path")' in step

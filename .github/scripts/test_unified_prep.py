@@ -143,8 +143,19 @@ def test_derive_impl_sets_new_graph_is_selectable():
 
 
 def test_module_impl_sets_match_registry():
-    assert up.KNOWN_AGENT_IMPLS == {"bare", "dcode", "tau3"}
+    assert up.KNOWN_AGENT_IMPLS == {"bare", "dcode", "search", "tau3"}
+    # `search` is registered but dataset-pinned, so it is not user-selectable as
+    # a code harness for the fan-out categories.
     assert up.CODE_AGENT_IMPLS == {"bare", "dcode"}
+
+
+def test_dataset_pinned_impls_are_not_selectable():
+    known, code = up.derive_impl_sets(
+        {"bare", "search"},
+        {"context": {"agent_impl": "bare", "fan_out": True}},
+    )
+    assert known == {"bare", "search"}
+    assert code == {"bare"}
 
 
 def test_main_rejects_invalid_profile(tmp_path, monkeypatch):

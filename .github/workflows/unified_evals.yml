@@ -148,14 +148,18 @@ jobs:
               dataset_path = CATEGORY_MAP[category]["dataset_path"]
               env = os.environ.copy()
               if dataset_path:
-                  # Local dataset: the per-task corpus is git-ignored and must be
-                  # regenerated from the vendored copy before enumeration can see
-                  # any task.toml files, mirroring the leaf's own populate step.
+                  # Local dataset: task content is git-ignored and must be
+                  # regenerated before enumeration can see any task.toml files,
+                  # mirroring the leaf's own populate step. The dispatcher maps
+                  # the dataset path to its adapter.
                   subprocess.run(
                       [
-                          "uv", "run", "python", "-m",
-                          "harbor_adapters.contextbench.main",
-                          "--populate", dataset_path,
+                          "uv", "run", "python",
+                          os.path.join(
+                              os.environ["GITHUB_WORKSPACE"],
+                              ".github", "scripts", "prepare_local_dataset.py",
+                          ),
+                          dataset_path,
                       ],
                       check=True,
                   )

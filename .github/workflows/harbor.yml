@@ -293,8 +293,8 @@ jobs:
 
       - name: "🏷️ Derive category"
         id: category
-        # Mirrors the leaf's own category convention: an explicit local
-        # dataset path is always "context"; a tau3 dataset ref is
+        # Mirrors the leaf's own category convention: a local dataset path maps
+        # to its own category via the case below; a tau3 dataset ref is
         # "conversation"; everything else (terminal-bench, harbor-index, ...)
         # is "autonomous".
         env:
@@ -302,7 +302,17 @@ jobs:
           DATASET: ${{ inputs.dataset_override || inputs.dataset }}
         run: |
           if [ -n "${DATASET_PATH}" ]; then
-            echo "category=context" >> "$GITHUB_OUTPUT"
+            # Local datasets are per-dataset, not all "context". Unknown local
+            # paths fail rather than being mislabelled, which would file their
+            # results under another category's scorecard axis.
+            case "${DATASET_PATH%/}" in
+              datasets/context-retrieval-evals) echo "category=context" >> "$GITHUB_OUTPUT" ;;
+              datasets/loho-search-evals)       echo "category=search"  >> "$GITHUB_OUTPUT" ;;
+              *)
+                echo "::error::No category mapped for local dataset '${DATASET_PATH}'."
+                exit 1
+                ;;
+            esac
           elif [[ "${DATASET}" == *tau3* ]]; then
             echo "category=conversation" >> "$GITHUB_OUTPUT"
           else

@@ -185,8 +185,10 @@ def test_enumerate_step_gated_on_full_profile() -> None:
     assert "if: ${{ inputs.profile == 'full' }}" in enumerate_step
     assert "ENUM_DATASET" in enumerate_step
     assert "ENUM_DATASET_PATH" in enumerate_step
-    assert "harbor_adapters.contextbench.main" in enumerate_step
-    assert "--populate" in enumerate_step
+    # Local datasets are populated via the path->adapter dispatcher, never a
+    # single hardcoded adapter.
+    assert "prepare_local_dataset.py" in enumerate_step
+    assert "harbor_adapters.contextbench.main" not in enumerate_step
     assert "UNIFIED_TASKS_JSON" in enumerate_step
 
     p_step = _indented_block(

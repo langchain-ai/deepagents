@@ -1,0 +1,12 @@
+# Local Harbor dataset for Deep Agents open-web search evals.
+# Task dirs are generated (never committed) — run this first:
+#   python -m harbor_adapters.lohosearch.main --populate datasets/loho-search-evals
+#   harbor run --path datasets/loho-search-evals ...
+# Not published to a registry, so tasks are discovered by scanning task dirs;
+# no per-task manifest entries are needed.
+
+[dataset]
+name = "langchain-ai/loho-search-evals"
+description = "Long-horizon open-web search evaluation tasks for Deep Agents."
+authors = []
+keywords = []

@@ -1,0 +1,12 @@
+{
+  "source": {
+    "repo": "meituan-longcat/LoHoSearch",
+    "config": "benchmark",
+    "split": "test"
+  },
+  "tasks": {
+    "loho-01": {"question_sha256": "2a4f40c3a37884a9232934e32478d2975baec79da925a8c718984dce8a3fb072"},
+    "loho-02": {"question_sha256": "1d8860726ff2b80f8666911d50de571fff9feb7566b7da60d0778648a896f6ce"},
+    "loho-03": {"question_sha256": "19bf362019ff1c5a75394187eb6f4d936cab5d2c64dbc90d36564027c659b1b7"}
+  }
+}

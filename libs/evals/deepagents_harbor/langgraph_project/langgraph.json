@@ -20,6 +20,7 @@
   "graphs": {
     "dcode": "./langgraph_agent.py:make_graph",
     "bare": "./langgraph_agent.py:make_bare_graph",
+    "search": "./langgraph_agent.py:make_search_graph",
     "tau3": "./langgraph_agent.py:make_tau3_graph"
   }
 }

@@ -313,8 +313,21 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
+          # Search-category only: the agent's web_search tool and the SimpleQA
+          # half of the dual judge. Empty for every other category so an absent
+          # secret cannot fail an unrelated run.
+          TAVILY_API_KEY: ${{ (matrix.category || inputs.category) == 'search' && secrets.TAVILY_API_KEY || '' }}
+          LOHO_JUDGE_B_API_KEY: ${{ (matrix.category || inputs.category) == 'search' && (secrets.LOHO_JUDGE_B_API_KEY || secrets.FIREWORKS_API_KEY) || '' }}
         run: |
           missing=()
+
+          # The search category needs a web-search key for the agent and a
+          # second judge key for the SimpleQA half of the reward. Judge A reuses
+          # OPENAI_API_KEY, already required above.
+          if [ "$HARBOR_CATEGORY" = "search" ]; then
+            [ -z "$TAVILY_API_KEY" ] && missing+=("TAVILY_API_KEY")
+            [ -z "$LOHO_JUDGE_B_API_KEY" ] && missing+=("LOHO_JUDGE_B_API_KEY or FIREWORKS_API_KEY")
+          fi
 
           # LangSmith is always required (experiment tracking)
           [ -z "$LANGSMITH_API_KEY" ] && missing+=("LANGSMITH_API_KEY")
@@ -457,19 +470,22 @@ jobs:
           python3 "$GITHUB_WORKSPACE/.github/scripts/prune_agent_deps.py" \
             "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
 
-      - name: "🗂️ Populate local dataset corpus"
+      - name: "🗂️ Populate local dataset"
         if: ${{ (matrix.dataset_path || inputs.dataset_path) != '' }}
         working-directory: libs/evals
         env:
           HARBOR_DATASET_PATH: ${{ matrix.dataset_path || inputs.dataset_path }}
-        # The per-task corpus is single-sourced (git-ignored) and regenerated from
-        # the vendored copy so each task's build context has its files/ before
-        # Harbor builds the task images.
+        # Local datasets do not commit everything Harbor needs: Context-Bench
+        # git-ignores its shared corpus and invariant verifier files, LoHoSearch
+        # git-ignores whole task dirs. prepare_local_dataset.py maps the dataset
+        # path to its adapter (explicit allowlist) and runs that adapter's
+        # --populate, so each task's build context is complete before Harbor
+        # builds the task images.
         run: |
           if ! [[ "$HARBOR_DATASET_PATH" =~ ^datasets/[A-Za-z0-9._/-]+$ ]] || [[ "$HARBOR_DATASET_PATH" == *".."* ]] || [[ "$HARBOR_DATASET_PATH" == *"~"* ]]; then
             echo "::error::Invalid local Harbor dataset path: $HARBOR_DATASET_PATH"; exit 1
           fi
-          uv run python -m harbor_adapters.contextbench.main --populate "$HARBOR_DATASET_PATH"
+          uv run python "$GITHUB_WORKSPACE/.github/scripts/prepare_local_dataset.py" "$HARBOR_DATASET_PATH"
 
       - name: "🌿 Overlay branch agent source"
         if: ${{ inputs.branch != '' && inputs.branch != 'current' }}
@@ -542,6 +558,12 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
+          # Search category only. TAVILY_API_KEY backs the agent's web_search
+          # tool; the LOHO_JUDGE_* pair drives the dual-judge verifier (judge A
+          # falls back to OPENAI_API_KEY, already present above). Empty elsewhere
+          # so no other category carries these into its sandbox.
+          TAVILY_API_KEY: ${{ (matrix.category || inputs.category) == 'search' && secrets.TAVILY_API_KEY || '' }}
+          LOHO_JUDGE_B_API_KEY: ${{ (matrix.category || inputs.category) == 'search' && (secrets.LOHO_JUDGE_B_API_KEY || secrets.FIREWORKS_API_KEY) || '' }}
         run: |
           # Stage current checkout packages for LangGraph's sandbox install.
           local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"
@@ -823,6 +845,23 @@ jobs:
             --verifier-env 'JUDGE_REPEATS=1'
             --verifier-env 'JUDGE_CONCURRENCY=1'
           )
+
+          # LoHoSearch grades with two independent judges and averages their
+          # binary verdicts, so the verifier needs both endpoints. Judge A
+          # (BrowseComp prompt) reuses the OpenAI key already forwarded above;
+          # judge B (SimpleQA prompt) is a separate provider. Scoped to the
+          # search category so other verifiers see no unused judge config.
+          if [ "$HARBOR_CATEGORY" = "search" ]; then
+            verifier_env_args+=(
+              --verifier-env 'LOHO_JUDGE_A_MODEL=gpt-4.1'
+              --verifier-env 'LOHO_JUDGE_A_BASE_URL=${OPENAI_BASE_URL}'
+              --verifier-env 'LOHO_JUDGE_A_API_KEY=${OPENAI_API_KEY}'
+              --verifier-env 'LOHO_JUDGE_B_MODEL=accounts/fireworks/models/qwen2p5-32b-instruct'
+              --verifier-env 'LOHO_JUDGE_B_BASE_URL=https://api.fireworks.ai/inference/v1'
+              --verifier-env 'LOHO_JUDGE_B_API_KEY=${LOHO_JUDGE_B_API_KEY}'
+            )
+          fi
+
           model_provider="${HARBOR_MODEL%%:*}"
           case "$model_provider" in
             anthropic)    agent_env_args+=(--agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}') ;;
@@ -841,6 +880,14 @@ jobs:
             xai)          agent_env_args+=(--agent-env 'XAI_API_KEY=${XAI_API_KEY}') ;;
             nvidia)       agent_env_args+=(--agent-env 'NVIDIA_API_KEY=${NVIDIA_API_KEY}') ;;
           esac
+
+          # The search graph's web_search tool is Tavily-backed. Harbor's own
+          # env forwarding allowlist does not include TAVILY_API_KEY, so it must
+          # be passed explicitly or the tool reports "API key not configured"
+          # and every task fails for a reason that looks like a model failure.
+          if [ "$HARBOR_CATEGORY" = "search" ]; then
+            agent_env_args+=(--agent-env 'TAVILY_API_KEY=${TAVILY_API_KEY}')
+          fi
 
           echo "LangSmith plugin experiment: $HARBOR_LANGSMITH_EXPERIMENT"
           echo "Agent implementation: $HARBOR_AGENT_GRAPH"
@@ -999,6 +1046,26 @@ jobs:
           fi
           branch_safe="${branch_safe}-$(printf '%s' "$HARBOR_BRANCH" | sha256sum | cut -c1-8)"
           echo "HARBOR_BRANCH_SAFE=$branch_safe" >> "$GITHUB_ENV"
+
+      - name: "🧽 Redact benchmark plaintext from search artifacts"
+        if: ${{ always() && (matrix.category || inputs.category) == 'search' }}
+        working-directory: libs/evals
+        # LoHoSearch questions and answers are decrypted at runtime, and its
+        # canary forbids republishing them as plain text. This repo is PUBLIC,
+        # so shard artifacts are world-downloadable: agent/instruction.txt holds
+        # the decrypted question, and the agent and verifier logs hold the
+        # answer and fetched page content.
+        #
+        # Allowlisted, not denylisted: keep only what the aggregate job reads
+        # (result.json plus empty-shard markers) and delete everything else, so
+        # a log file added by a future Harbor release cannot start leaking
+        # silently. Debug search runs locally, not from CI artifacts.
+        run: |
+          root="harbor-jobs/terminal-bench"
+          [ -d "$root" ] || exit 0
+          find "$root" -type f ! -name 'result.json' ! -name 'empty-shard-*' -delete
+          find "$root" -mindepth 1 -type d -empty -delete
+          echo "Redacted search artifacts; kept result.json and empty-shard markers."
 
       - name: "📤 Upload Harbor artifacts"
         if: always()

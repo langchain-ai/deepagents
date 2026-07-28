@@ -69,7 +69,9 @@ def test_aggregate_and_summary(tmp_path: Path):
     assert result.skipped_files == 0
     assert result.malformed_rewards == 0
 
-    dataset_passk, avg_at_k, totals, per_task = agg.build_summary(by_task, 3)
+    dataset_passk, avg_at_k, mean_reward_at_k, totals, per_task = agg.build_summary(
+        by_task, 3, result.reward_sums
+    )
     # pass@K (K=3), scalar: mean over tasks of "passed at least once" = (1+0+1)/3.
     assert abs(dataset_passk - (1 + 0 + 1) / 3) < 1e-6
     assert totals == {
@@ -81,6 +83,8 @@ def test_aggregate_and_summary(tmp_path: Path):
     }
     # avg@K: passing trials / expected trials = 4 / (3 tasks * 3 rollouts) = 4/9.
     assert abs(avg_at_k - 4 / 9) < 1e-6
+    # These rewards are all binary, so mean_reward@K must equal avg@K exactly.
+    assert mean_reward_at_k == avg_at_k
     assert len(per_task) == 3
     # per-task pass@K is a scalar under a dynamic "pass@{K}" key.
     assert {r["task"]: r["pass@3"] for r in per_task} == {
@@ -133,8 +137,66 @@ def test_end_to_end_writes_files(tmp_path: Path):
         json.loads(line) for line in (out / "per_task.jsonl").read_text().splitlines()
     ]
     assert rows == [
-        {"task": "taskA", "trials": 2, "passed": 1, "errored": 0, "pass@2": 1.0}
+        {
+            "task": "taskA",
+            "trials": 2,
+            "passed": 1,
+            "errored": 0,
+            "pass@2": 1.0,
+            "mean_reward@2": 0.5,
+        }
     ]
+
+
+def test_partial_credit_counts_toward_mean_reward_but_not_pass(tmp_path: Path):
+    # A dual-judge verifier (LoHoSearch) emits 0.0/0.5/1.0. A 0.5 split is not a
+    # pass, but it must not be discarded either: it is half credit.
+    _write_trial(tmp_path / "a__0", "taskA", reward=0.5)
+    _write_trial(tmp_path / "a__1", "taskA", reward=0.5)
+    out = tmp_path / "out"
+    rc = agg.main([str(tmp_path), "--rollouts", "2", "--out-dir", str(out)])
+    assert rc == 0
+    summary = json.loads((out / "summary.json").read_text())
+    # Neither trial cleared PASS_THRESHOLD, so the pass-based metrics are zero...
+    assert summary["pass@2"] == 0.0
+    assert summary["avg@2"] == 0.0
+    # ...while mean_reward@2 records the half credit the judges actually gave.
+    assert summary["mean_reward@2"] == 0.5
+
+
+def test_mean_reward_matches_avg_for_binary_rewards(tmp_path: Path):
+    # The metric is a generalization, not a replacement: for every existing
+    # category (binary verifiers) it must reproduce avg@K exactly.
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
+    _write_trial(tmp_path / "a__1", "taskA", reward=0.0)
+    _write_trial(tmp_path / "b__0", "taskB", reward=0.0)
+    _write_trial(tmp_path / "b__1", "taskB", reward=0.0)
+    out = tmp_path / "out"
+    rc = agg.main([str(tmp_path), "--rollouts", "2", "--out-dir", str(out)])
+    assert rc == 0
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["mean_reward@2"] == summary["avg@2"] == 0.25
+
+
+def test_missing_reward_contributes_zero_to_mean_reward(tmp_path: Path):
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
+    _write_trial(tmp_path / "a__1", "taskA", reward=None)
+    out = tmp_path / "out"
+    rc = agg.main([str(tmp_path), "--rollouts", "2", "--out-dir", str(out)])
+    assert rc == 0
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["mean_reward@2"] == 0.5
+
+
+def test_out_of_range_reward_is_clamped(tmp_path: Path):
+    # A misbehaving verifier must not be able to push a task above full credit.
+    _write_trial(tmp_path / "a__0", "taskA", reward=5.0)
+    _write_trial(tmp_path / "a__1", "taskA", reward=-3.0)
+    out = tmp_path / "out"
+    rc = agg.main([str(tmp_path), "--rollouts", "2", "--out-dir", str(out)])
+    assert rc == 0
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["mean_reward@2"] == 0.5
 
 
 def test_missing_rollouts_count_as_failures(tmp_path: Path):

@@ -9,6 +9,13 @@ of all shard artifacts), groups trials by task, and computes:
   - avg@K   passing trials (capped at K per task, so duplicated rollouts cannot
             push a task above 1) over the EXPECTED trial count (tasks * rollouts),
             so missing rollouts of a present task count as failures.
+  - mean_reward@K
+            avg@K generalized to fractional rewards: summed reward rather than
+            counted passes, over the same capped numerator and expected
+            denominator. Verifiers that emit only 0.0/1.0 make this identical to
+            avg@K; it differs only for graders with partial credit (e.g. the
+            LoHoSearch dual judge, which scores 0.0/0.5/1.0), where it is the
+            benchmark's own published metric.
 
 The summary is flagged ``incomplete`` when a full run cannot be vouched for:
 the matrix job did not fully succeed (``--harbor-result`` != "success"); a
@@ -115,6 +122,7 @@ class Aggregation(NamedTuple):
     job_ids: set[str]
     empty_shards: set[str]
     by_task: dict[str, dict[str, int]]
+    reward_sums: dict[str, float]
     skipped_files: int
     malformed_rewards: int
 
@@ -124,6 +132,7 @@ class SummaryParts(NamedTuple):
 
     pass_at_k: float | None
     avg_at_k: float | None
+    mean_reward_at_k: float | None
     totals: dict[str, int]
     per_task: list[dict]
 
@@ -219,6 +228,7 @@ def aggregate(root: Path) -> Aggregation:
     by_task: dict[str, dict[str, int]] = defaultdict(
         lambda: {"trials": 0, "passed": 0, "errored": 0}
     )
+    reward_sums: dict[str, float] = defaultdict(float)
     skipped_files = 0
     malformed_rewards = 0
 
@@ -249,21 +259,30 @@ def aggregate(root: Path) -> Aggregation:
         if trial_errored(result):
             stats["errored"] += 1
         reward = trial_reward(result)
-        if reward is not None and reward >= PASS_THRESHOLD:
-            stats["passed"] += 1
+        if reward is not None:
+            # Clamped so a malformed out-of-range reward cannot inflate the mean;
+            # missing rewards contribute 0, matching how they are not passes.
+            reward_sums[task] += max(0.0, min(1.0, reward))
+            if reward >= PASS_THRESHOLD:
+                stats["passed"] += 1
 
     return Aggregation(
         models,
         job_ids,
         empty_shards,
         dict(by_task),
+        dict(reward_sums),
         skipped_files,
         malformed_rewards,
     )
 
 
-def build_summary(by_task: dict[str, dict[str, int]], rollouts: int) -> SummaryParts:
-    """Compute per-task rows plus dataset-level pass@K and avg@K, where K = rollouts.
+def build_summary(
+    by_task: dict[str, dict[str, int]],
+    rollouts: int,
+    reward_sums: dict[str, float] | None = None,
+) -> SummaryParts:
+    """Compute per-task rows plus dataset-level pass@K, avg@K, and mean_reward@K.
 
     Missing rollouts of a present task are treated as failures, so an incomplete
     shard cannot inflate the scores:
@@ -272,19 +291,34 @@ def build_summary(by_task: dict[str, dict[str, int]], rollouts: int) -> SummaryP
       - avg@K: passing trials, capped at K per task, divided by
         (present tasks * rollouts). The denominator is the EXPECTED trial count,
         and duplicated rollouts cannot inflate the score above 1.
+      - mean_reward@K: the same quantity over summed reward instead of counted
+        passes. Identical to avg@K for binary verifiers; it diverges only where a
+        grader awards partial credit.
+
+    Args:
+        by_task: Per-task trial tallies from `aggregate`.
+        rollouts: K, the expected rollouts per task.
+        reward_sums: Per-task summed reward from `aggregate`. Defaults to the
+            binary pass counts, which keeps mean_reward@K equal to avg@K.
+
+    Returns:
+        The computed metrics and per-task rows.
     """
     per_task: list[dict] = []
     passk_sum = 0.0
     total_trials = total_passed = total_errored = 0
     capped_passed = 0
+    capped_reward = 0.0
 
     for task in sorted(by_task):
         n = by_task[task]["trials"]
         c = by_task[task]["passed"]
         errored = by_task[task]["errored"]
+        reward_sum = c if reward_sums is None else reward_sums.get(task, 0.0)
         total_trials += n
         total_passed += c
         capped_passed += min(c, rollouts)
+        capped_reward += min(reward_sum, rollouts)
         total_errored += errored
 
         # A task passes @K iff it has >=1 observed pass; missing rollouts can only
@@ -298,6 +332,9 @@ def build_summary(by_task: dict[str, dict[str, int]], rollouts: int) -> SummaryP
                 "passed": c,
                 "errored": errored,
                 f"pass@{rollouts}": task_passk,
+                f"mean_reward@{rollouts}": round(min(reward_sum, rollouts) / rollouts, 6)
+                if rollouts
+                else None,
             }
         )
 
@@ -307,6 +344,9 @@ def build_summary(by_task: dict[str, dict[str, int]], rollouts: int) -> SummaryP
     # per-task capping prevents duplicated rollouts from inflating the numerator.
     expected_trials = n_tasks * rollouts
     avg_at_k = round(capped_passed / expected_trials, 6) if expected_trials else None
+    mean_reward_at_k = (
+        round(capped_reward / expected_trials, 6) if expected_trials else None
+    )
     totals = {
         "tasks": n_tasks,
         "trials": total_trials,
@@ -314,7 +354,7 @@ def build_summary(by_task: dict[str, dict[str, int]], rollouts: int) -> SummaryP
         "passed": total_passed,
         "errored": total_errored,
     }
-    return SummaryParts(dataset_passk, avg_at_k, totals, per_task)
+    return SummaryParts(dataset_passk, avg_at_k, mean_reward_at_k, totals, per_task)
 
 
 def make_summary(
@@ -334,11 +374,13 @@ def make_summary(
     totals: dict[str, int],
     pass_at_k: float | None,
     avg_at_k: float | None,
+    mean_reward_at_k: float | None = None,
     issues: list[dict[str, str]] | None = None,
 ) -> dict:
     """Assemble the summary dict in one place, so the empty and populated paths
     cannot drift in schema. The metric keys are dynamic (``pass@{K}`` /
-    ``avg@{K}``); ``rollouts_per_task`` carries K so a reader can reconstruct them.
+    ``avg@{K}`` / ``mean_reward@{K}``); ``rollouts_per_task`` carries K so a
+    reader can reconstruct them.
     """
     return {
         "dataset": dataset,
@@ -356,6 +398,7 @@ def make_summary(
         "totals": totals,
         f"pass@{rollouts}": pass_at_k,
         f"avg@{rollouts}": avg_at_k,
+        f"mean_reward@{rollouts}": mean_reward_at_k,
         "issues": list(issues or []),
     }
 
@@ -401,6 +444,12 @@ def render_step_summary(summary: dict) -> str:
     )
     lines.append(
         f"| avg@{k} | {avgk:.3f} |" if avgk is not None else f"| avg@{k} | n/a |"
+    )
+    meanrk = summary.get(f"mean_reward@{k}")
+    lines.append(
+        f"| mean_reward@{k} | {meanrk:.3f} |"
+        if meanrk is not None
+        else f"| mean_reward@{k} | n/a |"
     )
     issues = summary.get("issues") or []
     if issues:
@@ -574,6 +623,7 @@ def main(argv: list[str] | None = None) -> int:
             },
             pass_at_k=None,
             avg_at_k=None,
+            mean_reward_at_k=None,
             issues=issues,
         )
         write_outputs(summary, [], out_dir)
@@ -629,6 +679,7 @@ def main(argv: list[str] | None = None) -> int:
             },
             pass_at_k=None,
             avg_at_k=None,
+            mean_reward_at_k=None,
             issues=issues,
         )
         write_outputs(summary, [], out_dir)
@@ -652,7 +703,7 @@ def main(argv: list[str] | None = None) -> int:
         print("No trial results found; wrote empty summary.", file=sys.stderr)
         return 0
 
-    parts = build_summary(agg.by_task, args.rollouts)
+    parts = build_summary(agg.by_task, args.rollouts, agg.reward_sums)
     # Incomplete if a shard job failed, a shard is missing, a present task ran a
     # number of trials other than K (missing OR duplicated rollouts), or a result
     # was unreadable / had a non-numeric reward.
@@ -685,6 +736,7 @@ def main(argv: list[str] | None = None) -> int:
         totals=parts.totals,
         pass_at_k=parts.pass_at_k,
         avg_at_k=parts.avg_at_k,
+        mean_reward_at_k=parts.mean_reward_at_k,
         issues=issues,
     )
     if incomplete:

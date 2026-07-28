@@ -191,6 +191,15 @@ ban-relative-imports = "all"
     "T201",    # `print` is the verifier's stdout diagnostic channel (captured in verifier logs)
     "D",       # Docstring conventions — a copied-into-sandbox script, not library API
 ]
+"harbor_adapters/lohosearch/templates/*" = [
+    "INP001",  # Standalone script copied into each task's sandbox, not an importable module
+    "T201",    # `print` is the verifier's stdout diagnostic channel (captured in verifier logs)
+    "D",       # Docstring conventions — a copied-into-sandbox script, not library API
+    "ANN",     # Runs under the task image's bare python3, so no typing imports
+]
+"harbor_adapters/lohosearch/main.py" = [
+    "T201",    # `print` is the CLI's stdout output mechanism
+]
 
 [tool.ruff.lint.isort]
 force-single-line = false

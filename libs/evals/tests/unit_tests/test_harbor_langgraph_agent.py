@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 from deepagents_code.config import settings
+from deepagents_code.tools import fetch_url, web_search
 
 from deepagents_harbor.langgraph_project import langgraph_agent
 
@@ -49,6 +50,7 @@ def test_langgraph_config_points_to_deepagent_factory() -> None:
     assert config["graphs"] == {
         "dcode": "./langgraph_agent.py:make_graph",
         "bare": "./langgraph_agent.py:make_bare_graph",
+        "search": "./langgraph_agent.py:make_search_graph",
         "tau3": "./langgraph_agent.py:make_tau3_graph",
     }
     assert not (project_path / "langsmith.py").exists()
@@ -629,6 +631,47 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     # The bare path must not inject a harness system prompt, preserving the
     # prompt-free SDK default.
     assert "system_prompt" not in captured_create[0]
+
+
+def test_make_search_graph_attaches_web_tools(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    captured_backend: list[dict[str, object]] = []
+    captured_create: list[dict[str, object]] = []
+    backend = object()
+
+    def fake_init_chat_model(_model: str, **_kwargs: object) -> object:
+        return "chat-model"
+
+    def fake_local_shell_backend(**kwargs: object) -> object:
+        captured_backend.append(kwargs)
+        return backend
+
+    def fake_create_deep_agent(**kwargs: object) -> object:
+        captured_create.append(kwargs)
+        return "graph"
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
+    monkeypatch.setattr(langgraph_agent, "LocalShellBackend", fake_local_shell_backend)
+    monkeypatch.setattr(langgraph_agent, "create_deep_agent", fake_create_deep_agent)
+
+    result = langgraph_agent.make_search_graph(
+        {"configurable": {"model": "test-provider:test-model", "cwd": str(tmp_path)}}
+    )
+
+    assert result == "graph"
+    # Identity, not name: these are the exact callables deepagents-code ships.
+    assert captured_create[0]["tools"] == [web_search, fetch_url]
+    # The shell backend exists only so the agent can write /app/answer.txt.
+    assert captured_backend == [{"root_dir": tmp_path, "inherit_env": False, "virtual_mode": False}]
+    # Unlike the bare graph, search does carry a prompt: the benchmark scores
+    # every model under the BrowseComp system prompt.
+    assert "answer.txt" in str(captured_create[0]["system_prompt"])
+
+
+def test_tavily_key_is_hidden_from_the_shell_tool() -> None:
+    """The search agent must not be able to read its own search key via shell."""
+    assert "TAVILY_API_KEY" in langgraph_agent._SHELL_ENV_DENYLIST
 
 
 def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):

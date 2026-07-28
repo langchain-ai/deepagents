@@ -1,0 +1,1 @@
+"""LoHoSearch Harbor task adapter."""

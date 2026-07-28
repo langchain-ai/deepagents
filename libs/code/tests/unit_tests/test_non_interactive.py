@@ -1706,6 +1706,47 @@ class TestMaxTurns:
         _, kwargs = agent.astream.call_args
         assert "Stop" in (kwargs["context"].get("hooks_server_events") or [])
 
+    async def test_run_agent_loop_ignores_persisted_project_hook_trust(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Trust remembered interactively must not opt a headless run in.
+
+        The operator of a `dcode -n` run may never have seen the interactive
+        prompt, so only the explicit flag may enable repository hooks.
+        """
+        from deepagents_code.hooks import trust as trust_module
+
+        monkeypatch.chdir(tmp_path)
+        project_hooks = tmp_path / ".deepagents"
+        project_hooks.mkdir()
+        (project_hooks / "hooks.json").write_text(
+            '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo x"}]}]}}',
+            encoding="utf-8",
+        )
+        store = tmp_path / "state" / "hooks_trust.json"
+        monkeypatch.setattr(trust_module, "_default_store_path", lambda: store)
+        assert trust_module.trust_project_hooks(tmp_path, store_path=store)
+
+        agent = MagicMock()
+        agent.astream = MagicMock(return_value=_async_iter([]))
+        config: RunnableConfig = {"configurable": {"thread_id": "t1"}}
+
+        with patch(
+            "deepagents_code.client.non_interactive.dispatch_hook",
+            new_callable=AsyncMock,
+        ):
+            await _run_agent_loop(
+                agent,
+                "task",
+                config,
+                Console(quiet=True),
+                MagicMock(),
+                quiet=True,
+            )
+
+        _, kwargs = agent.astream.call_args
+        assert "Stop" not in (kwargs["context"].get("hooks_server_events") or [])
+
     async def test_raises_after_user_limit(self) -> None:
         """HITLIterationLimitError is raised after max_turns HITL iterations."""
         agent = _make_looping_agent()

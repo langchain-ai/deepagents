@@ -64,6 +64,18 @@ def test_corrupt_store_fails_closed_without_overwrite(tmp_path: Path) -> None:
     assert store.read_text(encoding="utf-8") == "{invalid"
 
 
+def test_non_utf8_store_fails_closed_without_overwrite(tmp_path: Path) -> None:
+    """Decoding happens during the read, so it must fail closed like other I/O."""
+    root = _write_project_hooks(tmp_path / "project")
+    store = tmp_path / "hooks_trust.json"
+    raw = b'{"version": 1, "projects": {"\xff\xfe": {}}}'
+    store.write_bytes(raw)
+
+    assert not is_project_hooks_trusted(root, store_path=store)
+    assert not trust_project_hooks(root, store_path=store)
+    assert store.read_bytes() == raw
+
+
 def test_concurrent_writes_across_stores_preserve_every_entry(tmp_path: Path) -> None:
     """A single process-wide lock must not drop entries under contention."""
     roots = [_write_project_hooks(tmp_path / f"project-{index}") for index in range(8)]
@@ -112,6 +124,21 @@ def test_session_grant_does_not_extend_to_other_workspaces(tmp_path: Path) -> No
     assert policy.allows(granted)
     assert not policy.allows(other)
     assert not is_project_hooks_trusted(granted, store_path=store)
+
+
+def test_explicit_only_policy_ignores_persisted_trust(tmp_path: Path) -> None:
+    """Headless runs must not inherit a grant made in an interactive session."""
+    root = _write_project_hooks(tmp_path / "project")
+    store = tmp_path / "state" / "hooks_trust.json"
+    assert trust_project_hooks(root, store_path=store)
+
+    opted_out = WorkspaceTrust.explicit_only(root, granted=False, store_path=store)
+    opted_in = WorkspaceTrust.explicit_only(root, granted=True, store_path=store)
+
+    assert not opted_out.allows(root)
+    assert opted_in.allows(root)
+    # The interactive policy still honors the same persisted grant.
+    assert WorkspaceTrust(store_path=store).allows(root)
 
 
 def test_declined_trust_resolves_to_untrusted_everywhere(tmp_path: Path) -> None:
@@ -327,3 +354,24 @@ async def test_reload_picks_up_trust_when_entering_trusted_workspace(
     await manager.reload(cwd=trusted)
 
     assert manager.has_handlers(HookEvent.STOP)
+
+
+def test_headless_manager_ignores_persisted_trust(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The policy the headless runner builds must not load remembered hooks."""
+    _isolate_hook_config(tmp_path, monkeypatch)
+    root = _write_project_hooks(tmp_path / "project")
+    store = tmp_path / "state" / "hooks_trust.json"
+    assert trust_project_hooks(root, store_path=store)
+
+    opted_out = _manager(
+        root, WorkspaceTrust.explicit_only(root, granted=False, store_path=store)
+    )
+    opted_in = _manager(
+        root, WorkspaceTrust.explicit_only(root, granted=True, store_path=store)
+    )
+
+    assert not opted_out.has_handlers(HookEvent.STOP)
+    assert opted_in.has_handlers(HookEvent.STOP)

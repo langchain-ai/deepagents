@@ -167,7 +167,9 @@ def _load_store(path: Path, *, strict: bool = False) -> HooksTrustStore:
         raw_text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return HooksTrustStore()
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
+        # Decoding happens during the read, so non-UTF-8 stores surface here
+        # rather than at `json.loads` below.
         if strict:
             raise
         logger.warning("Could not read hooks trust store %s: %s", path, exc)
@@ -175,7 +177,7 @@ def _load_store(path: Path, *, strict: bool = False) -> HooksTrustStore:
 
     try:
         data: object = json.loads(raw_text)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+    except json.JSONDecodeError as exc:
         if strict:
             raise
         logger.warning("Could not parse hooks trust store %s: %s", path, exc)
@@ -355,6 +357,14 @@ class WorkspaceTrust:
     neither of which is persisted to the trust store.
     """
 
+    consult_store: bool = True
+    """Whether persisted trust may satisfy the policy.
+
+    Headless runs set this to `False`: executing repository hooks there requires
+    an explicit opt-in, so a workspace remembered during an interactive session
+    must not silently qualify a later `dcode -n` invocation.
+    """
+
     store_path: Path | None = None
     """Alternate trust store path for tests."""
 
@@ -387,16 +397,51 @@ class WorkspaceTrust:
             A policy that grants `cwd`'s workspace root for this session and
             defers to the persisted store everywhere else.
         """
-        grants: frozenset[str] = frozenset()
-        if granted:
-            try:
-                grants = frozenset({_project_key(project_root_for(cwd))})
-            except (OSError, ValueError):
-                logger.warning(
-                    "Could not resolve workspace root for session hook trust",
-                    exc_info=True,
-                )
-        return cls(session_grants=grants, store_path=store_path)
+        return cls(
+            session_grants=cls._grants_for(cwd) if granted else frozenset(),
+            store_path=store_path,
+        )
+
+    @classmethod
+    def explicit_only(
+        cls,
+        cwd: Path | str,
+        *,
+        granted: bool,
+        store_path: Path | None = None,
+    ) -> WorkspaceTrust:
+        """Build a policy that ignores persisted trust entirely.
+
+        For contexts where running repository hooks must be an explicit opt-in
+        rather than something a previous interactive session can enable —
+        notably headless runs, where the operator may never have seen the
+        interactive trust prompt.
+
+        Args:
+            cwd: Directory the trust decision was made for.
+            granted: Whether project hooks were explicitly opted into.
+            store_path: Alternate trust store path for tests.
+
+        Returns:
+            A policy that allows `cwd`'s workspace root only when `granted`, and
+            allows nothing otherwise.
+        """
+        return cls(
+            session_grants=cls._grants_for(cwd) if granted else frozenset(),
+            consult_store=False,
+            store_path=store_path,
+        )
+
+    @staticmethod
+    def _grants_for(cwd: Path | str) -> frozenset[str]:
+        try:
+            return frozenset({_project_key(project_root_for(cwd))})
+        except (OSError, ValueError):
+            logger.warning(
+                "Could not resolve workspace root for session hook trust",
+                exc_info=True,
+            )
+            return frozenset()
 
     def allows(self, cwd: Path | str) -> bool:
         """Return whether project hooks may run for a working directory.
@@ -406,19 +451,20 @@ class WorkspaceTrust:
 
         Returns:
             `True` when the enclosing workspace root was granted for this
-            session or is recorded in the trust store. Unresolvable directories
-            fail closed.
+            session, or is recorded in the trust store and `consult_store` is
+            set. Unresolvable directories fail closed.
         """
         try:
             root = project_root_for(cwd)
         except (OSError, ValueError):
+            # The raised exception carries the offending path; don't restate it.
             logger.warning(
-                "Could not resolve workspace root for %s; treating project "
-                "hooks as untrusted",
-                cwd,
+                "Could not resolve workspace root; treating project hooks as untrusted",
                 exc_info=True,
             )
             return False
         if _project_key(root) in self.session_grants:
             return True
+        if not self.consult_store:
+            return False
         return is_project_hooks_trusted(root, store_path=self.store_path)

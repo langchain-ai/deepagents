@@ -1356,7 +1356,9 @@ async def _run_agent_loop(
         identity=lambda: identity,
         notice=lambda notice: console.print(Text(notice), highlight=False),
         # Project hooks require an explicit opt-in, matching `--trust-project-mcp`.
-        trust=WorkspaceTrust.for_session(Path.cwd(), granted=trust_project_hooks),
+        # Persisted interactive trust deliberately does not carry into headless
+        # runs, so CI never inherits a grant made at someone's terminal.
+        trust=WorkspaceTrust.explicit_only(Path.cwd(), granted=trust_project_hooks),
     )
     state.hooks.apply_graph_context(context)
     context["approval_mode"] = resolved_approval_mode.value
@@ -1962,7 +1964,8 @@ async def run_non_interactive(
             cwd=Path.cwd(),
             identity=lambda: identity,
             notice=lambda notice: console.print(Text(notice), highlight=False),
-            trust=WorkspaceTrust.for_session(Path.cwd(), granted=trust_project_hooks),
+            # Explicit opt-in only; see `_run_agent_loop` for the rationale.
+            trust=WorkspaceTrust.explicit_only(Path.cwd(), granted=trust_project_hooks),
         )
         # Permission hooks need every gated call to reach the client, so they
         # override both middleware shortcuts that would skip HITL entirely.

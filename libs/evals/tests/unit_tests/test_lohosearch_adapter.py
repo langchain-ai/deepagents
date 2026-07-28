@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib.util
 import io
 import json
 import re
@@ -256,13 +257,10 @@ def test_render_grader_leaves_unknown_braces_alone() -> None:
 
 def _judge_module():
     """Load the in-sandbox judge script, which is a template rather than a module."""
-    import importlib.util
-
-    from harbor_adapters.lohosearch import adapter as _adapter
-
-    path = _adapter.templates_dir() / "judge.py"
+    path = adapter.templates_dir() / "judge.py"
     spec = importlib.util.spec_from_file_location("loho_judge", path)
-    assert spec and spec.loader
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -273,9 +271,7 @@ def test_judge_error_message_is_emitted_when_it_names_a_cause() -> None:
     judge = _judge_module()
     prompt = "Identify the horse that won a recurring sporting event in the early 1960s."
 
-    message = judge.safe_message(
-        "This endpoint's maximum context length is 32768 tokens.", prompt
-    )
+    message = judge.safe_message("This endpoint's maximum context length is 32768 tokens.", prompt)
 
     assert message == "This endpoint's maximum context length is 32768 tokens."
 

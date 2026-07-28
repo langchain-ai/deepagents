@@ -162,8 +162,8 @@ _COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
 }
 
 
-# Past-tense verbs for the `DiffMessage` header, keyed by the tool that produced
-# the diff. Tools absent here render a path-only header.
+# Past-tense verbs for the `DiffMessage` header, keyed by producing tool. Tools
+# absent here render a path-only header.
 _DIFF_VERBS: dict[str, str] = {
     "edit_file": "Edited",
     "write_file": "Wrote",
@@ -1836,11 +1836,9 @@ class ToolCallMessage(Vertical):
             return
         self._status_widget.remove_class("pending")
         if self._tool_name == "edit_file":
-            # The `DiffMessage` mounted right after this call fully conveys the
-            # outcome, so the tool row itself is redundant — hide it entirely
-            # rather than leaving a header + "Success!" stub above the diff.
-            # Errors and rejections still surface via `set_error`/`set_rejected`,
-            # which re-show the row.
+            # The `DiffMessage` mounted alongside this call already conveys the
+            # outcome, so hide the row entirely. Errors and rejections re-show it
+            # via `set_error`/`set_rejected`.
             self.display = False
             return
         if self._format_output(self._output, is_preview=False).content.plain.strip():
@@ -3873,15 +3871,14 @@ class DiffMessage(Static):
         self._file_path = file_path
         self._tool_name = tool_name
 
-    def _header(self) -> Content:
-        """Build the one-line header: what happened, to which file, at what cost.
+    def compose(self) -> ComposeResult:
+        """Compose the diff message layout.
 
-        Returns:
-            `Content` combining the past-tense verb, path, and `+N -M` counts.
+        Yields:
+            Widgets displaying the diff header and formatted content.
         """
         parts: list[str | tuple[str, str] | Content] = []
-        verb = _DIFF_VERBS.get(self._tool_name or "")
-        if verb:
+        if verb := _DIFF_VERBS.get(self._tool_name or ""):
             parts.append((f"{verb} ", "bold"))
         parts.append(Content.from_markup("[dim]$path[/dim]", path=self._file_path))
         # Credential files reveal nothing here, not even how much changed.
@@ -3889,15 +3886,7 @@ class DiffMessage(Static):
             stats = diff_stats_content(*count_diff_changes(self._diff_content))
             if stats.plain:
                 parts.extend(("  ", stats))
-        return Content.assemble(*parts)
-
-    def compose(self) -> ComposeResult:
-        """Compose the diff message layout.
-
-        Yields:
-            Widgets displaying the diff header and formatted content.
-        """
-        header = self._header()
+        header = Content.assemble(*parts)
         if header.plain:
             yield Static(header, classes="diff-header")
 
@@ -3908,11 +3897,8 @@ class DiffMessage(Static):
                 Content.styled("Diff hidden — file may contain credentials", "dim")
             )
         else:
-            # Render the diff with per-line Statics (CSS-driven backgrounds). The
-            # counts already live in the header, so skip the renderer's own row.
-            yield from compose_diff_lines(
-                self._diff_content, max_lines=100, show_stats=False
-            )
+            # Render the diff with per-line Statics (CSS-driven backgrounds)
+            yield from compose_diff_lines(self._diff_content, max_lines=100)
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""

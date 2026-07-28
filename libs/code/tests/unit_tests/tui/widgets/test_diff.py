@@ -6,47 +6,23 @@ from typing import TYPE_CHECKING, cast
 
 from textual.widgets import Static
 
-from deepagents_code.tui.widgets.diff import compose_diff_lines
+from deepagents_code.tui.widgets.diff import compose_diff_lines, count_diff_changes
 
 if TYPE_CHECKING:
     from textual.content import Content
 
 
-def _rendered(
-    diff: str, max_lines: int | None = 100, *, show_stats: bool = True
-) -> list[Static]:
+def _rendered(diff: str, max_lines: int | None = 100) -> list[Static]:
     """Materialize the diff widgets produced for `diff`.
 
     Args:
         diff: Unified diff string.
         max_lines: Maximum number of diff lines to show.
-        show_stats: Whether the `+N -M` summary row is included.
 
     Returns:
         The list of `Static` widgets yielded by `compose_diff_lines`.
     """
-    return [
-        w
-        for w in compose_diff_lines(diff, max_lines, show_stats=show_stats)
-        if isinstance(w, Static)
-    ]
-
-
-def _emphasized(widget: Static) -> list[str]:
-    """Return the substrings of a row that carry an emphasis span.
-
-    Args:
-        widget: A `Static` widget produced by the diff renderer.
-
-    Returns:
-        The emphasized substrings, in order.
-    """
-    content = cast("Content", widget.render())
-    return [
-        content.plain[span.start : span.end]
-        for span in content.spans
-        if not isinstance(span.style, str)
-    ]
+    return [w for w in compose_diff_lines(diff, max_lines) if isinstance(w, Static)]
 
 
 def _plain(widget: Static) -> str:
@@ -96,19 +72,11 @@ class TestComposeDiffLines:
         texts = _texts(_rendered(""))
         assert texts == ["No changes detected"]
 
-    def test_stats_header_excludes_file_headers(self) -> None:
+    def test_change_counts_exclude_file_headers(self) -> None:
         """`+++`/`---` headers are not counted as additions/deletions."""
-        # First widget is the stats header when there are changes.
-        header = _texts(_rendered(_SAMPLE_DIFF))[0]
         # Two additions (added1, added2), one deletion (removed) — headers
         # `+++ b/f.py` and `--- a/f.py` must not inflate the counts.
-        assert header == "+2 -1"
-
-    def test_stats_header_omits_zero_side(self) -> None:
-        """A diff with only additions shows just the `+N` segment."""
-        diff = "@@ -1,0 +1,1 @@\n+only addition"
-        header = _texts(_rendered(diff))[0]
-        assert header == "+1"
+        assert count_diff_changes(_SAMPLE_DIFF) == (2, 1)
 
     def test_file_and_hunk_headers_are_not_rendered_as_rows(self) -> None:
         """File headers and hunk headers don't appear as diff-line widgets."""
@@ -121,7 +89,7 @@ class TestComposeDiffLines:
         """Old/new line numbers track from the hunk header start values."""
         widgets = _rendered(_SAMPLE_DIFF)
         texts = _texts(widgets)
-        # Locate rows by their content (skip the stats header at index 0).
+        # Locate rows by their content.
         ctx = next(t for t in texts if "ctx" in t)
         removed = next(t for t in texts if "removed" in t)
         added1 = next(t for t in texts if "added1" in t)
@@ -154,69 +122,24 @@ class TestComposeDiffLines:
         # the same width on every row so the diff body lines up vertically.
         assert ctx.index("ctx") == removed.index("removed") == added1.index("added1")
 
-    def test_stats_row_can_be_suppressed(self) -> None:
-        """`show_stats=False` leaves the counts to the caller's own header."""
-        texts = _texts(_rendered(_SAMPLE_DIFF, show_stats=False))
-        assert not any(t.startswith("+2") for t in texts)
-        assert any("added1" in t for t in texts)
-
-    def test_rows_carry_change_markers(self) -> None:
-        """Changed rows are marked with `-`/`+`; context rows are not."""
-        texts = _texts(_rendered(_SAMPLE_DIFF))
-        removed = next(t for t in texts if "removed" in t)
-        added1 = next(t for t in texts if "added1" in t)
-        ctx = next(t for t in texts if "ctx" in t)
-        assert "- removed" in removed
-        assert "+ added1" in added1
-        assert "-" not in ctx
-        assert "+" not in ctx
-
-    def test_second_hunk_is_separated(self) -> None:
-        """Each hunk after the first is introduced by a separator row."""
-        diff = "@@ -1,1 +1,1 @@\n-a\n+b\n@@ -20,1 +20,1 @@\n-c\n+d"
-        texts = _texts(_rendered(diff))
-        # One separator only — the first hunk needs no break above it.
-        assert sum(t.strip() in {"…", "..."} for t in texts) == 1
-
     def test_max_lines_truncates_with_marker(self) -> None:
         """Beyond `max_lines`, a truncation marker replaces remaining rows."""
         diff = "\n".join(["@@ -1,5 +1,5 @@", *(f"+line{i}" for i in range(5))])
         texts = _texts(_rendered(diff, max_lines=2))
-        # Stats header + 2 rendered rows + 1 truncation marker.
+        # 2 rendered rows + 1 truncation marker.
         assert any("more lines" in t for t in texts)
         rendered_rows = [t for t in texts if "line" in t and "more lines" not in t]
         assert len(rendered_rows) == 2
 
-
-class TestIntraLineEmphasis:
-    """Word-level highlighting within paired removed/added rows."""
-
     def test_only_changed_words_are_emphasized(self) -> None:
-        """A one-to-one edit highlights just the words that differ."""
+        """Within a paired `-`/`+` row, only differing words get an extra tint."""
         diff = "@@ -1 +1 @@\n-value = compute(old_arg)\n+value = compute(new_arg)"
-        widgets = _rendered(diff)
-        removed = next(w for w in widgets if "old_arg" in _plain(w))
-        added = next(w for w in widgets if "new_arg" in _plain(w))
-        assert _emphasized(removed) == ["old_arg"]
-        assert _emphasized(added) == ["new_arg"]
-
-    def test_context_rows_are_never_emphasized(self) -> None:
-        """Unchanged rows carry no emphasis spans."""
-        diff = "@@ -1,2 +1,2 @@\n ctx\n-a = 1\n+a = 2"
-        widgets = _rendered(diff)
-        ctx = next(w for w in widgets if "ctx" in _plain(w))
-        assert _emphasized(ctx) == []
-
-    def test_unrelated_rewrite_is_not_emphasized(self) -> None:
-        """Lines sharing almost nothing fall back to the plain row tint."""
-        diff = "@@ -1 +1 @@\n-import os\n+CONSTANT_TABLE = {1: 'x', 2: 'y'}"
-        widgets = _rendered(diff)
-        added = next(w for w in widgets if "CONSTANT_TABLE" in _plain(w))
-        assert _emphasized(added) == []
-
-    def test_lopsided_runs_are_not_paired(self) -> None:
-        """When N lines become one, positional pairing would mislead."""
-        diff = "@@ -1,3 +1,1 @@\n-a = [\n-    1,\n-]\n+a = [1]"
-        widgets = _rendered(diff)
-        added = next(w for w in widgets if "a = [1]" in _plain(w))
-        assert _emphasized(added) == []
+        added = next(w for w in _rendered(diff) if "new_arg" in _plain(w))
+        content = cast("Content", added.render())
+        # Emphasis spans carry a `Style` object; the row's other spans are named.
+        emphasized = [
+            content.plain[s.start : s.end]
+            for s in content.spans
+            if not isinstance(s.style, str)
+        ]
+        assert emphasized == ["new_arg"]

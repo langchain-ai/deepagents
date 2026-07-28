@@ -70,7 +70,13 @@ jobs:
         id: detect
         run: |
           set -euo pipefail
+          # Prefer nested path; until main has it after this reorg, fall back
+          # to the flat layout (this job always checks out main).
           detector=".github/scripts/release/check_open_release_fanout.py"
+          legacy_detector=".github/scripts/check_open_release_fanout.py"
+          if [[ ! -f "$detector" && -f "$legacy_detector" ]]; then
+            detector="$legacy_detector"
+          fi
           if [[ ! -f "$detector" ]]; then
             echo "::warning::Detector '$detector' missing; watch is NOT enforcing."
             echo '[]' > offenders.json

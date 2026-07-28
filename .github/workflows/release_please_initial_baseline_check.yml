@@ -90,9 +90,34 @@ jobs:
               'base-release-please-manifest.json',
               await readRepoFile('.release-please-manifest.json', baseSha, '{}'),
             );
+            // Preferred nested path ships on this PR; until that lands on base,
+            // fall back to the flat layout so the gate still enforces.
+            const detectorCandidates = [
+              '.github/scripts/release/check_initial_release_baseline.py',
+              '.github/scripts/check_initial_release_baseline.py',
+            ];
+            let detectorSource;
+            let lastDetectorErr;
+            for (const candidate of detectorCandidates) {
+              try {
+                detectorSource = await readRepoFile(candidate, baseSha);
+                break;
+              } catch (err) {
+                if (err.status === 404) {
+                  lastDetectorErr = err;
+                  continue;
+                }
+                throw err;
+              }
+            }
+            if (detectorSource === undefined) {
+              throw lastDetectorErr ?? new Error(
+                `None of ${detectorCandidates.join(', ')} found at ${baseSha}`,
+              );
+            }
             fs.writeFileSync(
               'base-check-initial-release-baseline.py',
-              await readRepoFile('.github/scripts/release/check_initial_release_baseline.py', baseSha),
+              detectorSource,
             );
 
       - name: "Detect bad initial manifest baseline"

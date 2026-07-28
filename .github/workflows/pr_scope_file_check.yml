@@ -130,7 +130,13 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
+          # Preferred nested path ships on this PR; until that lands on base,
+          # fall back to the flat layout so the gate still enforces.
           detector=".github/scripts/labeling/check_pr_scope_files.py"
+          legacy_detector=".github/scripts/check_pr_scope_files.py"
+          if [[ ! -f "$detector" && -f "$legacy_detector" ]]; then
+            detector="$legacy_detector"
+          fi
           if [[ ! -f "$detector" ]]; then
             # The detector does not exist on the base revision: the bootstrapping
             # PR that first introduces this check, or a branch cut from before it

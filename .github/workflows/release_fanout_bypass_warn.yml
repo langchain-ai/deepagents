@@ -80,7 +80,13 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
+          # Preferred nested path ships on this PR; until that lands on base,
+          # fall back to the flat layout so the gate still enforces.
           detector=".github/scripts/release/list_touched_release_components.py"
+          legacy_detector=".github/scripts/list_touched_release_components.py"
+          if [[ ! -f "$detector" && -f "$legacy_detector" ]]; then
+            detector="$legacy_detector"
+          fi
           if [[ ! -f "$detector" ]]; then
             echo "::warning::Detector '$detector' absent on base; cannot list components."
             components='[]'

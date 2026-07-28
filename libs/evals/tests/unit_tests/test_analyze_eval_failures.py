@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[4] / ".github" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / ".github" / "scripts" / "evals"))
 
 from analyze_eval_failures import (  # ty: ignore[unresolved-import]
     _DEFAULT_MODEL,

@@ -21,6 +21,11 @@ from deepagents_code.tui.widgets.debug_console import (
     _DebugLogView,
     _record_matches_filter,
 )
+from deepagents_code.tui.widgets.message_store import (
+    MessageData,
+    MessageStore,
+    MessageType,
+)
 
 if TYPE_CHECKING:
     import pytest
@@ -1643,6 +1648,49 @@ class TestDebugConsoleToggle:
             assert thread_field.value.startswith("(unavailable:")
             assert thread_field.copyable is False
             assert thread_field.thread_id is None
+
+    async def test_build_snapshot_counts_thread_messages(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            assert _snapshot_dict(app._build_debug_snapshot())["Messages"] == "0"
+
+            for index in range(3):
+                app._message_store.append(
+                    MessageData(type=MessageType.USER, content=f"msg {index}")
+                )
+
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Messages"] == "3 (3 rendered)"
+
+    async def test_build_snapshot_message_count_reports_rendered_window(self) -> None:
+        """A virtualized thread reports its full count, not the mounted window."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            total = MessageStore.WINDOW_SIZE + 5
+            app._message_store.bulk_load(
+                [
+                    MessageData(type=MessageType.USER, content=str(index))
+                    for index in range(total)
+                ]
+            )
+
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert (
+                snapshot["Messages"] == f"{total} ({MessageStore.WINDOW_SIZE} rendered)"
+            )
+
+    async def test_build_snapshot_message_count_resets_with_transcript(self) -> None:
+        """Clearing the transcript (thread switch/reset) zeroes the count."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            app._message_store.append(
+                MessageData(type=MessageType.USER, content="hello")
+            )
+            assert _snapshot_dict(app._build_debug_snapshot())["Messages"] != "0"
+
+            await app._clear_messages()
+
+            assert _snapshot_dict(app._build_debug_snapshot())["Messages"] == "0"
 
     async def test_build_snapshot_version_and_cwd_are_copyable(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")

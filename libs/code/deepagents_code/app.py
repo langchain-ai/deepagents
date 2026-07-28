@@ -19003,6 +19003,16 @@ class DeepAgentsApp(App):
                 thread_id=thread_id,
             )
 
+        def _messages() -> str:
+            # The store is cleared on every thread switch/reset, so its count is
+            # scoped to the current thread. Reads in-memory state only, keeping
+            # the snapshot free of I/O.
+            store = self._message_store
+            total = store.total_count
+            if total == 0:
+                return "0"
+            return f"{total} ({store.visible_count} rendered)"
+
         def _log_path() -> str:
             path = installed_debug_log_path()
             if path:
@@ -19019,6 +19029,7 @@ class DeepAgentsApp(App):
             _safe("Version", lambda: __version__, copyable=True),
             _model_field(),
             _thread_field(),
+            _safe("Messages", _messages),
             _safe("CWD", lambda: self._cwd, copyable=True),
             _safe("Approval mode", lambda: self._approval_mode.value),
             _safe(

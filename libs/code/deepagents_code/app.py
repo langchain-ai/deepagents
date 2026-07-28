@@ -18905,6 +18905,10 @@ class DeepAgentsApp(App):
         self.push_screen(
             DebugConsoleScreen(
                 self._build_debug_snapshot(),
+                # Rebuild the header on the console's refresh tick so message
+                # counts, tokens, and other in-memory fields stay current while
+                # the modal is open. The builder is intentionally I/O-free.
+                snapshot_provider=self._build_debug_snapshot,
                 cleared_upto=self._debug_console_cleared_upto,
                 on_clear=persist_clear,
                 click_to_copy=self._debug_console_click_to_copy,
@@ -18954,10 +18958,13 @@ class DeepAgentsApp(App):
         self.call_later(_persist)
 
     def _build_debug_snapshot(self) -> list[SnapshotField]:
-        """Capture a point-in-time session/runtime snapshot for the console.
+        """Capture a session/runtime snapshot for the debug console header.
 
-        Each field is captured defensively: a subsystem that raises degrades to
-        an ``(unavailable: ...)`` value rather than aborting the whole overlay,
+        Called once when the console opens and again on each console refresh
+        tick (via `snapshot_provider`) so live fields such as message count and
+        token usage stay current while the modal is open. Each field is captured
+        defensively: a subsystem that raises degrades to an
+        ``(unavailable: ...)`` value rather than aborting the whole overlay,
         because a diagnostic tool must still open when the app is misbehaving.
 
         Returns:
@@ -19033,6 +19040,16 @@ class DeepAgentsApp(App):
                 thread_id=thread_id,
             )
 
+        def _messages() -> str:
+            # The store is cleared on every thread switch/reset, so its count is
+            # scoped to the current thread. Reads in-memory state only, keeping
+            # the snapshot free of I/O.
+            store = self._message_store
+            total = store.total_count
+            if total == 0:
+                return "0"
+            return f"{total} ({store.visible_count} rendered)"
+
         def _log_path() -> str:
             path = installed_debug_log_path()
             if path:
@@ -19049,6 +19066,7 @@ class DeepAgentsApp(App):
             _safe("Version", lambda: __version__, copyable=True),
             _model_field(),
             _thread_field(),
+            _safe("Messages", _messages),
             _safe("CWD", lambda: self._cwd, copyable=True),
             _safe("Approval mode", lambda: self._approval_mode.value),
             _safe(

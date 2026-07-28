@@ -923,3 +923,27 @@ def test_single_dataset_aggregate_labels_local_runs_by_path() -> None:
     assert 'os.environ.get("SINGLE_DATASET_PATH", "").strip()' in step
     # The multi-category branch already preferred the path; keep it that way.
     assert 'entry.get("dataset") or entry.get("dataset_path")' in step
+
+
+def test_search_defers_langsmith_project_to_the_plugin() -> None:
+    """`--agent-env` is Harbor's scoped overlay and beats the launcher's env.
+
+    harbor-langsmith >= 0.3.0 contributes LANGSMITH_PROJECT (the experiment's own
+    session name) through the per-exec env, which is what nests the agent
+    trajectory inside the experiment. Pinning it via --agent-env would win that
+    merge and strand the trajectory in a standalone tracing project.
+    """
+    reusable = HARBOR_WORKFLOW.read_text()
+
+    assert 'if [ "$HARBOR_CATEGORY" != "search" ]; then' in reusable
+    # Set only inside the guard, never unconditionally.
+    unconditional = (
+        "            --agent-env \"LANGSMITH_PROJECT=${HARBOR_LANGSMITH_EXPERIMENT}\"\n"
+    )
+    assert unconditional not in reusable
+    assert (
+        'agent_env_args+=(--agent-env "LANGSMITH_PROJECT=${HARBOR_LANGSMITH_EXPERIMENT}")'
+        in reusable
+    )
+    # Tracing itself stays on for every category.
+    assert "--agent-env 'LANGSMITH_TRACING=true'" in reusable

@@ -846,9 +846,25 @@ jobs:
           agent_env_args=(
             --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}'
             --agent-env 'LANGSMITH_TRACING=true'
-            --agent-env "LANGSMITH_PROJECT=${HARBOR_LANGSMITH_EXPERIMENT}"
             --agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
           )
+          # LANGSMITH_PROJECT is set per category, not unconditionally.
+          #
+          # `--agent-env` becomes Harbor's *scoped* exec overlay, and the merge
+          # order is persistent < per-exec < scoped (`environments/base.py`
+          # `_merge_env`), so a value set here beats anything the launcher builds.
+          # harbor-langsmith >= 0.3.0 contributes LANGSMITH_PROJECT through that
+          # per-exec env — the experiment's own session name, which is what makes
+          # the agent trajectory appear inside the experiment instead of a
+          # standalone tracing project. Setting it here would silently win and
+          # strand the trajectory again, so `search` leaves it to the plugin.
+          #
+          # The other categories still pin it explicitly: their runs may use the
+          # pinned Harbor, which has no contribution to defer to, and without a
+          # project name their traces would land in `default`.
+          if [ "$HARBOR_CATEGORY" != "search" ]; then
+            agent_env_args+=(--agent-env "LANGSMITH_PROJECT=${HARBOR_LANGSMITH_EXPERIMENT}")
+          fi
           verifier_env_args=(
             --verifier-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
             # harbor-index (and other) verifiers are OpenAI LLM judges: they need

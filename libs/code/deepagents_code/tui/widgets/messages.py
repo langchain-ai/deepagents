@@ -1830,17 +1830,20 @@ class ToolCallMessage(Vertical):
 
         When the call produces visible output it speaks for itself and the
         status stays hidden; otherwise show a "Success!" marker so a completed
-        call (e.g. `edit_file`) isn't left without any outcome indicator.
+        call isn't left without any outcome indicator.
         """
         if self._status_widget is None:
             return
         self._status_widget.remove_class("pending")
-        if (
-            self._tool_name != "edit_file"
-            and self._format_output(
-                self._output, is_preview=False
-            ).content.plain.strip()
-        ):
+        if self._tool_name == "edit_file":
+            # The `DiffMessage` mounted right after this call fully conveys the
+            # outcome, so the tool row itself is redundant — hide it entirely
+            # rather than leaving a header + "Success!" stub above the diff.
+            # Errors and rejections still surface via `set_error`/`set_rejected`,
+            # which re-show the row.
+            self.display = False
+            return
+        if self._format_output(self._output, is_preview=False).content.plain.strip():
             self._status_widget.remove_class("success")
             self._status_widget.display = False
             return

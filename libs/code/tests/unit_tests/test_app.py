@@ -32489,7 +32489,7 @@ class TestToolGroupCollapse:
             assert isinstance(rendered, Content)
             assert "Read 1 file, ran 1 shell command" in rendered.plain
 
-    @pytest.mark.parametrize("tool_name", ["ask_user", "edit_file", "write_todos"])
+    @pytest.mark.parametrize("tool_name", ["ask_user", "write_todos"])
     async def test_regroup_leaves_excluded_tools_expanded(self, tool_name: str) -> None:
         """Excluded tools stay visible and split adjacent tool groups."""
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
@@ -32518,6 +32518,39 @@ class TestToolGroupCollapse:
             assert not excluded.has_class("-grouped")
             assert after.display is False
 
+    async def test_regroup_leaves_edit_file_diff_standalone(self) -> None:
+        """A successful edit_file hides its tool row but still splits tool groups.
+
+        The row is hidden because the DiffMessage mounted alongside conveys the
+        outcome; grouping treats it as a boundary either way, so adjacent runs
+        still collapse into separate summaries.
+        """
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-excluded-edit")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            before, edit, after = await self._mount_tools(
+                pilot,
+                messages,
+                [
+                    ("before", "read_file", {"file_path": "a.py"}, "success"),
+                    ("edit", "edit_file", {"file_path": "b.py"}, "success"),
+                    ("after", "execute", {"command": "ls"}, "success"),
+                ],
+            )
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+
+            assert len(list(app.query(ToolGroupSummary))) == 2
+            assert before.display is False
+            assert edit.display is False
+            assert not edit.has_class("-grouped")
+            assert after.display is False
+
     async def test_regroup_leaves_edit_diff_outside_later_tool_group(self) -> None:
         """An edit diff arriving after a parallel read stays expanded."""
         from deepagents_code.tui.widgets.messages import DiffMessage, ToolGroupSummary
@@ -32543,7 +32576,8 @@ class TestToolGroupCollapse:
             await pilot.pause()
 
             assert len(list(app.query(ToolGroupSummary))) == 1
-            assert edit.display is True
+            # The edit row hides itself on success; its diff stays visible.
+            assert edit.display is False
             assert read.display is False
             assert diff.display is True
             assert not diff.has_class("-grouped")
@@ -32570,7 +32604,8 @@ class TestToolGroupCollapse:
             await pilot.pause()
 
             assert len(list(app.query(ToolGroupSummary))) == 0
-            assert edit.display is True
+            # The edit row hides itself on success (its diff shows instead).
+            assert edit.display is False
             assert todos.display is True
             assert not edit.has_class("-grouped")
             assert not todos.has_class("-grouped")

@@ -1498,16 +1498,26 @@ class TestToolCallMessageEditFileOutput:
 class TestToolCallMessageSuccessStatus:
     """A successful call with no output shows a "Success!" status marker."""
 
-    async def test_success_without_output_shows_success_status(self) -> None:
-        """edit_file (no visible output) shows the success marker instead of hiding."""
-        from deepagents_code.config import get_glyphs
-
+    async def test_edit_file_success_hides_tool_row(self) -> None:
+        """edit_file success hides the whole tool row (the diff conveys the outcome)."""
         app = _tool_msg_app("edit_file", {"file_path": "/tmp/f.py"})
         async with app.run_test() as pilot:
             await pilot.pause()
             app.msg.set_success(
                 "Successfully replaced 1 instance(s) of the string in '/tmp/f.py'"
             )
+            await pilot.pause()
+
+            assert app.msg.display is False
+
+    async def test_success_without_output_shows_success_status(self) -> None:
+        """write_file (no visible output) shows the success marker instead of hiding."""
+        from deepagents_code.config import get_glyphs
+
+        app = _tool_msg_app("write_file", {"file_path": "/tmp/f.py"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("")
             await pilot.pause()
 
             assert app.msg._status_widget is not None

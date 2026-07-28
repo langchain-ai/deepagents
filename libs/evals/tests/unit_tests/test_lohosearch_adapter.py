@@ -324,3 +324,46 @@ def test_openrouter_requests_ask_for_cross_provider_failover() -> None:
     assert 'body["provider"] = {"allow_fallbacks": True}' in source
     assert 'if "openrouter.ai" in base_url:' in source
     assert judge is not None
+
+
+def test_a_recovered_retry_is_not_reported_as_unreachable(monkeypatch) -> None:
+    """A retry that succeeds must not carry the earlier attempt's error forward.
+
+    Merging failure detail into the success return made a recovered call look
+    unreachable, which fails the whole trial — the retry that saved the grade
+    became the thing that discarded it.
+    """
+    judge = _judge_module()
+    monkeypatch.setattr(judge.time, "sleep", lambda _seconds: None)
+
+    attempts = {"n": 0}
+
+    def flaky(_base_url, _api_key, _model, _prompt):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise judge._JudgeHTTPError(400, '{"error":{"code":400}}')
+        return "Grade: A"
+
+    monkeypatch.setattr(judge, "_call", flaky)
+    raw, detail = judge._call_with_retries("m", "https://openrouter.ai/api/v1", "k", "prompt")
+
+    assert raw == "Grade: A"
+    assert "error" not in detail
+    assert judge._status_entry(1, detail)["called"] is True
+    assert detail["recovered_after"] == 1
+
+
+def test_an_exhausted_endpoint_is_reported_as_unreachable(monkeypatch) -> None:
+    judge = _judge_module()
+    monkeypatch.setattr(judge.time, "sleep", lambda _seconds: None)
+
+    def always_404(_base_url, _api_key, _model, _prompt):
+        raise judge._JudgeHTTPError(404, '{"error":{"code":404}}')
+
+    monkeypatch.setattr(judge, "_call", always_404)
+    raw, detail = judge._call_with_retries("m", "https://openrouter.ai/api/v1", "k", "prompt")
+
+    assert raw is None
+    assert judge._status_entry(0, detail)["called"] is False
+    # 404 is non-retryable, so it must stop after the first attempt.
+    assert detail["attempts"] == 1

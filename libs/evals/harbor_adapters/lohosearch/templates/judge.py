@@ -207,15 +207,21 @@ def _endpoints(name, default_model, default_base_url, default_key_var):
 
 
 def _call_with_retries(model, base_url, api_key, prompt):
-    """Try one endpoint up to `_MAX_ATTEMPTS` times. Returns (raw, detail)."""
-    detail = {"model": model, "prompt_chars": len(prompt)}
+    """Try one endpoint up to `_MAX_ATTEMPTS` times. Returns (raw, detail).
+
+    Failure detail is kept separate from the returned success detail on purpose.
+    Merging them let a recovered retry return an `error` key alongside a real
+    verdict, which downstream reads as "judge unreachable" and fails the trial —
+    turning the retry that saved the grade into the thing that discarded it.
+    """
+    base = {"model": model, "prompt_chars": len(prompt)}
+    failure = {}
     for attempt in range(_MAX_ATTEMPTS):
         try:
-            return _call(base_url, api_key, model, prompt), detail
+            raw = _call(base_url, api_key, model, prompt)
         except Exception as exc:  # noqa: BLE001 - report, maybe retry, then give up
             status = getattr(exc, "status", None)
-            detail = {
-                **detail,
+            failure = {
                 "error": f"{type(exc).__name__}: {exc}",
                 "http_status": status,
                 "error_code": getattr(exc, "code", None),
@@ -229,7 +235,13 @@ def _call_with_retries(model, base_url, api_key, prompt):
                 # Backoff, so a rate limit or a brief upstream outage gets a
                 # chance to clear instead of burning all five attempts at once.
                 time.sleep(min(2**attempt, _BACKOFF_CAP_SECONDS))
-    return None, detail
+        else:
+            detail = {**base, "attempts": attempt + 1}
+            if failure:
+                # Surface that a retry was needed without implying it failed.
+                detail["recovered_after"] = attempt
+            return raw, detail
+    return None, {**base, **failure}
 
 
 def _judge(name, prompt, default_model, default_base_url, fallback_key_var):
@@ -317,6 +329,7 @@ def _status_entry(correct, detail):
         "error_message": detail.get("error_message"),
         "attempts": detail.get("attempts"),
         "used_fallback": detail.get("used_fallback"),
+        "recovered_after": detail.get("recovered_after"),
     }
 
 

@@ -120,7 +120,7 @@ mdrxy/cli/startup-cmd-flag
 
 #### PR descriptions
 
-Do not add a `# Summary` or `## Release note` heading. Use an opening block ("frontmatter") in this order:
+Do not add a `# Summary`, `## Release note`, or `## Release Note` heading. The plain paragraph above `---` *is* the release note — never restate that same idea later under a heading. Use an opening block ("frontmatter") in this order:
 
 ```md
 Closes #123
@@ -132,9 +132,23 @@ A high-level, plain-English summary of the user-visible change.
 <rest of PR body>
 ```
 
+Bad example (do not do this — the opening paragraph already covers the user-visible change):
+
+```md
+Resume hints now echo the launched command name instead of always printing `dcode`.
+
+---
+
+<details about motivation>
+
+## Release Note
+
+Resume hints now echo the launched command name instead of always printing `dcode`.
+```
+
 - The issue or PR relationship line is optional. Use the appropriate keyword, such as `Fixes`, `Closes`, `Resolves`, `Supersedes`, `Depends on`, or `Related`. Only `Closes`, `Fixes`, and `Resolves` auto-close the referenced GitHub issue on merge.
-- For net new features or behavior-changing bugfixes, include the high-level user-facing summary in this opening block. Write it in release-note-ready plain English without a label or heading. Omit it for chores, refactors, or test-only changes.
-- Explain the *why* in the rest of the body: the motivation and why this solution is the right one. Limit prose.
+- For net new features or behavior-changing bugfixes, put one high-level plain-English summary of the user-visible change in the opening block only (no label or heading). That text is the release note; do not duplicate it below `---` or under any `Release note` / `Release Note` heading. Omit the opening summary for chores, refactors, or test-only changes.
+- Below `---`, explain the *why*: the motivation and why this solution is the right one. Limit prose. Do not repeat the opening summary.
 - Write for readers who may be unfamiliar with this area of the codebase. Avoid insider shorthand and prefer language that is friendly to public viewers — this aids interpretability.
 - Do **not** cite line numbers; they go stale as soon as the file changes.
 - Rarely include full file paths or filenames. Reference the affected symbol, class, or subsystem by name instead.

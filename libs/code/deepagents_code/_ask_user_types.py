@@ -1,8 +1,10 @@
-"""Lightweight types for the ask-user interrupt protocol.
+"""Lightweight types and shared rendering for the ask-user interrupt protocol.
 
 Extracted from `ask_user` so `textual_adapter` can import `AskUserRequest` at
 module level — and `app` can reference the types at type-check time — without
-pulling in the langchain middleware stack.
+pulling in the langchain middleware stack. The answer placeholders, row summary
+strings, and `format_ask_user_transcript` live here for the same reason: the
+tool and the TUI both need them and neither should import the other.
 """
 
 from __future__ import annotations
@@ -105,25 +107,60 @@ AskUserWidgetResult = AskUserAnswered | AskUserCancelled
 
 
 ASK_USER_NO_ANSWER = "(no answer)"
-"""Placeholder recorded when a question received no answer at all."""
+"""Placeholder for a question with no positionally matching answer.
+
+Recorded only when the answer list came back *shorter* than the question list (a
+count mismatch, warned about in `ask_user`). A question the user deliberately
+left blank renders as an empty `A:` line instead, never as this placeholder.
+"""
 
 ASK_USER_CANCELLED_ANSWER = "(cancelled)"
 """Placeholder recorded for every question when the user cancels the prompt."""
 
+ASK_USER_ERROR_ANSWER_PREFIX = "(error: "
+"""Prefix of the placeholder recorded for every question when the prompt fails.
+
+The full placeholder is `(error: <detail>)`. Both the transcript producer in
+`ask_user` and the TUI's summary classifier match on this prefix, so a failed
+prompt is never summarized as answered.
+"""
+
 ASK_USER_ANSWERED_SUMMARY = "User answered"
-"""One-line summary shown for an answered `ask_user` row before it is expanded."""
+"""One-line summary shown for an answered `ask_user` row before it is expanded.
+
+Doubles as the `tool.result` hook payload's `tool_output` for an answered
+prompt, deliberately in place of the transcript, so user-typed answers are not
+forwarded to hook scripts. Rewording this string changes that hook contract as
+well as the row; see `textual_adapter` and its `tool.result` tests.
+"""
+
+ASK_USER_CANCELLED_SUMMARY = "Question cancelled"
+"""One-line summary shown for a cancelled `ask_user` prompt."""
+
+ASK_USER_FAILED_SUMMARY = "Question failed"
+"""One-line summary shown for an `ask_user` prompt that errored."""
 
 
 def format_ask_user_transcript(questions: list[Question], answers: list[str]) -> str:
     r"""Render questions and answers as the `Q:`/`A:` transcript.
 
     This is the text the `ask_user` tool returns to the model, and the same text
-    the TUI shows on the tool row, so the two cannot drift.
+    the TUI shows on the tool row, so the two cannot drift in *format*. The two
+    call sites compute it from different inputs (the resume payload server-side,
+    the interrupt's questions plus the widget's answers in the TUI), so contents
+    can still differ.
+
+    The encoding is lossy: an answer containing a blank line followed by the
+    literal next `Q: <text>\nA:` header is indistinguishable from a real block
+    boundary. The TUI's parser anchors on the known question text to keep that
+    from fabricating an extra question, but cannot recover the split point.
 
     Args:
-        questions: Questions that were asked.
+        questions: Questions that were asked. `question` is a required key, and
+            `ask_user` validates it as non-empty before interrupting, so the
+            empty default below is unreachable in practice.
         answers: Answers, positionally matched to `questions`. A missing entry
-            falls back to `ASK_USER_NO_ANSWER`.
+            falls back to `ASK_USER_NO_ANSWER`; extra entries are dropped.
 
     Returns:
         Blank-line separated `Q: ...\nA: ...` blocks, one per question.

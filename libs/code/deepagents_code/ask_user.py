@@ -26,6 +26,7 @@ from pydantic import Field
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
     ASK_USER_CANCELLED_ANSWER,
+    ASK_USER_ERROR_ANSWER_PREFIX,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
     AskUserAuthorizationReceipt,
     AskUserRequest,
@@ -240,7 +241,7 @@ def _parse_answers(
 
     if status == "error":
         detail = error_text or "ask_user interaction failed"
-        answers = [f"(error: {detail})" for _ in questions]
+        answers = [f"{ASK_USER_ERROR_ANSWER_PREFIX}{detail})" for _ in questions]
 
     additional_kwargs: dict[str, object] = {}
     if (
@@ -271,6 +272,12 @@ def _parse_answers(
                     name="ask_user",
                     tool_call_id=tool_call_id,
                     additional_kwargs=additional_kwargs,
+                    # A failed prompt must not be recorded as a successful one.
+                    # `status` defaults to `"success"`, which made a resumed
+                    # thread render the `(error: ...)` transcript as an ordinary
+                    # answered row (see `_format_ask_user_output`), and told the
+                    # model the tool had succeeded.
+                    status="error" if status == "error" else "success",
                 )
             ],
         }

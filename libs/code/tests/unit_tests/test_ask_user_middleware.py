@@ -222,6 +222,37 @@ class TestParseAnswers:
             in _extract_tool_message_content(cmd)
         )
 
+    def test_error_status_marks_the_tool_message_as_errored(self) -> None:
+        """A failed prompt must not be recorded as a successful tool call.
+
+        `status` defaults to `"success"`, which told the model the tool had
+        succeeded and made a reloaded thread render the `(error: ...)` transcript
+        as an ordinary answered row.
+        """
+        cmd = _parse_answers(
+            {"status": "error", "error": "failed to display ask_user prompt"},
+            [{"question": "Name?", "type": "text"}],
+            "tc-1",
+        )
+        assert _extract_tool_message(cmd).status == "error"
+
+    def test_answered_status_marks_the_tool_message_as_successful(self) -> None:
+        cmd = _parse_answers(
+            {"status": "answered", "answers": ["Alice"]},
+            [{"question": "Name?", "type": "text"}],
+            "tc-1",
+        )
+        assert _extract_tool_message(cmd).status == "success"
+
+    def test_cancelled_status_marks_the_tool_message_as_successful(self) -> None:
+        """Cancelling is a user choice, not a tool failure."""
+        cmd = _parse_answers(
+            {"status": "cancelled", "answers": []},
+            [{"question": "Name?", "type": "text"}],
+            "tc-1",
+        )
+        assert _extract_tool_message(cmd).status == "success"
+
     def test_malformed_payload_is_explicit_error(self) -> None:
         cmd = _parse_answers(
             "not-a-dict",

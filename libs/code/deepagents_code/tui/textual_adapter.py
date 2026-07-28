@@ -47,6 +47,7 @@ if TYPE_CHECKING:
 
 from deepagents_code._ask_user_types import (
     ASK_USER_ANSWERED_SUMMARY,
+    ASK_USER_CANCELLED_SUMMARY,
     AskUserRequest,
     format_ask_user_transcript,
 )
@@ -1448,7 +1449,11 @@ async def execute_task_textual(
                             # turn was resolving interrupts. Its widget was
                             # cleared, so it lands here — consume the id and skip
                             # re-dispatch to avoid a duplicate tool.result (with
-                            # mismatched `{}` args).
+                            # mismatched `{}` args). For `ask_user` this is also
+                            # what keeps user-typed answers out of hook scripts:
+                            # this message's content *is* the Q&A transcript, and
+                            # the dispatch that already fired sent only the
+                            # summary.
                             completed_tool_result_ids.discard(tool_id)
                         else:
                             # The tool call was never mounted — either it has no
@@ -1839,26 +1844,39 @@ async def execute_task_textual(
                             if isinstance(answers, list):
                                 resume_payload[interrupt_id] = {"answers": answers}
                                 output = ASK_USER_ANSWERED_SUMMARY
-                                # The tool row carries the full Q&A transcript
-                                # (the same text the tool returns to the model,
-                                # and what a rehydrated thread renders) so the
-                                # answers stay inspectable after the question
-                                # widget is unmounted. The hook payload keeps the
-                                # summary so user-typed answers are not forwarded
-                                # to hook scripts.
-                                transcript = format_ask_user_transcript(
-                                    questions, [str(answer) for answer in answers]
-                                )
                                 tool_msg = adapter._current_tool_messages.pop(
                                     tool_id, None
                                 )
+                                # The hook payload deliberately carries only the
+                                # summary, never the transcript, so user-typed
+                                # answers are not forwarded to hook scripts. The
+                                # later `ToolMessage` that *does* carry the
+                                # transcript is suppressed via
+                                # `completed_tool_result_ids`, so this stays the
+                                # sole `tool.result` for this tool call.
                                 _dispatch_tool_result_hook(
                                     "ask_user", tool_id, tool_args, "success", output
                                 )
                                 completed_tool_result_ids.add(tool_id)
                                 if tool_msg is not None:
                                     try:
-                                        tool_msg.set_success(transcript)
+                                        # The row carries the full Q&A transcript
+                                        # (the same text the tool returns to the
+                                        # model, and what a reloaded thread
+                                        # renders) so the answers stay
+                                        # inspectable after the question widget
+                                        # is unmounted. Built inside the guard,
+                                        # after the dispatch above: `answers`
+                                        # elements are unvalidated, so a
+                                        # pathological `__str__` must not escape
+                                        # and abandon `resume_payload`
+                                        # mid-interrupt.
+                                        tool_msg.set_success(
+                                            format_ask_user_transcript(
+                                                questions,
+                                                [str(answer) for answer in answers],
+                                            )
+                                        )
                                         adapter._sync_tool_widget(tool_msg)
                                     except Exception:
                                         logger.exception(
@@ -1911,7 +1929,7 @@ async def execute_task_textual(
                             # resume so the agent can react to the failure.
                             ask_user_cancelled = True
                             tool_msg = adapter._current_tool_messages.pop(tool_id, None)
-                            output = "Question cancelled"
+                            output = ASK_USER_CANCELLED_SUMMARY
                             _dispatch_tool_error_hook("ask_user")
                             _dispatch_tool_result_hook(
                                 "ask_user", tool_id, tool_args, "error", output

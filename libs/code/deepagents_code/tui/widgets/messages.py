@@ -29,6 +29,9 @@ from deepagents_code import theme
 from deepagents_code._ask_user_types import (
     ASK_USER_ANSWERED_SUMMARY,
     ASK_USER_CANCELLED_ANSWER,
+    ASK_USER_CANCELLED_SUMMARY,
+    ASK_USER_ERROR_ANSWER_PREFIX,
+    ASK_USER_FAILED_SUMMARY,
 )
 from deepagents_code.config import (
     MODE_DISPLAY_GLYPHS,
@@ -163,9 +166,10 @@ _COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
 
 
 # Tools whose collapsed body is always the formatter's compact preview, no
-# matter how short the raw output is. `write_todos` renders a per-item summary;
-# `ask_user` renders a one-line "User answered" summary so the transcript stays
-# quiet while the answers remain one click away.
+# matter how short the raw output is, and whose expandability is therefore
+# decided by the formatter rather than by the raw size thresholds. `write_todos`
+# renders a per-item summary; `ask_user` renders a one-line summary so a
+# two-line transcript still keeps its answers behind an expand click.
 _ALWAYS_PREVIEW_TOOLS: frozenset[str] = frozenset({"write_todos", "ask_user"})
 
 
@@ -217,32 +221,52 @@ def _strip_success_exit_line(text: str) -> str:
     return _SUCCESS_EXIT_RE.sub("", text)
 
 
-_ASK_USER_BLOCK_SPLIT_RE = re.compile(r"\n\n(?=Q: )")
-"""Split an `ask_user` transcript into its per-question blocks."""
-
-_ASK_USER_PAIR_RE = re.compile(
-    r"\AQ: (?P<question>.*?)\nA: (?P<answer>.*)\Z", re.DOTALL
-)
-"""Match one `Q: ...\\nA: ...` block, produced by `format_ask_user_transcript`."""
-
-
-def _parse_ask_user_transcript(output: str) -> list[tuple[str, str]]:
+def _parse_ask_user_transcript(
+    output: str, questions: list[str]
+) -> list[tuple[str, str]]:
     """Split an `ask_user` tool result into question/answer pairs.
+
+    Inverts `format_ask_user_transcript`. Answers are free-form user text and the
+    transcript is unescaped, so blocks are located by seeking the *known*
+    question headers rather than by matching a generic `Q: ` pattern: an answer
+    that happens to contain a blank line followed by `Q: ...` can no longer
+    fabricate an extra question/answer row or inflate the answer count.
+
+    The final `A:` may have no trailing space, because an empty last answer
+    leaves one that `_format_output` rstrips away before this runs.
 
     Args:
         output: Raw tool output; the `Q:`/`A:` transcript on success, or an
             arbitrary error body otherwise.
+        questions: Question texts as passed to `format_ask_user_transcript`, in
+            order. Sourced from the tool call's own arguments, so they survive a
+            thread reload alongside the transcript.
 
     Returns:
-        One `(question, answer)` pair per block, or an empty list when the
-        output is not a transcript (e.g. an error message).
+        One `(question, answer)` pair per question, or an empty list when
+        `output` does not match the expected headers — i.e. it is not a
+        transcript for these questions (an error body, or a format drift).
     """
     pairs: list[tuple[str, str]] = []
-    for block in _ASK_USER_BLOCK_SPLIT_RE.split(output.strip()):
-        match = _ASK_USER_PAIR_RE.match(block)
-        if match is None:
+    position = 0
+    for index, question in enumerate(questions):
+        header = f"Q: {question}\nA:"
+        if not output.startswith(header, position):
             return []
-        pairs.append((match["question"], match["answer"]))
+        position += len(header)
+        # The space after `A:` is part of the separator, not the answer, but is
+        # absent when an rstripped empty answer ended the transcript.
+        if output.startswith(" ", position):
+            position += 1
+        if index + 1 == len(questions):
+            pairs.append((question, output[position:]))
+            break
+        separator = f"\n\nQ: {questions[index + 1]}\nA:"
+        end = output.find(separator, position)
+        if end < 0:
+            return []
+        pairs.append((question, output[position:end]))
+        position = end + len("\n\n")
     return pairs
 
 
@@ -2223,10 +2247,8 @@ class ToolCallMessage(Vertical):
         if self._tool_name == "edit_file" and self._status == "success":
             return True
 
-        # `_ALWAYS_PREVIEW_TOOLS` render a compact preview at any size, so their
-        # expandability is decided by the formatter rather than the raw size
-        # thresholds below: a two-line `ask_user` transcript still hides its
-        # answers behind the summary line.
+        # See `_ALWAYS_PREVIEW_TOOLS`: the formatter, not the raw size thresholds
+        # below, decides whether these have anything left to reveal.
         if self._tool_name in _ALWAYS_PREVIEW_TOOLS:
             return self._format_output(output, is_preview=True).truncation is not None
 
@@ -3035,33 +3057,72 @@ class ToolCallMessage(Vertical):
 
         return FormattedOutput(content=content, truncation=truncation)
 
-    def _format_ask_user_output(  # noqa: PLR6301  # Grouped as method for widget cohesion
+    def _ask_user_question_texts(self) -> list[str]:
+        """Question texts for this `ask_user` call, in the order they were asked.
+
+        Read from the tool call's own arguments rather than re-derived from the
+        output, so `_parse_ask_user_transcript` has trustworthy anchors. `app`
+        restores `tool_args` alongside `tool_output` when reloading a thread, so
+        they are available there too.
+
+        Returns:
+            One text per question, or an empty list when the arguments are
+            missing or malformed (which makes the transcript unparseable, so the
+            row falls back to rendering the output verbatim).
+        """
+        questions = self._args.get("questions")
+        if not isinstance(questions, list) or not questions:
+            return []
+        if not all(isinstance(question, dict) for question in questions):
+            return []
+        # Mirror `format_ask_user_transcript`, which produced the transcript.
+        return [question.get("question", "") for question in questions]
+
+    def _format_ask_user_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
         """Format an `ask_user` result as its question/answer transcript.
 
-        The inline question widget is unmounted once answered, so the tool row
-        is the only place the answers survive. Collapsed, the row keeps its
-        one-line summary; expanded, it shows what was sent back.
+        The inline question widget is unmounted once answered, so this row is the
+        only place the answers stay visible in the live session — the thread's
+        own `ToolMessage` is what a reload re-renders from. Collapsed, the row
+        keeps a one-line summary; expanded, it shows what was sent back.
 
         Returns:
             FormattedOutput with the summary line (preview) or the full Q&A
-                transcript, and the answer count as truncation info. Output that
-                is not a transcript (an error body) renders verbatim.
+                transcript, plus a count as truncation info. Output that does not
+                parse as a transcript for this call's questions renders verbatim
+                — a live `set_error` body, for example. Note the tool's *own*
+                error path emits a well-formed transcript of `(error: ...)`
+                placeholders, which is summarized as failed rather than answered.
         """
-        pairs = _parse_ask_user_transcript(output)
+        pairs = _parse_ask_user_transcript(output, self._ask_user_question_texts())
         if not pairs:
             return FormattedOutput(content=Content(output))
 
         if is_preview:
-            cancelled = all(
-                answer == ASK_USER_CANCELLED_ANSWER for _question, answer in pairs
+            answers = [answer for _question, answer in pairs]
+            cancelled = all(answer == ASK_USER_CANCELLED_ANSWER for answer in answers)
+            failed = not cancelled and all(
+                answer.startswith(ASK_USER_ERROR_ANSWER_PREFIX) for answer in answers
             )
-            summary = "Question cancelled" if cancelled else ASK_USER_ANSWERED_SUMMARY
-            noun = "answer" if len(pairs) == 1 else "answers"
+            if cancelled:
+                # Reachable only after a reload: a live cancel calls
+                # `set_rejected`, which never records any output. Every answer is
+                # a placeholder, so the count is of questions, not answers.
+                summary = ASK_USER_CANCELLED_SUMMARY
+                noun = "question" if len(pairs) == 1 else "questions"
+            else:
+                summary = (
+                    ASK_USER_FAILED_SUMMARY if failed else ASK_USER_ANSWERED_SUMMARY
+                )
+                noun = "answer" if len(pairs) == 1 else "answers"
+            # Always expandable, even when cancelled or failed: the sentinels are
+            # in-band, so an answer of literally `(cancelled)` would otherwise be
+            # summarized away with no way to reveal what the user actually typed.
             return FormattedOutput(
                 content=Content.styled(summary, "dim"),
-                truncation=None if cancelled else f"{len(pairs)} {noun}",
+                truncation=f"{len(pairs)} {noun}",
             )
 
         blocks = [
@@ -3164,7 +3225,7 @@ class ToolCallMessage(Vertical):
                 return
             # Truncate the preview only when the output is large enough to
             # warrant it; `_ALWAYS_PREVIEW_TOOLS` use their compact preview
-            # (per-item todos, `ask_user` summary line) regardless of size.
+            # regardless of size.
             is_preview = needs_truncation or self._tool_name in _ALWAYS_PREVIEW_TOOLS
             # Pass the raw output, not `output_stripped`: `_format_output`
             # normalizes whitespace while preserving the first line's leading

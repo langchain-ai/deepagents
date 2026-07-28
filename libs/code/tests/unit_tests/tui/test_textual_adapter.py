@@ -1,6 +1,7 @@
 """Unit tests for textual_adapter functions."""
 
 import asyncio
+import logging
 import sys
 from asyncio import Future
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator
@@ -18,7 +19,11 @@ from pydantic import ValidationError
 from rich.console import Console
 
 from deepagents_code import config as config_module
-from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+from deepagents_code._ask_user_types import (
+    ASK_USER_ANSWERED_SUMMARY,
+    AskUserWidgetResult,
+    Question,
+)
 from deepagents_code._tool_stream import (
     TOOL_OUTPUT_TRUNCATION_MARKER,
     UNRENDERABLE_TOOL_OUTPUT,
@@ -4517,8 +4522,10 @@ class TestExecuteTaskTextualAskUser:
     async def test_ask_user_row_keeps_answer_transcript(self) -> None:
         """The answered row records the Q&A transcript, not just a summary.
 
-        The inline question widget is unmounted once answered, so the tool row
-        is the only place the answers stay inspectable.
+        The inline question widget is unmounted once answered, so the row is the
+        only place the answers stay visible in the live session. The `tool.result`
+        payload deliberately keeps the bare summary instead; that is asserted by
+        `test_ask_user_result_hook_survives_widget_success_failure`.
         """
         mounted: list[object] = []
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
@@ -6108,13 +6115,96 @@ class TestToolHooksTextual:
             if c[0][0] == "tool.result"
         ]
         assert len(tool_result_calls) == 1
+        # `tool_output` is the bare summary, never the transcript: user-typed
+        # answers must not be forwarded to hook scripts. Compared against the
+        # constant so rewording it fails here rather than silently widening the
+        # payload.
         assert tool_result_calls[0][0][1] == {
             "tool_name": "ask_user",
             "tool_id": "ask-1",
             "tool_args": {"questions": questions},
             "tool_status": "success",
-            "tool_output": "User answered",
+            "tool_output": ASK_USER_ANSWERED_SUMMARY,
         }
+
+    async def test_ask_user_unstringifiable_answer_still_resumes(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A pathological answer must not abandon the interrupt mid-resume.
+
+        Building the row transcript coerces each answer with `str()`, so it has
+        to happen inside the row-update guard. Outside it, a raising `__str__`
+        escapes past the `tool.result` dispatch and past the resume, leaving the
+        graph parked on an interrupt whose payload was already collected.
+        """
+
+        class _Unstringifiable:
+            def __str__(self) -> str:
+                msg = "cannot render"
+                raise RuntimeError(msg)
+
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+        future.set_result({"type": "answered", "answers": [_Unstringifiable()]})  # ty: ignore[invalid-argument-type]
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            return future
+
+        questions: list[Question] = [{"question": "Name?", "type": "text"}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": questions,
+                            "tool_call_id": "ask-1",
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        with (
+            caplog.at_level(
+                logging.ERROR, logger="deepagents_code.tui.textual_adapter"
+            ),
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                adapter=adapter,
+            )
+
+        # The guard actually fired, rather than the coercion being skipped.
+        assert "Failed to update ask_user row" in caplog.text
+        tool_result_calls = [
+            c
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result"
+        ]
+        assert len(tool_result_calls) == 1
+        # The second stream call is the resume: the answers reached the graph.
+        assert len(agent.stream_inputs) == 2
+        assert isinstance(agent.stream_inputs[1], Command)
 
     async def test_ask_user_interrupt_error_dispatches_tool_result_hook(self) -> None:
         """ask_user UI errors emit tool.result with tool_status='error'."""

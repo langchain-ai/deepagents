@@ -20,11 +20,16 @@ import re
 import tempfile
 import threading
 import unicodedata
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+if os.name != "nt":
+    import fcntl
+else:
+    import msvcrt
 
 from langchain_core.messages import (
     AIMessage,
@@ -41,7 +46,7 @@ from deepagents_code.config_manifest import _is_secret_env
 from deepagents_code.json_types import JSON_VALUE_ADAPTER, JsonValue
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterator, Mapping, Sequence
     from typing import Protocol
 
     class _TranscriptRuntime(Protocol):
@@ -239,6 +244,11 @@ class TranscriptStore:
     ) -> TranscriptHandle:
         """Flush pending records and return the client-readable path.
 
+        Materialization rewrites the whole per-thread JSONL file, so it runs
+        under a cross-process advisory lock and re-reads the on-disk records
+        first, merging in anything another dcode process appended since this
+        process last loaded the file.
+
         Args:
             thread_id: Conversation thread identifier.
             agent_id: Optional subagent scope.
@@ -256,15 +266,17 @@ class TranscriptStore:
             _ensure_private_directories(self.root, path.parent)
             if path.is_file() and os.name != "nt":
                 path.chmod(_FILE_MODE)
-            if buffer.dirty or not path.is_file():
-                revision = _write_transcript(
-                    self.root,
-                    path,
-                    buffer.records,
-                    self.retention_revisions,
-                )
-                buffer.revision = revision
-                buffer.dirty = False
+            with _file_lock(path.with_suffix(path.suffix + ".lock")):
+                _merge_disk_records(path, buffer)
+                if buffer.dirty or not path.is_file():
+                    revision = _write_transcript(
+                        self.root,
+                        path,
+                        buffer.records,
+                        self.retention_revisions,
+                    )
+                    buffer.revision = revision
+                    buffer.dirty = False
             return TranscriptHandle(
                 path=path,
                 revision=buffer.revision,
@@ -467,6 +479,61 @@ def _redact_url(value: str) -> str:
     query = urlencode([(key, "[redacted]") for key, _value in query_items])
     fragment = "[redacted]" if parsed.fragment else ""
     return urlunsplit((parsed.scheme, netloc, path, query, fragment))
+
+
+@contextmanager
+def _file_lock(lock_path: Path) -> Iterator[None]:
+    """Hold an advisory cross-process lock on `lock_path`.
+
+    Materialization rewrites the whole transcript file, so concurrent dcode
+    processes resuming the same thread must serialize their read-merge-write
+    cycle on something stronger than the in-process `threading.RLock`.
+    """
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, _FILE_MODE)
+    try:
+        if os.name != "nt":
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        try:
+            yield
+        finally:
+            if os.name != "nt":
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            else:
+                with suppress(OSError):
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    finally:
+        os.close(fd)
+
+
+def _merge_disk_records(path: Path, buffer: _TranscriptBuffer) -> None:
+    """Fold on-disk records missing from `buffer` back into it.
+
+    Another process may have materialized the shared transcript since this
+    process last loaded it; re-reading under the file lock prevents the next
+    rewrite from silently dropping that process's records. Buffer records win
+    ordering ties; disk-only records keep their relative order appended after.
+    """
+    if not path.is_file():
+        return
+    disk_records, valid = _read_transcript(path)
+    if not valid:
+        return
+    buffer_ids = {record.record_id for record in buffer.records}
+    if all(record.record_id in buffer_ids for record in disk_records):
+        return
+    merged = list(buffer.records)
+    merged_ids = set(buffer_ids)
+    for record in disk_records:
+        if record.record_id in merged_ids:
+            continue
+        merged.append(record.model_copy(update={"sequence": len(merged)}))
+        merged_ids.add(record.record_id)
+    buffer.records = merged
+    buffer.record_ids = merged_ids
+    buffer.dirty = True
 
 
 def _write_transcript(

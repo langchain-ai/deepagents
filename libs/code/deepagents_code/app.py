@@ -13991,7 +13991,8 @@ class DeepAgentsApp(App):
                         ):
                             tool_error = text
                         elif (
-                            text.startswith("Conversation compacted.")
+                            getattr(msg, "name", None) == "compact_conversation"
+                            and text.startswith("Conversation compacted.")
                             and not compact_boundary_fired
                         ):
                             compact_boundary_fired = True

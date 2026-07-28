@@ -199,6 +199,32 @@ def test_transcript_deduplicates_stable_message_identity(tmp_path: Path) -> None
     assert len(records) == 1
 
 
+def test_materialize_merges_records_written_by_another_store(tmp_path: Path) -> None:
+    """Two stores sharing a transcript must not drop each other's records."""
+    root = tmp_path / "transcripts"
+    first = TranscriptStore(root)
+    first.append_messages("thread", [HumanMessage(id="shared-1", content="shared")])
+    first.materialize("thread")
+
+    second = TranscriptStore(root)
+    second.append_messages("thread", [HumanMessage(id="other-1", content="other")])
+    second.materialize("thread")
+
+    first.append_messages("thread", [HumanMessage(id="mine-1", content="mine")])
+    handle = first.materialize("thread")
+
+    records = [
+        json.loads(line)
+        for line in handle.path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["message_id"] for record in records] == [
+        "shared-1",
+        "mine-1",
+        "other-1",
+    ]
+    assert [record["sequence"] for record in records] == [0, 1, 2]
+
+
 def test_stream_recorder_collects_completed_main_and_identified_subagent(
     tmp_path: Path,
 ) -> None:

@@ -1568,6 +1568,8 @@ async def execute_task_textual(
                             if (
                                 isinstance(raw_id, str)
                                 and raw_id
+                                and getattr(message, "name", None)
+                                == "compact_conversation"
                                 and str(message.content).startswith(
                                     "Conversation compacted."
                                 )
@@ -1630,6 +1632,7 @@ async def execute_task_textual(
                             isinstance(compaction_id, str)
                             and compaction_id
                             and compaction_id not in completed_compaction_ids
+                            and tool_name == "compact_conversation"
                             and output_str.startswith("Conversation compacted.")
                         ):
                             completed_compaction_ids.add(compaction_id)

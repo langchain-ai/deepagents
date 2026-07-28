@@ -33,6 +33,7 @@ from deepagents_code.client.non_interactive import (
     ThreadUrlLookupState,
     _build_non_interactive_header,
     _collect_action_request_warnings,
+    _compaction_result_id,
     _dispatch_orphaned_tool_result_hooks,
     _make_hitl_decision,
     _make_stdio_encoding_safe,
@@ -76,6 +77,37 @@ def test_subagent_summarization_does_not_signal_compaction() -> None:
     )
 
     assert _summarization_stream_status(chunk) is None
+
+
+def test_compaction_result_id_requires_compact_tool_name() -> None:
+    """Ordinary tool output echoing the prefix must not signal compaction."""
+    ordinary = (
+        (),
+        "messages",
+        (
+            ToolMessage(
+                content="Conversation compacted. Summarized 2 messages.",
+                tool_call_id="tc-1",
+                name="execute",
+            ),
+            {},
+        ),
+    )
+    assert _compaction_result_id(ordinary) is None
+
+    compact = (
+        (),
+        "messages",
+        (
+            ToolMessage(
+                content="Conversation compacted. Summarized 2 messages.",
+                tool_call_id="tc-2",
+                name="compact_conversation",
+            ),
+            {},
+        ),
+    )
+    assert _compaction_result_id(compact) == "tc-2"
 
 
 @pytest.fixture(autouse=True)

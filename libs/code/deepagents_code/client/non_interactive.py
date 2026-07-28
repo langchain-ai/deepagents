@@ -1228,6 +1228,7 @@ def _compaction_result_id(chunk: object) -> str | None:
     message, _metadata = data
     if not (
         isinstance(message, ToolMessage)
+        and getattr(message, "name", None) == "compact_conversation"
         and str(message.content).startswith("Conversation compacted.")
     ):
         return None

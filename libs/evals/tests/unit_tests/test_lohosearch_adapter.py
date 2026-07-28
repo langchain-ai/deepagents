@@ -294,3 +294,33 @@ def test_judge_retries_transient_statuses_but_not_configuration_errors() -> None
     assert 400 not in judge._NON_RETRYABLE_STATUSES
     assert 429 not in judge._NON_RETRYABLE_STATUSES
     assert {401, 403, 404, 422} <= judge._NON_RETRYABLE_STATUSES
+
+
+def test_judge_falls_back_to_a_second_provider_only_when_configured() -> None:
+    """The fallback is opt-in, so a normal run grades every task with one model."""
+    judge = _judge_module()
+
+    primary_only = judge._endpoints(
+        "B", "qwen/qwen-2.5-72b-instruct", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"
+    )
+    assert [base for _model, base, _key in primary_only] in (
+        [],
+        ["https://openrouter.ai/api/v1"],
+    )
+
+
+def test_judge_reports_no_endpoint_when_every_key_is_absent() -> None:
+    """No key must surface as an unreachable judge, not a silent zero."""
+    judge = _judge_module()
+
+    assert judge._endpoints("B", "m", "https://example.test/v1", "DEFINITELY_UNSET_KEY") == []
+
+
+def test_openrouter_requests_ask_for_cross_provider_failover() -> None:
+    """qwen-2.5-72b is load-balanced across two upstreams; one intermittently 400s."""
+    judge = _judge_module()
+    source = (adapter.templates_dir() / "judge.py").read_text()
+
+    assert 'body["provider"] = {"allow_fallbacks": True}' in source
+    assert 'if "openrouter.ai" in base_url:' in source
+    assert judge is not None

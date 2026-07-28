@@ -154,6 +154,14 @@ def _call(base_url, api_key, model, prompt):
         "messages": [{"role": "user", "content": prompt}],
         "temperature": _temperature(model),
     }
+    if "openrouter.ai" in base_url:
+        # OpenRouter fronts several upstream providers per model and load-balances
+        # across them (qwen-2.5-72b has two). When one is unhealthy it returns a
+        # bare 400, and plain retries kept landing on the same one -- a task
+        # failed all five attempts in one run and graded fine in the next two.
+        # Asking OpenRouter to fail over between upstreams fixes that without
+        # changing the judge model, which a different-provider fallback would.
+        body["provider"] = {"allow_fallbacks": True}
     request = urllib.request.Request(  # noqa: S310 - OpenAI-compatible host from env
         f"{base_url.rstrip('/')}/chat/completions",
         data=json.dumps(body).encode("utf-8"),
@@ -171,23 +179,43 @@ def _call(base_url, api_key, model, prompt):
     return payload["choices"][0]["message"]["content"]
 
 
-def _judge(name, prompt, default_model, default_base_url, fallback_key_var):
-    """Call one judge and return (correct, detail). Any failure scores 0."""
-    model = os.environ.get(f"LOHO_JUDGE_{name}_MODEL") or default_model
-    base_url = os.environ.get(f"LOHO_JUDGE_{name}_BASE_URL") or default_base_url
-    api_key = os.environ.get(f"LOHO_JUDGE_{name}_API_KEY") or os.environ.get(fallback_key_var)
-    if not api_key:
-        return 0, {"model": model, "error": f"no API key (LOHO_JUDGE_{name}_API_KEY)"}
+def _endpoints(name, default_model, default_base_url, default_key_var):
+    """Resolve this judge's endpoints, primary first, from the verifier env.
 
-    last = {"model": model, "prompt_chars": len(prompt)}
+    A judge may declare a fallback on an unrelated provider
+    (`LOHO_JUDGE_<n>_FALLBACK_*`). It is only reached once the primary has
+    exhausted its retries, so the common case still grades every task with the
+    same model; the fallback exists so one provider's outage costs a trial's
+    grade rather than the trial.
+    """
+    endpoints = []
+    primary_key = os.environ.get(f"LOHO_JUDGE_{name}_API_KEY") or os.environ.get(default_key_var)
+    if primary_key:
+        endpoints.append(
+            (
+                os.environ.get(f"LOHO_JUDGE_{name}_MODEL") or default_model,
+                os.environ.get(f"LOHO_JUDGE_{name}_BASE_URL") or default_base_url,
+                primary_key,
+            )
+        )
+    fallback_model = os.environ.get(f"LOHO_JUDGE_{name}_FALLBACK_MODEL")
+    fallback_key = os.environ.get(f"LOHO_JUDGE_{name}_FALLBACK_API_KEY")
+    fallback_base = os.environ.get(f"LOHO_JUDGE_{name}_FALLBACK_BASE_URL")
+    if fallback_model and fallback_key and fallback_base:
+        endpoints.append((fallback_model, fallback_base, fallback_key))
+    return endpoints
+
+
+def _call_with_retries(model, base_url, api_key, prompt):
+    """Try one endpoint up to `_MAX_ATTEMPTS` times. Returns (raw, detail)."""
+    detail = {"model": model, "prompt_chars": len(prompt)}
     for attempt in range(_MAX_ATTEMPTS):
         try:
-            raw = _call(base_url, api_key, model, prompt)
-            return None, {"model": model, "raw": raw, "prompt_chars": len(prompt)}
+            return _call(base_url, api_key, model, prompt), detail
         except Exception as exc:  # noqa: BLE001 - report, maybe retry, then give up
             status = getattr(exc, "status", None)
-            last = {
-                **last,
+            detail = {
+                **detail,
                 "error": f"{type(exc).__name__}: {exc}",
                 "http_status": status,
                 "error_code": getattr(exc, "code", None),
@@ -201,6 +229,31 @@ def _judge(name, prompt, default_model, default_base_url, fallback_key_var):
                 # Backoff, so a rate limit or a brief upstream outage gets a
                 # chance to clear instead of burning all five attempts at once.
                 time.sleep(min(2**attempt, _BACKOFF_CAP_SECONDS))
+    return None, detail
+
+
+def _judge(name, prompt, default_model, default_base_url, fallback_key_var):
+    """Call one judge, trying its fallback endpoint if the primary is exhausted.
+
+    Returns `(None, detail_with_raw)` when a judge answered, or `(0, detail)`
+    when none could be reached -- the caller turns the latter into a failed
+    trial rather than a zero score.
+    """
+    endpoints = _endpoints(name, default_model, default_base_url, fallback_key_var)
+    if not endpoints:
+        return 0, {
+            "model": default_model,
+            "error": f"no API key (LOHO_JUDGE_{name}_API_KEY)",
+        }
+
+    last = {}
+    for index, (model, base_url, api_key) in enumerate(endpoints):
+        raw, detail = _call_with_retries(model, base_url, api_key, prompt)
+        if raw is not None:
+            # Record when a fallback graded: the judge model then differs from
+            # the one other trials used, which matters when reading the scores.
+            return None, {**detail, "raw": raw, "used_fallback": index > 0}
+        last = detail
     return 0, last
 
 
@@ -217,9 +270,9 @@ def _grade_browsecomp(question, ground_truth, submission):
     # Upstream parses the structured verdict block for `correct: yes|no`.
     match = re.search(r"correct\s*:\s*(yes|no)", detail["raw"], re.IGNORECASE)
     if match is None:
-        return 0, {"model": detail["model"], "error": "unparseable verdict", "verdict": None}
+        return 0, {**detail, "error": "unparseable verdict", "verdict": None}
     correct = int(match.group(1).lower() == "yes")
-    return correct, {"model": detail["model"], "verdict": match.group(1).lower()}
+    return correct, {**detail, "verdict": match.group(1).lower()}
 
 
 def _grade_simpleqa(question, ground_truth, submission):
@@ -241,7 +294,7 @@ def _grade_simpleqa(question, ground_truth, submission):
     # Upstream takes the first A/B/C and defaults to C (NOT_ATTEMPTED).
     match = re.search(r"(A|B|C)", detail["raw"])
     grade = match.group(0) if match else "C"
-    return int(grade == "A"), {"model": detail["model"], "verdict": grade}
+    return int(grade == "A"), {**detail, "verdict": grade}
 
 
 def _status_entry(correct, detail):
@@ -263,6 +316,7 @@ def _status_entry(correct, detail):
         "prompt_chars": detail.get("prompt_chars"),
         "error_message": detail.get("error_message"),
         "attempts": detail.get("attempts"),
+        "used_fallback": detail.get("used_fallback"),
     }
 
 

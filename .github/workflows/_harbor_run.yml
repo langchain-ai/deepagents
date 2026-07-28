@@ -557,14 +557,17 @@ jobs:
           BASETEN_API_KEY: ${{ startsWith(matrix.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
           FIREWORKS_API_KEY: ${{ startsWith(matrix.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
           GOOGLE_API_KEY: ${{ startsWith(matrix.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
-          GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
+          # Also judge B's fallback for the search category, so it is not gated
+          # on the model provider the way the agent-side keys are.
+          GROQ_API_KEY: ${{ (startsWith(matrix.model, 'groq:') || (matrix.category || inputs.category) == 'search') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           # The verifier's judge is always an OpenAI model (JUDGE_PROVIDER=openai),
           # so this key is required regardless of the model under test.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
+          # Judge B's primary endpoint for the search category, so likewise ungated.
+          OPENROUTER_API_KEY: ${{ (startsWith(matrix.model, 'openrouter:') || (matrix.category || inputs.category) == 'search') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
           # Search category only. TAVILY_API_KEY backs the agent's web_search
           # tool; the LOHO_JUDGE_* pair drives the dual-judge verifier (judge A
@@ -894,6 +897,14 @@ jobs:
               --verifier-env 'LOHO_JUDGE_B_MODEL=qwen/qwen-2.5-72b-instruct'
               --verifier-env 'LOHO_JUDGE_B_BASE_URL=https://openrouter.ai/api/v1'
               --verifier-env 'LOHO_JUDGE_B_API_KEY=${LOHO_JUDGE_B_API_KEY}'
+              # Reached only after the primary exhausts its retries, so the common
+              # case still grades every task with one model. Different provider on
+              # purpose: an OpenRouter-wide outage is exactly what the primary's
+              # own cross-upstream failover cannot cover. judge_status records
+              # `used_fallback` so a mixed-model experiment is visible.
+              --verifier-env 'LOHO_JUDGE_B_FALLBACK_MODEL=qwen/qwen3-32b'
+              --verifier-env 'LOHO_JUDGE_B_FALLBACK_BASE_URL=https://api.groq.com/openai/v1'
+              --verifier-env 'LOHO_JUDGE_B_FALLBACK_API_KEY=${GROQ_API_KEY}'
             )
           fi
 

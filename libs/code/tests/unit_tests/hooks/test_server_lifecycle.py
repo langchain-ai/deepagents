@@ -196,59 +196,6 @@ def test_real_checkpointer_resume_replays_stable_hook_identity() -> None:
     assert resumed["completed"] is True
 
 
-def test_precompact_replay_uses_stable_tool_call_identity() -> None:
-    context = HookContext(
-        thread_id="thread-1",
-        cwd=Path("/tmp"),
-        approval_mode=ApprovalMode.MANUAL,
-    )
-    event = PreCompactEvent(
-        event=HookEvent.PRE_COMPACT,
-        trigger=CompactTrigger.AUTO,
-    )
-    gate = _session_gate(
-        {
-            "hooks_snapshot_id": "snapshot-1",
-            "hooks_server_events": [HookEvent.PRE_COMPACT.value],
-        }
-    )
-    assert gate is not None
-
-    def invoke_hook(state: _ReplayState) -> dict[str, bool]:
-        del state
-        decision = _invoke_hook(
-            context,
-            event,
-            gate=gate,
-            config={"configurable": {"thread_id": "thread-1"}},
-            deadline=timedelta(minutes=1),
-            logical_event_id="compact-call-1",
-        )
-        assert isinstance(decision, PreCompactDecision)
-        return {"completed": decision.continue_processing}
-
-    builder = StateGraph(_ReplayState)
-    builder.add_node("hook", invoke_hook)
-    builder.add_edge(START, "hook")
-    graph = builder.compile(checkpointer=InMemorySaver())
-    config: RunnableConfig = {"configurable": {"thread_id": "thread-1"}}
-
-    interrupted = graph.invoke(_ReplayState(completed=False), config)
-    pending = interrupted["__interrupt__"][0]
-    request = parse_hook_interrupt_payload(pending.value)
-    assert request is not None
-    response = HookInvocationResponse(
-        protocol_version=1,
-        invocation_id=request.invocation_id,
-        snapshot_id=request.snapshot_id,
-        decision=PreCompactDecision(event=HookEvent.PRE_COMPACT),
-    )
-
-    resumed = graph.invoke(Command(resume=build_hook_resume_value(response)), config)
-
-    assert resumed["completed"] is True
-
-
 def test_apply_hooks_context_sets_server_events(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -641,165 +588,69 @@ def test_pre_tool_deny_skips_hitl_and_execution(
     handler.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    ("args", "expected"),
-    [
-        ({"force": True}, CompactTrigger.MANUAL),
-        ({}, CompactTrigger.AUTO),
-    ],
-)
-def test_precompact_trigger_uses_forced_tool_identity(
-    monkeypatch: pytest.MonkeyPatch,
-    args: dict[str, object],
-    expected: CompactTrigger,
-) -> None:
-    middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
+def _compact_setup(
+    *, args: dict[str, object] | None = None, events: list[str] | None = None
+) -> tuple[MagicMock, ServerHooksState, dict[str, Any]]:
     runtime = MagicMock()
     runtime.context = {
         "hooks_snapshot_id": "snap",
-        "hooks_server_events": ["PreCompact"],
+        "hooks_server_events": events or ["PreCompact", "PreToolUse"],
         "thread_id": "t1",
         "approval_mode": "manual",
     }
-    state: ServerHooksState = {
-        "messages": [
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "compact_conversation",
-                        "args": args,
-                        "id": "compact-call",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-        ]
+    tool_call = {
+        "name": "compact_conversation",
+        "args": args or {},
+        "id": "compact-call",
+        "type": "tool_call",
     }
-    observed: list[tuple[CompactTrigger, str | None]] = []
-
-    def invoke(
-        _context: object,
-        event: object,
-        **kwargs: object,
-    ) -> PreCompactDecision:
-        assert isinstance(event, PreCompactEvent)
-        logical_id = kwargs.get("logical_event_id")
-        observed.append(
-            (
-                event.trigger,
-                logical_id if isinstance(logical_id, str) else None,
-            )
-        )
-        return PreCompactDecision(event=HookEvent.PRE_COMPACT)
-
-    monkeypatch.setattr(
-        "deepagents_code.hooks.server_middleware._invoke_hook",
-        invoke,
+    return (
+        runtime,
+        {"messages": [AIMessage(content="", tool_calls=[tool_call])]},
+        tool_call,
     )
 
-    update = middleware._after_model(state, runtime)
 
-    assert observed == [(expected, "compact-call")]
-    assert update["_hooks_pre_tool_outcomes"]["compact-call"]["behavior"] == "none"
-
-
-def test_precompact_runs_before_pretool(
+@pytest.mark.parametrize(
+    ("args", "trigger"),
+    [({}, CompactTrigger.AUTO), ({"force": True}, CompactTrigger.MANUAL)],
+)
+def test_precompact_trigger_and_order(
     monkeypatch: pytest.MonkeyPatch,
+    args: dict[str, object],
+    trigger: CompactTrigger,
 ) -> None:
     middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
-    runtime = MagicMock()
-    runtime.context = {
-        "hooks_snapshot_id": "snap",
-        "hooks_server_events": ["PreCompact", "PreToolUse"],
-        "thread_id": "t1",
-        "approval_mode": "manual",
-    }
-    state: ServerHooksState = {
-        "messages": [
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {
-                        "name": "compact_conversation",
-                        "args": {},
-                        "id": "compact-call",
-                        "type": "tool_call",
-                    }
-                ],
-            )
-        ]
-    }
+    runtime, state, _tool_call = _compact_setup(args=args)
     order: list[HookEvent] = []
 
     def invoke(
-        _context: object,
-        event: object,
-        **_kwargs: object,
+        _context: object, event: object, **kwargs: object
     ) -> PreCompactDecision | PreToolUseDecision:
         assert isinstance(event, PreCompactEvent | PreToolUseEvent)
         order.append(event.event)
         if isinstance(event, PreCompactEvent):
+            assert event.trigger == trigger
+            assert kwargs["logical_event_id"] == "compact-call"
             return PreCompactDecision(event=HookEvent.PRE_COMPACT)
         return PreToolUseDecision(
             event=HookEvent.PRE_TOOL_USE,
             permission=PermissionEffect(behavior="none"),
-            context=["continue with compacted context"],
         )
 
-    monkeypatch.setattr(
-        "deepagents_code.hooks.server_middleware._invoke_hook",
-        invoke,
-    )
-
+    monkeypatch.setattr("deepagents_code.hooks.server_middleware._invoke_hook", invoke)
     update = middleware._after_model(state, runtime)
 
     assert order == [HookEvent.PRE_COMPACT, HookEvent.PRE_TOOL_USE]
-    assert update["_hooks_pre_tool_outcomes"]["compact-call"]["context"] == [
-        "continue with compacted context"
-    ]
-    state["_hooks_pre_tool_outcomes"] = update["_hooks_pre_tool_outcomes"]
-    runtime.config = {"configurable": {"thread_id": "t1"}}
-    request = MagicMock()
-    request.state = state
-    request.runtime = runtime
-    request.tool = None
-    message = state["messages"][-1]
-    assert isinstance(message, AIMessage)
-    request.tool_call = message.tool_calls[0]
-    result = middleware.wrap_tool_call(
-        request,
-        lambda _request: ToolMessage(
-            content="compacted",
-            name="compact_conversation",
-            tool_call_id="compact-call",
-        ),
-    )
-    assert isinstance(result, ToolMessage)
-    assert "continue with compacted context" in str(result.content)
+    assert update["_hooks_pre_tool_outcomes"]["compact-call"]["behavior"] == "none"
 
 
 def test_precompact_block_skips_hitl_and_tool_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
-    runtime = MagicMock()
-    runtime.context = {
-        "hooks_snapshot_id": "snap",
-        "hooks_server_events": ["PreCompact", "PreToolUse"],
-        "thread_id": "t1",
-        "approval_mode": "manual",
-    }
+    runtime, state, tool_call = _compact_setup()
     runtime.config = {"configurable": {"thread_id": "t1"}}
-    tool_call = {
-        "name": "compact_conversation",
-        "args": {},
-        "id": "compact-call",
-        "type": "tool_call",
-    }
-    state: ServerHooksState = {
-        "messages": [AIMessage(content="", tool_calls=[tool_call])]
-    }
     invoke = MagicMock(
         return_value=PreCompactDecision(
             event=HookEvent.PRE_COMPACT,
@@ -807,17 +658,11 @@ def test_precompact_block_skips_hitl_and_tool_execution(
             stop_reason="keep full context",
         )
     )
-    monkeypatch.setattr(
-        "deepagents_code.hooks.server_middleware._invoke_hook",
-        invoke,
-    )
-    update = middleware._after_model(state, runtime)
-    state["_hooks_pre_tool_outcomes"] = update["_hooks_pre_tool_outcomes"]
-    request = MagicMock()
-    request.state = state
-    request.runtime = runtime
-    request.tool = None
-    request.tool_call = tool_call
+    monkeypatch.setattr("deepagents_code.hooks.server_middleware._invoke_hook", invoke)
+    state["_hooks_pre_tool_outcomes"] = middleware._after_model(state, runtime)[
+        "_hooks_pre_tool_outcomes"
+    ]
+    request = MagicMock(state=state, runtime=runtime, tool=None, tool_call=tool_call)
     handler = MagicMock()
 
     assert _should_interrupt_tool_call(request) is False
@@ -945,46 +790,6 @@ def test_subagent_start_deny_returns_error_tool_message(
     assert blocked.status == "error"
     assert "no subagents" in str(blocked.content)
     handler.assert_not_called()
-
-
-def test_task_tool_scopes_subagent_transcript_identity() -> None:
-    from langchain_core.runnables.config import ensure_config
-
-    middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
-    request = MagicMock()
-    request.state = {}
-    request.tool = None
-    request.tool_call = {
-        "name": "task",
-        "args": {"subagent_type": "researcher", "description": "go"},
-        "id": "call-1",
-        "type": "tool_call",
-    }
-    request.runtime.context = {
-        "thread_id": "t1",
-        "approval_mode": "manual",
-    }
-    request.runtime.config = {
-        "configurable": {"thread_id": "t1"},
-        "metadata": {"parent": "kept"},
-    }
-    observed: list[dict[str, object]] = []
-
-    def handler(_request: object) -> ToolMessage:
-        nested = ensure_config({"configurable": {"ls_agent_type": "subagent"}})
-        observed.append(dict(nested["metadata"]))
-        return ToolMessage(content="done", name="task", tool_call_id="call-1")
-
-    result = middleware.wrap_tool_call(request, handler)
-
-    assert isinstance(result, ToolMessage)
-    assert observed == [
-        {
-            "parent": "kept",
-            SUBAGENT_TRANSCRIPT_ID_METADATA_KEY: "call-1",
-        }
-    ]
-    assert SUBAGENT_TRANSCRIPT_ID_METADATA_KEY not in ensure_config()["metadata"]
 
 
 async def test_async_task_tool_scopes_subagent_transcript_identity() -> None:

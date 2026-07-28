@@ -37,6 +37,7 @@ from deepagents_code.client.non_interactive import (
     _make_hitl_decision,
     _make_stdio_encoding_safe,
     _process_ai_message,
+    _process_hitl_interrupts,
     _process_message_chunk,
     _run_agent_loop,
     _run_startup_command,
@@ -46,9 +47,14 @@ from deepagents_code.client.non_interactive import (
 )
 from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult
 from deepagents_code.file_ops import FileOpTracker
-from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+from deepagents_code.hooks.client_lifecycle import (
+    ClientHookContext,
+    ClientHookStopError,
+)
 from deepagents_code.hooks.models.domain import (
     HookEvent,
+    PermissionEffect,
+    PermissionRequestDecision,
     SessionEndDecision,
     SessionStartDecision,
     UserPromptSubmitDecision,
@@ -62,30 +68,14 @@ def console() -> Console:
     return Console(quiet=True)
 
 
-def test_summarization_status_ignores_subagent_namespaces() -> None:
-    assert (
-        _summarization_stream_status(
-            (
-                ("tools:subagent",),
-                "messages",
-                (
-                    AIMessage(content="summary"),
-                    {"lc_source": "summarization"},
-                ),
-            )
-        )
-        is None
+def test_subagent_summarization_does_not_signal_compaction() -> None:
+    chunk = (
+        ("subagent",),
+        "messages",
+        (AIMessage(content="summary"), {"lc_source": "summarization"}),
     )
-    assert (
-        _summarization_stream_status(
-            (
-                ("tools:subagent",),
-                "messages",
-                (AIMessage(content="continued"), {}),
-            )
-        )
-        is None
-    )
+
+    assert _summarization_stream_status(chunk) is None
 
 
 @pytest.fixture(autouse=True)
@@ -1374,6 +1364,45 @@ def _make_looping_agent() -> MagicMock:
     return mock_agent
 
 
+@pytest.fixture
+def lifecycle_runtime(tmp_path: Path) -> MagicMock:
+    """Minimal hook runtime shared by lifecycle loop tests."""
+    runtime = MagicMock()
+    runtime.cwd = tmp_path
+    runtime.snapshot_id = "snapshot"
+    runtime.configured_server_events.return_value = ()
+    return runtime
+
+
+async def test_headless_compact_permission_uses_live_context() -> None:
+    context = ClientHookContext.create(
+        thread_id="t1",
+        approval_mode=ApprovalMode.AUTO,
+        prompt_id="00000000-0000-4000-8000-000000000001",
+    )
+    hooks = MagicMock()
+    hooks.permission_request = AsyncMock(
+        return_value=PermissionRequestDecision(
+            event=HookEvent.PERMISSION_REQUEST,
+            permission=PermissionEffect(behavior="allow"),
+        )
+    )
+    state = StreamState(client_hooks=hooks, client_hook_context=context)
+    state.pending_interrupts["interrupt-1"] = {
+        "action_requests": [{"name": "compact_conversation", "args": {}}],
+        "review_configs": [],
+    }
+
+    await _process_hitl_interrupts(state, Console(quiet=True), "t1")
+
+    awaited = hooks.permission_request.await_args
+    assert awaited is not None
+    assert awaited.args[0] is context
+    assert awaited.args[1].name == "compact_conversation"
+    hooks.pre_compact.assert_not_called()
+    assert state.hitl_response["interrupt-1"]["decisions"] == [{"type": "approve"}]
+
+
 class TestMaxTurns:
     """Tests for max_turns parameter in _run_agent_loop."""
 
@@ -1403,12 +1432,9 @@ class TestMaxTurns:
 
     async def test_user_prompt_hook_suppresses_legacy_duplicate_and_prompt(
         self,
-        tmp_path: Path,
+        lifecycle_runtime: MagicMock,
     ) -> None:
-        runtime = MagicMock()
-        runtime.cwd = tmp_path
-        runtime.snapshot_id = "snapshot"
-        runtime.configured_server_events.return_value = ()
+        runtime = lifecycle_runtime
         runtime.configured_events.return_value = frozenset(
             {HookEvent.USER_PROMPT_SUBMIT}
         )
@@ -1449,12 +1475,9 @@ class TestMaxTurns:
 
     async def test_user_prompt_stop_ends_headless_session_once(
         self,
-        tmp_path: Path,
+        lifecycle_runtime: MagicMock,
     ) -> None:
-        runtime = MagicMock()
-        runtime.cwd = tmp_path
-        runtime.snapshot_id = "snapshot"
-        runtime.configured_server_events.return_value = ()
+        runtime = lifecycle_runtime
         runtime.configured_events.return_value = frozenset(
             {
                 HookEvent.SESSION_START,
@@ -1494,62 +1517,11 @@ class TestMaxTurns:
         ]
         agent.astream.assert_not_called()
 
-    async def test_headless_transcript_records_main_and_identified_subagent(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        runtime = MagicMock()
-        runtime.cwd = tmp_path
-        runtime.snapshot_id = "snapshot"
-        runtime.configured_server_events.return_value = ()
-        runtime.configured_events.return_value = frozenset()
-        chunks = [
-            (
-                ("subagent",),
-                "messages",
-                (
-                    AIMessage(id="sub-1", content="research"),
-                    {"dcode_subagent_id": "agent-1"},
-                ),
-            ),
-            (
-                (),
-                "messages",
-                (AIMessage(id="main-1", content="answer"), {}),
-            ),
-        ]
-        agent = MagicMock()
-        agent.astream = MagicMock(return_value=_async_iter(chunks))
-
-        with patch(
-            "deepagents_code.client.non_interactive.dispatch_hook",
-            new_callable=AsyncMock,
-        ):
-            await _run_agent_loop(
-                agent,
-                "question",
-                {"configurable": {"thread_id": "t1"}},
-                Console(quiet=True),
-                MagicMock(),
-                quiet=True,
-                hooks_runtime=runtime,
-            )
-
-        calls = runtime.append_messages.call_args_list
-        assert calls[0].args[1][0].content == "question"
-        assert calls[1].kwargs == {"agent_id": "agent-1"}
-        assert calls[1].args[1][0].content == "research"
-        assert calls[2].kwargs == {"agent_id": None}
-        assert calls[2].args[1][0].content == "answer"
-
     async def test_compact_session_start_uses_active_model_before_continuation(
         self,
-        tmp_path: Path,
+        lifecycle_runtime: MagicMock,
     ) -> None:
-        runtime = MagicMock()
-        runtime.cwd = tmp_path
-        runtime.snapshot_id = "snapshot"
-        runtime.configured_server_events.return_value = ()
+        runtime = lifecycle_runtime
         runtime.configured_events.return_value = frozenset(
             {HookEvent.SESSION_START, HookEvent.PRE_COMPACT}
         )

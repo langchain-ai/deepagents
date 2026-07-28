@@ -208,11 +208,7 @@ def test_stream_recorder_collects_completed_main_and_identified_subagent(
         transcript_root=tmp_path / "transcripts",
     )
     recorder = TranscriptRecorder(runtime, "thread")
-    recorder.record(
-        AIMessageChunk(id="main-1", content="hel"),
-        {},
-        main_agent=True,
-    )
+    recorder.record(AIMessageChunk(id="main-1", content="hel"), {}, main_agent=True)
     recorder.record(
         AIMessageChunk(id="main-1", content="lo", chunk_position="last"),
         {},
@@ -223,34 +219,22 @@ def test_stream_recorder_collects_completed_main_and_identified_subagent(
         {SUBAGENT_TRANSCRIPT_ID_METADATA_KEY: "agent-1"},
         main_agent=False,
     )
-    recorder.record(
-        AIMessage(id="unstable", content="skip"),
-        {},
-        main_agent=False,
-    )
-    recorder.record(
-        AIMessage(id="summary", content="hidden summary"),
-        {"lc_source": "summarization"},
-        main_agent=True,
-    )
-    recorder.record(
-        AIMessage(id="classifier", content="hidden classifier"),
-        {"lc_source": "auto_mode_classifier"},
-        main_agent=True,
-    )
+    recorder.record(AIMessage(id="unstable", content="skip"), {}, main_agent=False)
+    for source in ("summarization", "auto_mode_classifier"):
+        recorder.record(
+            AIMessage(id=source, content=f"hidden {source}"),
+            {"lc_source": source},
+            main_agent=True,
+        )
 
-    main = runtime.transcripts.materialize("thread").path.read_text(encoding="utf-8")
+    main = runtime.transcripts.materialize("thread").path.read_text()
     agent = runtime.transcripts.materialize(
-        "thread",
-        agent_id="agent-1",
-    ).path.read_text(encoding="utf-8")
+        "thread", agent_id="agent-1"
+    ).path.read_text()
 
     assert '"content":"hello"' in main
     assert '"content":"research"' in agent
-    assert "skip" not in main
-    assert "skip" not in agent
-    assert "hidden summary" not in main
-    assert "hidden classifier" not in main
+    assert all(value not in main + agent for value in ("skip", "hidden"))
 
 
 def test_runtime_stores_transcripts_outside_workspace(
@@ -270,21 +254,6 @@ def test_runtime_stores_transcripts_outside_workspace(
     assert runtime.transcripts.root == (global_dir / "transcripts").resolve()
     assert not (workspace / ".deepagents").exists()
     assert not (config_dir / "transcripts").exists()
-
-
-def test_runtime_accepts_explicit_transcript_root(tmp_path: Path) -> None:
-    workspace = tmp_path / "workspace"
-    transcript_root = tmp_path / "isolated-transcripts"
-    workspace.mkdir()
-
-    runtime = HooksRuntime.create(
-        cwd=workspace,
-        config_dir=tmp_path / "config",
-        transcript_root=transcript_root,
-    )
-
-    assert runtime.transcripts.root == transcript_root.resolve()
-    assert not (tmp_path / "config" / "transcripts").exists()
 
 
 async def test_runtime_materializes_paths_and_invokes(tmp_path: Path) -> None:

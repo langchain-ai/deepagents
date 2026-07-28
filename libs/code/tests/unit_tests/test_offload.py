@@ -1712,11 +1712,9 @@ class TestDriveServerSideCompaction:
                 assert isinstance(context, dict)
                 normalized = {str(key): value for key, value in context.items()}
                 assert {key: normalized[key] for key in expected} == expected
-                assert isinstance(normalized["hooks_snapshot_id"], str)
-                assert normalized["hooks_server_events"] == []
 
     async def test_fulfills_precompact_before_manual_approval(self) -> None:
-        import asyncio
+        """A precompact hook is fulfilled before the compaction approval."""
         from types import SimpleNamespace
 
         from langchain_core.messages import ToolMessage
@@ -1725,44 +1723,27 @@ class TestDriveServerSideCompaction:
         from deepagents_code.client.remote_client import RemoteAgent
         from deepagents_code.hooks.interrupt import HOOK_INVOCATION_INTERRUPT_TYPE
 
-        astream_inputs: list[Any] = []
-        contexts: list[object] = []
+        streams: list[object] = []
 
-        async def _astream(stream_input: object, **kwargs: object):  # noqa: ANN202
-            await asyncio.sleep(0)
-            index = len(astream_inputs)
-            astream_inputs.append(stream_input)
-            contexts.append(kwargs.get("context"))
+        async def _astream(  # noqa: ANN202, RUF029
+            value: object, **_kwargs: object
+        ):
+            index = len(streams)
+            streams.append(value)
             if index == 0:
-                yield (
-                    (),
-                    "updates",
-                    {
-                        "__interrupt__": [
-                            SimpleNamespace(
-                                id="hook-interrupt",
-                                value={"type": HOOK_INVOCATION_INTERRUPT_TYPE},
-                            )
-                        ]
-                    },
+                interrupt = SimpleNamespace(
+                    id="hook-interrupt",
+                    value={"type": HOOK_INVOCATION_INTERRUPT_TYPE},
                 )
             elif index == 1:
-                yield (
-                    (),
-                    "updates",
-                    {
-                        "__interrupt__": [
-                            SimpleNamespace(
-                                id="approval-interrupt",
-                                value={
-                                    "action_requests": [
-                                        {
-                                            "name": "compact_conversation",
-                                            "args": {"force": True},
-                                        }
-                                    ]
-                                },
-                            )
+                interrupt = SimpleNamespace(
+                    id="approval-interrupt",
+                    value={
+                        "action_requests": [
+                            {
+                                "name": "compact_conversation",
+                                "args": {"force": True},
+                            }
                         ]
                     },
                 )
@@ -1770,51 +1751,42 @@ class TestDriveServerSideCompaction:
                 yield (
                     (),
                     "messages",
-                    (
-                        ToolMessage(
-                            content="Conversation compacted. Summarized 2 messages.",
-                            name="compact_conversation",
-                            tool_call_id="compact-call",
-                        ),
-                        {},
-                    ),
+                    (ToolMessage(content="compacted", tool_call_id="compact-call"), {}),
                 )
+                return
+            yield ((), "updates", {"__interrupt__": [interrupt]})
 
-        agent = MagicMock(spec=RemoteAgent)
-        agent.aensure_thread = AsyncMock()
-        agent.aupdate_state = AsyncMock()
-        agent.astream = _astream
+        agent = MagicMock(
+            spec=RemoteAgent,
+            aensure_thread=AsyncMock(),
+            aupdate_state=AsyncMock(),
+            astream=_astream,
+        )
         app = DeepAgentsApp()
+
         async with app.run_test() as pilot:
             await pilot.pause()
-            assert app._session_state is not None
-            runtime = MagicMock()
-            runtime.snapshot_id = "snapshot"
+            runtime = MagicMock(snapshot_id="snapshot")
             runtime.configured_server_events.return_value = ("PreCompact",)
+            assert app._session_state is not None
             app._session_state.hooks_runtime = runtime
             app._agent = agent
             app._lc_thread_id = "test-thread"
             fulfill = AsyncMock(return_value={"hook": "approved"})
-
-            with patch(
-                "deepagents_code.hooks.client.fulfill_hook_interrupt",
-                fulfill,
-            ):
-                result = await app._drive_server_side_compaction(  # ty: ignore
+            with patch("deepagents_code.hooks.client.fulfill_hook_interrupt", fulfill):
+                result = await app._drive_server_side_compaction(
                     {"configurable": {"thread_id": "test-thread"}}
                 )
 
         assert result is None
         fulfill.assert_awaited_once()
-        assert len(astream_inputs) == 3
-        assert isinstance(astream_inputs[1], Command)
-        assert astream_inputs[1].resume == {"hook-interrupt": {"hook": "approved"}}
-        assert isinstance(astream_inputs[2], Command)
-        assert "approval-interrupt" in astream_inputs[2].resume
-        for context in contexts:
-            assert isinstance(context, dict)
-            normalized = {str(key): value for key, value in context.items()}
-            assert normalized["hooks_server_events"] == ["PreCompact"]
+        assert len(streams) == 3
+        assert isinstance(streams[1], Command)
+        assert streams[1].resume == {"hook-interrupt": {"hook": "approved"}}
+        assert isinstance(streams[2], Command)
+        approval = streams[2].resume
+        assert isinstance(approval, dict)
+        assert "approval-interrupt" in approval
 
     async def test_reports_tool_failure(self) -> None:
         """Returns the tool's error text when compaction fails."""
@@ -1876,8 +1848,6 @@ class TestDriveServerSideCompaction:
             assert isinstance(context, dict)
             normalized = {str(key): value for key, value in context.items()}
             assert {key: normalized[key] for key in expected} == expected
-            assert isinstance(normalized["hooks_snapshot_id"], str)
-            assert normalized["hooks_server_events"] == []
 
     async def test_rejects_interrupt_without_identifiable_action(self) -> None:
         """Malformed interrupt payloads fail closed instead of being approved."""

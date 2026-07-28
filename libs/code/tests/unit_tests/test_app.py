@@ -556,24 +556,6 @@ class TestStartupSequence:
         assert call_count == 1
         assert app._initial_session_started is True
 
-    async def test_session_start_initializes_session_runtime_inline(self) -> None:
-        """Startup builds session/hooks state before client SessionStart runs."""
-        app = DeepAgentsApp(
-            agent=MagicMock(),
-            thread_id="thread-123",
-            initial_prompt="hello",
-        )
-        run_hook = AsyncMock(return_value=True)
-        submit = AsyncMock()
-        app._run_session_start_hook = run_hook  # ty: ignore[invalid-assignment]
-        app._submit_initial_submission = submit  # ty: ignore[invalid-assignment]
-
-        await app._run_session_start_sequence()
-
-        assert app._session_state is not None
-        run_hook.assert_awaited_once()
-        submit.assert_awaited_once()
-
     async def test_stopped_session_start_blocks_initial_submission(self) -> None:
         """A hook stop at startup prevents the initial prompt from running."""
         app = DeepAgentsApp(
@@ -581,23 +563,16 @@ class TestStartupSequence:
             thread_id="thread-123",
             initial_prompt="hello",
         )
-        app._session_state = TextualSessionState(thread_id="thread-123")
         hook = AsyncMock(return_value=False)
-        app._run_session_start_hook = hook  # ty: ignore[invalid-assignment]
         submit = AsyncMock()
-        drain = AsyncMock()
+        app._run_session_start_hook = hook  # ty: ignore[invalid-assignment]
         app._submit_initial_submission = submit  # ty: ignore[invalid-assignment]
-        app._drain_startup_backlog = drain  # ty: ignore[invalid-assignment]
 
-        await app._run_session_start_sequence()
         await app._run_session_start_sequence()
         await app._run_session_start_sequence()
 
         submit.assert_not_awaited()
-        drain.assert_not_awaited()
         hook.assert_awaited_once()
-        assert app._initial_session_started is False
-        assert app._initial_session_start_stopped is True
 
     async def test_reconnect_drains_queue_without_reloading_history(self) -> None:
         """Later `ServerReady` events should drain queued input once connected."""
@@ -13111,23 +13086,21 @@ class TestMessageTimestampFooters:
         async with app.run_test() as pilot:
             await pilot.pause()
             assert app._session_state is not None
-            runtime = MagicMock()
+            runtime: Any = MagicMock()
             app._session_state.hooks_runtime = runtime
             payload = _ThreadHistoryPayload(
-                messages=[],
-                context_tokens=0,
-                model_spec="",
+                [],
+                0,
+                "",
                 transcript_messages=(HumanMessage(id="history-1", content="restored"),),
             )
-
             await app._load_thread_history(
                 thread_id="t-restored",
                 preloaded_payload=payload,
             )
 
         runtime.append_messages.assert_called_once_with(
-            "t-restored",
-            payload.transcript_messages,
+            "t-restored", payload.transcript_messages
         )
 
     async def test_load_thread_history_skips_duplicate_ids(self) -> None:

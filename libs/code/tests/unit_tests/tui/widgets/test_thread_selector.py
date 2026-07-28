@@ -3135,7 +3135,7 @@ class TestResumeThread:
         assert "already in progress" in _get_widget_text(mounted[0])
 
     async def test_already_on_thread_shows_message(self) -> None:
-        """_resume_thread when already on the thread should show info message."""
+        """_resume_thread when already on the thread should toast, not mount."""
         app = DeepAgentsApp()
         mounted: list[Static] = []
         _app_test_double(app)._mount_message = AsyncMock(
@@ -3143,8 +3143,8 @@ class TestResumeThread:
         )
         offer_cwd_switch = AsyncMock(return_value="continue")
         _app_test_double(app)._offer_thread_cwd_switch = offer_cwd_switch
-        schedule_link_mock = MagicMock()
-        _app_test_double(app)._schedule_thread_message_link = schedule_link_mock
+        notify_mock = MagicMock()
+        _app_test_double(app).notify = notify_mock
         app._agent = MagicMock()
         app._session_state = MagicMock()
         app._session_state.thread_id = "thread-123"
@@ -3156,13 +3156,54 @@ class TestResumeThread:
             restart_server=True,
             abort="thread_switch",
         )
-        assert len(mounted) == 1
-        assert "Already on thread" in _get_widget_text(mounted[0])
-        schedule_link_mock.assert_called_once_with(
-            mounted[0],
-            prefix="Already on thread",
-            thread_id="thread-123",
+        assert mounted == []
+        notify_mock.assert_called_once_with(
+            "Already on thread: thread-123", markup=False
         )
+
+    async def test_duplicate_already_on_thread_toast_is_suppressed(self) -> None:
+        """Repeated no-op resumes within the toast lifetime toast only once."""
+        app = DeepAgentsApp()
+        _app_test_double(app)._mount_message = AsyncMock()
+        _app_test_double(app)._offer_thread_cwd_switch = AsyncMock(
+            return_value="continue"
+        )
+        notify_mock = MagicMock()
+        _app_test_double(app).notify = notify_mock
+        app._agent = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.thread_id = "thread-123"
+
+        clock = {"now": 100.0}
+        with patch("deepagents_code.app._monotonic", side_effect=lambda: clock["now"]):
+            await app._resume_thread("thread-123")
+            clock["now"] = 100.0 + app.NOTIFICATION_TIMEOUT / 2
+            await app._resume_thread("thread-123")
+
+        notify_mock.assert_called_once_with(
+            "Already on thread: thread-123", markup=False
+        )
+
+    async def test_expired_already_on_thread_toast_can_reemit(self) -> None:
+        """Once the toast has expired, a later no-op resume toasts again."""
+        app = DeepAgentsApp()
+        _app_test_double(app)._mount_message = AsyncMock()
+        _app_test_double(app)._offer_thread_cwd_switch = AsyncMock(
+            return_value="continue"
+        )
+        notify_mock = MagicMock()
+        _app_test_double(app).notify = notify_mock
+        app._agent = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.thread_id = "thread-123"
+
+        clock = {"now": 100.0}
+        with patch("deepagents_code.app._monotonic", side_effect=lambda: clock["now"]):
+            await app._resume_thread("thread-123")
+            clock["now"] = 100.0 + app.NOTIFICATION_TIMEOUT
+            await app._resume_thread("thread-123")
+
+        assert notify_mock.call_count == 2
 
     async def test_already_on_thread_reports_cwd_switch(
         self,
@@ -3192,6 +3233,8 @@ class TestResumeThread:
             return "continue"
 
         _app_test_double(app)._offer_thread_cwd_switch = offer_cwd_switch
+        notify_mock = MagicMock()
+        _app_test_double(app).notify = notify_mock
         app._agent = MagicMock()
         app._session_state = MagicMock()
         app._session_state.thread_id = "thread-123"
@@ -3200,7 +3243,7 @@ class TestResumeThread:
 
         assert len(mounted) == 1
         assert "Switched to thread directory" in _get_widget_text(mounted[0])
-        assert "Already on thread" not in _get_widget_text(mounted[0])
+        notify_mock.assert_not_called()
 
     async def test_successful_switch_updates_ids(self) -> None:
         """Successful _resume_thread should update thread IDs and load history."""
@@ -3303,6 +3346,15 @@ class TestResumeThread:
         session_state = app._session_state
         assert session_state is not None
         assert session_state.previous_thread_id == "old-thread"
+
+    async def test_successful_switch_rearms_already_on_thread_toast(self) -> None:
+        """Landing on a thread lets a later no-op resume toast again."""
+        app = self._switch_app()
+        app._last_thread_unchanged = ("Already on thread: old-thread", 100.0)
+
+        await app._resume_thread("new-thread")
+
+        assert app._last_thread_unchanged is None
 
     async def test_failure_restores_previous_thread_ids(self) -> None:
         """If _clear_messages raises, thread IDs should be restored."""

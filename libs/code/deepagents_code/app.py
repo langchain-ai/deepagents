@@ -3208,6 +3208,13 @@ class DeepAgentsApp(App):
         they cannot drift out of sync.
         """
 
+        self._last_thread_unchanged: tuple[str, float] | None = None
+        """Most recent same-thread toast, as `(text, monotonic timestamp)`.
+
+        The same-model counterpart of `_last_model_unchanged`, for re-selecting
+        the thread the session is already on.
+        """
+
         self._model_install_switching = False
         """True while a provider extra install-then-switch flow is active."""
 
@@ -22333,12 +22340,9 @@ class DeepAgentsApp(App):
             if cwd_choice == "abort":
                 return
             if await asyncio.to_thread(self._cwd_paths_equal, self._cwd, prev_cwd):
-                thread_msg_widget = AppMessage(f"Already on thread: {thread_id}")
-                await self._mount_message(thread_msg_widget)
-                self._schedule_thread_message_link(
-                    thread_msg_widget,
-                    prefix="Already on thread",
-                    thread_id=thread_id,
+                self._last_thread_unchanged = self._notify_unchanged_once(
+                    f"Already on thread: {thread_id}",
+                    self._last_thread_unchanged,
                 )
             else:
                 await self._mount_message(
@@ -22412,6 +22416,10 @@ class DeepAgentsApp(App):
             # thread". Set only after the last statement that can raise, so a
             # failed switch (handled below) never leaves a stale pointer.
             self._session_state.previous_thread_id = prev_session_thread
+
+            # Landing on a new thread re-arms the same-thread toast, so stepping
+            # back to a thread and re-selecting it announces itself again.
+            self._last_thread_unchanged = None
         except Exception as exc:
             if prefetched_payload is None:
                 logger.exception("Failed to prefetch history for thread %s", thread_id)
@@ -22481,6 +22489,36 @@ class DeepAgentsApp(App):
         if hint:
             body += f" {hint}"
         await self._mount_message(ErrorMessage(body))
+
+    def _notify_unchanged_once(
+        self, message: str, last: tuple[str, float] | None
+    ) -> tuple[str, float] | None:
+        """Toast a no-op notice unless an identical toast is still on-screen.
+
+        Re-selecting the model or thread the session is already on is transient
+        feedback, not part of the conversation, so it surfaces as a toast rather
+        than an inline chat message. Suppression lasts only for the toast
+        lifetime, so a later intentional no-op selection can toast again.
+
+        Args:
+            message: The notice to toast. Interpolated identifiers are rendered
+                literally — markup parsing is always disabled.
+            last: The caller's previous `(text, monotonic timestamp)` record, or
+                `None` when nothing has been toasted yet.
+
+        Returns:
+            The record the caller should store: the new toast's text and
+                timestamp, or `last` unchanged when the toast was suppressed.
+        """
+        now = _monotonic()
+        if (
+            last is not None
+            and last[0] == message
+            and (now - last[1]) < self.NOTIFICATION_TIMEOUT
+        ):
+            return last
+        self.notify(message, markup=False)
+        return (message, now)
 
     async def _switch_model(
         self,
@@ -22631,22 +22669,10 @@ class DeepAgentsApp(App):
                 self._sync_status_model()
                 params_suffix = _format_model_params(extra_kwargs)
                 if announce_unchanged:
-                    message = f"Already using {current}{params_suffix}"
-                    # Suppress only while the previous identical toast is
-                    # presumed still on-screen. Once it expires, a later
-                    # intentional no-op selection must be able to toast again.
-                    now = _monotonic()
-                    last = self._last_model_unchanged
-                    if (
-                        last is None
-                        or last[0] != message
-                        or (now - last[1]) >= self.NOTIFICATION_TIMEOUT
-                    ):
-                        # A no-op re-selection is transient feedback, not part
-                        # of the conversation, so surface it as a toast rather
-                        # than an inline chat message.
-                        self.notify(message, markup=False)
-                        self._last_model_unchanged = (message, now)
+                    self._last_model_unchanged = self._notify_unchanged_once(
+                        f"Already using {current}{params_suffix}",
+                        self._last_model_unchanged,
+                    )
                 logger.info(
                     "Model unchanged (%s); model_params=%s",
                     current,

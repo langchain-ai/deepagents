@@ -54,6 +54,12 @@ _DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _MAX_ATTEMPTS = 5
 _TIMEOUT_SECONDS = 120
 
+# Client errors are deterministic and not worth retrying -- except rate limiting,
+# which is the one 4xx that clears on its own.
+_CLIENT_ERROR_MIN = 400
+_SERVER_ERROR_MIN = 500
+_RATE_LIMITED = 429
+
 # Substituted in a single pass so a value containing a placeholder string cannot
 # cascade into another slot.
 _PLACEHOLDER_RE = re.compile(r"\{(question|response|correct_answer|target|predicted_answer)\}")
@@ -74,16 +80,34 @@ def _temperature(model):
 
 
 class _JudgeHTTPError(RuntimeError):
-    """An HTTP failure from a judge endpoint, carrying its status code.
+    """An HTTP failure from a judge endpoint, carrying triage fields.
 
-    The status is the single most useful triage signal (401 wrong key, 404
-    unknown model, 429 rate limit) and is not sensitive, so it survives into the
-    downloadable status file while the response body does not.
+    The status code (401 wrong key, 404 unknown model, 429 rate limit) and the
+    provider's machine-readable `error.code` / `error.type` are not sensitive, so
+    they survive into the downloadable status file. The free-text `error.message`
+    does not: providers echo request content into it, which for this benchmark
+    means the question.
     """
 
-    def __init__(self, status, detail):
-        super().__init__(f"HTTP {status} from judge: {detail}")
+    def __init__(self, status, body):
+        super().__init__(f"HTTP {status} from judge: {body[:200]}")
         self.status = status
+        self.code, self.type = _error_fields(body)
+
+
+def _error_fields(body):
+    """Pull `error.code` / `error.type` out of a JSON error body, if present."""
+    try:
+        error = (json.loads(body) or {}).get("error") or {}
+    except ValueError:
+        return (None, None)
+    if not isinstance(error, dict):
+        return (None, None)
+    code, kind = error.get("code"), error.get("type")
+    return (
+        code if isinstance(code, (str, int)) else None,
+        kind if isinstance(kind, str) else None,
+    )
 
 
 def _call(base_url, api_key, model, prompt):
@@ -104,8 +128,8 @@ def _call(base_url, api_key, model, prompt):
     except urllib.error.HTTPError as exc:
         # Surface the API's own reason (e.g. an unsupported-temperature 400)
         # rather than a bare status, with anything token-shaped scrubbed first.
-        detail = _SECRET_RE.sub("<redacted>", exc.read().decode("utf-8", "replace")[:200])
-        raise _JudgeHTTPError(exc.code, detail) from exc
+        body = _SECRET_RE.sub("<redacted>", exc.read().decode("utf-8", "replace")[:2000])
+        raise _JudgeHTTPError(exc.code, body) from exc
     return payload["choices"][0]["message"]["content"]
 
 
@@ -117,15 +141,29 @@ def _judge(name, prompt, default_model, default_base_url, fallback_key_var):
     if not api_key:
         return 0, {"model": model, "error": f"no API key (LOHO_JUDGE_{name}_API_KEY)"}
 
-    last_error = ""
-    last_status = None
+    last = {"model": model, "prompt_chars": len(prompt)}
     for _ in range(_MAX_ATTEMPTS):
         try:
             return None, {"model": model, "raw": _call(base_url, api_key, model, prompt)}
-        except Exception as exc:  # noqa: BLE001 - report, retry, then give up
-            last_error = f"{type(exc).__name__}: {exc}"
-            last_status = getattr(exc, "status", None)
-    return 0, {"model": model, "error": last_error, "http_status": last_status}
+        except Exception as exc:  # noqa: BLE001 - report, maybe retry, then give up
+            status = getattr(exc, "status", None)
+            last = {
+                **last,
+                "error": f"{type(exc).__name__}: {exc}",
+                "http_status": status,
+                "error_code": getattr(exc, "code", None),
+                "error_kind": getattr(exc, "type", None),
+            }
+            # A 4xx other than rate limiting is deterministic -- the same request
+            # will fail identically five times. Retrying only delays the failure
+            # and muddies the logs.
+            if (
+                status is not None
+                and _CLIENT_ERROR_MIN <= status < _SERVER_ERROR_MIN
+                and status != _RATE_LIMITED
+            ):
+                break
+    return 0, last
 
 
 def _grade_browsecomp(question, ground_truth, submission):
@@ -179,6 +217,12 @@ def _status_entry(correct, detail):
         "error_type": (detail.get("error") or "").split(":")[0] or None,
         # Not sensitive, and the fastest triage signal: 401 key, 404 model, 429 rate.
         "http_status": detail.get("http_status"),
+        # Machine-readable provider fields, never the free-text message (which
+        # echoes request content). `prompt_chars` distinguishes a length limit
+        # from a content rejection when the status alone is ambiguous.
+        "error_code": detail.get("error_code"),
+        "error_kind": detail.get("error_kind"),
+        "prompt_chars": detail.get("prompt_chars"),
     }
 
 

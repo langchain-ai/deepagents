@@ -179,7 +179,7 @@ The Harbor agent config at `deepagents_harbor/langgraph_project/langgraph.json` 
 
 - Keep `PROVIDER_TO_PACKAGE` in `.github/scripts/evals/prune_agent_deps.py` in sync with every prunable provider package in that file.
 - Wire credentials / agent-env for new providers in the Harbor workflow.
-- Run `python -m pytest .github/scripts/tests/test_prune_agent_deps.py` (also covered by CI's **Validate Release Options** job).
+- Run `python -m pytest .github/scripts/tests/evals/test_prune_agent_deps.py` (also covered by CI's **Validate Release Options** job).
 
 Those tests load the real `langgraph.json` directly; do not reintroduce a hand-copied dependency fixture.
 

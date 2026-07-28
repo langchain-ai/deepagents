@@ -6,7 +6,7 @@ from pathlib import Path
 import yaml
 
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
 AUTOMATION_WORKFLOW = ROOT / ".github/workflows/dcode_release_notes.yml"
 CHECK_WORKFLOW = ROOT / ".github/workflows/dcode_release_notes_check.yml"
 RELEASE_PLEASE_WORKFLOW = ROOT / ".github/workflows/release-please.yml"
@@ -18,8 +18,8 @@ def test_dcode_release_notes_node_tests() -> None:
         [
             "node",
             "--test",
-            ".github/scripts/tests/dcode-release-notes.test.js",
-            ".github/scripts/tests/draft-dcode-release-notes.test.js",
+            ".github/scripts/tests/release/dcode-release-notes.test.js",
+            ".github/scripts/tests/release/draft-dcode-release-notes.test.js",
         ],
         cwd=ROOT,
         check=False,

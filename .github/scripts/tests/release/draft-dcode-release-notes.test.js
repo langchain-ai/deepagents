@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const draft = require('../release/draft-dcode-release-notes.js');
+const draft = require('../../release/draft-dcode-release-notes.js');
 
 function structured(notes) {
   return JSON.stringify({ release_notes_markdown: notes });

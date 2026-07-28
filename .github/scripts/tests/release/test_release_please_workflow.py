@@ -5,7 +5,7 @@ from pathlib import Path
 import yaml
 
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
 WORKFLOW = ROOT / ".github/workflows/release-please.yml"
 
 

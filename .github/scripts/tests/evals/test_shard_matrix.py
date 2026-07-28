@@ -13,7 +13,7 @@ from types import ModuleType
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 SHARD_SCRIPT = REPO_ROOT / ".github" / "scripts" / "evals" / "shard_matrix.py"
 
 

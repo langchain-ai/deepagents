@@ -460,7 +460,7 @@ def test_check_dependency_freshness_warns_without_failing_on_transient_error(
 
 def test_comment_workflow_preserves_existing_report_on_partial_pypi_failure() -> None:
     workflow = (
-        Path(__file__).parents[2] / "workflows/check_dep_freshness.yml"
+        Path(__file__).parents[3] / "workflows/check_dep_freshness.yml"
     ).read_text(encoding="utf-8")
     preserve = "if (indeterminate && existing) {"
     update = "await github.rest.issues.updateComment"

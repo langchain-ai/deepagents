@@ -215,7 +215,7 @@ def test_script_exits_2_on_unsupported_version(tmp_path) -> None:
     scripts.mkdir(parents=True)
     script = scripts / "check_sdk_pin.py"
     shutil.copy(
-        Path(__file__).resolve().parents[1] / "release" / "check_sdk_pin.py",
+        Path(__file__).resolve().parents[2] / "release" / "check_sdk_pin.py",
         script,
     )
     result = subprocess.run(
@@ -239,7 +239,7 @@ def test_workflow_warning_comments_link_pin_release() -> None:
     is not importable from pytest; matching the workflow text is the only
     in-harness option, but these checks tolerate reformatting and renames.
     """
-    workflow = Path(__file__).parents[2] / "workflows" / "check_sdk_pin.yml"
+    workflow = Path(__file__).parents[3] / "workflows" / "check_sdk_pin.yml"
     text = workflow.read_text()
 
     # Release URL targets the `deepagents==<pin>` tag, URL-encoded so `==`
@@ -269,7 +269,7 @@ def test_workflow_warning_comments_link_pin_release() -> None:
 
 def test_workflow_prerelease_warning_requires_release_deps_acknowledgement() -> None:
     """Prerelease pins fail closed until `release-deps: acknowledged` is present."""
-    workflow = Path(__file__).parents[2] / "workflows" / "check_sdk_pin.yml"
+    workflow = Path(__file__).parents[3] / "workflows" / "check_sdk_pin.yml"
     text = workflow.read_text()
 
     assert 'RELEASE_DEPS_BYPASS_LABEL: "release-deps: acknowledged"' in text

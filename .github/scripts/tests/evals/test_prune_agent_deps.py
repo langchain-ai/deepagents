@@ -17,7 +17,7 @@ from types import ModuleType
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 PRUNE_SCRIPT = REPO_ROOT / ".github" / "scripts" / "evals" / "prune_agent_deps.py"
 
 

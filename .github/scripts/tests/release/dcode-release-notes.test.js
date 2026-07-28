@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const releaseNotes = require('../release/dcode-release-notes.js');
+const releaseNotes = require('../../release/dcode-release-notes.js');
 
 const APP_SLUG = 'dcode-release-bot';
 const BOT = { login: `${APP_SLUG}[bot]`, id: 42 };

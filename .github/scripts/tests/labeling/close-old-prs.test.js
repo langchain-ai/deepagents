@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-const { run, closeBody, ageInDays, COMMENT_MARKER } = require('../labeling/close-old-prs.js');
+const { run, closeBody, ageInDays, COMMENT_MARKER } = require('../../labeling/close-old-prs.js');
 
 function httpError(message, status) {
   const error = new Error(message);

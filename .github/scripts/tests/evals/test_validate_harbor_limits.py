@@ -13,7 +13,7 @@ from types import ModuleType
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "evals" / "validate_harbor_limits.py"
 UNIFIED_PREP_SCRIPT = REPO_ROOT / ".github" / "scripts" / "evals" / "unified_prep.py"
 

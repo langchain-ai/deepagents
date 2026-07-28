@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "release.yml"
 PACKAGE_PATH = Path("libs/example")
 VERSION = "1.2.3"

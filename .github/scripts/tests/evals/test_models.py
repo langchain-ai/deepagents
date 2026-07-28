@@ -10,7 +10,7 @@ from types import ModuleType
 import pytest
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 MODELS_SCRIPT = REPO_ROOT / ".github" / "scripts" / "evals" / "models.py"
 EVALS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "evals.yml"
 HARBOR_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "harbor.yml"

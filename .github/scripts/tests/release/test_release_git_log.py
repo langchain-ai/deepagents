@@ -9,7 +9,7 @@ from typing import NamedTuple
 import pytest
 import yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[4]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "release.yml"
 PACKAGE_PATH = Path("libs/example")
 REPOSITORY = "langchain-ai/deepagents"

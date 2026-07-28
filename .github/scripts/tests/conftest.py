@@ -5,7 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Production helpers live under domain folders beside this `tests/` package.
+# Production helpers live under domain folders beside this `tests/` tree.
+# Nested test packages mirror those domains under tests/<domain>/.
 _SCRIPTS_DIR = Path(__file__).resolve().parents[1]
 _DOMAIN_DIRS = (
     _SCRIPTS_DIR / "checks",

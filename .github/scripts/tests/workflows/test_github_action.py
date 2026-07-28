@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
 ACTION_PATH = ROOT / "action.yml"
 MAIN_PATH = ROOT / "libs" / "code" / "deepagents_code" / "main.py"
 

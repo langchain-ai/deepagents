@@ -9,7 +9,7 @@ import textwrap
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
 UNIFIED_WORKFLOW = ROOT / ".github/workflows/unified_evals.yml"
 HARBOR_WORKFLOW = ROOT / ".github/workflows/_harbor_run.yml"
 HARBOR_DISPATCH_WORKFLOW = ROOT / ".github/workflows/harbor.yml"

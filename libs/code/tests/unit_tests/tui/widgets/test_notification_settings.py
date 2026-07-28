@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from textual.app import App
 from textual.widgets import Checkbox, Static
 
+from deepagents_code.approval_mode import YOLO_WARNING_KEY
+from deepagents_code.model_config import is_warning_suppressed, suppress_warning
 from deepagents_code.tui.widgets.notification_settings import (
+    WARNING_TOGGLES,
     NotificationSettingsScreen,
 )
 
@@ -65,3 +70,71 @@ async def test_help_footer_documents_both_toggle_keys() -> None:
 
         assert "Space/Enter toggle" in help_text
         assert "Esc close" in help_text
+
+
+async def test_yolo_warning_is_toggleable() -> None:
+    """Toggling the YOLO row round-trips the suppression key in `config.toml`.
+
+    The re-check direction matters as much as the mute: a user who silences
+    the toast needs a working way to get it back.
+    """
+    assert any(key == YOLO_WARNING_KEY for key, _ in WARNING_TOGGLES)
+
+    app = _NotificationSettingsHost()
+    async with app.run_test() as pilot:
+        await app.push_screen(NotificationSettingsScreen(suppressed=set()))
+        await pilot.pause()
+
+        checkbox = app.screen.query_one(f"#ns-{YOLO_WARNING_KEY}", Checkbox)
+        assert checkbox.value is True
+        checkbox.value = False
+        await pilot.pause()
+        await pilot.pause()
+
+        assert is_warning_suppressed(YOLO_WARNING_KEY) is True
+
+        checkbox.value = True
+        await pilot.pause()
+        await pilot.pause()
+
+        assert is_warning_suppressed(YOLO_WARNING_KEY) is False
+
+
+async def test_suppressed_key_renders_unchecked() -> None:
+    """A key already in `[warnings].suppress` renders its row unchecked."""
+    app = _NotificationSettingsHost()
+    async with app.run_test() as pilot:
+        await app.push_screen(NotificationSettingsScreen(suppressed={YOLO_WARNING_KEY}))
+        await pilot.pause()
+
+        checkbox = app.screen.query_one(f"#ns-{YOLO_WARNING_KEY}", Checkbox)
+        assert checkbox.value is False
+
+
+async def test_failed_unsuppress_reverts_the_checkbox() -> None:
+    """A failed write must not leave the box claiming the warning is armed.
+
+    Showing checked while the key is still suppressed is the unsafe direction
+    to diverge in: the user believes they re-enabled a safety warning that
+    will never fire.
+    """
+    assert suppress_warning(YOLO_WARNING_KEY) is True
+
+    app = _NotificationSettingsHost()
+    async with app.run_test() as pilot:
+        await app.push_screen(NotificationSettingsScreen(suppressed={YOLO_WARNING_KEY}))
+        await pilot.pause()
+
+        checkbox = app.screen.query_one(f"#ns-{YOLO_WARNING_KEY}", Checkbox)
+        assert checkbox.value is False
+
+        with patch(
+            "deepagents_code.model_config.unsuppress_warning",
+            return_value=False,
+        ):
+            checkbox.value = True
+            await pilot.pause()
+            await pilot.pause()
+
+        assert checkbox.value is False
+        assert is_warning_suppressed(YOLO_WARNING_KEY) is True

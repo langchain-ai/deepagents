@@ -8,12 +8,15 @@ import os
 import tempfile
 import threading
 from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from filelock import FileLock, Timeout
 from pydantic import BaseModel, ConfigDict, ValidationError
+
+from deepagents_code.project_utils import ProjectContext
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -22,8 +25,13 @@ logger = logging.getLogger(__name__)
 
 _STORE_VERSION: Literal[1] = 1
 _TRUST_STORE_LOCK_TIMEOUT_SECONDS = 5.0
-_TRUST_STORE_THREAD_LOCKS_GUARD = threading.Lock()
-_TRUST_STORE_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_TRUST_STORE_THREAD_LOCK = threading.Lock()
+"""Process-local guard for trust-store mutations.
+
+A single lock is sufficient: one store backs the process, and the alternate
+paths tests pass only ever serialize against each other harmlessly. Contention
+across distinct stores is not worth per-path lock bookkeeping.
+"""
 
 
 class HooksTrustEntry(BaseModel):
@@ -61,31 +69,13 @@ def _trust_store_lock_path(path: Path) -> Path:
     return path.with_name(f"{path.name}.lock")
 
 
-def _trust_store_thread_lock(path: Path) -> threading.Lock:
-    """Return the process-local mutation lock for a trust-store path.
-
-    Args:
-        path: Path to `hooks_trust.json`.
-
-    Returns:
-        Process-lifetime lock keyed by the normalized path string.
-    """
-    key = str(path)
-    with _TRUST_STORE_THREAD_LOCKS_GUARD:
-        lock = _TRUST_STORE_THREAD_LOCKS.get(key)
-        if lock is None:
-            lock = threading.Lock()
-            _TRUST_STORE_THREAD_LOCKS[key] = lock
-        return lock
-
-
 @contextmanager
 def _trust_store_lock(path: Path) -> Iterator[None]:
     """Serialize read-merge-write updates to the hooks trust store.
 
-    Combines a process-local threading lock with a cross-process `FileLock` on a
-    sibling `.lock` file so concurrent `dcode` processes cannot drop each
-    other's workspace entries.
+    Combines a single process-local threading lock with a cross-process
+    `FileLock` on a sibling `.lock` file so concurrent `dcode` processes cannot
+    drop each other's workspace entries.
 
     Args:
         path: Path to `hooks_trust.json`.
@@ -104,7 +94,7 @@ def _trust_store_lock(path: Path) -> Iterator[None]:
         timeout=_TRUST_STORE_LOCK_TIMEOUT_SECONDS,
         thread_local=False,
     )
-    with _trust_store_thread_lock(path), file_lock:
+    with _TRUST_STORE_THREAD_LOCK, file_lock:
         yield
 
 
@@ -329,3 +319,106 @@ def trust_project_hooks(
         logger.exception("Could not save hooks trust store %s", path)
         return False
     return True
+
+
+def project_root_for(cwd: Path | str) -> Path:
+    """Resolve the workspace root that governs hook trust for a directory.
+
+    Args:
+        cwd: Session working directory.
+
+    Returns:
+        The enclosing project root, or the directory itself when it is not
+        inside a project.
+    """
+    context = ProjectContext.from_user_cwd(Path(cwd))
+    return context.project_root or context.user_cwd
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceTrust:
+    """Decides whether project-scoped hooks may run in a given directory.
+
+    Trust is a property of the workspace, not of the session, so it must be
+    re-resolved every time the working directory moves. A session that starts in
+    a trusted project and later moves into an untrusted one must not carry the
+    original grant forward.
+
+    Callers hand this policy to `HooksManager`, which resolves it on load and on
+    every reload; nothing upstream needs to hold or reinterpret the decision.
+    """
+
+    session_grants: frozenset[str] = frozenset()
+    """Canonical workspace roots trusted for this session only.
+
+    Populated from an explicit CLI grant or an in-session `allow once` choice,
+    neither of which is persisted to the trust store.
+    """
+
+    store_path: Path | None = None
+    """Alternate trust store path for tests."""
+
+    @classmethod
+    def none(cls) -> WorkspaceTrust:
+        """Return a policy that trusts no workspace.
+
+        Returns:
+            A policy that consults only the persisted trust store.
+        """
+        return cls()
+
+    @classmethod
+    def for_session(
+        cls,
+        cwd: Path | str,
+        *,
+        granted: bool,
+        store_path: Path | None = None,
+    ) -> WorkspaceTrust:
+        """Build a policy from a launch-time trust decision.
+
+        Args:
+            cwd: Directory the trust decision was made for.
+            granted: Whether the user trusted project hooks for this session
+                without persisting that choice.
+            store_path: Alternate trust store path for tests.
+
+        Returns:
+            A policy that grants `cwd`'s workspace root for this session and
+            defers to the persisted store everywhere else.
+        """
+        grants: frozenset[str] = frozenset()
+        if granted:
+            try:
+                grants = frozenset({_project_key(project_root_for(cwd))})
+            except (OSError, ValueError):
+                logger.warning(
+                    "Could not resolve workspace root for session hook trust",
+                    exc_info=True,
+                )
+        return cls(session_grants=grants, store_path=store_path)
+
+    def allows(self, cwd: Path | str) -> bool:
+        """Return whether project hooks may run for a working directory.
+
+        Args:
+            cwd: Directory to resolve trust for.
+
+        Returns:
+            `True` when the enclosing workspace root was granted for this
+            session or is recorded in the trust store. Unresolvable directories
+            fail closed.
+        """
+        try:
+            root = project_root_for(cwd)
+        except (OSError, ValueError):
+            logger.warning(
+                "Could not resolve workspace root for %s; treating project "
+                "hooks as untrusted",
+                cwd,
+                exc_info=True,
+            )
+            return False
+        if _project_key(root) in self.session_grants:
+            return True
+        return is_project_hooks_trusted(root, store_path=self.store_path)

@@ -54,6 +54,13 @@ class HooksRuntime:
     engine: HookEngine
     cwd: Path
     workspace_trusted: bool
+    """Trust decision resolved for `cwd` when this runtime was frozen.
+
+    Scoped to `cwd` by construction: a runtime is never reused across working
+    directories, so `HooksManager` discards it and re-resolves trust whenever the
+    session moves.
+    """
+
     project_hooks_loaded: bool
     fulfillments: HookFulfillmentLedger
 
@@ -70,7 +77,9 @@ class HooksRuntime:
 
         Args:
             cwd: Session working directory.
-            workspace_trusted: Whether project-scoped hooks may be loaded.
+            workspace_trusted: Whether project-scoped hooks may be loaded for
+                `cwd`, already resolved by the caller from `WorkspaceTrust`. The
+                runtime treats it as fixed for its lifetime.
             config_dir: Alternate user config directory for tests.
             transcript_root: Alternate transcript store root for tests.
                 Defaults to `~/.deepagents/transcripts` regardless of

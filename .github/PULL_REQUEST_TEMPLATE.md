@@ -1,4 +1,4 @@
-<!-- Optional: Replace this comment with `Fixes #` / `Closes#` / or `Resolves #` with the issue number to auto-close the issue when this PR is merged. If applicable, add separate `Depends on #` or `Related: #` lines. -->
+<!-- Optional: Replace this comment with `Fixes #` / `Closes #` / or `Resolves #` with the issue number to auto-close the issue when this PR is merged. If applicable, add separate `Depends on #` or `Related: #` lines. -->
 
 <!-- For a net new feature or behavior-changing bugfix: replace this comment with one plain-English sentence on the user-visible change. Usually not needed for chores/refactors/test-only PRs. -->
 

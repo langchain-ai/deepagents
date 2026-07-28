@@ -61,7 +61,7 @@ jobs:
           from pathlib import Path
 
           root = Path.cwd()
-          script = root / ".github" / "scripts" / "check_sdk_pin.py"
+          script = root / ".github" / "scripts" / "release" / "check_sdk_pin.py"
           spec = importlib.util.spec_from_file_location("check_sdk_pin", script)
           if spec is None or spec.loader is None:
               print(f"::error::Could not load {script}", file=sys.stderr)
@@ -76,7 +76,7 @@ jobs:
               prerelease = module.is_prerelease(pkg_pin)
           except ValueError as e:
               print(
-                  "::error file=.github/scripts/check_sdk_pin.py::"
+                  "::error file=.github/scripts/release/check_sdk_pin.py::"
                   f"Could not determine SDK pin status: {e}",
                   file=sys.stderr,
               )

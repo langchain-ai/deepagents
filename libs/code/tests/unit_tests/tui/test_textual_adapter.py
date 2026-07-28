@@ -51,6 +51,7 @@ from deepagents_code.tui.textual_adapter import (
 )
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
+    DiffMessage,
     RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -2333,6 +2334,70 @@ class TestExecuteTaskTextualAutoModeClassifier:
         assert sum(isinstance(w, SummarizationMessage) for w in mounted) == 1
         assert "Offloading" in statuses
         assert statuses[-1] == "Thinking"
+
+
+class TestExecuteTaskTextualFileOpDiffs:
+    """Every successful edit mounts a diff, even when nothing changed."""
+
+    async def test_noop_edit_still_mounts_a_diff_message(self, tmp_path: Path) -> None:
+        """An edit whose replacement matches the original leaves a trace.
+
+        The edit backend accepts an `old_string` identical to `new_string` and
+        reports success, so the file is unchanged and the tracker computes no
+        diff. The tool row hides itself on success, so a diff message must still
+        mount or the call would vanish from the transcript entirely.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        chunks = [
+            (
+                (),
+                "messages",
+                (
+                    _tool_call_message(
+                        "edit_file",
+                        {
+                            "file_path": str(target),
+                            "old_string": "value = 1",
+                            "new_string": "value = 1",
+                        },
+                        "tool-1",
+                    ),
+                    {},
+                ),
+            ),
+            (
+                (),
+                "messages",
+                (ToolMessage(content="Updated file", tool_call_id="tool-1"), {}),
+            ),
+        ]
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="edit the file",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            adapter=adapter,
+        )
+
+        diffs = [m for m in mounted if isinstance(m, DiffMessage)]
+        assert len(diffs) == 1
+        assert diffs[0]._diff_content == ""
+        assert diffs[0]._tool_name == "edit_file"
 
 
 class TestExecuteTaskTextualToolCallStreaming:

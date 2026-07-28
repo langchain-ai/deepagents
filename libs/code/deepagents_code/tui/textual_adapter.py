@@ -78,6 +78,7 @@ from deepagents_code.input import MediaTracker, parse_file_mentions
 from deepagents_code.media_utils import create_multimodal_content
 from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.tui.widgets.messages import (
+    TOOLS_SUPERSEDED_BY_DIFF,
     AppMessage,
     AssistantMessage,
     DiffMessage,
@@ -1489,10 +1490,18 @@ async def execute_task_textual(
                                     assistant_message_by_namespace,
                                 )
                                 pending_text_by_namespace[ns_key] = ""
-                            if record.diff:
+                            # Mount a diff whenever there is one, and also for a
+                            # successful call whose tool row hides itself — a
+                            # no-op edit produces no diff, and without this the
+                            # call would leave no trace at all. `DiffMessage`
+                            # renders an empty diff as a "no changes" header.
+                            if record.diff or (
+                                record.tool_name in TOOLS_SUPERSEDED_BY_DIFF
+                                and record.status == "success"
+                            ):
                                 await adapter._mount_message(
                                     DiffMessage(
-                                        record.diff,
+                                        record.diff or "",
                                         record.display_path,
                                         tool_name=record.tool_name,
                                     )

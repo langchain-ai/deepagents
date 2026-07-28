@@ -729,6 +729,31 @@ class TestDiffMessageCredentialRedaction:
         assert any("print('b')" in text for text in texts)
 
 
+class TestDiffMessageNoChanges:
+    """An edit that changed nothing still has to leave a trace."""
+
+    @staticmethod
+    def _texts(widget: DiffMessage) -> list[str]:
+        texts: list[str] = []
+        for child in widget.compose():
+            rendered = child.render()
+            texts.append(
+                rendered.plain if isinstance(rendered, Content) else str(rendered)
+            )
+        return texts
+
+    def test_empty_diff_renders_single_no_changes_row(self) -> None:
+        """The header reports the no-op; no empty diff body follows it."""
+        texts = self._texts(DiffMessage("", "main.py", tool_name="edit_file"))
+        assert texts == ["Edited main.py  no changes"]
+
+    def test_empty_diff_for_credential_file_stays_redacted(self) -> None:
+        """Credential files report neither counts nor a no-op."""
+        texts = self._texts(DiffMessage("", ".env", tool_name="edit_file"))
+        assert all("no changes" not in text for text in texts)
+        assert any("may contain credentials" in text for text in texts)
+
+
 class TestToolCallMessageDuration:
     """Tests for the post-run duration shown on long-running tool calls."""
 

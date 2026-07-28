@@ -170,6 +170,14 @@ _DIFF_VERBS: dict[str, str] = {
 }
 
 
+# Tools whose successful row is hidden because the `DiffMessage` mounted for the
+# same call says everything the row would. This is a two-sided contract: the
+# streaming layer must mount a diff for *every* successful call to these tools —
+# including no-op edits that produce an empty diff — or the call would vanish
+# from the transcript entirely. See `_show_success_status` and `textual_adapter`.
+TOOLS_SUPERSEDED_BY_DIFF: frozenset[str] = frozenset({"edit_file"})
+
+
 # Long-running tools whose completed status row reports how long they ran
 # ("Took <duration>") when a run was timed, instead of being hidden. `execute`
 # shells and `task` subagent dispatches can both run for a while, so the elapsed
@@ -1835,7 +1843,7 @@ class ToolCallMessage(Vertical):
         if self._status_widget is None:
             return
         self._status_widget.remove_class("pending")
-        if self._tool_name == "edit_file":
+        if self._tool_name in TOOLS_SUPERSEDED_BY_DIFF:
             # The `DiffMessage` mounted alongside this call already conveys the
             # outcome, so hide the row entirely. Errors and rejections re-show it
             # via `set_error`/`set_rejected`.
@@ -3877,26 +3885,34 @@ class DiffMessage(Static):
         Yields:
             Widgets displaying the diff header and formatted content.
         """
+        # Credential files reveal nothing here, not even how much changed.
+        redacted = is_sensitive_file_path(self._file_path)
+        additions, deletions = (
+            (0, 0) if redacted else count_diff_changes(self._diff_content)
+        )
+
         parts: list[str | tuple[str, str] | Content] = []
         if verb := _DIFF_VERBS.get(self._tool_name or ""):
             parts.append((f"{verb} ", "bold"))
         parts.append(Content.from_markup("[dim]$path[/dim]", path=self._file_path))
-        # Credential files reveal nothing here, not even how much changed.
-        if not is_sensitive_file_path(self._file_path):
-            stats = diff_stats_content(*count_diff_changes(self._diff_content))
-            if stats.plain:
-                parts.extend(("  ", stats))
+        if additions or deletions:
+            parts.extend(("  ", diff_stats_content(additions, deletions)))
+        elif not redacted:
+            # A call that succeeded without changing anything still needs a trace:
+            # the tool row is hidden for these tools, so this line is the only
+            # evidence the edit ran. An empty diff body would say nothing.
+            parts.append(("  no changes", "dim"))
         header = Content.assemble(*parts)
         if header.plain:
             yield Static(header, classes="diff-header")
 
         # Never render the contents of credential files (e.g. `.env`) — the diff
         # would leak secrets into the terminal UI and scrollback.
-        if is_sensitive_file_path(self._file_path):
+        if redacted:
             yield Static(
                 Content.styled("Diff hidden — file may contain credentials", "dim")
             )
-        else:
+        elif additions or deletions:
             # Render the diff with per-line Statics (CSS-driven backgrounds)
             yield from compose_diff_lines(self._diff_content, max_lines=100)
 

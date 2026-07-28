@@ -672,7 +672,9 @@ jobs:
           from harbor.registry.client.package import PackageDatasetClient
 
           # shard_matrix.py is pure stdlib; import it from the checkout (repo root).
-          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts"))
+          sys.path.insert(
+              0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts", "evals")
+          )
           from shard_matrix import select_shard_tasks, task_display_name
 
           ds = os.environ["HARBOR_DATASET"]

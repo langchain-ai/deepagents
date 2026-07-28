@@ -126,7 +126,7 @@ jobs:
           # a single source of truth for category -> dataset and a version
           # bump there can't silently drift out of sync with enumeration.
           sys.path.insert(
-              0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts")
+              0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts", "evals")
           )
           from unified_prep import CATEGORY_MAP
 
@@ -141,7 +141,7 @@ jobs:
               sys.exit("::error::No categories selected to enumerate for the full profile")
 
           enumerate_script = os.path.join(
-              os.environ["GITHUB_WORKSPACE"], ".github", "scripts", "enumerate_tasks.py"
+              os.environ["GITHUB_WORKSPACE"], ".github", "scripts", "evals", "enumerate_tasks.py"
           )
           tasks_by_cat: dict[str, list[str]] = {}
           for category in categories:

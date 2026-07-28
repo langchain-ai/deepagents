@@ -114,7 +114,7 @@ class NotificationSettingsScreen(ModalScreen[None]):
                 )
             help_text = (
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab navigate"
-                f" {glyphs.bullet} Space toggle"
+                f" {glyphs.bullet} Space/Enter toggle"
                 f" {glyphs.bullet} Esc close"
             )
             yield Static(help_text, classes="ns-help")

@@ -252,3 +252,49 @@ def test_render_grader_substitutes_without_cascading() -> None:
 
 def test_render_grader_leaves_unknown_braces_alone() -> None:
     assert adapter.render_grader("{not_a_field} {question}", question="q") == ("{not_a_field} q")
+
+
+def _judge_module():
+    """Load the in-sandbox judge script, which is a template rather than a module."""
+    import importlib.util
+
+    from harbor_adapters.lohosearch import adapter as _adapter
+
+    path = _adapter.templates_dir() / "judge.py"
+    spec = importlib.util.spec_from_file_location("loho_judge", path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_judge_error_message_is_emitted_when_it_names_a_cause() -> None:
+    """A provider's template message is the whole point of the diagnostic."""
+    judge = _judge_module()
+    prompt = "Identify the horse that won a recurring sporting event in the early 1960s."
+
+    message = judge.safe_message(
+        "This endpoint's maximum context length is 32768 tokens.", prompt
+    )
+
+    assert message == "This endpoint's maximum context length is 32768 tokens."
+
+
+def test_judge_error_message_is_withheld_when_it_echoes_the_question() -> None:
+    """Some providers quote the offending input back; here that is the benchmark."""
+    judge = _judge_module()
+    prompt = "Identify the horse that won a recurring sporting event in the early 1960s."
+
+    message = judge.safe_message(f"Invalid input: {prompt[:60]}", prompt)
+
+    assert message == "<withheld: echoes request content>"
+    assert "Identify the horse" not in message
+
+
+def test_judge_retries_transient_statuses_but_not_configuration_errors() -> None:
+    """A 400 from OpenRouter can be a transient upstream failure; a 404 cannot."""
+    judge = _judge_module()
+
+    assert 400 not in judge._NON_RETRYABLE_STATUSES
+    assert 429 not in judge._NON_RETRYABLE_STATUSES
+    assert {401, 403, 404, 422} <= judge._NON_RETRYABLE_STATUSES

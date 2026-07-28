@@ -96,22 +96,56 @@ class _JudgeHTTPError(RuntimeError):
     def __init__(self, status, body):
         super().__init__(f"HTTP {status} from judge: {body[:200]}")
         self.status = status
-        self.code, self.type = _error_fields(body)
+        self.code, self.type, self.message = _error_fields(body)
 
 
 def _error_fields(body):
-    """Pull `error.code` / `error.type` out of a JSON error body, if present."""
+    """Pull `error.code` / `error.type` / `error.message` from a JSON error body."""
     try:
         error = (json.loads(body) or {}).get("error") or {}
     except ValueError:
-        return (None, None)
+        return (None, None, None)
     if not isinstance(error, dict):
-        return (None, None)
-    code, kind = error.get("code"), error.get("type")
+        return (None, None, None)
+    code, kind, message = error.get("code"), error.get("type"), error.get("message")
     return (
         code if isinstance(code, (str, int)) else None,
         kind if isinstance(kind, str) else None,
+        message if isinstance(message, str) else None,
     )
+
+
+# Longest run of prompt text allowed to appear in a message before it is withheld.
+# Short enough that an echoed phrase trips it, long enough that shared boilerplate
+# ("Question:", "the model") does not.
+_ECHO_WINDOW = 24
+
+
+def safe_message(message, prompt):
+    """Return a provider error message only if it does not echo the request.
+
+    Most 400s carry a template message ("maximum context length is N tokens")
+    that names the cause and nothing else, and that is exactly what is needed to
+    diagnose a judge failure. Some providers instead quote the offending input
+    back, which for this benchmark is the decrypted question. Rather than choose
+    between a useless diagnostic and a leak, the message is emitted only when no
+    window of the prompt appears in it.
+
+    Args:
+        message: The provider's free-text error message, or None.
+        prompt: The request text that must not be echoed.
+
+    Returns:
+        The message, a withheld marker, or None when there was no message.
+    """
+    if not message:
+        return None
+    haystack = message.casefold()
+    prompt_cf = prompt.casefold()
+    for start in range(0, max(len(prompt_cf) - _ECHO_WINDOW, 0) + 1, _ECHO_WINDOW // 2):
+        if prompt_cf[start : start + _ECHO_WINDOW] in haystack:
+            return "<withheld: echoes request content>"
+    return message[:300]
 
 
 def _call(base_url, api_key, model, prompt):
@@ -148,7 +182,8 @@ def _judge(name, prompt, default_model, default_base_url, fallback_key_var):
     last = {"model": model, "prompt_chars": len(prompt)}
     for attempt in range(_MAX_ATTEMPTS):
         try:
-            return None, {"model": model, "raw": _call(base_url, api_key, model, prompt)}
+            raw = _call(base_url, api_key, model, prompt)
+            return None, {"model": model, "raw": raw, "prompt_chars": len(prompt)}
         except Exception as exc:  # noqa: BLE001 - report, maybe retry, then give up
             status = getattr(exc, "status", None)
             last = {
@@ -157,6 +192,7 @@ def _judge(name, prompt, default_model, default_base_url, fallback_key_var):
                 "http_status": status,
                 "error_code": getattr(exc, "code", None),
                 "error_kind": getattr(exc, "type", None),
+                "error_message": safe_message(getattr(exc, "message", None), prompt),
                 "attempts": attempt + 1,
             }
             if status in _NON_RETRYABLE_STATUSES:
@@ -225,6 +261,7 @@ def _status_entry(correct, detail):
         "error_code": detail.get("error_code"),
         "error_kind": detail.get("error_kind"),
         "prompt_chars": detail.get("prompt_chars"),
+        "error_message": detail.get("error_message"),
         "attempts": detail.get("attempts"),
     }
 

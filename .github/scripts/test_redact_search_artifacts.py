@@ -136,3 +136,27 @@ def test_empty_shard_markers_survive(tmp_path: Path) -> None:
 
 def test_missing_root_is_a_no_op(tmp_path: Path) -> None:
     assert rsa.redact(tmp_path / "nope") == (0, 0)
+
+
+def test_judge_status_survives_but_judges_rationales_do_not(tmp_path: Path) -> None:
+    """The one verifier file kept: it cannot contain task content by construction."""
+    root = tmp_path / "job"
+    trial = root / "job1" / "loho-01__abc"
+    (trial / "logs" / "verifier").mkdir(parents=True)
+    status = {
+        "reward": 0.0,
+        "graded": True,
+        "browsecomp": {"model": "gpt-4.1", "called": True, "verdict": "no", "correct": 0},
+        "simpleqa": {"model": "qwen", "called": True, "verdict": "B", "correct": 0},
+    }
+    (trial / "logs" / "verifier" / "judge_status.json").write_text(json.dumps(status))
+    (trial / "logs" / "verifier" / "judges.json").write_text(
+        json.dumps({"rationale": _SECRET})
+    )
+
+    rsa.redact(root)
+
+    kept = trial / "logs" / "verifier" / "judge_status.json"
+    assert kept.is_file()
+    assert json.loads(kept.read_text()) == status
+    assert not (trial / "logs" / "verifier" / "judges.json").exists()

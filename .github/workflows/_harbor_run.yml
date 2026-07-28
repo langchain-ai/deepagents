@@ -924,6 +924,18 @@ jobs:
             agent_env_args+=(--agent-env 'TAVILY_API_KEY=${TAVILY_API_KEY}')
           fi
 
+          # Verifier logs are not downloaded by default, so nothing from the
+          # dual judge reaches the job dir and a 0.0 is indistinguishable from a
+          # judge that errored and fell back to 0. Pull exactly one file:
+          # judge_status.json is plaintext-free by construction (model, whether
+          # the call succeeded, verdict token) and is allowlisted through
+          # redaction. judges.json, which holds rationales quoting the answer,
+          # deliberately stays in the sandbox.
+          verifier_logs_args=()
+          if [ "$HARBOR_CATEGORY" = "search" ]; then
+            verifier_logs_args=(--verifier-include-logs judge_status.json)
+          fi
+
           echo "LangSmith plugin experiment: $HARBOR_LANGSMITH_EXPERIMENT"
           echo "Agent implementation: $HARBOR_AGENT_GRAPH"
           echo ""
@@ -948,6 +960,7 @@ jobs:
             "${include_args[@]}" \
             "${agent_env_args[@]}" \
             "${verifier_env_args[@]}" \
+            "${verifier_logs_args[@]}" \
             --jobs-dir harbor-jobs/terminal-bench \
             $env_flag \
             --model "$HARBOR_MODEL" \

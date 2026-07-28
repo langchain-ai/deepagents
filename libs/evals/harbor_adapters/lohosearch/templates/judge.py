@@ -28,7 +28,14 @@ from pathlib import Path
 _CASE_PATH = Path("/tests/case.json")
 _SUBMISSION_PATH = Path("/app/answer.txt")
 _REWARD_PATH = Path("/logs/verifier/reward.txt")
+# Rich detail, including judge rationales. Rationales quote the answer, so this
+# file stays in the sandbox and is never downloaded into an artifact.
 _JUDGES_PATH = Path("/logs/verifier/judges.json")
+# Plaintext-free by construction: model, whether the call succeeded, and the
+# verdict token. Nothing derived from the question, answer, or submission. This
+# is the one verifier file the workflow downloads, so a 0.0 can be told apart
+# from a judge that errored and fell back to 0.
+_STATUS_PATH = Path("/logs/verifier/judge_status.json")
 
 _BROWSECOMP_PROMPT_PATH = Path("/tests/browsecomp_grader.txt")
 _SIMPLEQA_PROMPT_PATH = Path("/tests/simpleqa_grader.txt")
@@ -139,6 +146,22 @@ def _grade_simpleqa(question, ground_truth, submission):
     return int(grade == "A"), {"model": detail["model"], "verdict": grade}
 
 
+def _status_entry(correct, detail):
+    """Reduce a judge result to fields that cannot contain task content."""
+    return {
+        "model": detail.get("model"),
+        "called": "error" not in detail,
+        "verdict": detail.get("verdict"),
+        "correct": correct,
+        # Class name only -- an exception message can echo the prompt.
+        "error_type": (detail.get("error") or "").split(":")[0] or None,
+    }
+
+
+def _write_status(payload):
+    _STATUS_PATH.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+
 def main():
     _REWARD_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -146,6 +169,7 @@ def main():
         print("no /app/answer.txt; scoring 0.0")
         _REWARD_PATH.write_text("0.0\n", encoding="utf-8")
         _JUDGES_PATH.write_text(json.dumps({"error": "no submission"}) + "\n", encoding="utf-8")
+        _write_status({"reward": 0.0, "graded": False, "reason": "no submission"})
         return
 
     case = json.loads(_CASE_PATH.read_text(encoding="utf-8"))
@@ -169,6 +193,14 @@ def main():
         )
         + "\n",
         encoding="utf-8",
+    )
+    _write_status(
+        {
+            "reward": reward,
+            "graded": True,
+            "browsecomp": _status_entry(browsecomp, browsecomp_detail),
+            "simpleqa": _status_entry(simpleqa, simpleqa_detail),
+        }
     )
     print(f"reward={reward} browsecomp={browsecomp} simpleqa={simpleqa}")
 

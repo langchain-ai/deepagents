@@ -36,6 +36,14 @@ from typing import Any
 # missing one. Names only, no content.
 _EMPTY_SHARD_PREFIX = "empty-shard-"
 
+# The judge's plaintext-free status file: model, whether each judge call
+# succeeded, and the verdict token. It exists so a 0.0 reward can be told apart
+# from a judge that errored and fell back to 0 -- without it, the two are
+# indistinguishable once the rest of the verifier output is stripped. Its
+# sibling judges.json holds rationales that quote the answer and is never
+# downloaded, so it never reaches this tree.
+_JUDGE_STATUS = "judge_status.json"
+
 
 def safe_record(result: dict[str, Any]) -> dict[str, Any]:
     """Rebuild one trial record from the fields the aggregator reads.
@@ -92,7 +100,7 @@ def redact(root: Path) -> tuple[int, int]:
     for path in sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True):
         if path.is_dir():
             continue
-        if path.name.startswith(_EMPTY_SHARD_PREFIX):
+        if path.name.startswith(_EMPTY_SHARD_PREFIX) or path.name == _JUDGE_STATUS:
             continue
         if path.name == "result.json":
             try:

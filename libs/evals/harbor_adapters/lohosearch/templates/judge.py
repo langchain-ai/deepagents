@@ -65,6 +65,19 @@ def _temperature(model):
     return 0.0
 
 
+class _JudgeHTTPError(RuntimeError):
+    """An HTTP failure from a judge endpoint, carrying its status code.
+
+    The status is the single most useful triage signal (401 wrong key, 404
+    unknown model, 429 rate limit) and is not sensitive, so it survives into the
+    downloadable status file while the response body does not.
+    """
+
+    def __init__(self, status, detail):
+        super().__init__(f"HTTP {status} from judge: {detail}")
+        self.status = status
+
+
 def _call(base_url, api_key, model, prompt):
     body = {
         "model": model,
@@ -84,8 +97,7 @@ def _call(base_url, api_key, model, prompt):
         # Surface the API's own reason (e.g. an unsupported-temperature 400)
         # rather than a bare status, with anything token-shaped scrubbed first.
         detail = _SECRET_RE.sub("<redacted>", exc.read().decode("utf-8", "replace")[:200])
-        msg = f"HTTP {exc.code} from judge: {detail}"
-        raise RuntimeError(msg) from exc
+        raise _JudgeHTTPError(exc.code, detail) from exc
     return payload["choices"][0]["message"]["content"]
 
 
@@ -98,12 +110,14 @@ def _judge(name, prompt, default_model, default_base_url, fallback_key_var):
         return 0, {"model": model, "error": f"no API key (LOHO_JUDGE_{name}_API_KEY)"}
 
     last_error = ""
+    last_status = None
     for _ in range(_MAX_ATTEMPTS):
         try:
             return None, {"model": model, "raw": _call(base_url, api_key, model, prompt)}
-        except Exception as exc:  # noqa: BLE001 - report, retry, then fail closed
+        except Exception as exc:  # noqa: BLE001 - report, retry, then give up
             last_error = f"{type(exc).__name__}: {exc}"
-    return 0, {"model": model, "error": last_error}
+            last_status = getattr(exc, "status", None)
+    return 0, {"model": model, "error": last_error, "http_status": last_status}
 
 
 def _grade_browsecomp(question, ground_truth, submission):
@@ -155,6 +169,8 @@ def _status_entry(correct, detail):
         "correct": correct,
         # Class name only -- an exception message can echo the prompt.
         "error_type": (detail.get("error") or "").split(":")[0] or None,
+        # Not sensitive, and the fastest triage signal: 401 key, 404 model, 429 rate.
+        "http_status": detail.get("http_status"),
     }
 
 
@@ -180,6 +196,30 @@ def main():
     browsecomp, browsecomp_detail = _grade_browsecomp(question, ground_truth, submission)
     simpleqa, simpleqa_detail = _grade_simpleqa(question, ground_truth, submission)
     reward = (browsecomp + simpleqa) / 2
+
+    # A judge that could not be reached is not evidence the answer was wrong.
+    # Scoring it 0 silently halves the ceiling for every trial and reads as a
+    # legitimate result, so an unreachable judge fails the trial instead: no
+    # reward file, non-zero exit, and the aggregator counts it as errored rather
+    # than folding a transport failure into the score. A judge that answered and
+    # said "incorrect" still scores 0 -- that is a real grade.
+    unreachable = [
+        name
+        for name, detail in (("browsecomp", browsecomp_detail), ("simpleqa", simpleqa_detail))
+        if "error" in detail
+    ]
+    if unreachable:
+        _write_status(
+            {
+                "reward": None,
+                "graded": False,
+                "unreachable": unreachable,
+                "browsecomp": _status_entry(browsecomp, browsecomp_detail),
+                "simpleqa": _status_entry(simpleqa, simpleqa_detail),
+            }
+        )
+        print(f"judge(s) unreachable: {unreachable}; failing the trial instead of scoring 0")
+        raise SystemExit(1)
 
     _REWARD_PATH.write_text(f"{reward}\n", encoding="utf-8")
     _JUDGES_PATH.write_text(

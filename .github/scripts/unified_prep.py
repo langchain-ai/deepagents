@@ -68,6 +68,16 @@ CATEGORY_MAP: dict[str, dict] = {
         "agent_impl": "bare",
         "fan_out": True,
     },
+    # Pinned to its own harness like `conversation`/tau3: the search graph is the
+    # only one with web tools, and the other harnesses have no way to answer an
+    # open-web question. `fan_out: False` both pins it and keeps `search` out of
+    # the selectable code-harness set, so no one can point it at `context`.
+    "search": {
+        "dataset": "",
+        "dataset_path": "datasets/loho-search-evals",
+        "agent_impl": "search",
+        "fan_out": False,
+    },
 }
 
 # Harness used when the `agent_impls` input (UNIFIED_AGENT_IMPLS) is unset or blank.
@@ -94,14 +104,6 @@ def _load_registry_graphs(path: Path) -> set[str]:
     return set(graphs)
 
 
-# Graphs whose tooling is bound to one dataset, so they are never a general code
-# harness a user may point at another category. `tau3` is already excluded via its
-# non-fan-out category below; `search` needs listing here because its category is
-# not in CATEGORY_MAP yet, and running e.g. `context` under a web-search agent
-# would produce a meaningless comparison rather than an error.
-DATASET_PINNED_AGENT_IMPLS = frozenset({"search"})
-
-
 def derive_impl_sets(
     all_graphs: set[str], category_map: dict[str, dict]
 ) -> tuple[set[str], set[str]]:
@@ -109,8 +111,7 @@ def derive_impl_sets(
 
     `known` is every registered graph. `code` is the graphs a user may select on
     the code (fan-out) categories: every graph except one pinned by a non-fan-out
-    category (e.g. `tau3`, bound to conversation) or listed in
-    `DATASET_PINNED_AGENT_IMPLS`.
+    category (`tau3` for conversation, `search` for search).
     """
     pinned_non_code = {
         cm["agent_impl"] for cm in category_map.values() if not cm["fan_out"]
@@ -119,7 +120,7 @@ def derive_impl_sets(
     # excluded from the selectable code set even if a fan-out category also uses
     # it. Not reachable with the current CATEGORY_MAP, but it is the defined
     # invariant.
-    return all_graphs, all_graphs - pinned_non_code - DATASET_PINNED_AGENT_IMPLS
+    return all_graphs, all_graphs - pinned_non_code
 
 
 def _validate_category_map_keys(category_map: dict[str, dict]) -> None:

@@ -8,7 +8,11 @@ on:
         type: string
         required: true
       categories:
-        description: "Comma list"
+        description: >-
+          Comma list of autonomous, conversation, context, search. `search`
+          (LoHoSearch open-web research) is opt-in rather than a default: its
+          task set is not calibrated yet, and it always runs the pinned `search`
+          harness regardless of `agent_impls`.
         type: string
         default: "autonomous,conversation,context"
       agent_impls:

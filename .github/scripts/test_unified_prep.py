@@ -144,18 +144,31 @@ def test_derive_impl_sets_new_graph_is_selectable():
 
 def test_module_impl_sets_match_registry():
     assert up.KNOWN_AGENT_IMPLS == {"bare", "dcode", "search", "tau3"}
-    # `search` is registered but dataset-pinned, so it is not user-selectable as
-    # a code harness for the fan-out categories.
+    # `tau3` and `search` are pinned to their own non-fan-out categories, so
+    # neither is selectable as a code harness for autonomous/context. Pointing a
+    # web-search agent at the context corpus would silently produce a
+    # meaningless comparison rather than an error.
     assert up.CODE_AGENT_IMPLS == {"bare", "dcode"}
 
 
-def test_dataset_pinned_impls_are_not_selectable():
-    known, code = up.derive_impl_sets(
-        {"bare", "search"},
-        {"context": {"agent_impl": "bare", "fan_out": True}},
+def test_search_category_is_pinned_to_the_search_graph():
+    """Search runs its own graph only, never fanned out over code harnesses."""
+    search = up.CATEGORY_MAP["search"]
+    assert search["agent_impl"] == "search"
+    assert search["fan_out"] is False
+    assert search["dataset_path"] == "datasets/loho-search-evals"
+    assert search["dataset"] == ""
+
+
+def test_search_category_emits_one_group_regardless_of_selected_impls():
+    entries = up.build_flat_matrix(
+        "openai:gpt-4.1",
+        ["search"],
+        {"search": ["loho-01", "loho-02"]},
+        code_impls=["bare", "dcode"],
     )
-    assert known == {"bare", "search"}
-    assert code == {"bare"}
+    assert {e["agent_impl"] for e in entries} == {"search"}
+    assert {e["category"] for e in entries} == {"search"}
 
 
 def test_main_rejects_invalid_profile(tmp_path, monkeypatch):

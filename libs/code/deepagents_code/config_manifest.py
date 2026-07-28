@@ -1588,6 +1588,43 @@ def option_keys() -> tuple[str, ...]:
     return tuple(opt.key for opt in get_config_options())
 
 
+def options_with_key_prefix(prefix: str) -> tuple[ConfigOption, ...]:
+    """Return every option whose key sits under the dotted `prefix` section.
+
+    Matching is exact on segment boundaries: `credentials` matches
+    `credentials.openai` but `credential` matches nothing, so `config get` can
+    accept a section name without also accepting truncated guesses.
+
+    Args:
+        prefix: Dotted key prefix without a trailing dot (e.g. `credentials`).
+
+    Returns:
+        Matching options in manifest order; empty when no key uses `prefix`.
+    """
+    if not prefix:
+        return ()
+    section = f"{prefix}."
+    return tuple(opt for opt in get_config_options() if opt.key.startswith(section))
+
+
+def options_in_group(title: str) -> tuple[ConfigOption, ...]:
+    """Return every option in the display group named `title`, case-insensitively.
+
+    Group titles are the human-readable headings `config` prints (`Credentials`,
+    `Display`, ...), so a user who read the table can pass one back verbatim.
+
+    Args:
+        title: Group heading to match, in any case.
+
+    Returns:
+        Matching options in manifest order; empty when no group uses `title`.
+    """
+    if not title:
+        return ()
+    wanted = title.casefold()
+    return tuple(opt for opt in get_config_options() if opt.group.casefold() == wanted)
+
+
 @lru_cache(maxsize=1)
 def _options_by_key() -> dict[str, ConfigOption]:
     return {opt.key: opt for opt in get_config_options()}

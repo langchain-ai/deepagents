@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from typing import Any
 
 import pytest
 
@@ -30,6 +31,8 @@ from deepagents_code.config_manifest import (
     get_option,
     is_provider_package_installed,
     option_keys,
+    options_in_group,
+    options_with_key_prefix,
     provider_install_extra,
     resolve_interpreter_kwargs,
     resolve_scalar,
@@ -1634,6 +1637,31 @@ def test_config_parser_wires_default_and_verbose_flag(monkeypatch) -> None:
     assert ns.output_format == "json"
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["dcode", "config", "get", "credentials", "--verbose", "--json"],
+        ["dcode", "config", "--verbose", "--json", "get", "credentials"],
+    ],
+)
+def test_config_get_parser_accepts_verbose_on_either_side(monkeypatch, argv) -> None:
+    """`--verbose`/`--json` reach `config get` before or after the subcommand.
+
+    The `get` subparser suppresses its own defaults, so a flag set on the parent
+    `config` parser survives the subparser namespace merge.
+    """
+    import sys
+
+    from deepagents_code.main import parse_args
+
+    monkeypatch.setattr(sys, "argv", argv)
+    ns = parse_args()
+    assert ns.config_command == "get"
+    assert ns.key == "credentials"
+    assert ns.verbose is True
+    assert ns.output_format == "json"
+
+
 @pytest.mark.parametrize("removed_subcommand", ["show", "list", "ls"])
 def test_config_parser_rejects_removed_subcommands(
     monkeypatch, removed_subcommand
@@ -1655,6 +1683,171 @@ def test_run_get_text_returns_zero() -> None:
         config_command="get", key="interpreter.memory_limit_mb", output_format="text"
     )
     assert run_config_command(args) == 0
+
+
+# --- `config get` sections --------------------------------------------------
+
+
+def _get_args(
+    key: str, output_format: str = "text", *, verbose: bool = False
+) -> argparse.Namespace:
+    """Build a parsed `config get <key>` namespace."""
+    return argparse.Namespace(
+        config_command="get", key=key, output_format=output_format, verbose=verbose
+    )
+
+
+def _get_json_data(
+    key: str, capsys: pytest.CaptureFixture[str], *, verbose: bool = False
+) -> dict[str, Any] | list[dict[str, Any]]:
+    """Run `config get <key> --json` and return the decoded `data` payload."""
+    import json
+
+    assert run_config_command(_get_args(key, "json", verbose=verbose)) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "config get"
+    return payload["data"]
+
+
+def _get_json_object(key: str, capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
+    """Return the single-option `config get --json` payload for `key`."""
+    data = _get_json_data(key, capsys)
+    assert isinstance(data, dict)
+    return data
+
+
+def _get_json_rows(
+    key: str, capsys: pytest.CaptureFixture[str], *, verbose: bool = False
+) -> list[dict[str, Any]]:
+    """Return the section `config get --json` rows for `key`."""
+    data = _get_json_data(key, capsys, verbose=verbose)
+    assert isinstance(data, list)
+    return data
+
+
+def test_options_with_key_prefix_matches_whole_segments_only() -> None:
+    """A key prefix matches on the dot boundary, never a truncated guess."""
+    matched = options_with_key_prefix("credentials")
+    assert len(matched) > 1
+    assert all(opt.key.startswith("credentials.") for opt in matched)
+    assert options_with_key_prefix("credential") == ()
+    assert options_with_key_prefix("") == ()
+
+
+def test_options_in_group_is_case_insensitive() -> None:
+    """Group titles resolve regardless of the case the user typed."""
+    assert options_in_group("cReDeNtIaLs") == options_in_group("Credentials")
+    assert all(opt.group == "Credentials" for opt in options_in_group("credentials"))
+    assert options_in_group("nope") == ()
+
+
+def test_run_get_exact_key_keeps_single_line_text(capsys) -> None:
+    """An exact key still renders the compact `key = value (source)` line."""
+    assert run_config_command(_get_args("interpreter.memory_limit_mb")) == 0
+    rendered = " ".join(capsys.readouterr().out.split())
+    assert rendered.startswith("interpreter.memory_limit_mb = ")
+
+
+def test_run_get_exact_key_json_stays_single_object(capsys) -> None:
+    """Existing single-key JSON consumers keep their one-object payload."""
+    data = _get_json_object("interpreter.memory_limit_mb", capsys)
+    assert data["key"] == "interpreter.memory_limit_mb"
+    assert "group" not in data
+
+
+def test_run_get_credentials_section_lists_every_credential(capsys) -> None:
+    """`config get credentials` renders the grouped section, not one option."""
+    assert run_config_command(_get_args("credentials")) == 0
+    rendered = capsys.readouterr().out
+    assert "Credentials" in rendered
+    expected = options_with_key_prefix("credentials")
+    assert len(expected) > 1
+    assert all(opt.key in rendered for opt in expected)
+    # Secrets stay redacted: a section reports presence only.
+    assert "not configured" in rendered
+
+
+@pytest.mark.parametrize("key", ["credentials", "credentials.", "Credentials"])
+def test_run_get_credentials_section_accepts_prefix_dot_and_title(key, capsys) -> None:
+    """Prefix, trailing dot, and group title all select the same options."""
+    rows = _get_json_rows(key, capsys)
+    assert [row["key"] for row in rows] == [
+        opt.key for opt in options_with_key_prefix("credentials")
+    ]
+    # Secret-flagged rows report presence only, exactly as bare `config` does.
+    assert any(row["redacted"] for row in rows)
+    assert all(row["value"] is None for row in rows if row["redacted"])
+
+
+def test_run_get_section_json_matches_bare_config_row_shape(capsys) -> None:
+    """Section rows carry the same fields as each bare `config --json` row."""
+    rows = _get_json_rows("interpreter", capsys)
+    assert len(rows) > 1
+    assert all(
+        {"key", "group", "source", "set", "redacted", "value"} <= set(row)
+        for row in rows
+    )
+    assert all("type" not in row for row in rows)
+
+
+def test_run_get_section_verbose_json_folds_in_catalog(capsys) -> None:
+    """`config get <section> --verbose --json` adds the static catalog fields."""
+    rows = _get_json_rows("interpreter", capsys, verbose=True)
+    assert all(
+        {"summary", "type", "default", "env_var", "toml_path", "cli_flag"} <= set(row)
+        for row in rows
+    )
+    assert any(
+        row["key"] == "interpreter.memory_limit_mb" and row["default"] == 64
+        for row in rows
+    )
+
+
+def test_run_get_section_verbose_text_shows_descriptions(capsys) -> None:
+    """`config get <section> --verbose` matches the verbose bare-`config` view."""
+    opt = get_option("display.charset")
+    assert opt is not None
+    assert run_config_command(_get_args("display", verbose=True)) == 0
+    rendered = " ".join(capsys.readouterr().out.split())
+    assert " ".join(opt.summary.split()) in rendered
+    assert "set via" in rendered
+
+
+def test_run_get_section_prefers_key_prefix_over_group_title(capsys) -> None:
+    """`models` resolves to every `models.*` key, even across group headings."""
+    rows = _get_json_rows("models", capsys)
+    keys = [row["key"] for row in rows]
+    assert keys == [opt.key for opt in options_with_key_prefix("models")]
+    # The `Models` heading is narrower than the dotted prefix; keys win.
+    assert len(keys) > len(options_in_group("Models"))
+
+
+def test_run_get_group_title_without_matching_prefix_resolves(capsys) -> None:
+    """A heading whose options share no key prefix (`Tools`) still resolves."""
+    assert options_with_key_prefix("tools") == ()
+    rows = _get_json_rows("tools", capsys)
+    assert [row["key"] for row in rows] == [
+        opt.key for opt in options_in_group("Tools")
+    ]
+    assert len(rows) > 1
+
+
+def test_run_get_single_option_section_still_renders_as_a_list(capsys) -> None:
+    """A one-option section stays list-shaped so responses are unambiguous."""
+    prefix = "goals"
+    assert len(options_with_key_prefix(prefix)) == 1
+    rows = _get_json_rows(prefix, capsys)
+    assert [row["key"] for row in rows] == ["goals.auto_accept_criteria"]
+
+
+@pytest.mark.parametrize("key", ["credential", "credentials.open", "nope"])
+def test_run_get_rejects_partial_matches(key, capsys) -> None:
+    """Truncated keys, partial leaves, and typos stay hard errors."""
+    assert run_config_command(_get_args(key)) == 1
+    err = capsys.readouterr().err
+    assert "Unknown config option" in err
+    assert "config --verbose" in err
+    assert "config get credentials" in err
 
 
 def test_run_path_text_returns_zero() -> None:

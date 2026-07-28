@@ -800,17 +800,30 @@ def show_config_help() -> None:
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
     console.print("  dcode config [options]", markup=False)
-    console.print("  dcode config get <key> [--json]", markup=False)
+    console.print("  dcode config get <key|section> [--json] [--verbose]", markup=False)
     console.print("  dcode config path [--json]", markup=False)
     console.print()
     console.print("Show effective configuration values and their source.")
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
-    console.print("  get <key>         Show one option's value and source")
+    console.print("  get <key|section> Show one option, or a whole section")
     console.print("  path              Show config file locations")
     console.print()
     _print_option_section(
         "  -v, --verbose, --all  Also show each option's description and how to set it",
+    )
+    console.print()
+    console.print(
+        "  A section is a key prefix (credentials, display) or a group title",
+        style=theme.MUTED,
+    )
+    console.print(
+        "  from `dcode config`. Sections render the grouped view, and emit a",
+        style=theme.MUTED,
+    )
+    console.print(
+        "  JSON list instead of a single object.",
+        style=theme.MUTED,
     )
     console.print()
     console.print(
@@ -822,6 +835,8 @@ def show_config_help() -> None:
     console.print("  dcode config")
     console.print("  dcode config --verbose")
     console.print("  dcode config get interpreter.memory_limit_mb")
+    console.print("  dcode config get credentials")
+    console.print("  dcode config get display --json")
     console.print("  dcode config path")
     console.print()
 

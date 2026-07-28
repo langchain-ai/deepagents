@@ -4,8 +4,10 @@ Bare `config` resolves each option against the app credential store (for
 credentials), the live environment, and `config.toml`, reporting the effective
 value and which source provided it. Adding `--verbose`/`--all` folds in each
 option's description and where it can be set (the static catalog). `config get
-<key>` does the same for a single option, while `config path` prints the on-disk
-config locations.
+<key>` does the same for a single option, and `config get <group>` (a key prefix
+such as `credentials`, or a display group title such as `Credentials`) renders
+every option in that section using the same grouped view as bare `config`.
+`config path` prints the on-disk config locations.
 
 Secret-flagged options (API keys and other credentials) are never printed by
 value — `config`/`config get` report only whether they are set and from which
@@ -65,6 +67,8 @@ def setup_config_parser(
             help screens from `deepagents_code.ui`.
         add_output_args: Helper that adds the shared `--json` flag.
     """
+    from argparse import SUPPRESS
+
     config_parser = subparsers.add_parser(
         "config",
         help="Inspect configuration options and their sources",
@@ -88,7 +92,7 @@ def setup_config_parser(
 
     get_parser = config_sub.add_parser(
         "get",
-        help="Show the effective value and source for one option",
+        help="Show the effective value and source for one option or section",
         add_help=False,
     )
     # Optional so a bare `config get` reaches our handler with a useful hint
@@ -98,12 +102,27 @@ def setup_config_parser(
         "key",
         nargs="?",
         default=None,
-        help="Option key (e.g. interpreter.memory_limit_mb)",
+        help=(
+            "Option key (e.g. interpreter.memory_limit_mb) or section "
+            "(e.g. credentials)"
+        ),
     )
     get_parser.add_argument(
         "-h",
         "--help",
         action=make_help_action(_lazy_ui_help("show_config_help")),
+    )
+    # `SUPPRESS` so `config --verbose get <key>` keeps the parent value: argparse
+    # copies every key of the subparser namespace over the parent's, so a
+    # `store_true` default here would reset it to `False`.
+    get_parser.add_argument(
+        "-v",
+        "--verbose",
+        "--all",
+        dest="verbose",
+        action="store_true",
+        default=SUPPRESS,
+        help="With a section, also show each option's description and how to set it",
     )
     add_output_args(get_parser)
 
@@ -557,29 +576,135 @@ def _report_missing_get_key(output_format: OutputFormat) -> int:
     return 2
 
 
-def _run_get(key: str | None, output_format: OutputFormat) -> int:
-    """Resolve and print a single option by key.
+def _select_options(key: str) -> tuple[ConfigOption, ...] | None:
+    """Resolve a `config get` argument to the options it names.
+
+    Priority is exact key, then dotted key prefix (`credentials`, with an
+    optional trailing dot), then display group title (`Credentials`,
+    case-insensitively). Prefix wins over group title so the selection always
+    agrees with the dotted keys the user typed — `models` resolves to every
+    `models.*` key rather than to the smaller `Models` heading.
+
+    Args:
+        key: The raw argument passed to `config get`.
 
     Returns:
-        Process exit code (`0` on success, `1` for an unknown key, `2` when no
-        key was given).
+        A one-item tuple for an exact key match, every option in the section for
+        a prefix/group match, or `None` when nothing matches.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        options_in_group,
+        options_with_key_prefix,
+    )
+
+    exact = get_option(key)
+    if exact is not None:
+        return (exact,)
+
+    section = key.removesuffix(".")
+    return options_with_key_prefix(section) or options_in_group(section) or None
+
+
+def _report_unknown_get_key(key: str, output_format: OutputFormat) -> int:
+    """Report that `key` names neither an option nor a section.
+
+    Returns:
+        Exit code `1`.
+    """
+    if output_format == "json":
+        write_json("config get", {"key": key, "error": "unknown option"})
+    else:
+        print(  # noqa: T201
+            f"Unknown config option or section: {key!r}. Run "
+            "`dcode config --verbose` to see available keys, or "
+            "`dcode config get credentials` to read a whole section.",
+            file=sys.stderr,
+        )
+    return 1
+
+
+def _run_get_section(
+    options: Sequence[ConfigOption], output_format: OutputFormat, *, verbose: bool
+) -> int:
+    """Resolve and print every option in a matched section.
+
+    Rendering delegates to the same grouped table/verbose view and JSON row
+    builder bare `config` uses, so secret redaction and source resolution are
+    not duplicated. JSON is always a list here — even for a one-option section —
+    so consumers can tell a section response from the single-key object.
+
+    Returns:
+        Process exit code (`0` on success).
+    """
+    from deepagents_code.config import _ensure_bootstrap
+    from deepagents_code.config_manifest import load_config_toml
+
+    _ensure_bootstrap()
+    toml_data = load_config_toml()
+    # Only credential options consult the store, so skip the read (and its
+    # warning) when the section holds none.
+    stored = (
+        _load_stored_credentials()
+        if any(opt.group == "Credentials" for opt in options)
+        else None
+    )
+    resolved = [
+        ResolvedOption(opt, *_resolve(opt, toml_data, stored=stored)) for opt in options
+    ]
+    store_error = stored.error if stored is not None else None
+
+    if output_format == "json":
+        write_json(
+            "config get",
+            [
+                _config_json_row(
+                    row.option,
+                    is_set=row.is_set,
+                    source=row.source,
+                    value=row.value,
+                    store_error=store_error,
+                    include_catalog=verbose,
+                )
+                for row in resolved
+            ],
+        )
+        return 0
+
+    if verbose:
+        _print_config_verbose(resolved, store_error=store_error)
+    else:
+        _print_config_table(resolved, store_error=store_error)
+    return 0
+
+
+def _run_get(
+    key: str | None, output_format: OutputFormat, *, verbose: bool = False
+) -> int:
+    """Resolve and print one option, or every option in a section.
+
+    Args:
+        key: Option key, dotted key prefix, or display group title.
+        output_format: `text` for the rendered view, `json` for a machine-
+            readable payload.
+        verbose: Fold each option's description and how-to-set into a section's
+            output, matching `config --verbose`. Ignored for an exact key, whose
+            output shape is unchanged.
+
+    Returns:
+        Process exit code (`0` on success, `1` for an unknown key or section,
+        `2` when no key was given).
     """
     if key is None:
         return _report_missing_get_key(output_format)
 
-    from deepagents_code.config_manifest import get_option
+    selection = _select_options(key)
+    if selection is None:
+        return _report_unknown_get_key(key, output_format)
+    if len(selection) > 1 or selection[0].key != key:
+        return _run_get_section(selection, output_format, verbose=verbose)
 
-    option = get_option(key)
-    if option is None:
-        if output_format == "json":
-            write_json("config get", {"key": key, "error": "unknown option"})
-        else:
-            print(  # noqa: T201
-                f"Unknown config option: {key!r}. Run "
-                "`dcode config --verbose` to see available keys.",
-                file=sys.stderr,
-            )
-        return 1
+    option = selection[0]
 
     from deepagents_code.config import _ensure_bootstrap
     from deepagents_code.config_manifest import load_config_toml
@@ -664,7 +789,7 @@ def run_config_command(args: argparse.Namespace) -> int:
     if command is None:
         return _run_config(output_format, verbose=verbose)
     if command == "get":
-        return _run_get(args.key, output_format)
+        return _run_get(args.key, output_format, verbose=verbose)
     if command == "path":
         return _run_path(output_format)
 

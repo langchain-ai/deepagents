@@ -160,7 +160,8 @@ class TestOffloadGuards:
             before = _state_values(_make_dict_messages(3))
             after = _state_values(_make_dict_messages(3))
             after["_session_cost_usd"] = 0.75
-            app._session_cost_usd = 1.25
+            app._set_session_cost(0.5)
+            app._add_provisional_cost(0.75)
 
             with (
                 patch.object(
@@ -183,7 +184,10 @@ class TestOffloadGuards:
             assert any(
                 "the conversation is already compact" in str(w._content) for w in msgs
             )
-            assert app._session_cost_usd == pytest.approx(1.25)
+            # The graph prices the compaction run's own model call, so the
+            # committed total replaces the client's provisional estimate.
+            assert app._session_cost_usd == pytest.approx(0.75)
+            assert app._displayed_cost_usd == pytest.approx(0.75)
 
     async def test_empty_state_shows_error(self) -> None:
         """Should show error when state has no values."""

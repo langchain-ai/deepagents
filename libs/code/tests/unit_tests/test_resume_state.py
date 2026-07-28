@@ -330,21 +330,62 @@ class TestCostDisplayCallbacks:
             )
             assert payload.session_cost_usd == pytest.approx(0.0)
 
-    def test_streamed_cost_accumulates_onto_restored_total(self) -> None:
+    def test_server_total_replaces_the_displayed_value(self) -> None:
+        """The graph's absolute total is adopted outright, never added to."""
         app = DeepAgentsApp()
         app._session_cost_usd = 1.0
 
-        app._on_cost_update(0.25)
+        app._set_session_cost(1.25)
 
         assert app._session_cost_usd == pytest.approx(1.25)
+        assert app._displayed_cost_usd == pytest.approx(1.25)
+
+    def test_streamed_estimate_shows_ahead_of_the_server_total(self) -> None:
+        """Spend the graph has not reported yet still moves the display."""
+        app = DeepAgentsApp()
+        app._set_session_cost(1.0)
+
+        app._add_provisional_cost(0.25)
+
+        assert app._displayed_cost_usd == pytest.approx(1.25)
+        # The server-owned figure is untouched by a client estimate.
+        assert app._session_cost_usd == pytest.approx(1.0)
+
+    def test_server_total_supersedes_provisional_estimates(self) -> None:
+        """A provisional estimate cannot be counted twice once a total lands."""
+        app = DeepAgentsApp()
+        app._set_session_cost(1.0)
+        app._add_provisional_cost(0.25)
+
+        app._set_session_cost(1.25)
+
+        assert app._displayed_cost_usd == pytest.approx(1.25)
 
     def test_zero_cost_does_not_change_running_total(self) -> None:
         app = DeepAgentsApp()
         app._session_cost_usd = 1.0
 
-        app._on_cost_update(0.0)
+        app._add_provisional_cost(0.0)
 
-        assert app._session_cost_usd == pytest.approx(1.0)
+        assert app._displayed_cost_usd == pytest.approx(1.0)
+
+    def test_committed_state_lowers_an_optimistic_display(self) -> None:
+        """The client defers to the checkpoint instead of pushing its own total."""
+        app = DeepAgentsApp()
+        app._set_session_cost(1.0)
+        app._add_provisional_cost(0.5)
+
+        app._sync_session_cost_from_state({"_session_cost_usd": 1.1})
+
+        assert app._displayed_cost_usd == pytest.approx(1.1)
+
+    def test_state_without_a_cost_channel_leaves_the_display_alone(self) -> None:
+        app = DeepAgentsApp()
+        app._set_session_cost(1.0)
+
+        app._sync_session_cost_from_state({"messages": []})
+
+        assert app._displayed_cost_usd == pytest.approx(1.0)
 
     def test_cost_summary_includes_total_and_type_model_breakdown(self) -> None:
         stats = SessionStats()
@@ -398,7 +439,7 @@ class TestCostDisplayCallbacks:
         app = DeepAgentsApp()
         app._reset_thread_usage(1.0)
         app._thread_stats = stats
-        app._on_cost_update(0.42)
+        app._set_session_cost(1.42)
 
         summary = app._format_cost_summary()
 
@@ -425,35 +466,34 @@ class TestCostDisplayCallbacks:
         assert "example:free-model: $0.00" in summary
         assert "Requests without known pricing are excluded." in summary
 
-    async def test_persist_displayed_cost_writes_gap_only(self) -> None:
-        """Live total above checkpoint is written as an additive delta."""
+    async def test_checkpoint_reconcile_never_writes_cost(self) -> None:
+        """The client reads the graph's total; it never back-fills the channel."""
         from unittest.mock import AsyncMock
 
         app = DeepAgentsApp()
         app._agent = object()
         app._lc_thread_id = "thread-1"
-        app._session_cost_usd = 1.25
+        app._set_session_cost(1.0)
+        app._add_provisional_cost(0.25)
         app._get_thread_state_values = AsyncMock(
-            return_value={"_session_cost_usd": 1.0}
+            return_value={"_session_cost_usd": 1.5}
         )
         app._aupdate_thread_state = AsyncMock()
 
-        await app._persist_displayed_cost_to_checkpoint()
+        await app._sync_session_cost_from_checkpoint()
 
-        app._aupdate_thread_state.assert_awaited_once_with({"_session_cost_usd": 0.25})
-
-    async def test_persist_displayed_cost_skips_when_checkpoint_caught_up(self) -> None:
-        from unittest.mock import AsyncMock
-
-        app = DeepAgentsApp()
-        app._agent = object()
-        app._lc_thread_id = "thread-1"
-        app._session_cost_usd = 1.0
-        app._get_thread_state_values = AsyncMock(
-            return_value={"_session_cost_usd": 1.0}
-        )
-        app._aupdate_thread_state = AsyncMock()
-
-        await app._persist_displayed_cost_to_checkpoint()
-
+        assert app._displayed_cost_usd == pytest.approx(1.5)
         app._aupdate_thread_state.assert_not_awaited()
+
+    async def test_failed_state_read_keeps_the_displayed_cost(self) -> None:
+        from unittest.mock import AsyncMock
+
+        app = DeepAgentsApp()
+        app._agent = object()
+        app._lc_thread_id = "thread-1"
+        app._set_session_cost(1.0)
+        app._get_thread_state_values = AsyncMock(side_effect=RuntimeError("no server"))
+
+        await app._sync_session_cost_from_checkpoint()
+
+        assert app._displayed_cost_usd == pytest.approx(1.0)

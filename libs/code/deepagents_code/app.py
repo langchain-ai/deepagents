@@ -3612,7 +3612,20 @@ class DeepAgentsApp(App):
         """Whether the cached token count is stale (interrupted generation)."""
 
         self._session_cost_usd: float = 0.0
-        """Cumulative estimated cost restored and displayed for the active thread."""
+        """The graph's cumulative estimated cost for the active thread.
+
+        Written only from server-owned values: the checkpoint on thread load and
+        the streamed absolute total during a turn. The client never adds its own
+        estimates here.
+        """
+
+        self._provisional_cost_usd: float = 0.0
+        """Streamed spend the graph has not reported a total for yet.
+
+        Added to the displayed figure so the status bar keeps moving during work
+        the checkpoint lags behind — nested subagent steps, most visibly — and
+        reset whenever a server total arrives.
+        """
 
         self._thread_restored_cost_usd: float = 0.0
         """Checkpoint cost without a local per-model breakdown."""
@@ -4262,7 +4275,8 @@ class DeepAgentsApp(App):
         self._ui_adapter._on_tokens_update = self._on_tokens_update
         self._ui_adapter._on_tokens_pending = self._show_pending_tokens
         self._ui_adapter._on_tokens_show = self._show_tokens
-        self._ui_adapter._on_cost_update = self._on_cost_update
+        self._ui_adapter._on_session_cost = self._set_session_cost
+        self._ui_adapter._on_provisional_cost = self._add_provisional_cost
 
         if self._server_startup_deferred:
             await self._mount_deferred_start_notice()
@@ -6794,16 +6808,28 @@ class DeepAgentsApp(App):
             self._status_bar.show_pending_tokens()
 
     def _set_session_cost(self, cost_usd: float) -> None:
-        """Set the active thread's displayed cumulative cost.
+        """Set the active thread's cumulative cost from a server-owned value.
 
-        Used for both restored totals and live updates after each priced request.
+        Used for both the restored checkpoint total and the totals the graph
+        streams during a turn. Either supersedes anything the message stream
+        contributed provisionally, so that add-on is dropped.
 
         Args:
             cost_usd: Non-negative cumulative estimated cost in US dollars.
         """
         self._session_cost_usd = _coerce_session_cost_usd(cost_usd)
+        self._provisional_cost_usd = 0.0
+        self._refresh_session_cost_display()
+
+    @property
+    def _displayed_cost_usd(self) -> float:
+        """The cost shown to the user: the graph's total plus provisional spend."""
+        return self._session_cost_usd + self._provisional_cost_usd
+
+    def _refresh_session_cost_display(self) -> None:
+        """Show the server total plus any spend it has not accounted for yet."""
         if self._status_bar:
-            self._status_bar.set_cost(self._session_cost_usd)
+            self._status_bar.set_cost(self._displayed_cost_usd)
 
     def _reset_thread_usage(self, cost_usd: float = 0.0) -> None:
         """Start local usage details for a newly activated thread.
@@ -6815,15 +6841,21 @@ class DeepAgentsApp(App):
         self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._set_session_cost(self._thread_restored_cost_usd)
 
-    def _on_cost_update(self, cost_usd: float) -> None:
-        """Add one streamed request estimate to the active thread display.
+    def _add_provisional_cost(self, cost_usd: float) -> None:
+        """Show one streamed request's estimate ahead of the graph's total.
+
+        The graph checkpoints this same request and streams the total that
+        includes it, which resets the provisional figure. Nothing here changes
+        the durable value, so an estimate that briefly counts twice on screen
+        cannot survive into the thread's cost.
 
         Args:
             cost_usd: Estimated request cost in US dollars.
         """
         request_cost_usd = _coerce_session_cost_usd(cost_usd)
         if request_cost_usd > 0:
-            self._set_session_cost(self._session_cost_usd + request_cost_usd)
+            self._provisional_cost_usd += request_cost_usd
+            self._refresh_session_cost_display()
 
     def _format_cost_summary(self) -> str:
         """Build the running total and type/model breakdown for `/cost`.
@@ -6831,12 +6863,13 @@ class DeepAgentsApp(App):
         Returns:
             User-facing estimated cost summary for the active thread.
         """
-        if self._session_cost_usd <= 0 and not self._thread_stats.priced_request_count:
+        displayed_cost_usd = self._displayed_cost_usd
+        if displayed_cost_usd <= 0 and not self._thread_stats.priced_request_count:
             if self._thread_stats.request_count:
                 return "No priceable usage recorded for this thread."
             return "No estimated cost yet."
 
-        lines = [f"Estimated thread cost: {format_cost(self._session_cost_usd)}"]
+        lines = [f"Estimated thread cost: {format_cost(displayed_cost_usd)}"]
         priced_kinds = [
             (kind, self._thread_stats.per_kind[kind])
             for kind in USAGE_KIND_ORDER
@@ -6863,7 +6896,7 @@ class DeepAgentsApp(App):
                     else model.model_name
                 )
                 lines.append(f"- {label}: {format_cost(model.cost_usd)}")
-        elif self._session_cost_usd > 0 and not priced_kinds:
+        elif displayed_cost_usd > 0 and not priced_kinds:
             lines.append(
                 "Per-type and per-model details are unavailable for restored usage."
             )
@@ -6874,13 +6907,29 @@ class DeepAgentsApp(App):
             lines.append("Requests without known pricing are excluded.")
         return "\n".join(lines)
 
-    async def _persist_displayed_cost_to_checkpoint(self) -> None:
-        """Write live-only cost (offload/auto) into `_session_cost_usd`.
+    def _sync_session_cost_from_state(self, state_values: Mapping[str, Any]) -> None:
+        """Adopt the checkpoint's cumulative cost as the displayed total.
 
-        Graph-side cost middleware records assistant and nested-agent model
-        calls. Direct model invokes used for offload and Auto mode do not run
-        through that channel, but their stream usage still updates the live
-        total. Persist any missing delta so resume does not under-report spend.
+        The graph is the only writer, so a committed value always supersedes the
+        provisional figure the message stream produced. State that carries no
+        cost channel at all (a read that failed or a graph without the
+        middleware) is left alone rather than treated as zero spend.
+
+        Args:
+            state_values: Committed thread state values.
+        """
+        if "_session_cost_usd" not in state_values:
+            return
+        self._set_session_cost(
+            _coerce_session_cost_usd(state_values.get("_session_cost_usd"))
+        )
+
+    async def _sync_session_cost_from_checkpoint(self) -> None:
+        """Reconcile the displayed cost with the thread's committed total.
+
+        The streamed totals already track spend during a turn; this settles the
+        display at the end of one, and covers a turn whose final events were
+        missed (an aborted stream, say).
         """
         if not self._agent or not self._lc_thread_id:
             return
@@ -6888,24 +6937,11 @@ class DeepAgentsApp(App):
             state_values = await self._get_thread_state_values(self._lc_thread_id)
         except Exception:
             logger.debug(
-                "Could not load thread state while persisting cost",
+                "Could not load thread state while reconciling cost",
                 exc_info=True,
             )
             return
-        persisted_cost_usd = _coerce_session_cost_usd(
-            state_values.get("_session_cost_usd")
-        )
-        gap = self._session_cost_usd - persisted_cost_usd
-        if gap <= 0:
-            return
-        try:
-            await self._aupdate_thread_state({"_session_cost_usd": gap})
-        except Exception:
-            logger.warning(
-                "Failed to persist streamed cost gap for thread %s",
-                self._lc_thread_id,
-                exc_info=True,
-            )
+        self._sync_session_cost_from_state(state_values)
 
     def _notify_hydration_failure(self) -> None:
         """Surface transcript hydration failures to the user, once per session.
@@ -12840,7 +12876,7 @@ class DeepAgentsApp(App):
                         f"\n\u2514 Conversation: ~{conv_str}{conv_unit}"
                     )
 
-                if self._session_cost_usd > 0:
+                if self._displayed_cost_usd > 0:
                     msg += f"\n\n{self._format_cost_summary()}"
                 await self._mount_message(AppMessage(msg))
             else:
@@ -12855,7 +12891,7 @@ class DeepAgentsApp(App):
                     parts.append(model_name)
 
                 msg = " · ".join(parts)
-                if self._session_cost_usd > 0:
+                if self._displayed_cost_usd > 0:
                     msg += f"\n\n{self._format_cost_summary()}"
                 await self._mount_message(AppMessage(msg))
         elif cmd == "/cost":
@@ -13625,11 +13661,9 @@ class DeepAgentsApp(App):
                 # (the archive now lives in the agent's own backend, not a
                 # client-local directory the server can never read).
                 new_state = await self._get_thread_state_values(self._lc_thread_id)
-            persisted_cost_usd = _coerce_session_cost_usd(
-                new_state.get("_session_cost_usd")
-            )
-            self._set_session_cost(max(self._session_cost_usd, persisted_cost_usd))
-            await self._persist_displayed_cost_to_checkpoint()
+            # The compaction run's summary model spend is priced and committed by
+            # the graph, so the state just read is the complete total.
+            self._sync_session_cost_from_state(new_state)
             new_event = new_state.get("_summarization_event")
             new_cutoff = _summarization_cutoff(new_event)
 
@@ -14776,8 +14810,12 @@ class DeepAgentsApp(App):
                     self._thread_stats.merge(turn_stats)
                 self._inflight_turn_stats = None
                 self._inflight_thread_id = None
+            # Settle the display on the committed total. Only a completed turn
+            # is read back: `durability="exit"` may drop an aborted turn's
+            # writes, and the streamed totals already seen are closer to what
+            # was actually spent than that turn's stale checkpoint.
             if turn_completed and self._lc_thread_id is not None:
-                await self._persist_displayed_cost_to_checkpoint()
+                await self._sync_session_cost_from_checkpoint()
             # Finalize any subagent rows left "running" — an interrupt cancels
             # the worker before the bridge emits terminal events (a cancel is a
             # BaseException, which the bridge's `except Exception` skips), so the

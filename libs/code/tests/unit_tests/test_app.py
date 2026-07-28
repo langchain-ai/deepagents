@@ -6463,7 +6463,8 @@ class TestClearCommand:
             await pilot.pause()
             app._session_state = TextualSessionState(thread_id="old-thread")
             app._lc_thread_id = "old-thread"
-            app._session_cost_usd = 1.25
+            app._set_session_cost(1.25)
+            app._add_provisional_cost(0.5)
             app._thread_stats.record_request(
                 "gpt-5.5",
                 100,
@@ -6483,6 +6484,9 @@ class TestClearCommand:
             assert app._lc_thread_id == "new-thread"
             assert app._session_cost_usd == pytest.approx(0.0)
             assert app._thread_restored_cost_usd == pytest.approx(0.0)
+            # A stale provisional estimate must not follow the user to the new
+            # thread, where nothing would ever supersede it.
+            assert app._displayed_cost_usd == pytest.approx(0.0)
             assert app._thread_stats.request_count == 0
 
             app_msgs = list(app.query(AppMessage))

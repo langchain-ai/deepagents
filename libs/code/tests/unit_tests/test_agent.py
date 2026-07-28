@@ -2864,6 +2864,12 @@ class TestMiddlewareStackConformance:
             < middleware_types.index(CostTrackingMiddleware)
             < middleware_types.index(GoalToolsMiddleware)
         )
+        # The main agent owns the thread's cumulative cost; only nested
+        # instances opt out of writing it.
+        cost_middleware = next(
+            mw for mw in middleware_list if isinstance(mw, CostTrackingMiddleware)
+        )
+        assert cost_middleware._nested is False
 
 
 class TestEnableAskUser:
@@ -3604,6 +3610,13 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 ServerHooksMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
             assert subagents_by_name[name]["middleware"][-1]._emit_stop is False
+            # Nested spend is priced once by the main agent, so a subagent's
+            # instance must not also write the shared cost channel.
+            assert all(
+                mw._nested
+                for mw in subagents_by_name[name]["middleware"]
+                if isinstance(mw, CostTrackingMiddleware)
+            ), f"Subagent {name!r} must install cost tracking in nested mode"
 
         pinned = subagents_by_name["pinned"]
         assert pinned["model"] == "anthropic:claude-haiku-4-5"
@@ -3612,8 +3625,9 @@ class TestCreateCliAgentShellMiddlewareWiring:
             isinstance(mw, ShellAllowListMiddleware) for mw in pinned_middleware
         ), "Pinned subagent should retain shell middleware"
         assert any(
-            isinstance(mw, CostTrackingMiddleware) for mw in pinned_middleware
-        ), "Pinned subagent should retain cost tracking"
+            isinstance(mw, CostTrackingMiddleware) and mw._nested
+            for mw in pinned_middleware
+        ), "Pinned subagent should retain nested cost tracking"
         assert not any(
             isinstance(mw, ConfigurableModelMiddleware) for mw in pinned_middleware
         ), "Pinned subagent must not gain configurable model middleware"

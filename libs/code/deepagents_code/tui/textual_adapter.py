@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import math
 import time
 import uuid
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
@@ -44,8 +45,18 @@ if TYPE_CHECKING:
 
         def __call__(self, *, approximate: bool = False) -> None: ...
 
-    class _CostUpdateCallback(Protocol):
-        """Callback signature for `_on_cost_update`."""
+    class _SessionCostCallback(Protocol):
+        """Callback signature for `_on_session_cost`.
+
+        Positional-only: the total is always passed positionally, so a consumer
+        is free to name the parameter for its own domain (a restored checkpoint
+        total, say) rather than matching this one.
+        """
+
+        def __call__(self, total_usd: float, /) -> None: ...
+
+    class _ProvisionalCostCallback(Protocol):
+        """Callback signature for `_on_provisional_cost`."""
 
         def __call__(self, cost_usd: float) -> None: ...
 
@@ -469,8 +480,20 @@ class TextualUIAdapter:
         self._on_tokens_show: _TokensShowCallback | None = None
         """Called to restore the token display with the cached value."""
 
-        self._on_cost_update: _CostUpdateCallback | None = None
-        """Called with each priceable request's estimated USD cost."""
+        self._on_session_cost: _SessionCostCallback | None = None
+        """Called with the graph's absolute cumulative thread cost.
+
+        The graph owns the durable total and streams it after each step, so this
+        is the only input the displayed lifetime figure is built from.
+        """
+
+        self._on_provisional_cost: _ProvisionalCostCallback | None = None
+        """Called with a streamed request's estimate for the live display only.
+
+        Keeps the status bar moving during work whose cost the graph has not
+        checkpointed yet — a long subagent run, say — without making the client
+        a second authority: every server total replaces what this accumulated.
+        """
 
     def _sync_tool_widget(self, tool_msg: ToolCallMessage) -> None:
         """Sync a tool widget when the app provided a store callback.
@@ -669,6 +692,36 @@ def _is_renderable_subagent_event(data: Any, *, is_main_agent: bool) -> bool:  #
         True only for a well-formed subagent event from the main agent.
     """
     return is_main_agent and isinstance(data, dict) and data.get("type") == "subagent"
+
+
+def _session_cost_total(data: Any, *, is_main_agent: bool) -> float | None:  # noqa: ANN401  # custom-stream payload is dynamic
+    """Return the absolute thread cost carried by a session-cost event.
+
+    Args:
+        data: The `custom` stream payload.
+        is_main_agent: Whether the payload came from the top-level namespace.
+            Only the main agent owns the cost channel, so a nested emit is
+            treated as malformed rather than applied to the displayed total.
+
+    Returns:
+        The finite non-negative total in US dollars, or `None` when the payload
+        is not a well-formed session-cost event from the main agent.
+    """
+    from deepagents_code.cost_tracking import SESSION_COST_EVENT_TYPE
+
+    if (
+        not is_main_agent
+        or not isinstance(data, dict)
+        or data.get("type") != SESSION_COST_EVENT_TYPE
+    ):
+        return None
+    total = data.get("total")
+    if isinstance(total, bool) or not isinstance(total, int | float):
+        return None
+    total_usd = float(total)
+    if not math.isfinite(total_usd) or total_usd < 0:
+        return None
+    return total_usd
 
 
 def _require_approval_mode_key(value: str | None) -> str:
@@ -1066,6 +1119,18 @@ async def execute_task_textual(
                 # nested custom events never reach the panel; forwarding must
                 # never raise into the stream loop.
                 if current_stream_mode == "custom":
+                    # The graph owns the cumulative thread cost and streams the
+                    # new absolute total after each step it charges, because the
+                    # channel is schema-private and never reaches the state
+                    # stream. Applying it outright keeps the client a reader.
+                    session_cost_total = _session_cost_total(
+                        data, is_main_agent=is_main_agent
+                    )
+                    if session_cost_total is not None:
+                        if adapter._on_session_cost is not None:
+                            adapter._on_session_cost(session_cost_total)
+                        continue
+
                     rubric_message = data if isinstance(data, dict) else None
                     formatted_rubric_event = (
                         _format_rubric_event(rubric_message) if rubric_message else None
@@ -1364,9 +1429,12 @@ async def execute_task_textual(
                             if (
                                 recorded
                                 and cost_usd is not None
-                                and adapter._on_cost_update
+                                and adapter._on_provisional_cost
                             ):
-                                adapter._on_cost_update(cost_usd)
+                                # Display-only: the graph checkpoints the same
+                                # spend and streams the authoritative total,
+                                # which supersedes this estimate.
+                                adapter._on_provisional_cost(cost_usd)
 
                     # Skip subagent outputs - only render main agent content in chat
                     if not is_main_agent:

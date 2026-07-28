@@ -47,6 +47,7 @@ from deepagents_code.tui.textual_adapter import (
     _is_auto_mode_classifier_chunk,
     _is_summarization_chunk,
     _read_mentioned_file,
+    _session_cost_total,
     execute_task_textual,
 )
 from deepagents_code.tui.widgets.messages import (
@@ -2107,7 +2108,7 @@ class TestExecuteTaskTextualUsageStats:
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
-        adapter._on_cost_update = record_cost
+        adapter._on_provisional_cost = record_cost
 
         with (
             patch("deepagents_code.config.settings") as mock_settings,
@@ -2148,7 +2149,7 @@ class TestExecuteTaskTextualUsageStats:
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
-        adapter._on_cost_update = record_cost
+        adapter._on_provisional_cost = record_cost
 
         main_usage = _usage_chunk(input_tokens=40, output_tokens=10)
         subagent_usage = (
@@ -2189,6 +2190,77 @@ class TestExecuteTaskTextualUsageStats:
         assert turn_stats.per_kind["offload"].request_count == 1
         assert turn_stats.per_kind["subagent"].cost_usd == pytest.approx(0.1)
         assert turn_stats.per_kind["offload"].cost_usd == pytest.approx(0.1)
+
+
+class TestSessionCostEvents:
+    """The graph's absolute cost total drives the client display."""
+
+    async def test_streamed_total_reaches_the_app(self) -> None:
+        """A session-cost event is applied as the displayed lifetime total."""
+
+        async def mount_message(_: object) -> None:
+            await asyncio.sleep(0)
+
+        totals: list[float] = []
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        adapter._on_session_cost = totals.append
+        adapter._on_provisional_cost = lambda cost_usd: pytest.fail(  # noqa: ARG005  # signature must match the callback protocol
+            "a server total must not be routed to the provisional display"
+        )
+        subagent_events: list[object] = []
+        adapter._on_subagent_event = subagent_events.append
+
+        chunks = [
+            ((), "custom", {"type": "session_cost", "total": 1.25}),
+            ((), "messages", (_text_message("Done."), {})),
+        ]
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            adapter=adapter,
+            turn_stats=SessionStats(),
+        )
+
+        assert totals == [pytest.approx(1.25)]
+        assert subagent_events == []
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"type": "session_cost"},
+            {"type": "session_cost", "total": "1.25"},
+            {"type": "session_cost", "total": True},
+            {"type": "session_cost", "total": -1.0},
+            {"type": "session_cost", "total": float("nan")},
+            {"type": "session_cost", "total": float("inf")},
+            {"type": "other", "total": 1.25},
+            "session_cost",
+        ],
+    )
+    def test_malformed_payloads_are_ignored(self, payload: object) -> None:
+        assert _session_cost_total(payload, is_main_agent=True) is None
+
+    def test_nested_namespace_total_is_ignored(self) -> None:
+        """Only the main agent owns the channel, so a nested emit is a bug."""
+        assert (
+            _session_cost_total(
+                {"type": "session_cost", "total": 1.25},
+                is_main_agent=False,
+            )
+            is None
+        )
+
+    def test_integer_total_is_accepted(self) -> None:
+        assert _session_cost_total(
+            {"type": "session_cost", "total": 0},
+            is_main_agent=True,
+        ) == pytest.approx(0.0)
 
 
 class TestExecuteTaskTextualAutoModeClassifier:

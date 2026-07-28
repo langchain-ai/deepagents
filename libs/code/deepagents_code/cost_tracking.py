@@ -1,15 +1,31 @@
 """Estimate and persist cumulative model cost for each thread.
 
-This module uses a dedicated `CostTrackingMiddleware` rather than extending
-`ResumeStateMiddleware`. The separate middleware keeps resume-state token and
-model bookkeeping focused while still writing `_session_cost_usd` from inside
-the graph, so each cost update rides the model checkpoint and works for local,
-headless, and remote graph execution without a client-side state update.
+The graph owns the durable total. `CostTrackingMiddleware` is the only writer of
+`_session_cost_usd`, so each cost update rides the model checkpoint and works for
+local, headless, and remote graph execution without a client-side state update.
+The client is a reader: it renders the streamed total and never maintains its own
+lifetime figure.
 
-The cost channel uses an additive reducer and each model call contributes only
-its own estimate. Nested agents install the same middleware with
-`reset_on_start=True` so a parent total copied into a subagent is cleared before
-the child runs; the child's sum then merges back into the parent once.
+Coverage is not limited to the agent's own model node. Offload/summarization and
+the Auto mode classifier invoke a model directly, outside `after_model`, and
+subagents run their own graph. `_SessionCostRecorder` — a callback handler
+installed process-wide for every model request (see `_install_recorder`) —
+collects one record per *completed* request, keyed by thread, and
+`CostTrackingMiddleware` drains and prices those records on the main agent's
+checkpoint path. New side invokes are covered with no extra wiring.
+
+The recorder only collects; the middleware alone prices and writes. The agent's
+own response is still priced from state, but only when the recorder did not
+already charge that message ID, so a request is never counted twice. That
+fallback keeps main-agent cost correct even for a model that never fires
+callbacks.
+
+Nested agents contribute through the same thread-keyed drain rather than a
+returned total: the subagent tool strips `PrivateStateAttr` channels in both
+directions, so `_session_cost_usd` neither seeds a subagent nor merges back.
+Nested instances install `CostTrackingMiddleware(nested=True)`, which records
+nothing and only zeroes the channel — a guard that keeps an inherited parent
+total from ever being added twice if that exclusion changes.
 
 Every caller uses `estimate_cost`, the only function that imports or calls
 `genai-prices`. The import is lazy so the package and its bundled pricing data
@@ -22,7 +38,11 @@ from __future__ import annotations
 import logging
 import math
 import operator
-from collections.abc import Mapping
+import threading
+from collections import OrderedDict
+from collections.abc import Mapping, Sequence
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired
 
 from langchain.agents.middleware.types import (
@@ -30,15 +50,29 @@ from langchain.agents.middleware.types import (
     ContextT,
     PrivateStateAttr,
 )
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage
+from langchain_core.runnables.config import ensure_config
 from langgraph.types import Overwrite
 
 from deepagents_code.resume_state import ResumeState
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
+    from langchain_core.outputs import LLMResult
     from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
+
+SESSION_COST_EVENT_TYPE = "session_cost"
+"""Custom-stream event type carrying the thread's absolute cumulative cost.
+
+Emitted by the durable writer so the status bar can track spend live without
+re-pricing anything. The payload is `{"type": ..., "total": <usd>}`; `total` is
+the full thread lifetime estimate, never a delta, so a client that misses an
+event still converges on the next one.
+"""
 
 _PROVIDER_ALIASES: dict[str, str] = {
     "azure_openai": "azure",
@@ -198,6 +232,238 @@ def resolve_message_model(
     return resolved_model, resolved_provider
 
 
+_MAX_TRACKED_THREADS = 64
+"""Threads held in the recorder at once.
+
+The middleware drains a thread on every model step, so a live thread holds at
+most one step of records. Extra entries mean model calls nobody drained — a run
+that died mid-turn, or a process (such as the client) that prices nothing. The
+cap bounds that residue instead of letting it grow for the process lifetime.
+"""
+
+_MAX_RECORDS_PER_THREAD = 1_024
+"""Undrained records kept for one thread before the oldest are dropped."""
+
+_MAX_INFLIGHT_REQUESTS = 4_096
+"""Started requests tracked at once, in case one neither ends nor errors."""
+
+
+@dataclass(frozen=True, slots=True)
+class _ModelCallRecord:
+    """One completed model request awaiting pricing."""
+
+    message_id: str | None
+    """Response message ID, used to avoid charging a request twice."""
+
+    usage_metadata: Mapping[str, Any]
+    """The request's LangChain `usage_metadata`."""
+
+    model_name: str
+    """Model named by the response, or `""` when it named none."""
+
+    provider: str
+    """Provider named by the response, or `""` when it named none."""
+
+
+class _SessionCostRecorder(BaseCallbackHandler):
+    """Collect completed model requests per thread for the graph to price.
+
+    Installed for every model request in the process, so it sees the agent model
+    node, subagent graphs, and direct side invokes (offload/summarization, the
+    Auto classifier) alike. It deliberately does no pricing: `estimate_cost`
+    imports `genai-prices` on first use, and this handler runs inline on the
+    event loop, which the server guards against blocking calls. The middleware
+    prices drained records from a worker thread instead.
+    """
+
+    run_inline = True
+    """Run in the calling context: dict bookkeeping only, no I/O to offload.
+
+    Running inline also keeps `on_chat_model_start` in the invoking context, so
+    the ambient config is available as a fallback source of the thread ID.
+    """
+
+    def __init__(self) -> None:
+        """Initialize empty per-run and per-thread state."""
+        self._lock = threading.Lock()
+        self._run_threads: OrderedDict[UUID, str] = OrderedDict()
+        self._records: OrderedDict[str, list[_ModelCallRecord]] = OrderedDict()
+
+    def _start(self, run_id: UUID, metadata: Mapping[str, Any] | None) -> None:
+        thread_id = metadata.get("thread_id") if metadata is not None else None
+        if not isinstance(thread_id, str) or not thread_id:
+            # A caller that passes its own `metadata` can replace the ambient
+            # metadata LangGraph populated, dropping `thread_id`. The ambient
+            # config survives that merge, so read the thread from there.
+            configurable = ensure_config().get("configurable") or {}
+            thread_id = configurable.get("thread_id")
+        if not isinstance(thread_id, str) or not thread_id:
+            # Without a thread there is nothing to attribute the cost to. The
+            # middleware still prices the agent's own response from state.
+            return
+        with self._lock:
+            self._run_threads[run_id] = thread_id
+            # A request that neither completes nor errors (a cancelled turn)
+            # leaves its entry behind, so evict the oldest rather than growing.
+            while len(self._run_threads) > _MAX_INFLIGHT_REQUESTS:
+                self._run_threads.popitem(last=False)
+
+    def on_chat_model_start(
+        self,
+        serialized: dict[str, Any],  # noqa: ARG002  # Callback interface.
+        messages: list[list[Any]],  # noqa: ARG002  # Callback interface.
+        *,
+        run_id: UUID,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,  # noqa: ARG002  # Callback interface.
+    ) -> None:
+        """Remember which thread a starting chat-model request belongs to."""
+        self._start(run_id, metadata)
+
+    def on_llm_start(
+        self,
+        serialized: dict[str, Any],  # noqa: ARG002  # Callback interface.
+        prompts: list[str],  # noqa: ARG002  # Callback interface.
+        *,
+        run_id: UUID,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,  # noqa: ARG002  # Callback interface.
+    ) -> None:
+        """Remember the thread for a starting completion-model request."""
+        self._start(run_id, metadata)
+
+    def on_llm_end(
+        self,
+        response: LLMResult,
+        *,
+        run_id: UUID,
+        **kwargs: Any,  # noqa: ARG002  # Callback interface.
+    ) -> None:
+        """Record the completed request's usage for its thread."""
+        with self._lock:
+            thread_id = self._run_threads.pop(run_id, None)
+        if thread_id is None:
+            return
+        try:
+            record = _record_from_response(response)
+        except Exception:
+            logger.debug("Could not read usage from a model response", exc_info=True)
+            return
+        if record is None:
+            return
+        with self._lock:
+            while thread_id not in self._records and (
+                len(self._records) >= _MAX_TRACKED_THREADS
+            ):
+                self._records.popitem(last=False)
+                logger.debug("Dropped undrained cost records for an inactive thread")
+            records = self._records.setdefault(thread_id, [])
+            self._records.move_to_end(thread_id)
+            records.append(record)
+            if len(records) > _MAX_RECORDS_PER_THREAD:
+                del records[:-_MAX_RECORDS_PER_THREAD]
+                logger.debug("Dropped the oldest undrained cost records for a thread")
+
+    def on_llm_error(
+        self,
+        error: BaseException,  # noqa: ARG002  # Callback interface.
+        *,
+        run_id: UUID,
+        **kwargs: Any,  # noqa: ARG002  # Callback interface.
+    ) -> None:
+        """Forget a failed request so its run entry cannot leak."""
+        with self._lock:
+            self._run_threads.pop(run_id, None)
+
+    def drain(self, thread_id: str) -> list[_ModelCallRecord]:
+        """Remove and return the records collected for one thread.
+
+        Args:
+            thread_id: Thread whose completed requests should be priced.
+
+        Returns:
+            Records for every request completed since the previous drain.
+        """
+        with self._lock:
+            return self._records.pop(thread_id, [])
+
+
+def _record_from_response(response: LLMResult) -> _ModelCallRecord | None:
+    """Build a pricing record from a completed model response.
+
+    Returns:
+        The record, or `None` when the response carries no usage to price.
+    """
+    message: object | None = None
+    usage_metadata: object = None
+    for generations in response.generations:
+        for generation in generations:
+            candidate = getattr(generation, "message", None)
+            candidate_usage = getattr(candidate, "usage_metadata", None)
+            # A response with several candidates reports usage for the request as
+            # a whole, on whichever generation the provider attached it to.
+            if candidate is not None and candidate_usage:
+                message = candidate
+                usage_metadata = candidate_usage
+    if message is None or not isinstance(usage_metadata, Mapping):
+        return None
+    model_name, provider = resolve_message_model(message)
+    message_id = getattr(message, "id", None)
+    return _ModelCallRecord(
+        message_id=message_id if isinstance(message_id, str) and message_id else None,
+        usage_metadata=dict(usage_metadata),
+        model_name=model_name,
+        provider=provider,
+    )
+
+
+_RECORDER = _SessionCostRecorder()
+"""The process-wide recorder that every model request reports to."""
+
+_RECORDER_VAR: ContextVar[_SessionCostRecorder | None] = ContextVar(
+    "deepagents_code_session_cost_recorder",
+    default=_RECORDER,
+)
+"""Context variable holding the recorder for LangChain's configure hooks.
+
+The default value is the recorder itself, so no caller has to install anything:
+`_configure` reads this variable while building every callback manager and
+attaches the handler it finds. A context that sets the variable to `None` opts
+out for the duration, which is how tests isolate the recorder.
+"""
+
+
+def _install_recorder() -> None:
+    """Attach the recorder to every model request made in this process.
+
+    `register_configure_hook` is the same mechanism LangSmith tracing uses. The
+    hook is registered non-inheritable so the handler is attached freshly per
+    request from the context variable rather than propagating through child runs
+    as an inherited callback.
+    """
+    from langchain_core.tracers.context import register_configure_hook
+
+    register_configure_hook(_RECORDER_VAR, inheritable=False)
+
+
+_install_recorder()
+
+
+def _drain_recorded_costs(thread_id: str | None) -> list[_ModelCallRecord]:
+    """Return the active recorder's pending records for a thread.
+
+    Args:
+        thread_id: Thread being priced, or `None` when the run has no thread.
+
+    Returns:
+        Records to price, or an empty list when there is nothing to drain.
+    """
+    recorder = _RECORDER_VAR.get()
+    if recorder is None or not thread_id:
+        return []
+    return recorder.drain(thread_id)
+
+
 class CostState(ResumeState):
     """Agent state extended with the cumulative thread-cost channel."""
 
@@ -205,41 +471,114 @@ class CostState(ResumeState):
     """Cumulative estimated USD cost for all priceable calls in this thread.
 
     Kept schema-private so cost is not part of public graph input/output, while
-    still using an additive reducer so each model call contributes only its own
-    estimate and nested agents can return their local total into the parent
-    without replacing the parent's prior spend. `operator.add` is last so
-    LangGraph still detects the reducer.
+    still using an additive reducer so each drain contributes only the spend it
+    priced and no write has to read-modify-write the running total.
+    `operator.add` is last so LangGraph still detects the reducer.
     """
 
 
+def _checkpointed_model_spec(state: CostState) -> tuple[str, str]:
+    """Return the `(model, provider)` checkpointed for the completed request.
+
+    Returns:
+        The model name and provider from `_model_spec`, either of which may be
+        `""` when the spec is absent or names only a model.
+    """
+    model_spec = state.get("_model_spec")
+    if not isinstance(model_spec, str) or not model_spec:
+        return "", ""
+    provider, separator, model_name = model_spec.partition(":")
+    if not separator:
+        return provider, ""
+    return model_name, provider
+
+
+def _pricing_target(
+    model_name: str,
+    provider: str,
+    fallback: tuple[str, str],
+) -> tuple[str, str]:
+    """Return the model and provider to price one request with.
+
+    Args:
+        model_name: Model the response named, or `""`.
+        provider: Provider the response named, or `""`.
+        fallback: The `(model, provider)` checkpointed for the request.
+
+    Returns:
+        The resolved pair, falling back to the checkpointed spec and then to the
+        configured CLI model. Either value may still be `""`, which
+        `estimate_cost` treats as unpriceable.
+    """
+    resolved_model = model_name or fallback[0]
+    resolved_provider = provider or fallback[1]
+    if not resolved_model:
+        from deepagents_code.config import settings
+
+        resolved_model = settings.model_name or ""
+        resolved_provider = resolved_provider or settings.model_provider or ""
+    return resolved_model, resolved_provider
+
+
+def _thread_id(runtime: Runtime[ContextT]) -> str | None:
+    """Return the thread whose recorded model calls this run should price.
+
+    Returns:
+        The execution's thread ID, or `None` when the run has no thread (an
+        uncheckpointed invoke), in which case nothing is drained.
+    """
+    execution_info = getattr(runtime, "execution_info", None)
+    thread_id = getattr(execution_info, "thread_id", None)
+    return thread_id if isinstance(thread_id, str) and thread_id else None
+
+
+def _latest_ai_message(messages: Sequence[Any]) -> AIMessage | None:
+    """Return the most recent AI message, if any.
+
+    Returns:
+        The last `AIMessage` in the sequence, or `None`.
+    """
+    for message in reversed(messages):
+        if isinstance(message, AIMessage):
+            return message
+    return None
+
+
 class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
-    """Accumulate priceable model usage into `_session_cost_usd` checkpoints."""
+    """Own the thread's cumulative `_session_cost_usd` checkpoint value.
+
+    The main agent's instance is the only writer of the channel: it prices every
+    model request recorded for the thread — its own, its subagents',
+    offload/summarization, and the Auto classifier — plus its own latest response
+    when the recorder did not already charge it.
+    """
 
     state_schema = CostState
 
-    def __init__(self, *, reset_on_start: bool = False) -> None:
+    def __init__(self, *, nested: bool = False) -> None:
         """Initialize cost tracking.
 
         Args:
-            reset_on_start: When `True`, clear the cost channel before the agent
-                runs. Subagents inherit parent state and need a clean zero so
-                their returned total is only nested spend.
+            nested: When `True`, this instance belongs to a subagent: it records
+                nothing (the thread's main agent prices nested spend from the
+                shared recorder) and only zeroes the channel before the agent
+                runs, so an inherited parent total can never be added twice.
         """
         super().__init__()
-        self._reset_on_start = reset_on_start
+        self._nested = nested
 
     def before_agent(  # ty: ignore[invalid-method-override]
         self,
         state: CostState,  # noqa: ARG002
         runtime: Runtime[ContextT],  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Optionally zero the cost channel before a nested agent run.
+        """Zero the cost channel before a nested agent run.
 
         Returns:
-            An overwrite of `_session_cost_usd` to `0.0` when nested start reset
-            is enabled, otherwise `None`.
+            An overwrite of `_session_cost_usd` to `0.0` for a nested instance,
+            otherwise `None`.
         """
-        if not self._reset_on_start:
+        if not self._nested:
             return None
         return {"_session_cost_usd": Overwrite(0.0)}
 
@@ -255,53 +594,150 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         """
         return self.before_agent(state, runtime)
 
-    def after_model(  # noqa: PLR6301  # AgentMiddleware hook must be an instance method.
+    def after_model(  # ty: ignore[invalid-method-override]
         self,
         state: CostState,
-        runtime: Runtime[ContextT],  # noqa: ARG002
+        runtime: Runtime[ContextT],
     ) -> dict[str, Any] | None:
-        """Contribute the latest model response's estimate as an additive delta.
+        """Charge every model request completed since the previous checkpoint.
 
         Args:
             state: Current state containing messages and prior session cost.
-            runtime: LangGraph runtime required by the middleware interface.
+            runtime: LangGraph runtime used to identify the thread and to stream
+                the new total to the client.
 
         Returns:
-            The latest request's estimated cost, or `None` when it cannot be
-            priced. Returning `None` leaves the prior checkpoint value unchanged.
+            The additive cost delta, or `None` when there is nothing priceable
+            to add. Returning `None` leaves the prior checkpoint value unchanged.
         """
-        for message in reversed(state.get("messages") or []):
-            if not isinstance(message, AIMessage):
-                continue
+        return self._charge(state, runtime, price_latest_message=True)
 
-            fallback_model = ""
-            fallback_provider = ""
-            model_spec = state.get("_model_spec")
-            if isinstance(model_spec, str) and model_spec:
-                fallback_provider, separator, fallback_model = model_spec.partition(":")
-                if not separator:
-                    fallback_model = fallback_provider
-                    fallback_provider = ""
+    def after_agent(  # ty: ignore[invalid-method-override]
+        self,
+        state: CostState,
+        runtime: Runtime[ContextT],
+    ) -> dict[str, Any] | None:
+        """Charge model requests that completed after the last model step.
 
-            model_name, provider = resolve_message_model(
-                message,
-                fallback_model=fallback_model,
-                fallback_provider=fallback_provider,
-            )
-            if not model_name:
-                from deepagents_code.config import settings
+        Work outside the agent loop can spend once `after_model` has run for the
+        final step: `ReliableRubricMiddleware.aafter_agent` runs a whole grading
+        agent, and `after_agent` hooks run in reverse stack order, so this one
+        drains after it. Anything that still spends later is charged on the next
+        turn's first step rather than lost, but draining here keeps the turn's
+        own checkpoint complete.
 
-                model_name = settings.model_name or ""
-                provider = provider or settings.model_provider or ""
+        Args:
+            state: Final state for the completed agent run.
+            runtime: LangGraph runtime used to identify the thread and to stream
+                the new total to the client.
 
+        Returns:
+            The additive cost delta, or `None` when nothing was left to charge.
+        """
+        return self._charge(state, runtime, price_latest_message=False)
+
+    def _charge(
+        self,
+        state: CostState,
+        runtime: Runtime[ContextT],
+        *,
+        price_latest_message: bool,
+    ) -> dict[str, Any] | None:
+        """Price drained requests and return the additive delta.
+
+        Args:
+            state: Current agent state.
+            runtime: LangGraph runtime for the running step.
+            price_latest_message: Whether to also price the latest AI message
+                when the recorder did not charge it. Only the model step that
+                produced the message does this; `after_agent` would otherwise
+                re-price a message an earlier drain already charged.
+
+        Returns:
+            The delta to add to `_session_cost_usd`, or `None` when it is zero.
+        """
+        if self._nested:
+            return None
+
+        fallback = _checkpointed_model_spec(state)
+        delta_usd = 0.0
+        charged_message_ids: set[str] = set()
+        charged_count = 0
+        for record in _drain_recorded_costs(_thread_id(runtime)):
             cost_usd = estimate_cost(
-                getattr(message, "usage_metadata", None),
-                model_name,
-                provider,
+                record.usage_metadata,
+                *_pricing_target(record.model_name, record.provider, fallback),
             )
             if cost_usd is None:
-                return None
+                continue
+            delta_usd += cost_usd
+            charged_count += 1
+            if record.message_id is not None:
+                charged_message_ids.add(record.message_id)
 
-            return {"_session_cost_usd": cost_usd}
+        if price_latest_message:
+            message = _latest_ai_message(state.get("messages") or [])
+            # A model that never fires callbacks (or a request the recorder
+            # could not attribute to this thread) leaves the agent's own
+            # response uncharged, so price it from state. Joining on message ID
+            # keeps a request the recorder already charged from being added
+            # twice; only successfully priced records are in the charged set.
+            # An unidentified response cannot be joined, so treat any charged
+            # request as covering it: undercounting one request beats charging
+            # the same one twice.
+            already_charged = (
+                message.id in charged_message_ids
+                if message is not None and message.id is not None
+                else charged_count > 0
+            )
+            if message is not None and not already_charged:
+                model_name, provider = resolve_message_model(
+                    message,
+                    fallback_model=fallback[0],
+                    fallback_provider=fallback[1],
+                )
+                cost_usd = estimate_cost(
+                    getattr(message, "usage_metadata", None),
+                    *_pricing_target(model_name, provider, fallback),
+                )
+                if cost_usd is not None:
+                    delta_usd += cost_usd
 
-        return None
+        if delta_usd <= 0:
+            return None
+        self._emit_total(state, runtime, delta_usd)
+        return {"_session_cost_usd": delta_usd}
+
+    @staticmethod
+    def _emit_total(
+        state: CostState,
+        runtime: Runtime[ContextT],
+        delta_usd: float,
+    ) -> None:
+        """Stream the thread's new absolute total for the live status bar.
+
+        The channel is schema-private, so it does not reach the client on the
+        state stream. Sending the absolute total (rather than the delta the
+        checkpoint stores) lets the client set the displayed figure outright and
+        stay correct even if it misses an event.
+
+        Args:
+            state: State carrying the total this delta applies to.
+            runtime: LangGraph runtime providing the custom stream writer.
+            delta_usd: Cost just charged to the channel.
+        """
+        writer = getattr(runtime, "stream_writer", None)
+        if not callable(writer):
+            return
+        prior_usd = state.get("_session_cost_usd")
+        if not isinstance(prior_usd, int | float) or not math.isfinite(prior_usd):
+            prior_usd = 0.0
+        try:
+            writer(
+                {
+                    "type": SESSION_COST_EVENT_TYPE,
+                    "total": max(float(prior_usd), 0.0) + delta_usd,
+                }
+            )
+        except Exception:
+            logger.debug("Could not emit the session cost event", exc_info=True)

@@ -3663,7 +3663,8 @@ class TestLoadThreadHistory:
         from deepagents_code.app import _ThreadHistoryPayload
 
         app = DeepAgentsApp(thread_id="tid-1")
-        app._session_cost_usd = 9.0
+        app._set_session_cost(9.0)
+        app._add_provisional_cost(0.5)
         app._thread_stats.record_request(
             "old-model",
             100,
@@ -3685,6 +3686,7 @@ class TestLoadThreadHistory:
         assert app._context_tokens == 8500
         assert app._session_cost_usd == pytest.approx(1.25)
         assert app._thread_restored_cost_usd == pytest.approx(1.25)
+        assert app._displayed_cost_usd == pytest.approx(1.25)
         assert app._thread_stats.request_count == 0
 
     async def test_zero_context_tokens_does_not_overwrite_cache(self) -> None:

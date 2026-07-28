@@ -2450,9 +2450,10 @@ def create_cli_agent(
             middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
         if not has_explicit_model:
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
-        # Nested model spend is written locally then returned into the parent
-        # additive cost channel. Reset first so parent totals are not re-added.
-        middleware.append(CostTrackingMiddleware(reset_on_start=True))
+        # Nested model spend is priced by the main agent from the shared
+        # thread-keyed cost recorder, so this instance only zeroes the channel:
+        # a guard in case a parent total ever starts seeding subagent state.
+        middleware.append(CostTrackingMiddleware(nested=True))
         # Interactive turns may legitimately be tool-free, so terminal-stall
         # recovery is installed only on headless stacks. The middleware itself
         # activates only for the measured Fireworks GLM-5.2 endpoint.
@@ -2556,7 +2557,10 @@ def create_cli_agent(
     # Resume state: declares private checkpoint channels used on resume.
     # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata
     # is written by `ConfigurableModelMiddleware` from the actual completed model
-    # request. `CostTrackingMiddleware` writes the separate cumulative thread cost.
+    # request. `CostTrackingMiddleware` is the sole writer of the cumulative
+    # thread cost, pricing every model request recorded for this thread —
+    # including subagent, offload, and Auto classifier calls that never reach
+    # `after_model` — so stack position does not affect what it covers.
     # The CLI reads these channels back from `state_values` on thread resume.
     # Goal tools: exposes the read-only `get_goal`/`get_rubric` tools and the
     # constrained `update_goal` tool, and maintains goal-state notices.

@@ -11,7 +11,7 @@ side produces it and which reads it.
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, NotRequired, get_args
+from typing import Annotated, Literal, NotRequired, assert_never, get_args
 
 from pydantic import Field
 from typing_extensions import TypedDict
@@ -22,23 +22,70 @@ QuestionType = Literal["text", "multiple_choice", "multi_select"]
 QUESTION_TYPES: frozenset[str] = frozenset(get_args(QuestionType))
 """Runtime membership view of `QuestionType`.
 
-Derived via `get_args` so the validators in `ask_user` and `auto_mode` cannot
-drift from the alias when a new question type is added. That drift would be
-silent: an unrecognized type makes `_ask_user_question_count` return `None`,
+Derived via `get_args` so the membership checks in `ask_user` and `auto_mode`
+cannot drift from the alias when a new question type is added. That drift would
+be silent: an unrecognized type makes `_ask_user_question_count` return `None`,
 which drops the user's answers as same-turn authorization without any error.
 """
 
-CHOICE_QUESTION_TYPES: frozenset[str] = frozenset({"multiple_choice", "multi_select"})
-"""Question types that require a non-empty `choices` list."""
+
+def _requires_choices(question_type: QuestionType) -> bool:
+    """Return whether `question_type` needs a non-empty `choices` list.
+
+    Args:
+        question_type: A member of `QuestionType`.
+
+    Returns:
+        True if questions of this type must define `choices`.
+    """
+    if question_type == "text":
+        return False
+    if question_type in {"multiple_choice", "multi_select"}:
+        return True
+    # Exhaustiveness guard: adding a `QuestionType` member without deciding here
+    # whether it needs choices fails type checking rather than silently landing
+    # on the wrong side of `CHOICE_QUESTION_TYPES`.
+    assert_never(question_type)
+
+
+CHOICE_QUESTION_TYPES: frozenset[str] = frozenset(
+    question_type
+    for question_type in get_args(QuestionType)
+    if _requires_choices(question_type)
+)
+"""Question types that require a non-empty `choices` list.
+
+Derived from `_requires_choices` rather than written out, so it cannot omit a
+new choice-based `QuestionType` member. Note that requiring `choices` is not the
+same as being *rendered* as a choice list: the TUI has its own exhaustive
+dispatch in `_QuestionWidget.compose`.
+"""
 
 MULTI_SELECT_ANSWER_SEPARATOR = ", "
 """Separator joining the selected values of a `multi_select` answer."""
+
+MULTI_SELECT_FORBIDDEN_IN_VALUE = ","
+"""Substring a `multi_select` choice value must not contain.
+
+Kept separate from `MULTI_SELECT_ANSWER_SEPARATOR` so validation states the
+forbidden text outright instead of deriving it by stripping the separator. That
+derivation only happened to work for punctuation: a separator of `" and "` would
+have rejected every value containing "and".
+"""
 
 
 class Choice(TypedDict):
     """A single choice option for a multiple choice or multi-select question."""
 
-    value: Annotated[str, Field(description="The display label for this choice.")]
+    value: Annotated[
+        str,
+        Field(
+            description=(
+                "The display label for this choice. Also the text returned as "
+                "the answer when this choice is selected."
+            )
+        ),
+    ]
 
 
 class Question(TypedDict):

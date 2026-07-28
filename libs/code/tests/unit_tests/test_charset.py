@@ -2,6 +2,7 @@
 
 import os
 import sys
+from dataclasses import fields
 from unittest.mock import Mock, patch
 
 import pytest
@@ -115,34 +116,15 @@ class TestGlyphs:
             UNICODE_GLYPHS.tool_prefix = "changed"  # ty: ignore
 
     def test_glyphs_all_fields_present(self) -> None:
-        """Test that both glyph sets have all required fields."""
-        required_fields = [
-            "tool_prefix",
-            "ellipsis",
-            "checkmark",
-            "error",
-            "circle_empty",
-            "circle_filled",
-            "checkbox_empty",
-            "checkbox_checked",
-            "output_prefix",
-            "spinner_frames",
-            "pause",
-            "newline",
-            "warning",
-            "arrow_up",
-            "arrow_down",
-            "bullet",
-            "cursor",
-            # Box-drawing characters
-            "box_horizontal",
-            "hunk_break",
-        ]
-        for field in required_fields:
-            assert hasattr(UNICODE_GLYPHS, field)
-            assert hasattr(ASCII_GLYPHS, field)
-            assert getattr(UNICODE_GLYPHS, field) is not None
-            assert getattr(ASCII_GLYPHS, field) is not None
+        """Test that both glyph sets populate every declared field.
+
+        Enumerated from `dataclasses.fields` rather than a hand-written list: a
+        restated list silently stops covering new fields, and this one had
+        already drifted behind six of them.
+        """
+        for field in fields(Glyphs):
+            assert getattr(UNICODE_GLYPHS, field.name) is not None
+            assert getattr(ASCII_GLYPHS, field.name) is not None
 
 
 class TestDetectCharsetMode:

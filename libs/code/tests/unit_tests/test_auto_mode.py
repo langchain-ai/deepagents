@@ -5143,6 +5143,16 @@ class TestAskUserQuestionCount:
         call = _ask_user_call([{"question": "Q?", "type": "multiselect"}])
         assert _ask_user_question_count(cast("Any", call)) is None
 
+    def test_rejects_non_boolean_required(self) -> None:
+        """`_validate_questions` now raises on this rather than letting it here.
+
+        Kept as a regression test for the counting side: if this check were
+        dropped, a `required` that pydantic coerced would stop voiding
+        authorization silently, but the two layers would disagree again.
+        """
+        call = _ask_user_call([{"question": "Q?", "type": "text", "required": "false"}])
+        assert _ask_user_question_count(cast("Any", call)) is None
+
     def test_rejects_text_question_carrying_choices(self) -> None:
         call = _ask_user_call(
             [{"question": "Name?", "type": "text", "choices": [{"value": "a"}]}]

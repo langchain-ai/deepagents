@@ -16,6 +16,7 @@ from deepagents_code._ask_user_types import (
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
     QUESTION_TYPES,
     Question,
+    _requires_choices,
 )
 from deepagents_code.ask_user import (
     AskUserMiddleware,
@@ -91,8 +92,9 @@ class TestValidateQuestions:
             )
 
     def test_rejects_non_string_choice_value(self) -> None:
-        # Deliberately ill-typed: guards the runtime check against payloads that
-        # never passed through the tool's pydantic schema.
+        # Deliberately ill-typed. On the tool path pydantic rejects this shape
+        # first, so this exercises `_validate_choices`' belt-and-braces content
+        # checks directly — see the note on the loop in `_validate_choices`.
         questions = cast(
             "list[Question]",
             [
@@ -131,8 +133,35 @@ class TestValidateQuestions:
             ]
         )
 
+    def test_rejects_unknown_question_type(self) -> None:
+        """Nothing outside `QuestionType` may reach the interrupt."""
+        questions = cast("list[Question]", [{"question": "Q?", "type": "multiselect"}])
+        with pytest.raises(ValueError, match="unsupported ask_user question type"):
+            _validate_questions(questions)
+
+    def test_rejects_non_boolean_required(self) -> None:
+        """A non-boolean `required` would silently void same-turn authorization.
+
+        Pydantic coerces `"false"` to `False`, so the prompt would render and the
+        user would answer — but `_ask_user_question_count` reads the raw tool
+        args, rejects the string, and returns `None`, dropping every answer in
+        the call as authorization with no error. Fail loudly here instead.
+        """
+        questions = cast(
+            "list[Question]",
+            [{"question": "Q?", "type": "text", "required": "false"}],
+        )
+        with pytest.raises(ValueError, match="non-boolean 'required'"):
+            _validate_questions(questions)
+
     def test_accepts_every_declared_question_type(self) -> None:
-        """Guards against a new `QuestionType` member the validator rejects."""
+        """Guards against a `QuestionType` member the validator rejects.
+
+        Note this cannot catch a member *added* to `QuestionType`, since the
+        fixture derives its shape from `CHOICE_QUESTION_TYPES`. That direction is
+        covered by `test_choice_question_types_covers_every_question_type` and by
+        the widget-side `assert_never` in `_QuestionWidget.compose`.
+        """
         for question_type in sorted(QUESTION_TYPES):
             question: dict[str, Any] = {
                 "question": "Q?",
@@ -141,6 +170,37 @@ class TestValidateQuestions:
             if question_type in CHOICE_QUESTION_TYPES:
                 question["choices"] = [{"value": "a"}, {"value": "b"}]
             _validate_questions([cast("Question", question)])
+
+    def test_choice_question_types_covers_every_question_type(self) -> None:
+        """`CHOICE_QUESTION_TYPES` must partition `QUESTION_TYPES`, not lag it.
+
+        Non-tautological in the direction that matters: a `QuestionType` member
+        missing from `_requires_choices` would pass `_validate_questions` with no
+        choices validation *and* make `_ask_user_question_count` return `None`
+        for any payload that does carry choices.
+        """
+        assert CHOICE_QUESTION_TYPES <= QUESTION_TYPES
+        assert {
+            question_type
+            for question_type in QUESTION_TYPES
+            if _requires_choices(cast("Any", question_type))
+        } == CHOICE_QUESTION_TYPES
+
+    def test_non_choice_question_types_reject_choices(self) -> None:
+        """Every non-choice type must refuse a `choices` list."""
+        for question_type in sorted(QUESTION_TYPES - CHOICE_QUESTION_TYPES):
+            questions = cast(
+                "list[Question]",
+                [
+                    {
+                        "question": "Q?",
+                        "type": question_type,
+                        "choices": [{"value": "a"}],
+                    }
+                ],
+            )
+            with pytest.raises(ValueError, match="must not define 'choices'"):
+                _validate_questions(questions)
 
     def test_accepts_valid_question_set(self) -> None:
         _validate_questions(

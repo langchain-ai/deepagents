@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
 if TYPE_CHECKING:
@@ -28,12 +28,12 @@ from deepagents_code._ask_user_types import (
     ASK_USER_CANCELLED_ANSWER,
     CHOICE_QUESTION_TYPES,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
-    MULTI_SELECT_ANSWER_SEPARATOR,
+    MULTI_SELECT_FORBIDDEN_IN_VALUE,
     QUESTION_TYPES,
     AskUserAuthorizationReceipt,
     AskUserRequest,
-    Choice,
     Question,
+    QuestionType,
     format_ask_user_error_answer,
     format_ask_user_transcript,
 )
@@ -80,25 +80,29 @@ When using `ask_user`:
 
 
 def _validate_choices(
-    choices: list[Choice], *, question_text: str, question_type: str
+    choices: Sequence[object], *, question_text: str, question_type: QuestionType
 ) -> None:
     """Validate the choice list of a choice-type question.
 
     Rejects blank values, which would otherwise render as an unlabelled option
     the user can select but whose answer reads as "no answer". For
-    `multi_select`, also rejects values containing the separator used to join
-    the selected values, since that would make the answer ambiguous.
+    `multi_select`, also rejects values containing
+    `MULTI_SELECT_FORBIDDEN_IN_VALUE`, since a value carrying the punctuation
+    that separates selections would make the joined answer ambiguous.
 
     Args:
         choices: Candidate `choices` value from a question definition.
         question_text: Question text, for error messages.
-        question_type: Question type, for error messages.
+        question_type: Question type. Selects the `multi_select`-only separator
+            check, and names the type in error messages.
 
     Raises:
         ValueError: If any choice is malformed, blank, or ambiguous.
     """
-    # `choices` is already a `list[Choice]` by the time pydantic has parsed the
-    # tool args; this only guards the contents.
+    # On the tool path pydantic has already parsed `choices` into `list[Choice]`,
+    # so the shape checks below are redundant there. They are kept — and the
+    # parameter typed as a plain sequence — so this stays safe if it is ever
+    # called on a raw, unparsed payload.
     for choice in choices:
         value = choice.get("value") if isinstance(choice, Mapping) else None
         if not isinstance(value, str) or not value.strip():
@@ -107,14 +111,11 @@ def _validate_choices(
                 f"missing or blank 'value': {choice!r}"
             )
             raise ValueError(msg)
-        if (
-            question_type == "multi_select"
-            and MULTI_SELECT_ANSWER_SEPARATOR.strip() in value
-        ):
+        if question_type == "multi_select" and MULTI_SELECT_FORBIDDEN_IN_VALUE in value:
             msg = (
                 f"multi_select question {question_text!r} has a choice value "
-                f"containing {MULTI_SELECT_ANSWER_SEPARATOR.strip()!r}, which "
-                f"would make the joined answer ambiguous: {value!r}"
+                f"containing {MULTI_SELECT_FORBIDDEN_IN_VALUE!r}, which would "
+                f"make the joined answer ambiguous: {value!r}"
             )
             raise ValueError(msg)
 
@@ -141,6 +142,18 @@ def _validate_questions(questions: list[Question]) -> None:
         question_type = q.get("type")
         if question_type not in QUESTION_TYPES:
             msg = f"unsupported ask_user question type: {question_type!r}"
+            raise ValueError(msg)
+
+        # `_ask_user_question_count` rejects a non-boolean `required` on the raw
+        # tool args, so accepting one here would let pydantic's lax coercion
+        # ("false" -> False) render the prompt and then silently drop every
+        # answer in the call as same-turn authorization. Fail loudly instead.
+        required = q.get("required")
+        if required is not None and not isinstance(required, bool):
+            msg = (
+                f"ask_user question {question_text!r} has a non-boolean "
+                f"'required': {required!r}"
+            )
             raise ValueError(msg)
 
         if question_type in CHOICE_QUESTION_TYPES:

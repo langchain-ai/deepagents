@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, assert_never
 
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical
@@ -43,6 +43,9 @@ from deepagents_code.tui.widgets._inline_prompt import (
 
 OTHER_CHOICE_LABEL = "Other (type your answer)"
 MISSING_ANSWER_TOAST = "Please provide an answer to all questions before continuing."
+UNSUBMITTABLE_ANSWER_TOAST = (
+    "Could not submit this answer (internal UI error). Press Esc to cancel and retry."
+)
 logger = logging.getLogger(__name__)
 
 _TRAILING_ANNOTATION_RE = re.compile(
@@ -85,6 +88,10 @@ class AskUserTextArea(InlinePromptTextArea):
             at_bottom = self.get_cursor_down_location() == cursor_location
             if (event.key == "up" and at_top) or (event.key == "down" and at_bottom):
                 question = self._find_question_widget()
+                # Deliberately `multiple_choice` rather than
+                # `CHOICE_QUESTION_TYPES`: this hand-off only makes sense for a
+                # question that owns both a choice list and a text area, and
+                # `multi_select` owns no text area to be focused in.
                 if question is not None and question._q_type == "multiple_choice":
                     event.prevent_default()
                     event.stop()
@@ -204,14 +211,13 @@ class AskUserMenu(Container):
             The bullet-joined footer hint string.
         """
         glyphs = get_glyphs()
-        has_multi_select = any(
-            qw.question_type == "multi_select" for qw in self._question_widgets
-        )
         parts = [f"{glyphs.arrow_up}/{glyphs.arrow_down} move"]
-        if has_multi_select:
-            parts.extend(("Space toggle", "Enter confirm selection"))
-        else:
-            parts.append("Enter to continue")
+        # Additive rather than replacing "Enter to continue": in a mixed prompt
+        # the other questions still continue on Enter, so swapping the hint out
+        # wholesale would describe the wrong keys while they are active.
+        if any(qw.question_type == "multi_select" for qw in self._question_widgets):
+            parts.append("Space toggle")
+        parts.append("Enter to continue")
         if self._show_editor_hint():
             editor = editor_display_name()
             parts.append(
@@ -219,7 +225,7 @@ class AskUserMenu(Container):
                 if editor is not None
                 else "Ctrl+X external editor"
             )
-        # Multi-select questions own no text area, so a prompt made up entirely
+        # A multi-select question owns no text area, so a prompt made up entirely
         # of them has nowhere to insert a newline.
         if any(qw.has_text_input for qw in self._question_widgets):
             parts.append(newline_hint())
@@ -301,9 +307,11 @@ class AskUserMenu(Container):
             self._submit()
             return
 
-        # A confirmed required question was left empty. Reachable normally: the
-        # user can navigate back to a confirmed multi-select and un-toggle every
-        # option. Re-open it and say why, so the jump is not unexplained.
+        # A confirmed required question was left empty. Reachable normally for
+        # any type: the user can Shift+Tab back to a confirmed question and
+        # clear it (un-toggle every multi-select option, or empty a text area),
+        # then confirm a different question, which re-collects all answers here.
+        # Re-open it and say why, so the jump is not unexplained.
         for i, a in enumerate(self._answers):
             if not a.strip() and self._question_widgets[i]._required:
                 self._confirmed[i] = False
@@ -407,12 +415,15 @@ class _ChoiceOption(InlinePromptOption):
 class _MultiSelectOption(_ChoiceOption):
     """A toggleable ask-user choice option for `multi_select` questions.
 
-    Renders a square checkbox glyph (`checkbox_checked`/`checkbox_empty`) before
-    the label so the user can see which options are toggled on, independent of
-    the highlight cursor. Squares distinguish multi-select from single-choice
-    lists and plain bullet points. This is the source of truth for whether a
-    choice is selected; `_QuestionWidget` reads it back rather than tracking
-    selection separately.
+    Renders a checkbox glyph (`checkbox_checked`/`checkbox_empty`) before the
+    label so the user can see which options are toggled on, independent of the
+    highlight cursor. The box is what distinguishes multi-select from a
+    single-choice list, whose options carry a cursor and nothing else. This is
+    the source of truth for whether a choice is toggled on; `_QuestionWidget`
+    reads it back rather than tracking that separately.
+
+    Note the inherited `selected` means "the highlight cursor is on this
+    option", *not* "toggled on" — read `checked` for the latter.
 
     Overriding `_render` is what keeps the glyph correct: the base class's
     `select`/`deselect`/`set_state` all re-render through it, so cursor movement
@@ -468,6 +479,12 @@ class _QuestionWidget(Vertical):
         Binding("k", "move_up", "Up", show=False),
         Binding("down", "move_down", "Down", show=False),
         Binding("j", "move_down", "Down", show=False),
+        # Safe despite the text-area children: Textual resolves the focused
+        # widget's `check_consume_key` before ancestor bindings, and
+        # `AskUserTextArea` claims printable keys, so a space still types into a
+        # focused text area rather than being swallowed here. `check_action`
+        # below keeps the binding from consuming space on non-multi-select
+        # questions, where the question container itself holds focus.
         Binding("space", "toggle_choice", "Toggle", show=False),
         Binding("enter", "select_or_submit", "Select", show=False),
     ]
@@ -489,9 +506,10 @@ class _QuestionWidget(Vertical):
         self._index: int = index
         self._show_number = show_number
         if question_type not in QUESTION_TYPES:
-            # Runtime defense: the widget is also built from interrupt payloads
-            # that never went through `_validate_questions`. Log rather than
-            # silently render a choice question as a free-text box.
+            # Belt-and-braces: `TypeAdapter(AskUserRequest)` in `textual_adapter`
+            # already rejects an unknown type before the payload reaches here, so
+            # this only covers direct construction (tests, a future non-TUI
+            # host). Log, rather than silently falling back to a text box.
             logger.warning(
                 "ask_user question %d has unrecognized type %r; rendering as text",
                 index,
@@ -501,11 +519,17 @@ class _QuestionWidget(Vertical):
         self._q_type: QuestionType = question_type
         self._choices: list[Choice] = question.get("choices", [])
         if self._q_type in CHOICE_QUESTION_TYPES and not self._choices:
+            # This one is a real gap: `choices` is `NotRequired`, so the adapter
+            # accepts a choice question with none and only `_validate_questions`
+            # rejects it. Degrade `_q_type` too, not just the rendering, so it
+            # stays a true discriminant — otherwise the help footer advertises
+            # "Space toggle" for what is actually a text box.
             logger.warning(
                 "ask_user %s question %d has no choices; rendering as text",
                 self._q_type,
                 index,
             )
+            self._q_type = "text"
         self._required: bool = question.get("required", True)
         self._choice_widgets: list[_ChoiceOption] = []
         self._multi_select_widgets: list[_MultiSelectOption] = []
@@ -513,6 +537,25 @@ class _QuestionWidget(Vertical):
         self._text_input: AskUserTextArea | None = None
         self._other_input: AskUserTextArea | None = None
         self._is_other_selected: bool = False
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Disable `toggle_choice` on questions that have nothing to toggle.
+
+        Returning `None` (rather than `False`) leaves the binding unmatched, so
+        `space` bubbles instead of being silently consumed on `text` and
+        `multiple_choice` questions.
+
+        Args:
+            action: Name of the action being checked.
+            parameters: Action parameters, unused.
+
+        Returns:
+            `None` to leave `toggle_choice` unbound here, otherwise the base
+            class's answer.
+        """
+        if action == "toggle_choice" and self._q_type != "multi_select":
+            return None
+        return super().check_action(action, parameters)
 
     @property
     def question_type(self) -> QuestionType:
@@ -523,10 +566,15 @@ class _QuestionWidget(Vertical):
     def has_text_input(self) -> bool:
         """Whether this question owns a text area.
 
-        Mirrors `compose`: every type except a multi-select with choices yields
-        either the main text input or the multiple-choice "Other" input.
+        Recomputed from `_q_type` rather than read off `_text_input` /
+        `_other_input`, because `AskUserMenu.compose` consults this before the
+        child widgets have composed, when both attributes are still `None`.
+
+        Every type except `multi_select` yields either the main text input or the
+        multiple-choice "Other" input; `__init__` degrades a choice-less
+        multi-select to `text`, so this needs no `choices` co-check.
         """
-        return not (self._q_type == "multi_select" and bool(self._choices))
+        return self._q_type != "multi_select"
 
     def compose(self) -> ComposeResult:
         q_text = _TRAILING_ANNOTATION_RE.sub("", self._question.get("question", ""))
@@ -542,7 +590,11 @@ class _QuestionWidget(Vertical):
         # agents can use inline formatting, links, and code spans in questions.
         yield Markdown(f"{prefix}{q_text}{suffix}", classes="ask-user-question-text")
 
-        if self._q_type == "multiple_choice" and self._choices:
+        # `__init__` guarantees a choice type here has a non-empty `_choices`, so
+        # these branches need no `and self._choices` co-guard. The `assert_never`
+        # makes the dispatch exhaustive: a new `QuestionType` member fails type
+        # checking here instead of silently falling through to a text box.
+        if self._q_type == "multiple_choice":
             for i, choice in enumerate(self._choices):
                 # Same fallback as `get_answer`, so the rendered label can never
                 # disagree with the value submitted for it.
@@ -558,16 +610,18 @@ class _QuestionWidget(Vertical):
             self._other_input = AskUserTextArea(classes="ask-user-other-input")
             self._other_input.display = False
             yield self._other_input
-        elif self._q_type == "multi_select" and self._choices:
+        elif self._q_type == "multi_select":
             for i, choice in enumerate(self._choices):
                 label = choice.get("value", "")
                 msw = _MultiSelectOption(label, index=i, selected=(i == 0))
                 self._choice_widgets.append(msw)
                 self._multi_select_widgets.append(msw)
                 yield msw
-        else:
+        elif self._q_type == "text":
             self._text_input = AskUserTextArea(classes="ask-user-text-input")
             yield self._text_input
+        else:
+            assert_never(self._q_type)
 
     def focus_input(self) -> None:
         """Focus the appropriate input for this question."""
@@ -588,10 +642,12 @@ class _QuestionWidget(Vertical):
         A multi-select answer is the toggled values in choice-list order (not
         the order they were toggled) joined with
         `MULTI_SELECT_ANSWER_SEPARATOR`, and is empty when nothing is toggled.
-        `_validate_choices` rejects values containing that separator, so the
-        join stays unambiguous.
+        On the tool path `_validate_choices` rejects values containing
+        `MULTI_SELECT_FORBIDDEN_IN_VALUE`, so the join is unambiguous; a payload
+        that bypassed it can still produce an ambiguous answer, since the
+        interrupt adapter does not enforce that rule.
         """
-        if self._q_type == "text" or not self._choices:
+        if self._q_type == "text":
             return self._text_input.submitted_value if self._text_input else ""
 
         if self._q_type == "multi_select":
@@ -644,17 +700,21 @@ class _QuestionWidget(Vertical):
         if self._q_type != "multi_select" or not self._multi_select_widgets:
             return
         index = self._selected_choice
-        if index >= len(self._multi_select_widgets):
-            # Unreachable: `action_move_down` caps the cursor at the last choice
-            # and multi-select adds no synthetic "Other" row. Log rather than
-            # swallow, since reaching it means the cursor and choices skewed.
+        if not 0 <= index < len(self._multi_select_widgets):
+            # Unreachable: `action_move_down` caps the cursor at the last choice,
+            # `action_move_up` clamps it at 0, and multi-select adds no synthetic
+            # "Other" row. Log rather than swallow, since reaching it means the
+            # cursor and choices skewed. Clamp instead of returning so the
+            # keypress still does what the user sees, rather than reading as a
+            # frozen UI. Note the lower bound matters: a negative index would
+            # otherwise toggle a box the cursor is not on.
             logger.error(
-                "multi_select question %d cursor %d exceeds %d toggleable choices",
+                "multi_select question %d cursor %d outside 0..%d toggleable choices",
                 self._index,
                 index,
-                len(self._multi_select_widgets),
+                len(self._multi_select_widgets) - 1,
             )
-            return
+            index = min(max(index, 0), len(self._multi_select_widgets) - 1)
         widget = self._multi_select_widgets[index]
         widget.set_checked(not widget.checked)
 
@@ -664,7 +724,7 @@ class _QuestionWidget(Vertical):
         For multi-select, warns and keeps the question open while a required
         question has nothing toggled.
         """
-        if self._q_type == "multi_select" and self._choice_widgets:
+        if self._q_type == "multi_select":
             if not self.get_answer().strip() and self._required:
                 # Keep the question open until at least one option is selected,
                 # and say so — a bare no-op reads as a frozen UI.
@@ -675,8 +735,17 @@ class _QuestionWidget(Vertical):
                 )
                 return
             menu = self._find_menu()
-            if menu is not None:
-                menu.confirm_and_advance(self._index)
+            if menu is None:
+                # `_find_menu` logs, but a bare return would leave the user
+                # pressing Enter with no advance and no explanation while the
+                # agent stays blocked on the interrupt.
+                self.app.notify(
+                    UNSUBMITTABLE_ANSWER_TOAST,
+                    severity="error",
+                    markup=False,
+                )
+                return
+            menu.confirm_and_advance(self._index)
             return
         if self._q_type == "multiple_choice" and self._choice_widgets:
             is_other = self._selected_choice == len(self._choices)

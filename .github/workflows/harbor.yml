@@ -221,7 +221,10 @@ jobs:
           MODELS_OVERRIDE: ${{ inputs.models_override || '(empty)' }}
           SANDBOX_ENV: ${{ inputs.sandbox_env }}
           AGENT_IMPL: ${{ inputs.agent_impl }}
-          DATASET: ${{ inputs.dataset_override || inputs.dataset || 'terminal-bench/terminal-bench-2' }}
+          # A local-dataset run leaves the `dataset` dropdown at its registry
+          # default while actually running `--path`, so the path has to win or
+          # this summary names a dataset that never ran.
+          DATASET: ${{ inputs.dataset_path || inputs.dataset_override || inputs.dataset || 'terminal-bench/terminal-bench-2' }}
           N_TASKS: ${{ inputs.n_tasks }}
           INCLUDE_TASKS: ${{ inputs.include_tasks }}
           ROLLOUTS_PER_TASK: ${{ inputs.rollouts_per_task }}

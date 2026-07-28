@@ -947,3 +947,22 @@ def test_search_defers_langsmith_project_to_the_plugin() -> None:
     )
     # Tracing itself stays on for every category.
     assert "--agent-env 'LANGSMITH_TRACING=true'" in reusable
+
+
+def test_every_dataset_display_prefers_the_local_path() -> None:
+    """A local-dataset run must never be *displayed* as the registry default.
+
+    `harbor.yml`'s `dataset` input keeps its `terminal-bench/terminal-bench-2`
+    default while a `dataset_path` run actually executes `--path`. Any place that
+    surfaces the dataset to a human or into results has to prefer the path, or it
+    reports a dataset that never ran. This has now been fixed twice — in the
+    aggregate matrix and in the dispatch summary — so it is pinned here.
+    """
+    dispatch = HARBOR_DISPATCH_WORKFLOW.read_text()
+    step = _indented_block(dispatch, '      - name: "📝 Log dispatch inputs"')
+
+    assert "DATASET: ${{ inputs.dataset_path || inputs.dataset_override" in step
+
+    reusable = HARBOR_WORKFLOW.read_text()
+    agg = _indented_block(reusable, '      - name: "🗂️ Derive aggregate matrix"')
+    assert 'os.environ.get("SINGLE_DATASET_PATH", "").strip()' in agg

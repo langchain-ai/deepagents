@@ -7484,13 +7484,19 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(self._approval_mode.value)
 
     def _warn_yolo_active(self, *, timeout: float) -> None:
-        """Warn that YOLO runs gated actions without review.
+        """Warn that YOLO runs gated actions without review, unless muted.
 
         Users who deliberately live in YOLO can mute the recurring toast from
-        `/notifications` (or by adding `YOLO_WARNING_KEY` to
-        `[warnings].suppress` in `config.toml`). Only the toast is muted: the
-        first-enable acknowledgement and the status-bar mode indicator still
-        make unrestricted mode explicit and visible.
+        `/notifications`, or by adding `"yolo"` (`YOLO_WARNING_KEY`) to
+        `[warnings].suppress` in `~/.deepagents/config.toml`. Only the toast is
+        muted; see `YOLO_WARNING_KEY` for what suppression leaves untouched.
+
+        Deliberately synchronous. Callers warn *before* awaiting anything, so
+        that a cancellation or a raise downstream can never land between "YOLO
+        is live" and "the user was told". Offloading the small config read to
+        a thread (as `_show_notification_settings` does) would reopen exactly
+        that window. An unreadable or malformed config fails open: when
+        suppression cannot be determined, the warning still fires.
 
         Args:
             timeout: Seconds the toast stays on screen.
@@ -7498,7 +7504,15 @@ class DeepAgentsApp(App):
         from deepagents_code.approval_mode import YOLO_WARNING_KEY
         from deepagents_code.model_config import is_warning_suppressed
 
-        if is_warning_suppressed(YOLO_WARNING_KEY):
+        try:
+            suppressed = is_warning_suppressed(YOLO_WARNING_KEY)
+        except Exception:
+            logger.warning(
+                "Could not read YOLO warning suppression; showing the warning",
+                exc_info=True,
+            )
+            suppressed = False
+        if suppressed:
             return
         self.notify(
             "YOLO is active: gated actions run without review.",
@@ -17097,10 +17111,12 @@ class DeepAgentsApp(App):
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
         elif target is ApprovalMode.YOLO:
-            # Warn before the await below. State is already committed above, so
-            # if goal-rubric auto-accept raises, YOLO is active and the "no
-            # review" warning must have fired first. AUTO notifies before its
-            # await for the same reason.
+            # Warn before the await below. State is already committed above,
+            # so if goal-rubric auto-accept raises, YOLO is active and the "no
+            # review" warning has already been attempted. AUTO notifies before
+            # its await for the same reason. Both can legitimately no-op — the
+            # YOLO toast when suppressed, the AUTO notice after its first run —
+            # so this ordering guarantees the attempt, not the delivery.
             self._warn_yolo_active(timeout=8)
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()

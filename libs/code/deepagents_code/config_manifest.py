@@ -1344,7 +1344,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         group="Warnings",
         summary=(
             "Warning keys to suppress (e.g. 'ripgrep', 'tavily', 'yolo'); "
-            "also editable from `/notifications`."
+            "also editable from /notifications."
         ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("warnings", "suppress"),

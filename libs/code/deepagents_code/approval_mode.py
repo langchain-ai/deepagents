@@ -29,9 +29,12 @@ YOLO_ACKNOWLEDGEMENT_POLICY_VERSION = "2026-07-14"
 YOLO_WARNING_KEY = "yolo"
 """`[warnings].suppress` key that mutes the recurring "YOLO is active" toast.
 
-Suppression is cosmetic: the first-enable acknowledgement modal, the approval
-switcher policy, and the status-bar mode indicator are unaffected, so YOLO is
-still an explicit, visible opt-in.
+Suppression is cosmetic: YOLO still requires an explicit acknowledgement to
+enter (a modal in the TUI, a console prompt for `--yolo`), still honors the
+`startup.yolo_switcher` setting, and still shows a persistent `YOLO`
+status-bar indicator the whole time it is active. Because the acknowledgement
+is once per policy version, that indicator is the only remaining in-session
+signal for a returning user who has muted the toast.
 """
 
 AUTO_NOTICE_VERSION = "2026-07-24"

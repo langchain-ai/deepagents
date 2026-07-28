@@ -156,6 +156,12 @@ class NotificationSettingsScreen(ModalScreen[None]):
                 )
                 ok = False
             if not ok:
+                # Roll the box back to what is actually on disk. Leaving it
+                # showing the requested state would claim a warning is armed
+                # when it is still suppressed — the unsafe direction to lie in.
+                # `prevent` keeps the rollback from re-entering this handler.
+                with event.checkbox.prevent(Checkbox.Changed):
+                    event.checkbox.value = not enabled
                 self.app.notify(
                     "Could not save notification preference. "
                     "Check file permissions for ~/.deepagents/config.toml.",

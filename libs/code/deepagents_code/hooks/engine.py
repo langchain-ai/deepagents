@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from deepagents_code.hooks.capabilities import get_event_spec
+from deepagents_code.hooks.envelope import HookEnvelopeAdapter
 from deepagents_code.hooks.models.domain import HookDiagnostic
-from deepagents_code.hooks.projection import serialize_hook_input
-from deepagents_code.hooks.reducer import reduce_hook_results
 from deepagents_code.hooks.runner import (
     MAX_HOOK_OUTPUT_BYTES,
     run_command_handler,
@@ -29,6 +28,7 @@ class HookEngine:
     snapshot: HooksSnapshot
     default_timeout: float | None = None
     max_output_bytes: int = MAX_HOOK_OUTPUT_BYTES
+    adapter: HookEnvelopeAdapter = field(default_factory=HookEnvelopeAdapter)
 
     async def run(
         self,
@@ -53,7 +53,7 @@ class HookEngine:
         """
         match = self.snapshot.match(invocation)
         try:
-            payload = serialize_hook_input(
+            payload = self.adapter.serialize_input(
                 invocation,
                 transcript_path=transcript_path,
                 agent_transcript_path=agent_transcript_path,
@@ -64,7 +64,7 @@ class HookEngine:
                 severity="warning",
                 message=f"Could not project hook invocation: {exc}",
             )
-            return reduce_hook_results(
+            return self.adapter.to_domain_decision(
                 invocation,
                 (),
                 diagnostics=(
@@ -92,7 +92,7 @@ class HookEngine:
                 for handler in match.handlers
             )
         )
-        return reduce_hook_results(
+        return self.adapter.to_domain_decision(
             invocation,
             results,
             diagnostics=(

@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -54,11 +55,14 @@ _DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 _MAX_ATTEMPTS = 5
 _TIMEOUT_SECONDS = 120
 
-# Client errors are deterministic and not worth retrying -- except rate limiting,
-# which is the one 4xx that clears on its own.
-_CLIENT_ERROR_MIN = 400
-_SERVER_ERROR_MIN = 500
-_RATE_LIMITED = 429
+# Statuses that will never succeed on retry: wrong key, no access, unknown
+# model, unprocessable request. Everything else is retried, including a plain
+# 400 -- OpenRouter surfaces transient upstream-provider failures as 400, and a
+# task observed 400ing on one run graded normally on the next. Treating 4xx as
+# uniformly deterministic (as an OpenAI-style API would be) turns a flaky judge
+# into a spuriously errored trial.
+_NON_RETRYABLE_STATUSES = frozenset({401, 403, 404, 422})
+_BACKOFF_CAP_SECONDS = 8
 
 # Substituted in a single pass so a value containing a placeholder string cannot
 # cascade into another slot.
@@ -142,7 +146,7 @@ def _judge(name, prompt, default_model, default_base_url, fallback_key_var):
         return 0, {"model": model, "error": f"no API key (LOHO_JUDGE_{name}_API_KEY)"}
 
     last = {"model": model, "prompt_chars": len(prompt)}
-    for _ in range(_MAX_ATTEMPTS):
+    for attempt in range(_MAX_ATTEMPTS):
         try:
             return None, {"model": model, "raw": _call(base_url, api_key, model, prompt)}
         except Exception as exc:  # noqa: BLE001 - report, maybe retry, then give up
@@ -153,16 +157,14 @@ def _judge(name, prompt, default_model, default_base_url, fallback_key_var):
                 "http_status": status,
                 "error_code": getattr(exc, "code", None),
                 "error_kind": getattr(exc, "type", None),
+                "attempts": attempt + 1,
             }
-            # A 4xx other than rate limiting is deterministic -- the same request
-            # will fail identically five times. Retrying only delays the failure
-            # and muddies the logs.
-            if (
-                status is not None
-                and _CLIENT_ERROR_MIN <= status < _SERVER_ERROR_MIN
-                and status != _RATE_LIMITED
-            ):
+            if status in _NON_RETRYABLE_STATUSES:
                 break
+            if attempt + 1 < _MAX_ATTEMPTS:
+                # Backoff, so a rate limit or a brief upstream outage gets a
+                # chance to clear instead of burning all five attempts at once.
+                time.sleep(min(2**attempt, _BACKOFF_CAP_SECONDS))
     return 0, last
 
 
@@ -223,6 +225,7 @@ def _status_entry(correct, detail):
         "error_code": detail.get("error_code"),
         "error_kind": detail.get("error_kind"),
         "prompt_chars": detail.get("prompt_chars"),
+        "attempts": detail.get("attempts"),
     }
 
 

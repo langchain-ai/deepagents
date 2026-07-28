@@ -4353,6 +4353,14 @@ class AppMessage(Static):
         """Open style-embedded hyperlinks on single click."""
         open_style_link(event)
 
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer cursor over embedded links, text cursor elsewhere."""
+        self.styles.pointer = "pointer" if event_targets_link(event) else "text"
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "text"
+
 
 class SummarizationMessage(AppMessage):
     """Widget displaying a summarization completion notification."""

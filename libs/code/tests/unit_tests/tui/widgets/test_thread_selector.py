@@ -3143,6 +3143,8 @@ class TestResumeThread:
         )
         offer_cwd_switch = AsyncMock(return_value="continue")
         _app_test_double(app)._offer_thread_cwd_switch = offer_cwd_switch
+        schedule_link_mock = MagicMock()
+        _app_test_double(app)._schedule_thread_message_link = schedule_link_mock
         app._agent = MagicMock()
         app._session_state = MagicMock()
         app._session_state.thread_id = "thread-123"
@@ -3156,6 +3158,11 @@ class TestResumeThread:
         )
         assert len(mounted) == 1
         assert "Already on thread" in _get_widget_text(mounted[0])
+        schedule_link_mock.assert_called_once_with(
+            mounted[0],
+            prefix="Already on thread",
+            thread_id="thread-123",
+        )
 
     async def test_already_on_thread_reports_cwd_switch(
         self,
@@ -4119,6 +4126,28 @@ class TestBuildThreadMessage:
         style = spans[0].style
         assert isinstance(style, TStyle)
         assert style.link == url
+
+    async def test_linked_content_matches_plain_app_message_styling(self) -> None:
+        """Every span should be dim italic so linked notes match unlinked ones."""
+        from textual.content import Content
+        from textual.style import Style as TStyle
+
+        app = DeepAgentsApp()
+        url = "https://smith.langchain.com/o/org/projects/p/proj/t/tid-123"
+        target = "deepagents_code.config.build_langsmith_thread_url"
+        with patch(target, return_value=url):
+            result = await app._build_thread_message(
+                "Previous thread", "tid-123", suffix=" (Resume with /threads -r)"
+            )
+
+        assert isinstance(result, Content)
+        covered = 0
+        for span in result._spans:
+            assert isinstance(span.style, TStyle)
+            assert span.style.dim is True
+            assert span.style.italic is True
+            covered += span.end - span.start
+        assert covered == len(result.plain)
 
     async def test_fallback_on_timeout(self) -> None:
         """Returns plain string when URL resolution times out."""

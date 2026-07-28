@@ -9562,7 +9562,10 @@ class DeepAgentsApp(App):
                 (e.g. `' (Resume with /threads -r)'`).
 
         Returns:
-            `Content` with a clickable thread ID, or a plain string.
+            `Content` with a clickable thread ID, or a plain string. The
+                `Content` carries the same dim italic styling `AppMessage`
+                applies to plain strings so linked and unlinked thread notes
+                look identical apart from the link.
         """
         from deepagents_code.config import build_langsmith_thread_url
 
@@ -9575,10 +9578,11 @@ class DeepAgentsApp(App):
             url = None
 
         if url:
+            note_style = TStyle(dim=True, italic=True)
             return Content.assemble(
-                f"{prefix}: ",
-                (thread_id, TStyle(link=url)),
-                suffix,
+                (f"{prefix}: ", note_style),
+                (thread_id, TStyle(dim=True, italic=True, link=url)),
+                (suffix, note_style),
             )
         return f"{prefix}: {thread_id}{suffix}"
 
@@ -22329,7 +22333,13 @@ class DeepAgentsApp(App):
             if cwd_choice == "abort":
                 return
             if await asyncio.to_thread(self._cwd_paths_equal, self._cwd, prev_cwd):
-                await self._mount_message(AppMessage(f"Already on thread: {thread_id}"))
+                thread_msg_widget = AppMessage(f"Already on thread: {thread_id}")
+                await self._mount_message(thread_msg_widget)
+                self._schedule_thread_message_link(
+                    thread_msg_widget,
+                    prefix="Already on thread",
+                    thread_id=thread_id,
+                )
             else:
                 await self._mount_message(
                     AppMessage(f"Switched to thread directory: {self._cwd}"),

@@ -17,7 +17,11 @@ from deepagents_code.config import ASCII_GLYPHS, get_glyphs
 from deepagents_code.tool_display import format_tool_display
 from deepagents_code.tui.widgets.ask_user import (
     _TRAILING_ANNOTATION_RE,
+    ADD_ANOTHER_OTHER_LABEL,
     MISSING_ANSWER_TOAST,
+    MISSING_OTHER_TEXT_TOAST,
+    MULTI_SELECT_COMMA_TOAST,
+    OTHER_CHOICE_LABEL,
     AskUserMenu,
     AskUserTextArea,
     _ChoiceOption,
@@ -733,19 +737,230 @@ class TestAskUserMenu:
             await pilot.pause()
 
             options = list(menu.query(_MultiSelectOption))
-            assert [o.checked for o in options] == [False, False]
+            # Predefined choices plus the automatic Other row.
+            assert [o.checked for o in options] == [False, False, False]
+            assert options[2]._text == OTHER_CHOICE_LABEL
 
             await pilot.press("space")
             await pilot.pause()
-            assert [o.checked for o in options] == [True, False]
+            assert [o.checked for o in options] == [True, False, False]
             assert glyphs.checkbox_checked in str(options[0].render())
             assert glyphs.checkbox_empty in str(options[1].render())
 
             # Moving the cursor off a checked option must not clear its glyph.
             await pilot.press("down")
             await pilot.pause()
-            assert [o.checked for o in options] == [True, False]
+            assert [o.checked for o in options] == [True, False, False]
             assert glyphs.checkbox_checked in str(options[0].render())
+
+    async def test_multi_select_other_combines_with_predefined_choices(self) -> None:
+        """Other free-text is appended after toggled predefined values."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+            question = menu.query_one(_QuestionWidget)
+
+            await pilot.pause()
+            # Toggle "red", move to Other, toggle it, type custom text, submit.
+            await pilot.press("space")
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.press("space")
+            await pilot.pause()
+
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            assert other_input.display is True
+            other_input.text = "teal"
+            question.sync_other_slots()
+            other_input.focus()
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {
+                "type": "answered",
+                "answers": ["red, teal"],
+            }
+
+    async def test_multi_select_other_alone_submits_custom_text(self) -> None:
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+            question = menu.query_one(_QuestionWidget)
+
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.press("space")
+            await pilot.pause()
+
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            other_input.text = "purple"
+            question.sync_other_slots()
+            other_input.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {"type": "answered", "answers": ["purple"]}
+
+    async def test_multi_select_multiple_others_grow_and_join(self) -> None:
+        """Filling one Other reveals an Add-another slot for more custom values."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+            question = menu.query_one(_QuestionWidget)
+
+            await pilot.pause()
+            options = list(menu.query(_MultiSelectOption))
+            assert len(options) == 3
+            assert options[2]._text == OTHER_CHOICE_LABEL
+
+            # Toggle first Other and fill its free-text value.
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.press("space")
+            await pilot.pause()
+            first_other = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            first_other.text = "teal"
+            question.sync_other_slots()
+            await pilot.pause()
+
+            options = list(menu.query(_MultiSelectOption))
+            assert len(options) == 4
+            assert options[3]._text == ADD_ANOTHER_OTHER_LABEL
+            other_inputs = list(
+                menu.query(AskUserTextArea).filter(".ask-user-other-input")
+            )
+            assert len(other_inputs) == 2
+
+            # Leave the first free-text with Up, then toggle/fill Add another.
+            await pilot.press("up")
+            await pilot.press("down")
+            await pilot.press("space")
+            await pilot.pause()
+            other_inputs = list(
+                menu.query(AskUserTextArea).filter(".ask-user-other-input")
+            )
+            second_other = other_inputs[1]
+            assert second_other.display is True
+            second_other.text = "cyan"
+            question.sync_other_slots()
+            second_other.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {
+                "type": "answered",
+                "answers": ["teal, cyan"],
+            }
+            # A spare empty Add-another row may remain mounted after the second
+            # custom is filled; it must not contribute to the answer.
+            assert len(list(menu.query(_MultiSelectOption))) >= 4
+
+    async def test_multi_select_other_requires_text_when_checked(self) -> None:
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                    "required": False,
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            # Checked Other with no custom text is incomplete, even when optional.
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.press("space")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert not future.done()
+            assert MISSING_OTHER_TEXT_TOAST in [n.message for n in app._notifications]
+
+    async def test_multi_select_other_rejects_comma_in_custom_text(self) -> None:
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick some",
+                    "type": "multi_select",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.press("space")
+            await pilot.pause()
+
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            other_input.text = "teal, cyan"
+            other_input.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert not future.done()
+            assert MULTI_SELECT_COMMA_TOAST in [n.message for n in app._notifications]
 
     async def test_untoggling_confirmed_multi_select_reopens_with_toast(self) -> None:
         """Clearing an already-confirmed required question explains the bounce."""
@@ -804,8 +1019,8 @@ class TestAskUserMenu:
                 "answers": ["red", "Alice"],
             }
 
-    async def test_help_text_omits_newline_hint_for_multi_select_only(self) -> None:
-        """A prompt with no text area advertises no newline shortcut."""
+    async def test_help_text_includes_newline_hint_for_multi_select_only(self) -> None:
+        """Multi-select owns an Other free-text input, so the newline hint stays."""
         app = _AskUserTestApp(
             [
                 {
@@ -822,7 +1037,7 @@ class TestAskUserMenu:
             help_text = str(menu.query_one(".ask-user-help").render())
             assert "Space toggle" in help_text
             assert "Enter to continue" in help_text
-            assert "newline" not in help_text
+            assert "newline" in help_text
 
     async def test_help_text_keeps_newline_hint_when_text_question_present(
         self,

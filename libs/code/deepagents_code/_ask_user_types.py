@@ -99,9 +99,13 @@ class Question(TypedDict):
             description=(
                 "Question type. 'text' for free-form input, 'multiple_choice' for "
                 "picking exactly one predefined option, 'multi_select' for picking "
-                "one or more predefined options. A 'multi_select' answer comes back "
-                "as the selected values joined with ', '; if nothing is selected on "
-                "an optional question the answer is an empty string."
+                "one or more predefined options. Both choice types always append an "
+                "'Other' free-form option automatically; multi-select can accept "
+                "multiple custom Other values (filling one reveals another). A "
+                "'multi_select' answer comes back as the selected values "
+                "(including any custom Other text) joined with ', '; if nothing "
+                "is selected on an optional question the answer is an empty "
+                "string."
             )
         ),
     ]
@@ -112,9 +116,10 @@ class Question(TypedDict):
             Field(
                 description=(
                     "Options for 'multiple_choice' and 'multi_select' questions. "
-                    "Every choice needs a non-empty 'value'. For 'multiple_choice', "
-                    "an 'Other' free-form option is always appended automatically; "
-                    "'multi_select' has no 'Other' option, and its values must not "
+                    "Every choice needs a non-empty 'value'. An 'Other' free-form "
+                    "option is always appended automatically for both types; "
+                    "multi-select may collect multiple custom Other values. "
+                    "'multi_select' values (including custom Other text) must not "
                     "contain ',' because the answer joins them with ', '."
                 )
             ),

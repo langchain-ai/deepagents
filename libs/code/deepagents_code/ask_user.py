@@ -46,11 +46,11 @@ ASK_USER_TOOL_DESCRIPTION = """Ask the user one or more questions when you need 
 Each question can be one of:
 - "text": Free-form text response from the user
 - "multiple_choice": User selects exactly one of the predefined options (an "Other" option is always available)
-- "multi_select": User selects one or more of the predefined options (no "Other" option)
+- "multi_select": User selects one or more of the predefined options (an "Other" free-form option is always available; filling one reveals an "Add another" slot for more custom values)
 
-For "multiple_choice" and "multi_select" questions, provide a list of choices, each with a non-empty "value". For "multiple_choice" the user picks one option or types a custom answer via the "Other" option; for "multi_select" the user toggles one or more of the provided options.
+For "multiple_choice" and "multi_select" questions, provide a list of choices, each with a non-empty "value". For "multiple_choice" the user picks one option or types a custom answer via the "Other" option; for "multi_select" the user toggles one or more of the provided options and may also add one or more custom free-form Other values among the selected values.
 
-A "multi_select" answer is returned as the selected values joined with ", " (an optional question the user leaves untouched returns an empty string). Because of that joining, "multi_select" choice values must not themselves contain a comma.
+A "multi_select" answer is returned as the selected values joined with ", " (an optional question the user leaves untouched returns an empty string). Because of that joining, "multi_select" choice values and custom Other text must not themselves contain a comma.
 
 By default all questions are required. Set "required" to false for optional questions that the user can skip. Do not include "(required)", "(optional)", "- optional", or similar annotations in the question text — the UI renders that separately based on the "required" field.
 

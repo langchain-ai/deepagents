@@ -19,6 +19,7 @@ import math
 import os
 import time
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Protocol, cast
@@ -110,21 +111,37 @@ def _number(value: Decimal) -> float:
     return number
 
 
-def _totals_block(
-    *,
-    token_covered: int,
-    prompt_tokens: int,
-    completion_tokens: int,
-    total_tokens: int,
-    priced: int,
-    total_cost: Decimal,
-) -> dict[str, object]:
+@dataclass
+class _Totals:
+    """Running token/cost tally over one subset of rollouts."""
+
+    token_rollouts: int = 0
+    priced_rollouts: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost: Decimal = Decimal(0)
+
+    def add_tokens(self, prompt: int, completion: int, total: int) -> None:
+        """Fold one rollout's token counts into the tally."""
+        self.token_rollouts += 1
+        self.prompt_tokens += prompt
+        self.completion_tokens += completion
+        self.total_tokens += total
+
+    def add_cost(self, cost: Decimal) -> None:
+        """Fold one rollout's cost into the tally."""
+        self.priced_rollouts += 1
+        self.cost += cost
+
+
+def _totals_block(tally: _Totals) -> dict[str, object]:
     """Build a token/cost totals block, nulling metrics with no coverage."""
     return {
-        "prompt_tokens": prompt_tokens if token_covered else None,
-        "completion_tokens": completion_tokens if token_covered else None,
-        "total_tokens": total_tokens if token_covered else None,
-        "cost_usd": _number(total_cost) if priced else None,
+        "prompt_tokens": tally.prompt_tokens if tally.token_rollouts else None,
+        "completion_tokens": tally.completion_tokens if tally.token_rollouts else None,
+        "total_tokens": tally.total_tokens if tally.token_rollouts else None,
+        "cost_usd": _number(tally.cost) if tally.priced_rollouts else None,
     }
 
 
@@ -137,74 +154,48 @@ def summarize_runs(
     one over rollouts that reached a terminal result (``error`` unset), so a
     leaf's cost can be compared without being skewed by its failure rate.
     """
-    observed = token_covered = priced = completed = errored = 0
-    completed_token_covered = completed_priced = 0
-    prompt_tokens = completion_tokens = total_tokens = 0
-    completed_prompt = completed_completion = completed_total = 0
-    total_cost = Decimal(0)
-    completed_cost = Decimal(0)
+    counts = {"observed": 0, "completed": 0, "errored": 0}
+    overall = _Totals()
+    succeeded = _Totals()
     for run in runs:
         if "harbor-trial" not in (run.tags or []):
             continue
-        observed += 1
+        counts["observed"] += 1
         is_errored = bool(run.error)
-        if is_errored:
-            errored += 1
-        else:
-            completed += 1
+        counts["errored" if is_errored else "completed"] += 1
+        # An errored rollout counts toward true spend but not completed-only totals.
+        targets = (overall,) if is_errored else (overall, succeeded)
+
         prompt = _token(run.prompt_tokens)
         completion = _token(run.completion_tokens)
         total = _token(run.total_tokens)
-        has_tokens = prompt is not None and completion is not None and total is not None
-        if has_tokens:
-            token_covered += 1
-            prompt_tokens += prompt
-            completion_tokens += completion
-            total_tokens += total
-            if not is_errored:
-                completed_token_covered += 1
-                completed_prompt += prompt
-                completed_completion += completion
-                completed_total += total
+        if prompt is not None and completion is not None and total is not None:
+            for tally in targets:
+                tally.add_tokens(prompt, completion, total)
+
         cost = _cost(run.total_cost)
         if cost is not None:
-            priced += 1
-            total_cost += cost
-            if not is_errored:
-                completed_priced += 1
-                completed_cost += cost
+            for tally in targets:
+                tally.add_cost(cost)
 
     status = "complete"
     if expected_rollouts is not None and any(
-        count < expected_rollouts for count in (observed, token_covered, priced)
+        count < expected_rollouts
+        for count in (counts["observed"], overall.token_rollouts, overall.priced_rollouts)
     ):
         status = "partial"
     return {
         "status": status,
         "coverage": {
             "expected_rollouts": expected_rollouts,
-            "observed_rollouts": observed,
-            "token_rollouts": token_covered,
-            "priced_rollouts": priced,
-            "completed_rollouts": completed,
-            "errored_rollouts": errored,
+            "observed_rollouts": counts["observed"],
+            "token_rollouts": overall.token_rollouts,
+            "priced_rollouts": overall.priced_rollouts,
+            "completed_rollouts": counts["completed"],
+            "errored_rollouts": counts["errored"],
         },
-        "totals": _totals_block(
-            token_covered=token_covered,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            priced=priced,
-            total_cost=total_cost,
-        ),
-        "completed_totals": _totals_block(
-            token_covered=completed_token_covered,
-            prompt_tokens=completed_prompt,
-            completion_tokens=completed_completion,
-            total_tokens=completed_total,
-            priced=completed_priced,
-            total_cost=completed_cost,
-        ),
+        "totals": _totals_block(overall),
+        "completed_totals": _totals_block(succeeded),
     }
 
 
@@ -249,39 +240,6 @@ def _fully_covered(usage: dict[str, object]) -> bool:
         cast(int, coverage[field]) >= expected
         for field in ("observed_rollouts", "token_rollouts", "priced_rollouts")
     )
-
-
-def collect_experiment(
-    client: ClientLike,
-    experiment: str,
-    expected_rollouts: int | None,
-    *,
-    attempts: int = 5,
-    sleep: Callable[[float], None] = time.sleep,
-    delays: tuple[float, ...] = RETRY_DELAYS,
-) -> dict[str, object]:
-    """Query one experiment with bounded retries for delayed trace ingestion."""
-    best: dict[str, object] | None = None
-    for attempt in range(attempts):
-        try:
-            runs = client.list_runs(
-                project_name=experiment,
-                is_root=True,
-                select=SELECT_FIELDS,
-            )
-            current = summarize_runs(runs, expected_rollouts=expected_rollouts)
-            if best is None or _coverage_rank(current) > _coverage_rank(best):
-                best = current
-            if _fully_covered(current):
-                return current
-        except Exception as exc:  # noqa: BLE001  # API clients expose several transport exceptions
-            print(
-                f"::warning::LangSmith usage query failed for {experiment!r} "
-                f"(attempt {attempt + 1}/{attempts}): {type(exc).__name__}: {exc}"
-            )
-        if attempt + 1 < attempts:
-            sleep(delays[min(attempt, len(delays) - 1)])
-    return best or unavailable_usage(expected_rollouts)
 
 
 def _query_once(

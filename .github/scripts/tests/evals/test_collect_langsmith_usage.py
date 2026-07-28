@@ -1,16 +1,12 @@
 from __future__ import annotations
 
 import json
-import os
-import sys
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
+import collect_langsmith_usage as usage
 import pytest
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import collect_langsmith_usage as usage  # noqa: E402
 
 
 @dataclass
@@ -133,7 +129,7 @@ def test_summarize_runs_rejects_non_numeric_tokens_and_costs() -> None:
     assert result["totals"]["cost_usd"] is None
 
 
-def test_collect_experiment_retries_until_usage_and_price_are_complete() -> None:
+def test_collect_all_retries_until_usage_and_price_are_complete() -> None:
     client = FakeClient(
         [
             RuntimeError("temporary"),
@@ -143,34 +139,34 @@ def test_collect_experiment_retries_until_usage_and_price_are_complete() -> None
     )
     sleeps: list[float] = []
 
-    result = usage.collect_experiment(
+    result = usage.collect_all(
+        {"experiment": 2},
         client,
-        "experiment",
-        2,
         attempts=3,
         sleep=sleeps.append,
         delays=(0.0,),
     )
+    experiment = result["experiments"]["experiment"]
 
     assert client.calls == 3
     assert sleeps == [0.0, 0.0]
-    assert result["status"] == "complete"
-    assert result["coverage"]["priced_rollouts"] == 2
+    assert experiment["status"] == "complete"
+    assert experiment["coverage"]["priced_rollouts"] == 2
 
 
-def test_collect_experiment_retains_best_partial_result() -> None:
+def test_collect_all_retains_best_partial_result() -> None:
     client = FakeClient([[_run()], RuntimeError("temporary")])
 
-    result = usage.collect_experiment(
+    result = usage.collect_all(
+        {"experiment": 2},
         client,
-        "experiment",
-        2,
         attempts=2,
         sleep=lambda _delay: None,
     )
+    experiment = result["experiments"]["experiment"]
 
-    assert result["status"] == "partial"
-    assert result["coverage"]["observed_rollouts"] == 1
+    assert experiment["status"] == "partial"
+    assert experiment["coverage"]["observed_rollouts"] == 1
 
 
 def test_collect_all_marks_experiments_unavailable_without_client() -> None:

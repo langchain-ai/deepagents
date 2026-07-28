@@ -1255,7 +1255,7 @@ jobs:
 
           pkg_name = os.environ["PKG_NAME"]
           root = Path.cwd()
-          script = root / ".github" / "scripts" / "check_sdk_pin.py"
+          script = root / ".github" / "scripts" / "release" / "check_sdk_pin.py"
           spec = importlib.util.spec_from_file_location("check_sdk_pin", script)
           if spec is None or spec.loader is None:
               print(f"::error::Could not load {script}")
@@ -1269,7 +1269,7 @@ jobs:
               comparison = module.compare_versions(pkg_pin, sdk_version)
           except ValueError as e:
               print(
-                  "::error file=.github/scripts/check_sdk_pin.py::"
+                  "::error file=.github/scripts/release/check_sdk_pin.py::"
                   f"Could not determine {pkg_name} SDK pin status: {e}"
               )
               raise SystemExit(1) from None

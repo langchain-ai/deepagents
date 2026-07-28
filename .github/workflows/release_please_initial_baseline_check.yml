@@ -92,7 +92,7 @@ jobs:
             );
             fs.writeFileSync(
               'base-check-initial-release-baseline.py',
-              await readRepoFile('.github/scripts/check_initial_release_baseline.py', baseSha),
+              await readRepoFile('.github/scripts/release/check_initial_release_baseline.py', baseSha),
             );
 
       - name: "Detect bad initial manifest baseline"

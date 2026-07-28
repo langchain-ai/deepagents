@@ -80,7 +80,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          detector=".github/scripts/list_touched_release_components.py"
+          detector=".github/scripts/release/list_touched_release_components.py"
           if [[ ! -f "$detector" ]]; then
             echo "::warning::Detector '$detector' absent on base; cannot list components."
             components='[]'

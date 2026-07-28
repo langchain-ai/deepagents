@@ -25,13 +25,13 @@ _HEADER = """\
 
 Quick reference for the model sets available in the
 [evals workflow](../../.github/workflows/evals.yml).
-Source of truth: [`.github/scripts/models.py`](../../.github/scripts/models.py).
+Source of truth: [`.github/scripts/evals/models.py`](../../.github/scripts/evals/models.py).
 """
 
 
 def _import_models() -> types.ModuleType:
-    """Import `.github/scripts/models.py` by file path (it has no package structure)."""
-    models_path = _REPO_ROOT / ".github" / "scripts" / "models.py"
+    """Import `.github/scripts/evals/models.py` by file path (it has no package structure)."""
+    models_path = _REPO_ROOT / ".github" / "scripts" / "evals" / "models.py"
     spec = importlib.util.spec_from_file_location("models", models_path)
     if spec is None or spec.loader is None:
         msg = f"Could not create import spec for {models_path}."

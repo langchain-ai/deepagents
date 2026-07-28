@@ -70,7 +70,7 @@ jobs:
         id: detect
         run: |
           set -euo pipefail
-          detector=".github/scripts/check_open_release_fanout.py"
+          detector=".github/scripts/release/check_open_release_fanout.py"
           if [[ ! -f "$detector" ]]; then
             echo "::warning::Detector '$detector' missing; watch is NOT enforcing."
             echo '[]' > offenders.json

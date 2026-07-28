@@ -1,4 +1,4 @@
-"""Tests for the eval failure analysis script (`.github/scripts/analyze_eval_failures.py`).
+"""Tests for the eval failure analysis script (`.github/scripts/evals/analyze_eval_failures.py`).
 
 Adds the script directory to `sys.path` for import since it lives outside
 the package tree.

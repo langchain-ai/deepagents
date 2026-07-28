@@ -400,7 +400,7 @@ When adding a new partner package, update these files:
 - `.github/ISSUE_TEMPLATE/feature-request.yml` – Add to Area checkbox options
 - `.github/ISSUE_TEMPLATE/privileged.yml` – Add to Area checkbox options
 - `.github/dependabot.yml` – Add dependency update directory
-- `.github/scripts/pr-labeler-config.json` – Add scope-to-label mapping and file rule
+- `.github/scripts/labeling/pr-labeler-config.json` – Add scope-to-label mapping and file rule
 - `.github/workflows/auto-label-by-package.yml` – Add package label mapping
 - `.github/workflows/ci.yml` – Add to change detection and lint/test jobs
 - `.github/workflows/pr_lint.yml` – Add to allowed scopes

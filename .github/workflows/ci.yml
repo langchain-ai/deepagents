@@ -435,7 +435,7 @@ jobs:
           echo "$STATUS"
           echo "$STATUS" | grep 'nothing to commit, working tree clean'
 
-  # Validates every helper script under .github/scripts/test_*.py. Job id/name
+  # Validates every helper script under .github/scripts/tests/. Job id/name
   # are kept for branch-protection compatibility; rename only with a coordinated PR.
   check-release-options:
     name: "Validate Release Options"
@@ -455,7 +455,7 @@ jobs:
       - name: "📦 Install Dependencies"
         run: python -m pip install packaging pyyaml pytest
       - name: "🔍 Check workflow helper scripts"
-        run: python -m pytest .github/scripts/test_*.py -v
+        run: python -m pytest .github/scripts/tests -v
 
   # Final status check - ensures all jobs passed
   ci_success:

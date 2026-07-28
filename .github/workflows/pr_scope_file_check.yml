@@ -20,8 +20,8 @@
 #
 # How it stays faithful to existing repo configuration:
 #   - Scope -> package and dir -> package mappings are read from
-#     .github/scripts/pr-labeler-config.json by the helper script — see
-#     .github/scripts/check_pr_scope_files.py.
+#     .github/scripts/labeling/pr-labeler-config.json by the helper script — see
+#     .github/scripts/labeling/check_pr_scope_files.py.
 #
 # Trust model:
 #   - The detector and labeler config run from the PR *base* revision, not the
@@ -130,7 +130,7 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          detector=".github/scripts/check_pr_scope_files.py"
+          detector=".github/scripts/labeling/check_pr_scope_files.py"
           if [[ ! -f "$detector" ]]; then
             # The detector does not exist on the base revision: the bootstrapping
             # PR that first introduces this check, or a branch cut from before it

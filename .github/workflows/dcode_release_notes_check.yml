@@ -50,7 +50,7 @@ jobs:
           BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
         with:
           script: |
-            const { checkCuratedState, isReleaseBranchPr } = require('./trusted-source/.github/scripts/dcode-release-notes.js');
+            const { checkCuratedState, isReleaseBranchPr } = require('./trusted-source/.github/scripts/release/dcode-release-notes.js');
             const number = Number(process.env.PR_NUMBER);
             if (!Number.isSafeInteger(number) || number <= 0) {
               core.setFailed(`Invalid PR number: ${process.env.PR_NUMBER}`);

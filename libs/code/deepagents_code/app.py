@@ -3937,12 +3937,7 @@ class DeepAgentsApp(App):
         if self._approval_mode.value == "auto":
             self._notify_auto_mode_enabled_once()
         elif self._approval_mode.value == "yolo":
-            self.notify(
-                "YOLO is active: gated actions run without review.",
-                severity="warning",
-                timeout=10,
-                markup=False,
-            )
+            self._warn_yolo_active(timeout=10)
 
         # `Widget.focus()` defers the actual focus change by posting a callback.
         # Terminal keys may already be ahead of that callback in the app queue,
@@ -7758,6 +7753,44 @@ class DeepAgentsApp(App):
             self._session_state.approval_mode = self._approval_mode
         if self._status_bar:
             self._status_bar.set_approval_mode(self._approval_mode.value)
+
+    def _warn_yolo_active(self, *, timeout: float) -> None:
+        """Warn that YOLO runs gated actions without review, unless muted.
+
+        Users who deliberately live in YOLO can mute the recurring toast from
+        `/notifications`, or by adding `"yolo"` (`YOLO_WARNING_KEY`) to
+        `[warnings].suppress` in `~/.deepagents/config.toml`. Only the toast is
+        muted; see `YOLO_WARNING_KEY` for what suppression leaves untouched.
+
+        Deliberately synchronous. Callers warn *before* awaiting anything, so
+        that a cancellation or a raise downstream can never land between "YOLO
+        is live" and "the user was told". Offloading the small config read to
+        a thread (as `_show_notification_settings` does) would reopen exactly
+        that window. An unreadable or malformed config fails open: when
+        suppression cannot be determined, the warning still fires.
+
+        Args:
+            timeout: Seconds the toast stays on screen.
+        """
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY
+        from deepagents_code.model_config import is_warning_suppressed
+
+        try:
+            suppressed = is_warning_suppressed(YOLO_WARNING_KEY)
+        except Exception:
+            logger.warning(
+                "Could not read YOLO warning suppression; showing the warning",
+                exc_info=True,
+            )
+            suppressed = False
+        if suppressed:
+            return
+        self.notify(
+            "YOLO is active: gated actions run without review.",
+            severity="warning",
+            timeout=timeout,
+            markup=False,
+        )
 
     def _notify_auto_mode_enabled_once(self) -> None:
         """Show the Auto first-enable modal at most once per install.
@@ -17383,16 +17416,13 @@ class DeepAgentsApp(App):
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
         elif target is ApprovalMode.YOLO:
-            # Warn before the await below. State is already committed above, so
-            # if goal-rubric auto-accept raises, YOLO is active and the "no
-            # review" warning must have fired first. AUTO notifies before its
-            # await for the same reason.
-            self.notify(
-                "YOLO is active: gated actions run without review.",
-                severity="warning",
-                timeout=8,
-                markup=False,
-            )
+            # Warn before the await below. State is already committed above,
+            # so if goal-rubric auto-accept raises, YOLO is active and the "no
+            # review" warning has already been attempted. AUTO notifies before
+            # its await for the same reason. Both can legitimately no-op — the
+            # YOLO toast when suppressed, the AUTO notice after its first run —
+            # so this ordering guarantees the attempt, not the delivery.
+            self._warn_yolo_active(timeout=8)
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
         return True
@@ -19095,6 +19125,10 @@ class DeepAgentsApp(App):
         self.push_screen(
             DebugConsoleScreen(
                 self._build_debug_snapshot(),
+                # Rebuild the header on the console's refresh tick so message
+                # counts, tokens, and other in-memory fields stay current while
+                # the modal is open. The builder is intentionally I/O-free.
+                snapshot_provider=self._build_debug_snapshot,
                 cleared_upto=self._debug_console_cleared_upto,
                 on_clear=persist_clear,
                 click_to_copy=self._debug_console_click_to_copy,
@@ -19144,10 +19178,13 @@ class DeepAgentsApp(App):
         self.call_later(_persist)
 
     def _build_debug_snapshot(self) -> list[SnapshotField]:
-        """Capture a point-in-time session/runtime snapshot for the console.
+        """Capture a session/runtime snapshot for the debug console header.
 
-        Each field is captured defensively: a subsystem that raises degrades to
-        an ``(unavailable: ...)`` value rather than aborting the whole overlay,
+        Called once when the console opens and again on each console refresh
+        tick (via `snapshot_provider`) so live fields such as message count and
+        token usage stay current while the modal is open. Each field is captured
+        defensively: a subsystem that raises degrades to an
+        ``(unavailable: ...)`` value rather than aborting the whole overlay,
         because a diagnostic tool must still open when the app is misbehaving.
 
         Returns:
@@ -19223,6 +19260,16 @@ class DeepAgentsApp(App):
                 thread_id=thread_id,
             )
 
+        def _messages() -> str:
+            # The store is cleared on every thread switch/reset, so its count is
+            # scoped to the current thread. Reads in-memory state only, keeping
+            # the snapshot free of I/O.
+            store = self._message_store
+            total = store.total_count
+            if total == 0:
+                return "0"
+            return f"{total} ({store.visible_count} rendered)"
+
         def _log_path() -> str:
             path = installed_debug_log_path()
             if path:
@@ -19239,6 +19286,7 @@ class DeepAgentsApp(App):
             _safe("Version", lambda: __version__, copyable=True),
             _model_field(),
             _thread_field(),
+            _safe("Messages", _messages),
             _safe("CWD", lambda: self._cwd, copyable=True),
             _safe("Approval mode", lambda: self._approval_mode.value),
             _safe(

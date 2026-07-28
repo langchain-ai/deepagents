@@ -52,6 +52,7 @@ from deepagents_code._session_stats import SessionStats
 from deepagents_code._version import CHANGELOG_URL, __version__
 from deepagents_code.app import (
     _DEEPAGENTS_IMPORT_LOCK,
+    _MIN_TOAST_ROWS,
     _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
     DeferredAction,
@@ -24923,6 +24924,82 @@ class TestNotificationCenterIntegration:
             await pilot.pause()
 
             assert isinstance(app.screen, NotificationCenterScreen)
+
+
+class TestToastAnchoring:
+    """Toasts float above the chat input instead of covering it."""
+
+    @staticmethod
+    def _rack(app: DeepAgentsApp) -> Widget:
+        """Return the toast rack composed into the app's main screen."""
+        return app.screen.get_child_by_id("textual-toastrack")
+
+    @staticmethod
+    def _chrome(app: DeepAgentsApp) -> Widget:
+        """Return the bottom chrome (panels + chat input) container."""
+        return app.query_one("#bottom-app-container", Widget)
+
+    async def test_rack_margin_clears_the_bottom_chrome(self) -> None:
+        """The rack's bottom margin reaches the top of the bottom chrome."""
+        app = DeepAgentsApp()
+        async with app.run_test(notifications=True) as pilot:
+            await pilot.pause()
+            expected = app.screen.size.height - self._chrome(app).region.y
+            assert expected > 1
+            assert self._rack(app).styles.margin.bottom == expected
+
+    async def test_toasts_do_not_cover_the_chat_input(self) -> None:
+        """Displayed toasts stack directly above the bottom chrome."""
+        from textual.widgets._toast import Toast as _Toast
+
+        app = DeepAgentsApp()
+        async with app.run_test(notifications=True) as pilot:
+            await pilot.pause()
+            app.notify("first", timeout=60)
+            app.notify("second", timeout=60)
+            await pilot.pause()
+
+            toasts = list(app.screen.query(_Toast))
+            assert toasts
+            chrome_top = self._chrome(app).region.y
+            assert max(toast.region.bottom for toast in toasts) == chrome_top
+
+    async def test_growing_chat_input_lifts_the_rack(self) -> None:
+        """A taller chat input pushes toasts further up the screen."""
+        app = DeepAgentsApp()
+        async with app.run_test(notifications=True) as pilot:
+            await pilot.pause()
+            before = self._rack(app).styles.margin.bottom
+
+            app.query_one("#input-area", ChatInput).styles.height = 12
+            await pilot.pause()
+
+            after = self._rack(app).styles.margin.bottom
+            assert after > before
+            assert after == app.screen.size.height - self._chrome(app).region.y
+
+    async def test_short_terminal_keeps_toasts_onscreen(self) -> None:
+        """A chrome taller than the terminal must not dock toasts off the top.
+
+        The anchor stops at `_MIN_TOAST_ROWS`, and the rack is capped to the
+        space that leaves, so even a heavily wrapped toast stays on screen
+        instead of losing its opening lines above row zero.
+        """
+        from textual.widgets._toast import Toast as _Toast
+
+        app = DeepAgentsApp()
+        async with app.run_test(notifications=True, size=(80, 12)) as pilot:
+            await pilot.pause()
+            app.query_one("#input-area", ChatInput).styles.height = 20
+            await pilot.pause()
+            app.notify("word " * 60, timeout=60)
+            await pilot.pause()
+
+            margin_bottom = self._rack(app).styles.margin.bottom
+            assert 0 <= margin_bottom <= 12 - _MIN_TOAST_ROWS
+            toasts = list(app.screen.query(_Toast))
+            assert toasts
+            assert all(toast.region.y >= 0 for toast in toasts)
 
 
 class TestFatalErrorRedaction:

@@ -62,6 +62,7 @@ This environment is used by standard evals, Harbor evals, unified evals, and clb
 | `OLLAMA_API_KEY` | Ollama Cloud models selected by an eval matrix. |
 | `OPENAI_API_KEY` | OpenAI models and Harbor judges or verifiers. |
 | `OPENROUTER_API_KEY` | OpenRouter-hosted models selected by an eval matrix. |
+| `TAVILY_API_KEY` | Tavily-backed `web_search` (under OSS integrations account). |
 | `XAI_API_KEY` | xAI models selected by an eval matrix. |
 
 The current `LANGSMITH_API_KEY` needs this practical permission union for the repository's locked eval clients:

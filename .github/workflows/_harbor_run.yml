@@ -671,7 +671,18 @@ jobs:
             # the shell-validated dataset dir to the shard-matrix step below, which
             # enumerates task names from disk instead of querying the registry.
             export HARBOR_LOCAL_DATASET_DIR="$dataset_path"
-            HARBOR_LANGSMITH_DATASET="local/${HARBOR_DATASET_PATH//\//-}"
+            # LangSmith dataset name. Registry-backed categories group under their
+            # dataset ref (e.g. `harbor-index/harbor-index-1.0`) and tau3 under
+            # `tau3-subset`, so a named local dataset gets an equivalent clean
+            # grouping name here rather than a path-derived one.
+            #
+            # context-retrieval-evals deliberately keeps its path-derived name:
+            # renaming it would fork its existing LangSmith experiment history
+            # across two datasets.
+            case "${HARBOR_DATASET_PATH%/}" in
+              datasets/loho-search-evals) HARBOR_LANGSMITH_DATASET="lohosearch-bench" ;;
+              *) HARBOR_LANGSMITH_DATASET="local/${HARBOR_DATASET_PATH//\//-}" ;;
+            esac
           elif ! [[ "$HARBOR_DATASET" =~ ^[A-Za-z0-9._/-]+$ ]]; then
             echo "::error::Invalid Harbor dataset ref: $HARBOR_DATASET"
             exit 1

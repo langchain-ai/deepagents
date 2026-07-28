@@ -95,6 +95,26 @@ time, after the agent is killed.
 > `network_mode = "allowlist"`, cannot run on the LangSmith sandbox under the pinned Harbor
 > either. That is a pre-existing issue independent of this dataset.
 
+## Tracing
+
+Runs trace to LangSmith automatically — the leaf workflow forwards
+`LANGSMITH_API_KEY`/`LANGSMITH_TRACING` into the sandbox and sets
+`LANGSMITH_PROJECT` to the experiment name.
+
+| | |
+|---|---|
+| Dataset | `lohosearch-bench` |
+| Experiment | `deepagents-harbor-<branch>-search-<model>-search-<run_id>-<attempt>` |
+
+The trace is the place to inspect a run: every `web_search` query, every
+`fetch_url`, the reasoning between them, and token counts. CI artifacts are
+deliberately stripped to score-level records only, so LangSmith is the debugging
+surface.
+
+**Traces contain the decrypted question and answer.** Keep the workspace private
+and do not share trace links publicly, or the benchmark leaks by a route the
+artifact redaction does not cover.
+
 ## Task set
 
 The current manifest holds 3 tasks and is **not calibrated** — it exists to exercise the

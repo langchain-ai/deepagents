@@ -882,3 +882,27 @@ def test_harbor_dispatch_agent_impl_options_match_the_graph_registry() -> None:
         f"harbor.yml agent_impl options {sorted(options)} do not match "
         f"langgraph.json graphs {sorted(registry)}"
     )
+
+
+def test_local_datasets_get_clean_langsmith_dataset_names() -> None:
+    """Named local datasets group in LangSmith like the registry-backed ones.
+
+    Registry categories group under their dataset ref and tau3 under
+    `tau3-subset`; a local dataset would otherwise land under a path-derived
+    `local/datasets-...` name. context-retrieval-evals keeps its path-derived
+    name on purpose so its existing experiment history is not split in two.
+    """
+    reusable = HARBOR_WORKFLOW.read_text()
+
+    assert 'datasets/loho-search-evals) HARBOR_LANGSMITH_DATASET="lohosearch-bench"' in (
+        reusable
+    )
+    # The fallback must survive, or an unnamed local dataset gets an empty name.
+    assert 'HARBOR_LANGSMITH_DATASET="local/${HARBOR_DATASET_PATH//\\//-}"' in reusable
+    assert "datasets/context-retrieval-evals) HARBOR_LANGSMITH_DATASET=" not in reusable
+
+
+def test_langsmith_experiment_name_is_category_scoped() -> None:
+    """Each category gets its own experiment inside its dataset."""
+    reusable = HARBOR_WORKFLOW.read_text()
+    assert "${experiment_category:+-$experiment_category}" in reusable

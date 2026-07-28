@@ -1064,7 +1064,6 @@ async def _process_hitl_interrupts(
         ClientHookStopError,
         PermissionReviewDecision,
         permission_hook_outcome,
-        permission_review_payload,
     )
     from deepagents_code.hooks.models.domain import (
         DcodeNotificationKind,
@@ -1136,7 +1135,7 @@ async def _process_hitl_interrupts(
             strict=True,
         ):
             resolved.append(
-                permission_review_payload(decision)
+                cast("dict[str, str]", dict(decision))
                 if decision is not None
                 else _make_hitl_decision(action_request, console)
             )

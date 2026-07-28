@@ -103,24 +103,6 @@ def permission_hook_outcome(
     return PermissionHookOutcome(None)
 
 
-def permission_review_payload(
-    decision: PermissionReviewDecision,
-) -> dict[str, str]:
-    """Copy a typed review decision into a mutable resume payload.
-
-    Args:
-        decision: Structurally validated hook review decision.
-
-    Returns:
-        Mutable HITL resume payload.
-    """
-    payload = {"type": decision["type"]}
-    message = decision.get("message")
-    if message is not None:
-        payload["message"] = message
-    return payload
-
-
 @dataclass(frozen=True, slots=True)
 class ClientHookContext:
     """Client state required to create a domain hook invocation."""

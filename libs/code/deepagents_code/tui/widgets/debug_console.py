@@ -800,6 +800,12 @@ class DebugConsoleScreen(ModalScreen[None]):
         # Seed links resolved elsewhere in this process (normally the welcome
         # banner) so reopening the console does not briefly render without one.
         self._langsmith_urls = self._cached_langsmith_urls()
+        # Thread ids a lookup worker has already been scheduled for, so the
+        # refresh tick never stacks overlapping lookups for the same thread.
+        self._langsmith_attempted: set[str] = set()
+        # Whether the last provider poll raised, so a persistent failure logs a
+        # single WARNING instead of one per refresh tick.
+        self._snapshot_poll_failing = False
 
     def _cached_langsmith_urls(self) -> dict[str, str]:
         """Return immediately available LangSmith URLs for snapshot threads."""
@@ -877,14 +883,24 @@ class DebugConsoleScreen(ModalScreen[None]):
         Reuses the log-tail timer so the header tracks live session state (message
         counts, tokens, thread id, …) without a second schedule. Failures are
         swallowed with a WARNING so a misbehaving provider cannot tear down the
-        diagnostic overlay or its log tail.
+        diagnostic overlay or its log tail. Only the transition into failure logs
+        at WARNING: a provider that keeps raising would otherwise emit a
+        traceback every tick into the very ring buffer the console is tailing,
+        flooding out the records the user opened it to read. Repeats stay at
+        DEBUG, and a later success re-arms the WARNING.
         """
         if self._snapshot_provider is None:
             return
         try:
             self._poll_snapshot_once()
         except Exception:  # a diagnostic must never crash the app it inspects
-            logger.warning("Debug console snapshot poll failed", exc_info=True)
+            if self._snapshot_poll_failing:
+                logger.debug("Debug console snapshot poll failed again", exc_info=True)
+            else:
+                self._snapshot_poll_failing = True
+                logger.warning("Debug console snapshot poll failed", exc_info=True)
+        else:
+            self._snapshot_poll_failing = False
 
     def _poll_snapshot_once(self) -> None:
         """Refresh `self._snapshot` from the provider when its rows changed."""
@@ -900,13 +916,26 @@ class DebugConsoleScreen(ModalScreen[None]):
         self._resolve_langsmith_links()
 
     def _resolve_langsmith_links(self) -> None:
-        """Kick off background resolution of `(langsmith)` links for the snapshot."""
+        """Kick off background resolution of `(langsmith)` links for the snapshot.
+
+        Each thread id gets at most one lookup per console open. The refresh tick
+        calls this on every snapshot change, and a resolved URL is only recorded
+        on success, so without a separate guard a slow or failing lookup would be
+        restarted every 500 ms. `asyncio.wait_for` cannot cancel the blocking SDK
+        call inside `asyncio.to_thread`, so those retries would pile up executor
+        threads and network requests for as long as the console stays open.
+        Attempted ids therefore stay marked even after the worker finishes;
+        reopening the console retries with a fresh screen.
+        """
         thread_ids = {
             field.thread_id
             for field in self._snapshot
-            if field.thread_id and field.thread_id not in self._langsmith_urls
+            if field.thread_id
+            and field.thread_id not in self._langsmith_urls
+            and field.thread_id not in self._langsmith_attempted
         }
         for thread_id in thread_ids:
+            self._langsmith_attempted.add(thread_id)
             self.run_worker(
                 self._fetch_langsmith_link(thread_id),
                 exclusive=False,

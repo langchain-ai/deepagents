@@ -233,6 +233,42 @@ class TestDebugConsoleScreen:
                 "snapshot poll failed" in record.message for record in caplog.records
             )
 
+    def test_repeated_snapshot_provider_failures_warn_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A stuck provider must not flood the buffer the console is tailing."""
+        failing = True
+
+        def provider() -> list[SnapshotField]:
+            if failing:
+                msg = "snapshot provider boom"
+                raise RuntimeError(msg)
+            return [SnapshotField("Messages", "1")]
+
+        screen = DebugConsoleScreen(
+            [SnapshotField("Messages", "0")], snapshot_provider=provider
+        )
+
+        with caplog.at_level(
+            logging.DEBUG, logger="deepagents_code.tui.widgets.debug_console"
+        ):
+            for _ in range(3):
+                screen._poll_snapshot()
+
+            warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+            assert len(warnings) == 1
+            assert len(caplog.records) == 3
+
+            # Recovering re-arms the WARNING so a later failure is still loud.
+            caplog.clear()
+            failing = False
+            screen._poll_snapshot()
+            failing = True
+            screen._poll_snapshot()
+
+        rearmed = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(rearmed) == 1
+
     async def test_refresh_tick_polls_snapshot_and_logs(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1084,6 +1120,39 @@ class TestDebugConsoleScreen:
             assert "(langsmith)" in _widget_text(snapshot_widget)
 
         lookup.assert_not_called()
+
+    async def test_langsmith_lookup_is_not_restarted_while_unresolved(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Snapshot churn must not stack overlapping lookups for one thread."""
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", thread_id="thread-abc")]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            # Close the coroutine the real worker would have consumed so the
+            # stub does not leave a never-awaited coroutine behind.
+            run_worker = MagicMock(side_effect=lambda work, **_: work.close())
+            monkeypatch.setattr(screen, "run_worker", run_worker)
+
+            # A snapshot that keeps changing (message counts tick) but never
+            # resolves the URL: the id is already in flight, so no new worker.
+            screen._resolve_langsmith_links()
+            screen._resolve_langsmith_links()
+
+            run_worker.assert_not_called()
+
+            # A thread switch still resolves the newly seen id exactly once.
+            screen._snapshot = [
+                SnapshotField("Thread", "thread-xyz", thread_id="thread-xyz")
+            ]
+            screen._resolve_langsmith_links()
+            screen._resolve_langsmith_links()
+
+            assert run_worker.call_count == 1
 
     async def test_clicking_thread_value_copies_it(
         self, monkeypatch: pytest.MonkeyPatch

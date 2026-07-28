@@ -2559,6 +2559,18 @@ def create_cli_agent(
 
     agent_middleware.extend([ResumeStateMiddleware(), GoalToolsMiddleware()])
 
+    # Mid-turn steering: drains the client's Store inbox before each model call so
+    # a queued message can reach the turn that is already running instead of
+    # waiting for it to finish. Interactive only (the headless surface has no
+    # queue to steer from), and skipped entirely when steering is disabled so the
+    # per-boundary Store read never happens.
+    from deepagents_code.steering import steering_enabled
+
+    if interactive and steering_enabled():
+        from deepagents_code.steering_middleware import SteeringMiddleware
+
+        agent_middleware.append(SteeringMiddleware())
+
     # Add ask_user middleware (must be early so its tool is available)
     trusted_ask_user_tool: BaseTool | None = None
     if enable_ask_user:

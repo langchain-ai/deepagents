@@ -466,6 +466,13 @@ class ChatTextArea(PasteBurstTextArea):
             self.value = value
             super().__init__()
 
+    class SteerRequested(Message):
+        """Enter was pressed with an empty draft.
+
+        The app layer decides what this means: with messages queued behind a
+        running turn it steers them into that turn, and otherwise it is a no-op.
+        """
+
     class HistoryPrevious(Message):
         """Request previous history entry."""
 
@@ -1026,6 +1033,11 @@ class ChatTextArea(PasteBurstTextArea):
             value = self.text.strip()
             if value:
                 self.post_message(self.Submitted(value))
+            else:
+                # An empty draft has nothing to submit, but the keypress is still
+                # a deliberate "send it now" for anything queued behind a running
+                # turn. The app layer owns that decision.
+                self.post_message(self.SteerRequested())
             return
 
         await super()._on_key(event)
@@ -1428,6 +1440,9 @@ class ChatInput(Vertical):
             super().__init__()
             self.value = value
             self.mode = mode
+
+    class SteerRequested(Message):
+        """Relayed from the chat text area when Enter is pressed on an empty draft."""
 
     class ModeChanged(Message):
         """Message sent when input mode changes."""
@@ -2208,6 +2223,13 @@ class ChatInput(Vertical):
         process immediately or queue based on agent status.
         """
         self._submit_value(event.value)
+
+    def on_chat_text_area_steer_requested(
+        self,
+        event: ChatTextArea.SteerRequested,  # noqa: ARG002  # Textual event handler signature
+    ) -> None:
+        """Relay an empty-draft Enter to the app as `ChatInput.SteerRequested`."""
+        self.post_message(self.SteerRequested())
 
     def on_chat_text_area_history_previous(
         self, event: ChatTextArea.HistoryPrevious

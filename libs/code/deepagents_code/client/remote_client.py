@@ -395,6 +395,8 @@ class RemoteAgent:
         namespace: tuple[str, ...],
         key: str,
         value: dict[str, Any],
+        *,
+        ttl: int | None = None,
     ) -> None:
         """Write an item to the server-side LangGraph Store.
 
@@ -402,6 +404,10 @@ class RemoteAgent:
             namespace: Store namespace.
             key: Item key within `namespace`.
             value: JSON-serializable item value.
+            ttl: Optional expiry in minutes. Control records that must outlive
+                the session (approval mode) omit it; transient records (the
+                steering inbox) set it so an abandoned session cannot strand
+                them.
 
         Notes:
             A failed write is logged at debug and re-raised. The re-raise is
@@ -415,7 +421,7 @@ class RemoteAgent:
         graph = self._get_graph()
         try:
             client = graph._validate_client()
-            await client.store.put_item(namespace, key, value, index=False)
+            await client.store.put_item(namespace, key, value, index=False, ttl=ttl)
         except Exception:
             logger.debug(
                 "Failed to write store item %s/%s",

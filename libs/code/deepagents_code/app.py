@@ -9114,6 +9114,117 @@ class DeepAgentsApp(App):
 
         await self._submit_input(value, mode)
 
+    async def on_chat_input_steer_requested(
+        self,
+        event: ChatInput.SteerRequested,  # noqa: ARG002  # Textual event handler signature
+    ) -> None:
+        """Steer queued messages into the running turn on an empty-draft Enter."""
+        if self._exiting:
+            return
+        await self._steer_pending_messages()
+
+    async def _steer_pending_messages(self) -> None:
+        """Hand queued messages to the running turn instead of waiting for it.
+
+        Writes each steerable queued message into the thread's steering inbox,
+        where `SteeringMiddleware` picks it up before the agent's next model
+        call. The queued placeholder is replaced with a normal user message so
+        the transcript shows it as sent, matching how the injected message is
+        rendered when the thread is later resumed.
+
+        No-ops (silently, since Enter on an empty draft has always been a no-op)
+        unless steering is enabled, an agent turn is actually running, and the
+        session has a server-backed agent with a thread id. Slash and shell
+        entries stay queued: they execute in the client, not in the graph.
+        """
+        from deepagents_code.steering import awrite_steer, steering_enabled
+
+        if not steering_enabled() or not self._pending_messages:
+            return
+        if not self._agent_running:
+            return
+        agent = self._remote_agent()
+        thread_id = self._lc_thread_id
+        if agent is None or not thread_id:
+            return
+
+        steerable = [msg for msg in self._pending_messages if msg.mode == "normal"]
+        if not steerable:
+            return
+
+        turn_id = self._session_state.turn_id if self._session_state else None
+        delivered: list[QueuedMessage] = []
+        for queued in steerable:
+            try:
+                await awrite_steer(
+                    agent,
+                    thread_id,
+                    text=queued.text,
+                    turn_id=turn_id,
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to write a steering message to the inbox", exc_info=True
+                )
+                break
+            delivered.append(queued)
+
+        if not delivered:
+            self.notify(
+                "Could not steer the agent; the message stays queued",
+                severity="warning",
+                timeout=4,
+            )
+            return
+
+        await self._promote_steered_messages(delivered)
+        count = len(delivered)
+        noun = "message" if count == 1 else "messages"
+        self.notify(
+            f"Steering the agent with {count} queued {noun}; it lands at the next step",
+            timeout=4,
+            markup=False,
+        )
+
+    async def _promote_steered_messages(self, delivered: list[QueuedMessage]) -> None:
+        """Move steered entries out of the queue and into the transcript.
+
+        `_pending_messages` and `_queued_widgets` are positionally aligned, so
+        both are rebuilt in one pass to keep them in step even when the steered
+        entries are not contiguous.
+
+        Args:
+            delivered: Queue entries already written to the steering inbox,
+                identified by object identity so duplicate text is not dropped
+                twice.
+        """
+        delivered_ids = {id(queued) for queued in delivered}
+        widgets = list(self._queued_widgets)
+        remaining_messages: list[QueuedMessage] = []
+        remaining_widgets: list[QueuedUserMessage] = []
+        detached: list[QueuedUserMessage] = []
+
+        for index, queued in enumerate(self._pending_messages):
+            widget = widgets[index] if index < len(widgets) else None
+            if id(queued) in delivered_ids:
+                if widget is not None:
+                    detached.append(widget)
+                continue
+            remaining_messages.append(queued)
+            if widget is not None:
+                remaining_widgets.append(widget)
+
+        self._pending_messages.clear()
+        self._pending_messages.extend(remaining_messages)
+        self._queued_widgets.clear()
+        self._queued_widgets.extend(remaining_widgets)
+
+        for widget in detached:
+            await widget.remove()
+        for queued in delivered:
+            await self._mount_message(UserMessage(queued.text))
+        self._sync_status_queued()
+
     async def _dismiss_startup_tip(self) -> None:
         """Remove the startup tip once the first prompt is submitted.
 

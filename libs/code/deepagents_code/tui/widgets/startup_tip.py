@@ -28,6 +28,7 @@ _TIPS: dict[str, int] = {
     "Use /model to switch models mid-conversation": 2,
     "Use /effort to change the current model's reasoning effort": 1,
     "Press ctrl+x to compose prompts in your external editor": 1,
+    "Queue a message while the agent works, then press Enter to steer it mid-turn": 2,
     "Use /skill:<name> to invoke a skill directly": 1,
     "Use /theme to customize the TUI's colors": 1,
     "Use /skill-creator to build reusable agent skills": 1,

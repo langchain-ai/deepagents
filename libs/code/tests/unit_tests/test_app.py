@@ -4030,6 +4030,132 @@ class TestQueuedMessage:
         assert msg.mode == "shell"
 
 
+class TestSteerQueuedMessages:
+    """Enter on an empty chat input steers queued messages into a running turn."""
+
+    @staticmethod
+    def _recording_agent(*, fail: bool = False) -> Any:  # noqa: ANN401  # concrete RemoteAgent subclass defined inline
+        """Return a real `RemoteAgent` whose Store write is captured locally."""
+        from deepagents_code.client.remote_client import RemoteAgent
+
+        class _RecordingRemoteAgent(RemoteAgent):
+            """Captures inbox writes instead of sending them to a server."""
+
+            def __init__(self) -> None:
+                super().__init__("http://localhost:0")
+                self.writes: list[dict[str, Any]] = []
+
+            async def aput_store_item(
+                self,
+                namespace: tuple[str, ...],
+                key: str,
+                value: dict[str, Any],
+                *,
+                ttl: int | None = None,
+            ) -> None:
+                del namespace, key, ttl
+                if fail:
+                    msg = "store unavailable"
+                    raise RuntimeError(msg)
+                self.writes.append(value)
+
+        return _RecordingRemoteAgent()
+
+    async def test_empty_enter_steers_every_queued_message(self) -> None:
+        """Queued prompts are handed to the running turn in submission order."""
+        agent = self._recording_agent()
+        app = DeepAgentsApp(agent=agent, thread_id="thread-steer")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            await app._submit_input("first", "normal")
+            await app._submit_input("second", "normal")
+            await pilot.pause()
+
+            app.post_message(ChatInput.SteerRequested())
+            await pilot.pause()
+
+            assert [write["text"] for write in agent.writes] == ["first", "second"]
+            assert not app._pending_messages
+            assert not app._queued_widgets
+            assert not app.query(QueuedUserMessage)
+            mounted = [widget.raw_text for widget in app.query(UserMessage)]
+            assert mounted == ["first", "second"]
+
+    async def test_steer_leaves_client_side_entries_queued(self) -> None:
+        """Shell and slash entries must still run in the client after the turn."""
+        agent = self._recording_agent()
+        app = DeepAgentsApp(agent=agent, thread_id="thread-steer")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            await app._submit_input("!ls", "shell")
+            await app._submit_input("steer me", "normal")
+            await pilot.pause()
+
+            app.post_message(ChatInput.SteerRequested())
+            await pilot.pause()
+
+            assert [write["text"] for write in agent.writes] == ["steer me"]
+            assert [message.text for message in app._pending_messages] == ["!ls"]
+            assert len(app._queued_widgets) == 1
+            assert len(app.query(QueuedUserMessage)) == 1
+
+    async def test_steer_is_a_noop_while_idle(self) -> None:
+        """With no turn running there is nothing to steer into."""
+        agent = self._recording_agent()
+        app = DeepAgentsApp(agent=agent, thread_id="thread-steer")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            await app._submit_input("later", "normal")
+            # Hold the normal drain so the queue state reflects steering alone.
+            drain = AsyncMock()
+            app._process_next_from_queue = drain  # ty: ignore
+            app._agent_running = False
+
+            app.post_message(ChatInput.SteerRequested())
+            await pilot.pause()
+
+            assert agent.writes == []
+            assert [message.text for message in app._pending_messages] == ["later"]
+
+    async def test_steer_respects_the_disable_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Opting out keeps queued messages strictly post-turn."""
+        from deepagents_code._env_vars import STEERING
+
+        monkeypatch.setenv(STEERING, "0")
+        agent = self._recording_agent()
+        app = DeepAgentsApp(agent=agent, thread_id="thread-steer")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            await app._submit_input("queued", "normal")
+
+            app.post_message(ChatInput.SteerRequested())
+            await pilot.pause()
+
+            assert agent.writes == []
+            assert [message.text for message in app._pending_messages] == ["queued"]
+
+    async def test_failed_write_keeps_the_message_queued(self) -> None:
+        """A Store failure must not lose the prompt the user typed."""
+        agent = self._recording_agent(fail=True)
+        app = DeepAgentsApp(agent=agent, thread_id="thread-steer")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent_running = True
+            await app._submit_input("keep me", "normal")
+
+            app.post_message(ChatInput.SteerRequested())
+            await pilot.pause()
+
+            assert [message.text for message in app._pending_messages] == ["keep me"]
+            assert len(app._queued_widgets) == 1
+
+
 class TestMessageQueue:
     """Test message queue behavior in DeepAgentsApp."""
 

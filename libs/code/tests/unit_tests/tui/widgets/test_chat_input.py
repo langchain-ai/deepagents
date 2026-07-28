@@ -480,6 +480,58 @@ class TestChatTextAreaKeybindings:
         assert "alt+backspace" in word_delete_keys
 
 
+class TestEmptyEnterSteerRequest:
+    """Enter on an empty draft asks the app to steer, instead of doing nothing."""
+
+    class _SteerRecordingApp(App[None]):
+        """App that records `ChatInput.SteerRequested` for assertion."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.steer_requests = 0
+            self.submitted: list[ChatInput.Submitted] = []
+
+        def compose(self) -> ComposeResult:
+            yield ChatInput(id="chat-input")
+
+        def on_chat_input_steer_requested(
+            self,
+            event: ChatInput.SteerRequested,  # noqa: ARG002  # Textual event handler signature
+        ) -> None:
+            self.steer_requests += 1
+
+        def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
+            self.submitted.append(event)
+
+    async def test_empty_draft_requests_a_steer(self) -> None:
+        """An empty Enter reaches the app as a steer request."""
+        app = self._SteerRecordingApp()
+        async with app.run_test() as pilot:
+            app.query_one(ChatInput).focus_input()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.steer_requests == 1
+            assert app.submitted == []
+
+    async def test_draft_still_submits(self) -> None:
+        """A non-empty Enter submits as before and never requests a steer."""
+        app = self._SteerRecordingApp()
+        async with app.run_test() as pilot:
+            chat_input = app.query_one(ChatInput)
+            chat_input.focus_input()
+            text_area = chat_input.input_widget
+            assert text_area is not None
+            text_area.insert("do the thing")
+            await pilot.pause()
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert [event.value for event in app.submitted] == ["do the thing"]
+            assert app.steer_requests == 0
+
+
 class TestDiscardText:
     """Tests for the undoable draft clear behind esc+esc and the `[ X ]` button."""
 

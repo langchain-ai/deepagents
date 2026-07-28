@@ -381,6 +381,17 @@ Off by default; the model is always visible in the status bar, so the banner
 row is opt-in to avoid duplicating it.
 """
 
+STEERING = "DEEPAGENTS_CODE_STEERING"
+"""Allow queued messages to be steered into a running turn (defaults to on).
+
+When enabled, pressing Enter on an empty chat input while the agent is working
+hands every queued message to the server-side steering inbox, and the agent
+picks them up at its next model call instead of after the turn ends. Set to a
+falsy value (`0`, `false`, `no`, `off`) to keep queued messages strictly
+post-turn, which also stops the agent server from reading the inbox at all.
+Parsed by `is_env_truthy`.
+"""
+
 SUPPRESS_ENV_OVERRIDE_WARNING = "DEEPAGENTS_CODE_SUPPRESS_ENV_OVERRIDE_WARNING"
 """Silence the startup warning emitted when a `DEEPAGENTS_CODE_`-prefixed
 LangSmith variable overrides its canonical counterpart (e.g. both

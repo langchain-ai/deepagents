@@ -21,8 +21,15 @@ dependencies = [
     "deepagents>=0.6.12",
     "langchain>=1.3.12,<2.0.0",
     "deepagents-code>=0.1.27",
-    # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, introduced in harbor 0.13.2)
-    "harbor[langsmith]>=0.16.1,<0.17.0",
+    # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, introduced in harbor 0.13.2).
+    # 0.20.0 is the floor for LangSmith trace nesting: its LangGraph launcher calls
+    # `harbor_langsmith.nesting.parent_env(context_id)`, which is what carries the
+    # plugin's parent-run handle into the sandbox so an agent's trajectory appears
+    # inside its experiment instead of a disconnected tracing project.
+    "harbor[langsmith]>=0.20.0,<0.21.0",
+    # The other half of that bridge: 0.3.0 is the first release whose plugin
+    # publishes the parent dotted-order and the experiment session name.
+    "harbor-langsmith>=0.3.0,<0.4.0",
     # LangSmith for observability
     "langsmith>=0.10.9,<0.11.0",
     # Sandbox runtimes

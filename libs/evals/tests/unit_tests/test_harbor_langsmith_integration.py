@@ -12,9 +12,20 @@ EVALS = ROOT / "libs" / "evals"
 
 
 def test_evals_uses_published_harbor_langsmith_dependency() -> None:
-    pyproject = tomllib.loads((EVALS / "pyproject.toml").read_text())
+    """Both halves of the LangSmith trace-nesting bridge must stay in range.
 
-    assert "harbor[langsmith]>=0.16.1,<0.17.0" in pyproject["project"]["dependencies"]
+    Harbor 0.20.0's LangGraph launcher calls
+    `harbor_langsmith.nesting.parent_env(context_id)`, and harbor-langsmith 0.3.0
+    is the first release that publishes the parent handle for it to read. Drop
+    below either floor and agent trajectories silently stop nesting under their
+    experiment — they still trace, just into a disconnected project, so nothing
+    fails and the loss is easy to miss.
+    """
+    pyproject = tomllib.loads((EVALS / "pyproject.toml").read_text())
+    dependencies = pyproject["project"]["dependencies"]
+
+    assert "harbor[langsmith]>=0.20.0,<0.21.0" in dependencies
+    assert "harbor-langsmith>=0.3.0,<0.4.0" in dependencies
     assert "harbor" not in pyproject["tool"]["uv"]["sources"]
 
 

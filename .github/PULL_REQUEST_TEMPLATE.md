@@ -1,60 +1,28 @@
 Fixes #
 
-<!-- Update the relationship and number above, or remove the line when none applies. Only `Closes`, `Fixes`, and `Resolves` auto-close the referenced GitHub issue on merge. -->
+<!-- Optional: `Fixes` / `Closes` / `Resolves` auto-close the issue on merge. Use `Depends on` or `Related` otherwise. -->
 
-<!-- For a net new feature or behavior-changing bugfix, replace this comment with a high-level, plain-English summary of the user-visible change. That paragraph is the release note — no heading or label, and do not repeat it later. Remove this comment for chores, refactors, or test-only changes. -->
+<!-- For a net new feature or behavior-changing bugfix: one plain-English sentence on the user-visible change (this is the release note — no heading, don't repeat it). Remove for chores/refactors/tests-only. -->
 
 ---
 
-<!-- Explain the motivation and why this solution is the right one. Do not add a `# Summary`, `## Release note`, or `## Release Note` heading; the plain summary above `---` already is the release note. -->
+<!-- Why this change, and why this approach. No `# Summary` or `## Release note` heading. -->
 
-Read the full contributing guidelines: https://docs.langchain.com/oss/python/contributing/overview
+Thanks for contributing! A few essentials:
 
-> **All contributions must be in English.** See the [language policy](https://docs.langchain.com/oss/python/contributing/overview#language-policy).
+1. **Title:** `type(scope): description` — e.g. `fix(sdk): ...`, `feat(cli): ...`. Allowed values: [pr_lint.yml](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/pr_lint.yml).
+2. **Body:** optional issue link + user-facing summary above `---`; motivation below. Call out breaking changes.
+3. **Checks:** `make format`, `make lint`, and `make test` from the package(s) you changed (CI must pass).
 
-If you paste a large clearly AI generated description here your PR may be IGNORED or CLOSED!
+Also:
+- One package per PR unless a maintainer says otherwise
+- Don't change `uv.lock` / add deps without maintainer OK
+- AI-assisted? Say so. Large pasted AI descriptions may be ignored or closed
+- English only — [language policy](https://docs.langchain.com/oss/python/contributing/overview#language-policy)
 
-Thank you for contributing to Deep Agents! Follow these steps to have your pull request considered as ready for review.
-
-1. PR title: Should follow the format: TYPE(SCOPE): DESCRIPTION
-
-  - Examples:
-    - fix(sdk): resolve flag parsing error
-    - feat(cli): add multi-tenant support
-    - test(acp): update API usage tests
-  - Do not include Linear issue-closing markers such as `[closes DCD-52]` in the title. Put issue references and closing metadata in the PR description instead.
-  - Allowed TYPE and SCOPE values: https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/pr_lint.yml
-
-2. PR description:
-
-  - Keep an optional issue or PR relationship and, when required, the user-facing summary above the `---`; put the rest of the body below it.
-  - For net new features or behavior-changing bugfixes, write a high-level, plain-English summary of the user-visible change above `---` without a heading or label. That summary is the release note — do not also add a `## Release note` / `## Release Note` section.
-  - If this PR addresses a specific issue, use `Fixes #ISSUE_NUMBER`, `Closes #ISSUE_NUMBER`, or `Resolves #ISSUE_NUMBER` to automatically close it when the PR is merged.
-  - If there are any breaking changes, please clearly describe them.
-  - If this PR depends on another PR being merged first, please include `Depends on #PR_NUMBER` in the description.
-
-<!--
-Do not add a dedicated "Test plan" or "Testing" section unless this PR is large or the changes are highly consequential. When one is warranted, keep it collapsed:
-
-<details>
-<summary>Test plan</summary>
-
-- Describe the verification performed.
-
-</details>
--->
-
-3. Run `make format`, `make lint` and `make test` from the root of the package(s) you've modified.
-
-  - We will not consider a PR unless these three are passing in CI.
-
-Additional guidelines:
-
-  - We ask that if you use generative AI for your contribution, you include a disclaimer.
-  - PRs should not touch more than one package unless absolutely necessary.
-  - Do not update the `uv.lock` files or add dependencies to `pyproject.toml` files (even optional ones) unless you have explicit permission to do so by a maintainer.
+Full guide: https://docs.langchain.com/oss/python/contributing/overview
 
 ## Social handles (optional)
-<!-- If you'd like a shoutout on release, add your socials below -->
+<!-- Shoutout on release -->
 Twitter: @
 LinkedIn: https://linkedin.com/in/

@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from deepagents_code.input import (
+    ParsedPastedPathPayload,
     dropped_payload_paths,
     extract_leading_pasted_file_path,
     normalize_pasted_path,
@@ -425,6 +426,28 @@ def test_dropped_payload_paths_resolves_file_url(tmp_path: Path) -> None:
     img.write_bytes(b"img")
 
     assert dropped_payload_paths(img.as_uri()) == [img.resolve()]
+
+
+def test_dropped_payload_paths_accepts_windows_drive_shape(mocker) -> None:
+    """Windows drive-letter drops pass the shape guard and get parsed."""
+    resolved = Path(r"C:\Users\Alice\shot.png")
+    mocker.patch(
+        "deepagents_code.input.parse_pasted_path_payload",
+        return_value=ParsedPastedPathPayload(paths=[resolved]),
+    )
+
+    assert dropped_payload_paths(r"C:\Users\Alice\shot.png") == [resolved]
+
+
+def test_dropped_payload_paths_accepts_windows_unc_shape(mocker) -> None:
+    """Windows UNC drops pass the shape guard and get parsed."""
+    resolved = Path(r"\\server\share\shot.png")
+    mocker.patch(
+        "deepagents_code.input.parse_pasted_path_payload",
+        return_value=ParsedPastedPathPayload(paths=[resolved]),
+    )
+
+    assert dropped_payload_paths(r"\\server\share\shot.png") == [resolved]
 
 
 def test_dropped_payload_paths_ignores_plain_text() -> None:

@@ -613,11 +613,12 @@ def parse_pasted_path_payload(
 def _looks_like_dropped_payload(text: str) -> bool:
     """Return whether a payload has the shape a terminal uses for a file drop.
 
-    Terminals deliver a dragged file as an absolute path, a `~/` path, or a
-    `file://` URL, so requiring that shape keeps a hand-typed relative path
-    (`assets/logo.png`) from being mistaken for a drop. Without this guard
-    `parse_pasted_file_paths` would resolve such a token against the working
-    directory, and a caller that rejects drops would swallow ordinary text.
+    Terminals deliver a dragged file as an absolute path (POSIX or Windows
+    drive/UNC), a `~/` path, or a `file://` URL, so requiring that shape keeps a
+    hand-typed relative path (`assets/logo.png`) from being mistaken for a
+    drop. Without this guard `parse_pasted_file_paths` would resolve such a
+    token against the working directory, and a caller that rejects drops would
+    swallow ordinary text.
 
     Args:
         text: Raw pasted/dropped text payload.
@@ -626,7 +627,10 @@ def _looks_like_dropped_payload(text: str) -> bool:
         `True` when the payload begins like a dropped path.
     """
     value = text.strip().lstrip("<'\"")
-    return value.startswith(("/", "~/", "file://"))
+    return bool(
+        value.startswith(("/", "~/", "file://", "\\\\"))
+        or _WINDOWS_DRIVE_PATH_PATTERN.match(value)
+    )
 
 
 def dropped_payload_paths(text: str) -> list[Path]:

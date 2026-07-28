@@ -6,7 +6,7 @@ import shlex
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TypeVar
 from urllib.parse import unquote, urlparse
 
 from rich.markup import escape as escape_markup
@@ -88,6 +88,17 @@ space code points that look identical to normal spaces when pasted.
 _WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
 """Pattern for Windows drive-letter paths like `C:\\Users\\...`."""
 
+_MediaItemT = TypeVar("_MediaItemT", ImageData, VideoData)
+"""Media payload type handled uniformly by the tracker's partition helpers."""
+
+MAX_DETACHED_MEDIA = 10
+"""Cap on detached media items retained per kind for undo.
+
+Detached items hold full base64 payloads, so the pool is bounded and drops the
+oldest entries first. Ten covers realistic delete/undo churn in a single draft
+without letting a paste-heavy session grow memory without limit.
+"""
+
 
 @dataclass(frozen=True)
 class ParsedPastedPathPayload:
@@ -118,6 +129,10 @@ class MediaTracker:
         self.videos: list[VideoData] = []
         self.next_image_id: int = 1
         self.next_video_id: int = 1
+        # Media whose placeholder was removed from the draft but whose payload is
+        # retained so an undo (ctrl+z) that restores the token re-attaches it.
+        self._detached_images: list[ImageData] = []
+        self._detached_videos: list[VideoData] = []
 
     def add_media(
         self,
@@ -144,6 +159,7 @@ class MediaTracker:
             data.placeholder = placeholder
             self.images.append(data)  # ty: ignore[invalid-argument-type]
             self.next_image_id += 1
+            self._drop_detached(self._detached_images, placeholder)
         else:
             while f"[video {self.next_video_id}]" in existing_text:
                 self.next_video_id += 1
@@ -151,6 +167,7 @@ class MediaTracker:
             data.placeholder = placeholder
             self.videos.append(data)  # ty: ignore[invalid-argument-type]
             self.next_video_id += 1
+            self._drop_detached(self._detached_videos, placeholder)
         return placeholder
 
     def add_image(self, image_data: ImageData, *, existing_text: str = "") -> str:
@@ -196,9 +213,11 @@ class MediaTracker:
         return list(self.videos)
 
     def clear(self) -> None:
-        """Clear all tracked media and reset counters."""
+        """Clear all tracked media, detached undo payloads, and reset counters."""
         self.images.clear()
         self.videos.clear()
+        self._detached_images.clear()
+        self._detached_videos.clear()
         self.next_image_id = 1
         self.next_video_id = 1
 
@@ -207,6 +226,8 @@ class MediaTracker:
         tracker = MediaTracker()
         tracker.images = [replace(img) for img in self.images]
         tracker.videos = [replace(vid) for vid in self.videos]
+        tracker._detached_images = [replace(img) for img in self._detached_images]
+        tracker._detached_videos = [replace(vid) for vid in self._detached_videos]
         tracker.next_image_id = self.next_image_id
         tracker.next_video_id = self.next_video_id
         return tracker
@@ -219,6 +240,8 @@ class MediaTracker:
         """
         self.images = [replace(img) for img in snapshot.images]
         self.videos = [replace(vid) for vid in snapshot.videos]
+        self._detached_images = [replace(img) for img in snapshot._detached_images]
+        self._detached_videos = [replace(vid) for vid in snapshot._detached_videos]
         self.next_image_id = snapshot.next_image_id
         self.next_video_id = snapshot.next_video_id
 
@@ -231,6 +254,11 @@ class MediaTracker:
     ) -> None:
         """Retain only media still referenced by placeholders in current text.
 
+        Media whose placeholder disappeared is detached rather than dropped, and
+        a detached item is re-attached when its token comes back (the ctrl+z
+        case). The detached payloads are released by `clear()`, once the message
+        has been consumed.
+
         Args:
             text: Current input text shown to the user.
             previous_text: Previous input text, used to keep tracking the same
@@ -238,14 +266,12 @@ class MediaTracker:
             cursor_offset: Current cursor offset, used to disambiguate whole-paste
                 edits that create duplicate placeholder tokens.
         """
-        img_found = self._sync_kind_images(
+        self._sync_kind_images(
             text, previous_text=previous_text, cursor_offset=cursor_offset
         )
-        vid_found = self._sync_kind_videos(
+        self._sync_kind_videos(
             text, previous_text=previous_text, cursor_offset=cursor_offset
         )
-        if not img_found and not vid_found:
-            self.clear()
 
     def remap_spans_to_text(self, text: str, *, previous_text: str) -> None:
         """Re-map tracked placeholder spans onto a transformed copy of the text.
@@ -281,20 +307,19 @@ class MediaTracker:
         *,
         previous_text: str | None = None,
         cursor_offset: int | None = None,
-    ) -> bool:
+    ) -> None:
         """Sync image list to surviving placeholders in text.
 
         Args:
             text: Current input text.
             previous_text: Previous input text, used to map existing spans.
             cursor_offset: Current cursor offset for duplicate disambiguation.
-
-        Returns:
-            Whether any image placeholders were found.
         """
         matches = list(IMAGE_PLACEHOLDER_PATTERN.finditer(text))
         placeholders = {m.group(0) for m in matches}
-        self.images = [img for img in self.images if img.placeholder in placeholders]
+        self.images, self._detached_images = self._partition_media(
+            self.images, self._detached_images, placeholders, IMAGE_PLACEHOLDER_PATTERN
+        )
         self._update_placeholder_spans(
             self.images, matches, text, previous_text, cursor_offset
         )
@@ -304,7 +329,6 @@ class MediaTracker:
             self.next_image_id = self._max_placeholder_id(
                 self.images, IMAGE_PLACEHOLDER_PATTERN, len(self.images)
             )
-        return bool(placeholders)
 
     def _sync_kind_videos(
         self,
@@ -312,20 +336,19 @@ class MediaTracker:
         *,
         previous_text: str | None = None,
         cursor_offset: int | None = None,
-    ) -> bool:
+    ) -> None:
         """Sync video list to surviving placeholders in text.
 
         Args:
             text: Current input text.
             previous_text: Previous input text, used to map existing spans.
             cursor_offset: Current cursor offset for duplicate disambiguation.
-
-        Returns:
-            Whether any video placeholders were found.
         """
         matches = list(VIDEO_PLACEHOLDER_PATTERN.finditer(text))
         placeholders = {m.group(0) for m in matches}
-        self.videos = [vid for vid in self.videos if vid.placeholder in placeholders]
+        self.videos, self._detached_videos = self._partition_media(
+            self.videos, self._detached_videos, placeholders, VIDEO_PLACEHOLDER_PATTERN
+        )
         self._update_placeholder_spans(
             self.videos, matches, text, previous_text, cursor_offset
         )
@@ -335,7 +358,78 @@ class MediaTracker:
             self.next_video_id = self._max_placeholder_id(
                 self.videos, VIDEO_PLACEHOLDER_PATTERN, len(self.videos)
             )
-        return bool(placeholders)
+
+    @classmethod
+    def _partition_media(
+        cls,
+        attached: list[_MediaItemT],
+        detached: list[_MediaItemT],
+        placeholders: set[str],
+        pattern: re.Pattern[str],
+    ) -> tuple[list[_MediaItemT], list[_MediaItemT]]:
+        """Split media into what the current text references and what it does not.
+
+        Items are matched by placeholder token, never by object identity, so an
+        item detached by a delete is the same item re-attached by the undo that
+        restores its token. An attached item always wins over a detached one
+        holding the same token, since the attached copy carries the live span.
+
+        Args:
+            attached: Media currently bound to tokens in the draft.
+            detached: Media retained for undo after its token was removed.
+            placeholders: Placeholder tokens present in the current text.
+            pattern: Placeholder regex with an `id` group, used for ordering.
+
+        Returns:
+            The `(attached, detached)` lists for the current text. Attached items
+                are ordered by placeholder ID so message content blocks keep a
+                stable order; the detached pool is capped at
+                `MAX_DETACHED_MEDIA`, dropping the oldest entries first.
+        """
+        attached_by_token = {item.placeholder: item for item in attached}
+        detached_by_token = {
+            item.placeholder: item
+            for item in detached
+            if item.placeholder not in attached_by_token
+        }
+        still_attached = [
+            item
+            for item in (*attached_by_token.values(), *detached_by_token.values())
+            if item.placeholder in placeholders
+        ]
+        still_attached.sort(key=lambda item: cls._placeholder_sort_key(item, pattern))
+        now_detached = [
+            item
+            for item in (*detached_by_token.values(), *attached_by_token.values())
+            if item.placeholder not in placeholders
+        ]
+        return still_attached, now_detached[-MAX_DETACHED_MEDIA:]
+
+    @staticmethod
+    def _drop_detached(detached: list[_MediaItemT], placeholder: str) -> None:
+        """Release detached media whose placeholder is being reassigned.
+
+        Args:
+            detached: Detached pool to prune in place.
+            placeholder: Placeholder token just handed to a new media item.
+        """
+        detached[:] = [item for item in detached if item.placeholder != placeholder]
+
+    @staticmethod
+    def _placeholder_sort_key(
+        item: ImageData | VideoData, pattern: re.Pattern[str]
+    ) -> int:
+        """Return the numeric placeholder ID used to order tracked media.
+
+        Args:
+            item: Media item whose placeholder should be parsed.
+            pattern: Placeholder regex with an `id` group.
+
+        Returns:
+            The parsed ID, or `0` when the placeholder is not a numbered token.
+        """
+        match = pattern.fullmatch(item.placeholder)
+        return int(match.group("id")) if match is not None else 0
 
     def _update_placeholder_spans(
         self,

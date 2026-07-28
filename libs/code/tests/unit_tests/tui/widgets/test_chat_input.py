@@ -2854,6 +2854,46 @@ class TestDroppedImagePaste:
             assert chat._text_area.text == "[image 1][image 2]"
             assert len(app.tracker.get_images()) == 2
 
+    async def test_undo_after_backspace_keeps_image_atomic(self, tmp_path) -> None:
+        """Ctrl+Z after backspacing `[image N]` restores an atomic, attached token.
+
+        Regression: the attachment was dropped when the token left the draft, so
+        the undo restored placeholder-shaped *text* only. Backspace then chewed
+        it one character at a time (`[image 1`) and the image never reached the
+        model.
+        """
+        img_path = tmp_path / "undo.png"
+        from PIL import Image
+
+        Image.new("RGB", (4, 4), color="cyan").save(img_path, format="PNG")
+
+        app = _ImagePasteApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat.handle_external_paste(str(img_path))
+            await pilot.pause()
+            assert chat._text_area.text == "[image 1] "
+
+            await pilot.press("backspace")
+            await pilot.pause()
+            assert chat._text_area.text == ""
+            assert app.tracker.get_images() == []
+
+            chat._text_area.undo()
+            await pilot.pause()
+            assert chat._text_area.text == "[image 1] "
+            assert len(app.tracker.get_images()) == 1
+
+            chat._text_area.move_cursor((0, len("[image 1] ")))
+            await pilot.pause()
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert chat._text_area.text == ""
+            assert app.tracker.get_images() == []
+
     async def test_readding_after_delete_restarts_image_counter(self, tmp_path) -> None:
         """Re-adding after deleting all placeholders should restart at `[image 1]`."""
         img_path = tmp_path / "readd.png"

@@ -122,6 +122,10 @@ Debug logging is configured **once**, on the `deepagents_code` package logger, b
 
 The `deepagents-code --help` screen is hand-maintained in `ui.show_help()`, separate from the argparse definitions in `main.parse_args()`. When adding a new CLI flag, update **both** files. A drift-detection test (`test_args.TestHelpScreenDrift`) fails if a flag is registered in argparse but missing from the help screen.
 
+## Command name in hints
+
+Hints that tell the user to run something (for example the teardown `-r <thread>` resume hint) must render `_invocation.invoked_name()` rather than a literal `dcode`. The package ships two console scripts (`dcode` and `deepagents-code`), and per-checkout shims — a renamed symlink pointing at a worktree's `bin/dcode` — are a common way to run several installs side by side, so a hardcoded name sends those users to a command they do not have. `invoked_name()` resolves from `sys.argv[0]` (an internal env sentinel carries it across the auto-update re-exec, which drops argv[0]) and falls back to `dcode` when the launch name is not a plausible command. The hand-maintained `--help` usage lines still hardcode `dcode`.
+
 ## Splash screen tips
 
 When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding entry to the `_TIPS` dict in `deepagents_code/tui/widgets/startup_tip.py`, mapping the tip text to a relative selection weight (higher = shown more often). One tip is chosen at random above the input on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+x to compose prompts in your external editor"`).

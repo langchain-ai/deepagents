@@ -190,7 +190,14 @@ def _restart_current_process() -> NoReturn:
     Raises:
         RuntimeError: If process replacement unexpectedly returns.
     """
+    from deepagents_code._env_vars import INVOKED_AS
+    from deepagents_code._invocation import invoked_name
+
     argv = [sys.executable, "-m", "deepagents_code", *sys.argv[1:]]
+    # `-m` discards argv[0], so the launch name would be lost across the exec
+    # and post-update resume hints would fall back to `dcode`. Hand it to the
+    # next generation explicitly.
+    os.environ[INVOKED_AS] = invoked_name()
     # Re-exec the trusted interpreter with the user's own argv verbatim; the
     # only "input" is the command the user already ran, so S606's concern
     # (untrusted/unsanitized args to a spawned executable) does not apply.
@@ -254,6 +261,7 @@ def _render_teardown_thread_hints(
     from rich.style import Style
     from rich.text import Text
 
+    from deepagents_code._invocation import invoked_name
     from deepagents_code.config import build_langsmith_thread_url
     from deepagents_code.sessions import thread_exists
 
@@ -285,7 +293,10 @@ def _render_teardown_thread_hints(
     if return_code == 0:
         console.print()
         console.print("[dim]Resume this thread with:[/dim]")
-        hint = Text("dcode -r ", style="cyan")
+        # Echo the command the user actually launched (a shim or the
+        # `deepagents-code` alias), not a hardcoded `dcode` they may not have.
+        hint = Text(invoked_name(), style="cyan")
+        hint.append(" -r ", style="cyan")
         hint.append(str(thread_id), style="cyan")
         console.print(hint)
 

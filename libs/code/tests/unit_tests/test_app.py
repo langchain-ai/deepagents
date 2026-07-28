@@ -29925,6 +29925,77 @@ class TestCanBypassQueue:
         assert app._pending_messages[0].text == "/clear"
 
 
+class TestScheduleOffMessagePump:
+    """Coverage for detached slash-command continuations."""
+
+    async def test_continuation_runs_and_is_forgotten(self) -> None:
+        """A scheduled continuation runs and clears its tracking entry."""
+        app = DeepAgentsApp()
+        ran = asyncio.Event()
+
+        async def _work() -> None:  # noqa: RUF029  # scheduled as a coroutine
+            ran.set()
+
+        task = app._schedule_off_message_pump(_work(), context="demo")
+
+        assert task is not None
+        await asyncio.wait_for(task, timeout=2.0)
+        assert ran.is_set()
+        await asyncio.sleep(0)  # let the done-callback fire
+        assert "demo" not in app._modal_command_tasks
+
+    async def test_duplicate_context_is_refused(self) -> None:
+        """A second continuation is refused while the first modal is open.
+
+        The command handler returns as soon as the continuation is detached, so
+        the user can submit the same command again while its prompt is still up.
+        Deduplication is what stops a confirmed install or refresh from racing a
+        duplicate of itself.
+        """
+        app = DeepAgentsApp()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        second_ran = False
+
+        async def _first() -> None:
+            started.set()
+            await release.wait()
+
+        async def _second() -> None:  # noqa: RUF029  # scheduled as a coroutine
+            nonlocal second_ran
+            second_ran = True
+
+        first = app._schedule_off_message_pump(_first(), context="demo")
+        assert first is not None
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        with patch.object(app, "notify") as notify:
+            assert app._schedule_off_message_pump(_second(), context="demo") is None
+
+        notify.assert_called_once()
+        release.set()
+        await asyncio.wait_for(first, timeout=2.0)
+        assert second_ran is False
+
+    async def test_exit_cancels_a_continuation_waiting_on_its_modal(self) -> None:
+        """App teardown cancels a continuation parked on a confirmation modal."""
+        app = DeepAgentsApp()
+        started = asyncio.Event()
+
+        async def _blocked() -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        task = app._schedule_off_message_pump(_blocked(), context="demo")
+        assert task is not None
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        app._cancel_modal_command_tasks()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2.0)
+
+
 def _banner_query_raiser(app: DeepAgentsApp, exc: Exception) -> Callable[..., Widget]:
     """Return a `query_one` stand-in that raises for the welcome banner only.
 

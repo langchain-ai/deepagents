@@ -18,6 +18,9 @@ from deepagents_code._version import __version__
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from textual.pilot import Pilot
+
+    from deepagents_code.app import DeepAgentsApp
     from deepagents_code.extras_info import VersionReport
 
 
@@ -60,6 +63,22 @@ def _block_sdk_pypi_fetch(tmp_path: Path) -> Iterator[None]:
         ),
     ):
         yield
+
+
+async def _drain_modal_commands(app: DeepAgentsApp) -> None:
+    """Await the confirmation continuations `/update` schedules off the pump.
+
+    `/update` hands its confirmation modals to `_schedule_off_message_pump`, so
+    `_handle_command` returns before the confirmed work runs. Tests await the
+    detached tasks instead of relying on pump scheduling order.
+
+    Args:
+        app: The app whose pending continuations should be awaited.
+    """
+    while pending := [
+        task for task in app._modal_command_tasks.values() if not task.done()
+    ]:
+        await asyncio.gather(*pending, return_exceptions=True)
 
 
 def test_version_matches_pyproject() -> None:
@@ -1018,6 +1037,7 @@ async def test_update_deps_routes_outdated_dcode_through_regular_update() -> Non
             ),
         ):
             await app._handle_command("/update --deps")
+            await _drain_modal_commands(app)
             await pilot.pause()
 
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
@@ -1068,6 +1088,7 @@ async def test_update_deps_skips_refresh_prompt_when_refresh_unsupported() -> No
             ) as perform_upgrade_mock,
         ):
             await app._handle_command("/update --deps")
+            await _drain_modal_commands(app)
             await pilot.pause()
 
         confirm_mock.assert_not_awaited()
@@ -1124,6 +1145,7 @@ async def test_update_deps_decline_app_update_refreshes_current_deps() -> None:
             ) as perform_upgrade_mock,
         ):
             await app._handle_command("/update --deps")
+            await _drain_modal_commands(app)
             await pilot.pause()
 
         refresh_mock.assert_awaited_once_with(include_prereleases=None)
@@ -1174,6 +1196,7 @@ async def test_update_deps_decline_app_update_reports_no_new_deps() -> None:
             ) as perform_upgrade_mock,
         ):
             await app._handle_command("/update --deps")
+            await _drain_modal_commands(app)
             await pilot.pause()
 
         perform_upgrade_mock.assert_not_awaited()
@@ -1229,6 +1252,7 @@ async def test_update_already_current_prompts_and_refreshes_on_confirm() -> None
             ) as refresh_mock,
         ):
             await app._handle_command("/update")
+            await _drain_modal_commands(app)
             await pilot.pause()
 
         dry_run_mock.assert_awaited_once_with(include_prereleases=None)
@@ -1281,6 +1305,7 @@ async def test_update_already_current_skips_refresh_on_decline() -> None:
             ) as refresh_mock,
         ):
             await app._handle_command("/update")
+            await _drain_modal_commands(app)
             await pilot.pause()
 
         dry_run_mock.assert_awaited_once_with(include_prereleases=None)
@@ -1290,6 +1315,169 @@ async def test_update_already_current_skips_refresh_on_decline() -> None:
         refresh_mock.assert_not_awaited()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert "Dependency refresh skipped." in str(app_msgs[-1]._content)
+
+
+async def _wait_for_modal(
+    pilot: Pilot[None], screen_type: type, *, present: bool
+) -> None:
+    """Pump the app until a modal of `screen_type` is (or is no longer) on top.
+
+    Args:
+        pilot: Driver for the app under test.
+        screen_type: Modal screen class to watch for.
+        present: Whether to wait for the modal to appear or to go away.
+    """
+    for _ in range(60):
+        await pilot.pause(0.05)
+        if isinstance(pilot.app.screen, screen_type) is present:
+            return
+
+
+async def test_update_refresh_prompt_responsive_through_message_pump() -> None:
+    """The dependency-refresh modal must accept keys via the real submit path.
+
+    Regression test: `/update` is dispatched from the App's
+    `on_chat_input_submitted` handler, which is awaited inline on the App message
+    pump. Previously the confirmation was `await`ed in that chain, so the pump
+    stayed blocked while the modal was open and the modal never received the
+    Enter/Esc key events it needs to resolve — it appeared frozen until its
+    600s watchdog fired. The confirmation now runs off the pump
+    (`_schedule_off_message_pump`), so submitting through the real
+    `ChatInput.Submitted` path and pressing Enter must resolve the modal and run
+    the refresh rather than wedging the UI.
+    """
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.chat_input import ChatInput
+    from deepagents_code.tui.widgets.update_confirm import (
+        RefreshDependenciesConfirmScreen,
+    )
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Idle session so the submission is processed instead of queued.
+        app._agent_running = False
+        app._connecting = False
+        app._startup_sequence_running = False
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(False, "1.0.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.dependency_refresh_supported",
+                return_value=(True, None),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_dependency_refresh_dry_run",
+                new_callable=AsyncMock,
+                return_value=(
+                    True,
+                    " - langchain-openai==1.3.2\n + langchain-openai==1.5.0\n",
+                ),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_dependency_refresh",
+                new_callable=AsyncMock,
+                return_value=(
+                    True,
+                    " - langchain-openai==1.3.2\n + langchain-openai==1.5.0\n",
+                ),
+            ) as refresh_mock,
+        ):
+            # Submit through the message pump, exactly as the ChatInput widget
+            # would, rather than awaiting `_handle_command` directly (which would
+            # not exercise the pump-blocking path).
+            assert app._chat_input is not None
+            app._chat_input.post_message(ChatInput.Submitted("/update", "command"))
+            await _wait_for_modal(
+                pilot,
+                RefreshDependenciesConfirmScreen,
+                present=True,
+            )
+            assert isinstance(app.screen, RefreshDependenciesConfirmScreen)
+
+            # With the pump free, Enter must reach the modal and resolve it.
+            await pilot.press("enter")
+            await _wait_for_modal(
+                pilot,
+                RefreshDependenciesConfirmScreen,
+                present=False,
+            )
+            await _drain_modal_commands(app)
+
+        assert not isinstance(app.screen, RefreshDependenciesConfirmScreen)
+        refresh_mock.assert_awaited_once_with(include_prereleases=None)
+
+
+async def test_update_deps_prompt_responsive_through_message_pump() -> None:
+    """The `--deps` app-update modal must accept keys via the real submit path.
+
+    Same pump-blocking regression as the dependency-refresh modal: Esc has to
+    reach `UpdateBeforeDependenciesConfirmScreen` for the user to keep the
+    current version and refresh its dependencies.
+    """
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.chat_input import ChatInput
+    from deepagents_code.tui.widgets.update_confirm import (
+        UpdateBeforeDependenciesConfirmScreen,
+    )
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._agent_running = False
+        app._connecting = False
+        app._startup_sequence_running = False
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "1.1.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.dependency_refresh_supported",
+                return_value=(True, None),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+            ) as upgrade_mock,
+            patch(
+                "deepagents_code.update_check.perform_dependency_refresh",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as refresh_mock,
+        ):
+            assert app._chat_input is not None
+            app._chat_input.post_message(
+                ChatInput.Submitted("/update --deps", "command"),
+            )
+            await _wait_for_modal(
+                pilot,
+                UpdateBeforeDependenciesConfirmScreen,
+                present=True,
+            )
+            assert isinstance(app.screen, UpdateBeforeDependenciesConfirmScreen)
+
+            await pilot.press("escape")
+            await _wait_for_modal(
+                pilot,
+                UpdateBeforeDependenciesConfirmScreen,
+                present=False,
+            )
+            await _drain_modal_commands(app)
+
+        assert not isinstance(app.screen, UpdateBeforeDependenciesConfirmScreen)
+        refresh_mock.assert_awaited_once_with(include_prereleases=None)
+        upgrade_mock.assert_not_awaited()
 
 
 async def test_update_already_current_reports_no_dependency_changes() -> None:
@@ -1329,6 +1517,7 @@ async def test_update_already_current_reports_no_dependency_changes() -> None:
             ) as refresh_mock,
         ):
             await app._handle_command("/update")
+            await _drain_modal_commands(app)
             await pilot.pause()
 
             dry_run_mock.assert_awaited_once_with(include_prereleases=None)
@@ -1375,6 +1564,7 @@ async def test_update_already_current_reports_dependency_check_failure() -> None
             ) as refresh_mock,
         ):
             await app._handle_command("/update")
+            await _drain_modal_commands(app)
             await pilot.pause()
 
             confirm_mock.assert_not_awaited()
@@ -1425,6 +1615,7 @@ async def test_update_already_current_skips_prompt_when_refresh_unsupported() ->
             ) as refresh_mock,
         ):
             await app._handle_command("/update")
+            await _drain_modal_commands(app)
             await pilot.pause()
 
         confirm_mock.assert_not_awaited()

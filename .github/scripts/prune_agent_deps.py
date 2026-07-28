@@ -40,12 +40,13 @@ PROVIDER_TO_PACKAGE: dict[str, str] = {
 }
 """Model-spec provider prefix -> pip package that supplies it.
 
-Must stay in sync with the provider packages listed in `langgraph.json`. Keep
-this hardcoded (not derived): it is the single source of truth for which
-packages are prunable and what each provider maps to. The `prune_dependencies`
-drift guard fails the run if the matched package is missing from the file, so a
-stale entry here surfaces loudly rather than silently shipping an agent env with
-no provider.
+Must stay in sync with the provider *package names* listed in `langgraph.json`.
+Keep this hardcoded (not derived): it is the single source of truth for which
+packages are prunable and what each provider maps to. Version pins live only in
+`langgraph.json` — CI tests load that file rather than a second hand copy. The
+`prune_dependencies` drift guard fails the run if the matched package is missing
+from the file, so a stale entry here surfaces loudly rather than silently
+shipping an agent env with no provider.
 """
 
 PRUNABLE_PACKAGES: frozenset[str] = frozenset(PROVIDER_TO_PACKAGE.values())

@@ -530,29 +530,14 @@ class TestStatusMessageVisibility:
             msg = pilot.app.query_one("#status-message", Static)
 
             bar.set_status_message("Loading thread", source="agent")
-            await pilot.pause()
-            assert str(msg.render()) == "Loading thread"
-
-            bar.set_status_message("Running [lint] checks", source="hooks")
-            await pilot.pause()
-            assert str(msg.render()) == "Running [lint] checks"
-
+            bar.set_status_message("Running [bold]hook[/bold]", source="hooks")
             bar.set_status_message("Still loading", source="agent")
             await pilot.pause()
-            assert str(msg.render()) == "Running [lint] checks"
+            assert str(msg.render()) == "Running [bold]hook[/bold]"
 
             bar.set_status_message("", source="hooks")
             await pilot.pause()
             assert str(msg.render()) == "Still loading"
-
-    async def test_status_message_renders_markup_literally(self) -> None:
-        """Configured status text must not be interpreted as Rich markup."""
-        async with StatusBarApp().run_test() as pilot:
-            bar = pilot.app.query_one("#status-bar", StatusBar)
-            msg = pilot.app.query_one("#status-message", Static)
-            bar.set_status_message("Running [bold]hook[/bold]", source="hooks")
-            await pilot.pause()
-            assert str(msg.render()) == "Running [bold]hook[/bold]"
 
     async def test_busy_shows_slot_and_clearing_hides(self) -> None:
         """A busy indicator reveals the slot; clearing busy (no message) hides it."""

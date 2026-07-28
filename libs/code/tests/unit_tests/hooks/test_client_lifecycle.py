@@ -78,7 +78,8 @@ async def test_common_effects_context_and_live_hook_fields(
                             severity="warning",
                             message="diagnostic",
                         )
-                    ],
+                    ]
+                    * 2,
                 )
             ]
         ),

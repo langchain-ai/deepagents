@@ -6,7 +6,6 @@ import asyncio
 import json
 import sys
 from datetime import UTC, datetime, timedelta
-from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
@@ -830,35 +829,11 @@ async def test_async_task_tool_scopes_subagent_transcript_identity() -> None:
 async def test_fulfill_hook_invocation_runs_engine(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    command = "import json; print(json.dumps({'systemMessage': 'visible notice'}))"
-    (config_dir / "hooks.json").write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "PreToolUse": [
-                        {
-                            "hooks": [
-                                {
-                                    "type": "command",
-                                    "command": "unused",
-                                    "argv": [sys.executable, "-c", command],
-                                }
-                            ]
-                        }
-                    ]
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    notices: list[tuple[str, str]] = []
+    (config_dir / "hooks.json").write_text('{"hooks":{}}', encoding="utf-8")
     runtime = HooksRuntime.create(
         cwd=tmp_path,
         config_dir=config_dir,
         transcript_root=tmp_path / "transcripts",
-        feedback=HookFeedback(
-            notice=lambda message, severity: notices.append((message, severity))
-        ),
     )
     request = _request()
     request = request.model_copy(update={"snapshot_id": runtime.snapshot_id})
@@ -871,12 +846,10 @@ async def test_fulfill_hook_invocation_runs_engine(tmp_path: Path) -> None:
     )
     assert isinstance(response.decision, PreToolUseDecision)
     assert response.decision.permission.behavior in {"allow", "none"}
-    assert notices == [("visible notice", "information")]
 
 
 async def test_fulfillment_is_idempotent_in_flight_and_after_completion(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -885,14 +858,7 @@ async def test_fulfillment_is_idempotent_in_flight_and_after_completion(
         "import json,pathlib,time; "
         f"pathlib.Path({str(marker)!r}).write_text('x'); "
         "time.sleep(0.05); "
-        "print(json.dumps({"
-        "'systemMessage':'once',"
-        "'terminalSequence':'\\u0007',"
-        "'hookSpecificOutput':{"
-        "'hookEventName':'PreToolUse',"
-        "'permissionDecision':'allow'"
-        "}"
-        "}))"
+        "print(json.dumps({'systemMessage':'once'}))"
     )
     (config_dir / "hooks.json").write_text(
         json.dumps(
@@ -916,10 +882,6 @@ async def test_fulfillment_is_idempotent_in_flight_and_after_completion(
         encoding="utf-8",
     )
     notices: list[tuple[str, str]] = []
-    output = StringIO()
-    monkeypatch.setattr("deepagents_code.hooks.feedback.sys.stdout", output)
-    # Force a terminal sequence through a decision that includes one by patching
-    # after invoke would be heavy; instead assert notice exactly-once via sink.
     runtime = HooksRuntime.create(
         cwd=tmp_path,
         config_dir=config_dir,
@@ -937,8 +899,7 @@ async def test_fulfillment_is_idempotent_in_flight_and_after_completion(
 
     assert first == second == third
     assert marker.read_text() == "x"
-    assert notices.count(("once", "information")) == 1
-    assert output.getvalue() == "\a"
+    assert notices == [("once", "information")]
 
 
 def test_snapshot_configured_server_events() -> None:

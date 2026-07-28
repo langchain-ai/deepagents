@@ -62,12 +62,24 @@ their binary verdicts, so a trial scores **0.0, 0.5, or 1.0**:
 
 | Judge | Prompt | Default model |
 |---|---|---|
-| A | BrowseComp grader | `gpt-4.1` |
-| B | SimpleQA grader | `qwen2p5-32b-instruct` (Fireworks) |
+| A | BrowseComp grader | `gpt-4.1` (OpenAI) |
+| B | SimpleQA grader | `qwen/qwen-2.5-72b-instruct` (OpenRouter) |
 
 Both prompts are verbatim from [openai/simple-evals](https://github.com/openai/simple-evals).
 Models and credentials come from `LOHO_JUDGE_A_*` / `LOHO_JUDGE_B_*` in the verifier
-environment. Grading fails closed: an errored or unparseable judge scores 0 for its half.
+environment.
+
+> **Scores here are LoHoSearch-*derived*, not the published metric.** The paper's judge B is
+> Qwen2.5-**32B**, which no configured provider serves — Fireworks 404s on it, OpenRouter
+> carries 72B/7B/coder-32B/VL-72B, and Groq only has Qwen3. Judge B is therefore the 72B of the
+> same family and generation. Don't compare these numbers directly to the paper's 34.74%.
+
+**A judge that answers "incorrect" scores 0 for its half — that is a real grade. A judge that
+cannot be reached fails the trial instead**, so it lands in `errored` rather than contributing
+a zero. This matters: when judge B was misconfigured, every trial silently had a ceiling of 0.5
+and reported it as a legitimate `0.0`. `judge_status.json` (downloaded, plaintext-free by
+construction) records each judge's model, whether its call succeeded, its verdict, and the HTTP
+status on failure.
 
 The headline metric is **`mean_reward@K`**, which is what the paper's 34.74% is measured in.
 `pass@k` is reported too, but on this axis it means "both judges agreed at least once in K

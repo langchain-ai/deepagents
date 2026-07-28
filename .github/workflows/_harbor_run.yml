@@ -325,7 +325,7 @@ jobs:
           # half of the dual judge. Empty for every other category so an absent
           # secret cannot fail an unrelated run.
           TAVILY_API_KEY: ${{ (matrix.category || inputs.category) == 'search' && secrets.TAVILY_API_KEY || '' }}
-          LOHO_JUDGE_B_API_KEY: ${{ (matrix.category || inputs.category) == 'search' && (secrets.LOHO_JUDGE_B_API_KEY || secrets.FIREWORKS_API_KEY) || '' }}
+          LOHO_JUDGE_B_API_KEY: ${{ (matrix.category || inputs.category) == 'search' && (secrets.LOHO_JUDGE_B_API_KEY || secrets.OPENROUTER_API_KEY) || '' }}
         run: |
           missing=()
 
@@ -334,7 +334,7 @@ jobs:
           # OPENAI_API_KEY, already required above.
           if [ "$HARBOR_CATEGORY" = "search" ]; then
             [ -z "$TAVILY_API_KEY" ] && missing+=("TAVILY_API_KEY")
-            [ -z "$LOHO_JUDGE_B_API_KEY" ] && missing+=("LOHO_JUDGE_B_API_KEY or FIREWORKS_API_KEY")
+            [ -z "$LOHO_JUDGE_B_API_KEY" ] && missing+=("LOHO_JUDGE_B_API_KEY or OPENROUTER_API_KEY")
           fi
 
           # LangSmith is always required (experiment tracking)
@@ -571,7 +571,7 @@ jobs:
           # falls back to OPENAI_API_KEY, already present above). Empty elsewhere
           # so no other category carries these into its sandbox.
           TAVILY_API_KEY: ${{ (matrix.category || inputs.category) == 'search' && secrets.TAVILY_API_KEY || '' }}
-          LOHO_JUDGE_B_API_KEY: ${{ (matrix.category || inputs.category) == 'search' && (secrets.LOHO_JUDGE_B_API_KEY || secrets.FIREWORKS_API_KEY) || '' }}
+          LOHO_JUDGE_B_API_KEY: ${{ (matrix.category || inputs.category) == 'search' && (secrets.LOHO_JUDGE_B_API_KEY || secrets.OPENROUTER_API_KEY) || '' }}
         run: |
           # Stage current checkout packages for LangGraph's sandbox install.
           local_deps_dir="deepagents_harbor/langgraph_project/.local_deps"
@@ -891,8 +891,8 @@ jobs:
               --verifier-env 'LOHO_JUDGE_A_MODEL=gpt-4.1'
               --verifier-env 'LOHO_JUDGE_A_BASE_URL=${OPENAI_BASE_URL}'
               --verifier-env 'LOHO_JUDGE_A_API_KEY=${OPENAI_API_KEY}'
-              --verifier-env 'LOHO_JUDGE_B_MODEL=accounts/fireworks/models/qwen2p5-32b-instruct'
-              --verifier-env 'LOHO_JUDGE_B_BASE_URL=https://api.fireworks.ai/inference/v1'
+              --verifier-env 'LOHO_JUDGE_B_MODEL=qwen/qwen-2.5-72b-instruct'
+              --verifier-env 'LOHO_JUDGE_B_BASE_URL=https://openrouter.ai/api/v1'
               --verifier-env 'LOHO_JUDGE_B_API_KEY=${LOHO_JUDGE_B_API_KEY}'
             )
           fi

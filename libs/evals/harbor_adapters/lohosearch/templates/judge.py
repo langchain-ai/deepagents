@@ -10,10 +10,12 @@ over-strictness or over-leniency of any single setup.
 Both grader prompts are verbatim from openai/simple-evals. Judge selection and
 credentials come from the verifier environment the harness injects
 (`LOHO_JUDGE_A_*`, `LOHO_JUDGE_B_*`, falling back to `OPENAI_API_KEY` /
-`FIREWORKS_API_KEY`); nothing is hardcoded and keys are never printed.
+`OPENROUTER_API_KEY`); nothing is hardcoded and keys are never printed.
 
-Grading fails closed: a judge that errors, exhausts its retries, or returns an
-unparseable verdict scores 0 for that half of the reward.
+A judge that answers "incorrect" scores 0 for its half -- that is a real grade.
+A judge that cannot be *reached* is different: it is not evidence about the
+answer, so it fails the trial rather than scoring 0, because a silently halved
+ceiling still produces a number that looks publishable.
 """
 
 from __future__ import annotations
@@ -41,7 +43,13 @@ _BROWSECOMP_PROMPT_PATH = Path("/tests/browsecomp_grader.txt")
 _SIMPLEQA_PROMPT_PATH = Path("/tests/simpleqa_grader.txt")
 
 _DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
-_DEFAULT_FIREWORKS_BASE_URL = "https://api.fireworks.ai/inference/v1"
+# Judge B substitutes Qwen2.5-72B for the paper's Qwen2.5-32B: the 32B is not
+# served by any provider configured for these runs (Fireworks 404s on it,
+# OpenRouter carries 72B/7B/coder-32B/VL-72B, Groq only Qwen3). Same family and
+# generation, one size up, so grading behavior should be the closer match than
+# jumping a generation would be. Scores are therefore LoHoSearch-derived rather
+# than directly comparable to the published 34.74%.
+_DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 _MAX_ATTEMPTS = 5
 _TIMEOUT_SECONDS = 120
@@ -148,9 +156,9 @@ def _grade_simpleqa(question, ground_truth, submission):
     score, detail = _judge(
         "B",
         prompt,
-        "accounts/fireworks/models/qwen2p5-32b-instruct",
-        _DEFAULT_FIREWORKS_BASE_URL,
-        "FIREWORKS_API_KEY",
+        "qwen/qwen-2.5-72b-instruct",
+        _DEFAULT_OPENROUTER_BASE_URL,
+        "OPENROUTER_API_KEY",
     )
     if score is not None:
         return score, detail

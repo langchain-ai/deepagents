@@ -138,18 +138,19 @@ Screen {
     color: $text-muted;
 }
 
-/* Diff styling — used by EditFileApprovalWidget (fg + bg + padding) */
+/* Diff styling — used by EditFileApprovalWidget (fg + bg + padding). Tints match
+   the low-alpha rows in `compose_diff_lines` so both diff surfaces read alike. */
 .diff-removed {
     height: auto;
     color: $text-error;
-    background: $error-muted;
+    background: $error 12%;
     padding: 0 1;
 }
 
 .diff-added {
     height: auto;
     color: $text-success;
-    background: $success-muted;
+    background: $success 12%;
     padding: 0 1;
 }
 
@@ -159,13 +160,15 @@ Screen {
     padding: 0 1;
 }
 
-/* Diff line backgrounds — used by compose_diff_lines (bg only, fg via Content) */
+/* Diff line backgrounds — used by compose_diff_lines (bg only, fg via Content).
+   Low alpha keeps whole-row tints readable; changed words get a stronger tint
+   applied per-span in Python. */
 .diff-line-removed {
-    background: $error-muted;
+    background: $error 12%;
 }
 
 .diff-line-added {
-    background: $success-muted;
+    background: $success 12%;
 }
 
 /* Mode-specific borders for UserMessage */

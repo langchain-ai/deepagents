@@ -711,6 +711,12 @@ class TestDiffMessageCredentialRedaction:
         assert any("may contain credentials" in text for text in texts)
         assert all("supersecret" not in text for text in texts)
 
+    def test_env_file_header_omits_change_counts(self) -> None:
+        """Not even the size of the change is reported for credential files."""
+        diff = "@@ -1 +1 @@\n-API_KEY=old\n+API_KEY=supersecret"
+        texts = self._texts(DiffMessage(diff, file_path=".env"))
+        assert all("+1" not in text and "-1" not in text for text in texts)
+
     def test_regular_file_diff_is_rendered(self) -> None:
         diff = "@@ -1 +1 @@\n-print('a')\n+print('b')"
         texts = self._texts(DiffMessage(diff, file_path="main.py"))
@@ -727,6 +733,26 @@ class TestDiffMessageCredentialRedaction:
         texts = self._texts(DiffMessage(diff, file_path=""))
         assert all("may contain credentials" not in text for text in texts)
         assert any("print('b')" in text for text in texts)
+
+
+class TestDiffMessageHeader:
+    """`DiffMessage` summarizes the edit in a single header row."""
+
+    @staticmethod
+    def _header(widget: DiffMessage) -> str:
+        first = next(iter(widget.compose()))
+        rendered = first.render()
+        return rendered.plain if isinstance(rendered, Content) else str(rendered)
+
+    def test_header_combines_verb_path_and_counts(self) -> None:
+        diff = "@@ -1,2 +1,2 @@\n-print('a')\n+print('b')\n+print('c')"
+        header = self._header(DiffMessage(diff, "main.py", tool_name="edit_file"))
+        assert header == "Edited main.py  +2 -1"
+
+    def test_unknown_tool_renders_path_only_verb(self) -> None:
+        diff = "@@ -1 +1 @@\n-a\n+b"
+        header = self._header(DiffMessage(diff, "main.py", tool_name="apply_patch"))
+        assert header == "main.py  +1 -1"
 
 
 class TestToolCallMessageDuration:

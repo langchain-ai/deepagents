@@ -52,7 +52,11 @@ from deepagents_code.tui.widgets._links import (
     open_checked_url_async,
     open_style_link,
 )
-from deepagents_code.tui.widgets.diff import compose_diff_lines
+from deepagents_code.tui.widgets.diff import (
+    compose_diff_lines,
+    count_diff_changes,
+    diff_stats_content,
+)
 from deepagents_code.unicode_security import render_with_unicode_markers
 
 if TYPE_CHECKING:
@@ -155,6 +159,14 @@ _COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
     "read_file",
     "grep",
     "glob",
+}
+
+
+# Past-tense verbs for the `DiffMessage` header, keyed by the tool that produced
+# the diff. Tools absent here render a path-only header.
+_DIFF_VERBS: dict[str, str] = {
+    "edit_file": "Edited",
+    "write_file": "Wrote",
 }
 
 
@@ -3824,38 +3836,18 @@ class DiffMessage(Static):
     DEFAULT_CSS = """
     DiffMessage {
         height: auto;
-        padding: 1;
+        padding: 0 1;
         margin: 0 0 1 0;
-        background: $surface;
-        border: solid $primary;
+        background: transparent;
+        border-left: wide $panel;
         pointer: text;
     }
 
     DiffMessage .diff-header {
-        text-style: bold;
         margin-bottom: 1;
     }
-
-    DiffMessage .diff-add {
-        color: $text-success;
-        background: $success-muted;
-    }
-
-    DiffMessage .diff-remove {
-        color: $text-error;
-        background: $error-muted;
-    }
-
-    DiffMessage .diff-context {
-        color: $text-muted;
-    }
-
-    DiffMessage .diff-hunk {
-        color: $secondary;
-        text-style: bold;
-    }
     """
-    """Diff syntax coloring per theme: additions, removals, muted context."""
+    """A quiet left rail instead of a full box, so the diff rows carry the color."""
 
     def __init__(
         self,
@@ -3878,17 +3870,33 @@ class DiffMessage(Static):
         self._file_path = file_path
         self._tool_name = tool_name
 
+    def _header(self) -> Content:
+        """Build the one-line header: what happened, to which file, at what cost.
+
+        Returns:
+            `Content` combining the past-tense verb, path, and `+N -M` counts.
+        """
+        parts: list[str | tuple[str, str] | Content] = []
+        verb = _DIFF_VERBS.get(self._tool_name or "")
+        if verb:
+            parts.append((f"{verb} ", "bold"))
+        parts.append(Content.from_markup("[dim]$path[/dim]", path=self._file_path))
+        # Credential files reveal nothing here, not even how much changed.
+        if not is_sensitive_file_path(self._file_path):
+            stats = diff_stats_content(*count_diff_changes(self._diff_content))
+            if stats.plain:
+                parts.extend(("  ", stats))
+        return Content.assemble(*parts)
+
     def compose(self) -> ComposeResult:
         """Compose the diff message layout.
 
         Yields:
             Widgets displaying the diff header and formatted content.
         """
-        if self._file_path:
-            yield Static(
-                Content.from_markup("[bold]File: $path[/bold]", path=self._file_path),
-                classes="diff-header",
-            )
+        header = self._header()
+        if header.plain:
+            yield Static(header, classes="diff-header")
 
         # Never render the contents of credential files (e.g. `.env`) — the diff
         # would leak secrets into the terminal UI and scrollback.
@@ -3897,14 +3905,17 @@ class DiffMessage(Static):
                 Content.styled("Diff hidden — file may contain credentials", "dim")
             )
         else:
-            # Render the diff with per-line Statics (CSS-driven backgrounds)
-            yield from compose_diff_lines(self._diff_content, max_lines=100)
+            # Render the diff with per-line Statics (CSS-driven backgrounds). The
+            # counts already live in the header, so skip the renderer's own row.
+            yield from compose_diff_lines(
+                self._diff_content, max_lines=100, show_stats=False
+            )
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
-            self.styles.border = ("ascii", colors.primary)
+            self.styles.border_left = ("ascii", colors.panel)
 
 
 class ErrorMessage(Static):

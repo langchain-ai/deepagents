@@ -74,6 +74,7 @@ from deepagents_code.goal_state_notice import (
     GOAL_CONTROL_MESSAGE_SOURCE,
     goal_state_notice_info,
 )
+from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.media_utils import ImageData, VideoData
 from deepagents_code.tui.textual_adapter import RubricEvaluationEnd
 from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
@@ -5052,6 +5053,7 @@ class TestMessageQueue:
         app._agent.aupdate_state = AsyncMock()
         app._ui_adapter = MagicMock()
         app._session_state = MagicMock()
+        app._session_state.hooks = HooksManager.inert()
         async with app.run_test() as pilot:
             await pilot.pause()
             # A prior turn produced output.
@@ -13087,7 +13089,11 @@ class TestMessageTimestampFooters:
             await pilot.pause()
             assert app._session_state is not None
             runtime: Any = MagicMock()
-            app._session_state.hooks_runtime = runtime
+            app._session_state.hooks = HooksManager.adopting(
+                runtime,
+                identity=app._session_state.hook_identity,
+                notice=lambda _message: None,
+            )
             payload = _ThreadHistoryPayload(
                 [],
                 0,
@@ -13100,7 +13106,7 @@ class TestMessageTimestampFooters:
             )
 
         runtime.append_messages.assert_called_once_with(
-            "t-restored", payload.transcript_messages
+            "t-restored", payload.transcript_messages, agent_id=None
         )
 
     async def test_load_thread_history_skips_duplicate_ids(self) -> None:
@@ -15013,6 +15019,7 @@ class TestShellCommandInterrupt:
         app._lc_thread_id = "thread-123"
         app._ui_adapter = MagicMock()
         app._session_state = MagicMock()
+        app._session_state.hooks = HooksManager.inert()
         app._pending_shell_messages = [self._shell_context_message("echo hi", "hi")]
 
         async with app.run_test() as pilot:
@@ -15258,6 +15265,7 @@ class TestShellCommandInterrupt:
         app._lc_thread_id = "thread-123"
         app._ui_adapter = MagicMock()
         app._session_state = MagicMock()
+        app._session_state.hooks = HooksManager.inert()
         app._pending_shell_messages = [self._shell_context_message("echo hi", "hi")]
 
         async with app.run_test() as pilot:
@@ -26248,6 +26256,31 @@ class TestLiveApprovalModeWrites:
 
         assert app._session_state is not None
         assert app._session_state.approval_mode is ApprovalMode.AUTO
+
+    async def test_session_init_builds_one_state_for_concurrent_callers(self) -> None:
+        """The startup worker and the inline startup fallback must not race.
+
+        Idempotency rests on construction staying free of `await`; reintroducing
+        one would let both callers pass the guard and build two states.
+        """
+        app = DeepAgentsApp()
+        creations = 0
+
+        def count_creation(**_kwargs: object) -> None:
+            nonlocal creations
+            creations += 1
+
+        with patch(
+            "deepagents_code.hooks.runtime.HooksRuntime.create",
+            side_effect=count_creation,
+        ):
+            await asyncio.gather(
+                app._init_session_state(),
+                app._init_session_state(),
+            )
+
+        assert creations == 1
+        assert app._session_state is not None
 
     async def test_toggle_off_failed_write_cancels_running_agent(self) -> None:
         app = DeepAgentsApp(auto_approve=True)

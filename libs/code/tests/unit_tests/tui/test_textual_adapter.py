@@ -35,12 +35,14 @@ from deepagents_code.client.non_interactive import (
     _process_message_chunk,
 )
 from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
+from deepagents_code.hooks.manager import HooksManager, PromptOutcome
 from deepagents_code.hooks.models.domain import (
     HookEvent,
     PermissionEffect,
     PermissionRequestDecision,
     UserPromptSubmitDecision,
 )
+from deepagents_code.hooks.permissions import PermissionPlan, permission_hook_outcome
 from deepagents_code.tui.textual_adapter import (
     RubricEvaluationEnd,
     SessionStats,
@@ -64,7 +66,36 @@ from deepagents_code.tui.widgets.messages import (
 )
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
     from langchain_core.runnables import RunnableConfig
+
+    from deepagents_code.app import TextualSessionState
+
+
+def _session_state(
+    *,
+    thread_id: str = "thread-1",
+    approval_mode: ApprovalMode | str = "manual",
+    auto_approve: bool | None = None,
+) -> "TextualSessionState":
+    """Build real session state so the adapter sees its full contract."""
+    from deepagents_code.app import TextualSessionState
+
+    return TextualSessionState(
+        approval_mode=approval_mode,
+        auto_approve=auto_approve,
+        thread_id=thread_id,
+    )
+
+
+def _handlers_for(*events: HookEvent) -> "AbstractContextManager[object]":
+    """Make every `HooksManager` report handlers for exactly `events`."""
+    return patch.object(
+        HooksManager,
+        "has_handlers",
+        lambda _self, event: event in events,
+    )
 
 
 async def _mock_mount(widget: object) -> None:
@@ -1819,42 +1850,36 @@ class TestExecuteTaskTextualTurnMarkers:
 
 class TestExecuteTaskTextualClientLifecycle:
     async def test_user_prompt_hook_applies_context_and_suppression_once(self) -> None:
-        from deepagents_code.app import TextualSessionState
-
         agent = _SequencedAgent([[]])
-        hooks = MagicMock()
-        hooks.has_handlers.side_effect = lambda event: (
-            event is HookEvent.USER_PROMPT_SUBMIT
-        )
-        hooks.user_prompt_submit = AsyncMock(
-            return_value=UserPromptSubmitDecision(
-                event=HookEvent.USER_PROMPT_SUBMIT,
-                context=["replacement context"],
+        on_user_prompt = AsyncMock(
+            return_value=PromptOutcome(
+                context=("replacement context",),
                 suppress_original_prompt=True,
             )
         )
-        hooks.take_session_context.return_value = ()
-        state = TextualSessionState(thread_id="thread-1")
-        state.client_hooks = hooks
         adapter = TextualUIAdapter(
             mount_message=_mock_mount,
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
 
-        with patch(
-            "deepagents_code.tui.textual_adapter.dispatch_hook",
-            new_callable=AsyncMock,
-        ) as legacy:
+        with (
+            _handlers_for(HookEvent.USER_PROMPT_SUBMIT),
+            patch.object(HooksManager, "on_user_prompt", on_user_prompt),
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
+            ) as legacy,
+        ):
             await execute_task_textual(
                 user_input="secret prompt",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=state,
+                session_state=_session_state(),
                 adapter=adapter,
             )
 
-        hooks.user_prompt_submit.assert_awaited_once()
+        on_user_prompt.assert_awaited_once()
         stream_input = agent.stream_inputs[0]
         assert isinstance(stream_input, dict)
         assert stream_input["messages"] == [
@@ -1887,7 +1912,7 @@ class TestExecuteTaskTextualAutoApproveInput:
             user_input="hi",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -1920,7 +1945,7 @@ class TestExecuteTaskTextualAutoApproveInput:
             user_input="hi",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
             rubric="tests pass",
         )
@@ -1941,11 +1966,7 @@ class TestExecuteTaskTextualAutoApproveInput:
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
-        session_state = SimpleNamespace(
-            thread_id="thread-1",
-            auto_approve=True,
-            approval_mode_key="stale",
-        )
+        session_state = _session_state(auto_approve=True)
 
         with pytest.raises(
             RuntimeError, match="Manual approval mode could not be persisted"
@@ -2022,11 +2043,7 @@ class TestExecuteTaskTextualAutoApproveInput:
 
         callback_seen: list[bool] = []
 
-        session_state = SimpleNamespace(
-            thread_id="thread-1",
-            approval_mode=ApprovalMode.MANUAL,
-            auto_approve=False,
-        )
+        session_state = _session_state(approval_mode=ApprovalMode.MANUAL)
         on_auto_approve_enabled: Callable[[], Awaitable[bool] | bool]
         if use_async_callback:
 
@@ -2166,7 +2183,7 @@ class TestExecuteTaskTextualUsageStats:
                 user_input="hello",
                 agent=_FakeAgent([_usage_chunk(input_tokens=100, output_tokens=50)]),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
                 turn_stats=turn_stats,
             )
@@ -2239,11 +2256,7 @@ class TestExecuteTaskTextualAutoModeClassifier:
                 user_input="edit the file",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(
-                    thread_id="thread-1",
-                    approval_mode=ApprovalMode.AUTO,
-                    auto_approve=True,
-                ),
+                session_state=_session_state(approval_mode=ApprovalMode.AUTO),
                 adapter=adapter,
                 turn_stats=turn_stats,
             )
@@ -2300,11 +2313,7 @@ class TestExecuteTaskTextualAutoModeClassifier:
                 user_input="edit the file",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(
-                    thread_id="thread-1",
-                    approval_mode=ApprovalMode.AUTO,
-                    auto_approve=True,
-                ),
+                session_state=_session_state(approval_mode=ApprovalMode.AUTO),
                 adapter=adapter,
             )
 
@@ -2369,11 +2378,7 @@ class TestExecuteTaskTextualAutoModeClassifier:
                 user_input="edit the file",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(
-                    thread_id="thread-1",
-                    approval_mode=ApprovalMode.AUTO,
-                    auto_approve=True,
-                ),
+                session_state=_session_state(approval_mode=ApprovalMode.AUTO),
                 adapter=adapter,
             )
 
@@ -2423,7 +2428,7 @@ class TestExecuteTaskTextualToolCallStreaming:
             user_input="hello",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -2456,7 +2461,7 @@ class TestExecuteTaskTextualToolCallStreaming:
             user_input="hello",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -2491,7 +2496,7 @@ class TestExecuteTaskTextualToolCallStreaming:
             user_input="hello",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -2525,7 +2530,7 @@ class TestExecuteTaskTextualToolCallStreaming:
             user_input="hello",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -2563,7 +2568,7 @@ class TestExecuteTaskTextualToolCallStreaming:
             user_input="hello",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -2609,7 +2614,7 @@ class TestExecuteTaskTextualSummarizationFeedback:
             user_input="hello",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -2651,7 +2656,7 @@ class TestExecuteTaskTextualSummarizationFeedback:
             user_input="hello",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -2690,7 +2695,7 @@ class TestExecuteTaskTextualSummarizationFeedback:
             user_input="hello",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -2737,7 +2742,7 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
             user_input="hi",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -2762,7 +2767,7 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
             user_input="hi",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -2786,7 +2791,7 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
             user_input="hi",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -2831,7 +2836,7 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
             user_input="hi",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -2852,7 +2857,7 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
             user_input="hi",
             agent=_FakeAgent([]),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -2880,7 +2885,7 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
             user_input="hi",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -2907,7 +2912,7 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
             user_input="hi",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -2941,7 +2946,7 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
                 ]
             ),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -3008,7 +3013,7 @@ class TestExecuteTaskTextualParallelToolSpinner:
             user_input="hello",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -3039,7 +3044,7 @@ class TestExecuteTaskTextualParallelToolSpinner:
             user_input="hi",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -3064,7 +3069,7 @@ class TestExecuteTaskTextualParallelToolSpinner:
             user_input="hi",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -3106,7 +3111,7 @@ class TestExecuteTaskTextualParallelToolSpinner:
             user_input="list files",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -3158,7 +3163,7 @@ class TestExecuteTaskTextualParallelToolSpinner:
             user_input="edit the file",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -3201,7 +3206,7 @@ class TestExecuteTaskTextualParallelToolSpinner:
             user_input="search",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -3254,7 +3259,7 @@ class TestExecuteTaskTextualParallelToolSpinner:
             user_input="edit",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -3321,7 +3326,7 @@ class TestExecuteTaskTextualParallelToolSpinner:
             user_input="hello",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -3376,7 +3381,7 @@ class TestExecuteTaskTextualParallelToolSpinner:
             user_input="hello",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 
@@ -3429,7 +3434,7 @@ class TestExecuteTaskTextualTextThenToolSpinner:
                 user_input="hi",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+                session_state=_session_state(auto_approve=True),
                 adapter=adapter,
             )
 
@@ -3481,7 +3486,7 @@ class TestExecuteTaskTextualTextThenToolSpinner:
                 user_input="hi",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+                session_state=_session_state(auto_approve=True),
                 adapter=adapter,
             )
 
@@ -3533,7 +3538,7 @@ class TestExecuteTaskTextualTextThenToolSpinner:
                 user_input="hi",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+                session_state=_session_state(auto_approve=True),
                 adapter=adapter,
             )
 
@@ -3620,7 +3625,7 @@ class TestExecuteTaskTextualRubricRevisionStreaming:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+                session_state=_session_state(auto_approve=True),
                 adapter=adapter,
             )
 
@@ -3749,7 +3754,7 @@ class TestExecuteTaskTextualHITLShellSuppression:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
         return adapter, mounted, snapshots
@@ -3881,7 +3886,7 @@ class TestExecuteTaskTextualHITLShellSuppression:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -4041,7 +4046,7 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -4098,7 +4103,7 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -4176,7 +4181,7 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -4260,7 +4265,7 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -4361,7 +4366,7 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -4441,7 +4446,7 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -4502,7 +4507,7 @@ class TestExecuteTaskTextualTaskTimerAcrossInterrupts:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -4556,7 +4561,7 @@ class TestExecuteTaskTextualAskUser:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -4612,7 +4617,7 @@ class TestExecuteTaskTextualAskUser:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -4661,7 +4666,7 @@ class TestExecuteTaskTextualAskUser:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -4714,7 +4719,7 @@ class TestExecuteTaskTextualAskUser:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -4777,7 +4782,7 @@ class TestExecuteTaskTextualAskUser:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -4834,7 +4839,7 @@ class TestExecuteTaskTextualAskUser:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -4905,7 +4910,7 @@ class TestExecuteTaskTextualAskUser:
             user_input="",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
             graph_input=request,
         )
@@ -4970,7 +4975,7 @@ class TestExecuteTaskTextualAskUser:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -5027,7 +5032,7 @@ class TestExecuteTaskTextualAskUser:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -5070,7 +5075,7 @@ class TestExecuteTaskTextualAskUser:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -5117,7 +5122,7 @@ class TestExecuteTaskTextualAskUser:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -5165,7 +5170,7 @@ class TestExecuteTaskTextualAskUser:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -5204,7 +5209,7 @@ class TestExecuteTaskTextualAskUser:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -5260,7 +5265,7 @@ class TestExecuteTaskTextualAskUser:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -5300,10 +5305,7 @@ class TestExecuteTaskTextualAskUser:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(
-                    thread_id="thread-1",
-                    auto_approve=False,
-                ),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -5487,7 +5489,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -5551,7 +5553,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -5616,7 +5618,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -5670,7 +5672,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -5742,7 +5744,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -5782,7 +5784,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -5846,7 +5848,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -5923,7 +5925,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -6008,7 +6010,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -6096,7 +6098,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -6151,7 +6153,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -6226,7 +6228,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -6302,7 +6304,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -6337,17 +6339,19 @@ class TestToolHooksTextual:
                 [],
             ]
         )
-        client_hooks = MagicMock()
-        client_hooks.has_handlers.side_effect = lambda event: (
-            event is HookEvent.PERMISSION_REQUEST
-        )
-        client_hooks.permission_request = AsyncMock(
-            return_value=PermissionRequestDecision(
-                event=HookEvent.PERMISSION_REQUEST,
-                permission=PermissionEffect(
-                    behavior="deny",
-                    reason="blocked by hook",
-                ),
+        on_permission_request = AsyncMock(
+            return_value=PermissionPlan(
+                (
+                    permission_hook_outcome(
+                        PermissionRequestDecision(
+                            event=HookEvent.PERMISSION_REQUEST,
+                            permission=PermissionEffect(
+                                behavior="deny",
+                                reason="blocked by hook",
+                            ),
+                        )
+                    ),
+                )
             )
         )
         request_approval = AsyncMock()
@@ -6357,22 +6361,20 @@ class TestToolHooksTextual:
             request_approval=request_approval,
         )
 
-        await execute_task_textual(
-            user_input="hello",
-            agent=agent,
-            assistant_id="assistant",
-            session_state=SimpleNamespace(
-                thread_id="thread-1",
-                approval_mode=ApprovalMode.YOLO,
-                auto_approve=True,
-                turn_id=None,
-                client_hooks=client_hooks,
-            ),
-            adapter=adapter,
-        )
+        with (
+            _handlers_for(HookEvent.PERMISSION_REQUEST),
+            patch.object(HooksManager, "on_permission_request", on_permission_request),
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=True),
+                adapter=adapter,
+            )
 
         request_approval.assert_not_awaited()
-        client_hooks.permission_request.assert_awaited_once()
+        on_permission_request.assert_awaited_once()
         resume_cmd = agent.stream_inputs[1]
         assert isinstance(resume_cmd, Command)
         resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
@@ -6453,7 +6455,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -6549,7 +6551,7 @@ class TestToolHooksTextual:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -6579,7 +6581,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -6634,7 +6636,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -6694,7 +6696,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -6796,7 +6798,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -6876,7 +6878,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -6953,7 +6955,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -7014,7 +7016,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -7081,7 +7083,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -7202,7 +7204,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -7269,7 +7271,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -7338,7 +7340,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -7381,7 +7383,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -7415,7 +7417,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -7461,7 +7463,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -7551,7 +7553,7 @@ async def _run_textual_surface(
             user_input="hello",
             agent=_FakeAgent(stream_chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
     return calls
@@ -7886,7 +7888,7 @@ class TestTextualEndOfStreamDiagnostics:
                 user_input="hello",
                 agent=_FakeAgent(chunks),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -7918,7 +7920,7 @@ class TestTextualEndOfStreamDiagnostics:
                 user_input="hello",
                 agent=_RaisingAgent(chunks, RuntimeError("boom")),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -7950,7 +7952,7 @@ class TestTextualEndOfStreamDiagnostics:
                 user_input="hello",
                 agent=_RaisingAgent(chunks, asyncio.CancelledError()),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -7983,7 +7985,7 @@ class TestTextualEndOfStreamDiagnostics:
                 user_input="",
                 agent=_RaisingAgent([], asyncio.CancelledError()),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
                 graph_input=request,
             )
@@ -8032,7 +8034,7 @@ class TestTextualNonCleanExitTerminalHooks:
                 user_input="hello",
                 agent=_RaisingAgent(chunks, RuntimeError("boom")),
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -8120,7 +8122,7 @@ class TestExecuteTaskTextualRubricEvents:
             user_input="hi",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
             on_rubric_evaluation_end=lambda event: evaluations.append(
                 (event.grading_run_id, event.result)
@@ -8167,7 +8169,7 @@ class TestExecuteTaskTextualRubricEvents:
             user_input="hi",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
             on_rubric_evaluation_end=lambda event: evaluations.append(
                 (event.grading_run_id, event.result)
@@ -8202,7 +8204,7 @@ class TestExecuteTaskTextualRubricEvents:
                 ]
             ),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
             on_rubric_evaluation_end=callback,
         )
@@ -8234,7 +8236,7 @@ class TestExecuteTaskTextualRubricEvents:
                 ]
             ),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
             on_rubric_evaluation_end=callback,
         )
@@ -8266,7 +8268,7 @@ class TestExecuteTaskTextualRubricEvents:
                 ]
             ),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
             on_rubric_evaluation_end=callback,
         )

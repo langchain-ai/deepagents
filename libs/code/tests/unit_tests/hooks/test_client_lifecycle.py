@@ -14,7 +14,6 @@ from deepagents_code.hooks.client_lifecycle import (
     ClientHookContext,
     ClientHookService,
     ClientHookStopError,
-    permission_hook_outcome,
 )
 from deepagents_code.hooks.models.domain import (
     DcodeNotificationKind,
@@ -30,6 +29,7 @@ from deepagents_code.hooks.models.domain import (
     SessionStartCause,
     SessionStartDecision,
 )
+from deepagents_code.hooks.permissions import permission_hook_outcome
 
 if TYPE_CHECKING:
     from pathlib import Path

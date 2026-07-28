@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import sys
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from deepagents_code.approval_mode import ApprovalMode
@@ -56,51 +56,6 @@ logger = logging.getLogger(__name__)
 
 class ClientHookStopError(RuntimeError):
     """Raised when a client-owned hook stops lifecycle processing."""
-
-
-class PermissionReviewDecision(TypedDict):
-    """Client approval decision compatible with HITL resume payloads."""
-
-    type: Literal["approve", "reject"]
-    message: NotRequired[str]
-
-
-@dataclass(frozen=True, slots=True)
-class PermissionHookOutcome:
-    """Normalized result shared by TUI and headless permission handling."""
-
-    decision: PermissionReviewDecision | None
-    interrupt: bool = False
-
-
-def permission_hook_outcome(
-    decision: PermissionRequestDecision,
-) -> PermissionHookOutcome:
-    """Translate a hook permission decision into a client review outcome.
-
-    Args:
-        decision: Aggregated permission hook decision.
-
-    Returns:
-        Shared approval, rejection, or unresolved result.
-    """
-    if not decision.continue_processing:
-        return PermissionHookOutcome(
-            {
-                "type": "reject",
-                "message": decision.stop_reason or "Permission stopped by hook",
-            },
-            interrupt=True,
-        )
-    permission = decision.permission
-    if permission.behavior == "allow":
-        return PermissionHookOutcome({"type": "approve"})
-    if permission.behavior == "deny":
-        denied = PermissionReviewDecision(type="reject")
-        if permission.reason:
-            denied["message"] = permission.reason
-        return PermissionHookOutcome(denied, interrupt=permission.interrupt)
-    return PermissionHookOutcome(None)
 
 
 @dataclass(frozen=True, slots=True)

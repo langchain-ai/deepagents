@@ -17,6 +17,7 @@ from deepagents_code import offload
 from deepagents_code._session_stats import format_token_count
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.command_registry import get_slash_commands
+from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.offload import (
     _artifacts_root,
     _filesystem_tool_path,
@@ -1769,7 +1770,11 @@ class TestDriveServerSideCompaction:
             runtime = MagicMock(snapshot_id="snapshot")
             runtime.configured_server_events.return_value = ("PreCompact",)
             assert app._session_state is not None
-            app._session_state.hooks_runtime = runtime
+            app._session_state.hooks = HooksManager.adopting(
+                runtime,
+                identity=app._session_state.hook_identity,
+                notice=lambda _message: None,
+            )
             app._agent = agent
             app._lc_thread_id = "test-thread"
             fulfill = AsyncMock(return_value={"hook": "approved"})

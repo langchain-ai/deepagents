@@ -49,9 +49,10 @@ from deepagents_code.client.non_interactive import (
 from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult
 from deepagents_code.file_ops import FileOpTracker
 from deepagents_code.hooks.client_lifecycle import (
-    ClientHookContext,
+    ClientHookService,
     ClientHookStopError,
 )
+from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
 from deepagents_code.hooks.models.domain import (
     HookEvent,
     PermissionEffect,
@@ -429,7 +430,7 @@ class TestSandboxTypeForwarding:
         assert server_kwargs["auto_approve"] is False
         assert server_kwargs["interrupt_shell_only"] is False
         _, loop_kwargs = mock_loop.call_args
-        assert loop_kwargs["hooks_runtime"] is runtime
+        assert loop_kwargs["hooks"].has_handlers(HookEvent.PERMISSION_REQUEST)
         assert loop_kwargs["approval_mode"] is ApprovalMode.YOLO
         assert loop_kwargs["prompt_id"] is not None
 
@@ -1406,32 +1407,62 @@ def lifecycle_runtime(tmp_path: Path) -> MagicMock:
     return runtime
 
 
-async def test_headless_compact_permission_uses_live_context() -> None:
-    context = ClientHookContext.create(
-        thread_id="t1",
-        approval_mode=ApprovalMode.AUTO,
-        prompt_id="00000000-0000-4000-8000-000000000001",
+def _manager(runtime: MagicMock) -> HooksManager:
+    """Wrap a stub runtime in a coordinator with fixed headless identity."""
+    return HooksManager.adopting(
+        runtime,
+        identity=lambda: HookSessionIdentity(
+            thread_id="t1",
+            approval_mode=ApprovalMode.MANUAL,
+        ),
+        notice=lambda _message: None,
     )
-    hooks = MagicMock()
-    hooks.permission_request = AsyncMock(
+
+
+async def test_headless_compact_permission_uses_live_context() -> None:
+    """`compact_conversation` is gated by `PermissionRequest`, not `PreCompact`.
+
+    The manager must project the session identity read at call time, so a mode
+    switch mid-run reaches the handler rather than a stale snapshot.
+    """
+    approval_mode = ApprovalMode.MANUAL
+    runtime = MagicMock()
+    runtime.configured_events.return_value = frozenset({HookEvent.PERMISSION_REQUEST})
+    hooks = HooksManager.adopting(
+        runtime,
+        identity=lambda: HookSessionIdentity(
+            thread_id="t1",
+            approval_mode=approval_mode,
+            prompt_id="00000000-0000-4000-8000-000000000001",
+        ),
+        notice=lambda _message: None,
+    )
+    state = StreamState(hooks=hooks)
+    state.pending_interrupts["interrupt-1"] = {
+        "action_requests": [{"name": "compact_conversation", "args": {}}],
+        "review_configs": [],
+    }
+    permission_request = AsyncMock(
         return_value=PermissionRequestDecision(
             event=HookEvent.PERMISSION_REQUEST,
             permission=PermissionEffect(behavior="allow"),
         )
     )
-    state = StreamState(client_hooks=hooks, client_hook_context=context)
-    state.pending_interrupts["interrupt-1"] = {
-        "action_requests": [{"name": "compact_conversation", "args": {}}],
-        "review_configs": [],
-    }
+    pre_compact = AsyncMock()
 
-    await _process_hitl_interrupts(state, Console(quiet=True), "t1")
+    # Switch modes after the manager is built: the handler must see AUTO.
+    approval_mode = ApprovalMode.AUTO
+    with (
+        patch.object(ClientHookService, "permission_request", permission_request),
+        patch.object(ClientHookService, "pre_compact", pre_compact),
+    ):
+        await _process_hitl_interrupts(state, Console(quiet=True))
 
-    awaited = hooks.permission_request.await_args
+    awaited = permission_request.await_args
     assert awaited is not None
-    assert awaited.args[0] is context
+    assert awaited.args[0].approval_mode is ApprovalMode.AUTO
     assert awaited.args[1].name == "compact_conversation"
-    hooks.pre_compact.assert_not_called()
+    pre_compact.assert_not_awaited()
     assert state.hitl_response["interrupt-1"]["decisions"] == [{"type": "approve"}]
 
 
@@ -1492,7 +1523,7 @@ class TestMaxTurns:
                 Console(quiet=True),
                 MagicMock(),
                 quiet=True,
-                hooks_runtime=runtime,
+                hooks=_manager(runtime),
             )
 
         stream_input = agent.astream.call_args.args[0]
@@ -1538,7 +1569,7 @@ class TestMaxTurns:
                 Console(quiet=True),
                 MagicMock(),
                 quiet=True,
-                hooks_runtime=runtime,
+                hooks=_manager(runtime),
             )
 
         events = [call.args[0].event.event for call in runtime.invoke.await_args_list]
@@ -1597,7 +1628,7 @@ class TestMaxTurns:
                 Console(quiet=True),
                 MagicMock(),
                 quiet=True,
-                hooks_runtime=runtime,
+                hooks=_manager(runtime),
             )
 
         invocations = [call.args[0] for call in runtime.invoke.await_args_list]

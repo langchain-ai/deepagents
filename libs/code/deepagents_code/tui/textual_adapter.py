@@ -30,13 +30,7 @@ if TYPE_CHECKING:
     from pydantic import TypeAdapter
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
-    from deepagents_code.approval_mode import ApprovalMode
-    from deepagents_code.hooks.client_lifecycle import (
-        ClientHookContext,
-        ClientHookService,
-    )
-    from deepagents_code.hooks.models.domain import DcodeNotificationKind, HookEvent
-    from deepagents_code.hooks.runtime import HooksRuntime
+    from deepagents_code.hooks.models.domain import ToolCallData
     from deepagents_code.resume_state import RubricResult
 
     # Type alias matching HITLResponse["decisions"] element type
@@ -51,13 +45,6 @@ if TYPE_CHECKING:
         """Callback signature for `_on_tokens_show`."""
 
         def __call__(self, *, approximate: bool = False) -> None: ...
-
-    class _ClientHookSessionState(Protocol):
-        thread_id: str
-        approval_mode: ApprovalMode
-        turn_id: str | None
-        client_hooks: ClientHookService | None
-        hooks_runtime: HooksRuntime | None
 
 
 from deepagents_code._ask_user_types import AskUserRequest
@@ -89,10 +76,8 @@ from deepagents_code.hooks import (
     dispatch_hook,
     dispatch_hook_fire_and_forget,
 )
-from deepagents_code.hooks.client_lifecycle import (
-    PermissionHookOutcome as _PermissionHookOutcome,
-    permission_hook_outcome,
-)
+from deepagents_code.hooks.manager import PromptOutcome
+from deepagents_code.hooks.permissions import merge_permission_decisions
 from deepagents_code.input import MediaTracker, parse_file_mentions
 from deepagents_code.media_utils import create_multimodal_content
 from deepagents_code.tool_display import format_tool_message_content
@@ -113,73 +98,36 @@ _hitl_adapter_cache: TypeAdapter | None = None
 _ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
 
 
-def _client_hook_context(session_state: _ClientHookSessionState) -> ClientHookContext:
-    from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
-    from deepagents_code.hooks.client_lifecycle import ClientHookContext
-
-    return ClientHookContext.create(
-        thread_id=session_state.thread_id,
-        approval_mode=coerce_approval_mode(
-            getattr(session_state, "approval_mode", ApprovalMode.MANUAL)
-        ),
-        prompt_id=getattr(session_state, "turn_id", None),
-    )
-
-
-def _has_client_hook_handlers(
-    session_state: _ClientHookSessionState,
-    event: HookEvent,
-) -> bool:
-    service = getattr(session_state, "client_hooks", None)
-    return service is not None and service.has_handlers(event)
-
-
-async def _notify_client_hook(
-    session_state: _ClientHookSessionState,
-    kind: DcodeNotificationKind,
-    message: str,
-    *,
-    title: str | None = None,
-) -> None:
-    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
-
-    service = getattr(session_state, "client_hooks", None)
-    if service is None:
-        return
-    try:
-        await service.notification(
-            _client_hook_context(session_state),
-            kind,
-            message,
-            title=title,
-        )
-    except ClientHookStopError:
-        raise
-    except Exception:
-        logger.warning("Notification hook invocation failed", exc_info=True)
-
-
-async def _permission_hook_outcomes(
-    session_state: _ClientHookSessionState,
+def _permission_tool_calls(
     interrupt_id: str,
-    action_requests: list[ActionRequest],
+    action_requests: Sequence[ActionRequest],
     current_tool_messages: Mapping[str, ToolCallMessage],
-) -> list[_PermissionHookOutcome]:
-    service = getattr(session_state, "client_hooks", None)
-    if service is None:
-        return [_PermissionHookOutcome(None, False) for _ in action_requests]
+) -> list[ToolCallData | None]:
+    """Pair each gated action request with the tool id its row already carries.
 
+    HITL action requests do not expose tool-call ids, so a mounted row whose
+    name and arguments match is claimed at most once to recover the real id.
+    Unmatched requests fall back to a positional id derived from the interrupt.
+
+    Args:
+        interrupt_id: LangGraph interrupt owning this batch.
+        action_requests: Gated tool calls, in request order.
+        current_tool_messages: Mounted tool rows keyed by tool-call id.
+
+    Returns:
+        One hook tool call per action request, in the same order. `None` marks
+        a request the graph did not describe well enough to hand to a hook.
+    """
     from deepagents_code.hooks.models.domain import ToolCallData
 
     candidates = list(current_tool_messages.items())
     claimed: set[str] = set()
-    outcomes: list[_PermissionHookOutcome] = []
-    context = _client_hook_context(session_state)
+    calls: list[ToolCallData | None] = []
     for index, request in enumerate(action_requests):
         name = request.get("name")
         args = request.get("args")
         if not isinstance(name, str) or not isinstance(args, dict):
-            outcomes.append(_PermissionHookOutcome(None, False))
+            calls.append(None)
             continue
         tool_id = f"{interrupt_id}:{index}"
         for candidate_id, tool_message in candidates:
@@ -189,44 +137,8 @@ async def _permission_hook_outcomes(
                 tool_id = candidate_id
                 claimed.add(candidate_id)
                 break
-        try:
-            hook_decision = await service.permission_request(
-                context,
-                ToolCallData(id=tool_id, name=name, args=args),
-            )
-        except Exception:
-            logger.warning("PermissionRequest hook invocation failed", exc_info=True)
-            outcomes.append(_PermissionHookOutcome(None, False))
-            continue
-        outcomes.append(permission_hook_outcome(hook_decision))
-    return outcomes
-
-
-def _merge_permission_outcomes(
-    outcomes: list[_PermissionHookOutcome],
-    reviewed: Sequence[HITLDecision],
-) -> list[HITLDecision]:
-    from langchain.agents.middleware.human_in_the_loop import (
-        ApproveDecision,
-        RejectDecision,
-    )
-
-    reviewed_iter = iter(reviewed)
-    merged: list[HITLDecision] = []
-    for outcome in outcomes:
-        decision = outcome.decision
-        if decision is None:
-            merged.append(next(reviewed_iter))
-        elif decision["type"] == "approve":
-            merged.append(ApproveDecision(type="approve"))
-        else:
-            message = decision.get("message")
-            merged.append(
-                RejectDecision(type="reject", message=message)
-                if message
-                else RejectDecision(type="reject")
-            )
-    return merged
+        calls.append(ToolCallData(id=tool_id, name=name, args=args))
+    return calls
 
 
 def _dispatch_tool_use_hook(
@@ -1036,12 +948,8 @@ async def execute_task_textual(
     # when multiple subagents stream in parallel
     pending_text_by_namespace: dict[tuple, str] = {}
     assistant_message_by_namespace: dict[tuple, Any] = {}
-    hooks_runtime = getattr(session_state, "hooks_runtime", None)
-    transcript = None
-    if hooks_runtime is not None:
-        from deepagents_code.hooks.transcript import TranscriptRecorder
-
-        transcript = TranscriptRecorder(hooks_runtime, thread_id)
+    hooks = session_state.hooks
+    transcript = hooks.recorder(thread_id)
 
     if image_tracker and graph_input is None:
         image_tracker.clear()
@@ -1061,45 +969,28 @@ async def execute_task_textual(
         )
         user_msg["additional_kwargs"] = trusted_kwargs
         messages: list[dict[str, Any]] = []
-        client_hooks = getattr(session_state, "client_hooks", None)
-        if transcript is not None:
-            transcript.append([HumanMessage(content=message_content or "")])
-        prompt_decision = None
-        if client_hooks is not None and client_hooks.has_handlers(
-            HookEvent.USER_PROMPT_SUBMIT
-        ):
-            prompt_decision = await client_hooks.user_prompt_submit(
-                _client_hook_context(session_state),
-                user_input,
-            )
-            if not prompt_decision.continue_processing:
+        transcript.append([HumanMessage(content=message_content or "")])
+        if hooks.has_handlers(HookEvent.USER_PROMPT_SUBMIT):
+            prompt_outcome = await hooks.on_user_prompt(user_input)
+            if not prompt_outcome.ok:
                 from deepagents_code.hooks.client_lifecycle import ClientHookStopError
 
-                reason = (
-                    prompt_decision.stop_reason
+                raise ClientHookStopError(
+                    prompt_outcome.stop_reason
                     or "User prompt submission stopped by hook"
                 )
-                raise ClientHookStopError(reason)
         else:
+            prompt_outcome = PromptOutcome()
             await dispatch_hook("session.start", {"thread_id": thread_id})
             await dispatch_hook("user.prompt", {})
-        if client_hooks is not None:
-            session_context = client_hooks.take_session_context(thread_id)
-            if session_context:
-                messages.append(
-                    {
-                        "role": "system",
-                        "content": "\n\n".join(session_context),
-                    }
-                )
-        if prompt_decision is not None and prompt_decision.context:
+        session_context = hooks.take_pending_context(thread_id=thread_id)
+        if session_context:
+            messages.append({"role": "system", "content": "\n\n".join(session_context)})
+        if prompt_outcome.context:
             messages.append(
-                {
-                    "role": "system",
-                    "content": "\n\n".join(prompt_decision.context),
-                }
+                {"role": "system", "content": "\n\n".join(prompt_outcome.context)}
             )
-        if prompt_decision is None or not prompt_decision.suppress_original_prompt:
+        if not prompt_outcome.suppress_original_prompt:
             messages.append(user_msg)
         stream_input: dict | Command = {
             "messages": messages,
@@ -1122,21 +1013,14 @@ async def execute_task_textual(
         from deepagents_code.hooks.client_lifecycle import ClientHookStopError
         from deepagents_code.hooks.models.domain import SessionStartCause
 
-        service = getattr(session_state, "client_hooks", None)
-        if service is None:
-            return
-        try:
-            decision = await service.session_start(
-                _client_hook_context(session_state),
-                SessionStartCause.COMPACT,
-                model=settings.model_name or None,
+        outcome = await hooks.on_session_start(
+            SessionStartCause.COMPACT,
+            model=settings.model_name or None,
+        )
+        if not outcome.ok:
+            raise ClientHookStopError(
+                outcome.stop_reason or "Compact session start stopped by hook"
             )
-        except Exception:
-            logger.warning("Compact SessionStart hook invocation failed", exc_info=True)
-            return
-        if not decision.continue_processing:
-            reason = decision.stop_reason or "Compact session start stopped by hook"
-            raise ClientHookStopError(reason)
 
     try:
         while True:
@@ -1211,16 +1095,10 @@ async def execute_task_textual(
             context["approval_mode_key"] = live_key
             session_state.approval_mode_key = live_key
 
-            from deepagents_code.hooks.client import fulfill_hook_interrupt
-            from deepagents_code.hooks.context import apply_hooks_context
             from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
             from deepagents_code.hooks.models.domain import HookEvent
 
-            apply_hooks_context(
-                context,
-                getattr(session_state, "hooks_runtime", None),
-                prompt_id=getattr(session_state, "turn_id", None),
-            )
+            hooks.apply_graph_context(context)
 
             # Show the Thinking spinner before each astream iteration so
             # both the first turn and HITL/ask_user resumes surface feedback
@@ -1352,23 +1230,7 @@ async def execute_task_textual(
                             for interrupt_obj in interrupts:
                                 iv = interrupt_obj.value
                                 if is_hook_interrupt_payload(iv):
-                                    hooks_runtime = getattr(
-                                        session_state,
-                                        "hooks_runtime",
-                                        None,
-                                    )
-                                    if hooks_runtime is None:
-                                        msg = (
-                                            "Received hook invocation interrupt "
-                                            "without a HooksRuntime"
-                                        )
-                                        raise RuntimeError(msg)
-                                    resume_value = await fulfill_hook_interrupt(
-                                        hooks_runtime, iv
-                                    )
-                                    if resume_value is None:
-                                        msg = "Failed to parse hook interrupt"
-                                        raise RuntimeError(msg)
+                                    resume_value = await hooks.fulfill_interrupt(iv)
                                     pending_hook_resumes[interrupt_obj.id] = (
                                         resume_value
                                     )
@@ -1444,9 +1306,8 @@ async def execute_task_textual(
                                                     tool_id
                                                 ] = tool_msg
                                         interrupt_occurred = True
-                                        if not _has_client_hook_handlers(
-                                            session_state,
-                                            HookEvent.NOTIFICATION,
+                                        if not hooks.has_handlers(
+                                            HookEvent.NOTIFICATION
                                         ):
                                             await dispatch_hook("input.required", {})
                                     except ValidationError:
@@ -1464,9 +1325,8 @@ async def execute_task_textual(
                                             validated_request,
                                         )
                                         interrupt_occurred = True
-                                        if not _has_client_hook_handlers(
-                                            session_state,
-                                            HookEvent.NOTIFICATION,
+                                        if not hooks.has_handlers(
+                                            HookEvent.NOTIFICATION
                                         ):
                                             await dispatch_hook("input.required", {})
                                     except ValidationError:  # noqa: TRY203  # Re-raise preserves exception context in handler
@@ -2021,8 +1881,7 @@ async def execute_task_textual(
                             DcodeNotificationKind,
                         )
 
-                        await _notify_client_hook(
-                            session_state,
+                        await hooks.notify(
                             DcodeNotificationKind.AGENT_NEEDS_INPUT,
                             "Agent needs input",
                         )
@@ -2221,11 +2080,8 @@ async def execute_task_textual(
                 ):
                     action_requests = hitl_request["action_requests"]
 
-                    if getattr(
-                        session_state, "approval_mode", None
-                    ) is ApprovalMode.YOLO and not _has_client_hook_handlers(
-                        session_state,
-                        HookEvent.PERMISSION_REQUEST,
+                    if session_state.approval_mode is ApprovalMode.YOLO and (
+                        not hooks.has_handlers(HookEvent.PERMISSION_REQUEST)
                     ):
                         decisions: list[HITLDecision] = [
                             ApproveDecision(type="approve") for _ in action_requests
@@ -2240,27 +2096,16 @@ async def execute_task_textual(
                             adapter._sync_tool_widget(tool_msg)
                     else:
                         all_action_requests = action_requests
-                        hook_outcomes = await _permission_hook_outcomes(
-                            session_state,
-                            interrupt_id,
-                            all_action_requests,
-                            adapter._current_tool_messages,
+                        plan = await hooks.on_permission_request(
+                            _permission_tool_calls(
+                                interrupt_id,
+                                all_action_requests,
+                                adapter._current_tool_messages,
+                            )
                         )
-                        if any(outcome.interrupt for outcome in hook_outcomes):
-                            interrupted_outcomes = [
-                                outcome
-                                if outcome.decision is not None
-                                else _PermissionHookOutcome(
-                                    {
-                                        "type": "reject",
-                                        "message": "Permission interrupted by hook",
-                                    },
-                                    interrupt=True,
-                                )
-                                for outcome in hook_outcomes
-                            ]
-                            decisions = _merge_permission_outcomes(
-                                interrupted_outcomes,
+                        if plan.interrupted:
+                            decisions = merge_permission_decisions(
+                                plan.as_interrupted(),
                                 [],
                             )
                             for tool_msg in _interrupt_tool_rows(
@@ -2275,21 +2120,17 @@ async def execute_task_textual(
                             break
 
                         action_requests = [
-                            request
-                            for request, outcome in zip(
-                                all_action_requests,
-                                hook_outcomes,
-                                strict=True,
-                            )
-                            if outcome.decision is None
+                            all_action_requests[index]
+                            for index in plan.unresolved_indices
                         ]
                         resolved_row_ids: set[int] = set()
                         for request, outcome in zip(
                             all_action_requests,
-                            hook_outcomes,
+                            plan.outcomes,
                             strict=True,
                         ):
-                            if outcome.decision is None:
+                            hook_decision = outcome.decision
+                            if hook_decision is None:
                                 continue
                             rows = _interrupt_owned_tool_rows(
                                 [request],
@@ -2297,7 +2138,7 @@ async def execute_task_textual(
                             )
                             for tool_msg in rows:
                                 resolved_row_ids.add(id(tool_msg))
-                                if outcome.decision["type"] == "approve":
+                                if hook_decision["type"] == "approve":
                                     tool_msg.set_running()
                                     tool_name = request.get("name")
                                     args = request.get("args")
@@ -2312,12 +2153,12 @@ async def execute_task_textual(
                                         )
                                 else:
                                     tool_msg.set_rejected(
-                                        reason=outcome.decision.get("message")
+                                        reason=hook_decision.get("message")
                                     )
                                 adapter._sync_tool_widget(tool_msg)
 
-                        if not action_requests:
-                            decisions = _merge_permission_outcomes(hook_outcomes, [])
+                        if plan.fully_resolved:
+                            decisions = merge_permission_decisions(plan, [])
                             for tool_msg in adapter._current_tool_messages.values():
                                 if id(tool_msg) not in resolved_row_ids:
                                     tool_msg.set_running()
@@ -2325,17 +2166,11 @@ async def execute_task_textual(
                             resume_payload[interrupt_id] = {"decisions": decisions}
                             continue
 
-                        if (
-                            getattr(session_state, "approval_mode", None)
-                            is ApprovalMode.YOLO
-                        ):
+                        if session_state.approval_mode is ApprovalMode.YOLO:
                             reviewed = [
                                 ApproveDecision(type="approve") for _ in action_requests
                             ]
-                            decisions = _merge_permission_outcomes(
-                                hook_outcomes,
-                                reviewed,
-                            )
+                            decisions = merge_permission_decisions(plan, reviewed)
                             resume_payload[interrupt_id] = {"decisions": decisions}
                             for tool_msg in _interrupt_tool_rows(
                                 namespace,
@@ -2357,8 +2192,7 @@ async def execute_task_textual(
                             DcodeNotificationKind,
                         )
 
-                        await _notify_client_hook(
-                            session_state,
+                        await hooks.notify(
                             DcodeNotificationKind.PERMISSION_REQUIRED,
                             "Permission required",
                         )
@@ -2604,10 +2438,7 @@ async def execute_task_textual(
                             adapter._current_tool_messages.clear()
                             any_rejected = True
 
-                        decisions = _merge_permission_outcomes(
-                            hook_outcomes,
-                            decisions,
-                        )
+                        decisions = merge_permission_decisions(plan, decisions)
                         resume_payload[interrupt_id] = {"decisions": decisions}
 
                         if any_rejected:
@@ -2668,15 +2499,11 @@ async def execute_task_textual(
                     DcodeNotificationKind,
                 )
 
-                await _notify_client_hook(
-                    session_state,
+                await hooks.notify(
                     DcodeNotificationKind.AGENT_COMPLETED,
                     "Agent completed",
                 )
-                if not _has_client_hook_handlers(
-                    session_state,
-                    HookEvent.NOTIFICATION,
-                ):
+                if not hooks.has_handlers(HookEvent.NOTIFICATION):
                     await dispatch_hook("task.complete", {"thread_id": thread_id})
                 break
 

@@ -1075,16 +1075,15 @@ jobs:
         # the decrypted question, and the agent and verifier logs hold the
         # answer and fetched page content.
         #
-        # Allowlisted, not denylisted: keep only what the aggregate job reads
-        # (result.json plus empty-shard markers) and delete everything else, so
-        # a log file added by a future Harbor release cannot start leaking
-        # silently. Debug search runs locally, not from CI artifacts.
+        # Allowlisted at the KEY level, not by filename. Filtering by name is not
+        # enough: `<trial>/agent/result.json` is the full message transcript and
+        # shares its basename with the trial record the aggregator needs, so a
+        # name filter publishes the decrypted question. redact_search_artifacts.py
+        # rebuilds each trial record from a fixed field set and deletes the rest,
+        # so a path or field Harbor adds later is dropped by default.
         run: |
-          root="harbor-jobs/terminal-bench"
-          [ -d "$root" ] || exit 0
-          find "$root" -type f ! -name 'result.json' ! -name 'empty-shard-*' -delete
-          find "$root" -mindepth 1 -type d -empty -delete
-          echo "Redacted search artifacts; kept result.json and empty-shard markers."
+          python3 "$GITHUB_WORKSPACE/.github/scripts/redact_search_artifacts.py" \
+            harbor-jobs/terminal-bench
 
       - name: "📤 Upload Harbor artifacts"
         if: always()

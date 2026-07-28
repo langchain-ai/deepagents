@@ -4298,11 +4298,11 @@ class TestConvertMessagesToData:
     def test_reloaded_ask_user_row_keeps_its_questions(self) -> None:
         """A reloaded `ask_user` row needs its questions to render answers.
 
-        `_format_ask_user_output` parses the persisted transcript by anchoring on
-        the question texts, which come from `tool_args` — recovered from the
-        preceding `AIMessage.tool_calls[].args`, never from the `ToolMessage`.
-        Without them the transcript no longer parses and the row degrades to a
-        verbatim dump, so this pins the args plumbing the whole feature rests on.
+        `_format_ask_user_output` takes its answer count from the structured
+        questions in `tool_args` — recovered from the preceding
+        `AIMessage.tool_calls[].args`, never from the `ToolMessage`. Without them
+        the row degrades to generic formatting, so this pins the args plumbing the
+        whole feature rests on.
         """
         from deepagents_code._ask_user_types import ASK_USER_FAILED_SUMMARY
         from deepagents_code.tui.widgets.message_store import ToolStatus

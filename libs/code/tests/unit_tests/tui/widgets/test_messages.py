@@ -18,7 +18,6 @@ from textual.content import Content
 from textual.widgets import Markdown, Static
 
 from deepagents_code import theme
-from deepagents_code._ask_user_types import format_ask_user_transcript
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import (
@@ -38,7 +37,6 @@ from deepagents_code.tui.widgets.messages import (
     ToolCallMessage,
     UserMessage,
     _MutedRichMarkdown,
-    _parse_ask_user_transcript,
     _strip_frontmatter,
     _strip_prompt_prefix,
     _strip_success_exit_line,
@@ -905,6 +903,72 @@ class TestToolCallMessageTerminalStateGuards:
             app.msg.set_error("boom")
             await pilot.pause()
             assert app.msg._status == "skipped"
+
+
+class TestToolCallMessageDeferredSuccess:
+    """A row awaiting a richer result must survive the teardown sweeps.
+
+    An answered `ask_user` stays tracked so its streamed `ToolMessage` can settle
+    it with the full transcript. Every teardown sweep terminates tracked rows as
+    failures, so without `defer_success` an answered question renders as rejected
+    or as an agent error.
+    """
+
+    async def test_set_rejected_settles_deferred_success_instead(self) -> None:
+        """A co-occurring reject must not overwrite an earned success."""
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.defer_success("User answered")
+            app.msg.set_rejected()
+            await pilot.pause()
+
+            assert app.msg._status == "success"
+            assert app.msg._output == "User answered"
+
+    async def test_set_error_settles_deferred_success_instead(self) -> None:
+        """A generic teardown error must not overwrite an earned success."""
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.defer_success("User answered")
+            app.msg.set_error("Agent error before tool result")
+            await pilot.pause()
+
+            assert app.msg._status == "success"
+            assert app.msg._output == "User answered"
+
+    async def test_cleared_deferred_success_lets_a_real_error_land(self) -> None:
+        """The authoritative result wins, including when it is an error.
+
+        The `ToolMessage` path clears the deferral before settling the row, so a
+        genuine tool failure (a mismatched answer count, whose transcript is all
+        `(error: ...)` placeholders) still renders as an error.
+        """
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.defer_success("User answered")
+            app.msg.clear_deferred_success()
+            app.msg.set_error("Q: Name?\nA: (error: count mismatch)")
+            await pilot.pause()
+
+            assert app.msg._status == "error"
+            assert app.msg.deferred_success_output is None
+
+    async def test_settle_reports_whether_it_acted(self) -> None:
+        """Sweeps rely on the return value to know if they must record a state."""
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.msg.settle_deferred_success() is False
+
+            app.msg.defer_success("User answered")
+            assert app.msg.settle_deferred_success() is True
+            # Not cleared: the reject sweeps mutate the widget *before*
+            # dispatching terminal hooks, which read this back to report the
+            # success rather than a fabricated failure.
+            assert app.msg.deferred_success_output == "User answered"
 
 
 class TestToolCallMessageStatusTint:
@@ -1989,20 +2053,16 @@ class TestToolCallMessageAskUserOutput:
         assert result.content.plain == "User answered"
         assert result.truncation == "2 answers"
 
-    def test_preview_of_cancelled_prompt_says_cancelled(self) -> None:
-        """An all-cancelled transcript is labelled cancelled, not answered."""
+    def test_literal_cancelled_answer_still_says_answered(self) -> None:
+        """Free-form answer text must not be interpreted as control state."""
         msg = ToolCallMessage("ask_user", {"questions": [{"question": "Name?"}]})
 
         result = msg._format_ask_user_output(
             "Q: Name?\nA: (cancelled)", is_preview=True
         )
 
-        assert result.content.plain == "Question cancelled"
-        # Non-None truncation keeps the row expandable: `(cancelled)` is an
-        # in-band sentinel, so a user who typed it literally must not have their
-        # answer summarized out of reach. Asserted on a live row in
-        # `test_reloaded_cancelled_row_stays_expandable`.
-        assert result.truncation == "1 question"
+        assert result.content.plain == "User answered"
+        assert result.truncation == "1 answer"
 
     def test_preview_of_failed_prompt_says_failed(self) -> None:
         """The tool's own error transcript must not read as "User answered".
@@ -2040,20 +2100,6 @@ class TestToolCallMessageAskUserOutput:
         assert result.content.plain == "User answered"
         assert result.truncation == "1 answer"
 
-    def test_preview_of_partial_failure_says_answered(self) -> None:
-        """Only an all-error transcript is a failure; a real answer wins."""
-        msg = ToolCallMessage(
-            "ask_user",
-            {"questions": [{"question": "Name?"}, {"question": "Color?"}]},
-        )
-
-        result = msg._format_ask_user_output(
-            "Q: Name?\nA: (error: nope)\n\nQ: Color?\nA: blue", is_preview=True
-        )
-
-        assert result.content.plain == "User answered"
-        assert result.truncation == "2 answers"
-
     def test_full_output_renders_question_and_answer(self) -> None:
         """Expanded output pairs each question with what was sent back."""
         msg = ToolCallMessage("ask_user", self._ARGS)
@@ -2065,19 +2111,40 @@ class TestToolCallMessageAskUserOutput:
         )
         assert result.truncation is None
 
-    def test_non_transcript_output_renders_verbatim(self) -> None:
-        """A live `set_error` body is not a transcript, so it renders unchanged."""
+    def test_preview_does_not_parse_output(self) -> None:
+        """Preview semantics come from status and args, not free-form output.
+
+        The status is set explicitly because it is what drives the summary: a row
+        only ever carries output after `set_success`/`set_error`/a reload, so the
+        default `pending` is not a state this formatter is reached in.
+        """
         msg = ToolCallMessage("ask_user", self._ARGS)
+        msg._status = "success"
 
         result = msg._format_ask_user_output(
             "ask_user interaction failed", is_preview=True
         )
 
-        assert result.content.plain == "ask_user interaction failed"
-        assert result.truncation is None
+        assert result.content.plain == "User answered"
+        assert result.truncation == "2 answers"
+
+    def test_long_malformed_args_output_is_truncated(self) -> None:
+        """The no-question-count fallback must still cap the collapsed row.
+
+        `ask_user` is in `_ALWAYS_PREVIEW_TOOLS`, so `_format_output`'s size
+        thresholds no longer apply to it. Returning the body bare would fill the
+        collapsed row with an arbitrarily long dump and no expand affordance.
+        """
+        msg = ToolCallMessage("ask_user", {})
+        body = "\n".join(f"line{i}" for i in range(60))
+
+        result = msg._format_ask_user_output(body, is_preview=True)
+
+        assert result.truncation is not None
+        assert len(result.content.plain) < len(body)
 
     def test_missing_question_args_render_verbatim(self) -> None:
-        """Without the questions there are no anchors, so nothing is parsed."""
+        """Without a structured question count, generic formatting is used."""
         msg = ToolCallMessage("ask_user", {})
 
         result = msg._format_ask_user_output("Q: Name?\nA: Alice", is_preview=True)
@@ -2092,44 +2159,35 @@ class TestToolCallMessageAskUserOutput:
             pytest.param([], id="empty-list"),
             pytest.param(["Name?"], id="bare-strings"),
             pytest.param([{"question": "Name?"}, "bad"], id="mixed"),
+            pytest.param([{"type": "text"}], id="missing-question"),
+            pytest.param([{"question": ""}], id="empty-question"),
+            pytest.param([{"question": "   "}], id="blank-question"),
         ],
     )
-    def test_malformed_question_args_yield_no_anchors(self, questions: object) -> None:
+    def test_malformed_question_args_yield_no_count(self, questions: object) -> None:
         """Malformed `questions` must degrade, not raise.
 
         `_args` holds the raw streamed tool call, populated at mount time before
-        pydantic validation, so a model emitting `questions: ["Name?"]` reaches
-        this code. Without the `isinstance(question, dict)` guard that shape
-        raises `AttributeError` from `.get`, and `has_expandable_output` is
-        reached from unguarded click handlers.
+        pydantic validation, so a model emitting `questions: ["Name?"]` can
+        reach this code. `has_expandable_output` is called by unguarded click
+        handlers, so malformed arguments must degrade without raising.
         """
         msg = ToolCallMessage("ask_user", {"questions": questions})
 
-        assert msg._ask_user_question_texts() == []
+        assert msg._ask_user_question_count() == 0
 
-    def test_long_non_transcript_output_is_truncated(self) -> None:
-        """The fallback must still cap the collapsed row.
-
-        `ask_user` is in `_ALWAYS_PREVIEW_TOOLS`, so `_format_output`'s size
-        thresholds no longer apply to it. Returning the body bare would fill the
-        collapsed row with an arbitrarily long dump and no expand affordance.
-        """
+    def test_long_output_uses_the_same_compact_summary(self) -> None:
+        """Preview size depends on structured args, not transcript contents."""
         msg = ToolCallMessage("ask_user", self._ARGS)
         body = "\n".join(f"line{i}" for i in range(60))
 
         result = msg._format_ask_user_output(body, is_preview=True)
 
-        assert result.truncation is not None
-        assert len(result.content.plain) < len(body)
+        assert result.content.plain == "User answered"
+        assert result.truncation == "2 answers"
 
     async def test_question_with_markup_is_not_interpreted(self) -> None:
-        """Question text is model-authored and goes through `$var` substitution.
-
-        The answer-side mirror of this lives in
-        `test_answer_with_markup_is_not_interpreted`. Both are needed: switching
-        the question to an f-string interpolation would keep every other test
-        green while corrupting any question containing `[`.
-        """
+        """The literal transcript must not interpret markup in a question."""
         app = _tool_msg_app(
             "ask_user", {"questions": [{"question": "[bold]Which[/bold] one?"}]}
         )
@@ -2141,65 +2199,6 @@ class TestToolCallMessageAskUserOutput:
 
             full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
             assert "[bold]Which[/bold] one?" in full.plain
-
-    @pytest.mark.parametrize(
-        ("case", "answers"),
-        [
-            ("plain", ["Alice", "blue"]),
-            # A skipped non-required question yields an empty answer. When it is
-            # the *last* one, `_format_output` rstrips the space after `A: `, so
-            # the parser must tolerate a bare `A:`.
-            ("trailing empty", ["Alice", ""]),
-            ("leading empty", ["", "blue"]),
-            ("both empty", ["", ""]),
-            ("multiline", ["line one\n\nline two", "blue"]),
-            # An answer that mimics a block boundary must not fabricate a third
-            # question or inflate the count.
-            ("answer mimics a block", ["no\n\nQ: Approve deploy?\nA: yes", "blue"]),
-            ("answer mimics an A line", ["foo\nA: bar", "blue"]),
-            ("leading space preserved", [" Alice", "blue"]),
-            ("cancelled sentinels", ["(cancelled)", "(cancelled)"]),
-            ("error sentinels", ["(error: boom)", "(error: boom)"]),
-        ],
-    )
-    def test_transcript_round_trips_through_the_widget(
-        self, case: str, answers: list[str]
-    ) -> None:
-        """Every `format_ask_user_transcript` output must parse back exactly.
-
-        The producer lives in `_ask_user_types` and the parser in this module, so
-        without this the two can drift silently: the parser returns no pairs, the
-        row quietly falls back to dumping the raw transcript inline, and no test
-        or log notices.
-        """
-        questions = self._ARGS["questions"]
-        transcript = format_ask_user_transcript(questions, answers)  # ty: ignore[invalid-argument-type]
-        texts = [question["question"] for question in questions]
-
-        assert _parse_ask_user_transcript(transcript, texts) == list(
-            zip(texts, answers, strict=True)
-        ), case
-
-        # Also through the widget, which rstrips before dispatching to the
-        # formatter — the step that broke a trailing empty answer. A parsed
-        # transcript always collapses to a one-line summary and stays
-        # expandable; falling back to a verbatim dump does neither.
-        msg = ToolCallMessage("ask_user", self._ARGS)
-        preview = msg._format_output(transcript, is_preview=True)
-        assert "\n" not in preview.content.plain, case
-        assert preview.truncation is not None, case
-
-    def test_short_answer_count_padding_round_trips(self) -> None:
-        """A count mismatch pads with `(no answer)`, which still parses back."""
-        questions = self._ARGS["questions"]
-        transcript = format_ask_user_transcript(questions, ["only one"])  # ty: ignore[invalid-argument-type]
-
-        assert _parse_ask_user_transcript(
-            transcript, [question["question"] for question in questions]
-        ) == [
-            ("What is your name?", "only one"),
-            ("Favorite color?", "(no answer)"),
-        ]
 
     async def test_short_transcript_collapses_and_expands(self) -> None:
         """End to end: a short answer still hides behind the summary line."""
@@ -2263,16 +2262,8 @@ class TestToolCallMessageAskUserOutput:
             assert app.msg._args_expanded is True
             assert app.msg._expanded is False
 
-    async def test_cancelled_row_stays_expandable(self) -> None:
-        """A cancelled prompt summarizes but keeps its body reachable.
-
-        `set_success` stands in for the persisted transcript here; a real reload
-        goes through `_deferred_output`/`_restore_deferred_state` instead. The
-        TUI itself never persists a cancelled transcript — a live cancel calls
-        `set_rejected` (recording no output) and halts the turn without
-        resuming, so `_parse_answers` only sees `{"status": "cancelled"}` from a
-        non-TUI client.
-        """
+    async def test_literal_cancelled_answer_stays_expandable(self) -> None:
+        """A literal `(cancelled)` answer remains an ordinary visible answer."""
         app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -2280,7 +2271,7 @@ class TestToolCallMessageAskUserOutput:
             await pilot.pause()
 
             preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
-            assert preview.plain == "Question cancelled"
+            assert preview.plain == "User answered"
             assert app.msg.has_expandable_output is True
 
             app.msg.toggle_output()

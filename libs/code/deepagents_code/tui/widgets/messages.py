@@ -28,9 +28,6 @@ from textual.widgets import Static
 from deepagents_code import theme
 from deepagents_code._ask_user_types import (
     ASK_USER_ANSWERED_SUMMARY,
-    ASK_USER_CANCELLED_ANSWER,
-    ASK_USER_CANCELLED_SUMMARY,
-    ASK_USER_ERROR_ANSWER_PREFIX,
     ASK_USER_FAILED_SUMMARY,
 )
 from deepagents_code.config import (
@@ -219,55 +216,6 @@ def _strip_success_exit_line(text: str) -> str:
         Text with the success exit-code trailer removed, if present.
     """
     return _SUCCESS_EXIT_RE.sub("", text)
-
-
-def _parse_ask_user_transcript(
-    output: str, questions: list[str]
-) -> list[tuple[str, str]]:
-    """Split an `ask_user` tool result into question/answer pairs.
-
-    Inverts `format_ask_user_transcript`. Answers are free-form user text and the
-    transcript is unescaped, so blocks are located by seeking the *known*
-    question headers rather than by matching a generic `Q: ` pattern: an answer
-    that happens to contain a blank line followed by `Q: ...` can no longer
-    fabricate an extra question/answer row or inflate the answer count.
-
-    The final `A:` may have no trailing space, because an empty last answer
-    leaves one that `_format_output` rstrips away before this runs.
-
-    Args:
-        output: Raw tool output; the `Q:`/`A:` transcript on success, or an
-            arbitrary error body otherwise.
-        questions: Question texts as passed to `format_ask_user_transcript`, in
-            order. Sourced from the tool call's own arguments, so they survive a
-            thread reload alongside the transcript.
-
-    Returns:
-        One `(question, answer)` pair per question, or an empty list when
-        `output` does not match the expected headers — i.e. it is not a
-        transcript for these questions (an error body, or a format drift).
-    """
-    pairs: list[tuple[str, str]] = []
-    position = 0
-    for index, question in enumerate(questions):
-        header = f"Q: {question}\nA:"
-        if not output.startswith(header, position):
-            return []
-        position += len(header)
-        # The space after `A:` is part of the separator, not the answer, but is
-        # absent when an rstripped empty answer ended the transcript.
-        if output.startswith(" ", position):
-            position += 1
-        if index + 1 == len(questions):
-            pairs.append((question, output[position:]))
-            break
-        separator = f"\n\nQ: {questions[index + 1]}\nA:"
-        end = output.find(separator, position)
-        if end < 0:
-            return []
-        pairs.append((question, output[position:end]))
-        position = end + len("\n\n")
-    return pairs
 
 
 # Visual width of the prompt prefix (glyph + trailing space, e.g. "> ", "$ ").
@@ -1571,6 +1519,12 @@ class ToolCallMessage(Vertical):
         self._start_time: float | None = None
         self._duration: float | None = None
         self._animation_timer: Timer | None = None
+        # Terminal output this row already earned while it waits for a richer
+        # one. Set for an answered `ask_user`, which stays tracked so the
+        # streamed `ToolMessage` can replace the summary with the full Q&A
+        # transcript; until then the row must not be reported as a teardown
+        # failure. See `defer_success`.
+        self._deferred_success_output: str | None = None
         # Deferred state for hydration (set by MessageData.to_widget)
         self._deferred_status: str | None = None
         self._deferred_output: str | None = None
@@ -1828,6 +1782,55 @@ class ToolCallMessage(Vertical):
         if class_name in _STATUS_CLASSES:
             self.add_class(class_name)
 
+    def defer_success(self, output: str) -> None:
+        """Record a terminal success this row earned but has not yet rendered.
+
+        An answered `ask_user` deliberately stays in `_current_tool_messages` so
+        the streamed `ToolMessage` can settle it with the full Q&A transcript.
+        That leaves the row non-terminal in the meantime, and every teardown
+        sweep treats a still-tracked row as a failure — so without this the row
+        renders as rejected or as an agent error, and its `tool.result` reports
+        `tool_status="error"`, for a question the user answered normally.
+
+        Args:
+            output: Terminal output to settle with if the `ToolMessage` never
+                arrives. Also reported verbatim as the `tool.result` payload by
+                `_dispatch_terminal_tool_result_hooks`, so it must never carry
+                content that may not reach hook scripts — pass the `ask_user`
+                summary constant, never the transcript.
+        """
+        self._deferred_success_output = output
+
+    @property
+    def deferred_success_output(self) -> str | None:
+        """Terminal output earned by a row still awaiting a richer one, if any."""
+        return self._deferred_success_output
+
+    def clear_deferred_success(self) -> None:
+        """Drop the deferred outcome once an authoritative result supersedes it.
+
+        Called when the streamed `ToolMessage` settles the row, so its real
+        status wins — including an error, which `set_error` would otherwise
+        redirect back to the deferred success.
+        """
+        self._deferred_success_output = None
+
+    def settle_deferred_success(self) -> bool:
+        """Settle this row with its deferred success, if it has one.
+
+        Deliberately does *not* clear the recorded output: the reject sweeps
+        mutate the widget before dispatching terminal hooks, and those hooks read
+        it back to report the success rather than a fabricated failure.
+
+        Returns:
+            True if the row was settled, False if it had no deferred outcome and
+                the caller should record its own terminal state instead.
+        """
+        if self._deferred_success_output is None:
+            return False
+        self.set_success(self._deferred_success_output)
+        return True
+
     def set_success(self, result: str = "") -> None:
         """Mark the tool call as successful.
 
@@ -1921,6 +1924,12 @@ class ToolCallMessage(Vertical):
             # state rather than flipping to "Error" (which also left the stale
             # `rejected` CSS class alongside `error`).
             return
+        if self.settle_deferred_success():
+            # A teardown sweep imposing a generic failure on a row that already
+            # succeeded (an answered `ask_user` awaiting its transcript). The
+            # authoritative `ToolMessage` calls `clear_deferred_success` first,
+            # so a *real* tool error still lands below.
+            return
         self._stop_animation()
         self._status = "error"
         self._apply_status_class("error")
@@ -1950,6 +1959,11 @@ class ToolCallMessage(Vertical):
             reason: Optional free-text reason supplied via the HITL reject
                 widget; rendered as a dim line beneath the status.
         """
+        if self.settle_deferred_success():
+            # A co-occurring reject in the same interrupt batch sweeps every
+            # tracked row; an answered `ask_user` among them still succeeded and
+            # its answers still reach the model, so it keeps its own outcome.
+            return
         self._stop_animation()
         self._status = "rejected"
         self._apply_status_class("rejected")
@@ -3081,100 +3095,78 @@ class ToolCallMessage(Vertical):
 
         return FormattedOutput(content=content, truncation=truncation)
 
-    def _ask_user_question_texts(self) -> list[str]:
-        """Question texts for this `ask_user` call, in the order they were asked.
+    def _ask_user_question_count(self) -> int:
+        """Return the number of valid question objects in this tool call.
 
-        Read from the tool call's own arguments rather than re-derived from the
-        output, so `_parse_ask_user_transcript` has trustworthy anchors. `app`
-        restores `tool_args` alongside `tool_output` when reloading a thread, so
-        they are available there too.
+        The count comes from the structured tool arguments rather than parsing
+        the free-form transcript. This keeps arbitrary answer text opaque while
+        still supporting the collapsed `N answers` affordance.
 
         Returns:
-            One text per question, or an empty list when the arguments are
-            missing or malformed (which makes the transcript unparseable, so the
-            row falls back to rendering the output verbatim).
+            The question count, or zero when the arguments are malformed —
+                anything `ask_user._validate_questions` would reject before
+                interrupting, including a missing, non-string, or blank
+                `question`. `_args` holds the raw streamed tool call, populated at
+                mount time before pydantic validation, so those shapes do reach
+                here and must degrade rather than raise.
         """
         questions = self._args.get("questions")
         if not isinstance(questions, list) or not questions:
-            return []
-        if not all(isinstance(question, dict) for question in questions):
-            return []
-        # Mirror `format_ask_user_transcript`, which produced the transcript.
-        return [question.get("question", "") for question in questions]
+            return 0
+        if not all(
+            isinstance(question, dict)
+            and isinstance(question.get("question"), str)
+            and bool(question["question"].strip())
+            for question in questions
+        ):
+            return 0
+        return len(questions)
 
     def _format_ask_user_output(
         self, output: str, *, is_preview: bool = False
     ) -> FormattedOutput:
-        """Format an `ask_user` result as its question/answer transcript.
+        """Format an `ask_user` result for the collapsed or expanded row.
 
         The inline question widget is unmounted once answered, so this row is the
         only place the answers stay visible in the live session — the thread's
         own `ToolMessage` is what a reload re-renders from. Collapsed, the row
         keeps a one-line summary; expanded, it shows what was sent back.
 
+        The summary is derived from the recorded status and the question count,
+        never from the answer text. The placeholders are in-band, so a user who
+        types `(cancelled)` or `(error: ...)` must not have their answer read as
+        control state. The cost is that a cancelled prompt resumed by a non-TUI
+        client — which `ask_user` records as `status="success"` with `(cancelled)`
+        placeholders — reads as answered until expanded.
+
         Returns:
-            FormattedOutput with the summary line (preview) or the full Q&A
-                transcript, plus a count as truncation info. Output that does not
-                parse as a transcript for this call's questions falls back to
-                generic size-based truncation — a live `set_error` body, for
-                example. Note the tool's *own* error path emits a well-formed
-                transcript of `(error: ...)` placeholders, which is summarized as
-                failed rather than answered.
+            FormattedOutput with the status-derived summary when `is_preview`, or
+                the output rendered literally when expanded. Falls back to generic
+                formatting when the structured question args are unavailable.
         """
-        pairs = _parse_ask_user_transcript(output, self._ask_user_question_texts())
-        if not pairs:
-            # Not a transcript for these questions. Route through the generic
-            # path rather than returning the body bare: `ask_user` is in
-            # `_ALWAYS_PREVIEW_TOOLS`, so the size thresholds in `_format_output`
-            # no longer apply to it and an arbitrarily long body would otherwise
-            # fill the collapsed row with no expand affordance.
+        question_count = self._ask_user_question_count()
+        if question_count == 0:
+            # Route through the generic path rather than returning the body bare:
+            # `ask_user` is in `_ALWAYS_PREVIEW_TOOLS`, so `_format_output`'s size
+            # thresholds no longer apply to it and an arbitrarily long body would
+            # otherwise fill the collapsed row with no expand affordance.
             return self._format_generic_output(output, is_preview=is_preview)
 
-        if is_preview:
-            answers = [answer for _question, answer in pairs]
-            # `failed` is gated on the recorded status, not on the sentinel
-            # alone: the placeholders are in-band, so a user who types
-            # `(error: ...)` as their answer must not get a "Question failed"
-            # row. `ask_user` records `status="error"` for a failed prompt, and
-            # that is what a reload restores here.
-            failed = self._status == "error" and all(
-                answer.startswith(ASK_USER_ERROR_ANSWER_PREFIX) for answer in answers
-            )
-            cancelled = not failed and all(
-                answer == ASK_USER_CANCELLED_ANSWER for answer in answers
-            )
-            if cancelled:
-                # A cancel is recorded as `status="success"` (a user choice, not
-                # a tool failure), so unlike `failed` this can only be detected
-                # from the sentinel. The TUI never persists such a transcript —
-                # it halts the turn without resuming — so this is reachable only
-                # when a non-TUI client resumes with `{"status": "cancelled"}`.
-                # Every answer is a placeholder, so the count is of questions.
-                summary = ASK_USER_CANCELLED_SUMMARY
-                noun = "question" if len(pairs) == 1 else "questions"
-            else:
-                summary = (
-                    ASK_USER_FAILED_SUMMARY if failed else ASK_USER_ANSWERED_SUMMARY
-                )
-                noun = "answer" if len(pairs) == 1 else "answers"
-            # Always expandable, even when cancelled or failed: the sentinels are
-            # in-band, so an answer of literally `(cancelled)` would otherwise be
-            # summarized away with no way to reveal what the user actually typed.
-            return FormattedOutput(
-                content=Content.styled(summary, "dim"),
-                truncation=f"{len(pairs)} {noun}",
-            )
+        if not is_preview:
+            # The transcript contains unrestricted user text. Keep it opaque and
+            # render it literally instead of parsing an unescaped text protocol.
+            return FormattedOutput(content=Content(output))
 
-        blocks = [
-            Content("\n").join(
-                (
-                    Content.from_markup("[dim]Q: $question[/dim]", question=question),
-                    Content.assemble(("A: ", "dim"), answer),
-                )
-            )
-            for question, answer in pairs
-        ]
-        return FormattedOutput(content=Content("\n\n").join(blocks))
+        summary = (
+            ASK_USER_FAILED_SUMMARY
+            if self._status == "error"
+            else ASK_USER_ANSWERED_SUMMARY
+        )
+        noun = "answer" if question_count == 1 else "answers"
+        return FormattedOutput(
+            content=Content.styled(summary, "dim"),
+            truncation=f"{question_count} {noun}",
+        )
 
     def _update_output_display(self) -> None:
         """Update the output display based on expanded state."""

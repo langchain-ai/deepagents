@@ -2,9 +2,13 @@
 
 Extracted from `ask_user` so `textual_adapter` can import `AskUserRequest` at
 module level — and `app` can reference the types at type-check time — without
-pulling in the langchain middleware stack. The answer placeholders, row summary
-strings, and `format_ask_user_transcript` live here for the same reason: the
-tool and the TUI both need them and neither should import the other.
+pulling in the langchain middleware stack.
+
+Only the TypedDicts are consumed by both sides. The rest is colocated here so the
+whole wire format stays in one file and neither side has to import the other: the
+answer placeholders and `format_ask_user_transcript` are tool-side (`ask_user`),
+while the `ASK_USER_*_SUMMARY` strings are TUI-side row labels that all double as
+`tool.result` hook payloads, as their docstrings note.
 """
 
 from __future__ import annotations
@@ -109,12 +113,10 @@ AskUserWidgetResult = AskUserAnswered | AskUserCancelled
 ASK_USER_NO_ANSWER = "(no answer)"
 """Placeholder for a question with no positionally matching answer.
 
-Recorded when the answer list came back *shorter* than the question list. The
-server path no longer reaches this: `ask_user` treats a count mismatch as an
-error and replaces every answer with an `(error: ...)` placeholder, so only the
-TUI's own call site — which passes the widget's answers without a length check —
-can still produce it. A question the user deliberately left blank renders as an
-empty `A:` line instead, never as this placeholder.
+Defensive fallback for callers that pass fewer answers than questions. The
+middleware validates answer counts before formatting, so its normal paths do
+not produce this value. A question the user deliberately left blank renders as
+an empty `A:` line instead, never as this placeholder.
 """
 
 ASK_USER_CANCELLED_ANSWER = "(cancelled)"
@@ -123,10 +125,10 @@ ASK_USER_CANCELLED_ANSWER = "(cancelled)"
 ASK_USER_ERROR_ANSWER_PREFIX = "(error: "
 """Prefix of the placeholder recorded for every question when the prompt fails.
 
-The full placeholder is `(error: <detail>)`. The TUI's summary classifier matches
-on this prefix, but only for a row whose recorded status is already `"error"` —
-the placeholder is in-band, so the prefix alone cannot distinguish a failed
-prompt from a user who typed `(error: ...)` as their answer.
+The full placeholder is `(error: <detail>)`. Producer-side only: nothing in-tree
+matches on it. The TUI derives its row summary from the recorded tool status
+instead, because the placeholder is in-band — the prefix alone cannot distinguish
+a failed prompt from a user who typed `(error: ...)` as their answer.
 """
 
 ASK_USER_ANSWERED_SUMMARY = "User answered"
@@ -139,15 +141,22 @@ well as the row; see `textual_adapter` and its `tool.result` tests.
 """
 
 ASK_USER_CANCELLED_SUMMARY = "Question cancelled"
-"""One-line summary shown for a cancelled `ask_user` prompt.
+"""The `tool.result` hook payload's `tool_output` for the cancelled path.
 
-Like `ASK_USER_ANSWERED_SUMMARY`, this doubles as the `tool.result` hook
-payload's `tool_output` for the cancelled path, so rewording it changes that hook
-contract as well as the row.
+Rewording it changes that hook contract. No longer rendered on a row: a live
+cancel calls `set_rejected` (which records no output), and a transcript of
+`(cancelled)` placeholders from a non-TUI client is summarized from the recorded
+status like any other, so it reads as `ASK_USER_ANSWERED_SUMMARY`.
 """
 
 ASK_USER_FAILED_SUMMARY = "Question failed"
-"""One-line summary shown for an `ask_user` prompt that errored."""
+"""One-line summary shown for an `ask_user` prompt that errored.
+
+Like `ASK_USER_ANSWERED_SUMMARY`, this doubles as the `tool.result` hook
+payload's `tool_output` for a failed prompt — deliberately in place of the
+transcript, whose `(error: ...)` placeholders carry an arbitrary detail string.
+Rewording it changes that hook contract as well as the row.
+"""
 
 
 def format_ask_user_error_answer(detail: str) -> str:
@@ -168,16 +177,16 @@ def format_ask_user_error_answer(detail: str) -> str:
 def format_ask_user_transcript(questions: list[Question], answers: list[str]) -> str:
     r"""Render questions and answers as the `Q:`/`A:` transcript.
 
-    This is the text the `ask_user` tool returns to the model, and the same text
-    the TUI shows on the tool row, so the two cannot drift in *format*. The two
-    call sites compute it from different inputs (the resume payload server-side,
-    the interrupt's questions plus the widget's answers in the TUI), so contents
-    can still differ.
+    This is the text the `ask_user` tool returns to the model and persists in the
+    thread. The TUI renders that authoritative text literally rather than trying
+    to parse the unrestricted answer content back into structured data.
 
-    The encoding is lossy: an answer containing a blank line followed by the
-    literal next `Q: <text>\nA:` header is indistinguishable from a real block
-    boundary. The TUI's parser anchors on the known question text to keep that
-    from fabricating an extra question, but cannot recover the split point.
+    Answers are interpolated unescaped, so the encoding is not unambiguously
+    decodable: an answer containing a blank line followed by a literal
+    `Q: <text>\nA:` header is indistinguishable from a real block boundary. Only
+    the model reads it that way today. Any future decoder must anchor on the known
+    question text rather than on a generic `Q: ` pattern, or a crafted answer can
+    fabricate an extra question/answer pair.
 
     Args:
         questions: Questions that were asked. Callers must pass questions whose

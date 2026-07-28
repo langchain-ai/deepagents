@@ -297,7 +297,15 @@ class TestParseAnswers:
             in _extract_tool_message_content(cmd)
         )
 
-    def test_answer_count_mismatch_falls_back_to_no_answer(self) -> None:
+    def test_answer_count_mismatch_is_an_error(self) -> None:
+        """A short answer list is a failed prompt, not a partial one.
+
+        Padding with `(no answer)` would keep `status="success"` while silently
+        re-attributing every answer after the gap to the wrong question — here
+        `"Alice"` would stay on `Name?` only by luck of it being first. The model
+        must be told the payload was unusable rather than handed a confident
+        wrong pairing.
+        """
         cmd = _parse_answers(
             {"answers": ["Alice"]},
             [
@@ -306,9 +314,24 @@ class TestParseAnswers:
             ],
             "tc-1",
         )
-        content = _extract_tool_message_content(cmd)
-        assert "Q: Name?\nA: Alice" in content
-        assert "Q: Color?\nA: (no answer)" in content
+        message = _extract_tool_message(cmd)
+        assert message.status == "error"
+        content = str(message.content)
+        assert "Q: Name?\nA: (error: ask_user answer count mismatch" in content
+        assert "Q: Color?\nA: (error: ask_user answer count mismatch" in content
+        assert "expected 2, got 1" in content
+        assert "Alice" not in content
+
+    def test_extra_answers_are_also_an_error(self) -> None:
+        """A long list is equally untrustworthy; extras would be dropped."""
+        cmd = _parse_answers(
+            {"answers": ["Alice", "blue"]},
+            [{"question": "Name?", "type": "text"}],
+            "tc-1",
+        )
+        message = _extract_tool_message(cmd)
+        assert message.status == "error"
+        assert "expected 1, got 2" in str(message.content)
 
 
 def _turn_state(turn_id: str) -> dict[str, object]:

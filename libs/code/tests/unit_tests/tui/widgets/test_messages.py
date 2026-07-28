@@ -2010,8 +2010,10 @@ class TestToolCallMessageAskUserOutput:
         `ask_user` renders a failure as `(error: ...)` placeholder answers run
         through the same formatter, so a reloaded thread would otherwise show an
         affirmative "User answered" row for a prompt that never got an answer.
+        The row's status is what a reload restores from `ToolMessage.status`.
         """
         msg = ToolCallMessage("ask_user", {"questions": [{"question": "Name?"}]})
+        msg._status = "error"
 
         result = msg._format_ask_user_output(
             "Q: Name?\nA: (error: ask_user interaction failed)", is_preview=True
@@ -2019,6 +2021,23 @@ class TestToolCallMessageAskUserOutput:
 
         assert result.content.plain == "Question failed"
         # Expandable, so the `(error: <detail>)` reason stays reachable.
+        assert result.truncation == "1 answer"
+
+    def test_user_typed_error_placeholder_still_says_answered(self) -> None:
+        """The `(error: ...)` sentinel is in-band, so status decides, not text.
+
+        A successful prompt whose answer happens to look like the failure
+        placeholder is still an answer; only a row `ask_user` recorded as
+        `status="error"` is a failure.
+        """
+        msg = ToolCallMessage("ask_user", {"questions": [{"question": "Name?"}]})
+        msg._status = "success"
+
+        result = msg._format_ask_user_output(
+            "Q: Name?\nA: (error: not really an error)", is_preview=True
+        )
+
+        assert result.content.plain == "User answered"
         assert result.truncation == "1 answer"
 
     def test_preview_of_partial_failure_says_answered(self) -> None:
@@ -2065,6 +2084,63 @@ class TestToolCallMessageAskUserOutput:
 
         assert result.content.plain == "Q: Name?\nA: Alice"
         assert result.truncation is None
+
+    @pytest.mark.parametrize(
+        "questions",
+        [
+            pytest.param("notalist", id="not-a-list"),
+            pytest.param([], id="empty-list"),
+            pytest.param(["Name?"], id="bare-strings"),
+            pytest.param([{"question": "Name?"}, "bad"], id="mixed"),
+        ],
+    )
+    def test_malformed_question_args_yield_no_anchors(self, questions: object) -> None:
+        """Malformed `questions` must degrade, not raise.
+
+        `_args` holds the raw streamed tool call, populated at mount time before
+        pydantic validation, so a model emitting `questions: ["Name?"]` reaches
+        this code. Without the `isinstance(question, dict)` guard that shape
+        raises `AttributeError` from `.get`, and `has_expandable_output` is
+        reached from unguarded click handlers.
+        """
+        msg = ToolCallMessage("ask_user", {"questions": questions})
+
+        assert msg._ask_user_question_texts() == []
+
+    def test_long_non_transcript_output_is_truncated(self) -> None:
+        """The fallback must still cap the collapsed row.
+
+        `ask_user` is in `_ALWAYS_PREVIEW_TOOLS`, so `_format_output`'s size
+        thresholds no longer apply to it. Returning the body bare would fill the
+        collapsed row with an arbitrarily long dump and no expand affordance.
+        """
+        msg = ToolCallMessage("ask_user", self._ARGS)
+        body = "\n".join(f"line{i}" for i in range(60))
+
+        result = msg._format_ask_user_output(body, is_preview=True)
+
+        assert result.truncation is not None
+        assert len(result.content.plain) < len(body)
+
+    async def test_question_with_markup_is_not_interpreted(self) -> None:
+        """Question text is model-authored and goes through `$var` substitution.
+
+        The answer-side mirror of this lives in
+        `test_answer_with_markup_is_not_interpreted`. Both are needed: switching
+        the question to an f-string interpolation would keep every other test
+        green while corrupting any question containing `[`.
+        """
+        app = _tool_msg_app(
+            "ask_user", {"questions": [{"question": "[bold]Which[/bold] one?"}]}
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("Q: [bold]Which[/bold] one?\nA: this")
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "[bold]Which[/bold] one?" in full.plain
 
     @pytest.mark.parametrize(
         ("case", "answers"),
@@ -2187,12 +2263,15 @@ class TestToolCallMessageAskUserOutput:
             assert app.msg._args_expanded is True
             assert app.msg._expanded is False
 
-    async def test_reloaded_cancelled_row_stays_expandable(self) -> None:
-        """A reloaded cancelled prompt summarizes but keeps its body reachable.
+    async def test_cancelled_row_stays_expandable(self) -> None:
+        """A cancelled prompt summarizes but keeps its body reachable.
 
-        Reloading a thread replays the persisted transcript through
-        `set_success`, which is the only way the cancelled branch is reached — a
-        live cancel calls `set_rejected` and records no output.
+        `set_success` stands in for the persisted transcript here; a real reload
+        goes through `_deferred_output`/`_restore_deferred_state` instead. The
+        TUI itself never persists a cancelled transcript — a live cancel calls
+        `set_rejected` (recording no output) and halts the turn without
+        resuming, so `_parse_answers` only sees `{"status": "cancelled"}` from a
+        non-TUI client.
         """
         app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
         async with app.run_test() as pilot:

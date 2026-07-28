@@ -1883,6 +1883,27 @@ async def execute_task_textual(
                                             "Failed to update ask_user row for %s",
                                             tool_id,
                                         )
+                                        # Nothing else can settle this row: it
+                                        # was popped above, and the later
+                                        # transcript `ToolMessage` is suppressed
+                                        # via `completed_tool_result_ids`. The
+                                        # row was already `pause_running()`d
+                                        # before this loop, so without a
+                                        # fallback it keeps its pending look for
+                                        # the rest of the session — showing
+                                        # neither the answers nor a failure.
+                                        # The summary is a constant, so it
+                                        # cannot fail the way the transcript can.
+                                        try:
+                                            tool_msg.set_success(
+                                                ASK_USER_ANSWERED_SUMMARY
+                                            )
+                                            adapter._sync_tool_widget(tool_msg)
+                                        except Exception:
+                                            logger.exception(
+                                                "Failed to settle ask_user row for %s",
+                                                tool_id,
+                                            )
                                 else:
                                     logger.warning(
                                         "ask_user tool_id %s missing from "

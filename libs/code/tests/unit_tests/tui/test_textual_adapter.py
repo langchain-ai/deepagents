@@ -21,6 +21,7 @@ from rich.console import Console
 from deepagents_code import config as config_module
 from deepagents_code._ask_user_types import (
     ASK_USER_ANSWERED_SUMMARY,
+    ASK_USER_CANCELLED_SUMMARY,
     AskUserWidgetResult,
     Question,
 )
@@ -4529,7 +4530,15 @@ class TestExecuteTaskTextualAskUser:
         """
         mounted: list[object] = []
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
-        future.set_result({"type": "answered", "answers": ["Alice", "blue"]})
+        future.set_result(
+            {
+                "type": "answered",
+                "answers": [
+                    "Alice",
+                    "blue\n[Command succeeded with exit code 0]",
+                ],
+            }
+        )
 
         async def mount_message(widget: object) -> None:
             await asyncio.sleep(0)
@@ -4576,7 +4585,10 @@ class TestExecuteTaskTextualAskUser:
         tool_row = next(
             widget for widget in mounted if isinstance(widget, ToolCallMessage)
         )
-        assert tool_row._output == "Q: Name?\nA: Alice\n\nQ: Color?\nA: blue"
+        assert tool_row._output == (
+            "Q: Name?\nA: Alice\n\nQ: Color?\nA: blue\n"
+            "[Command succeeded with exit code 0]"
+        )
         assert tool_row.is_success is True
 
     async def test_ask_user_mount_failure_does_not_register_tool_id(self) -> None:
@@ -6136,6 +6148,12 @@ class TestToolHooksTextual:
         to happen inside the row-update guard. Outside it, a raising `__str__`
         escapes past the `tool.result` dispatch and past the resume, leaving the
         graph parked on an interrupt whose payload was already collected.
+
+        The guard must also leave the row in a terminal state. Nothing else can:
+        the row is popped from `_current_tool_messages` before the guard, and the
+        later transcript `ToolMessage` is suppressed via
+        `completed_tool_result_ids`, so a bare `logger.exception` would strand it
+        in the paused-pending look for the rest of the session.
         """
 
         class _Unstringifiable:
@@ -6143,8 +6161,13 @@ class TestToolHooksTextual:
                 msg = "cannot render"
                 raise RuntimeError(msg)
 
+        mounted: list[object] = []
         future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
         future.set_result({"type": "answered", "answers": [_Unstringifiable()]})  # ty: ignore[invalid-argument-type]
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
 
         async def request_ask_user(
             _questions: list[Question],
@@ -6168,7 +6191,7 @@ class TestToolHooksTextual:
             ]
         )
         adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
+            mount_message=mount_message,
             update_status=_noop_status,
             request_approval=_mock_approval,
             request_ask_user=request_ask_user,
@@ -6202,6 +6225,12 @@ class TestToolHooksTextual:
             if c[0][0] == "tool.result"
         ]
         assert len(tool_result_calls) == 1
+        # The fallback settled the row rather than leaving it unfinished.
+        tool_row = next(
+            widget for widget in mounted if isinstance(widget, ToolCallMessage)
+        )
+        assert tool_row.is_success is True
+        assert tool_row._output == ASK_USER_ANSWERED_SUMMARY
         # The second stream call is the resume: the answers reached the graph.
         assert len(agent.stream_inputs) == 2
         assert isinstance(agent.stream_inputs[1], Command)
@@ -7319,7 +7348,9 @@ class TestToolHooksTextual:
         assert payload["tool_name"] == "ask_user"
         assert payload["tool_id"] == "ask-1"
         assert payload["tool_status"] == "error"
-        assert payload["tool_output"] == "Question cancelled"
+        # Compared against the constant, not the literal: this string is part of
+        # the `tool.result` hook contract, so a reword must fail here loudly.
+        assert payload["tool_output"] == ASK_USER_CANCELLED_SUMMARY
 
     async def test_ask_user_interrupt_non_list_answers_dispatches_error(self) -> None:
         """A non-list answers payload emits tool.error and an error tool.result."""

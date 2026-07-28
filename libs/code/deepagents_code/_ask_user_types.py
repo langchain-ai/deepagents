@@ -109,9 +109,12 @@ AskUserWidgetResult = AskUserAnswered | AskUserCancelled
 ASK_USER_NO_ANSWER = "(no answer)"
 """Placeholder for a question with no positionally matching answer.
 
-Recorded only when the answer list came back *shorter* than the question list (a
-count mismatch, warned about in `ask_user`). A question the user deliberately
-left blank renders as an empty `A:` line instead, never as this placeholder.
+Recorded when the answer list came back *shorter* than the question list. The
+server path no longer reaches this: `ask_user` treats a count mismatch as an
+error and replaces every answer with an `(error: ...)` placeholder, so only the
+TUI's own call site — which passes the widget's answers without a length check —
+can still produce it. A question the user deliberately left blank renders as an
+empty `A:` line instead, never as this placeholder.
 """
 
 ASK_USER_CANCELLED_ANSWER = "(cancelled)"
@@ -120,9 +123,10 @@ ASK_USER_CANCELLED_ANSWER = "(cancelled)"
 ASK_USER_ERROR_ANSWER_PREFIX = "(error: "
 """Prefix of the placeholder recorded for every question when the prompt fails.
 
-The full placeholder is `(error: <detail>)`. Both the transcript producer in
-`ask_user` and the TUI's summary classifier match on this prefix, so a failed
-prompt is never summarized as answered.
+The full placeholder is `(error: <detail>)`. The TUI's summary classifier matches
+on this prefix, but only for a row whose recorded status is already `"error"` —
+the placeholder is in-band, so the prefix alone cannot distinguish a failed
+prompt from a user who typed `(error: ...)` as their answer.
 """
 
 ASK_USER_ANSWERED_SUMMARY = "User answered"
@@ -135,10 +139,30 @@ well as the row; see `textual_adapter` and its `tool.result` tests.
 """
 
 ASK_USER_CANCELLED_SUMMARY = "Question cancelled"
-"""One-line summary shown for a cancelled `ask_user` prompt."""
+"""One-line summary shown for a cancelled `ask_user` prompt.
+
+Like `ASK_USER_ANSWERED_SUMMARY`, this doubles as the `tool.result` hook
+payload's `tool_output` for the cancelled path, so rewording it changes that hook
+contract as well as the row.
+"""
 
 ASK_USER_FAILED_SUMMARY = "Question failed"
 """One-line summary shown for an `ask_user` prompt that errored."""
+
+
+def format_ask_user_error_answer(detail: str) -> str:
+    """Render the placeholder answer recorded for every question on failure.
+
+    Keeps the closing paren together with `ASK_USER_ERROR_ANSWER_PREFIX` so the
+    sentinel is not split between the constant and its producer.
+
+    Args:
+        detail: Human-readable reason the prompt failed.
+
+    Returns:
+        The `(error: <detail>)` placeholder.
+    """
+    return f"{ASK_USER_ERROR_ANSWER_PREFIX}{detail})"
 
 
 def format_ask_user_transcript(questions: list[Question], answers: list[str]) -> str:
@@ -156,9 +180,10 @@ def format_ask_user_transcript(questions: list[Question], answers: list[str]) ->
     from fabricating an extra question, but cannot recover the split point.
 
     Args:
-        questions: Questions that were asked. `question` is a required key, and
-            `ask_user` validates it as non-empty before interrupting, so the
-            empty default below is unreachable in practice.
+        questions: Questions that were asked. Callers must pass questions whose
+            `question` text is a non-empty string; `ask_user._validate_questions`
+            enforces that before interrupting. The empty default below only
+            keeps a caller that skips validation from raising `KeyError`.
         answers: Answers, positionally matched to `questions`. A missing entry
             falls back to `ASK_USER_NO_ANSWER`; extra entries are dropped.
 

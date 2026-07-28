@@ -26,11 +26,11 @@ from pydantic import Field
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
     ASK_USER_CANCELLED_ANSWER,
-    ASK_USER_ERROR_ANSWER_PREFIX,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
     AskUserAuthorizationReceipt,
     AskUserRequest,
     Question,
+    format_ask_user_error_answer,
     format_ask_user_transcript,
 )
 
@@ -225,10 +225,22 @@ def _parse_answers(
             answers = [ASK_USER_CANCELLED_ANSWER for _ in questions]
         elif status == "answered":
             if len(answers) != len(questions):
-                logger.warning(
-                    "ask_user answer count mismatch: expected %d, got %d",
+                # Treated as a failed prompt, not a partial one. A short list
+                # silently re-attributes every answer after the gap to the wrong
+                # question, and a long one drops the extras — either way the
+                # payload is untrustworthy, and a `"success"` transcript would
+                # hand the model a confident wrong Q->A pairing. Every other
+                # malformed-payload branch here fails the same way.
+                logger.error(
+                    "ask_user answer count mismatch: expected %d, got %d; "
+                    "returning explicit error answers",
                     len(questions),
                     len(answers),
+                )
+                status = "error"
+                error_text = (
+                    f"ask_user answer count mismatch (expected {len(questions)}, "
+                    f"got {len(answers)})"
                 )
         else:
             logger.error(
@@ -241,7 +253,7 @@ def _parse_answers(
 
     if status == "error":
         detail = error_text or "ask_user interaction failed"
-        answers = [f"{ASK_USER_ERROR_ANSWER_PREFIX}{detail})" for _ in questions]
+        answers = [format_ask_user_error_answer(detail) for _ in questions]
 
     additional_kwargs: dict[str, object] = {}
     if (
@@ -273,10 +285,12 @@ def _parse_answers(
                     tool_call_id=tool_call_id,
                     additional_kwargs=additional_kwargs,
                     # A failed prompt must not be recorded as a successful one.
-                    # `status` defaults to `"success"`, which made a resumed
-                    # thread render the `(error: ...)` transcript as an ordinary
-                    # answered row (see `_format_ask_user_output`), and told the
-                    # model the tool had succeeded.
+                    # `status` defaults to `"success"`, which told the model the
+                    # tool had succeeded and gave the row a success badge: this
+                    # value feeds `normalize_tool_status` on the live stream and
+                    # the `case "error"` arm of `_restore_deferred_state` on
+                    # reload. A cancel stays `"success"` — it is a user choice,
+                    # not a tool failure.
                     status="error" if status == "error" else "success",
                 )
             ],

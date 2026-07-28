@@ -1854,8 +1854,14 @@ class ToolCallMessage(Vertical):
             if self._tool_name in _TIMED_SUCCESS_TOOLS and elapsed is not None
             else None
         )
-        # Strip redundant success trailer — the UI already conveys success
-        self._output = _strip_success_exit_line(result)
+        # Strip redundant command success trailers — the UI already conveys
+        # success. `ask_user` output is a user-authored Q&A transcript, though,
+        # so text that resembles a command trailer must remain verbatim.
+        self._output = (
+            result
+            if self._tool_name == "ask_user"
+            else _strip_success_exit_line(result)
+        )
         self._apply_status_class("success")
         if self._duration is not None:
             self._show_timed_success_status(self._duration)
@@ -2175,8 +2181,26 @@ class ToolCallMessage(Vertical):
         if formatter:
             return formatter(output, is_preview=is_preview)
 
+        return self._format_generic_output(output, is_preview=is_preview)
+
+    def _format_generic_output(
+        self, output: str, *, is_preview: bool = False
+    ) -> FormattedOutput:
+        """Format output using generic size-based truncation.
+
+        Used for tools with no dedicated formatter, and by a dedicated formatter
+        that cannot parse its input and so must still cap an arbitrarily long
+        body rather than dumping it into the collapsed row.
+
+        Args:
+            output: Tool output, already whitespace-trimmed by `_format_output`.
+            is_preview: Whether to truncate for the collapsed row.
+
+        Returns:
+            FormattedOutput, carrying truncation info only when `is_preview` and
+                the body exceeds the line or character threshold.
+        """
         if is_preview:
-            # Fallback for unknown tools: use generic truncation
             lines = output.split("\n")
             if len(lines) > self._PREVIEW_LINES:
                 return self._format_lines_output(lines, is_preview=True)
@@ -3091,25 +3115,41 @@ class ToolCallMessage(Vertical):
         Returns:
             FormattedOutput with the summary line (preview) or the full Q&A
                 transcript, plus a count as truncation info. Output that does not
-                parse as a transcript for this call's questions renders verbatim
-                — a live `set_error` body, for example. Note the tool's *own*
-                error path emits a well-formed transcript of `(error: ...)`
-                placeholders, which is summarized as failed rather than answered.
+                parse as a transcript for this call's questions falls back to
+                generic size-based truncation — a live `set_error` body, for
+                example. Note the tool's *own* error path emits a well-formed
+                transcript of `(error: ...)` placeholders, which is summarized as
+                failed rather than answered.
         """
         pairs = _parse_ask_user_transcript(output, self._ask_user_question_texts())
         if not pairs:
-            return FormattedOutput(content=Content(output))
+            # Not a transcript for these questions. Route through the generic
+            # path rather than returning the body bare: `ask_user` is in
+            # `_ALWAYS_PREVIEW_TOOLS`, so the size thresholds in `_format_output`
+            # no longer apply to it and an arbitrarily long body would otherwise
+            # fill the collapsed row with no expand affordance.
+            return self._format_generic_output(output, is_preview=is_preview)
 
         if is_preview:
             answers = [answer for _question, answer in pairs]
-            cancelled = all(answer == ASK_USER_CANCELLED_ANSWER for answer in answers)
-            failed = not cancelled and all(
+            # `failed` is gated on the recorded status, not on the sentinel
+            # alone: the placeholders are in-band, so a user who types
+            # `(error: ...)` as their answer must not get a "Question failed"
+            # row. `ask_user` records `status="error"` for a failed prompt, and
+            # that is what a reload restores here.
+            failed = self._status == "error" and all(
                 answer.startswith(ASK_USER_ERROR_ANSWER_PREFIX) for answer in answers
             )
+            cancelled = not failed and all(
+                answer == ASK_USER_CANCELLED_ANSWER for answer in answers
+            )
             if cancelled:
-                # Reachable only after a reload: a live cancel calls
-                # `set_rejected`, which never records any output. Every answer is
-                # a placeholder, so the count is of questions, not answers.
+                # A cancel is recorded as `status="success"` (a user choice, not
+                # a tool failure), so unlike `failed` this can only be detected
+                # from the sentinel. The TUI never persists such a transcript —
+                # it halts the turn without resuming — so this is reachable only
+                # when a non-TUI client resumes with `{"status": "cancelled"}`.
+                # Every answer is a placeholder, so the count is of questions.
                 summary = ASK_USER_CANCELLED_SUMMARY
                 noun = "question" if len(pairs) == 1 else "questions"
             else:

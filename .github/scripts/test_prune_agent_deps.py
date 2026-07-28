@@ -2,6 +2,10 @@
 
 Mirrors `test_shard_matrix.py`: import-by-path, stdlib + pytest only, so it runs
 under CI's `pytest .github/scripts/test_*.py` (see `.github/workflows/ci.yml`).
+
+The committed Harbor `langgraph.json` is the source of truth for the multi-provider
+dependency list. These tests load that file rather than keeping a hand-copied
+fixture that can drift when pins change.
 """
 
 from __future__ import annotations
@@ -35,40 +39,9 @@ def _load_prune_script() -> ModuleType:
 prune = _load_prune_script()
 
 
-# A representative langgraph.json `dependencies` array: two local path deps,
-# langchain core, every prunable provider, and assorted non-provider deps.
-SAMPLE_DEPS: list[str] = [
-    "./.local_deps/deepagents",
-    "./.local_deps/deepagents-code",
-    "langchain>=1.3.9,<2.0.0",
-    "langchain-anthropic>=1.5.3,<2.0.0",
-    "langchain-baseten>=0.2.0,<0.3.0",
-    "langchain-fireworks>=1.4.2,<1.5.0",
-    "langchain-google-genai>=4.2.4,<4.3.0",
-    "langchain-groq>=1.1.3,<1.2.0",
-    "langchain-nvidia-ai-endpoints>=1.4.1,<1.5.0",
-    "langchain-ollama>=1.1.0,<1.2.0",
-    "langchain-openai>=1.3.0,<1.4.0",
-    "langchain-openrouter>=0.2.3,<0.3.0",
-    "langchain-xai>=1.2.2,<1.3.0",
-    "langchain-mcp-adapters>=0.3.0,<0.4.0",
-    "aiohttp>=3.14.0,<4.0.0",
-    "toml>=0.10.2,<1.0.0",
-]
-
-# Deps that must survive pruning no matter which provider is selected.
-NON_PROVIDER_DEPS: list[str] = [
-    "./.local_deps/deepagents",
-    "./.local_deps/deepagents-code",
-    "langchain>=1.3.9,<2.0.0",
-    "langchain-mcp-adapters>=0.3.0,<0.4.0",
-    "aiohttp>=3.14.0,<4.0.0",
-    "toml>=0.10.2,<1.0.0",
-]
-
-# The real config the CI step rewrites (see harbor.yml). The sync tests below
-# read it directly so drift between the pruner and the shipped file fails here,
-# at PR time, instead of much later inside a Harbor eval run.
+# The real config the CI step rewrites (see harbor.yml). Unit tests that need a
+# full multi-provider dependency list read it directly so pin bumps only touch
+# the committed file.
 REAL_CONFIG = (
     REPO_ROOT
     / "libs"
@@ -92,10 +65,31 @@ def _real_dependencies() -> list[str]:
     return json.loads(REAL_CONFIG.read_text())["dependencies"]
 
 
+def _non_provider_dependencies(deps: list[str] | None = None) -> list[str]:
+    """Return deps that pruning must never drop (path/core/infra packages)."""
+    source = _real_dependencies() if deps is None else deps
+    return [
+        dep
+        for dep in source
+        if prune.dependency_package(dep) not in prune.PRUNABLE_PACKAGES
+    ]
+
+
+def _dep_for_package(package: str, deps: list[str] | None = None) -> str:
+    """Return the requirement string for `package` from deps (or the real config)."""
+    source = _real_dependencies() if deps is None else deps
+    for dep in source:
+        if prune.dependency_package(dep) == package:
+            return dep
+    msg = f"Package {package!r} not found in dependencies"
+    raise AssertionError(msg)
+
+
 @pytest.mark.parametrize("provider", sorted(prune.PROVIDER_TO_PACKAGE))
 def test_keeps_exactly_one_provider(provider: str) -> None:
     """Every provider prunes to its own package plus all non-provider deps."""
-    kept = prune.prune_dependencies(SAMPLE_DEPS, provider)
+    deps = _real_dependencies()
+    kept = prune.prune_dependencies(deps, provider)
     kept_provider_pkgs = [
         prune.dependency_package(d)
         for d in kept
@@ -103,14 +97,15 @@ def test_keeps_exactly_one_provider(provider: str) -> None:
     ]
     assert kept_provider_pkgs == [prune.PROVIDER_TO_PACKAGE[provider]]
     # Non-provider deps are untouched.
-    for dep in NON_PROVIDER_DEPS:
+    for dep in _non_provider_dependencies(deps):
         assert dep in kept
 
 
 def test_order_is_preserved() -> None:
     """Pruning filters in place without reordering the surviving deps."""
-    kept = prune.prune_dependencies(SAMPLE_DEPS, "fireworks")
-    assert kept == [d for d in SAMPLE_DEPS if d in kept]
+    deps = _real_dependencies()
+    kept = prune.prune_dependencies(deps, "fireworks")
+    assert kept == [d for d in deps if d in kept]
 
 
 def test_openai_openrouter_do_not_collide() -> None:
@@ -120,30 +115,38 @@ def test_openai_openrouter_do_not_collide() -> None:
     for parsing the bare package name rather than prefix/substring matching on
     the shared `langchain-open` stem.
     """
-    openai_kept = prune.prune_dependencies(SAMPLE_DEPS, "openai")
-    assert "langchain-openai>=1.3.0,<1.4.0" in openai_kept
-    assert "langchain-openrouter>=0.2.3,<0.3.0" not in openai_kept
+    deps = _real_dependencies()
+    openai_dep = _dep_for_package("langchain-openai", deps)
+    openrouter_dep = _dep_for_package("langchain-openrouter", deps)
 
-    openrouter_kept = prune.prune_dependencies(SAMPLE_DEPS, "openrouter")
-    assert "langchain-openrouter>=0.2.3,<0.3.0" in openrouter_kept
-    assert "langchain-openai>=1.3.0,<1.4.0" not in openrouter_kept
+    openai_kept = prune.prune_dependencies(deps, "openai")
+    assert openai_dep in openai_kept
+    assert openrouter_dep not in openai_kept
+
+    openrouter_kept = prune.prune_dependencies(deps, "openrouter")
+    assert openrouter_dep in openrouter_kept
+    assert openai_dep not in openrouter_kept
 
 
 def test_nvidia_package_name_differs_from_prefix() -> None:
     """`nvidia` maps to `langchain-nvidia-ai-endpoints`, not `langchain-nvidia`."""
-    kept = prune.prune_dependencies(SAMPLE_DEPS, "nvidia")
-    assert "langchain-nvidia-ai-endpoints>=1.4.1,<1.5.0" in kept
+    deps = _real_dependencies()
+    nvidia_dep = _dep_for_package("langchain-nvidia-ai-endpoints", deps)
+    kept = prune.prune_dependencies(deps, "nvidia")
+    assert nvidia_dep in kept
 
 
 def test_unknown_provider_raises_key_error() -> None:
     """A provider absent from the map is a programming error, not a silent no-op."""
     with pytest.raises(KeyError):
-        prune.prune_dependencies(SAMPLE_DEPS, "mistral")
+        prune.prune_dependencies(_real_dependencies(), "mistral")
 
 
 def test_missing_provider_package_raises_value_error() -> None:
     """Drift guard: the selected provider's package must be present in deps."""
-    deps_without_fireworks = [d for d in SAMPLE_DEPS if "fireworks" not in d]
+    deps_without_fireworks = [
+        d for d in _real_dependencies() if "fireworks" not in d
+    ]
     with pytest.raises(ValueError, match="fireworks"):
         prune.prune_dependencies(deps_without_fireworks, "fireworks")
 
@@ -181,7 +184,7 @@ def test_main_rewrites_file_in_place(
 ) -> None:
     """`main` prunes the file and leaves unrelated keys (`graphs`) intact."""
     config_path = tmp_path / "langgraph.json"
-    _write_config(config_path, SAMPLE_DEPS)
+    _write_config(config_path, _real_dependencies())
     monkeypatch.setenv("HARBOR_MODEL", "fireworks:accounts/fireworks/models/glm-5p2")
     monkeypatch.setattr("sys.argv", [str(PRUNE_SCRIPT), str(config_path)])
 
@@ -214,7 +217,7 @@ def test_main_unknown_provider_fails_without_writing(
     fireworks arm). The file is left untouched because we fail before writing.
     """
     config_path = tmp_path / "langgraph.json"
-    _write_config(config_path, SAMPLE_DEPS)
+    _write_config(config_path, _real_dependencies())
     original = config_path.read_text()
     monkeypatch.setenv("HARBOR_MODEL", "some-new-provider:whatever")
     monkeypatch.setattr("sys.argv", [str(PRUNE_SCRIPT), str(config_path)])
@@ -231,7 +234,7 @@ def test_main_rejects_malformed_model(
 ) -> None:
     """A missing or colon-less HARBOR_MODEL fails loudly."""
     config_path = tmp_path / "langgraph.json"
-    _write_config(config_path, SAMPLE_DEPS)
+    _write_config(config_path, _real_dependencies())
     monkeypatch.setenv("HARBOR_MODEL", bad_model)
     monkeypatch.setattr("sys.argv", [str(PRUNE_SCRIPT), str(config_path)])
 
@@ -248,7 +251,7 @@ def test_main_handles_multi_colon_model(
     provider must still resolve via `split(':', 1)`.
     """
     config_path = tmp_path / "langgraph.json"
-    _write_config(config_path, SAMPLE_DEPS)
+    _write_config(config_path, _real_dependencies())
     monkeypatch.setenv("HARBOR_MODEL", "ollama:glm-5.2:cloud")
     monkeypatch.setattr("sys.argv", [str(PRUNE_SCRIPT), str(config_path)])
 
@@ -280,7 +283,7 @@ def test_main_prints_summary(
 ) -> None:
     """The operator-facing summary names the kept package and removed count."""
     config_path = tmp_path / "langgraph.json"
-    _write_config(config_path, SAMPLE_DEPS)
+    _write_config(config_path, _real_dependencies())
     monkeypatch.setenv("HARBOR_MODEL", "fireworks:accounts/fireworks/models/glm-5p2")
     monkeypatch.setattr("sys.argv", [str(PRUNE_SCRIPT), str(config_path)])
 
@@ -292,7 +295,16 @@ def test_main_prints_summary(
     assert f"removed {len(prune.PRUNABLE_PACKAGES) - 1}" in out
 
 
-@pytest.mark.parametrize("dependencies", [[], [d for d in SAMPLE_DEPS if "openai" in d]])
+@pytest.mark.parametrize(
+    "dependencies",
+    [
+        pytest.param([], id="empty"),
+        pytest.param(
+            [d for d in _real_dependencies() if "openai" in d],
+            id="openai-only",
+        ),
+    ],
+)
 def test_main_annotates_drift_without_writing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, dependencies: list[str]
 ) -> None:
@@ -326,15 +338,6 @@ def test_main_annotates_malformed_json(
 
     with pytest.raises(SystemExit, match="::error::"):
         prune.main()
-
-
-def test_sample_deps_match_real_config() -> None:
-    """The in-file fixture must mirror the committed langgraph.json verbatim.
-
-    SAMPLE_DEPS is a hand-copy; pinning it here stops the suite from silently
-    passing against a stale snapshot after someone edits the real config.
-    """
-    assert SAMPLE_DEPS == _real_dependencies()
 
 
 @pytest.mark.parametrize("provider", sorted(prune.PROVIDER_TO_PACKAGE))

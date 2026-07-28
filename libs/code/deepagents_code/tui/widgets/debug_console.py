@@ -1,9 +1,11 @@
 r"""Read-only in-app Debug Console modal.
 
 Toggled with `Ctrl+\` (or the hidden `/debug` command), this overlay shows a
-point-in-time session/runtime snapshot plus a live tail of recent
+live session/runtime snapshot plus a live tail of recent
 `deepagents_code.*` log records sourced from the in-memory ring buffer in
-`_debug_buffer`. It never mutates session state.
+`_debug_buffer`. The snapshot is seeded at open and, when the host supplies a
+`snapshot_provider`, rebuilt on the same refresh tick as the log tail. It never
+mutates session state.
 """
 
 from __future__ import annotations
@@ -758,6 +760,7 @@ class DebugConsoleScreen(ModalScreen[None]):
         self,
         snapshot: Sequence[SnapshotField],
         *,
+        snapshot_provider: Callable[[], Sequence[SnapshotField]] | None = None,
         cleared_upto: int = 0,
         on_clear: Callable[[int], None] | None = None,
         click_to_copy: bool = _CLICK_TO_COPY_DEFAULT,
@@ -766,7 +769,11 @@ class DebugConsoleScreen(ModalScreen[None]):
         """Initialize with a captured *snapshot* of session/runtime fields.
 
         Args:
-            snapshot: Ordered `SnapshotField` rows rendered in the header.
+            snapshot: Ordered `SnapshotField` rows rendered on first paint.
+            snapshot_provider: Optional callable that rebuilds the snapshot from
+                live host state. When set, the header is refreshed on the same
+                tick as the log tail whenever the provider returns a different
+                row list. Omit for a freeze-frame header (e.g. unit tests).
             cleared_upto: Absolute emission index a prior `Ctrl+L` cleared up to.
                 The console starts rendering from here so a clear persists across
                 close/reopen; records emitted after it still appear.
@@ -779,6 +786,7 @@ class DebugConsoleScreen(ModalScreen[None]):
         """
         super().__init__()
         self._snapshot = list(snapshot)
+        self._snapshot_provider = snapshot_provider
         self._records: list[InMemoryLogRecord] = []
         # Absolute index of the next unrendered log record (incremental writes),
         # seeded from any persisted clear so reopening honors the last Ctrl+L.
@@ -853,10 +861,43 @@ class DebugConsoleScreen(ModalScreen[None]):
 
     def on_mount(self) -> None:
         """Start the refresh timer and render the current buffer contents."""
-        self.set_interval(_REFRESH_INTERVAL, self._poll_logs)
-        self._poll_logs()
+        self.set_interval(_REFRESH_INTERVAL, self._on_refresh_tick)
+        self._on_refresh_tick()
         self._resolve_langsmith_links()
         self.call_after_refresh(self.query_one("#debug-log", _DebugLogView).focus)
+
+    def _on_refresh_tick(self) -> None:
+        """Rebuild the snapshot header (when live) and append new log records."""
+        self._poll_snapshot()
+        self._poll_logs()
+
+    def _poll_snapshot(self) -> None:
+        """Rebuild the snapshot header from the host provider, if configured.
+
+        Reuses the log-tail timer so the header tracks live session state (message
+        counts, tokens, thread id, …) without a second schedule. Failures are
+        swallowed with a WARNING so a misbehaving provider cannot tear down the
+        diagnostic overlay or its log tail.
+        """
+        if self._snapshot_provider is None:
+            return
+        try:
+            self._poll_snapshot_once()
+        except Exception:  # a diagnostic must never crash the app it inspects
+            logger.warning("Debug console snapshot poll failed", exc_info=True)
+
+    def _poll_snapshot_once(self) -> None:
+        """Refresh `self._snapshot` from the provider when its rows changed."""
+        if self._snapshot_provider is None:
+            return
+        next_snapshot = list(self._snapshot_provider())
+        if next_snapshot == self._snapshot:
+            return
+        self._snapshot = next_snapshot
+        self._refresh_snapshot()
+        # A thread switch mid-open needs a fresh LangSmith resolve for any new
+        # ids; unchanged ids keep their cached URLs and are skipped inside.
+        self._resolve_langsmith_links()
 
     def _resolve_langsmith_links(self) -> None:
         """Kick off background resolution of `(langsmith)` links for the snapshot."""

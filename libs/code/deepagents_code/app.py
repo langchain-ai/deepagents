@@ -18875,6 +18875,10 @@ class DeepAgentsApp(App):
         self.push_screen(
             DebugConsoleScreen(
                 self._build_debug_snapshot(),
+                # Rebuild the header on the console's refresh tick so message
+                # counts, tokens, and other in-memory fields stay current while
+                # the modal is open. The builder is intentionally I/O-free.
+                snapshot_provider=self._build_debug_snapshot,
                 cleared_upto=self._debug_console_cleared_upto,
                 on_clear=persist_clear,
                 click_to_copy=self._debug_console_click_to_copy,
@@ -18924,10 +18928,13 @@ class DeepAgentsApp(App):
         self.call_later(_persist)
 
     def _build_debug_snapshot(self) -> list[SnapshotField]:
-        """Capture a point-in-time session/runtime snapshot for the console.
+        """Capture a session/runtime snapshot for the debug console header.
 
-        Each field is captured defensively: a subsystem that raises degrades to
-        an ``(unavailable: ...)`` value rather than aborting the whole overlay,
+        Called once when the console opens and again on each console refresh
+        tick (via `snapshot_provider`) so live fields such as message count and
+        token usage stay current while the modal is open. Each field is captured
+        defensively: a subsystem that raises degrades to an
+        ``(unavailable: ...)`` value rather than aborting the whole overlay,
         because a diagnostic tool must still open when the app is misbehaving.
 
         Returns:

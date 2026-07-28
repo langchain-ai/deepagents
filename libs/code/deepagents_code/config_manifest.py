@@ -1342,7 +1342,10 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="warnings.suppress",
         group="Warnings",
-        summary="Warning keys to suppress (e.g. 'ripgrep').",
+        summary=(
+            "Warning keys to suppress (e.g. 'ripgrep', 'tavily', 'yolo'); "
+            "also editable from /notifications."
+        ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("warnings", "suppress"),
     ),

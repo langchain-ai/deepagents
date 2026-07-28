@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import Counter
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from textual.content import Content
@@ -30,17 +31,19 @@ _UNSET: Any = object()
 MEDIA_UNSUPPORTED_TOAST_PREFIX = "Only text is supported here"
 """Leading clause of the toast shown when media is dropped on an inline prompt.
 
-Public so tests and callers can assert on the toast without duplicating the
-whole message, which names the discarded files (see `_media_unsupported_toast`).
+Public so tests can assert on the toast without duplicating the whole message,
+which names the discarded files (see `_media_unsupported_toast`).
 """
 
 
 def _media_unsupported_toast(paths: list[Path]) -> str:
     """Build the toast for a rejected media drop.
 
-    Names every discarded file rather than only the media ones, because the
-    whole payload is swallowed — a mixed drop otherwise loses its non-media
-    paths with nothing to explain where they went.
+    Names each discarded file rather than only the media ones, because the whole
+    payload is swallowed — a mixed drop otherwise loses its non-media paths with
+    nothing to explain where they went. Paths are identified by name, falling
+    back to the full path when two drops share a basename, so the listing always
+    distinguishes every file it counts.
 
     Args:
         paths: All resolved paths in the rejected payload. Never empty — the
@@ -49,9 +52,14 @@ def _media_unsupported_toast(paths: list[Path]) -> str:
     Returns:
         Toast text naming the files that were not inserted.
     """
-    names = ", ".join(dict.fromkeys(path.name for path in paths))
-    noun = "file" if len(paths) == 1 else "files"
-    return f"{MEDIA_UNSUPPORTED_TOAST_PREFIX}; {noun} not inserted: {names}."
+    unique = list(dict.fromkeys(paths))
+    name_counts = Counter(path.name for path in unique)
+    labels = [
+        path.name if name_counts[path.name] == 1 else str(path) for path in unique
+    ]
+    noun = "file" if len(labels) == 1 else "files"
+    listing = ", ".join(labels)
+    return f"{MEDIA_UNSUPPORTED_TOAST_PREFIX}; {noun} not inserted: {listing}."
 
 
 class InlinePromptCompletion(Generic[ResultT]):
@@ -210,9 +218,11 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
             event.stop()
             return
 
-        # Don't call super() here — Textual's MRO dispatch already runs
-        # CollapsingPasteTextArea._on_paste and TextArea._on_paste after this
-        # handler returns, so calling super() would invoke them a second time.
+        # Don't call super() here — Textual dispatches a message to *every*
+        # class in the MRO that defines `_on_paste`, in order, so the base
+        # handlers already run after this one returns and super() would invoke
+        # them a second time. The `prevent_default()` above is what stops that
+        # walk on the rejection path.
 
     async def _dispatch_burst_payload(self, payload: str) -> None:
         """Reject a media file replayed as a key burst, else defer to the base."""
@@ -229,7 +239,7 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
         drop, so free-form prose is unaffected (see `dropped_payload_paths`).
 
         The whole payload is swallowed when any path is media, so a mixed drop
-        does not half-insert; the toast names every discarded file to make that
+        does not half-insert; the toast names each discarded file to make that
         visible.
 
         Args:
@@ -238,17 +248,31 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
         Returns:
             `True` when a media payload was detected and swallowed.
         """
-        from deepagents_code.input import dropped_payload_paths
+        from deepagents_code.input import (
+            dropped_payload_paths,
+            looks_like_dropped_payload,
+        )
         from deepagents_code.media_utils import is_media_path
+
+        # Screen with the pure string guard before hopping to a thread: the
+        # thread hop is an `await`, and `_dispatch_burst_payload` runs from the
+        # burst flush timer's own task rather than the widget message queue, so
+        # yielding there lets a concurrent keystroke land ahead of the buffered
+        # payload. Ordinary typing and pasting never pays that cost now.
+        if not looks_like_dropped_payload(text):
+            return False
 
         try:
             paths = await asyncio.to_thread(dropped_payload_paths, text)
         except Exception:
-            # The parser absorbs OSError/RuntimeError/ValueError internally, so
-            # reaching here signals an unexpected regression. Log at warning
-            # (not debug) so it surfaces without DEEPAGENTS_CODE_DEBUG, since
-            # falling through re-inserts the path this method exists to reject.
-            # Never log the payload itself.
+            # The parser guards its own filesystem probes, but
+            # `_resolve_with_unicode_space_variants` calls `expanduser()` and
+            # `Path.cwd()` unguarded, so a deleted working directory or an
+            # unresolvable home still surfaces here. Log at warning (not debug)
+            # so it survives without DEEPAGENTS_CODE_DEBUG, since falling
+            # through re-inserts the path this method exists to reject. The
+            # message never includes the payload, though an OSError traceback
+            # may name a path.
             logger.warning(
                 "Media-payload detection failed; treating paste as text",
                 exc_info=True,
@@ -256,6 +280,11 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
             return False
         if not any(is_media_path(path) for path in paths):
             return False
+        if not self.is_mounted:
+            # The prompt was resolved while the probe was in flight; `self.app`
+            # still resolves via the active-app ContextVar, so notifying here
+            # would toast about a field the user can no longer see.
+            return True
         self.app.notify(
             _media_unsupported_toast(paths),
             severity="warning",

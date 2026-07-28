@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -19,12 +20,11 @@ from deepagents_code.tui.widgets._inline_prompt import (
     MEDIA_UNSUPPORTED_TOAST_PREFIX,
     InlinePromptCompletion,
     InlinePromptTextArea,
+    _media_unsupported_toast,
 )
 from deepagents_code.tui.widgets._paste_textarea import PasteBurstTextArea
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from textual.app import ComposeResult
     from textual.pilot import Pilot
 
@@ -656,6 +656,137 @@ class TestInlinePromptMediaDrop:
             ]
             assert failures, "expected a breadcrumb for the detection failure"
             assert failures[0].levelno == logging.WARNING
+
+    async def test_quoted_image_drop_via_real_key_events_is_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A quoted media drop replayed as real keystrokes reaches the rejection.
+
+        Drives the production route end to end — `_on_key` -> burst promotion ->
+        flush timer -> `_dispatch_burst_payload` — rather than calling the
+        dispatcher directly. A leading quote is in `PASTE_BURST_START_CHARS`
+        precisely so a dropped path buffers, so this is the designed shape.
+        """
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: False
+        )
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"img")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            for char in f"'{img}'":
+                await ta._on_key(Key(char, char))
+
+            assert ta.text == ""
+            await pilot.pause(0.35)
+
+            assert ta.text == ""
+            latest = list(app._notifications)[-1]
+            assert latest.message.startswith(MEDIA_UNSUPPORTED_TOAST_PREFIX)
+            assert "shot.png" in latest.message
+
+    async def test_pending_burst_is_flushed_before_a_media_paste_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Buffered keystrokes land even though the following paste is refused.
+
+        Regression guard for the flush-first branch: a refusal returns early, so
+        leaving a burst pending would let its timer insert the buffered text
+        *after* the paste was already rejected.
+        """
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: False
+        )
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 30.0
+        )
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"img")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            for char in "'abc":
+                await ta._on_key(Key(char, char))
+            assert ta._paste_burst_buffer, "expected a pending burst to flush"
+
+            await _paste(pilot, str(img))
+
+            assert ta.text == "'abc"
+            assert not ta._paste_burst_buffer
+            latest = list(app._notifications)[-1]
+            assert latest.message.startswith(MEDIA_UNSUPPORTED_TOAST_PREFIX)
+
+    async def test_toast_is_not_interpreted_as_markup(self, tmp_path: Path) -> None:
+        """A filename containing Rich markup renders literally in the toast.
+
+        `shot[1].png` is the standard browser-download shape and `[1]` is a valid
+        Rich tag, so the toast has to opt out of markup. The flag is asserted on
+        the `Notification` rather than the message text: markup is applied when
+        the toast renders, so a message-only assertion passes either way.
+        """
+        img = tmp_path / "shot[1].png"
+        img.write_bytes(b"img")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await _paste(pilot, str(img))
+
+            assert ta.text == ""
+            latest = list(app._notifications)[-1]
+            assert "shot[1].png" in latest.message
+            assert latest.markup is False
+
+
+class TestMediaUnsupportedToast:
+    """The toast text accounts for exactly the files it discards."""
+
+    def test_single_file_is_singular_and_named(self) -> None:
+        """One discarded file reads as singular."""
+        assert _media_unsupported_toast([Path("/a/shot.png")]) == (
+            f"{MEDIA_UNSUPPORTED_TOAST_PREFIX}; file not inserted: shot.png."
+        )
+
+    def test_distinct_names_are_listed_and_pluralized(self) -> None:
+        """Two differently-named files read as plural and both appear."""
+        assert _media_unsupported_toast(
+            [Path("/a/shot.png"), Path("/a/notes.txt")]
+        ) == (
+            f"{MEDIA_UNSUPPORTED_TOAST_PREFIX}; "
+            "files not inserted: shot.png, notes.txt."
+        )
+
+    def test_colliding_basenames_fall_back_to_full_paths(self) -> None:
+        """Same-named files from different directories stay distinguishable.
+
+        Deduping by basename alone would print one name under a plural noun,
+        telling the user two files vanished while naming only one of them —
+        which defeats the point of listing them at all.
+        """
+        assert _media_unsupported_toast([Path("/a/shot.png"), Path("/b/shot.png")]) == (
+            f"{MEDIA_UNSUPPORTED_TOAST_PREFIX}; "
+            "files not inserted: /a/shot.png, /b/shot.png."
+        )
+
+    def test_repeated_identical_path_is_counted_once(self) -> None:
+        """The same path twice is one discarded file, not two."""
+        assert _media_unsupported_toast([Path("/a/shot.png"), Path("/a/shot.png")]) == (
+            f"{MEDIA_UNSUPPORTED_TOAST_PREFIX}; file not inserted: shot.png."
+        )
 
 
 class TestSharedBindings:

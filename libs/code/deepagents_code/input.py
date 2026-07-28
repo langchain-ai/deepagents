@@ -610,15 +610,20 @@ def parse_pasted_path_payload(
     return ParsedPastedPathPayload(paths=[path], token_end=token_end)
 
 
-def _looks_like_dropped_payload(text: str) -> bool:
+def looks_like_dropped_payload(text: str) -> bool:
     """Return whether a payload has the shape a terminal uses for a file drop.
 
     Terminals deliver a dragged file as an absolute path (POSIX or Windows
     drive/UNC), a `~/` path, or a `file://` URL, so requiring that shape keeps a
-    hand-typed relative path (`assets/logo.png`) from being mistaken for a
-    drop. Without this guard `parse_pasted_file_paths` would resolve such a
-    token against the working directory, and a caller that rejects drops would
-    swallow ordinary text.
+    payload that *begins* with a hand-typed relative path (`assets/logo.png`)
+    from being mistaken for a drop. Without this guard `parse_pasted_path_payload`
+    would resolve such a token against the working directory, and a caller that
+    rejects drops would swallow ordinary text. The check is leading-token only:
+    once the first token passes, later relative tokens still resolve against the
+    working directory.
+
+    Pure string inspection, so callers can apply it on the event loop to decide
+    whether the filesystem-touching parse is worth a thread hop at all.
 
     Args:
         text: Raw pasted/dropped text payload.
@@ -639,7 +644,7 @@ def dropped_payload_paths(text: str) -> list[Path]:
     Applies `parse_pasted_path_payload` — the same parser the chat input's drop
     handling uses, which only resolves paths that exist on disk — behind a shape
     guard that requires the drop form terminals actually emit (see
-    `_looks_like_dropped_payload`). Text-only inputs use this to detect a
+    `looks_like_dropped_payload`). Text-only inputs use this to detect a
     dragged file so it can be rejected instead of inserted as a path.
 
     Leading-path-plus-trailing-text payloads (`<path> what is this?`) are
@@ -653,7 +658,7 @@ def dropped_payload_paths(text: str) -> list[Path]:
     Returns:
         Resolved file paths found in the payload, or an empty list.
     """
-    if not _looks_like_dropped_payload(text):
+    if not looks_like_dropped_payload(text):
         return []
     parsed = parse_pasted_path_payload(text)
     if parsed is None:
@@ -944,9 +949,13 @@ def _safe_exists(path: Path) -> bool:
     swallows such an error is version-dependent (Python <=3.13 ignores only a
     small set of errnos and lets `ENAMETOOLONG` propagate; 3.14 routes these
     through `os.path.*`, which swallows more), so we guard unconditionally for
-    uniform behavior. A path holding an embedded NUL raises `ValueError` rather
-    than `OSError`, so that is guarded too. Callers here only care whether the
-    path is usable, so a failed probe is equivalent to "not there".
+    uniform behavior. Callers here only care whether the path is usable, so a
+    failed probe is equivalent to "not there".
+
+    `ValueError` needs no guard here: every supported interpreter already
+    absorbs an embedded NUL inside these three probes (3.11-3.13 catch it in
+    `pathlib`, 3.14 delegates to `os.path.*`, which catches it). Only
+    `resolve()` propagates it — see `_resolve_existing_pasted_path`.
 
     Args:
         path: Path candidate to probe.
@@ -956,7 +965,7 @@ def _safe_exists(path: Path) -> bool:
     """
     try:
         return path.exists()
-    except (OSError, ValueError) as e:
+    except OSError as e:
         logger.debug("exists() check failed for %r: %s", path, e)
         return False
 
@@ -974,7 +983,7 @@ def _safe_is_file(path: Path) -> bool:
     """
     try:
         return path.is_file()
-    except (OSError, ValueError) as e:
+    except OSError as e:
         logger.debug("is_file() check failed for %r: %s", path, e)
         return False
 
@@ -992,7 +1001,7 @@ def _safe_is_dir(path: Path) -> bool:
     """
     try:
         return path.is_dir()
-    except (OSError, ValueError) as e:
+    except OSError as e:
         logger.debug("is_dir() check failed for %r: %s", path, e)
         return False
 

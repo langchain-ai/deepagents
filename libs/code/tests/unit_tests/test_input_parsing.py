@@ -428,6 +428,70 @@ def test_dropped_payload_paths_resolves_file_url(tmp_path: Path) -> None:
     assert dropped_payload_paths(img.as_uri()) == [img.resolve()]
 
 
+@pytest.mark.parametrize("wrap", ["'{}'", '"{}"', "<{}>"])
+def test_dropped_payload_paths_resolves_quoted_payload(
+    tmp_path: Path, wrap: str
+) -> None:
+    """Quoted and bracketed drops resolve, since terminals wrap paths that way.
+
+    The shape guard strips leading `<`, `'`, and `"` for exactly this reason;
+    without that strip every quoted drop would look like typed text. A quoted
+    path is also the designed burst shape — see `PASTE_BURST_START_CHARS`.
+    """
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"img")
+
+    assert dropped_payload_paths(wrap.format(img)) == [img.resolve()]
+
+
+@pytest.mark.parametrize("template", ["{}", "'{}'", '"{}"'])
+def test_dropped_payload_paths_resolves_space_bearing_filename(
+    tmp_path: Path, template: str
+) -> None:
+    """A filename containing spaces resolves escaped or quoted.
+
+    This is the modal real-world drop: macOS screenshots are named
+    `Screenshot ... at ....png`.
+    """
+    img = tmp_path / "my shot.png"
+    img.write_bytes(b"img")
+    raw = str(img)
+    payload = template.format(raw if template != "{}" else raw.replace(" ", r"\ "))
+
+    assert dropped_payload_paths(payload) == [img.resolve()]
+
+
+def test_dropped_payload_paths_resolves_home_relative_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `~/`-shaped drop resolves, matching the shape guard's `~/` arm."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"img")
+
+    assert dropped_payload_paths("~/shot.png") == [img.resolve()]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "/usr/local is where it lives",
+        "/ is the root directory",
+        "~/ is my home",
+    ],
+)
+def test_dropped_payload_paths_ignores_prose_that_passes_shape_guard(
+    payload: str,
+) -> None:
+    """Prose starting with a path-shaped token is still text, not a drop.
+
+    The shape guard only inspects the leading token, so rejection here depends
+    on the parser refusing directories and multi-token text. Free-text prompts
+    rely on this: a swallowed answer is worse than an inserted path.
+    """
+    assert dropped_payload_paths(payload) == []
+
+
 def test_dropped_payload_paths_accepts_windows_drive_shape(mocker) -> None:
     """Windows drive-letter drops pass the shape guard and get parsed."""
     resolved = Path(r"C:\Users\Alice\shot.png")

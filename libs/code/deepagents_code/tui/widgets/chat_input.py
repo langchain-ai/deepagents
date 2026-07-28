@@ -877,11 +877,13 @@ class ChatTextArea(PasteBurstTextArea):
         try:
             parsed = await asyncio.to_thread(parse_pasted_path_payload, payload)
         except Exception:
-            # The parser absorbs OSError/RuntimeError internally, so reaching
-            # here signals an unexpected regression.  Leave a breadcrumb (never
-            # the paste content) instead of swallowing it, then fall through to
-            # normal text handling.  Logged at warning (not debug) so the
-            # regression actually surfaces in production.
+            # The parser guards its own filesystem probes, but
+            # `_resolve_with_unicode_space_variants` calls `expanduser()` and
+            # `Path.cwd()` unguarded, so a deleted working directory or an
+            # unresolvable home still surfaces here.  Leave a breadcrumb (the
+            # message never carries the paste content) instead of swallowing it,
+            # then fall through to normal text handling.  Logged at warning (not
+            # debug) so it actually surfaces in production.
             logger.warning(
                 "Path-payload parsing failed; treating burst as text",
                 exc_info=True,

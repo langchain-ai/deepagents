@@ -154,7 +154,9 @@ class ClientHookService:
 
     runtime: _ClientHooksRuntime
     notice: Callable[[str], None] | None = None
-    _session_context: dict[str, list[str]] = field(default_factory=dict)
+    # SessionStart context accumulated per thread, consumed by
+    # `take_session_context` for injection into the next model turn.
+    _pending_context: dict[str, list[str]] = field(default_factory=dict)
 
     async def session_start(
         self,
@@ -190,7 +192,7 @@ class ClientHookService:
             msg = f"Expected SessionStartDecision, got {type(decision).__name__}"
             raise TypeError(msg)
         if decision.context:
-            self._session_context.setdefault(context.thread_id, []).extend(
+            self._pending_context.setdefault(context.thread_id, []).extend(
                 decision.context
             )
         return decision
@@ -213,7 +215,7 @@ class ClientHookService:
             TypeError: If the runtime returns a mismatched decision type.
         """
         if not self.has_handlers(HookEvent.SESSION_END):
-            self._session_context.pop(context.thread_id, None)
+            self._pending_context.pop(context.thread_id, None)
             return SessionEndDecision(event=HookEvent.SESSION_END)
         decision = await self._invoke(
             context,
@@ -222,7 +224,7 @@ class ClientHookService:
         if not isinstance(decision, SessionEndDecision):
             msg = f"Expected SessionEndDecision, got {type(decision).__name__}"
             raise TypeError(msg)
-        self._session_context.pop(context.thread_id, None)
+        self._pending_context.pop(context.thread_id, None)
         return decision
 
     async def user_prompt_submit(
@@ -375,7 +377,7 @@ class ClientHookService:
         Returns:
             Ordered context strings, removed from the service.
         """
-        return tuple(self._session_context.pop(thread_id, ()))
+        return tuple(self._pending_context.pop(thread_id, ()))
 
     def has_handlers(self, event: HookEvent) -> bool:
         """Return whether the runtime has handlers for an event.

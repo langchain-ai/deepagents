@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import pytest
 from acp import text_block, update_agent_message
@@ -27,7 +27,9 @@ from deepagents import create_deep_agent
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.callbacks import AsyncCallbackManagerForLLMRun
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
+from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.checkpoint.base import (
@@ -42,6 +44,9 @@ from langgraph.types import interrupt
 from deepagents_acp import server as server_module
 from deepagents_acp.server import AgentServerACP, AgentSessionContext
 from tests.chat_model import GenericFakeChatModel
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 
 class FakeACPClient(Client):
@@ -147,6 +152,70 @@ async def test_acp_agent_cancel_stops_prompt() -> None:
     await cancel_during_prompt()
     resp = await task
     assert resp.stop_reason in {"cancelled", "end_turn"}
+
+
+async def test_acp_agent_cancel_only_cancels_target_session() -> None:
+    """cancel(session_id) must only stop that session's prompt, not other sessions'."""
+    started = [asyncio.Event(), asyncio.Event()]
+    gates = [asyncio.Event(), asyncio.Event()]
+    invocations: list[int] = []
+
+    class GatedFakeChatModel(GenericFakeChatModel):
+        """Streams one token, then blocks until that invocation's gate is opened."""
+
+        async def _astream(
+            self,
+            messages: list[BaseMessage],
+            stop: list[str] | None = None,
+            run_manager: AsyncCallbackManagerForLLMRun | None = None,
+            **kwargs: Any,
+        ) -> AsyncIterator[ChatGenerationChunk]:
+            index = len(invocations)
+            invocations.append(index)
+            started[index].set()
+            first = ChatGenerationChunk(message=AIMessageChunk(content="Working"))
+            if run_manager:
+                await run_manager.on_llm_new_token("Working", chunk=first)
+            yield first
+            await gates[index].wait()
+            last = ChatGenerationChunk(
+                message=AIMessageChunk(content=" done", chunk_position="last")
+            )
+            if run_manager:
+                await run_manager.on_llm_new_token(" done", chunk=last)
+            yield last
+
+    model = GatedFakeChatModel(messages=iter([AIMessage(content="unused")]))
+    graph = create_deep_agent(model=model, checkpointer=MemorySaver())
+
+    agent = AgentServerACP(agent=graph)
+    client = FakeACPClient()
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session_a = await agent.new_session(cwd="/tmp", mcp_servers=[])
+    session_b = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    task_a = asyncio.create_task(
+        agent.prompt([TextContentBlock(type="text", text="A")], session_id=session_a.session_id)
+    )
+    await asyncio.wait_for(started[0].wait(), timeout=5)
+    task_b = asyncio.create_task(
+        agent.prompt([TextContentBlock(type="text", text="B")], session_id=session_b.session_id)
+    )
+    await asyncio.wait_for(started[1].wait(), timeout=5)
+
+    # Cancel only session A while both prompts are in flight.
+    await agent.cancel(session_id=session_a.session_id)
+
+    # Session B finishes first: it must not observe (or consume) session A's cancellation.
+    gates[1].set()
+    resp_b = await asyncio.wait_for(task_b, timeout=5)
+
+    gates[0].set()
+    resp_a = await asyncio.wait_for(task_a, timeout=5)
+
+    assert resp_b.stop_reason == "end_turn"
+    assert resp_a.stop_reason == "cancelled"
 
 
 async def test_acp_agent_prompt_streams_list_content_blocks() -> None:

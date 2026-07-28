@@ -1,33 +1,39 @@
-# Pre-merge blocking check for release-please scope fan-out via lockfile churn.
+# Pre-merge blocking check for release-please scope fan-out.
 #
 # Why this exists:
 #   release-please scopes a commit to a package by the file PATHS it touches —
-#   it has no notion of "this file is just a lockfile." When a bump-worthy
-#   commit (a `feat:`/`fix:` in one package) also regenerates the `uv.lock` of
-#   every dependent package, release-please attributes the bump-worthy commit to
-#   those dependents and opens a release PR for each — even though their only
-#   change is a lockfile. This is the lockfile-churn sibling of the empty-commit
-#   fan-out that `guard-empty-commit` (release-please.yml) blocks; see the
-#   "Empty commit fan-out" entry in .github/RELEASING.md for the related case.
+#   it has no notion of "this file is just a lockfile" or "this dependency bound
+#   only exists so another package's feature builds." When a bump-worthy commit
+#   (a `feat:`/`fix:` in one package) also touches files under other managed
+#   package paths — lockfiles, `pyproject.toml` lower bounds, etc. —
+#   release-please attributes the bump-worthy commit to those packages and opens
+#   a release PR for each. This is the general fan-out sibling of the
+#   empty-commit fan-out that `guard-empty-commit` (release-please.yml) blocks;
+#   see "Lockfile churn fan-out" and "Multi-component fan-out" in
+#   .github/RELEASING.md.
 #
 #   This check inspects the PR's title type and changed files at PR time. When a
-#   bump-worthy PR changes only a lockfile inside a managed package it posts a
-#   sticky comment naming the affected packages and FAILS the check, so the
-#   fan-out is fixed before merge. When the condition is resolved (or the title
-#   isn't bump-worthy) the comment is removed and the check passes.
+#   bump-worthy PR either:
+#     1. edits real (non-lockfile) files in more than one managed component, or
+#     2. changes only a lockfile inside a managed package,
+#   it posts a sticky comment naming the affected packages and FAILS the check.
+#   When the condition is resolved (or the title isn't bump-worthy) the comment
+#   is removed and the check passes.
 #
 # Escape hatch:
-#   Lockfile-only releases are occasionally legitimate (e.g. a leaf-package
-#   security bump). Apply the `allow-lockfile-release` label to acknowledge the
-#   fan-out and let the PR pass; the `labeled` trigger re-runs the check so the
-#   red clears without a new commit.
+#   Cross-package releases are occasionally legitimate (e.g. a leaf-package
+#   security bump, or a deliberate coordinated multi-package bump). Apply the
+#   `allow-lockfile-release` label to acknowledge the fan-out and let the PR
+#   pass; the `labeled` trigger re-runs the check so the red clears without a
+#   new commit. A companion workflow (`release_fanout_bypass_warn.yml`) posts a
+#   loud sticky listing the components that will still fan out.
 #
 # To actually gate merges, add this check to the branch's required status checks.
 #
 # How it stays faithful to release-please:
 #   - Package path -> component map and the bump-worthy type set are both read
 #     from release-please-config.json by the helper script — see
-#     .github/scripts/check_lockfile_release_scope.py for the rationale.
+#     .github/scripts/release/check_lockfile_release_scope.py for the rationale.
 #
 # Trust model:
 #   - The detector and release-please-config.json run from the PR *base*
@@ -48,10 +54,10 @@
 #     exposed to PR-author-controlled code.
 #   - The detector and config run from base, so a PR that itself *adds* a new
 #     release-please package is checked against the base config that does not
-#     yet know that package: a lockfile-only fan-out into the just-added package
-#     path is not flagged until the package exists on base. Reading head config
-#     instead would reopen the self-bypass the base checkout closes, so this is
-#     the deliberate tradeoff; the next PR touching the package is gated normally.
+#     yet know that package: a fan-out into the just-added package path is not
+#     flagged until the package exists on base. Reading head config instead
+#     would reopen the self-bypass the base checkout closes, so this is the
+#     deliberate tradeoff; the next PR touching the package is gated normally.
 
 name: "🔍 Release-please scope check"
 
@@ -67,7 +73,7 @@ permissions:
 
 jobs:
   scope-check:
-    name: "flag lockfile-only release fan-out"
+    name: "flag release-please fan-out"
     runs-on: ubuntu-latest
     timeout-minutes: 3
     steps:
@@ -75,20 +81,20 @@ jobs:
         # Check out the PR *base* (trusted), never the PR head. The detector and
         # release-please-config.json are executed from this tree, so the PR under
         # test cannot edit check_lockfile_release_scope.py or the config to print
-        # "[]" and self-bypass the gate. The PR title (event payload) and
-        # changed-file list (API) are fed in separately and are authoritative
+        # empty offenders and self-bypass the gate. The PR title (event payload)
+        # and changed-file list (API) are fed in separately and are authoritative
         # regardless of this checkout.
         #
         # `persist-credentials: false` so the job token is not written into the
         # checkout's git config; the detector needs no git credentials, and the
         # github-script steps receive their own token directly.
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
       - name: "🐍 Setup Python 3.11"
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
@@ -124,7 +130,7 @@ jobs:
             fs.writeFileSync('changed_files.txt', files.map(f => f.filename).join('\n'));
             core.info(`Collected ${files.length} changed file(s).`);
 
-      - name: "Detect lockfile-only release scope"
+      - name: "Detect release fan-out"
         id: detect
         # PR title is passed via env (never interpolated into the script body)
         # to avoid shell injection from PR-author-controlled text.
@@ -132,7 +138,13 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          detector=".github/scripts/check_lockfile_release_scope.py"
+          # Preferred nested path ships on this PR; until that lands on base,
+          # fall back to the flat layout so the gate still enforces.
+          detector=".github/scripts/release/check_lockfile_release_scope.py"
+          legacy_detector=".github/scripts/check_lockfile_release_scope.py"
+          if [[ ! -f "$detector" && -f "$legacy_detector" ]]; then
+            detector="$legacy_detector"
+          fi
           if [[ ! -f "$detector" ]]; then
             # The detector does not exist on the base revision: the bootstrapping
             # PR that first introduces this check, or a branch cut from before it
@@ -148,53 +160,84 @@ jobs:
             # silently disables the gate. Emit a *warning* (not a notice) so the
             # desync surfaces in the Checks UI rather than only the fold-out log.
             echo "::warning::Detector '$detector' absent on base revision; scope check is NOT enforcing. Expected only on the bootstrapping PR or a pre-gate branch — otherwise the detector path here may be out of sync with the repo."
-            offenders="[]"
+            result='{"lockfile_only":[],"multi_component":[]}'
           else
             # A config-read error in the detector exits non-zero; under `set -e`
             # the command substitution propagates it and this step fails, so the
             # comment step (default `if: success()`) is skipped — fail closed.
-            offenders=$(python "$detector" "$PR_TITLE" < changed_files.txt)
+            result=$(python "$detector" "$PR_TITLE" < changed_files.txt)
           fi
           # Heredoc form so a multi-line value can never corrupt $GITHUB_OUTPUT.
           {
-            echo "offenders<<__SCOPE_EOF__"
-            echo "$offenders"
+            echo "result<<__SCOPE_EOF__"
+            echo "$result"
             echo "__SCOPE_EOF__"
           } >> "$GITHUB_OUTPUT"
-          echo "Detector offenders: $offenders"
+          echo "Detector result: $result"
 
-      - name: "Comment on lockfile-only fan-out"
-        # Offenders passed via env (not interpolated into the script body) for
+      - name: "Comment on release fan-out"
+        # Result passed via env (not interpolated into the script body) for
         # the same injection-safety reason as the title above.
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          OFFENDERS: ${{ steps.detect.outputs.offenders }}
+          RESULT: ${{ steps.detect.outputs.result }}
         with:
           script: |
             const STICKY_MARKER = '<!-- release-please-scope-check -->';
             const BYPASS_LABEL = 'allow-lockfile-release';
+            const SPLIT_RECIPE = [
+              'Split into:',
+              '',
+              '1. One feature/fix PR scoped to the **single** package that owns the user-facing change (`feat(code): ...` / `fix(cli): ...`).',
+              '2. One `chore(deps): ...` PR for the cross-package dependency / lockfile churn (`chore` is hidden and does **not** open release PRs).',
+            ].join('\n');
+            const RELEASING_LOCKFILE = '📖 [Lockfile churn fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#lockfile-churn-fan-out)';
+            const RELEASING_MULTI = '📖 [Multi-component fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#multi-component-fan-out)';
             const { number, labels } = context.payload.pull_request;
 
-            // Strict, fail-closed parse. The detector always prints a JSON array
-            // ("[]" when clean), so empty or non-array output means the detector
-            // didn't run as expected — block rather than silently coerce a
-            // missing result into "no offenders → pass."
-            const raw = process.env.OFFENDERS;
+            // Strict, fail-closed parse. Prefer the object shape with two arrays.
+            // During the bootstrap merge of this workflow (and any time base still
+            // has the pre-object detector), the trusted base checkout may print a
+            // legacy JSON array of lockfile-only component names ("[]" when clean).
+            // Accept that shape so the PR introducing the object detector is not
+            // blocked by its own rollout; multi_component is unavailable until
+            // the new detector is on base.
+            const raw = process.env.RESULT;
             if (raw === undefined || raw.trim() === '') {
               core.setFailed('Detector produced no output; cannot determine release scope. Failing closed.');
               return;
             }
-            let offenders;
+            let result;
             try {
-              offenders = JSON.parse(raw);
+              result = JSON.parse(raw);
             } catch (parseErr) {
               core.setFailed(`Detector output was not valid JSON: ${JSON.stringify(raw)} (${parseErr.message})`);
               return;
             }
-            if (!Array.isArray(offenders)) {
-              core.setFailed(`Detector output was not a JSON array: ${JSON.stringify(raw)}`);
+            if (Array.isArray(result)) {
+              if (result.some(c => typeof c !== 'string')) {
+                core.setFailed(`Legacy detector array contained a non-string entry: ${JSON.stringify(raw)}`);
+                return;
+              }
+              core.notice(
+                'Detector returned legacy lockfile-only array shape; multi_component fan-out is not enforceable until the object-shaped detector is on the PR base.',
+              );
+              result = { lockfile_only: result, multi_component: [] };
+            } else if (
+              !result ||
+              typeof result !== 'object' ||
+              !Array.isArray(result.lockfile_only) ||
+              !Array.isArray(result.multi_component) ||
+              result.lockfile_only.some(c => typeof c !== 'string') ||
+              result.multi_component.some(c => typeof c !== 'string')
+            ) {
+              core.setFailed(`Detector output was not a fan-out result object: ${JSON.stringify(raw)}`);
               return;
             }
+
+            const multi = result.multi_component;
+            const lockOnly = result.lockfile_only;
+            const hasFanout = multi.length > 0 || lockOnly.length > 0;
 
             // Constant string comparison against the structured label payload —
             // no PR-author-controlled text reaches a code path.
@@ -233,8 +276,8 @@ jobs:
                 // caller's core.setFailed — the red check is the load-bearing signal.
                 try {
                   await core.summary
-                    .addHeading('Lockfile-only release fan-out')
-                    .addRaw(`Affected components: ${offenders.join(', ')}`)
+                    .addHeading('Release-please fan-out')
+                    .addRaw(body)
                     .write();
                 } catch (summaryErr) {
                   core.warning(`Could not write job summary fallback [status=${summaryErr.status ?? 'n/a'}]: ${summaryErr.message}`);
@@ -242,7 +285,7 @@ jobs:
               }
             }
 
-            if (offenders.length === 0) {
+            if (!hasFanout) {
               // Resolved (or title not bump-worthy): clear any stale comment and
               // pass. Wrapped so a cleanup hiccup can't turn a clean result red.
               try {
@@ -250,42 +293,95 @@ jobs:
               } catch (cleanupErr) {
                 core.warning(`Could not clean up prior scope-check comment (stale comment may persist on a now-passing PR) [status=${cleanupErr.status ?? 'n/a'}]: ${cleanupErr.message}`);
               }
-              core.info('No lockfile-only release fan-out detected.');
+              core.info('No release-please fan-out detected.');
               return;
             }
 
-            const list = offenders.map(c => `\`${c}\``).join(', ');
-            const singular = offenders.length === 1;
+            const multiList = multi.map(c => `\`${c}\``).join(', ');
+            const lockList = lockOnly.map(c => `\`${c}\``).join(', ');
+            const allNames = [...multi, ...lockOnly];
 
             if (bypassed) {
               // Acknowledged as intentional via the bypass label: leave an
               // informational note (not a failure) and pass.
-              await upsertSticky([
+              const lines = [
                 STICKY_MARKER,
-                `ℹ️ **Lockfile-only release fan-out acknowledged** via the \`${BYPASS_LABEL}\` label.`,
+                `ℹ️ **Release fan-out acknowledged** via the \`${BYPASS_LABEL}\` label.`,
                 '',
-                `${singular ? 'This package' : 'These packages'} will get a release PR for a lockfile-only change: ${list}. Remove the label to re-enable the block.`,
-              ].join('\n'));
+                '**Consequence:** release-please will open a **separate release PR for every managed component this PR touches**, because the title is bump-worthy (`feat`/`fix`/etc.) and scoping is by changed file path.',
+              ];
+              if (multi.length) {
+                lines.push('', `Real-file multi-component hit(s): ${multiList}`);
+              }
+              if (lockOnly.length) {
+                lines.push('', `Lockfile-only package hit(s): ${lockList}`);
+              }
+              lines.push(
+                '',
+                'Remove the label to re-enable the block. Prefer the split recipe if this was unintentional:',
+                '',
+                SPLIT_RECIPE,
+                '',
+                RELEASING_MULTI,
+                RELEASING_LOCKFILE,
+              );
+              await upsertSticky(lines.join('\n'));
               core.info(`Bypassed via ${BYPASS_LABEL} label.`);
               return;
             }
 
-            await upsertSticky([
-              STICKY_MARKER,
-              '⛔ **This PR changes only a lockfile inside one or more release-please-managed packages.**',
-              '',
-              `Affected: ${list}`,
-              '',
-              `Because the PR title is bump-worthy, release-please will open a **separate release PR** for ${singular ? 'this package' : 'each of these packages'} — even though ${singular ? 'its' : 'their'} only change is a regenerated lockfile. This check is **blocking**.`,
-              '',
-              '### To resolve',
-              '',
-              'Move the lockfile regeneration into a separate `chore(deps):` commit/PR — `chore` is hidden and does not trigger a release — so only the package with real source changes is released.',
-              '',
-              '### If intentional',
-              '',
-              `Apply the \`${BYPASS_LABEL}\` label (e.g. a deliberate dependency bump shipping as a lockfile-only release). The check re-runs and passes.`,
-              '',
-              '📖 [Lockfile churn fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#lockfile-churn-fan-out)',
-            ].join('\n'));
-            core.setFailed(`Lockfile-only release fan-out for: ${offenders.join(', ')}. Resolve, or apply the '${BYPASS_LABEL}' label if intentional.`);
+            // Prefer the multi-component message when that is the primary
+            // signal; always surface both lists when both apply.
+            if (multi.length > 0) {
+              const singular = multi.length === 1;
+              const lines = [
+                STICKY_MARKER,
+                '⛔ **This bump-worthy PR touches real files in more than one release-please component.**',
+                '',
+                `Components with non-lockfile edits: ${multiList}`,
+              ];
+              if (lockOnly.length) {
+                lines.push('', `Also lockfile-only under: ${lockList}`);
+              }
+              lines.push(
+                '',
+                `Because the PR title is bump-worthy, release-please will open a **separate release PR** for ${singular ? 'this component' : 'each of these components'} (and any lockfile-only packages above). This check is **blocking**.`,
+                '',
+                '### To resolve',
+                '',
+                SPLIT_RECIPE,
+                '',
+                '### If intentional',
+                '',
+                `Apply the \`${BYPASS_LABEL}\` label to acknowledge the fan-out. The check re-runs and passes — but that still ships a release PR per touched component.`,
+                '',
+                RELEASING_MULTI,
+                RELEASING_LOCKFILE,
+              );
+              await upsertSticky(lines.join('\n'));
+              core.setFailed(`Multi-component release fan-out for: ${allNames.join(', ')}. Split the PR, or apply the '${BYPASS_LABEL}' label if intentional.`);
+              return;
+            }
+
+            {
+              const singular = lockOnly.length === 1;
+              await upsertSticky([
+                STICKY_MARKER,
+                '⛔ **This PR changes only a lockfile inside one or more release-please-managed packages.**',
+                '',
+                `Affected: ${lockList}`,
+                '',
+                `Because the PR title is bump-worthy, release-please will open a **separate release PR** for ${singular ? 'this package' : 'each of these packages'} — even though ${singular ? 'its' : 'their'} only change is a regenerated lockfile. This check is **blocking**.`,
+                '',
+                '### To resolve',
+                '',
+                SPLIT_RECIPE,
+                '',
+                '### If intentional',
+                '',
+                `Apply the \`${BYPASS_LABEL}\` label (e.g. a deliberate dependency bump shipping as a lockfile-only release). The check re-runs and passes — but that still ships a release PR per listed component.`,
+                '',
+                RELEASING_LOCKFILE,
+              ].join('\n'));
+              core.setFailed(`Lockfile-only release fan-out for: ${lockOnly.join(', ')}. Resolve, or apply the '${BYPASS_LABEL}' label if intentional.`);
+            }

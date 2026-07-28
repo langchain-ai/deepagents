@@ -105,13 +105,13 @@ bootstrap: ## Install dev dependencies and git hooks for local development
 check: ## Run the full local CI gauntlet (lint, types, imports, tests, repo gates)
 check: lint check_imports test
 	@echo "🔍 Verifying extras stay in sync with required deps..."
-	uv run --all-groups python "$(REPO_ROOT)/.github/scripts/check_extras_sync.py" pyproject.toml
+	uv run --all-groups python "$(REPO_ROOT)/.github/scripts/checks/check_extras_sync.py" pyproject.toml
 	@echo "🔍 Verifying pyproject.toml and _version.py agree..."
-	uv run --all-groups python "$(REPO_ROOT)/.github/scripts/check_version_equality.py"
+	uv run --all-groups python "$(REPO_ROOT)/.github/scripts/checks/check_version_equality.py"
 	@echo "🔒 Verifying uv.lock is up-to-date..."
 	UV_FROZEN=false uv lock --check
 	@echo "🔗 Checking SDK pin against workspace SDK (advisory)..."
-	@uv run --all-groups python "$(REPO_ROOT)/.github/scripts/check_sdk_pin.py" || \
+	@uv run --all-groups python "$(REPO_ROOT)/.github/scripts/release/check_sdk_pin.py" || \
 		{ rc=$$?; [ $$rc -eq 1 ] && echo "⚠️  Stale SDK pin (advisory, non-fatal)." || exit $$rc; }
 	@echo "✅ All local CI checks passed!"
 

@@ -87,6 +87,7 @@ Follow Conventional Commits. See `.github/workflows/pr_lint.yml` for allowed typ
 - Keep titles short and descriptive — save detail for the body.
 - Do not include Linear issue-closing markers such as `[closes DCD-52]` in PR titles. Put issue references and closing metadata in the PR description instead.
 - For version-branch sync PRs, use a title like `chore(repo): sync main into vX.Y`. Do not use `release` as the scope; PR title lint reserves `release` for the type and disallows it as a scope.
+- **One PR = one releasable component.** release-please scopes commits by **changed file path**, not title scope. A bump-worthy title (`feat`/`fix`/etc.) that touches files under multiple managed packages opens a **separate release PR per package**. Keep the user-facing change in a single package-scoped PR; ship cross-package dependency / lockfile churn as a separate `chore(deps):` PR (`chore` is hidden and does not cut releases). See [Multi-component fan-out](.github/RELEASING.md#multi-component-fan-out) and [Lockfile churn fan-out](.github/RELEASING.md#lockfile-churn-fan-out).
 
 Examples:
 
@@ -119,7 +120,7 @@ mdrxy/cli/startup-cmd-flag
 
 #### PR descriptions
 
-Do not add a `# Summary` or `## Release note` heading. Use an opening block ("frontmatter") in this order:
+Do not add a `# Summary`, `## Release note`, or `## Release Note` heading. The plain paragraph above `---` *is* the release note — never restate that same idea later under a heading. Use an opening block ("frontmatter") in this order:
 
 ```md
 Closes #123
@@ -131,9 +132,23 @@ A high-level, plain-English summary of the user-visible change.
 <rest of PR body>
 ```
 
+Bad example (do not do this — the opening paragraph already covers the user-visible change):
+
+```md
+Resume hints now echo the launched command name instead of always printing `dcode`.
+
+---
+
+<details about motivation>
+
+## Release Note
+
+Resume hints now echo the launched command name instead of always printing `dcode`.
+```
+
 - The issue or PR relationship line is optional. Use the appropriate keyword, such as `Fixes`, `Closes`, `Resolves`, `Supersedes`, `Depends on`, or `Related`. Only `Closes`, `Fixes`, and `Resolves` auto-close the referenced GitHub issue on merge.
-- For net new features or behavior-changing bugfixes, include the high-level user-facing summary in this opening block. Write it in release-note-ready plain English without a label or heading. Omit it for chores, refactors, or test-only changes.
-- Explain the *why* in the rest of the body: the motivation and why this solution is the right one. Limit prose.
+- For net new features or behavior-changing bugfixes, put one high-level plain-English summary of the user-visible change in the opening block only (no label or heading). That text is the release note; do not duplicate it below `---` or under any `Release note` / `Release Note` heading. Omit the opening summary for chores, refactors, or test-only changes.
+- Below `---`, explain the *why*: the motivation and why this solution is the right one. Limit prose. Do not repeat the opening summary.
 - Write for readers who may be unfamiliar with this area of the codebase. Avoid insider shorthand and prefer language that is friendly to public viewers — this aids interpretability.
 - Do **not** cite line numbers; they go stale as soon as the file changes.
 - Rarely include full file paths or filenames. Reference the affected symbol, class, or subsystem by name instead.
@@ -382,6 +397,8 @@ See [Developing a new version line](.github/RELEASING.md#developing-a-new-versio
 
 **Release-please parse check** (`.github/workflows/release_please_parse_check.yml`) – Runs `@conventional-commits/parser` on the would-be squash-merge message (`<title> (#<num>)\n\n<body>`) at PR time. Fails the check and posts a sticky comment with a paste-ready `BEGIN_COMMIT_OVERRIDE` block when the parser would reject the body, preventing silent changelog drops. Mirrors release-please's `preprocessCommitMessage` and `splitMessages` so per-sub-message parse failures are caught the same way release-please catches them. The parser is exact-pinned (not a semver range) and must stay in lock-step with `release-please/package.json`.
 
+**Release-please fan-out guards** – `release_please_scope_check.yml` blocks bump-worthy PRs that touch real files in more than one managed component or only lockfiles inside a managed package; `release_fanout_bypass_warn.yml` posts a loud sticky when `allow-lockfile-release` / `allow-scope-mismatch` is applied; `release_please_fanout_watch.yml` is a post-merge safety net that comments on open release PRs whose package delta is lockfile-only. See [`.github/RELEASING.md`](./.github/RELEASING.md#multi-component-fan-out).
+
 **Auto-labeling:**
 
 - `.github/workflows/pr_labeler.yml` – Unified PR labeler (size, file, title, external/internal, contributor tier)
@@ -397,7 +414,7 @@ When adding a new partner package, update these files:
 - `.github/ISSUE_TEMPLATE/feature-request.yml` – Add to Area checkbox options
 - `.github/ISSUE_TEMPLATE/privileged.yml` – Add to Area checkbox options
 - `.github/dependabot.yml` – Add dependency update directory
-- `.github/scripts/pr-labeler-config.json` – Add scope-to-label mapping and file rule
+- `.github/scripts/labeling/pr-labeler-config.json` – Add scope-to-label mapping and file rule
 - `.github/workflows/auto-label-by-package.yml` – Add package label mapping
 - `.github/workflows/ci.yml` – Add to change detection and lint/test jobs
 - `.github/workflows/pr_lint.yml` – Add to allowed scopes

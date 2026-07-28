@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Resolve target package from release-please branch
         id: pkg
@@ -61,7 +61,7 @@ jobs:
           from pathlib import Path
 
           root = Path.cwd()
-          script = root / ".github" / "scripts" / "check_sdk_pin.py"
+          script = root / ".github" / "scripts" / "release" / "check_sdk_pin.py"
           spec = importlib.util.spec_from_file_location("check_sdk_pin", script)
           if spec is None or spec.loader is None:
               print(f"::error::Could not load {script}", file=sys.stderr)
@@ -76,7 +76,7 @@ jobs:
               prerelease = module.is_prerelease(pkg_pin)
           except ValueError as e:
               print(
-                  "::error file=.github/scripts/check_sdk_pin.py::"
+                  "::error file=.github/scripts/release/check_sdk_pin.py::"
                   f"Could not determine SDK pin status: {e}",
                   file=sys.stderr,
               )
@@ -171,7 +171,7 @@ jobs:
                 '>',
                 '> A prerelease pin is valid only when it is not older than the workspace SDK, but it still needs an explicit merge acknowledgement.',
                 '>',
-                `> **Required:** add the \`${releaseDepsBypassLabel}\` label before merging to acknowledge this pin. That label records the review decision and skips the release dependency / freshness checks that commonly fail when the pinned SDK is not on PyPI yet (for example during an intentional cross-package release sequence).`,
+                `> 🚨 **Required:** add the \`${releaseDepsBypassLabel}\` label before merging to acknowledge this pin. That label records the review decision and skips the release dependency / freshness checks that commonly fail when the pinned SDK is not on PyPI yet (for example during an intentional cross-package release sequence).`,
               ].join('\n');
               warning = `${pkgLabel} pins prerelease SDK deepagents==${pkgPin}; add ${releaseDepsBypassLabel} to acknowledge before merging.`;
               fail = true;

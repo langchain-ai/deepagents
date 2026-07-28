@@ -88,7 +88,7 @@ jobs:
       experiments: ${{ steps.p.outputs.experiments }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🐍 Set up Python + UV"
         if: ${{ inputs.profile == 'full' }}
@@ -201,7 +201,7 @@ jobs:
           # Set by the enumerate step above for the full profile only; empty
           # (unset) for lite, which unified_prep.py never reads in that case.
           UNIFIED_TASKS_JSON: ${{ env.UNIFIED_TASKS_JSON }}
-        run: python .github/scripts/unified_prep.py
+        run: python .github/scripts/evals/unified_prep.py
 
       # A single place to see exactly what a dispatch ran with — the raw inputs
       # plus the values prep derived from them (resolved model list, and the
@@ -359,7 +359,7 @@ jobs:
           # Passed via env (not interpolated into the shell) for injection safety.
           printf '%s' "$EXPERIMENTS_JSON" > _usage/experiments.json
           uv run --project libs/evals python \
-            .github/scripts/collect_langsmith_usage.py \
+            .github/scripts/evals/collect_langsmith_usage.py \
             --experiments-json _usage/experiments.json \
             --out _usage/langsmith_usage.json
 
@@ -398,7 +398,7 @@ jobs:
       ROLLOUTS: ${{ inputs.rollouts }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -470,7 +470,7 @@ jobs:
           if [ -f _usage_langsmith_usage.json ]; then
             usage_args=(--usage-json _usage_langsmith_usage.json)
           fi
-          python3 .github/scripts/aggregate_unified.py _leaves --rollouts "$ROLLOUTS" --out-dir _combined "${usage_args[@]}"
+          python3 .github/scripts/evals/aggregate_unified.py _leaves --rollouts "$ROLLOUTS" --out-dir _combined "${usage_args[@]}"
 
       - name: "📊 Generate radar chart"
         id: radar-chart
@@ -617,7 +617,7 @@ jobs:
           EXPECTED_LEAVES: ${{ needs.prep.outputs.expected_leaves }}
           EXPECTED_CATEGORIES: ${{ needs.prep.outputs.categories }}
         run: |
-          python3 .github/scripts/aggregate_unified_compare.py _leaves \
+          python3 .github/scripts/evals/aggregate_unified_compare.py _leaves \
             --sources-json "$SOURCES" \
             --expected-leaves-json "$EXPECTED_LEAVES" \
             --categories-json "$EXPECTED_CATEGORIES" \

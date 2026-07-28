@@ -52,6 +52,7 @@ from deepagents_code._session_stats import SessionStats
 from deepagents_code._version import CHANGELOG_URL, __version__
 from deepagents_code.app import (
     _DEEPAGENTS_IMPORT_LOCK,
+    _MIN_TOAST_ROWS,
     _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
     DeferredAction,
@@ -5262,6 +5263,133 @@ class TestAskUserLifecycle:
             app._scroll_inline_prompt_into_view(menu)
 
         menu.scroll_visible.assert_called_once_with()
+
+    def test_ctrl_o_toggles_most_recent_expandable_user_message(self) -> None:
+        """Ctrl+O expands a most-recent long UserMessage when nothing else owns it."""
+        from deepagents_code.tui.widgets.messages import UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        user = MagicMock(spec=UserMessage)
+        user.has_expandable_body = True
+        container = MagicMock()
+        container.children = [user]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        user.toggle_expanded.assert_called_once_with()
+
+    def test_ctrl_o_prefers_a_later_tool_row_over_a_long_user_message(self) -> None:
+        """A tool row after the prompt claims Ctrl+O; the prompt needs a click."""
+        from deepagents_code.tui.widgets.messages import ToolCallMessage, UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        user = MagicMock(spec=UserMessage)
+        user.has_expandable_body = True
+        tool = MagicMock(spec=ToolCallMessage)
+        tool.has_class.return_value = False
+        tool.has_output = True
+        tool.has_expandable_output = True
+        tool.has_expandable_task_desc = False
+        tool.has_expandable_args = False
+        container = MagicMock()
+        container.children = [user, tool]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        tool.toggle_output.assert_called_once_with()
+        user.toggle_expanded.assert_not_called()
+
+    def test_ctrl_o_skips_unexpandable_user_messages(self) -> None:
+        """A short prompt is transparent, so Ctrl+O reaches the older long one."""
+        from deepagents_code.tui.widgets.messages import UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        long_user = MagicMock(spec=UserMessage)
+        long_user.has_expandable_body = True
+        short_user = MagicMock(spec=UserMessage)
+        short_user.has_expandable_body = False
+        container = MagicMock()
+        container.children = [long_user, short_user]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        long_user.toggle_expanded.assert_called_once_with()
+        short_user.toggle_expanded.assert_not_called()
+
+    def test_user_message_expansion_is_persisted_and_remeasured(self) -> None:
+        """Expanding a prompt updates the store and re-measures the row height."""
+        from deepagents_code.tui.widgets.messages import UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._message_store = MagicMock()
+        widget = MagicMock(spec=UserMessage)
+        widget.id = "msg-1"
+
+        with patch.object(app, "_schedule_message_height_measurement") as measure:
+            app.on_user_message_expansion_changed(
+                UserMessage.ExpansionChanged(widget, expanded=True)
+            )
+
+        app._message_store.update_message.assert_called_once_with(
+            "msg-1", user_expanded=True
+        )
+        measure.assert_called_once_with("msg-1")
+
+    async def test_long_user_message_submit_toasts(self) -> None:
+        """Submitting a >threshold message posts an information toast."""
+        from deepagents_code.tui.widgets.messages import UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._image_tracker = MagicMock()
+        app._image_tracker.snapshot.return_value = None
+        app.notify = MagicMock()
+        app._mount_message = AsyncMock()
+        app._send_to_agent = AsyncMock()
+
+        long_msg = "L" * 12_000
+        await app._handle_user_message(long_msg)
+        app.notify.assert_called_once()
+        kwargs = app.notify.call_args.kwargs
+        assert kwargs.get("severity") == "information"
+        assert kwargs.get("markup") is False
+        message = app.notify.call_args.args[0]
+        assert "shortened" in message.lower()
+        # Points at the affordance's literal label so the user can find it.
+        assert "show full message" in message
+
+        # The toast must describe the widget that was actually mounted, not a
+        # separately re-derived guess about the raw string.
+        mounted = app._mount_message.call_args.args[0]
+        assert isinstance(mounted, UserMessage)
+        assert mounted.has_expandable_body is True
+
+        app.notify.reset_mock()
+        await app._handle_user_message("short")
+        app.notify.assert_not_called()
+
+    async def test_literal_slash_message_toasts_at_its_own_length(self) -> None:
+        """A `-m` path-like prompt is measured as literal text, prefix included.
+
+        `_handle_user_message` builds the widget with mode detection off, so a
+        leading slash is body text. The toast must agree with what renders.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        app._image_tracker = MagicMock()
+        app._image_tracker.snapshot.return_value = None
+        app.notify = MagicMock()
+        app._mount_message = AsyncMock()
+        app._send_to_agent = AsyncMock()
+
+        await app._handle_user_message("/" + "x" * 10_000)
+
+        app.notify.assert_called_once()
+        assert app._mount_message.call_args.args[0].has_expandable_body is True
 
     def test_ctrl_o_targets_pending_ask_user_tool_row(self) -> None:
         """App-level Ctrl+O should toggle the active ask_user tool row."""
@@ -16029,7 +16157,11 @@ class TestActionOpenEditor:
             _, text_area, future = await self._open_goal_editor(app, pilot)
             text_area.text = ""
             big = "- criterion\n" * 5
-            await text_area._on_paste(events.Paste(big))
+            text_area.focus()
+            await pilot.pause()
+            # Post through the App so Textual's MRO dispatch reaches the base
+            # handlers; calling `_on_paste` directly skips the insert entirely.
+            app.post_message(events.Paste(big))
             await pilot.pause()
             assert text_area.text == "[Pasted text #1 +5 lines]"
             assert text_area._pasted_contents
@@ -16069,7 +16201,11 @@ class TestActionOpenEditor:
             _, text_area, future = await self._open_goal_editor(app, pilot)
             text_area.text = ""
             big = "- criterion\n" * 5
-            await text_area._on_paste(events.Paste(big))
+            text_area.focus()
+            await pilot.pause()
+            # Post through the App so Textual's MRO dispatch reaches the base
+            # handlers; calling `_on_paste` directly skips the insert entirely.
+            app.post_message(events.Paste(big))
             await pilot.pause()
             visible = text_area.text
             pasted = dict(text_area._pasted_contents)
@@ -16239,7 +16375,11 @@ class TestActionOpenEditor:
             await pilot.pause()
             _, other_input, future = await self._open_ask_user_other_editor(app, pilot)
             big = "answer line\n" * 5
-            await other_input._on_paste(events.Paste(big))
+            other_input.focus()
+            await pilot.pause()
+            # Post through the App so Textual's MRO dispatch reaches the base
+            # handlers; calling `_on_paste` directly skips the insert entirely.
+            app.post_message(events.Paste(big))
             await pilot.pause()
             assert other_input.text == "[Pasted text #1 +5 lines]"
             assert other_input._pasted_contents
@@ -16451,7 +16591,11 @@ class TestActionOpenEditor:
             await pilot.pause()
             _, other_input, future = await self._open_ask_user_other_editor(app, pilot)
             big = "answer line\n" * 5
-            await other_input._on_paste(events.Paste(big))
+            other_input.focus()
+            await pilot.pause()
+            # Post through the App so Textual's MRO dispatch reaches the base
+            # handlers; calling `_on_paste` directly skips the insert entirely.
+            app.post_message(events.Paste(big))
             await pilot.pause()
             visible = other_input.text
             pasted = dict(other_input._pasted_contents)
@@ -16485,6 +16629,294 @@ class TestEditorSlashCommand:
             app._chat_input = MagicMock()
             await app._handle_command("/editor")
         mock.assert_awaited_once()
+
+
+class TestApprovalModeSlashCommands:
+    """Tests for the `/manual`, `/auto`, and `/yolo` slash commands."""
+
+    async def test_auto_command_sets_auto_when_eligible(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.MANUAL
+        with patch.object(
+            app, "_set_approval_mode", new_callable=AsyncMock
+        ) as set_mode:
+            await app._handle_command("/auto")
+        set_mode.assert_awaited_once_with(ApprovalMode.AUTO)
+
+    async def test_manual_command_sets_manual(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.AUTO
+        with patch.object(
+            app, "_set_approval_mode", new_callable=AsyncMock
+        ) as set_mode:
+            await app._handle_command("/manual")
+        set_mode.assert_awaited_once_with(ApprovalMode.MANUAL)
+
+    async def test_auto_command_warns_when_ineligible(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = False
+        app._approval_mode = ApprovalMode.MANUAL
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch.object(app, "_warn_live_approval_mode_unavailable") as warn,
+        ):
+            await app._handle_command("/auto")
+        set_mode.assert_not_awaited()
+        warn.assert_called_once()
+        assert "Auto is unavailable" in str(warn.call_args.args[0])
+
+    async def test_already_in_mode_notifies_and_skips(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.MANUAL
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch.object(app, "notify") as notify,
+        ):
+            await app._handle_command("/manual")
+        set_mode.assert_not_awaited()
+        notify.assert_called_once()
+        assert "Already in Manual mode" in str(notify.call_args.args[0])
+
+    async def test_yolo_command_sets_yolo_when_acknowledged(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.AUTO
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch(
+                "deepagents_code.config.is_yolo_switcher_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                return_value=True,
+            ),
+        ):
+            await app._handle_command("/yolo")
+        set_mode.assert_awaited_once_with(ApprovalMode.YOLO)
+
+    async def test_yolo_command_prompts_when_not_acknowledged(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.AUTO
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch.object(app, "_prompt_yolo_switcher_acknowledgement") as prompt,
+            patch(
+                "deepagents_code.config.is_yolo_switcher_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                return_value=False,
+            ),
+        ):
+            await app._handle_command("/yolo")
+        set_mode.assert_not_awaited()
+        prompt.assert_called_once_with()
+
+    async def test_yolo_command_warns_when_switcher_disabled(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.AUTO
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch.object(app, "_warn_live_approval_mode_unavailable") as warn,
+            patch(
+                "deepagents_code.config.is_yolo_switcher_enabled",
+                return_value=False,
+            ),
+        ):
+            await app._handle_command("/yolo")
+        set_mode.assert_not_awaited()
+        warn.assert_called_once()
+        assert "YOLO is disabled" in str(warn.call_args.args[0])
+
+
+class TestYoloActiveWarning:
+    """The recurring "YOLO is active" toast honors `[warnings].suppress`."""
+
+    @staticmethod
+    async def _enter_yolo(app: DeepAgentsApp) -> list[str]:
+        """Switch `app` into YOLO and return the toast messages it posted."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        with (
+            patch.object(
+                app,
+                "_write_live_approval_mode",
+                new=AsyncMock(return_value=True),
+            ),
+            patch.object(app, "_auto_accept_pending_goal_rubric", new=AsyncMock()),
+            patch.object(app, "notify") as notify,
+        ):
+            assert await app._set_approval_mode(ApprovalMode.YOLO) is True
+        return [str(call_args.args[0]) for call_args in notify.call_args_list]
+
+    def test_suppression_key_is_the_documented_literal(self) -> None:
+        """Pin the config contract: users type `yolo`, not the symbol name.
+
+        Every other test refers to the constant on both the write and the read
+        side, so a renamed value would stay green while silently breaking
+        `[warnings].suppress = ["yolo"]` in existing configs.
+        """
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY
+
+        assert YOLO_WARNING_KEY == "yolo"
+
+    async def test_warns_by_default(self) -> None:
+        """An unsuppressed install still gets the no-review warning."""
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY
+        from deepagents_code.model_config import is_warning_suppressed
+
+        # Guards on the `_isolate_state_dir` autouse fixture: without it this
+        # reads the developer's real config and flakes only on machines where
+        # the toast has been muted.
+        assert is_warning_suppressed(YOLO_WARNING_KEY) is False
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = await self._enter_yolo(app)
+
+        assert any("YOLO is active" in message for message in messages)
+
+    async def test_warns_when_the_suppression_check_fails(self) -> None:
+        """An unreadable suppression list fails open, it does not mute."""
+        from deepagents_code import app as app_module
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+        # `warnings` as a list rather than a table: a plausible hand-edit that
+        # used to raise `AttributeError` straight out of the mode switch.
+        DEFAULT_CONFIG_PATH.write_text('warnings = ["yolo"]\n')
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = await self._enter_yolo(app)
+
+        assert any("YOLO is active" in message for message in messages)
+
+        # And an outright broken reader must not take the mode switch down.
+        with patch.object(
+            app_module,
+            "logger",
+            new=MagicMock(),
+        ):
+            app2 = DeepAgentsApp(agent=MagicMock())
+            async with app2.run_test() as pilot:
+                await pilot.pause()
+                with patch(
+                    "deepagents_code.model_config.is_warning_suppressed",
+                    side_effect=RuntimeError("boom"),
+                ):
+                    messages = await self._enter_yolo(app2)
+
+        assert any("YOLO is active" in message for message in messages)
+
+    async def test_warns_at_startup_when_launched_in_yolo(self) -> None:
+        """The `on_mount` toast is the recurring one this feature mutes."""
+        app = DeepAgentsApp(agent=MagicMock(), approval_mode="yolo")
+        with patch.object(app, "notify") as notify:
+            async with app.run_test() as pilot:
+                await pilot.pause()
+
+        messages = [str(call.args[0]) for call in notify.call_args_list]
+        assert any("YOLO is active" in message for message in messages)
+
+    async def test_startup_warning_is_muted_when_suppressed(self) -> None:
+        """Muting reaches the startup path, not just the mode switch."""
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY
+        from deepagents_code.model_config import suppress_warning
+
+        assert suppress_warning(YOLO_WARNING_KEY) is True
+
+        app = DeepAgentsApp(agent=MagicMock(), approval_mode="yolo")
+        with patch.object(app, "notify") as notify:
+            async with app.run_test() as pilot:
+                await pilot.pause()
+
+        messages = [str(call.args[0]) for call in notify.call_args_list]
+        assert not any("YOLO is active" in message for message in messages)
+
+    async def test_suppression_does_not_bypass_the_acknowledgement(self) -> None:
+        """Muting the toast must not skip the first-enable gate.
+
+        `_enter_yolo` drives `_set_approval_mode`, which sits *below* the
+        acknowledgement check. This covers the gate itself, so hoisting the
+        suppression check up into the command handler cannot silently turn
+        muting into a way past the modal.
+        """
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY, ApprovalMode
+        from deepagents_code.model_config import suppress_warning
+
+        assert suppress_warning(YOLO_WARNING_KEY) is True
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                    return_value=False,
+                ),
+                patch.object(app, "_prompt_yolo_switcher_acknowledgement") as prompt,
+                patch.object(app, "_set_approval_mode", new=AsyncMock()) as switch,
+            ):
+                await app._handle_approval_mode_command(ApprovalMode.YOLO)
+
+            prompt.assert_called_once()
+            switch.assert_not_called()
+            assert app._approval_mode is not ApprovalMode.YOLO
+
+    async def test_suppressed_key_mutes_the_toast(self) -> None:
+        """The `yolo` suppression key silences the toast."""
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY
+        from deepagents_code.model_config import suppress_warning
+
+        assert suppress_warning(YOLO_WARNING_KEY) is True
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = await self._enter_yolo(app)
+
+        assert not any("YOLO is active" in message for message in messages)
+
+    async def test_suppression_does_not_weaken_the_mode_switch(self) -> None:
+        """Muting the toast is cosmetic: YOLO still applies and stays visible."""
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY, ApprovalMode
+        from deepagents_code.model_config import suppress_warning
+
+        assert suppress_warning(YOLO_WARNING_KEY) is True
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await self._enter_yolo(app)
+            await pilot.pause()
+
+            assert app._approval_mode is ApprovalMode.YOLO
+            assert app._auto_approve is True
+            indicator = app.query_one("#auto-approve-indicator", Static)
+            assert str(indicator.render()) == "YOLO"
 
 
 class TestToolsSlashCommand:
@@ -20254,7 +20686,9 @@ class TestDeferredActions:
                 )
                 await pilot.pause()
 
-            mock_extra_for_package.assert_called_once_with("langchain-google-vertexai")
+            mock_extra_for_package.assert_called_once_with(
+                "langchain-google-vertexai", "deepagents-code"
+            )
             widget = app._startup_failure_widget
             assert isinstance(widget, ErrorMessage)
             rendered = str(widget._content)
@@ -24508,6 +24942,82 @@ class TestNotificationCenterIntegration:
             assert isinstance(app.screen, NotificationCenterScreen)
 
 
+class TestToastAnchoring:
+    """Toasts float above the chat input instead of covering it."""
+
+    @staticmethod
+    def _rack(app: DeepAgentsApp) -> Widget:
+        """Return the toast rack composed into the app's main screen."""
+        return app.screen.get_child_by_id("textual-toastrack")
+
+    @staticmethod
+    def _chrome(app: DeepAgentsApp) -> Widget:
+        """Return the bottom chrome (panels + chat input) container."""
+        return app.query_one("#bottom-app-container", Widget)
+
+    async def test_rack_margin_clears_the_bottom_chrome(self) -> None:
+        """The rack's bottom margin reaches the top of the bottom chrome."""
+        app = DeepAgentsApp()
+        async with app.run_test(notifications=True) as pilot:
+            await pilot.pause()
+            expected = app.screen.size.height - self._chrome(app).region.y
+            assert expected > 1
+            assert self._rack(app).styles.margin.bottom == expected
+
+    async def test_toasts_do_not_cover_the_chat_input(self) -> None:
+        """Displayed toasts stack directly above the bottom chrome."""
+        from textual.widgets._toast import Toast as _Toast
+
+        app = DeepAgentsApp()
+        async with app.run_test(notifications=True) as pilot:
+            await pilot.pause()
+            app.notify("first", timeout=60)
+            app.notify("second", timeout=60)
+            await pilot.pause()
+
+            toasts = list(app.screen.query(_Toast))
+            assert toasts
+            chrome_top = self._chrome(app).region.y
+            assert max(toast.region.bottom for toast in toasts) == chrome_top
+
+    async def test_growing_chat_input_lifts_the_rack(self) -> None:
+        """A taller chat input pushes toasts further up the screen."""
+        app = DeepAgentsApp()
+        async with app.run_test(notifications=True) as pilot:
+            await pilot.pause()
+            before = self._rack(app).styles.margin.bottom
+
+            app.query_one("#input-area", ChatInput).styles.height = 12
+            await pilot.pause()
+
+            after = self._rack(app).styles.margin.bottom
+            assert after > before
+            assert after == app.screen.size.height - self._chrome(app).region.y
+
+    async def test_short_terminal_keeps_toasts_onscreen(self) -> None:
+        """A chrome taller than the terminal must not dock toasts off the top.
+
+        The anchor stops at `_MIN_TOAST_ROWS`, and the rack is capped to the
+        space that leaves, so even a heavily wrapped toast stays on screen
+        instead of losing its opening lines above row zero.
+        """
+        from textual.widgets._toast import Toast as _Toast
+
+        app = DeepAgentsApp()
+        async with app.run_test(notifications=True, size=(80, 12)) as pilot:
+            await pilot.pause()
+            app.query_one("#input-area", ChatInput).styles.height = 20
+            await pilot.pause()
+            app.notify("word " * 60, timeout=60)
+            await pilot.pause()
+
+            margin_bottom = self._rack(app).styles.margin.bottom
+            assert 0 <= margin_bottom <= 12 - _MIN_TOAST_ROWS
+            toasts = list(app.screen.query(_Toast))
+            assert toasts
+            assert all(toast.region.y >= 0 for toast in toasts)
+
+
 class TestFatalErrorRedaction:
     """`_fatal_error` must not leak local variables (which carry secrets).
 
@@ -26128,6 +26638,102 @@ class TestLiveApprovalModeWrites:
                     "Stayed in the current approval mode" in str(call.args[0])
                     for call in notify.call_args_list
                 )
+
+    async def test_toggle_into_yolo_m_switches_to_manual(self) -> None:
+        """`m` on the switcher YOLO notice switches to Manual without ack."""
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.yolo_mode_notice import YoloModeNoticeScreen
+
+        app = DeepAgentsApp()
+        app._auto_mode_eligible = True
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = object()
+            app._approval_mode = ApprovalMode.AUTO
+            if app._session_state is not None:
+                app._session_state.approval_mode = ApprovalMode.AUTO
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=True),
+                ) as write_mode,
+                patch(
+                    "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.approval_mode.save_yolo_acknowledgement"
+                ) as save_ack,
+                patch(
+                    "deepagents_code.config.is_yolo_switcher_enabled",
+                    return_value=True,
+                ),
+                patch.object(app, "notify"),
+            ):
+                await app.action_toggle_auto_approve()
+                await pilot.pause()
+                assert isinstance(app.screen, YoloModeNoticeScreen)
+                await pilot.press("m")
+                await pilot.pause()
+                # Manual chosen: never persist the YOLO ack, land in Manual.
+                save_ack.assert_not_called()
+                assert app._approval_mode is ApprovalMode.MANUAL
+                assert app._auto_approve is False
+                write_mode.assert_awaited_with(ApprovalMode.MANUAL)
+
+    async def test_yolo_notice_m_skips_write_when_already_manual(self) -> None:
+        """`m` from Manual (via `/yolo`) does not rewrite Manual on the live store.
+
+        A failed redundant Manual write would set `_approval_mode_blocked` and
+        could cancel active work even though the user only declined YOLO.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.yolo_mode_notice import YoloModeNoticeScreen
+
+        app = DeepAgentsApp()
+        app._auto_mode_eligible = True
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = object()
+            app._approval_mode = ApprovalMode.MANUAL
+            app._approval_mode_blocked = False
+            if app._session_state is not None:
+                app._session_state.approval_mode = ApprovalMode.MANUAL
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=False),
+                ) as write_mode,
+                patch.object(
+                    app, "_set_approval_mode", wraps=app._set_approval_mode
+                ) as set_mode,
+                patch(
+                    "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.approval_mode.save_yolo_acknowledgement"
+                ) as save_ack,
+                patch(
+                    "deepagents_code.config.is_yolo_switcher_enabled",
+                    return_value=True,
+                ),
+                patch.object(app, "_warn_live_approval_mode_unavailable") as warn,
+                patch.object(app, "notify"),
+            ):
+                await app._handle_approval_mode_command(ApprovalMode.YOLO)
+                await pilot.pause()
+                assert isinstance(app.screen, YoloModeNoticeScreen)
+                await pilot.press("m")
+                await pilot.pause()
+                save_ack.assert_not_called()
+                set_mode.assert_not_awaited()
+                write_mode.assert_not_awaited()
+                warn.assert_not_called()
+                assert app._approval_mode is ApprovalMode.MANUAL
+                assert app._approval_mode_blocked is False
 
     async def test_toggle_skips_yolo_when_switcher_disabled(self) -> None:
         """Disabling the switcher restores Manual ↔ Auto only."""

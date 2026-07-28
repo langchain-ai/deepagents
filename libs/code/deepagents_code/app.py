@@ -35,6 +35,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
+from textual.dom import NoScreen
 from textual.events import Click
 from textual.message import Message
 from textual.notifications import Notification as _Notification, Notify as _Notify
@@ -571,7 +572,13 @@ class _ConfigWriteResult:
 ScreenResultT = TypeVar("ScreenResultT")
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+    from collections.abc import (
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Coroutine,
+        Mapping,
+    )
 
     from deepagents.backends import CompositeBackend
     from langchain_core.messages import BaseMessage
@@ -2261,6 +2268,8 @@ class TextualSessionState:
         # Assign the backing field directly: the setter reads `self._thread_id`
         # to detect a thread change, and it isn't set yet.
         self._thread_id = thread_id or _new_thread_id()
+        # Optional session-scoped Hooks v2 client runtime.
+        self.hooks_runtime = None
 
     @property
     def auto_approve(self) -> bool:
@@ -2509,6 +2518,35 @@ class _ChatScroll(VerticalScroll):
     def _is_scrollable(self) -> bool:
         """Return whether current chat content overflows the viewport."""
         return self.max_scroll_y > 0
+
+
+_MIN_TOAST_ROWS = 6
+"""Rows the toast rack keeps for itself above the bottom chrome.
+
+On a short terminal — or with a tall composed message in the chat input — the
+chrome can claim the whole screen, and anchoring above it would leave the rack
+no room at all. The anchor stops at this floor, and `_anchor_toast_rack` caps
+the rack's height to whatever space is left so a taller toast scrolls inside the
+rack instead of being docked off the top of the screen.
+"""
+
+
+class _BottomChrome(Container):
+    """Bottom container the toast rack is anchored above.
+
+    Textual docks `ToastRack` to the bottom of the screen, where it covers the
+    chat input. This container's height changes whenever the chat input grows,
+    or the startup tip / goal status / subagent panels appear, so it announces
+    its own resizes and lets the app re-anchor the rack (see
+    `DeepAgentsApp._anchor_toast_rack`).
+    """
+
+    class Resized(Message, namespace="bottom_chrome"):
+        """Posted whenever the bottom chrome's geometry changes."""
+
+    def on_resize(self, _event: Resize) -> None:
+        """Announce the new geometry so the app can re-anchor toasts."""
+        self.post_message(self.Resized())
 
 
 class _MainScreen(Screen[None]):
@@ -3161,8 +3199,14 @@ class DeepAgentsApp(App):
         )
         """Per-turn model params override set via startup or `/model` params."""
 
-        self._last_model_unchanged_message: str | None = None
-        """Most recent same-model notice, used to suppress duplicates."""
+        self._last_model_unchanged: tuple[str, float] | None = None
+        """Most recent same-model toast, as `(text, monotonic timestamp)`.
+
+        Used to suppress duplicates. Suppression only lasts for the toast
+        lifetime (`NOTIFICATION_TIMEOUT`); after expiry, a later identical
+        no-op selection can toast again. Text and timestamp are one field so
+        they cannot drift out of sync.
+        """
 
         self._model_install_switching = False
         """True while a provider extra install-then-switch flow is active."""
@@ -3775,7 +3819,7 @@ class DeepAgentsApp(App):
                 id="welcome-banner",
             )
             yield Container(id="messages")
-        with Container(id="bottom-app-container"):
+        with _BottomChrome(id="bottom-app-container"):
             # Live fan-out panel for subagents spawned from js_eval. Hidden
             # until the first spawn event; sits at the top of the bottom
             # container, above the startup tip and input.
@@ -3846,12 +3890,7 @@ class DeepAgentsApp(App):
         if self._approval_mode.value == "auto":
             self._notify_auto_mode_enabled_once()
         elif self._approval_mode.value == "yolo":
-            self.notify(
-                "YOLO is active: gated actions run without review.",
-                severity="warning",
-                timeout=10,
-                markup=False,
-            )
+            self._warn_yolo_active(timeout=10)
 
         # `Widget.focus()` defers the actual focus change by posting a callback.
         # Terminal keys may already be ahead of that callback in the app queue,
@@ -4279,10 +4318,25 @@ class DeepAgentsApp(App):
         """Create session state in a thread (imports deepagents_code.sessions)."""
 
         def _create() -> TextualSessionState:
-            return TextualSessionState(
+            from pathlib import Path
+
+            from deepagents_code.hooks.runtime import HooksRuntime
+
+            state = TextualSessionState(
                 approval_mode=self._approval_mode,
                 thread_id=self._lc_thread_id,
             )
+            try:
+                # Interactive sessions keep project hooks off until a dedicated
+                # workspace-trust prompt lands (design-doc security follow-up).
+                state.hooks_runtime = HooksRuntime.create(
+                    cwd=Path(self._cwd),
+                    workspace_trusted=False,
+                )
+            except Exception:
+                logger.exception("Failed to create HooksRuntime; server hooks disabled")
+                state.hooks_runtime = None
+            return state
 
         try:
             session_state = await asyncio.to_thread(_create)
@@ -5052,37 +5106,20 @@ class DeepAgentsApp(App):
             and self._server_kwargs is not None
         ):
             missing = self._server_startup_missing_provider_package
-            from deepagents_code.extras_info import extra_for_package
+            from deepagents_code.extras_info import resolve_install_hint
 
-            extra = extra_for_package(missing.package)
-            if extra is not None:
+            hint = resolve_install_hint(missing.package)
+            if hint.extra is not None:
                 text += (
-                    f"\n\nHint: install the package with `/install {extra}`, "
+                    f"\n\nHint: install the package with `/install {hint.extra}`, "
                     f"then run `/model {missing.provider}:<model>` to retry. "
                     "Or pick a different provider with `/model`."
                 )
             else:
-                from deepagents_code.extras_info import ExtrasIntrospectionError
-                from deepagents_code.update_check import (
-                    ToolRequirementIntrospectionError,
-                    install_package_command,
-                )
-
-                try:
-                    install_cmd = install_package_command(missing.package)
-                except (
-                    ValueError,
-                    ExtrasIntrospectionError,
-                    ToolRequirementIntrospectionError,
-                ) as exc:
-                    logger.debug(
-                        "install_package_command failed; falling back to "
-                        "manual hint: %s",
-                        exc,
-                    )
-                    install_hint = f"install the `{missing.package}` package manually"
+                if hint.command is not None:
+                    install_hint = f"run `{hint.command}`"
                 else:
-                    install_hint = f"run `{install_cmd}`"
+                    install_hint = f"install the `{missing.package}` package manually"
                 text += (
                     f"\n\nHint: {install_hint}, then run "
                     f"`/model {missing.provider}:<model>` "
@@ -6034,9 +6071,9 @@ class DeepAgentsApp(App):
                 create_update_log_path,
                 editable_extra_hint,
                 install_extra_command,
-                install_extra_recovery_command,
                 is_valid_extra_name,
                 perform_install_extra,
+                safe_install_extra_recovery_command,
             )
         except ImportError as exc:
             logger.warning("/install command import failed", exc_info=True)
@@ -6121,19 +6158,9 @@ class DeepAgentsApp(App):
             # already bound above so the hint is never empty. `manual_cmd` is
             # rendered into a Textual `Content` (literal, not Rich markup), so no
             # bracket escaping is needed here.
-            try:
-                manual_cmd = await asyncio.to_thread(
-                    install_extra_recovery_command, extra
-                )
-            except (
-                ExtrasIntrospectionError,
-                ToolRequirementIntrospectionError,
-                ValueError,
-            ):
-                logger.warning(
-                    "/install recovery command failed (install raised)",
-                    exc_info=True,
-                )
+            manual_cmd = await asyncio.to_thread(
+                safe_install_extra_recovery_command, extra, fallback=manual_cmd
+            )
             await self._mount_message(
                 ErrorMessage(
                     f"Install failed: {type(exc).__name__}: {exc}\n"
@@ -6149,19 +6176,9 @@ class DeepAgentsApp(App):
             detail = f": {output[-200:]}" if output else ""
             # See the OSError branch above: best-effort recovery command, falling
             # back to the already-bound install-script command on failure.
-            try:
-                manual_cmd = await asyncio.to_thread(
-                    install_extra_recovery_command, extra
-                )
-            except (
-                ExtrasIntrospectionError,
-                ToolRequirementIntrospectionError,
-                ValueError,
-            ):
-                logger.warning(
-                    "/install recovery command failed (install reported failure)",
-                    exc_info=True,
-                )
+            manual_cmd = await asyncio.to_thread(
+                safe_install_extra_recovery_command, extra, fallback=manual_cmd
+            )
             await self._mount_message(
                 ErrorMessage(
                     f"Install failed{detail}\n"
@@ -6216,9 +6233,14 @@ class DeepAgentsApp(App):
         # restart. `_offer_restart_after_install` owns all follow-up messaging
         # (the prompt's button is the call to action when shown; it mounts a
         # `/restart`-or-relaunch hint itself when it can't show the prompt), so
-        # a redundant "Run /restart" line is never appended here.
+        # a redundant "Run /restart" line is never appended here. The offer is
+        # scheduled off the message pump so the modal stays responsive (see
+        # `_schedule_restart_offer`); the interactive offer never affects this
+        # method's return value, so detaching it does not change the contract.
         await self._mount_message(AppMessage(f"Installed extra '{extra}'."))
-        await self._offer_restart_after_install(extra)
+        self._schedule_restart_offer(
+            self._offer_restart_after_install(extra), context=f"extra:{extra}"
+        )
         return True
 
     async def _handle_install_package(self, package: str, *, force: bool) -> None:
@@ -6309,7 +6331,11 @@ class DeepAgentsApp(App):
                 "now, or relaunch dcode.",
             ),
         )
-        await self._offer_restart_after_install(package)
+        # Scheduled off the message pump so the restart modal stays responsive
+        # to Enter/Esc (see `_schedule_restart_offer`).
+        self._schedule_restart_offer(
+            self._offer_restart_after_install(package), context=f"package:{package}"
+        )
 
     async def _confirm_install_package(self, package: str) -> bool:
         """Ask the user to confirm installing an arbitrary package.
@@ -6550,6 +6576,9 @@ class DeepAgentsApp(App):
 
     def on_resize(self, _event: Resize) -> None:
         """Scale cached message heights when terminal width changes."""
+        # A terminal resize moves the bottom chrome even when its height is
+        # unchanged, so re-anchor before the early returns below.
+        self._anchor_toast_rack()
         try:
             chat = self.query_one("#chat", VerticalScroll)
         except NoMatches:
@@ -6564,6 +6593,42 @@ class DeepAgentsApp(App):
         self._message_store.invalidate_height_hints(scale=previous / width)
         self._message_measure_width = width
         self._sync_transcript_spacers()
+
+    def on_bottom_chrome_resized(self, _event: _BottomChrome.Resized) -> None:
+        """Re-anchor toasts when the chat input (or a bottom panel) resizes."""
+        self._anchor_toast_rack()
+
+    def _anchor_toast_rack(self) -> None:
+        """Float toasts above the chat input instead of on top of it.
+
+        Textual docks its `ToastRack` to the bottom of the screen, so toasts
+        cover the chat input the user is typing into. Growing the rack's bottom
+        margin to the height of the bottom chrome (panels, chat input, and
+        status bar) lifts toasts to just above the input box.
+        """
+        try:
+            chrome = self.query_one("#bottom-app-container", _BottomChrome)
+            # Resolve the rack from the chrome's own screen: every screen
+            # composes its own rack, and modals must not retune the main one.
+            screen = chrome.screen
+            rack = screen.get_child_by_id("textual-toastrack")
+        except (NoMatches, NoScreen):
+            return
+        region = chrome.region
+        if not region:
+            # Not laid out yet; the chrome's first resize re-anchors.
+            return
+        screen_height = screen.size.height
+        headroom = max(screen_height - _MIN_TOAST_ROWS, 0)
+        margin_bottom = min(max(screen_height - region.y, 0), headroom)
+        # Inline style writes already no-op when the value is unchanged, so
+        # re-running this on every resize costs nothing.
+        rack.styles.margin = (0, 0, margin_bottom, 0)
+        # `ToastRack` is `height: auto` with no maximum, so a tall (or heavily
+        # wrapped) toast would be docked past the top of the screen and lose its
+        # first lines. Bound the rack to the space this anchor leaves it; the
+        # rack already scrolls to its end, keeping the newest toast in view.
+        rack.styles.max_height = screen_height - margin_bottom
 
     def _update_status(self, message: str) -> None:
         """Update the status bar with a message."""
@@ -7503,6 +7568,44 @@ class DeepAgentsApp(App):
             self._session_state.approval_mode = self._approval_mode
         if self._status_bar:
             self._status_bar.set_approval_mode(self._approval_mode.value)
+
+    def _warn_yolo_active(self, *, timeout: float) -> None:
+        """Warn that YOLO runs gated actions without review, unless muted.
+
+        Users who deliberately live in YOLO can mute the recurring toast from
+        `/notifications`, or by adding `"yolo"` (`YOLO_WARNING_KEY`) to
+        `[warnings].suppress` in `~/.deepagents/config.toml`. Only the toast is
+        muted; see `YOLO_WARNING_KEY` for what suppression leaves untouched.
+
+        Deliberately synchronous. Callers warn *before* awaiting anything, so
+        that a cancellation or a raise downstream can never land between "YOLO
+        is live" and "the user was told". Offloading the small config read to
+        a thread (as `_show_notification_settings` does) would reopen exactly
+        that window. An unreadable or malformed config fails open: when
+        suppression cannot be determined, the warning still fires.
+
+        Args:
+            timeout: Seconds the toast stays on screen.
+        """
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY
+        from deepagents_code.model_config import is_warning_suppressed
+
+        try:
+            suppressed = is_warning_suppressed(YOLO_WARNING_KEY)
+        except Exception:
+            logger.warning(
+                "Could not read YOLO warning suppression; showing the warning",
+                exc_info=True,
+            )
+            suppressed = False
+        if suppressed:
+            return
+        self.notify(
+            "YOLO is active: gated actions run without review.",
+            severity="warning",
+            timeout=timeout,
+            markup=False,
+        )
 
     def _notify_auto_mode_enabled_once(self) -> None:
         """Show the Auto first-enable modal at most once per install.
@@ -12416,6 +12519,10 @@ class DeepAgentsApp(App):
             await self._handle_version_command()
         elif cmd == "/agents":
             await self._show_agent_selector()
+        elif cmd in {"/manual", "/auto", "/yolo"}:
+            from deepagents_code.approval_mode import ApprovalMode
+
+            await self._handle_approval_mode_command(ApprovalMode(cmd.lstrip("/")))
         elif cmd == "/goal" or cmd.startswith("/goal "):
             await self._handle_goal_command(command)
         elif cmd in {"/rubric", "/criteria"} or cmd.startswith(
@@ -13858,6 +13965,24 @@ class DeepAgentsApp(App):
         )
         await self._mount_message(user_message)
         self._active_user_message = user_message
+        # Toast only on submit when the transcript will collapse the body —
+        # the model still receives the full text; the UI is head+tail until
+        # the user expands. Asking the widget (rather than re-deriving from
+        # `message`) keeps this in step with what `render()` actually collapses,
+        # including its mode-prefix handling.
+        if user_message.has_expandable_body:
+            # "Shortened", not "collapsed": a large paste already toasted
+            # "Large paste collapsed" in the composer (see chat_input), and
+            # that means something different (a placeholder chip, not a
+            # head+tail elision in the transcript).
+            self.notify(
+                "Long message shortened in the transcript — click "
+                "'show full message' to expand it. The full text was still "
+                "sent to the model.",
+                severity="information",
+                markup=False,
+                timeout=8,
+            )
         await self._send_to_agent(message)
 
     async def _send_to_agent(
@@ -15760,6 +15885,23 @@ class DeepAgentsApp(App):
             )
             self._schedule_message_height_measurement(event.widget.id)
 
+    def on_user_message_expansion_changed(
+        self,
+        event: UserMessage.ExpansionChanged,
+    ) -> None:
+        """Keep long-prompt expansion state across transcript virtualization.
+
+        Also re-measures the row: expanding a collapsed prompt can add hundreds
+        of lines, and the spacer math that sizes the scrollbar reads a cached
+        height that `refresh(layout=True)` alone does not update.
+        """
+        if event.widget.id:
+            self._message_store.update_message(
+                event.widget.id,
+                user_expanded=event.expanded,
+            )
+            self._schedule_message_height_measurement(event.widget.id)
+
     async def _clear_messages(self) -> None:
         """Clear the messages area and message store."""
         # Drop buffered `!` shell output so it never leaks across a thread
@@ -16901,7 +17043,9 @@ class DeepAgentsApp(App):
         elif kind == "denial":
             text = f"Auto denied [{event.get('category', 'policy')}]: {reason}"
         elif kind == "unavailable":
-            text = f"Auto classifier unavailable: {reason}"
+            # Reason is a short cause fragment from the server; keep the UI
+            # line outcome-focused so fail-closed denial is obvious.
+            text = f"Auto classifier unavailable: {reason} — tool not executed"
         else:
             text = f"Auto warning: {reason}"
         await self._mount_message(AppMessage(text))
@@ -17053,39 +17197,93 @@ class DeepAgentsApp(App):
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
         elif target is ApprovalMode.YOLO:
-            # Warn before the await below. State is already committed above, so
-            # if goal-rubric auto-accept raises, YOLO is active and the "no
-            # review" warning must have fired first. AUTO notifies before its
-            # await for the same reason.
-            self.notify(
-                "YOLO is active: gated actions run without review.",
-                severity="warning",
-                timeout=8,
-                markup=False,
-            )
+            # Warn before the await below. State is already committed above,
+            # so if goal-rubric auto-accept raises, YOLO is active and the "no
+            # review" warning has already been attempted. AUTO notifies before
+            # its await for the same reason. Both can legitimately no-op — the
+            # YOLO toast when suppressed, the AUTO notice after its first run —
+            # so this ordering guarantees the attempt, not the delivery.
+            self._warn_yolo_active(timeout=8)
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
         return True
+
+    async def _handle_approval_mode_command(self, target: ApprovalMode) -> None:
+        """Switch approval mode from a slash command (`/manual`, `/auto`, `/yolo`).
+
+        Mirrors the Shift+Tab switcher: Auto is refused with a sandbox, YOLO
+        honors the `startup.yolo_switcher` policy and prompts the first-run
+        acknowledgement modal before unrestricted mode becomes active. Feedback
+        is delivered via toasts and the status bar, not chat messages, so the
+        command stays quiet like the keybinding.
+
+        Args:
+            target: The approval mode requested by the command.
+        """
+        from deepagents_code.approval_mode import (
+            ApprovalMode,
+            has_yolo_acknowledgement,
+        )
+        from deepagents_code.config import is_yolo_switcher_enabled
+
+        if self._approval_mode is target:
+            self.notify(
+                f"Already in {target.value.capitalize()} mode.",
+                severity="information",
+                markup=False,
+            )
+            return
+
+        if target is ApprovalMode.AUTO and not self._auto_mode_eligible:
+            self._warn_live_approval_mode_unavailable(
+                "Auto is unavailable with a sandbox."
+            )
+            return
+
+        if target is ApprovalMode.YOLO:
+            if not is_yolo_switcher_enabled():
+                self._warn_live_approval_mode_unavailable(
+                    "YOLO is disabled in the approval switcher."
+                )
+                return
+            if not has_yolo_acknowledgement():
+                self._prompt_yolo_switcher_acknowledgement()
+                return
+
+        await self._set_approval_mode(target)
 
     def _prompt_yolo_switcher_acknowledgement(self) -> None:
         """Show the first-run YOLO acknowledgement before entering unrestricted mode.
 
         YOLO stays inactive until Enter persists the acknowledgement and the
-        follow-up mode write succeeds. Esc (or a non-true dismiss) leaves the
-        current mode untouched and does not store the acknowledgement.
+        follow-up mode write succeeds. `m` switches to Manual instead. Esc (or a
+        non-acknowledge dismiss) leaves the current mode untouched and does not
+        store the acknowledgement.
         """
         from deepagents_code.approval_mode import (
             ApprovalMode,
             save_yolo_acknowledgement,
         )
-        from deepagents_code.tui.widgets.yolo_mode_notice import YoloModeNoticeScreen
+        from deepagents_code.tui.widgets.yolo_mode_notice import (
+            YoloModeNoticeResult,
+            YoloModeNoticeScreen,
+        )
 
         if getattr(self, "_yolo_mode_notice_pending", False):
             return
 
-        def handle_result(accepted: bool | None) -> None:
+        def handle_result(result: YoloModeNoticeResult | None) -> None:
             self._yolo_mode_notice_pending = False
-            if accepted is not True:
+            if result is YoloModeNoticeResult.MANUAL:
+                # Already-Manual is a no-op: skip the live store write so a
+                # failed redundant write cannot flip `_approval_mode_blocked`
+                # and cancel an active run after the user declined YOLO.
+                if self._approval_mode is ApprovalMode.MANUAL:
+                    return
+                task = asyncio.create_task(self._set_approval_mode(ApprovalMode.MANUAL))
+                task.add_done_callback(_log_task_exception)
+                return
+            if result is not YoloModeNoticeResult.ACKNOWLEDGE:
                 self.notify(
                     "Stayed in the current approval mode.",
                     severity="information",
@@ -17174,6 +17372,13 @@ class DeepAgentsApp(App):
                 if child.has_output:
                     child.toggle_output()
                     return
+            # Long UserMessages are collapsible. This scan is newest-first and
+            # first-match-wins, so any later tool/skill/group row claims Ctrl+O
+            # and the prompt is then reachable only by click. Assistant rows are
+            # not in the chain, so they do not block it.
+            if isinstance(child, UserMessage) and child.has_expandable_body:
+                child.toggle_expanded()
+                return
 
     # Approval menu action handlers (delegated from App-level bindings)
     # NOTE: These only activate when approval widget is pending
@@ -18700,6 +18905,10 @@ class DeepAgentsApp(App):
         self.push_screen(
             DebugConsoleScreen(
                 self._build_debug_snapshot(),
+                # Rebuild the header on the console's refresh tick so message
+                # counts, tokens, and other in-memory fields stay current while
+                # the modal is open. The builder is intentionally I/O-free.
+                snapshot_provider=self._build_debug_snapshot,
                 cleared_upto=self._debug_console_cleared_upto,
                 on_clear=persist_clear,
                 click_to_copy=self._debug_console_click_to_copy,
@@ -18749,10 +18958,13 @@ class DeepAgentsApp(App):
         self.call_later(_persist)
 
     def _build_debug_snapshot(self) -> list[SnapshotField]:
-        """Capture a point-in-time session/runtime snapshot for the console.
+        """Capture a session/runtime snapshot for the debug console header.
 
-        Each field is captured defensively: a subsystem that raises degrades to
-        an ``(unavailable: ...)`` value rather than aborting the whole overlay,
+        Called once when the console opens and again on each console refresh
+        tick (via `snapshot_provider`) so live fields such as message count and
+        token usage stay current while the modal is open. Each field is captured
+        defensively: a subsystem that raises degrades to an
+        ``(unavailable: ...)`` value rather than aborting the whole overlay,
         because a diagnostic tool must still open when the app is misbehaving.
 
         Returns:
@@ -18828,6 +19040,16 @@ class DeepAgentsApp(App):
                 thread_id=thread_id,
             )
 
+        def _messages() -> str:
+            # The store is cleared on every thread switch/reset, so its count is
+            # scoped to the current thread. Reads in-memory state only, keeping
+            # the snapshot free of I/O.
+            store = self._message_store
+            total = store.total_count
+            if total == 0:
+                return "0"
+            return f"{total} ({store.visible_count} rendered)"
+
         def _log_path() -> str:
             path = installed_debug_log_path()
             if path:
@@ -18844,6 +19066,7 @@ class DeepAgentsApp(App):
             _safe("Version", lambda: __version__, copyable=True),
             _model_field(),
             _thread_field(),
+            _safe("Messages", _messages),
             _safe("CWD", lambda: self._cwd, copyable=True),
             _safe("Approval mode", lambda: self._approval_mode.value),
             _safe(
@@ -20794,6 +21017,28 @@ class DeepAgentsApp(App):
         except ModuleNotFoundError:
             logger.warning("Could not preload restart_prompt modal", exc_info=True)
 
+    def _schedule_restart_offer(
+        self, coro: Coroutine[Any, Any, None], *, context: str
+    ) -> None:
+        """Run a post-install restart offer as a detached background task.
+
+        The `/install` slash command reaches the restart offer through the App's
+        `on_chat_input_submitted` handler, which is awaited inline on the App
+        message pump. Awaiting the restart modal there blocks the pump, so the
+        modal never receives the Enter/Esc key events it needs to resolve and
+        appears frozen. Detaching the offer onto its own task lets the command
+        handler return and frees the pump to route keys to the modal — the same
+        reason the post-`/auth` web-search offer is scheduled rather than
+        awaited (see `_launch_web_search_restart_prompt`).
+
+        Args:
+            coro: The restart-offer coroutine to run off the message pump.
+            context: Short description used if the task is logged on failure.
+        """
+        task = asyncio.create_task(coro, name=f"restart-offer:{context}")
+        self._track_server_restart_task(task)
+        task.add_done_callback(_log_task_exception)
+
     async def _offer_restart_after_install(self, label: str) -> None:
         """Offer a one-keypress restart after a restart-capable install.
 
@@ -22298,7 +22543,7 @@ class DeepAgentsApp(App):
                 (e.g., `'anthropic:claude-sonnet-4-5'`) or just the model name
                 for auto-detection.
             extra_kwargs: Extra constructor kwargs from `--model-params`.
-            announce_unchanged: Whether to mount a message when the requested
+            announce_unchanged: Whether to toast a notice when the requested
                 model is already active.
             persist: Whether to write the model to the user's recent/default
                 config.
@@ -22425,9 +22670,21 @@ class DeepAgentsApp(App):
                 params_suffix = _format_model_params(extra_kwargs)
                 if announce_unchanged:
                     message = f"Already using {current}{params_suffix}"
-                    if message != self._last_model_unchanged_message:
-                        await self._mount_message(AppMessage(message))
-                        self._last_model_unchanged_message = message
+                    # Suppress only while the previous identical toast is
+                    # presumed still on-screen. Once it expires, a later
+                    # intentional no-op selection must be able to toast again.
+                    now = _monotonic()
+                    last = self._last_model_unchanged
+                    if (
+                        last is None
+                        or last[0] != message
+                        or (now - last[1]) >= self.NOTIFICATION_TIMEOUT
+                    ):
+                        # A no-op re-selection is transient feedback, not part
+                        # of the conversation, so surface it as a toast rather
+                        # than an inline chat message.
+                        self.notify(message, markup=False)
+                        self._last_model_unchanged = (message, now)
                 logger.info(
                     "Model unchanged (%s); model_params=%s",
                     current,
@@ -22479,7 +22736,7 @@ class DeepAgentsApp(App):
 
             self._sync_status_model()
 
-            self._last_model_unchanged_message = None
+            self._last_model_unchanged = None
             params_suffix = _format_model_params(extra_kwargs)
             if not persist:
                 # Session-only switch (e.g. adopting a resumed thread's model):

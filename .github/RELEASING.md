@@ -387,7 +387,7 @@ Use the exact `<VERSION>` everywhere except the branch name. For example, beta `
    uv lock --directory <PATH> --python <PYTHON_VERSION>
    ```
 
-   Use the package's required Python version for `<PYTHON_VERSION>`: `3.14` for `acp`, `3.12` for every other package. This mapping is the same one the lock check enforces — see `python_version` in `libs/Makefile` and `_python_version` in `.github/scripts/check_lockfiles_pre_commit.py`. Locking with the wrong version will fail the pre-commit `lock-check`.
+   Use the package's required Python version for `<PYTHON_VERSION>`: `3.14` for `acp`, `3.12` for every other package. This mapping is the same one the lock check enforces — see `python_version` in `libs/Makefile` and `_python_version` in `.github/scripts/checks/check_lockfiles_pre_commit.py`. Locking with the wrong version will fail the pre-commit `lock-check`.
 
    For example, for the SDK:
 
@@ -646,7 +646,22 @@ A subtler sibling of the empty-commit case. release-please scopes a commit to a 
 
 **Avoid it** by landing lockfile regeneration in a separate `chore(deps):` commit/PR — `chore` is hidden and triggers no release, so only the package with real source changes is released.
 
-The `release_please_scope_check.yml` workflow ([`.github/scripts/check_lockfile_release_scope.py`](https://github.com/langchain-ai/deepagents/blob/main/.github/scripts/check_lockfile_release_scope.py)) catches this at PR time: when a bump-worthy PR changes only a lockfile inside a managed package, it posts a sticky comment naming the affected components and **fails the check**. Resolve it (route the lockfile churn through a `chore(deps):` commit), or — for an intentional lockfile-only release such as a leaf-package security bump — apply the `allow-lockfile-release` label to acknowledge the fan-out and let the PR pass. For the failure to actually gate merges, add the check to the branch's required status checks (repo settings).
+The `release_please_scope_check.yml` workflow ([`.github/scripts/release/check_lockfile_release_scope.py`](https://github.com/langchain-ai/deepagents/blob/main/.github/scripts/release/check_lockfile_release_scope.py)) catches this at PR time: when a bump-worthy PR changes only a lockfile inside a managed package, it posts a sticky comment naming the affected components and **fails the check**. Resolve it (route the lockfile churn through a `chore(deps):` commit), or — for an intentional lockfile-only release such as a leaf-package security bump — apply the `allow-lockfile-release` label to acknowledge the fan-out and let the PR pass. Applying the label posts a loud bypass warning that lists every touched component — bypassing does **not** stop release-please from opening those release PRs. For the failure to actually gate merges, add the check to the branch's required status checks (repo settings).
+
+After merge, `release_please_fanout_watch.yml` is a safety net: if an open `release(<component>):` PR's package path only changed lockfiles on `main` since the last released SHA, it sticky-comments that release PR and fails an advisory check so the fan-out is noticed within minutes. Recovery still follows [Reverting a Merged-but-Unreleased PR](#reverting-a-merged-but-unreleased-pr).
+
+### Multi-component fan-out
+
+Lockfile-only is a special case of a more general rule: **one bump-worthy PR should touch real files in at most one release-please component.**
+
+When a `feat`/`fix` (etc.) also edits non-lockfile files under other managed packages — commonly cross-package `pyproject.toml` lower-bound bumps that accompany a single-package feature — release-please opens a **separate release PR for every touched component**. That is usually not what the author intended.
+
+**Canonical split:**
+
+1. One feature/fix PR scoped to the single package that owns the user-facing change (`feat(code): ...`).
+2. One `chore(deps): ...` PR for the cross-package dependency / lockfile churn (`chore` is hidden and does not open release PRs).
+
+`release_please_scope_check.yml` blocks bump-worthy multi-component real-file PRs the same way it blocks lockfile-only fan-out (same sticky / `allow-lockfile-release` bypass). `pr_scope_file_check.yml` sticky copy also states this release-please consequence when title scope and package dirs disagree. See also [Lockfile churn fan-out](#lockfile-churn-fan-out).
 
 ### Overriding a Merged Commit's Changelog Entry
 

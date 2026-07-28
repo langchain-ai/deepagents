@@ -123,7 +123,7 @@ jobs:
       aggregate_matrix: ${{ steps.agg-matrix.outputs.aggregate_matrix }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🔀 Expand matrix by shard"
         id: shard-matrix
@@ -141,7 +141,7 @@ jobs:
           MODEL_MATRIX: '{"include":[{"model":"${{ inputs.model }}"}]}'
           N_SHARDS: ${{ inputs.n_shards || '1' }}
           N_TASKS: ${{ inputs.n_tasks }}
-        run: python .github/scripts/shard_matrix.py
+        run: python .github/scripts/evals/shard_matrix.py
 
       - name: "🧮 Resolve matrix + parallel pool"
         id: resolve-matrix
@@ -361,7 +361,7 @@ jobs:
           echo "All required credentials present for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -450,11 +450,11 @@ jobs:
         # provider (for local `langgraph dev`); a single job needs just one, so
         # drop the rest before Harbor builds the agent env. In-place edit of the
         # ephemeral checkout only — the committed file is untouched. Pure stdlib,
-        # unit-tested in .github/scripts/test_prune_agent_deps.py. Both paths are
+        # unit-tested in .github/scripts/tests/evals/test_prune_agent_deps.py. Both paths are
         # absolute ($GITHUB_WORKSPACE) so this step doesn't depend on the job's
         # `working-directory: libs/evals` default.
         run: |
-          python3 "$GITHUB_WORKSPACE/.github/scripts/prune_agent_deps.py" \
+          python3 "$GITHUB_WORKSPACE/.github/scripts/evals/prune_agent_deps.py" \
             "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
 
       - name: "🗂️ Populate local dataset corpus"
@@ -660,7 +660,7 @@ jobs:
             # match fails loudly); select_shard_tasks then applies the n_tasks cap
             # and the i % n_shards partition of Harbor's _filter_task_ids subset.
             # task_display_name mirrors each task id's get_name() (see
-            # .github/scripts/shard_matrix.py + tests).
+            # .github/scripts/evals/shard_matrix.py + tests).
             if ! [[ "$HARBOR_SHARD_INDEX" =~ ^[0-9]+$ ]] || [ "$HARBOR_SHARD_INDEX" -ge "$HARBOR_N_SHARDS" ]; then
               echo "::error::Invalid shard index '$HARBOR_SHARD_INDEX' for $HARBOR_N_SHARDS shards"; exit 1
             fi
@@ -773,7 +773,7 @@ jobs:
           # graph=...`. Callers already validate, so this is defense-in-depth;
           # AGENT_IMPL is passed via env, never interpolated into the validator.
           AGENT_IMPL="$HARBOR_AGENT_IMPL" python3 \
-            "$GITHUB_WORKSPACE/.github/scripts/validate_agent_graph.py" \
+            "$GITHUB_WORKSPACE/.github/scripts/evals/validate_agent_graph.py" \
             "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
           HARBOR_AGENT_GRAPH="$HARBOR_AGENT_IMPL"
           # Precedence: explicit override > tau3-subset name hook > the value
@@ -788,7 +788,7 @@ jobs:
           # re-runs separate); shards of a category share it, so harbor's stock plugin
           # (>=harbor-langsmith 0.3.0) converges them into one experiment. Reads
           # HARBOR_MODEL/BRANCH/AGENT_IMPL/CATEGORY + GITHUB_RUN_ID/ATTEMPT from the env.
-          HARBOR_LANGSMITH_EXPERIMENT="$(python3 "$GITHUB_WORKSPACE/.github/scripts/experiment_name.py")"
+          HARBOR_LANGSMITH_EXPERIMENT="$(python3 "$GITHUB_WORKSPACE/.github/scripts/evals/experiment_name.py")"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_EXPERIMENT=$HARBOR_LANGSMITH_EXPERIMENT" >> "$GITHUB_ENV"
@@ -1032,7 +1032,7 @@ jobs:
       HARBOR_RESULT: ${{ needs.harbor.result }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🔖 Compute leaf slug"
         id: slug
@@ -1177,7 +1177,7 @@ jobs:
           fi
           # --model/--category are recorded authoritatively in summary.json
           # (model is otherwise null when every trial errored).
-          python3 .github/scripts/aggregate_shards.py _shards \
+          python3 .github/scripts/evals/aggregate_shards.py _shards \
             --rollouts "$ROLLOUTS" \
             "${expected_shards_args[@]}" \
             --dataset "$DATASET" \

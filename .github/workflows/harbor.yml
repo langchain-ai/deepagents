@@ -119,6 +119,7 @@ on:
         options:
           - dcode
           - bare
+          - search
           - tau3
       n_tasks:
         description: "Maximum number of tasks to run (0 = all)."

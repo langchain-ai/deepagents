@@ -12,10 +12,12 @@ import hashlib
 import io
 import json
 import re
+import tomllib
 from csv import writer as csv_writer
 from typing import TYPE_CHECKING
 
 import pytest
+from harbor.models.task.config import NetworkMode, TaskConfig
 
 from harbor_adapters.lohosearch import adapter
 
@@ -149,16 +151,41 @@ def test_solution_never_interpolates_the_answer_into_the_shell(tmp_path: Path) -
     assert base64.b64decode(payload.group(1)).decode() == f"{hostile}\n"
 
 
-def test_task_toml_grants_the_agent_public_egress(tmp_path: Path) -> None:
+def test_task_toml_grants_public_egress_and_never_requests_an_allowlist(
+    tmp_path: Path,
+) -> None:
+    """Harbor rejects `allowlist` on backends without the capability.
+
+    Only the docker backend declares `network_allowlist`; on the LangSmith
+    sandbox CI uses, requesting one aborts the trial at construction. An
+    open-web benchmark needs public egress anyway.
+    """
     rows = adapter.parse_rows(_csv([("Q", "A")]))
     dataset_dir = tmp_path / "dataset"
     dataset_dir.mkdir()
 
     task_dir = adapter.generate_task(rows[0], "loho-01", dataset_dir)
-    task_toml = (task_dir / "task.toml").read_text()
+    raw = tomllib.loads((task_dir / "task.toml").read_text())
 
-    assert '[agent]\nnetwork_mode = "public"' in task_toml
-    assert f'question_sha256 = "{rows[0].question_sha256}"' in task_toml
+    # Parsed, not grepped: the comment above the setting explains why an
+    # allowlist is rejected, so the word appears in the file legitimately.
+    assert raw["environment"]["network_mode"] == "public"
+    assert "allowed_hosts" not in raw["environment"]
+    assert "agent" not in raw
+    assert "verifier" not in raw
+    assert raw["metadata"]["question_sha256"] == rows[0].question_sha256
+
+
+def test_task_toml_parses_against_harbors_schema(tmp_path: Path) -> None:
+    """Catch a malformed task.toml here rather than mid-run in CI."""
+    rows = adapter.parse_rows(_csv([("Q", "A")]))
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+
+    task_dir = adapter.generate_task(rows[0], "loho-01", dataset_dir)
+    config = TaskConfig.model_validate(tomllib.loads((task_dir / "task.toml").read_text()))
+
+    assert config.environment.resolve_baseline().network_mode is NetworkMode.PUBLIC
 
 
 def test_generate_task_regenerates_cleanly(tmp_path: Path) -> None:

@@ -852,3 +852,33 @@ def test_evals_ci_filter_includes_unified_workflows() -> None:
     ]
     for path in expected_paths:
         assert evals_filter.count(f"              - '{path}'") == 1
+
+
+def test_harbor_dispatch_agent_impl_options_match_the_graph_registry() -> None:
+    """The dispatch dropdown must offer exactly the graphs that exist.
+
+    GitHub validates `choice` inputs against this hardcoded list, so a graph
+    registered in langgraph.json but missing here cannot be dispatched at all
+    (HTTP 422), and a stale entry here dispatches a run that fails deep in the
+    leaf when the graph cannot be resolved.
+    """
+    import json
+
+    registry = json.loads(
+        (
+            ROOT / "libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
+        ).read_text()
+    )["graphs"]
+
+    dispatch = HARBOR_DISPATCH_WORKFLOW.read_text()
+    block = _indented_block(dispatch, "      agent_impl:")
+    options = {
+        line.strip().removeprefix("- ")
+        for line in block.splitlines()
+        if line.strip().startswith("- ")
+    }
+
+    assert options == set(registry), (
+        f"harbor.yml agent_impl options {sorted(options)} do not match "
+        f"langgraph.json graphs {sorted(registry)}"
+    )

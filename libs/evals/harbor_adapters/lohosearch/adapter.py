@@ -62,28 +62,30 @@ _DOCKERIGNORE = (
     ".env\n.env.*\n*.pem\n*.key\n*.crt\ncredentials.json\n.git\n__pycache__/\n.venv/\n.DS_Store\n"
 )
 
-# Package mirrors plus every model-provider API the scorecard workflow can
-# select. The agent phase overrides this with `public` (see `_task_toml`); this
-# baseline covers sandbox bootstrap and the verifier's judge calls.
-_ALLOWED_HOSTS = (
-    "astral.sh",
-    "*.astral.sh",
-    "github.com",
-    "*.githubusercontent.com",
-    "pypi.org",
-    "*.pythonhosted.org",
-    "api.smith.langchain.com",
-    "api.anthropic.com",
-    "api.openai.com",
-    "generativelanguage.googleapis.com",
-    "openrouter.ai",
-    "*.baseten.co",
-    "api.fireworks.ai",
-    "ollama.com",
-    "api.groq.com",
-    "integrate.api.nvidia.com",
-    "api.x.ai",
-)
+_TASK_TOML = """version = "1.3"
+
+[metadata]
+source = "lohosearch"
+question_sha256 = "{question_sha256}"
+
+[environment]
+# `public`, with no phase overrides. Two reasons, and both are hard constraints
+# rather than preferences:
+#
+#   1. LoHoSearch is an open-web benchmark and the agent runs inside the sandbox,
+#      so the agent phase needs unrestricted egress by definition.
+#   2. `allowlist` is not merely ineffective on the LangSmith sandbox -- it is
+#      rejected. Harbor validates the requested mode against the backend's
+#      declared capabilities (`environments/base.py`
+#      `validate_network_policy_support`), and only the docker backend sets
+#      `network_allowlist`. Declaring an allowlist here would abort every trial
+#      at construction on the sandbox CI actually uses.
+#
+# A narrower `[verifier]` block was the intent -- the verifier is the only place
+# the answer key exists -- but it would hit the same rejection, so verifier
+# isolation is not expressible on this backend.
+network_mode = "public"
+"""
 
 
 @dataclass(frozen=True)
@@ -377,19 +379,4 @@ def copy_verifier_templates(tests_dir: Path) -> None:
 
 
 def _task_toml(row: Row) -> str:
-    hosts = ", ".join(f'"{host}"' for host in _ALLOWED_HOSTS)
-    return (
-        'version = "1.3"\n\n'
-        "[metadata]\n"
-        'source = "lohosearch"\n'
-        f'question_sha256 = "{row.question_sha256}"\n\n'
-        "[environment]\n"
-        # Baseline for sandbox bootstrap and the verifier's judge calls.
-        'network_mode = "allowlist"\n'
-        f"allowed_hosts = [{hosts}]\n\n"
-        "[agent]\n"
-        # LoHoSearch is an open-web benchmark and the agent runs inside the
-        # sandbox, so the agent phase needs unrestricted egress. On the LangSmith
-        # sandbox `public` is also the only mode that grants any egress at all.
-        'network_mode = "public"\n'
-    )
+    return _TASK_TOML.format(question_sha256=row.question_sha256)

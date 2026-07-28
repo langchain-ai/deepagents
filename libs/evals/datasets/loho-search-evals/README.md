@@ -76,10 +76,24 @@ models.
 
 ## Network policy
 
-The agent phase runs with `network_mode = "public"`: the benchmark is open-web, and the agent
-runs inside the sandbox, so it needs real egress. `fetch_url`'s SSRF guards still block private
-and link-local addresses, and `TAVILY_API_KEY` is on the shell-tool env denylist so the agent
-cannot read its own search key.
+Tasks declare `network_mode = "public"` with no phase overrides.
+
+The agent needs it by definition — this is an open-web benchmark and the agent runs inside the
+sandbox. The narrower design would have been an allowlisted baseline with a `[verifier]` block
+restricted to the judge endpoints, since the verifier is the only place the answer key exists.
+**That is not expressible on the LangSmith sandbox.** Harbor validates the requested mode
+against the backend's declared capabilities (`environments/base.py`,
+`validate_network_policy_support`), and only the docker backend sets `network_allowlist`;
+requesting an allowlist elsewhere aborts every trial at construction.
+
+Remaining protections: `fetch_url`'s SSRF guards still block private and link-local addresses,
+`TAVILY_API_KEY` is on the shell-tool env denylist so the agent cannot read its own search key,
+and the answer key is never copied into the agent image — Harbor mounts `tests/` only at verify
+time, after the agent is killed.
+
+> Note: the same capability check means the existing `context` dataset, which declares
+> `network_mode = "allowlist"`, cannot run on the LangSmith sandbox under the pinned Harbor
+> either. That is a pre-existing issue independent of this dataset.
 
 ## Task set
 

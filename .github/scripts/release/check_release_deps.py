@@ -8,9 +8,12 @@ the real index (`uv pip compile --no-sources`), so an unsatisfiable or
 not-yet-published runtime dependency fails before merge/publish instead of at
 user install time.
 
-This module also owns the shared PyPI JSON client (`fetch_pypi_json`) used by
-the dependency-freshness check; the import direction is one-way
-(`check_dep_freshness` imports from here) to avoid a cycle.
+This module also owns the helpers shared with the dependency-freshness check:
+the PyPI JSON client (`fetch_pypi_json`, `PyPIRequestError`, `FetchPyPI`),
+manifest discovery (`changed_manifests`, `load_release_packages`), and the
+Actions output writers (`_write_output`, `_write_step_summary` — underscored but
+deliberately shared). The import direction is one-way (`check_dep_freshness`
+imports from here) to avoid a cycle.
 """
 
 from __future__ import annotations
@@ -22,10 +25,11 @@ import subprocess
 import tempfile
 import time
 import tomllib
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from http.client import HTTPException
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, Self
+from typing import Any, Protocol, Self, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
@@ -34,9 +38,6 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
 from packaging.version import InvalidVersion, Version
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CONFIG = REPO_ROOT / "release-please-config.json"
@@ -49,6 +50,7 @@ DEFAULT_REQUEST_ATTEMPTS = 3
 MAX_RETRY_DELAY = 5.0
 SERVER_ERROR_MIN = 500
 SERVER_ERROR_MAX = 600
+HTTP_NOT_FOUND = 404
 TRANSIENT_HTTP_STATUSES = frozenset({408, 425, 429})
 RESOLVER_UV_KEYS = (
     "prerelease",
@@ -82,7 +84,7 @@ class ResolverFailure:
 
 @dataclass(frozen=True)
 class FollowUpConflict:
-    """A sibling release package whose published metadata conflicts with a head requirement."""
+    """A package whose published metadata conflicts with its head requirement."""
 
     manifest_path: str
     """Path to the release package manifest declaring the requirement."""
@@ -91,7 +93,7 @@ class FollowUpConflict:
     """Published package name of the manifest declaring the requirement."""
 
     dependency_name: str
-    """Sibling release package that must publish a compatible release."""
+    """Sibling package constrained differently by the declaring package at head."""
 
     requirement: str
     """Requirement specifier declared on this branch."""
@@ -103,26 +105,47 @@ class FollowUpConflict:
     """Why the published package cannot satisfy the head requirement."""
 
 
-@dataclass
+@dataclass(frozen=True)
 class CheckResult:
     """Outcome of resolving changed release manifests against PyPI."""
 
     changed: bool
     """Whether any release-package manifest changed on the PR."""
 
-    failures: list[ResolverFailure] = field(default_factory=list)
+    failures: tuple[ResolverFailure, ...] = ()
     """Manifests whose dependencies failed to resolve against PyPI."""
 
-    followups: list[FollowUpConflict] = field(default_factory=list)
+    followups: tuple[FollowUpConflict, ...] = ()
     """Sibling release packages needing a compatible follow-up release."""
 
     unavailable: tuple[str, ...] = ()
-    """Dependencies whose PyPI metadata could not be fetched."""
+    """Declaring packages whose PyPI metadata could not be determined."""
+
+    analysis_error: str | None = None
+    """Why the follow-up analysis could not complete, if it failed outright."""
+
+    def __post_init__(self) -> None:
+        """Reject findings recorded against a run that checked nothing.
+
+        Raises:
+            ValueError: If `changed` is false but findings are present.
+
+        """
+        if not self.changed and (
+            self.failures or self.followups or self.unavailable or self.analysis_error
+        ):
+            msg = "CheckResult(changed=False) cannot carry findings"
+            raise ValueError(msg)
 
     @property
-    def non_transient_failures(self) -> list[ResolverFailure]:
+    def non_transient_failures(self) -> tuple[ResolverFailure, ...]:
         """Failures that are not transient network or package-index errors."""
-        return [failure for failure in self.failures if not failure.transient]
+        return tuple(failure for failure in self.failures if not failure.transient)
+
+    @property
+    def has_followup_debt(self) -> bool:
+        """Whether anything beyond the resolver verdict still needs reporting."""
+        return bool(self.followups or self.unavailable or self.analysis_error)
 
 
 class HTTPResponse(Protocol):
@@ -153,20 +176,37 @@ class OpenUrl(Protocol):
 class PyPIRequestError(RuntimeError):
     """A known failure while querying or decoding a PyPI response."""
 
-    def __init__(self, message: str, *, transient: bool) -> None:
+    def __init__(
+        self, message: str, *, transient: bool, status: int | None = None
+    ) -> None:
         """Initialize a PyPI request failure.
 
         Args:
             message: Human-readable failure detail.
             transient: Whether retrying later could reasonably succeed.
+            status: HTTP status that caused the failure, when there was one.
+                `404` distinguishes "no such project" from "could not reach PyPI".
 
         """
         super().__init__(message)
         self.transient = transient
+        self.status = status
+
+    @property
+    def not_found(self) -> bool:
+        """Whether PyPI reported the project does not exist."""
+        return self.status == HTTP_NOT_FOUND
 
 
 class _InvalidPyPIResponseError(ValueError):
     """Raised when PyPI returns a response that cannot be decoded safely."""
+
+
+Sleep = Callable[[float], None]
+"""Injectable delay function, matching `time.sleep`'s float-seconds signature."""
+
+FetchPyPI = Callable[[str], Mapping[str, object]]
+"""Injectable PyPI JSON fetcher, matching `fetch_pypi_json`'s public signature."""
 
 
 def _notice(message: str) -> None:
@@ -190,7 +230,9 @@ def _decode_pypi_response(raw: bytes) -> Mapping[str, object]:
     if not isinstance(payload, dict) or not isinstance(payload.get("releases"), dict):
         msg = "JSON response does not contain a releases object"
         raise _InvalidPyPIResponseError(msg)
-    return payload
+    # JSON object keys are always strings; the isinstance check above cannot
+    # prove that to a type checker, so state it once here.
+    return cast("Mapping[str, object]", payload)
 
 
 def _retry_delay(error: HTTPError | None, attempt: int) -> float:
@@ -216,7 +258,7 @@ def fetch_pypi_json(
     attempts: int = DEFAULT_REQUEST_ATTEMPTS,
     timeout: float = DEFAULT_REQUEST_TIMEOUT,
     opener: OpenUrl | None = None,
-    sleep: Any = time.sleep,
+    sleep: Sleep = time.sleep,
 ) -> Mapping[str, object]:
     """Fetch one project's PyPI JSON with bounded retries.
 
@@ -241,7 +283,7 @@ def fetch_pypi_json(
 
     canonical_name = canonicalize_name(name)
     url = f"https://pypi.org/pypi/{quote(canonical_name, safe='')}/json"
-    request = Request(  # URL is fixed to the HTTPS PyPI origin.
+    request = Request(  # noqa: S310  # URL is fixed to the HTTPS PyPI origin.
         url,
         headers={
             "Accept": "application/json",
@@ -258,7 +300,9 @@ def fetch_pypi_json(
             transient = _is_transient_status(err.code)
             if not transient or attempt == attempts - 1:
                 msg = f"PyPI returned HTTP {err.code} for {canonical_name}"
-                raise PyPIRequestError(msg, transient=transient) from err
+                raise PyPIRequestError(
+                    msg, transient=transient, status=err.code
+                ) from err
             sleep(_retry_delay(err, attempt))
         except (
             URLError,
@@ -485,30 +529,28 @@ def _write_output(name: str, value: str) -> None:
         output.write(f"{name}<<{delimiter}\n{value}\n{delimiter}\n")
 
 
-def _self_and_local_names(data: dict[str, Any]) -> set[str]:
-    """Return canonicalized names of the package itself and its local path sources."""
-    names: set[str] = set()
+def _self_name(data: dict[str, Any]) -> str | None:
+    """Return the canonicalized name of the package declared by a manifest."""
     project = data.get("project", {})
     if isinstance(project, dict):
         name = project.get("name")
         if isinstance(name, str):
-            names.add(canonicalize_name(name))
-    tool = data.get("tool", {})
-    uv = tool.get("uv", {}) if isinstance(tool, dict) else {}
-    sources = uv.get("sources", {}) if isinstance(uv, dict) else {}
-    if isinstance(sources, dict):
-        for name, source in sources.items():
-            if not isinstance(name, str):
-                continue
-            if isinstance(source, dict) and (
-                isinstance(source.get("path"), str) or source.get("workspace") is True
-            ):
-                names.add(canonicalize_name(name))
-    return names
+            return canonicalize_name(name)
+    return None
 
 
-def _manifest_requirements(data: dict[str, Any]) -> list[Requirement]:
-    """Parse all runtime and optional dependency requirements from a manifest."""
+def _manifest_requirements(data: dict[str, Any], context: str) -> list[Requirement]:
+    """Parse all runtime and optional dependency requirements from a manifest.
+
+    Args:
+        data: Parsed manifest contents.
+        context: Manifest path, used to attribute unparseable specs in warnings.
+
+    Returns:
+        Every requirement that parsed. Unparseable specs are skipped with a
+        warning — silently dropping one would shrink the follow-up analysis
+        without any trace on the job.
+    """
     project = data.get("project", {})
     if not isinstance(project, dict):
         return []
@@ -525,8 +567,8 @@ def _manifest_requirements(data: dict[str, Any]) -> list[Requirement]:
     for spec in specs:
         try:
             requirements.append(Requirement(spec))
-        except InvalidRequirement:
-            continue
+        except InvalidRequirement as err:
+            _warning(f"Ignoring unparseable requirement in {context}: {spec!r} ({err})")
     return requirements
 
 
@@ -534,78 +576,93 @@ def _sibling_requirements(
     manifests: list[str],
     sibling_names: set[str],
 ) -> dict[str, list[tuple[str, str, Requirement]]]:
-    """Collect head requirements on sibling release packages, keyed by sibling name.
+    """Collect sibling requirements keyed by their declaring package name.
 
-    Skips requirements on the declaring package itself and on local path sources:
-    those never need a published sibling release.
+    Local path/workspace sources are deliberately retained: they affect only local
+    installation, while this analysis checks whether the declaring package's
+    published metadata has caught up with its in-tree requirements.
     """
     collected: dict[str, list[tuple[str, str, Requirement]]] = {}
     for manifest_path in manifests:
-        data = tomllib.loads((REPO_ROOT / manifest_path).read_text(encoding="utf-8"))
+        try:
+            raw = (REPO_ROOT / manifest_path).read_text(encoding="utf-8")
+            data = tomllib.loads(raw)
+        except (OSError, tomllib.TOMLDecodeError) as err:
+            # This scan covers every release package, not just the changed ones,
+            # so one unreadable manifest must not sink the whole check.
+            _warning(f"Skipping follow-up analysis for {manifest_path}: {err}")
+            continue
         project = data.get("project", {})
         package_name = (
             project.get("name")
             if isinstance(project, dict) and isinstance(project.get("name"), str)
             else manifest_path.removesuffix("/pyproject.toml")
         )
-        skip = _self_and_local_names(data)
-        for requirement in _manifest_requirements(data):
-            canonical_name = canonicalize_name(requirement.name)
-            if canonical_name in skip or canonical_name not in sibling_names:
+        declaring_name = _self_name(data) or canonicalize_name(package_name)
+        for requirement in _manifest_requirements(data, manifest_path):
+            dependency_name = canonicalize_name(requirement.name)
+            if (
+                dependency_name == declaring_name
+                or dependency_name not in sibling_names
+            ):
                 continue
-            collected.setdefault(canonical_name, []).append(
+            collected.setdefault(declaring_name, []).append(
                 (manifest_path, package_name, requirement)
             )
     return collected
 
 
-def _parse_requires_dist(requires_dist: Any) -> list[Requirement]:
-    """Parse a `requires_dist` list, skipping entries that are not valid requirements."""
+def _parse_requires_dist(requires_dist: object, context: str) -> list[Requirement]:
+    """Parse a `requires_dist` list, warning on entries that are not valid.
+
+    Args:
+        requires_dist: Raw `requires_dist` value from a PyPI JSON payload.
+        context: Package name, used to attribute unparseable entries in warnings.
+
+    Returns:
+        Every entry that parsed. A dropped entry could turn a real conflict into
+        a "does not declare this dependency" row, so each one is logged.
+    """
     requirements = []
     for spec in requires_dist if isinstance(requires_dist, list) else []:
         if not isinstance(spec, str):
             continue
         try:
             requirements.append(Requirement(spec))
-        except InvalidRequirement:
-            continue
+        except InvalidRequirement as err:
+            _warning(
+                f"Ignoring unparseable published requirement for {context}: "
+                f"{spec!r} ({err})"
+            )
     return requirements
 
 
 def _latest_published_metadata(
-    payload: Any, package_name: str
+    payload: Mapping[str, object], package_name: str
 ) -> tuple[str, list[Requirement]] | None:
     """Return the newest published version and its parsed `requires_dist`.
 
-    Prefers the `info` block of the PyPI JSON response; falls back to the newest
-    release carrying its own metadata (older PyPI uploads sometimes lack it).
+    Reads the `info` block of the PyPI JSON response, which is the only place the
+    legacy API exposes `requires_dist`. Per-release *file* entries carry
+    `requires_python` but never `requires_dist`, so there is nothing to fall back
+    to: a payload without a usable `info.version` is indeterminate, and the
+    caller records it as such rather than concluding "no conflict".
+
+    Args:
+        payload: Decoded PyPI JSON response.
+        package_name: Package the payload describes, for warning attribution.
+
+    Returns:
+        A (version, requires_dist) pair, or `None` if `info.version` is missing.
     """
-    info = payload.get("info") if isinstance(payload, dict) else None
-    if isinstance(info, dict):
+    info = payload.get("info")
+    if isinstance(info, Mapping):
         version = info.get("version")
         if isinstance(version, str):
-            return version, _parse_requires_dist(info.get("requires_dist"))
-
-    releases = payload.get("releases") if isinstance(payload, dict) else None
-    if not isinstance(releases, dict):
-        return None
-
-    candidates = []
-    for raw_version, files in releases.items():
-        if not isinstance(files, list) or not files:
-            continue
-        first = files[0]
-        if not isinstance(first, dict) or not isinstance(first.get("requires_dist"), str):
-            continue
-        try:
-            candidates.append((Version(raw_version), first["requires_dist"]))
-        except InvalidVersion:
-            continue
-    if not candidates:
-        return None
-    candidates.sort(key=lambda item: item[0])
-    version, requires_dist = candidates[-1]
-    return str(version), _parse_requires_dist([requires_dist])
+            return version, _parse_requires_dist(
+                info.get("requires_dist"), package_name
+            )
+    return None
 
 
 def _published_constraint(
@@ -621,10 +678,20 @@ def _published_constraint(
 def _probe_versions(specifier: SpecifierSet) -> list[Version]:
     """Build probe versions that sample the edges of a specifier range.
 
-    The returned versions cover each bound itself plus one step above or below
-    it, so a probe lands on both sides of every edge. Wildcard and `!=`
-    specifiers are skipped — they cannot pin a concrete edge. Zero bounds
-    (e.g. `<0.1` with nothing below) contribute only the bound itself.
+    Each bound contributes itself, plus a neighbour one step along its release
+    tuple: upper bounds (`<`, `<=`, `~=`) also probe just *below* the bound, and
+    lower bounds (`>=`, `>`, `~=`, `==`) just *above* it. So only upper bounds
+    straddle their own edge; a lower bound's probes both sit inside its range.
+
+    Skipped, because they pin no concrete edge: `!=` and wildcard specifiers
+    (`==1.2.*`), plus anything `packaging` cannot parse as a version — including
+    `===` arbitrary-equality strings. A bound whose last release component is
+    already `0` (e.g. `<1.0`) gets no below-probe, since decrementing would
+    leave the release tuple.
+
+    Probes are rebuilt from `Version.release` alone, so epoch and pre/post
+    segments are dropped; `_ranges_may_overlap` treats a probe-free comparison
+    as inconclusive rather than trusting the sample.
     """
     probes: list[Version] = []
     for spec in specifier:
@@ -650,36 +717,51 @@ def _probe_versions(specifier: SpecifierSet) -> list[Version]:
 def _ranges_may_overlap(head: SpecifierSet, published: SpecifierSet) -> bool:
     """Return whether two specifier ranges could share a version.
 
-    Uses probe versions sampled from both range edges. Conservative: it may
-    report overlap for adjacent open ranges that technically do not intersect,
-    which only costs an extra follow-up row, never a missed conflict.
+    Returning `True` means "cannot prove these are disjoint", and the caller
+    treats that as *no* follow-up conflict. So the two error directions are not
+    symmetric: a false `True` suppresses a real conflict, while a false `False`
+    only adds a spurious row. Every inconclusive case therefore returns `True`.
+
+    Because the test is a finite probe sample, it can only ever prove overlap,
+    never disjointness. Two guards keep that from fabricating conflicts:
+    an unconstrained side overlaps everything, and a comparison for which
+    neither side yields any probe (wildcard-only or `!=`-only ranges, e.g.
+    `==0.7.*` against `==0.7.*`) is inconclusive rather than disjoint.
     """
     if not str(head) or not str(published):
         return True
-    for probe in _probe_versions(head) + _probe_versions(published):
-        if head.contains(probe, prereleases=True) and published.contains(
-            probe, prereleases=True
-        ):
-            return True
-    return False
+    probes = _probe_versions(head) + _probe_versions(published)
+    if not probes:
+        return True
+    return any(
+        head.contains(probe, prereleases=True)
+        and published.contains(probe, prereleases=True)
+        for probe in probes
+    )
 
 
 def _compare_with_published(
     manifest_path: str,
     package_name: str,
     requirement: Requirement,
-    canonical_name: str,
-    payloads: dict[str, Any],
+    published_version: str,
+    requires_dist: list[Requirement],
 ) -> FollowUpConflict | None:
-    """Compare one head requirement against the sibling's published PyPI metadata."""
-    payload = payloads.get(canonical_name)
-    if payload is None:
-        return None
-    latest = _latest_published_metadata(payload, canonical_name)
-    if latest is None:
-        return None
-    published_version, requires_dist = latest
-    published = _published_constraint(requires_dist, canonical_name)
+    """Compare a head requirement with the declaring package's PyPI metadata.
+
+    Args:
+        manifest_path: Manifest declaring the requirement.
+        package_name: Published name of the declaring package.
+        requirement: Requirement as declared on this branch.
+        published_version: Declaring package's newest published version.
+        requires_dist: That published version's parsed `requires_dist`.
+
+    Returns:
+        A conflict when the published metadata cannot satisfy the head
+        requirement, otherwise `None`.
+    """
+    dependency_name = canonicalize_name(requirement.name)
+    published = _published_constraint(requires_dist, dependency_name)
     if published is None:
         return FollowUpConflict(
             manifest_path=manifest_path,
@@ -700,8 +782,7 @@ def _compare_with_published(
         requirement=str(requirement.specifier) or "(any)",
         published_constraint=str(published.specifier),
         reason=(
-            f"published {published_version} constrains it to "
-            f"`{published.specifier}`"
+            f"published {published_version} constrains it to `{published.specifier}`"
         ),
     )
 
@@ -710,54 +791,89 @@ def find_follow_up_conflicts(
     manifests: list[str],
     package_paths: list[str],
     *,
-    fetcher: Any = None,
+    fetcher: FetchPyPI | None = None,
 ) -> tuple[list[FollowUpConflict], tuple[str, ...]]:
     """Identify sibling release packages that must publish a compatible release.
 
-    Compares each head requirement that targets another release-please package
-    against that package's latest published `requires_dist` on PyPI. A conflict
-    means the published sibling cannot satisfy the head requirement, so the
-    sibling needs its own release before the public install graph is healthy.
+    Scans every release-please package for requirements on the packages changed
+    by this release PR, then compares each reverse-dependent requirement with
+    the declaring package's latest published `requires_dist` on PyPI. A
+    conflict means that declaring package needs a follow-up release before the
+    public install graph reflects the repository.
 
     Args:
-        manifests: Changed release-package manifest paths on this PR.
+        manifests: Changed release-package manifest paths on this PR. An empty
+            list skips analysis.
         package_paths: All release-please package paths.
         fetcher: Injectable PyPI JSON fetcher for tests.
 
     Returns:
         A (conflicts, unavailable) pair: the conflicting sibling dependencies,
-        and the dependency names whose PyPI metadata could not be fetched.
+        and the declaring packages whose published metadata could not be
+        determined. A declaring package that PyPI reports as non-existent is
+        neither — it has no published release to conflict with, so it will
+        publish fresh with the branch's metadata.
     """
-    package_names = {
-        canonicalize_name(name)
-        for name in load_release_packages().values()
-        if isinstance(name, str)
-    }
-    requirements = _sibling_requirements(manifests, package_names)
+    if not manifests:
+        return [], ()
+
+    changed_names: set[str] = set()
+    for manifest_path in manifests:
+        try:
+            raw = (REPO_ROOT / manifest_path).read_text(encoding="utf-8")
+            data = tomllib.loads(raw)
+        except (OSError, tomllib.TOMLDecodeError) as err:
+            _warning(f"Cannot read changed manifest {manifest_path}: {err}")
+            continue
+        package_name = _self_name(data)
+        if package_name is not None:
+            changed_names.add(package_name)
+    if not changed_names:
+        return [], ()
+
+    all_manifests = [f"{path}/pyproject.toml" for path in package_paths]
+    requirements = _sibling_requirements(all_manifests, changed_names)
     if not requirements:
         return [], ()
 
-    payloads: dict[str, Any] = {}
+    metadata: dict[str, tuple[str, list[Requirement]]] = {}
     unavailable: list[str] = []
     fetch = fetcher or fetch_pypi_json
-    for canonical_name in sorted(requirements):
+    for declaring_name in sorted(requirements):
         try:
-            payloads[canonical_name] = fetch(canonical_name)
+            payload = fetch(declaring_name)
         except PyPIRequestError as err:
-            _warning(f"Skipping follow-up analysis for {canonical_name}: {err}")
-            unavailable.append(canonical_name)
+            if err.not_found:
+                _notice(
+                    f"{declaring_name} is not published on PyPI; it has no "
+                    "release metadata to conflict with."
+                )
+            else:
+                _warning(f"Skipping follow-up analysis for {declaring_name}: {err}")
+                unavailable.append(declaring_name)
+            continue
+        latest = _latest_published_metadata(payload, declaring_name)
+        if latest is None:
+            # A 200 with no usable `info.version` (e.g. every file yanked) is
+            # indeterminate, not healthy — never report it as "no conflict".
+            _warning(
+                f"No usable published metadata for {declaring_name}; "
+                "cannot determine whether it needs a follow-up release."
+            )
+            unavailable.append(declaring_name)
+            continue
+        metadata[declaring_name] = latest
 
     conflicts: list[FollowUpConflict] = []
-    for canonical_name in sorted(requirements):
-        if canonical_name not in payloads:
-            continue
-        for manifest_path, package_name, requirement in requirements[canonical_name]:
+    for declaring_name in sorted(metadata):
+        published_version, requires_dist = metadata[declaring_name]
+        for manifest_path, package_name, requirement in requirements[declaring_name]:
             conflict = _compare_with_published(
                 manifest_path,
                 package_name,
                 requirement,
-                canonical_name,
-                payloads,
+                published_version,
+                requires_dist,
             )
             if conflict is not None:
                 conflicts.append(conflict)
@@ -765,13 +881,14 @@ def find_follow_up_conflicts(
 
 
 def _follow_up_markdown(
-    followups: list[FollowUpConflict],
+    followups: tuple[FollowUpConflict, ...],
     *,
     unavailable: tuple[str, ...] = (),
+    analysis_error: str | None = None,
     acked: bool,
 ) -> list[str]:
     """Render the "follow-up releases" section for the PR comment/step summary."""
-    if not followups and not unavailable:
+    if not followups and not unavailable and not analysis_error:
         return []
 
     lines: list[str] = []
@@ -799,16 +916,17 @@ def _follow_up_markdown(
                 ]
             )
 
+        # Cap the table so a wide fan-out cannot bury the resolver log below it,
+        # or push the comment past GitHub's body limit; the overflow row below
+        # carries the remainder. Applied to every conflict set, not just
+        # multi-manifest ones, so FOLLOWUP_LIMIT means what its name says.
+        shown = followups[:FOLLOWUP_LIMIT]
         if len(by_manifest) > 1:
-            # The resolver stops at the first unsatisfiable manifest, so list the
-            # full class of conflicts rather than only the one that failed first.
-            shown = followups[:FOLLOWUP_LIMIT]
             lines.append(
-                f"_Conflicts span {len(by_manifest)} manifests; the resolver reports only the first unsatisfiable one._"
+                f"_Conflicts span {len(by_manifest)} manifests. The resolver stops at "
+                "the first unsatisfiable one, so this table is the authoritative list._"
             )
             lines.append("")
-        else:
-            shown = followups
 
         lines.extend(
             [
@@ -837,14 +955,26 @@ def _follow_up_markdown(
         lines.extend(
             [
                 "> [!WARNING]",
-                f"> PyPI metadata could not be fetched for: {names}. Re-run the job before relying on the follow-up list as exhaustive.",
+                f"> Published metadata could not be determined for: {names}. These are"
+                " neither confirmed clean nor confirmed to need a release — re-run the"
+                " job before relying on the list above as exhaustive.",
+                "",
+            ]
+        )
+    if analysis_error:
+        lines.extend(
+            [
+                "> [!WARNING]",
+                f"> The follow-up release analysis did not complete ({analysis_error}),"
+                " so the list above may be incomplete. The resolver verdict is"
+                " unaffected.",
                 "",
             ]
         )
     return lines
 
 
-def _failure_sections(failures: list[ResolverFailure]) -> list[str]:
+def _failure_sections(failures: tuple[ResolverFailure, ...]) -> list[str]:
     """Render per-manifest failure sections without a title or marker."""
     lines: list[str] = []
     for failure in failures:
@@ -891,11 +1021,12 @@ def _failure_sections(failures: list[ResolverFailure]) -> list[str]:
 
 
 def _failure_markdown(
-    failures: list[ResolverFailure],
+    failures: tuple[ResolverFailure, ...],
     *,
     include_marker: bool,
-    followups: list[FollowUpConflict] | None = None,
+    followups: tuple[FollowUpConflict, ...] = (),
     unavailable: tuple[str, ...] = (),
+    analysis_error: str | None = None,
 ) -> str:
     lines: list[str] = []
     if include_marker:
@@ -910,14 +1041,20 @@ def _failure_markdown(
         ]
     )
 
-    follow_up_lines = _follow_up_markdown(
-        followups or [], unavailable=unavailable, acked=False
+    lines.extend(
+        _follow_up_markdown(
+            followups,
+            unavailable=unavailable,
+            analysis_error=analysis_error,
+            acked=False,
+        )
     )
-    if follow_up_lines:
-        lines.extend(follow_up_lines)
 
     lines.extend(_failure_sections(failures))
 
+    # Only a genuine metadata conflict is worth acknowledging. A transient-only
+    # run reaches this renderer via the step summary, where suggesting the
+    # bypass label would be actively wrong advice — re-running is the fix.
     if any(not failure.transient for failure in failures):
         lines.extend(
             [
@@ -926,6 +1063,37 @@ def _failure_markdown(
             ]
         )
 
+    return "\n".join(lines).rstrip()
+
+
+def _advisory_markdown(result: CheckResult, *, include_marker: bool) -> str:
+    """Render the report for a run that resolved cleanly but still owes releases.
+
+    Resolution passing only proves the *changed* package installs today. A
+    reverse-dependent whose published metadata caps the new line still breaks
+    `pip install` for its own users, so that debt is reported even though the
+    check is green.
+    """
+    lines: list[str] = []
+    if include_marker:
+        lines.append(COMMENT_MARKER)
+    lines.extend(
+        [
+            "## Release dependency follow-ups",
+            "",
+            "Resolution succeeded for the changed manifests, so this check passes. "
+            "Published metadata on other release packages still needs to catch up:",
+            "",
+        ]
+    )
+    lines.extend(
+        _follow_up_markdown(
+            result.followups,
+            unavailable=result.unavailable,
+            analysis_error=result.analysis_error,
+            acked=False,
+        )
+    )
     return "\n".join(lines).rstrip()
 
 
@@ -977,7 +1145,7 @@ def check_release_dependencies(
     base_sha: str,
     head_sha: str,
     *,
-    fetcher: Any = None,
+    fetcher: FetchPyPI | None = None,
 ) -> CheckResult:
     """Resolve changed release-package manifests against PyPI.
 
@@ -988,8 +1156,8 @@ def check_release_dependencies(
 
     Returns:
         The resolution outcome: changed flag, resolver failures, sibling
-        follow-up conflicts, and any dependencies whose PyPI metadata could
-        not be fetched.
+        follow-up conflicts, and any declaring packages whose PyPI metadata
+        could not be determined.
     """
     packages = load_release_packages()
     package_paths = list(packages)
@@ -1000,7 +1168,7 @@ def check_release_dependencies(
 
     _notice(f"Changed package manifests: {', '.join(manifests)}")
 
-    result = CheckResult(changed=True)
+    failures: list[ResolverFailure] = []
     with tempfile.TemporaryDirectory(prefix="release-deps-") as tmp:
         tmpdir = Path(tmp)
         for index, manifest_path in enumerate(manifests):
@@ -1027,7 +1195,7 @@ def check_release_dependencies(
                 package_name = (
                     project.get("name") if isinstance(project, dict) else None
                 )
-                result.failures.append(
+                failures.append(
                     ResolverFailure(
                         manifest_path=manifest_path,
                         package_name=package_name
@@ -1039,26 +1207,60 @@ def check_release_dependencies(
                     )
                 )
 
-    # Run follow-up analysis whenever manifests changed — including on clean
-    # resolves under the bypass label, where a soft-run still needs the
-    # follow-up list to stay authoritative.
-    result.followups, result.unavailable = find_follow_up_conflicts(
-        manifests, package_paths, fetcher=fetcher
+    # Run follow-up analysis whenever manifests changed, regardless of the
+    # resolver verdict or the bypass label: a clean resolve of the changed
+    # package says nothing about reverse-dependents whose published metadata
+    # caps the new line, and `run_check` reports that debt on every path.
+    #
+    # It is advisory and never changes the verdict, so it must not be able to
+    # turn a decided run into an exit-2 crash — least of all on the acknowledged
+    # path, where a crash would leave the release with no way through.
+    followups: tuple[FollowUpConflict, ...] = ()
+    unavailable: tuple[str, ...] = ()
+    analysis_error: str | None = None
+    try:
+        found, unavailable = find_follow_up_conflicts(
+            manifests, package_paths, fetcher=fetcher
+        )
+        followups = tuple(found)
+    except Exception as err:  # noqa: BLE001  # advisory only; never fail the gate
+        analysis_error = f"{type(err).__name__}: {err}"
+        _warning(f"Follow-up release analysis failed: {analysis_error}")
+
+    return CheckResult(
+        changed=True,
+        failures=tuple(failures),
+        followups=followups,
+        unavailable=unavailable,
+        analysis_error=analysis_error,
     )
-    return result
 
 
 def _comment_body(result: CheckResult, *, acked: bool) -> str:
-    """Build the PR comment body for a completed (possibly soft) check run."""
+    """Build the PR comment body for a completed (possibly soft) check run.
+
+    Returns an empty string when there is nothing to report, which is the signal
+    the workflow uses to clear a stale sticky.
+    """
     non_transient = result.non_transient_failures
 
     if not acked:
-        return _failure_markdown(
-            non_transient,
-            include_marker=True,
-            followups=result.followups,
-            unavailable=result.unavailable,
-        )
+        if non_transient:
+            return _failure_markdown(
+                non_transient,
+                include_marker=True,
+                followups=result.followups,
+                unavailable=result.unavailable,
+                analysis_error=result.analysis_error,
+            )
+        if result.has_followup_debt:
+            return _advisory_markdown(result, include_marker=True)
+        return ""
+
+    # An acknowledged run with nothing to report clears the sticky rather than
+    # leaving behind a comment that only explains the label.
+    if not result.failures and not result.has_followup_debt:
+        return ""
 
     lines: list[str] = [
         COMMENT_MARKER,
@@ -1069,10 +1271,14 @@ def _comment_body(result: CheckResult, *, acked: bool) -> str:
         "",
     ]
 
-    follow_up_lines = _follow_up_markdown(
-        result.followups, unavailable=result.unavailable, acked=True
+    lines.extend(
+        _follow_up_markdown(
+            result.followups,
+            unavailable=result.unavailable,
+            analysis_error=result.analysis_error,
+            acked=True,
+        )
     )
-    lines.extend(follow_up_lines)
 
     if non_transient:
         lines.extend(
@@ -1084,17 +1290,17 @@ def _comment_body(result: CheckResult, *, acked: bool) -> str:
             ]
         )
         lines.extend(_failure_sections(non_transient))
-    elif result.failures:
+    elif result.failures and not result.has_followup_debt:
         lines.extend(
             [
                 "Resolution hit only transient network or package-index errors; no metadata problems were detected.",
                 "",
             ]
         )
-    elif not result.followups and not result.unavailable:
+    elif result.failures:
         lines.extend(
             [
-                "Resolution succeeded against PyPI, and no sibling follow-up releases are required.",
+                "Resolution itself hit only transient network or package-index errors; the follow-ups above are still outstanding.",
                 "",
             ]
         )
@@ -1102,12 +1308,35 @@ def _comment_body(result: CheckResult, *, acked: bool) -> str:
     return "\n".join(lines).rstrip()
 
 
+def _summary_markdown(result: CheckResult, *, acked: bool) -> str:
+    """Render the step summary, which reports transient failures too.
+
+    The PR comment deliberately omits transient failures so a flaky run cannot
+    overwrite a real failure explanation. The summary has no such constraint and
+    is the readable surface for deciding whether to re-run, so it keeps every
+    failure log.
+    """
+    if acked:
+        return _comment_body(result, acked=True).removeprefix(COMMENT_MARKER).lstrip()
+    if result.failures:
+        return _failure_markdown(
+            result.failures,
+            include_marker=False,
+            followups=result.followups,
+            unavailable=result.unavailable,
+            analysis_error=result.analysis_error,
+        )
+    if result.has_followup_debt:
+        return _advisory_markdown(result, include_marker=False)
+    return ""
+
+
 def run_check(
     base_sha: str,
     head_sha: str,
     *,
     acked: bool,
-    fetcher: Any = None,
+    fetcher: FetchPyPI | None = None,
 ) -> int:
     """Run the release dependency check and emit GitHub Actions outputs.
 
@@ -1118,46 +1347,47 @@ def run_check(
         fetcher: Injectable PyPI JSON fetcher for tests.
 
     Returns:
-        Process exit code: 0 on success or a soft (acknowledged) run, 1 on an
-        unacknowledged resolution failure, 2 on an unexpected error.
+        Process exit code: 0 when nothing changed, when resolution succeeded, or
+        on an acknowledged soft run; 1 on an unacknowledged resolution failure,
+        including a purely transient one. Unexpected errors surface as exit 2
+        from `main`, which owns the catch-all.
     """
     result = check_release_dependencies(base_sha, head_sha, fetcher=fetcher)
 
     if not result.changed:
-        _write_output("failed", "false")
         _write_output("comment_body", "")
+        _write_output("failed", "false")
         return 0
 
     non_transient = result.non_transient_failures
+    summary = _summary_markdown(result, acked=acked)
+    if summary:
+        _write_step_summary(summary)
 
     if acked:
         _notice(
             f"`{BYPASS_LABEL}` label is set; running resolution in report-only mode."
         )
-        body = _comment_body(result, acked=True)
-        # The step summary duplicates the comment body but drops the HTML
-        # marker so it reads as a standalone report.
-        _write_step_summary(body.removeprefix(COMMENT_MARKER).lstrip())
+        # `comment_body` is written before `failed` throughout: a crash between
+        # the two writes must not leave `failed=false` with no body, which the
+        # workflow would read as "resolved" and use to delete the sticky.
+        _write_output("comment_body", _comment_body(result, acked=True))
         _write_output("failed", "false")
-        _write_output("comment_body", body)
         return 0
 
-    if not non_transient:
-        if result.failures:
-            # Purely transient failures fail closed with no comment, so an
-            # existing warning comment stays until the job is re-run.
-            _write_output("failed", "true")
-            _write_output("comment_body", "")
-            return 1
-        _write_output("failed", "false")
+    if not non_transient and result.failures:
+        # Purely transient failures fail closed with no comment, so an existing
+        # warning comment stays until the job is re-run.
         _write_output("comment_body", "")
-        return 0
+        _write_output("failed", "true")
+        return 1
 
-    body = _comment_body(result, acked=False)
-    _write_step_summary(body.removeprefix(COMMENT_MARKER).lstrip())
-    _write_output("failed", "true")
-    _write_output("comment_body", body)
-    return 1
+    # Follow-up debt is reported whether or not the resolver failed. A clean
+    # resolve still posts the sticky (and stays green) so the remaining release
+    # debt does not vanish the moment the bypass label comes off.
+    _write_output("comment_body", _comment_body(result, acked=False))
+    _write_output("failed", "true" if non_transient else "false")
+    return 1 if non_transient else 0
 
 
 def main() -> int:

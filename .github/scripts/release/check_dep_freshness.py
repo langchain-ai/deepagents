@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from enum import StrEnum
@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Self
 
 from check_release_deps import (
+    FetchPyPI,
     PyPIRequestError,
     _write_output,
     _write_step_summary,
@@ -41,9 +42,6 @@ class PrereleasePolicy(StrEnum):
     BOUND = "bound"
     ALWAYS = "always"
     NEVER = "never"
-
-
-FetchPyPI = Callable[[str], Mapping[str, object]]
 
 
 @dataclass(frozen=True)

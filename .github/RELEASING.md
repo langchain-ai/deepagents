@@ -679,6 +679,8 @@ When cutting a new major/minor line of a core package, it is normal for the rele
 
 Use `release-deps: acknowledged` only for this coordinated release order. If the pins on the branch are wrong (not merely ahead of what siblings have published), fix the dependency metadata instead of acknowledging. The follow-up list on the sticky is generated from live PyPI metadata, so treat "green under ack" as "the listed packages still owe releases," never as an all-clear.
 
+The follow-up sticky is independent of the label: a release PR that resolves cleanly still gets one whenever a sibling's *published* metadata caps the new line, because resolution only proves the changed package installs — not that its reverse-dependents still do. The sticky clears itself once nothing is outstanding. Packages listed under a "could not be determined" warning are neither confirmed clean nor confirmed to owe a release; re-run the job before treating that list as exhaustive.
+
 ### Overriding a Merged Commit's Changelog Entry
 
 Append a `BEGIN_COMMIT_OVERRIDE` block (shown below) to the **merged PR's body** when release-please needs to use a different message than the actual squash-merge commit. release-please reads merged PR bodies on every run within its lookback window and uses the override in place of the original commit message — no history rewrite, no force-push.

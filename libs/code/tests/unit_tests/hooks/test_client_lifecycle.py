@@ -15,7 +15,6 @@ from deepagents_code.hooks.client_lifecycle import (
     ClientHookService,
     ClientHookStopError,
 )
-from deepagents_code.hooks.feedback import HookFeedback
 from deepagents_code.hooks.models.domain import (
     DcodeNotificationKind,
     HookDecision,
@@ -31,6 +30,7 @@ from deepagents_code.hooks.models.domain import (
     SessionStartDecision,
 )
 from deepagents_code.hooks.permissions import permission_hook_outcome
+from deepagents_code.hooks.presenter import HookNoticeSeverity, HookPresenter
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -41,7 +41,7 @@ class _Runtime:
     cwd: Path
     decisions: deque[HookDecision]
     invocations: list[HookInvocation] = field(default_factory=list)
-    feedback: HookFeedback = field(default_factory=HookFeedback)
+    presenter: HookPresenter = field(default_factory=HookPresenter)
 
     def configured_events(self) -> frozenset[HookEvent]:
         return frozenset(decision.event for decision in self.decisions)
@@ -85,7 +85,13 @@ async def test_common_effects_context_and_live_hook_fields(
         ),
     )
     notices: list[str] = []
-    service = ClientHookService(runtime, notice=notices.append)
+
+    def record(message: str, severity: HookNoticeSeverity) -> None:
+        del severity
+        notices.append(message)
+
+    runtime.presenter.attach(notice=record)
+    service = ClientHookService(runtime)
 
     decision = await service.session_start(
         _context(prompt_id=prompt_id), SessionStartCause.STARTUP

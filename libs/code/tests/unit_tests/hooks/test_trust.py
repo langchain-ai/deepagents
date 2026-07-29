@@ -312,7 +312,6 @@ def _manager(cwd: Path, trust: WorkspaceTrust) -> HooksManager:
     return HooksManager.create(
         cwd=cwd,
         identity=lambda: HookSessionIdentity("thread", ApprovalMode.MANUAL),
-        notice=lambda _message: None,
         trust=trust,
     )
 

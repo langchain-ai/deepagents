@@ -1,4 +1,10 @@
-"""Shared user-facing feedback for Hooks v2 execution."""
+"""User-facing presentation for Hooks v2 execution.
+
+`HookPresenter` is the single place that turns hook results into something a
+person sees. It is owned by `HooksManager`, handed to every runtime that
+manager loads, and kept alive across reloads so its output sinks can be
+rebound once a UI exists without any other object holding its own copy.
+"""
 
 from __future__ import annotations
 
@@ -19,14 +25,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-HookFeedbackSeverity: TypeAlias = Literal["information", "warning", "error"]
+HookNoticeSeverity: TypeAlias = Literal["information", "warning", "error"]
 DiagnosticKey: TypeAlias = tuple[str, str, str, str | None, str | None]
 
 
 class HookNoticeCallback(Protocol):
     """Callable that surfaces a user-visible hook notice."""
 
-    def __call__(self, message: str, severity: HookFeedbackSeverity) -> None:
+    def __call__(self, message: str, severity: HookNoticeSeverity) -> None:
         """Present one notice to the user.
 
         Args:
@@ -53,17 +59,36 @@ class HookProgress:
     operation_id: str
     handler_id: str
     event: HookEvent
-    message: str
     active: bool
+    message: str = ""
+    """Handler-authored status text. Empty when the handler supplied none."""
 
 
 @dataclass(slots=True)
-class HookFeedback:
-    """Present hook feedback consistently across interactive and headless clients."""
+class HookPresenter:
+    """Present hook output consistently across interactive and headless clients."""
 
     notice: HookNoticeCallback | None = None
     status: HookStatusCallback | None = None
     _active_statuses: dict[str, str] = field(default_factory=dict)
+
+    def attach(
+        self,
+        *,
+        notice: HookNoticeCallback | None,
+        status: HookStatusCallback | None = None,
+    ) -> None:
+        """Rebind the output sinks without replacing the presenter.
+
+        Lets a client that loaded hooks before its UI existed start surfacing
+        output, while every runtime and service keeps the same instance.
+
+        Args:
+            notice: Sink for user-visible notices.
+            status: Sink for transient hook-owned status text.
+        """
+        self.notice = notice
+        self.status = status
 
     def present_decision(self, decision: HookDecision) -> None:
         """Present common side effects from a reduced hook decision.
@@ -104,7 +129,7 @@ class HookFeedback:
             )
             if key in delivered:
                 continue
-            severity: HookFeedbackSeverity = (
+            severity: HookNoticeSeverity = (
                 "error" if diagnostic.severity == "error" else "warning"
             )
             if self._notify(f"Hook {severity}: {diagnostic.message}", severity):
@@ -121,7 +146,7 @@ class HookFeedback:
             progress: Handler lifecycle update.
         """
         if progress.active:
-            self._active_statuses[progress.operation_id] = progress.message
+            self._active_statuses[progress.operation_id] = _status_text(progress)
         else:
             self._active_statuses.pop(progress.operation_id, None)
         message = next(reversed(self._active_statuses.values()), "")
@@ -154,14 +179,14 @@ class HookFeedback:
                 "warning",
             )
 
-    def _notify(self, message: str, severity: HookFeedbackSeverity) -> bool:
+    def _notify(self, message: str, severity: HookNoticeSeverity) -> bool:
         if self.notice is None:
-            logger.warning("Hook user feedback: %s", message)
+            logger.warning("Hook notice (no sink attached): %s", message)
             return True
         try:
             self.notice(message, severity)
         except Exception:
-            logger.warning("Failed to surface hook feedback", exc_info=True)
+            logger.warning("Failed to surface hook notice", exc_info=True)
             return False
         return True
 
@@ -172,6 +197,14 @@ class HookFeedback:
             self.status(message)
         except Exception:
             logger.warning("Failed to update hook status", exc_info=True)
+
+
+def _status_text(progress: HookProgress) -> str:
+    if progress.message:
+        return progress.message
+    from deepagents_code.config import get_glyphs
+
+    return f"Running {progress.event.value} hook{get_glyphs().ellipsis}"
 
 
 def _log_diagnostic(diagnostic: HookDiagnostic) -> None:

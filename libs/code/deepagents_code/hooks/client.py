@@ -92,7 +92,7 @@ async def fulfill_hook_invocation(
 
     async def execute() -> HookInvocationResponse:
         decision = await runtime.invoke(request.invocation)
-        runtime.feedback.present_decision(decision)
+        runtime.presenter.present_decision(decision)
         return HookInvocationResponse(
             protocol_version=1,
             invocation_id=request.invocation_id,

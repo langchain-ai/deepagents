@@ -9,8 +9,8 @@ from typing import TYPE_CHECKING
 
 from deepagents_code.hooks.capabilities import get_event_spec
 from deepagents_code.hooks.envelope import HookEnvelopeAdapter
-from deepagents_code.hooks.feedback import HookProgress
 from deepagents_code.hooks.models.domain import HookDiagnostic
+from deepagents_code.hooks.presenter import HookProgress
 from deepagents_code.hooks.runner import (
     MAX_HOOK_OUTPUT_BYTES,
     HandlerResult,
@@ -25,12 +25,6 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.snapshot import HookHandler, HooksSnapshot
 
 logger = logging.getLogger(__name__)
-
-
-def _default_progress_message(handler: HookHandler) -> str:
-    from deepagents_code.config import get_glyphs
-
-    return f"Running {handler.event.value} hook{get_glyphs().ellipsis}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +42,7 @@ class HookEngine:
         *,
         transcript_path: Path,
         agent_transcript_path: Path | None = None,
-        progress: Callable[[HookProgress], None] | None = None,
+        on_progress: Callable[[HookProgress], None] | None = None,
     ) -> HookDecision:
         """Execute matching handlers and return a normalized decision.
 
@@ -60,7 +54,7 @@ class HookEngine:
             invocation: Native lifecycle invocation.
             transcript_path: Materialized client transcript path.
             agent_transcript_path: Materialized subagent transcript path.
-            progress: Optional handler lifecycle callback.
+            on_progress: Optional handler lifecycle callback.
 
         Returns:
             The event-specific decision produced by ordered hook reduction.
@@ -103,7 +97,7 @@ class HookEngine:
                     default_timeout=event_default,
                     max_output_bytes=self.max_output_bytes,
                     operation_id=f"{id(invocation):x}:{handler.id}",
-                    progress=progress,
+                    on_progress=on_progress,
                 )
                 for handler in match.handlers
             )
@@ -126,19 +120,19 @@ async def _run_handler(
     default_timeout: float,
     max_output_bytes: int,
     operation_id: str,
-    progress: Callable[[HookProgress], None] | None,
+    on_progress: Callable[[HookProgress], None] | None,
 ) -> HandlerResult:
     message = (handler.status_message or "").strip()
-    if not message:
-        message = _default_progress_message(handler)
-    update = HookProgress(
-        operation_id=operation_id,
-        handler_id=handler.id,
-        event=handler.event,
-        message=message,
-        active=True,
+    _report_progress(
+        on_progress,
+        HookProgress(
+            operation_id=operation_id,
+            handler_id=handler.id,
+            event=handler.event,
+            message=message,
+            active=True,
+        ),
     )
-    _report_progress(progress, update)
     try:
         return await run_command_handler(
             handler,
@@ -149,7 +143,7 @@ async def _run_handler(
         )
     finally:
         _report_progress(
-            progress,
+            on_progress,
             HookProgress(
                 operation_id=operation_id,
                 handler_id=handler.id,

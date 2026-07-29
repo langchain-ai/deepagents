@@ -601,11 +601,11 @@ if TYPE_CHECKING:
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.goal_rubric import GoalCreateRequest, GoalCriteriaRequest
-    from deepagents_code.hooks.feedback import HookFeedback, HookFeedbackSeverity
     from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
     from deepagents_code.hooks.models.domain import (
         SessionStartCause,
     )
+    from deepagents_code.hooks.presenter import HookNoticeSeverity, HookPresenter
     from deepagents_code.hooks.trust import WorkspaceTrust
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
@@ -2283,7 +2283,6 @@ class TextualSessionState:
         self.hooks: HooksManager = HooksManager.adopting(
             None,
             identity=self.hook_identity,
-            notice=lambda _message: None,
         )
         """Client-side Hooks v2 coordinator.
 
@@ -4368,10 +4367,10 @@ class DeepAgentsApp(App):
                 lambda: asyncio.create_task(self._run_session_start_sequence()),
             )
 
-    def _create_hook_feedback(self) -> HookFeedback:
-        from deepagents_code.hooks.feedback import HookFeedback
+    def _create_hook_presenter(self) -> HookPresenter:
+        from deepagents_code.hooks.presenter import HookPresenter
 
-        return HookFeedback(
+        return HookPresenter(
             notice=self._notify_hook_feedback,
             status=self._update_hook_status,
         )
@@ -4379,7 +4378,7 @@ class DeepAgentsApp(App):
     def _notify_hook_feedback(
         self,
         message: str,
-        severity: HookFeedbackSeverity,
+        severity: HookNoticeSeverity,
     ) -> None:
         self.notify(message, severity=severity, markup=False)
 
@@ -4423,9 +4422,8 @@ class DeepAgentsApp(App):
         session_state.hooks = HooksManager.create(
             cwd=Path(self._cwd),
             identity=session_state.hook_identity,
-            notice=lambda message: self.notify(message, markup=False),
+            presenter=self._create_hook_presenter(),
             trust=self._hook_trust,
-            feedback=self._create_hook_feedback(),
         )
         # Re-read the app-owned selection last so a mode change during
         # construction cannot be overwritten by the freshly built state.
@@ -4445,7 +4443,7 @@ class DeepAgentsApp(App):
             self._detached_hooks = HooksManager.adopting(
                 None,
                 identity=self._hook_identity,
-                notice=lambda message: self.notify(message, markup=False),
+                presenter=self._create_hook_presenter(),
             )
         return self._detached_hooks
 
@@ -4465,10 +4463,7 @@ class DeepAgentsApp(App):
         """
         from pathlib import Path
 
-        await self._hooks.reload(
-            cwd=Path(self._cwd),
-            feedback=self._create_hook_feedback(),
-        )
+        await self._hooks.reload(cwd=Path(self._cwd))
 
     async def _run_session_start_hook(self, cause: SessionStartCause) -> bool:
         """Run `SessionStart`, surfacing a stop as a chat message.

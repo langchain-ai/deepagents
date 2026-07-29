@@ -62,8 +62,8 @@ from deepagents_code.hooks.tools import to_wire_call
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from deepagents_code.hooks.feedback import HookProgress
     from deepagents_code.hooks.models.domain import HookDomainEvent
+    from deepagents_code.hooks.presenter import HookProgress
     from deepagents_code.json_types import JsonObject
 
 
@@ -1655,7 +1655,7 @@ async def test_engine_reports_configured_handler_status(tmp_path: Path) -> None:
             ),
         ),
         transcript_path=_transcript_path(tmp_path),
-        progress=progress.append,
+        on_progress=progress.append,
     )
 
     assert [(update.active, update.message) for update in progress] == [

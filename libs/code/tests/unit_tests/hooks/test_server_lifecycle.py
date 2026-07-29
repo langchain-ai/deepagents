@@ -23,7 +23,6 @@ from deepagents_code.agent import _should_interrupt_tool_call, create_cli_agent
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.client import fulfill_hook_invocation
 from deepagents_code.hooks.context import apply_hooks_context
-from deepagents_code.hooks.feedback import HookFeedback
 from deepagents_code.hooks.interrupt import (
     HOOK_INVOCATION_INTERRUPT_TYPE,
     build_hook_interrupt_payload,
@@ -53,6 +52,7 @@ from deepagents_code.hooks.models.transport import (
     HookInvocationRequest,
     HookInvocationResponse,
 )
+from deepagents_code.hooks.presenter import HookPresenter
 from deepagents_code.hooks.runtime import HooksRuntime
 from deepagents_code.hooks.server_middleware import (
     ServerHooksMiddleware,
@@ -885,7 +885,7 @@ async def test_fulfillment_is_idempotent_in_flight_and_after_completion(
     runtime = HooksRuntime.create(
         cwd=tmp_path,
         config_dir=config_dir,
-        feedback=HookFeedback(
+        presenter=HookPresenter(
             notice=lambda message, severity: notices.append((message, severity))
         ),
     )

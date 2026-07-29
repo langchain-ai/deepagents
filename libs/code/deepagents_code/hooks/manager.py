@@ -26,6 +26,7 @@ from deepagents_code.hooks.permissions import (
     PermissionHookOutcome,
     PermissionPlan,
 )
+from deepagents_code.hooks.presenter import HookPresenter
 from deepagents_code.hooks.trust import WorkspaceTrust
 
 if TYPE_CHECKING:
@@ -37,13 +38,16 @@ if TYPE_CHECKING:
 
     from deepagents_code._cli_context import CLIContext
     from deepagents_code.approval_mode import ApprovalMode
-    from deepagents_code.hooks.feedback import HookFeedback
     from deepagents_code.hooks.models.domain import (
         CompactTrigger,
         DcodeNotificationKind,
         SessionEndCause,
         SessionStartCause,
         ToolCallData,
+    )
+    from deepagents_code.hooks.presenter import (
+        HookNoticeCallback,
+        HookStatusCallback,
     )
     from deepagents_code.hooks.runtime import HooksRuntime
     from deepagents_code.hooks.transcript import TranscriptRecorder
@@ -99,10 +103,15 @@ class _InertTranscriptRuntime:
 
 @dataclass(slots=True)
 class HooksManager:
-    """Owns the Hooks v2 runtime, hook service, and transcript projection."""
+    """Owns the Hooks v2 runtime, presenter, hook service, and transcripts.
+
+    The presenter is the manager's, not the runtime's: one instance is created
+    once and handed to every runtime the manager loads, so a reload or a late
+    UI attachment never leaves two presenters competing for the same output.
+    """
 
     identity: SessionIdentityProvider
-    notice: Callable[[str], None]
+    presenter: HookPresenter = field(default_factory=HookPresenter)
     _runtime: HooksRuntime | None = None
     trust: WorkspaceTrust = field(default_factory=WorkspaceTrust)
     """Policy re-resolved on every reload; the manager is its only interpreter."""
@@ -119,9 +128,8 @@ class HooksManager:
         *,
         cwd: Path,
         identity: SessionIdentityProvider,
-        notice: Callable[[str], None],
+        presenter: HookPresenter | None = None,
         trust: WorkspaceTrust | None = None,
-        feedback: HookFeedback | None = None,
     ) -> HooksManager:
         """Load hook configuration and return a ready manager.
 
@@ -131,19 +139,20 @@ class HooksManager:
         Args:
             cwd: Session working directory used to resolve hook configuration.
             identity: Reads current thread, approval mode, and prompt id.
-            notice: Surfaces hook `systemMessage` notices to the user.
+            presenter: Presents notices, diagnostics, and progress. When
+                omitted, a sinkless one is created and output is only logged
+                until `attach_output` binds it to a UI.
             trust: Project-hook trust policy. Defaults to trusting nothing
                 beyond what the persisted trust store already records.
-            feedback: Shared presenter for notices, diagnostics, and progress.
-                When omitted, feedback is logged rather than surfaced.
 
         Returns:
             A manager owning the loaded runtime, or an inert one on failure.
         """
         policy = trust if trust is not None else WorkspaceTrust.none()
-        runtime = _load_runtime(cwd, trust=policy, feedback=feedback)
+        resolved = presenter if presenter is not None else HookPresenter()
+        runtime = _load_runtime(cwd, trust=policy, presenter=resolved)
         _present_load_diagnostics(runtime)
-        return cls(identity, notice, runtime, policy)
+        return cls(identity, resolved, runtime, policy)
 
     @classmethod
     def adopting(
@@ -151,19 +160,32 @@ class HooksManager:
         runtime: HooksRuntime | None,
         *,
         identity: SessionIdentityProvider,
-        notice: Callable[[str], None],
+        presenter: HookPresenter | None = None,
     ) -> HooksManager:
         """Wrap an already-loaded runtime.
+
+        A supplied runtime brought its own presenter, so that one is adopted
+        rather than displaced; `presenter`'s sinks are copied onto it to keep a
+        single instance.
 
         Args:
             runtime: Preloaded runtime, or `None` when loading failed.
             identity: Reads current thread, approval mode, and prompt id.
-            notice: Surfaces hook `systemMessage` notices to the user.
+            presenter: Presents notices, diagnostics, and progress.
 
         Returns:
             A manager owning `runtime`.
         """
-        return cls(identity, notice, runtime)
+        if runtime is None:
+            return cls(
+                identity, presenter if presenter is not None else HookPresenter()
+            )
+        if presenter is not None:
+            runtime.presenter.attach(
+                notice=presenter.notice,
+                status=presenter.status,
+            )
+        return cls(identity, runtime.presenter, runtime)
 
     @classmethod
     def inert(cls) -> HooksManager:
@@ -174,29 +196,26 @@ class HooksManager:
         """
         from deepagents_code.approval_mode import ApprovalMode
 
-        return cls(
-            lambda: HookSessionIdentity("", ApprovalMode.MANUAL),
-            lambda _message: None,
-            None,
-        )
+        return cls(lambda: HookSessionIdentity("", ApprovalMode.MANUAL))
 
-    def attach_feedback(self, feedback: HookFeedback) -> None:
-        """Route hook notices, diagnostics, and progress through `feedback`.
+    def attach_output(
+        self,
+        *,
+        notice: HookNoticeCallback | None,
+        status: HookStatusCallback | None = None,
+    ) -> None:
+        """Route hook notices, diagnostics, and progress to a client's UI.
 
         For callers handed a manager that was loaded before their UI existed.
         Load diagnostics are re-presented so anything the earlier load could
         only log now reaches the user.
 
         Args:
-            feedback: Presenter to adopt.
+            notice: Sink for user-visible notices.
+            status: Sink for transient hook-owned status text.
         """
-        runtime = self._runtime
-        if runtime is None:
-            return
-        runtime.feedback.notice = feedback.notice
-        runtime.feedback.status = feedback.status
-        self._service = self._build_service()
-        _present_load_diagnostics(runtime)
+        self.presenter.attach(notice=notice, status=status)
+        _present_load_diagnostics(self._runtime)
 
     @property
     def enabled(self) -> bool:
@@ -215,36 +234,27 @@ class HooksManager:
         service = self._service
         return service is not None and service.has_handlers(event)
 
-    async def reload(
-        self,
-        *,
-        cwd: Path,
-        feedback: HookFeedback | None = None,
-    ) -> None:
+    async def reload(self, *, cwd: Path) -> None:
         """Rebuild the runtime after the session working directory changes.
 
         Workspace trust is re-resolved for `cwd`, so moving from a trusted
         project into an untrusted one drops project hooks instead of carrying
-        the previous grant forward.
+        the previous grant forward. The presenter survives the reload, so the
+        client's output sinks stay bound.
 
         Pending `SessionStart` context is dropped with the old runtime, matching
         the lifecycle boundary that triggers a reload.
 
         Args:
             cwd: New session working directory.
-            feedback: Shared presenter for notices, diagnostics, and progress.
-                When omitted, the previous runtime's presenter is preserved.
         """
         import asyncio
 
-        existing_feedback = (
-            self._runtime.feedback if self._runtime is not None else None
-        )
         self._runtime = await asyncio.to_thread(
             _load_runtime,
             cwd,
             trust=self.trust,
-            feedback=feedback if feedback is not None else existing_feedback,
+            presenter=self.presenter,
         )
         self._service = self._build_service()
         _present_load_diagnostics(self._runtime)
@@ -556,11 +566,7 @@ class HooksManager:
         runtime = self._runtime
         if runtime is None:
             return None
-        # Prefer the shared presenter so notices keep their severity and hook
-        # progress reaches the status bar. `notice` remains the fallback for
-        # callers that never supplied one.
-        presenter = runtime.feedback if runtime.feedback.notice is not None else None
-        return ClientHookService(runtime, notice=self.notice, feedback=presenter)
+        return ClientHookService(runtime)
 
     def _context(self, *, thread_id: str | None = None) -> ClientHookContext:
         identity = self.identity()
@@ -579,14 +585,14 @@ def _present_load_diagnostics(runtime: HooksRuntime | None) -> None:
     """
     if runtime is None:
         return
-    runtime.feedback.present_diagnostics(runtime.snapshot.diagnostics)
+    runtime.presenter.present_diagnostics(runtime.snapshot.diagnostics)
 
 
 def _load_runtime(
     cwd: Path,
     *,
     trust: WorkspaceTrust,
-    feedback: HookFeedback | None = None,
+    presenter: HookPresenter,
 ) -> HooksRuntime | None:
     """Resolve workspace trust for `cwd` and load a runtime under it.
 
@@ -596,7 +602,7 @@ def _load_runtime(
     Args:
         cwd: Session working directory.
         trust: Policy deciding whether project hooks may load.
-        feedback: Shared presenter for notices, diagnostics, and progress.
+        presenter: The manager's presenter, shared with the new runtime.
 
     Returns:
         The loaded runtime, or `None` when configuration could not be loaded.
@@ -607,7 +613,7 @@ def _load_runtime(
         return HooksRuntime.create(
             cwd=cwd,
             workspace_trusted=trust.allows(cwd),
-            feedback=feedback,
+            presenter=presenter,
         )
     except Exception:
         logger.exception("Failed to load hook configuration; hooks disabled")

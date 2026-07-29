@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from deepagents_code.approval_mode import ApprovalMode
-from deepagents_code.hooks.feedback import HookFeedback, HookFeedbackSeverity
 from deepagents_code.hooks.models.domain import (
     CompactTrigger,
     DcodeNotification,
@@ -40,16 +39,17 @@ from deepagents_code.hooks.permissions import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from pathlib import Path
     from typing import Protocol
+
+    from deepagents_code.hooks.presenter import HookPresenter
 
     class _ClientHooksRuntime(Protocol):
         @property
         def cwd(self) -> Path: ...
 
         @property
-        def feedback(self) -> HookFeedback: ...
+        def presenter(self) -> HookPresenter: ...
 
         def configured_events(self) -> frozenset[HookEvent]: ...
 
@@ -107,34 +107,17 @@ class ClientHookContext:
 
 @dataclass(slots=True)
 class ClientHookService:
-    """Execute client-owned events and apply their common side effects."""
+    """Execute client-owned events and apply their common side effects.
+
+    User-facing output goes through the runtime's presenter, which the owning
+    `HooksManager` also holds. The service never wraps or replaces it, so there
+    is exactly one presenter per session.
+    """
 
     runtime: _ClientHooksRuntime
-    notice: Callable[[str], None] | None = None
-    feedback: HookFeedback | None = None
     # SessionStart context accumulated per thread, consumed by
     # `take_session_context` for injection into the next model turn.
     _pending_context: dict[str, list[str]] = field(default_factory=dict)
-    _feedback: HookFeedback = field(init=False)
-
-    def __post_init__(self) -> None:
-        """Resolve one presenter shared with the session runtime when available."""
-        if self.feedback is not None:
-            self._feedback = self.feedback
-        elif self.notice is not None:
-            notice = self.notice
-
-            def sink(message: str, severity: HookFeedbackSeverity) -> None:
-                del severity
-                notice(message)
-
-            base = self.runtime.feedback
-            self._feedback = HookFeedback(
-                notice=sink,
-                status=base.status,
-            )
-        else:
-            self._feedback = self.runtime.feedback
 
     async def session_start(
         self,
@@ -311,7 +294,7 @@ class ClientHookService:
 
         The returned HITL decision carries the raw hook reason (or stop reason)
         for model-visible resume payloads. Attribution text is emitted only
-        through the shared feedback presenter.
+        through the shared presenter.
 
         Args:
             context: Current client session context.
@@ -413,7 +396,7 @@ class ClientHookService:
             tool_name: Display name of the affected tool.
             permission: Normalized permission effect.
         """
-        self._feedback.present_permission(tool_name, permission)
+        self.runtime.presenter.present_permission(tool_name, permission)
 
     async def _invoke(
         self,
@@ -430,5 +413,5 @@ class ClientHookService:
             event=event,
         )
         decision = await self.runtime.invoke(invocation)
-        self._feedback.present_decision(decision)
+        self.runtime.presenter.present_decision(decision)
         return decision

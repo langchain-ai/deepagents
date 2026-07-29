@@ -2457,17 +2457,21 @@ def create_cli_agent(
         # Server-owned hooks must wrap subagent tools too; otherwise Pre/Post
         # ToolUse only fire on the parent graph. Disable Stop so finishing a
         # subagent does not emit the main-agent Stop event (SubagentStop still
-        # fires from the parent wrap around `task`).
-        from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
+        # fires from the parent wrap around `task`). Hooks v2 stays off unless
+        # experimental mode is on.
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
-        hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
-        middleware.append(
-            ServerHooksMiddleware(
-                cwd=hooks_cwd,
-                emit_stop=False,
-                mcp_tools=mcp_tools,
+        if is_env_truthy(EXPERIMENTAL):
+            from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
+
+            hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
+            middleware.append(
+                ServerHooksMiddleware(
+                    cwd=hooks_cwd,
+                    emit_stop=False,
+                    mcp_tools=mcp_tools,
+                )
             )
-        )
         # Subagents share the on-disk filesystem backend and can edit the user
         # AGENTS.md, so they get the same managed onboarding-name block guard as
         # the main agent. Gated on memory because the block only exists when
@@ -2841,13 +2845,19 @@ def create_cli_agent(
         agent_middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
 
     # Server-owned Hooks v2 lifecycle events (Pre/Post tool, Stop, subagent).
-    # Gated at runtime by `hooks_server_events` on the per-run context so idle
-    # sessions without configured handlers pay no interrupt round-trip. Appended
-    # after the HITL middleware so `PreToolUse` resolves before approval routing.
-    from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
+    # Mounted only in experimental mode; when mounted, also gated at runtime by
+    # `hooks_server_events` on the per-run context so idle sessions without
+    # configured handlers pay no interrupt round-trip. Appended after the HITL
+    # middleware so `PreToolUse` resolves before approval routing.
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
-    hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
-    agent_middleware.append(ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools))
+    if is_env_truthy(EXPERIMENTAL):
+        from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
+
+        hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
+        agent_middleware.append(
+            ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools)
+        )
 
     if fs_tools is not None:
         # `fs_tools` is an explicit allowlist here (`--allow-fs-tools all` and an

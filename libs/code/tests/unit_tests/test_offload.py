@@ -1773,7 +1773,6 @@ class TestDriveServerSideCompaction:
             app._session_state.hooks = HooksManager.adopting(
                 runtime,
                 identity=app._session_state.hook_identity,
-                notice=lambda _message: None,
             )
             app._agent = agent
             app._lc_thread_id = "test-thread"

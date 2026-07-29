@@ -605,6 +605,7 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.models.domain import (
         SessionStartCause,
     )
+    from deepagents_code.hooks.presenter import HookNoticeSeverity
     from deepagents_code.hooks.trust import WorkspaceTrust
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
@@ -2282,7 +2283,6 @@ class TextualSessionState:
         self.hooks: HooksManager = HooksManager.adopting(
             None,
             identity=self.hook_identity,
-            notice=lambda _message: None,
         )
         """Client-side Hooks v2 coordinator.
 
@@ -4374,6 +4374,18 @@ class DeepAgentsApp(App):
                 lambda: asyncio.create_task(self._run_session_start_sequence()),
             )
 
+    def _notify_hook_feedback(
+        self,
+        message: str,
+        severity: HookNoticeSeverity,
+    ) -> None:
+        self.notify(message, severity=severity, markup=False)
+
+    def _update_hook_status(self, message: str) -> None:
+        """Update the status bar with hook-owned progress text."""
+        if self._status_bar:
+            self._status_bar.set_status_message(message, source="hooks")
+
     async def _init_session_state(self) -> None:
         """Create session state and load its Hooks v2 manager.
 
@@ -4409,7 +4421,8 @@ class DeepAgentsApp(App):
         session_state.hooks = HooksManager.create(
             cwd=Path(self._cwd),
             identity=session_state.hook_identity,
-            notice=lambda message: self.notify(message, markup=False),
+            notice=self._notify_hook_feedback,
+            status=self._update_hook_status,
             trust=self._hook_trust,
         )
         # Re-read the app-owned selection last so a mode change during
@@ -4430,7 +4443,8 @@ class DeepAgentsApp(App):
             self._detached_hooks = HooksManager.adopting(
                 None,
                 identity=self._hook_identity,
-                notice=lambda message: self.notify(message, markup=False),
+                notice=self._notify_hook_feedback,
+                status=self._update_hook_status,
             )
         return self._detached_hooks
 

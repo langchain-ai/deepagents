@@ -564,6 +564,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "ibm": "WATSONX_APIKEY",
     "litellm": "LITELLM_API_KEY",
     "meta": "MODEL_API_KEY",
+    "minimax": "MINIMAX_API_KEY",
     "mistralai": "MISTRAL_API_KEY",
     "nvidia": "NVIDIA_API_KEY",
     "openai": "OPENAI_API_KEY",
@@ -700,6 +701,11 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     #                 HF_INFERENCE_ENDPOINT.
     #   ibm           ChatWatsonx reads WATSONX_URL.
     #   meta          ChatMetaModel reads MODEL_API_BASE.
+    #   minimax       OpenAI-compatible with no dedicated LangChain integration,
+    #                 so the app resolves MINIMAX_API_BASE itself and passes it to
+    #                 ChatOpenAI as base_url. Listed under its own name (never the
+    #                 shared OPENAI_BASE_URL) for the same reason as the
+    #                 OpenAI-compatible providers noted below.
     #   mistralai     ChatMistralAI reads MISTRAL_BASE_URL.
     #   nvidia        ChatNVIDIA reads NVIDIA_BASE_URL.
     #   openai        langchain_openai reads OPENAI_API_BASE; the openai SDK
@@ -734,6 +740,7 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     "huggingface": ("HF_INFERENCE_ENDPOINT",),
     "ibm": ("WATSONX_URL",),
     "meta": ("MODEL_API_BASE",),
+    "minimax": ("MINIMAX_API_BASE",),
     "mistralai": ("MISTRAL_BASE_URL",),
     "nvidia": ("NVIDIA_BASE_URL",),
     "openai": ("OPENAI_BASE_URL", "OPENAI_API_BASE"),

@@ -1,5 +1,7 @@
 """Pytest shim for the curated release-notes Node.js tests."""
 
+import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -7,19 +9,19 @@ import yaml
 
 
 ROOT = Path(__file__).resolve().parents[4]
-AUTOMATION_WORKFLOW = ROOT / ".github/workflows/dcode_release_notes.yml"
-CHECK_WORKFLOW = ROOT / ".github/workflows/dcode_release_notes_check.yml"
+AUTOMATION_WORKFLOW = ROOT / ".github/workflows/release_notes.yml"
+CHECK_WORKFLOW = ROOT / ".github/workflows/release_notes_check.yml"
 RELEASE_PLEASE_WORKFLOW = ROOT / ".github/workflows/release-please.yml"
 
 
-def test_dcode_release_notes_node_tests() -> None:
+def test_release_notes_node_tests() -> None:
     """Run native Node.js tests for the GitHub workflow helper."""
     result = subprocess.run(
         [
             "node",
             "--test",
-            ".github/scripts/tests/release/dcode-release-notes.test.js",
-            ".github/scripts/tests/release/draft-dcode-release-notes.test.js",
+            ".github/scripts/tests/release/release-notes.test.js",
+            ".github/scripts/tests/release/draft-release-notes.test.js",
         ],
         cwd=ROOT,
         check=False,
@@ -91,6 +93,77 @@ def test_required_check_is_attached_to_the_validated_pr_head() -> None:
     assert "needs.update-lockfiles.result == 'success'" not in release_please
 
 
+def test_workflows_reference_helper_scripts_that_exist() -> None:
+    """Catch a helper rename that misses a workflow reference.
+
+    Both workflows load their helpers from a `trusted-source` checkout of `main`,
+    so a path that does not exist fails at runtime rather than at lint time. The
+    check workflow is the worst case: a bad path there breaks a required check.
+    """
+    referenced = set()
+    for workflow in (AUTOMATION_WORKFLOW, CHECK_WORKFLOW):
+        for match in re.finditer(
+            r"\./trusted-source/(\.github/scripts/\S+?\.js)\b", workflow.read_text()
+        ):
+            referenced.add(match.group(1))
+    assert referenced, "expected the workflows to reference helper scripts"
+    missing = sorted(path for path in referenced if not (ROOT / path).is_file())
+    assert not missing, f"workflows reference helper scripts that do not exist: {missing}"
+
+
+def test_release_notes_cover_every_release_please_component() -> None:
+    """Keep the curated-notes gate component-agnostic across the whole repo."""
+    dispatch = yaml.safe_load(RELEASE_PLEASE_WORKFLOW.read_text())["jobs"][
+        "dispatch-release-notes-check"
+    ]
+    step = next(
+        step for step in dispatch["steps"] if "release_notes_check.yml" in step["run"]
+    )
+    # A hardcoded component here would silently skip every other package's release
+    # PR, which is exactly the scoping this workflow moved away from. Only the
+    # executable lines matter; comments may name a component as an example.
+    code = "\n".join(
+        line
+        for line in step["run"].splitlines()
+        if not line.lstrip().startswith("#")
+    )
+    config = json.loads((ROOT / "release-please-config.json").read_text())
+    for component in (
+        meta["component"] for meta in config["packages"].values()
+    ):
+        assert component not in code, (
+            f"dispatch filter is scoped to {component}; it must match any component"
+        )
+
+    # The helper derives targets from release-please-config.json, so every managed
+    # component must resolve to its own changelog and release branch.
+    resolved = json.loads(
+        subprocess.run(
+            [
+                "node",
+                "-e",
+                "const m = require('./.github/scripts/release/release-notes.js');"
+                "const out = {};"
+                "for (const [k, v] of m.componentRegistry()) out[k] = v;"
+                "process.stdout.write(JSON.stringify(out));",
+            ],
+            cwd=ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        ).stdout
+    )
+    expected = {
+        meta["component"]: f"{path}/{meta.get('changelog-path', 'CHANGELOG.md')}"
+        for path, meta in config["packages"].items()
+    }
+    assert {k: v["changelogPath"] for k, v in resolved.items()} == expected
+    for component, target in resolved.items():
+        assert target["releaseBranch"] == (
+            f"release-please--branches--main--components--{component}"
+        )
+
+
 def test_mutation_workflow_commands_are_target_only() -> None:
     """Prevent untrusted fork comments from reaching repository mutations."""
     workflow = _load_workflow(AUTOMATION_WORKFLOW)
@@ -117,13 +190,13 @@ def test_mutation_workflow_commands_are_target_only() -> None:
     assert "createApplyCommit" in automation
 
     # The privileged draft/apply jobs must stay gated on the validate job's
-    # should-run output, pinned to the release-dcode environment, and read-only for
+    # should-run output, pinned to the release-bot environment, and read-only for
     # contents. Dropping the gate would let the App-token jobs run without the
     # permission/identity check; widening permissions would be privilege escalation.
     for job_name in ("draft", "apply"):
         job = workflow["jobs"][job_name]
         assert "needs.validate.outputs.should-run == 'true'" in job["if"]
-        assert job["environment"] == "release-dcode"
+        assert job["environment"] == "release-bot"
         assert job["permissions"] == {"contents": "read"}
         app_token = next(
             step for step in job["steps"] if step.get("id") == "app-token"
@@ -159,10 +232,12 @@ def test_mutation_workflow_commands_are_target_only() -> None:
             for step in privileged_steps
         )
 
-    assert "DCODE_RELEASE_BOT_TOKEN" not in automation
+    # No long-lived bot PAT: repository mutations go through short-lived App tokens.
+    # This also covers the old DCODE_RELEASE_BOT_TOKEN name as a substring.
+    assert "RELEASE_BOT_TOKEN" not in automation
 
     # Untrusted release text goes through a deterministic one-request helper, not
-    # dcode's agent/tool loop. Only the selected model key is placed in that
+    # an agent/tool loop. Only the selected model key is placed in that
     # process, under a provider-neutral variable that the model never sees.
     draft_step = next(
         step
@@ -171,7 +246,7 @@ def test_mutation_workflow_commands_are_target_only() -> None:
     )
     assert "uses" not in draft_step
     assert draft_step["run"] == (
-        "node ./trusted-source/.github/scripts/release/draft-dcode-release-notes.js"
+        "node ./trusted-source/.github/scripts/release/draft-release-notes.js"
     )
     assert set(draft_step["env"]) == {
         "INPUT_FILE",
@@ -186,7 +261,7 @@ def test_mutation_workflow_commands_are_target_only() -> None:
     assert "./trusted-source" not in {
         step.get("uses") for step in workflow["jobs"]["draft"]["steps"]
     }
-    helper = (ROOT / ".github/scripts/release/draft-dcode-release-notes.js").read_text()
+    helper = (ROOT / ".github/scripts/release/draft-release-notes.js").read_text()
     assert "child_process" not in helper
     assert "https://api.openai.com/v1/chat/completions" in helper
     assert "https://api.anthropic.com/v1/messages" in helper

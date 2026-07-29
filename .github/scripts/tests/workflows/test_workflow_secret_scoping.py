@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[4]
 WORKFLOWS = ROOT / ".github" / "workflows"
 APP_TOKEN_WORKFLOWS = (
     "close_unchecked_issues.yml",
-    "dcode_release_notes.yml",
+    "release_notes.yml",
     "dependabot_lockfile_fix.yml",
     "pr_labeler.yml",
     "pr_labeler_backfill.yml",

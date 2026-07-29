@@ -52,21 +52,12 @@ jobs:
         with:
           script: |
             // This workflow's YAML comes from the PR, but the helper is checked out
-            // from main, so a rename lands here one merge before it lands there.
-            // Try the current name first and fall back to the older ones, newest
-            // first, so the required check keeps working across the rename.
-            const fs = require('fs');
-            const candidates = [
-              './trusted-source/.github/scripts/release/release-notes.js',
-              './trusted-source/.github/scripts/release/dcode-release-notes.js',
-              './trusted-source/.github/scripts/dcode-release-notes.js',
-            ];
-            const helperPath = candidates.find(candidate => fs.existsSync(candidate));
-            if (!helperPath) {
-              core.setFailed(`No curated release-notes helper found on main; looked for: ${candidates.join(', ')}`);
-              return;
-            }
-            const { checkCuratedState, isReleaseBranchPr } = require(helperPath);
+            // from main. Renaming or moving the helper therefore breaks this require
+            // for exactly one merge — the new path does not exist on main until the
+            // renaming PR lands, and that PR needs this required check to pass. If
+            // you rename it, temporarily accept the old path here too and drop the
+            // fallback in a follow-up.
+            const { checkCuratedState, isReleaseBranchPr } = require('./trusted-source/.github/scripts/release/release-notes.js');
             const number = Number(process.env.PR_NUMBER);
             if (!Number.isSafeInteger(number) || number <= 0) {
               core.setFailed(`Invalid PR number: ${process.env.PR_NUMBER}`);

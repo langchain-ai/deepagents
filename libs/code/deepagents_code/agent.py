@@ -1929,12 +1929,11 @@ def _should_interrupt_tool_call(
     Returns:
         `True` to interrupt, or `False` for Auto/YOLO bypass.
     """
-    from deepagents_code.hooks.server_middleware import pre_tool_behavior
+    from deepagents_code.hooks.server_middleware import hook_decided_permission
 
     tool_call = getattr(request, "tool_call", None)
     tool_call_id = str(tool_call.get("id") or "") if isinstance(tool_call, dict) else ""
-    hook_behavior = pre_tool_behavior(getattr(request, "state", None), tool_call_id)
-    if hook_behavior in {"allow", "deny"}:
+    if hook_decided_permission(getattr(request, "state", None), tool_call_id):
         return False
 
     runtime = getattr(request, "runtime", None)

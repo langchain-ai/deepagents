@@ -20,7 +20,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents._tools import _apply_tool_description_overrides, _tool_name
-from deepagents._version import __version__
+from deepagents._version import __version__, _lc_version
 from deepagents.backends import StateBackend
 from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_CLASSES,
@@ -76,7 +76,16 @@ class TestCreateDeepAgentMetadata:
         agent = create_deep_agent(model=model)
         assert agent.config is not None
         versions = agent.config["metadata"]["lc_versions"]
-        assert versions["deepagents"] == __version__
+        assert versions["deepagents"] == _lc_version()
+        assert versions["deepagents"] in {__version__, f"{__version__}+editable"}
+
+    def test_versions_metadata_marks_editable_installs(self) -> None:
+        """Editable installs should use a PEP 440 `+editable` local segment."""
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        with patch("deepagents.graph._lc_version", return_value=f"{__version__}+editable"):
+            agent = create_deep_agent(model=model)
+        assert agent.config is not None
+        assert agent.config["metadata"]["lc_versions"]["deepagents"] == (f"{__version__}+editable")
 
     def test_ls_integration_metadata_preserved(self) -> None:
         """`ls_integration` should still be present alongside versions."""

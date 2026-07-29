@@ -603,6 +603,7 @@ dependencies = [
     { name = "deepagents-code" },
     { name = "dockerfile-parse" },
     { name = "harbor", extra = ["langsmith"] },
+    { name = "harbor-langsmith" },
     { name = "langchain" },
     { name = "langchain-anthropic" },
     { name = "langchain-baseten" },
@@ -648,7 +649,8 @@ requires-dist = [
     { name = "deepagents", editable = "../deepagents" },
     { name = "deepagents-code", directory = "../code" },
     { name = "dockerfile-parse", specifier = ">=2.0.1" },
-    { name = "harbor", extras = ["langsmith"], specifier = ">=0.16.1,<0.17.0" },
+    { name = "harbor", extras = ["langsmith"], specifier = ">=0.20.0,<0.21.0" },
+    { name = "harbor-langsmith", specifier = ">=0.3.0,<0.4.0" },
     { name = "langchain", specifier = ">=1.3.12,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.5.3,<2.0.0" },
     { name = "langchain-baseten", specifier = ">=0.2.1,<0.3.0" },
@@ -1033,10 +1035,9 @@ wheels = [
 
 [[package]]
 name = "harbor"
-version = "0.16.1"
+version = "0.20.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "datasets" },
     { name = "dirhash" },
     { name = "fastapi" },
     { name = "filelock" },
@@ -1047,6 +1048,7 @@ dependencies = [
     { name = "pathspec" },
     { name = "platformdirs" },
     { name = "pydantic" },
+    { name = "pyjwt" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
     { name = "requests" },
@@ -1058,9 +1060,9 @@ dependencies = [
     { name = "typer" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/37/46/49008d2a07f98ce0eb333366546cac8451d6e80c8068ac7687711c56c862/harbor-0.16.1.tar.gz", hash = "sha256:115c39ad76b3d1dbfd82ff51af904adf22acac240c90b12eb34e8cb7d46f8cc4", size = 1372236, upload-time = "2026-06-28T05:13:17.962Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1e/da/5a26998c6e7d9455321ab39bc8e9122993892ece13c3ad4f2b0de986aaf6/harbor-0.20.0.tar.gz", hash = "sha256:e2e5e88f772690fd121553ca34fd5d6dd6b4aaa51c8fae635abc84b112303112", size = 1590870, upload-time = "2026-07-18T21:25:22.578Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/44/f3/5abb440eff288c5fef89079e49b873e825a4b563b874b849dc728d551fab/harbor-0.16.1-py3-none-any.whl", hash = "sha256:26264bb011baf25f44d5264ee74e1a0882eb936f9883f8618bce1573878c3f66", size = 1560633, upload-time = "2026-06-28T05:13:15.704Z" },
+    { url = "https://files.pythonhosted.org/packages/76/03/b6617f32385295729f3af0ae0d512cf87ba4793b9ce462ea020d776a9025/harbor-0.20.0-py3-none-any.whl", hash = "sha256:4b7e48223aea2384cdb8c9eff35eaebd482fc9b1ec09f8193a121c47356ff19a", size = 1792416, upload-time = "2026-07-18T21:25:19.206Z" },
 ]
 
 [package.optional-dependencies]
@@ -1071,15 +1073,15 @@ langsmith = [
 
 [[package]]
 name = "harbor-langsmith"
-version = "0.1.1"
+version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "harbor" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/46/15/cb0f23fce7c644a3bf9a08084da0ab09cffca01f56af1a1bee2eea0ba3a0/harbor_langsmith-0.1.1.tar.gz", hash = "sha256:4ee136ea5915ebf5917ae7e7f0b2960641f6f54c6b6972bcf2bc7d54069ea1b9", size = 5196, upload-time = "2026-06-02T21:40:58.352Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/aa/fa/609e032d4077f668e84303fbc19a0e4e8fa706f628ed58c24dec2524cd71/harbor_langsmith-0.3.0.tar.gz", hash = "sha256:4ddf6dc7e9aa494d68adca3d7607b250fe942695e6ea1a254cf45dc5d8b23abc", size = 9465, upload-time = "2026-07-17T05:52:05.934Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/95/c9/c07047e62223d0e3ccb438f5fef4da9c718fbf02d002cae864726bb4c12b/harbor_langsmith-0.1.1-py3-none-any.whl", hash = "sha256:122387d2e4aeebe96e6966a9a423cdac9e0ff10b5ab65047458da5fc347a0361", size = 6427, upload-time = "2026-06-02T21:40:59.365Z" },
+    { url = "https://files.pythonhosted.org/packages/53/d2/a82f46008590ce4826d3881b44904e05b433d85db893356acaec61c999e8/harbor_langsmith-0.3.0-py3-none-any.whl", hash = "sha256:d323084e7c6504081f6814726a244ae5f372d846ba17267ebf4e0c5773ee436a", size = 11106, upload-time = "2026-07-17T05:52:04.986Z" },
 ]
 
 [[package]]

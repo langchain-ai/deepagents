@@ -646,3 +646,36 @@ def test_main_rejects_invalid_full_task_json_shape(tmp_path, monkeypatch):
 
         with pytest.raises(SystemExit, match=r"UNIFIED_TASKS_JSON must be a JSON object"):
             up.main([])
+
+
+def test_main_emits_experiments_map(tmp_path, monkeypatch):
+    """prep emits {experiment_name: expected_trials} for the usage collector."""
+    import json as _j
+
+    import experiment_name as en
+    import lite_tasks
+
+    monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "context")
+    monkeypatch.setenv("UNIFIED_AGENT_IMPLS", "bare")
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    monkeypatch.setenv("UNIFIED_ROLLOUTS", "2")
+    monkeypatch.setenv("GITHUB_RUN_ID", "99")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "o"))
+
+    assert up.main([]) == 0
+    lines = dict(line.split("=", 1) for line in (tmp_path / "o").read_text().splitlines())
+    experiments = _j.loads(lines["experiments"])
+
+    name = en.experiment_name(
+        model="anthropic:opus",
+        branch="current",
+        config="bare",
+        category="context",
+        run_id="99",
+        run_attempt="1",
+    )
+    assert name in experiments
+    # expected = tasks-in-category * rollouts (the count the collector waits for).
+    assert experiments[name] == len(lite_tasks.LITE_TASKS["context"]) * 2

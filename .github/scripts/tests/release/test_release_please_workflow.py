@@ -93,16 +93,61 @@ def test_release_dispatch_precedes_release_please_maintenance() -> None:
 
     release_please = jobs["release-please"]
     assert "guard-pending-release" in _needs(release_please)
+    # Must stay off this job: `trigger-releases` is skipped on ordinary pushes.
+    # The guard already sequences dispatch-before-maintenance; listing the
+    # skipped job here would reintroduce the #5161 skip poison that left main
+    # green while never refreshing release PRs.
     assert "trigger-releases" not in _needs(release_please)
-    # Exact match, so no status function sneaks in: without one, the implicit
-    # success() gate on `needs` is retained and a red/skipped guard blocks
-    # maintenance. Maintenance may run after release commits, so this must not
-    # re-test `release-commit` either.
-    assert _condition(release_please) == (
-        "needs.guard-pending-release.outputs.skip == 'false'"
-    )
+    # `!cancelled()` is required for the same reason as on the guard: an
+    # upstream-skipped `trigger-releases` would otherwise trip the implicit
+    # success() gate on this job even after a successful `skip=false` guard.
+    # Maintenance may (and should) run after release commits, so this must not
+    # re-test `release-commit`.
+    release_please_if = _condition(release_please)
+    assert "!cancelled()" in release_please_if
+    # Soft-reject only the detector's release-commit *output* gate — job ids may
+    # contain the words "release-commit" (e.g. detect-release-commit).
+    assert "outputs.release-commit" not in release_please_if
+    assert "needs.guard-pending-release.outputs.skip == 'false'" in release_please_if
 
     assert "release-please" in _needs(jobs["update-lockfiles"])
+
+
+def test_release_please_condition_fails_closed() -> None:
+    """Pin maintenance's boolean structure after the #5161 skip-gate fix."""
+    release_please_if = _condition(_load_workflow()["jobs"]["release-please"])
+
+    def runs(
+        skip: str,
+        *,
+        empty_commit: str = "success",
+        detect: str = "success",
+        guard: str = "success",
+        cancelled: bool = False,
+    ) -> bool:
+        return _evaluate(
+            release_please_if,
+            {
+                "needs.guard-empty-commit.result": empty_commit,
+                "needs.detect-release-commit.result": detect,
+                "needs.guard-pending-release.result": guard,
+                "needs.guard-pending-release.outputs.skip": skip,
+            },
+            cancelled=cancelled,
+        )
+
+    # Guard cleared the path — the normal push and post-dispatch release path.
+    assert runs("false")
+    # Guard deferred (in-flight / stuck publish / operator recovery).
+    assert not runs("true")
+    # Unset/empty skip (crash, hard timeout) must not look like all-clear.
+    assert not runs("")
+    # Direct deps: any red/skipped guardian job fails closed.
+    assert not runs("false", empty_commit="failure")
+    assert not runs("false", detect="failure")
+    assert not runs("false", guard="failure")
+    assert not runs("false", guard="skipped")
+    assert not runs("false", cancelled=True)
 
 
 def test_guard_condition_fails_closed() -> None:

@@ -44,22 +44,26 @@ To release a package:
 1. Merge one or more [releasable conventional commits](#releasable-commit-types-and-version-bumping) to `main`
 2. Wait for the release-please action to create/update the release PR (can take a minute or two)
 3. Review the generated changelog in the PR. The published GitHub release body is extracted from the merged package `CHANGELOG.md`, not from the release PR description.
-   1. For `deepagents-code`, follow the [curated release-notes workflow](#releasing-deepagents-code) after moving the PR from draft to ready for review.
+   1. Follow the [curated release-notes workflow](#curated-release-notes) after moving the PR from draft to ready for review. This applies to every release-please managed package.
 4. Merge the release PR after its required checks pass — this triggers the pre-release checks, PyPI publish, and GitHub release
 
 > [!IMPORTANT]
 > `deepagents-code` pins an exact `deepagents==` version in `libs/code/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version `deepagents-code` actually requires. If you intentionally need to ship a release PR with an older SDK pin, add the `release: skip sdk pin check` label before merging. See [Release Failed: Code SDK Pin Is Older Than SDK](#release-failed-code-sdk-pin-is-older-than-sdk) for recovery if a stale pin slips through.
 
-### Releasing `deepagents-code`
+### Curated Release Notes
+
+This applies to **every** package release-please manages. The package under release is derived from the release PR's head branch, so a package added to [`release-please-config.json`](https://github.com/langchain-ai/deepagents/blob/main/release-please-config.json) is covered with no workflow change.
 
 Keep the release PR in draft while changes are still accumulating. When it is ready to release:
 
-1. Mark the PR ready for review. `dcode-release-bot` will post a polished release-notes draft as a PR comment.
+1. Mark the PR ready for review. `release-bot` will post a polished release-notes draft as a PR comment.
 2. Edit the notes in that marked comment as needed (while keeping the version heading intact).
-3. After reviewing & finalizing, comment `@dcode-release-bot apply`. The bot updates the PR's `libs/code/CHANGELOG.md` and mirrors the notes to the PR body.
+3. After reviewing & finalizing, comment `@release-bot apply`. The bot updates that package's `CHANGELOG.md` (e.g. `libs/code/CHANGELOG.md` for `deepagents-code`) and mirrors the notes to the PR body.
 4. Merge normally after the `curated release notes` CI check passes.
 
-Run `@dcode-release-bot draft` to regenerate the draft if the automatic run fails or new changes cause release-please to add changelog entries to the release PR. If release-please updates the PR after the notes were applied, the check will fail until you run `draft` and `apply` again.
+Run `@release-bot draft` to regenerate the draft if the automatic run fails or new changes cause release-please to add changelog entries to the release PR. If release-please updates the PR after the notes were applied, the check will fail until you run `draft` and `apply` again.
+
+During a fanout release each package gets its own release PR, and each needs its own `draft`/`apply`. Commands act only on the PR they are posted to.
 
 The merged changelog is the source for the published GitHub release notes.
 
@@ -71,8 +75,8 @@ The draft and apply jobs reuse the repository's GitHub App credentials to mint s
 
 Configure these repository-level Actions variables, which are also needed by jobs that do not use the release environment:
 
-- `DCODE_RELEASE_BOT_LOGIN`: the App bot login, `<app-slug>[bot]`
-- `DCODE_RELEASE_BOT_ID`: the numeric user ID for that bot login (this is not the GitHub App ID)
+- `RELEASE_BOT_LOGIN`: the App bot login, `<app-slug>[bot]`
+- `RELEASE_BOT_ID`: the numeric user ID for that bot login (this is not the GitHub App ID)
 
 Find the App slug in its GitHub App settings URL, then look up both values with:
 
@@ -81,9 +85,9 @@ APP_SLUG=<app-slug>
 gh api "users/${APP_SLUG}[bot]" --jq '{login, id}'
 ```
 
-Create the `release-dcode` environment without required reviewers or other approval rules, because approval would block automatic drafting. Add `DCODE_RELEASE_MODEL` as an environment variable, using an explicit `provider:model` value with one of the supported providers and a model that supports JSON Schema structured output, and add the matching provider's API key as an environment secret (only the configured provider's key is required). The workflow reads a fixed secret name per provider:
+Create the `release-bot` environment without required reviewers or other approval rules, because approval would block automatic drafting. Add `RELEASE_BOT_MODEL` as an environment variable, using an explicit `provider:model` value with one of the supported providers and a model that supports JSON Schema structured output, and add the matching provider's API key as an environment secret (only the configured provider's key is required). The workflow reads a fixed secret name per provider:
 
-| `DCODE_RELEASE_MODEL` provider | Environment secret name |
+| `RELEASE_BOT_MODEL` provider | Environment secret name |
 | ------------------------------ | ----------------------- |
 | `openai`                       | `OPENAI_API_KEY`        |
 | `anthropic`                    | `ANTHROPIC_API_KEY`     |
@@ -131,7 +135,7 @@ A few rules of thumb for picking a type that respects what *should* end up in us
 - Internal-only work (refactors, test-only changes, CI tweaks, dependency bumps with no behavior change, comment/docstring updates) belongs in a hidden type. These still trigger a release PR rebase if one is open, but never appear in the changelog.
 - Don't smuggle user-visible changes into hidden types (e.g., a `chore:` that adds a feature). The change won't appear in release notes and users will be surprised by undocumented behavior.
 - The release PR description is a preview/control surface generated by release-please. The published GitHub release body comes from the merged package `CHANGELOG.md`, with contributor shoutouts appended by `release.yml`.
-- For `deepagents-code`, use the bot-authored curated-notes comment and `apply` command rather than editing generated files directly. For other packages, edit the package `CHANGELOG.md` first and then mirror the polished section in the release PR body. A later release-please run can regenerate both surfaces; reapply any curation after the PR syncs.
+- Use the bot-authored curated-notes comment and `apply` command rather than editing generated files directly. A later release-please run can regenerate both surfaces; reapply any curation after the PR syncs by running `draft` and then `apply` again.
 
 ## Commit Format
 
@@ -251,7 +255,7 @@ Release-please uses labels to track the state of release PRs:
 
 | Label | Meaning |
 | ----- | ------- |
-| `autorelease: pending` | Release PR has been merged but not yet tagged/released |
+| `autorelease: pending` | Applied by release-please when it opens the release PR, and carried until the release is tagged. On a **merged** PR it means the release has not been tagged/published yet |
 | `autorelease: tagged` | Release PR has been successfully tagged and released |
 
 Because `skip-github-release: true` is set in the release-please config (we create releases via our own workflow instead of using the one built into release-please), our `release.yml` workflow must update these labels manually for state management! After successfully creating the GitHub release and tag, the `mark-release` job updates the label from `pending` to `tagged`.
@@ -439,7 +443,7 @@ Use the exact `<VERSION>` everywhere except the branch name. For example, beta `
 
 #### Enrich the published pre-release notes
 
-A regular release has a review point before publication: release-please generates the package changelog in a release PR, and [`deepagents-code` notes are curated](#releasing-deepagents-code) before that PR merges. A pre-release bypasses release-please and has no matching changelog section, so `release.yml` initially publishes only the generated release scaffolding described in step 6. After the workflow succeeds, edit the published GitHub release body in place to add the user-facing notes. This presentation-only edit does not change the tag or published artifacts; do not add the pre-release notes to `CHANGELOG.md`.
+A regular release has a review point before publication: release-please generates the package changelog in a release PR, and [notes are curated](#curated-release-notes) before that PR merges. A pre-release bypasses release-please and has no matching changelog section, so `release.yml` initially publishes only the generated release scaffolding described in step 6. After the workflow succeeds, edit the published GitHub release body in place to add the user-facing notes. This presentation-only edit does not change the tag or published artifacts; do not add the pre-release notes to `CHANGELOG.md`.
 
 Apply the same editorial standard as the regular release-note automation:
 

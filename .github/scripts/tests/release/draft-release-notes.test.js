@@ -6,7 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const draft = require('../../release/draft-dcode-release-notes.js');
+const draft = require('../../release/draft-release-notes.js');
 
 function structured(notes) {
   return JSON.stringify({ release_notes_markdown: notes });
@@ -53,7 +53,7 @@ test('provider requests embed the structured-output schema in each provider cont
 
   assert.deepEqual(openai.body.response_format, {
     type: 'json_schema',
-    json_schema: { name: 'dcode_release_notes', strict: true, schema: expectedSchema },
+    json_schema: { name: 'release_notes', strict: true, schema: expectedSchema },
   });
   assert.deepEqual(anthropic.body.output_config.format, { type: 'json_schema', schema: expectedSchema });
   assert.equal(google.body.generationConfig.responseMimeType, 'application/json');
@@ -169,7 +169,7 @@ test('response text fails closed on truncated, filtered, or unsignalled completi
 });
 
 test('drafting writes only the model response to the requested output', async () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dcode-release-notes-'));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-'));
   const inputFile = path.join(directory, 'input.md');
   const outputFile = path.join(directory, 'output.md');
   fs.writeFileSync(inputFile, 'untrusted source');
@@ -214,7 +214,7 @@ test('drafting handles anthropic and google response shapes end to end', async (
     },
   ];
   for (const testCase of cases) {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dcode-release-notes-'));
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-'));
     const inputFile = path.join(directory, 'input.md');
     const outputFile = path.join(directory, 'output.md');
     fs.writeFileSync(inputFile, 'untrusted source');
@@ -252,7 +252,7 @@ test('drafting throws before any request when the provider key is missing', asyn
 });
 
 test('drafting throws and writes nothing on a non-OK model response', async () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'dcode-release-notes-'));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-'));
   const inputFile = path.join(directory, 'input.md');
   const outputFile = path.join(directory, 'output.md');
   fs.writeFileSync(inputFile, 'untrusted source');

@@ -2777,6 +2777,7 @@ class DeepAgentsApp(App):
         model_kwargs: dict[str, Any] | None = None,
         model_explicitly_set: bool = False,
         interpreter_arg: bool | None = None,
+        soft_max_context_tokens: int | None = None,
         defer_server_start: bool = False,
         hook_trust: WorkspaceTrust | None = None,
         title: str | None = None,
@@ -2844,6 +2845,8 @@ class DeepAgentsApp(App):
                 opt-out from a sandbox-suppressed default when surfacing the
                 disabled-by-sandbox advisory; the resolved value travels in
                 `server_kwargs`.
+            soft_max_context_tokens: Context-token threshold for showing an
+                `/offload` reminder after each turn, or `None` to disable it.
             defer_server_start: Whether to keep app-owned server startup paused
                 until the user configures credentials or explicitly picks a model.
             hook_trust: Policy deciding which workspaces may run project-scoped
@@ -3625,6 +3628,9 @@ class DeepAgentsApp(App):
         Source of truth is `_context_tokens` in graph state; this is a sync
         copy for the status bar.
         """
+
+        self._soft_max_context_tokens = soft_max_context_tokens
+        """Optional threshold for per-turn `/offload` reminders."""
 
         self._tokens_approximate: bool = False
         """Whether the cached token count is stale (interrupted generation)."""
@@ -6850,18 +6856,38 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.set_tokens(count, approximate=approximate)
 
-    def _on_tokens_update(self, count: int, *, approximate: bool = False) -> None:
-        """Update the local cache *and* the status bar.
+    def _on_tokens_update(
+        self,
+        count: int,
+        *,
+        approximate: bool = False,
+        notify_soft_limit: bool = True,
+    ) -> None:
+        """Update the local cache and surface any configured context reminder.
 
         This is the callback wired to the adapter's `_on_tokens_update`.
 
         Args:
             count: Total context token count to cache and display.
             approximate: Append "+" to signal a stale/interrupted count.
+            notify_soft_limit: Whether this update represents a turn that should
+                show the configured `/offload` reminder.
         """
         self._context_tokens = count
         self._tokens_approximate = approximate
         self._update_tokens(count, approximate=approximate)
+        if (
+            notify_soft_limit
+            and self._soft_max_context_tokens is not None
+            and count >= self._soft_max_context_tokens
+        ):
+            self.notify(
+                "Context has reached the configured soft limit. "
+                "Run /offload to reduce context size.",
+                severity="warning",
+                timeout=8,
+                markup=False,
+            )
 
     def _show_tokens(self, *, approximate: bool = False) -> None:
         """Restore the status bar to the cached token value.
@@ -15425,7 +15451,10 @@ class DeepAgentsApp(App):
 
             # Seed token cache from persisted state
             if payload.context_tokens > 0:
-                self._on_tokens_update(payload.context_tokens)
+                self._on_tokens_update(
+                    payload.context_tokens,
+                    notify_soft_limit=False,
+                )
 
             # 5. Cache container ref (single query). Queried before the store
             # load so history can be reconciled against widgets already in the
@@ -23255,6 +23284,7 @@ async def run_textual_app(
     model_kwargs: dict[str, Any] | None = None,
     model_explicitly_set: bool = False,
     interpreter_arg: bool | None = None,
+    soft_max_context_tokens: int | None = None,
     defer_server_start: bool = False,
     hook_trust: WorkspaceTrust | None = None,
     title: str | None = None,
@@ -23313,6 +23343,8 @@ async def run_textual_app(
         interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state,
             forwarded to the app so the disabled-by-sandbox advisory can tell an
             explicit opt-out from a sandbox-suppressed default.
+        soft_max_context_tokens: Context-token threshold for showing an
+            `/offload` reminder after each turn, or `None` to disable it.
         defer_server_start: Whether to keep app-owned server startup paused
             until credentials or a model are configured from inside the TUI.
         hook_trust: Policy deciding which workspaces may run project-scoped hook
@@ -23350,6 +23382,7 @@ async def run_textual_app(
         model_kwargs=model_kwargs,
         model_explicitly_set=model_explicitly_set,
         interpreter_arg=interpreter_arg,
+        soft_max_context_tokens=soft_max_context_tokens,
         defer_server_start=defer_server_start,
         hook_trust=hook_trust,
         title=title,

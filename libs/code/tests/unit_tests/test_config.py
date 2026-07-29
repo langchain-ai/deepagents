@@ -740,6 +740,21 @@ class TestValidateModelCapabilities:
         mock_console.print.assert_not_called()
 
 
+def test_settings_loads_soft_max_context_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """`Settings` carries the configured reminder threshold into the TUI."""
+    monkeypatch.setattr(
+        "deepagents_code.config_manifest.load_config_toml",
+        lambda: {"runtime": {"soft_max_context_tokens": 120_000}},
+    )
+
+    runtime = Settings.from_environment(start_path=tmp_path)
+
+    assert runtime.soft_max_context_tokens == 120_000
+
+
 class TestAgentsAliasDirectories:
     """Tests for .agents directory alias methods."""
 

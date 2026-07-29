@@ -1579,7 +1579,10 @@ class TestRunTextualCliAsyncMcp:
             await asyncio.sleep(0)
             return app_result
 
-        with patch("deepagents_code.app.run_textual_app", new=_run_textual_app_stub):
+        with (
+            patch("deepagents_code.app.run_textual_app", new=_run_textual_app_stub),
+            patch("deepagents_code.config.settings.soft_max_context_tokens", 120_000),
+        ):
             result = await run_textual_cli_async(
                 "agent",
                 thread_id="thread-123",
@@ -1606,6 +1609,7 @@ class TestRunTextualCliAsyncMcp:
         assert captured_kwargs["model_kwargs"]["model_spec"] == "openai:gpt-5.5"
         assert captured_kwargs["model_kwargs"]["extra_kwargs"] is None
         assert captured_kwargs["initial_goal"] == "add refresh tokens"
+        assert captured_kwargs["soft_max_context_tokens"] == 120_000
 
     async def test_no_mcp_kwargs_when_disabled(self) -> None:
         """mcp_preload_kwargs should be None when no_mcp=True."""

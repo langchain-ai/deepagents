@@ -2337,6 +2337,9 @@ class Settings:
     model_context_limit: int | None = None
     """Maximum input token count from the model profile."""
 
+    soft_max_context_tokens: int | None = None
+    """Context-token threshold for showing `/offload` reminders."""
+
     model_unsupported_modalities: frozenset[str] = frozenset()
     """Input modalities not indicated as supported by the model profile."""
 
@@ -2471,9 +2474,15 @@ class Settings:
             _read_config_toml_skills_dirs(),
         )
 
-        from deepagents_code.config_manifest import resolve_interpreter_kwargs
+        from deepagents_code.config_manifest import (
+            load_config_toml,
+            resolve_interpreter_kwargs,
+            resolve_soft_max_context_tokens,
+        )
 
-        interpreter_kwargs = resolve_interpreter_kwargs()
+        toml_data = load_config_toml()
+        interpreter_kwargs = resolve_interpreter_kwargs(toml_data=toml_data)
+        soft_max_context_tokens = resolve_soft_max_context_tokens(toml_data=toml_data)
 
         return cls(
             openai_api_key=openai_key,
@@ -2487,6 +2496,7 @@ class Settings:
             project_root=project_root,
             shell_allow_list=shell_allow_list,
             extra_skills_dirs=extra_skills_dirs,
+            soft_max_context_tokens=soft_max_context_tokens,
             **interpreter_kwargs,
         )
 

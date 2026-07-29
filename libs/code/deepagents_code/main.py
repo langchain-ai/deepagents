@@ -2517,6 +2517,7 @@ async def run_textual_cli_async(
             model_kwargs=model_kwargs,
             model_explicitly_set=model_name is not None,
             interpreter_arg=interpreter_arg,
+            soft_max_context_tokens=settings.soft_max_context_tokens,
             defer_server_start=defer_server_start,
             hook_trust=hook_trust,
         )

@@ -2081,6 +2081,51 @@ def test_provider_dependency_metadata_is_exhaustive() -> None:
     )
 
 
+# --- Soft context limit ----------------------------------------------------
+
+
+def test_soft_max_context_tokens_option_metadata() -> None:
+    """The soft context limit is a config-only optional integer."""
+    opt = get_option("runtime.soft_max_context_tokens")
+    assert opt is not None
+    assert opt.kind is OptionKind.INT
+    assert opt.default is None
+    assert opt.env_var is None
+    assert opt.toml_keys == ("runtime", "soft_max_context_tokens")
+
+
+def test_resolve_soft_max_context_tokens_default() -> None:
+    """The reminder stays disabled when the setting is omitted."""
+    from deepagents_code.config_manifest import resolve_soft_max_context_tokens
+
+    assert resolve_soft_max_context_tokens(toml_data={}) is None
+
+
+def test_resolve_soft_max_context_tokens_from_toml() -> None:
+    """A positive TOML token threshold is accepted verbatim."""
+    from deepagents_code.config_manifest import resolve_soft_max_context_tokens
+
+    assert (
+        resolve_soft_max_context_tokens(
+            toml_data={"runtime": {"soft_max_context_tokens": 120_000}}
+        )
+        == 120_000
+    )
+
+
+@pytest.mark.parametrize("raw", [0, -1, False, "120000"])
+def test_resolve_soft_max_context_tokens_rejects_invalid_values(raw: object) -> None:
+    """Non-positive and wrong-typed thresholds leave the reminder disabled."""
+    from deepagents_code.config_manifest import resolve_soft_max_context_tokens
+
+    assert (
+        resolve_soft_max_context_tokens(
+            toml_data={"runtime": {"soft_max_context_tokens": raw}}
+        )
+        is None
+    )
+
+
 # --- Recursion limit -------------------------------------------------------
 
 

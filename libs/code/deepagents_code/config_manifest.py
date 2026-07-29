@@ -724,6 +724,34 @@ def resolve_interpreter_kwargs(
     return resolved
 
 
+def resolve_soft_max_context_tokens(
+    *, toml_data: dict[str, Any] | None = None
+) -> int | None:
+    """Resolve the optional context-token threshold for `/offload` reminders.
+
+    Args:
+        toml_data: Parsed `config.toml`; loaded automatically when omitted.
+
+    Returns:
+        The configured positive token count, or `None` when unset or invalid.
+    """
+    data = load_config_toml() if toml_data is None else toml_data
+    option = get_option("runtime.soft_max_context_tokens")
+    if option is None:
+        return None
+
+    value, source = resolve_scalar(option, toml_data=data)
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    if value is not None:
+        logger.warning(
+            "Ignoring %s soft_max_context_tokens %r (expected int > 0)",
+            source,
+            value,
+        )
+    return None
+
+
 def _is_valid_recursion_limit(value: object) -> bool:
     """Return whether `value` is an accepted main-agent `recursion_limit`."""
     return (
@@ -1431,6 +1459,13 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         invert_toml_bool=True,
     ),
     # --- Runtime --------------------------------------------------------
+    ConfigOption(
+        key="runtime.soft_max_context_tokens",
+        group="Runtime",
+        summary="Warn after each turn at or above this context-token count.",
+        kind=OptionKind.INT,
+        toml_keys=("runtime", "soft_max_context_tokens"),
+    ),
     ConfigOption(
         key="runtime.recursion_limit",
         group="Runtime",

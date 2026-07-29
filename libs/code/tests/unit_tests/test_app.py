@@ -188,6 +188,43 @@ class TestWhatsNewMessage:
         assert links == [CHANGELOG_URL]
 
 
+class TestSoftMaxContextNotification:
+    """Tests for per-turn reminders to reduce oversized context."""
+
+    def test_notifies_at_and_above_configured_limit(self) -> None:
+        """Every token update at or above the limit prompts `/offload`."""
+        app = DeepAgentsApp(soft_max_context_tokens=100)
+
+        with patch.object(app, "notify") as notify:
+            app._on_tokens_update(99)
+            app._on_tokens_update(100)
+            app._on_tokens_update(101)
+
+        assert notify.call_count == 2
+        notify.assert_called_with(
+            "Context has reached the configured soft limit. "
+            "Run /offload to reduce context size.",
+            severity="warning",
+            timeout=8,
+            markup=False,
+        )
+
+    def test_disabled_limit_and_history_restore_stay_silent(self) -> None:
+        """Unset limits and non-turn history hydration do not show reminders."""
+        disabled = DeepAgentsApp()
+        configured = DeepAgentsApp(soft_max_context_tokens=100)
+
+        with (
+            patch.object(disabled, "notify") as disabled_notify,
+            patch.object(configured, "notify") as configured_notify,
+        ):
+            disabled._on_tokens_update(1_000)
+            configured._on_tokens_update(1_000, notify_soft_limit=False)
+
+        disabled_notify.assert_not_called()
+        configured_notify.assert_not_called()
+
+
 class TestInitialPromptOnMount:
     """Test that -m initial prompt is submitted on mount."""
 

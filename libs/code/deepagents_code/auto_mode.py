@@ -13,6 +13,7 @@ import shlex
 import stat
 import tempfile
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from enum import StrEnum
 from hashlib import sha256
@@ -80,6 +81,7 @@ _TOTAL_DENIAL_FALLBACK = 20
 _CONSECUTIVE_DENIAL_FALLBACK = 3
 _CONSECUTIVE_UNAVAILABLE_FALLBACK = 2
 _MIN_SECRET_LENGTH = 8
+_EMITTED_EVENT_BATCH_SCOPES = 8
 _MAX_ARGUMENT_DEPTH = 4
 _MIN_COMMAND_PARTS = 2
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
@@ -1285,6 +1287,11 @@ def _batch_id(calls: Sequence[ToolCall]) -> str:
     return sha256(encoded).hexdigest()
 
 
+def _event_scope(runtime: object, calls: Sequence[ToolCall]) -> str:
+    """Return the emission-ledger scope for one action batch on one thread."""
+    return f"{_thread_key(runtime) or '-'}:{_batch_id(calls)}"
+
+
 def _resolved_tools(request: ModelRequest) -> dict[str, BaseTool]:
     return {
         tool.name: tool
@@ -1673,6 +1680,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         self._known_secrets = _known_credential_values()
         self._trusted_ask_user_tool = trusted_ask_user_tool
         self._trusted_compaction_tool = trusted_compaction_tool
+        self._emitted_events: OrderedDict[str, set[tuple[str, ...]]] = OrderedDict()
 
         @tool
         def create_temp_artifact(
@@ -2321,6 +2329,36 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         except Exception:
             logger.debug("Could not emit Auto mode event", exc_info=True)
 
+    def _emit_event_once(
+        self,
+        runtime: object,
+        *,
+        scope: str,
+        key: tuple[str, ...],
+        payload: Mapping[str, object],
+    ) -> None:
+        """Emit one Auto event at most once per action batch.
+
+        `interrupt()` restarts the whole `after_model` node when the user
+        answers an approval, so any emission that precedes it runs again on
+        resume and renders a duplicate transcript line. The ledger is keyed by
+        thread and action batch, so it survives that replay while still letting
+        a later batch emit the same text. Scopes are evicted least-recently-used
+        so a long-lived server process cannot grow the ledger without bound.
+        """
+        seen = self._emitted_events.get(scope)
+        if seen is None:
+            seen = set()
+            self._emitted_events[scope] = seen
+            while len(self._emitted_events) > _EMITTED_EVENT_BATCH_SCOPES:
+                self._emitted_events.popitem(last=False)
+        else:
+            self._emitted_events.move_to_end(scope)
+        if key in seen:
+            return
+        seen.add(key)
+        self._emit_event(runtime, payload)
+
     def _action_and_config(
         self,
         tool_call: ToolCall,
@@ -2390,9 +2428,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             }
             if fallback_mode is not None:
                 event["mode"] = fallback_mode.value
-            self._emit_event(
+            self._emit_event_once(
                 runtime,
-                event,
+                scope=_event_scope(runtime, ai_message.tool_calls),
+                key=("fallback", *sorted(target_ids)),
+                payload=event,
             )
         response = interrupt(
             HITLRequest(
@@ -2675,8 +2715,10 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         # tool call in the batch with the same disposition and reason. Each call
         # still needs its own ToolMessage, but the transcript event is a
         # batch-level note, so coalesce identical events to avoid flooding the
-        # transcript with N duplicate lines for an N-tool batch.
-        emitted_events: set[tuple[str, str, str]] = set()
+        # transcript with N duplicate lines for an N-tool batch. The ledger is
+        # batch-scoped rather than call-scoped so a human-fallback interrupt
+        # later in this node cannot re-emit them when the node replays.
+        event_scope = _event_scope(runtime, ai_message.tool_calls)
         for call in ai_message.tool_calls:
             decision = decision_by_id.get(_tool_call_id(call))
             if decision is None:
@@ -2698,13 +2740,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 )
             )
             event_kind = "unavailable" if unavailable else "denial"
-            event_key = (event_kind, label, decision["reason"])
-            if event_key in emitted_events:
-                continue
-            emitted_events.add(event_key)
-            self._emit_event(
+            self._emit_event_once(
                 runtime,
-                {
+                scope=event_scope,
+                key=(event_kind, label, decision["reason"]),
+                payload={
                     "event": event_kind,
                     "category": label,
                     "reason": decision["reason"],

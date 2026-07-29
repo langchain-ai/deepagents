@@ -3170,11 +3170,17 @@ class DeepAgentsApp(App):
         self._modal_command_tasks: dict[str, asyncio.Task[None]] = {}
         """Detached slash-command continuations that drive a confirmation modal.
 
-        Keyed by the context passed to `_schedule_off_message_pump`, so a second
-        invocation of the same command can be refused while the first one's
-        modal is still open. Holding the reference keeps the task from being
-        GC'd mid-flight and lets tests await it deterministically.
+        Only one continuation may run at a time, regardless of its context, so
+        installs and updates cannot mutate the tool environment concurrently.
+        Holding the references keeps tasks from being GC'd mid-flight and lets
+        tests await them deterministically.
         """
+
+        self._modal_queue_drain_task: asyncio.Task[None] | None = None
+        """Queue drain scheduled when the active modal continuation finishes."""
+
+        self._environment_mutation_lock = asyncio.Lock()
+        """Serialize every install or update of the running tool environment."""
 
         self._pending_mcp_reconnect: bool = False
         """Set after a successful MCP login when the user defers the server
@@ -6011,6 +6017,25 @@ class DeepAgentsApp(App):
         upgrade_include_prereleases: bool | None,
         pin_upgrade_version: str | None,
     ) -> None:
+        """Serialize an app upgrade against every other environment mutation."""
+        async with self._environment_mutation_lock:
+            await self._perform_app_upgrade_unlocked(
+                current=current,
+                latest=latest,
+                include_prereleases=include_prereleases,
+                upgrade_include_prereleases=upgrade_include_prereleases,
+                pin_upgrade_version=pin_upgrade_version,
+            )
+
+    async def _perform_app_upgrade_unlocked(
+        self,
+        *,
+        current: str,
+        latest: str,
+        include_prereleases: bool | None,
+        upgrade_include_prereleases: bool | None,
+        pin_upgrade_version: str | None,
+    ) -> None:
         """Install a newer `deepagents-code` release and report the outcome.
 
         Args:
@@ -6116,6 +6141,19 @@ class DeepAgentsApp(App):
             )
 
     async def _refresh_dependencies(
+        self,
+        *,
+        include_prereleases: bool | None,
+        app_update_version: str | None = None,
+    ) -> None:
+        """Serialize dependency refresh against all environment mutations."""
+        async with self._environment_mutation_lock:
+            await self._refresh_dependencies_unlocked(
+                include_prereleases=include_prereleases,
+                app_update_version=app_update_version,
+            )
+
+    async def _refresh_dependencies_unlocked(
         self,
         *,
         include_prereleases: bool | None,
@@ -6363,6 +6401,21 @@ class DeepAgentsApp(App):
         await self._install_extra(extra, force=force)
 
     async def _install_extra(
+        self, extra: str, *, force: bool = False, auto_restart: bool = False
+    ) -> bool:
+        """Serialize an extra install against every environment mutation.
+
+        Returns:
+            Whether the extra installed and any requested restart succeeded.
+        """
+        async with self._environment_mutation_lock:
+            return await self._install_extra_unlocked(
+                extra,
+                force=force,
+                auto_restart=auto_restart,
+            )
+
+    async def _install_extra_unlocked(
         self, extra: str, *, force: bool = False, auto_restart: bool = False
     ) -> bool:
         """Install a `deepagents-code` extra, mounting progress and restart offer.
@@ -6647,6 +6700,11 @@ class DeepAgentsApp(App):
         await self._perform_package_install(package)
 
     async def _perform_package_install(self, package: str) -> None:
+        """Serialize a package install against every environment mutation."""
+        async with self._environment_mutation_lock:
+            await self._perform_package_install_unlocked(package)
+
+    async def _perform_package_install_unlocked(self, package: str) -> None:
         """Install a confirmed package and report the outcome.
 
         Args:
@@ -9408,11 +9466,19 @@ class DeepAgentsApp(App):
         if (
             cmd in STARTUP_RECOVERY_COMMANDS
             and self._server_startup_error is not None
-            and not (self._agent_running or self._shell_running)
+            and not (
+                self._agent_running
+                or self._shell_running
+                or self._modal_command_running()
+            )
         ):
             return True
         if cmd in BYPASS_WHEN_CONNECTING:
-            return self._connecting and not (self._agent_running or self._shell_running)
+            return self._connecting and not (
+                self._agent_running
+                or self._shell_running
+                or self._modal_command_running()
+            )
         if cmd in IMMEDIATE_UI:
             # Only bare form (no args) bypasses — the selector-opening form is
             # safe, but an argument form does a direct action that shouldn't
@@ -9486,6 +9552,7 @@ class DeepAgentsApp(App):
             or self._agent_reconciling
             or self._goal_state_mutating
             or self._shell_running
+            or self._modal_command_running()
             or self._connecting
             or self._startup_sequence_running
             or self._server_startup_error is not None
@@ -15114,6 +15181,7 @@ class DeepAgentsApp(App):
         if (
             self._processing_pending
             or self._goal_state_mutating
+            or self._modal_command_running()
             or not self._pending_messages
             or self._exit
             or self._exiting
@@ -15148,6 +15216,7 @@ class DeepAgentsApp(App):
             or self._agent_reconciling
             or self._goal_state_mutating
             or self._shell_running
+            or self._modal_command_running()
         )
         if not busy and self._pending_messages:
             await self._process_next_from_queue()
@@ -21556,9 +21625,10 @@ class DeepAgentsApp(App):
         offer is scheduled rather than awaited (see `_schedule_restart_offer`).
 
         Because the command handler now returns while the modal is still open,
-        the user can submit the same command again. Continuations are keyed by
-        `context` and a second one is refused while the first is in flight, so a
-        confirmed install or refresh can never race a duplicate of itself.
+        the continuation participates in the app's busy state until it ends.
+        Only one continuation is allowed globally, so differently keyed install
+        and update commands cannot show overlapping modals or mutate the tool
+        environment concurrently.
 
         Args:
             coro: The continuation to run off the message pump.
@@ -21566,14 +21636,13 @@ class DeepAgentsApp(App):
                 and failure logs.
 
         Returns:
-            The scheduled task, or `None` when an equivalent continuation is
-                already in flight (in which case `coro` is closed unstarted).
+            The scheduled task, or `None` when another continuation is already
+                in flight (in which case `coro` is closed unstarted).
         """
-        existing = self._modal_command_tasks.get(context)
-        if existing is not None and not existing.done():
+        if self._modal_command_running():
             coro.close()
             self.notify(
-                "That prompt is already open — answer it first.",
+                "Another install or update prompt is already open — answer it first.",
                 severity="warning",
                 timeout=5,
             )
@@ -21586,9 +21655,18 @@ class DeepAgentsApp(App):
             if self._modal_command_tasks.get(context) is done:
                 del self._modal_command_tasks[context]
             _log_task_exception(done)
+            if self._pending_messages and not self._modal_command_running():
+                self._modal_queue_drain_task = asyncio.create_task(
+                    self._process_next_from_queue(),
+                    name="drain-after-modal-command",
+                )
 
         task.add_done_callback(_forget)
         return task
+
+    def _modal_command_running(self) -> bool:
+        """Return whether a detached mutation continuation is still active."""
+        return any(not task.done() for task in self._modal_command_tasks.values())
 
     def _cancel_modal_command_tasks(self) -> None:
         """Cancel detached command continuations still waiting on a modal.
@@ -21599,6 +21677,11 @@ class DeepAgentsApp(App):
         for task in list(self._modal_command_tasks.values()):
             if not task.done():
                 task.cancel()
+        if (
+            self._modal_queue_drain_task is not None
+            and not self._modal_queue_drain_task.done()
+        ):
+            self._modal_queue_drain_task.cancel()
 
     async def _offer_restart_after_install(self, label: str) -> None:
         """Offer a one-keypress restart after a restart-capable install.

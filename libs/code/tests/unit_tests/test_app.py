@@ -30439,13 +30439,13 @@ class TestScheduleOffMessagePump:
         await asyncio.sleep(0)  # let the done-callback fire
         assert "demo" not in app._modal_command_tasks
 
-    async def test_duplicate_context_is_refused(self) -> None:
-        """A second continuation is refused while the first modal is open.
+    async def test_different_context_is_refused(self) -> None:
+        """A second mutation continuation is refused while one is active.
 
         The command handler returns as soon as the continuation is detached, so
-        the user can submit the same command again while its prompt is still up.
-        Deduplication is what stops a confirmed install or refresh from racing a
-        duplicate of itself.
+        another install or update can arrive while its prompt is still up. The
+        global guard prevents differently keyed environment mutations from
+        racing each other.
         """
         app = DeepAgentsApp()
         started = asyncio.Event()
@@ -30460,17 +30460,103 @@ class TestScheduleOffMessagePump:
             nonlocal second_ran
             second_ran = True
 
-        first = app._schedule_off_message_pump(_first(), context="demo")
+        first = app._schedule_off_message_pump(_first(), context="update")
         assert first is not None
         await asyncio.wait_for(started.wait(), timeout=2.0)
 
         with patch.object(app, "notify") as notify:
-            assert app._schedule_off_message_pump(_second(), context="demo") is None
+            assert app._schedule_off_message_pump(_second(), context="install") is None
 
         notify.assert_called_once()
         release.set()
         await asyncio.wait_for(first, timeout=2.0)
         assert second_ran is False
+
+    async def test_continuation_blocks_and_then_resumes_queue(self) -> None:
+        """Queued work waits for the detached continuation's full lifetime."""
+        app = DeepAgentsApp()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        processed: list[str] = []
+        continuation: asyncio.Task[None] | None = None
+
+        async def _mutation() -> None:
+            started.set()
+            await release.wait()
+
+        async def _process(value: str, _mode: str) -> None:  # noqa: RUF029  # replaces an awaited coroutine method
+            nonlocal continuation
+            processed.append(value)
+            if value == "update":
+                continuation = app._schedule_off_message_pump(
+                    _mutation(), context="update"
+                )
+
+        app._process_message = _process  # ty: ignore
+        app._pending_messages.extend(
+            [
+                QueuedMessage(text="update", mode="command"),
+                QueuedMessage(text="next agent turn", mode="normal"),
+            ]
+        )
+
+        await app._process_next_from_queue()
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        assert processed == ["update"]
+        assert [message.text for message in app._pending_messages] == [
+            "next agent turn"
+        ]
+
+        assert continuation is not None
+        release.set()
+        await asyncio.wait_for(continuation, timeout=2.0)
+        for _ in range(10):
+            if processed == ["update", "next agent turn"]:
+                break
+            await asyncio.sleep(0)
+
+        assert processed == ["update", "next agent turn"]
+        assert not app._pending_messages
+
+    async def test_environment_mutations_share_one_lock(self) -> None:
+        """Command and worker installs cannot rewrite the environment together."""
+        app = DeepAgentsApp()
+        first_started = asyncio.Event()
+        second_started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _install_extra(
+            _extra: str, *, force: bool, auto_restart: bool
+        ) -> bool:
+            assert force is False
+            assert auto_restart is False
+            first_started.set()
+            await release.wait()
+            return True
+
+        async def _install_package(_package: str) -> None:  # noqa: RUF029  # patched async mutation implementation
+            second_started.set()
+
+        with (
+            patch.object(app, "_install_extra_unlocked", side_effect=_install_extra),
+            patch.object(
+                app,
+                "_perform_package_install_unlocked",
+                side_effect=_install_package,
+            ),
+        ):
+            extra_task = asyncio.create_task(app._install_extra("provider"))
+            await asyncio.wait_for(first_started.wait(), timeout=2.0)
+            package_task = asyncio.create_task(app._perform_package_install("package"))
+            await asyncio.sleep(0)
+
+            assert not second_started.is_set()
+
+            release.set()
+            await asyncio.gather(extra_task, package_task)
+
+        assert second_started.is_set()
 
     async def test_exit_cancels_a_continuation_waiting_on_its_modal(self) -> None:
         """App teardown cancels a continuation parked on a confirmation modal."""

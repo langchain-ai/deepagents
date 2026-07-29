@@ -221,6 +221,31 @@ def _clear_onboarding_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _pin_invoked_name(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    """Pin the launch command name echoed by resume hints.
+
+    `invoked_name()` derives from `sys.argv[0]`, which under test is the runner
+    (`pytest`, `__main__.py`, a tox shim, ...) and therefore varies with how the
+    suite was started. Pin it to the default console script so hint assertions
+    are deterministic, and drop the process-lifetime cache around every test so
+    a test that varies the launch name cannot leak it into another.
+    """
+    from deepagents_code._env_vars import INVOKED_AS
+    from deepagents_code._invocation import (
+        DEFAULT_INVOKED_NAME,
+        invoked_name,
+        log_nonstandard_invoked_name,
+    )
+
+    monkeypatch.setenv(INVOKED_AS, DEFAULT_INVOKED_NAME)
+    invoked_name.cache_clear()
+    log_nonstandard_invoked_name.cache_clear()
+    yield
+    invoked_name.cache_clear()
+    log_nonstandard_invoked_name.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _clear_update_env(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,

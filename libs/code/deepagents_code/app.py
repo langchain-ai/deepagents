@@ -64,6 +64,7 @@ from deepagents_code._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
 )
+from deepagents_code._invocation import invoked_name
 from deepagents_code._session_stats import (
     SessionStats,
     SpinnerStatus,
@@ -19030,8 +19031,9 @@ class DeepAgentsApp(App):
             # `previous_thread_has_agent_output` above.
             if previous_thread_id and previous_thread_has_agent_output:
                 resume_hint = Content.from_markup(
-                    "[dim]Relaunch with[/dim] dcode -r $thread "
+                    "[dim]Relaunch with[/dim] $command -r $thread "
                     "[dim]to resume the previous thread.[/dim]",
+                    command=invoked_name(),
                     thread=previous_thread_id,
                 )
                 await self._mount_message(AppMessage(resume_hint))

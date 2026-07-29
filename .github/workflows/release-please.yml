@@ -184,8 +184,14 @@ jobs:
           # grep -q in an `if` conditional is safe under set -eo pipefail;
           # bash suppresses errexit inside `if` compound commands.
 
+          # Tracks whether any package matched, so a release commit that matches
+          # none can fail loudly instead of producing a green no-op run (see the
+          # check after the last package below).
+          ANY_PACKAGE=false
+
           if echo "$CHANGED" | grep -q "^libs/cli/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-cli\):"; then
             echo "cli-release=true" >> "$GITHUB_OUTPUT"
+            ANY_PACKAGE=true
             echo "CLI release detected: $COMMIT_MSG"
           else
             echo "cli-release=false" >> "$GITHUB_OUTPUT"
@@ -193,6 +199,7 @@ jobs:
 
           if echo "$CHANGED" | grep -q "^libs/deepagents/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents\):"; then
             echo "sdk-release=true" >> "$GITHUB_OUTPUT"
+            ANY_PACKAGE=true
             echo "SDK release detected: $COMMIT_MSG"
           else
             echo "sdk-release=false" >> "$GITHUB_OUTPUT"
@@ -200,6 +207,7 @@ jobs:
 
           if echo "$CHANGED" | grep -q "^libs/acp/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-acp\):"; then
             echo "acp-release=true" >> "$GITHUB_OUTPUT"
+            ANY_PACKAGE=true
             echo "ACP release detected: $COMMIT_MSG"
           else
             echo "acp-release=false" >> "$GITHUB_OUTPUT"
@@ -207,6 +215,7 @@ jobs:
 
           if echo "$CHANGED" | grep -q "^libs/code/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-code\):"; then
             echo "code-release=true" >> "$GITHUB_OUTPUT"
+            ANY_PACKAGE=true
             echo "Deep Agents Code release detected: $COMMIT_MSG"
           else
             echo "code-release=false" >> "$GITHUB_OUTPUT"
@@ -214,6 +223,7 @@ jobs:
 
           if echo "$CHANGED" | grep -q "^libs/talon/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-talon\):"; then
             echo "talon-release=true" >> "$GITHUB_OUTPUT"
+            ANY_PACKAGE=true
             echo "Deep Agents Talon release detected: $COMMIT_MSG"
           else
             echo "talon-release=false" >> "$GITHUB_OUTPUT"
@@ -221,6 +231,7 @@ jobs:
 
           if echo "$CHANGED" | grep -q "^libs/partners/daytona/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-daytona\):"; then
             echo "daytona-release=true" >> "$GITHUB_OUTPUT"
+            ANY_PACKAGE=true
             echo "Daytona release detected: $COMMIT_MSG"
           else
             echo "daytona-release=false" >> "$GITHUB_OUTPUT"
@@ -228,6 +239,7 @@ jobs:
 
           if echo "$CHANGED" | grep -q "^libs/partners/modal/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-modal\):"; then
             echo "modal-release=true" >> "$GITHUB_OUTPUT"
+            ANY_PACKAGE=true
             echo "Modal release detected: $COMMIT_MSG"
           else
             echo "modal-release=false" >> "$GITHUB_OUTPUT"
@@ -235,6 +247,7 @@ jobs:
 
           if echo "$CHANGED" | grep -q "^libs/partners/runloop/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-runloop\):"; then
             echo "runloop-release=true" >> "$GITHUB_OUTPUT"
+            ANY_PACKAGE=true
             echo "Runloop release detected: $COMMIT_MSG"
           else
             echo "runloop-release=false" >> "$GITHUB_OUTPUT"
@@ -242,6 +255,7 @@ jobs:
 
           if echo "$CHANGED" | grep -q "^libs/partners/vercel/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-vercel-sandbox\):"; then
             echo "vercel-release=true" >> "$GITHUB_OUTPUT"
+            ANY_PACKAGE=true
             echo "Vercel release detected: $COMMIT_MSG"
           else
             echo "vercel-release=false" >> "$GITHUB_OUTPUT"
@@ -249,9 +263,23 @@ jobs:
 
           if echo "$CHANGED" | grep -q "^libs/partners/quickjs/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-quickjs\):"; then
             echo "quickjs-release=true" >> "$GITHUB_OUTPUT"
+            ANY_PACKAGE=true
             echo "QuickJS release detected: $COMMIT_MSG"
           else
             echo "quickjs-release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # A release commit that matches no package is a wiring bug, not a no-op:
+          # `trigger-releases` is gated on the per-package outputs, so it skips and
+          # nothing publishes — and because `guard-pending-release` requires a
+          # successful dispatch on release commits, maintenance skips too. Every
+          # job would be green while the release silently did not happen. The usual
+          # cause is a package added to release-please-config.json and to this list
+          # but missed in `trigger-releases`, or a changed changelog-path.
+          if [ -n "$RELEASE_VERSION" ] && [ "$ANY_PACKAGE" = false ]; then
+            echo "::error::Release commit matched no known package: $COMMIT_MSG"
+            echo "::error::Add the component to this job's detection list and to trigger-releases' \`if:\`, or check its changelog-path in release-please-config.json."
+            exit 1
           fi
 
   # Wait out an in-flight publish instead of recomputing against half-updated state.
@@ -260,11 +288,11 @@ jobs:
   # PR's `autorelease: pending` -> `autorelease: tagged` label minutes *after*
   # the release PR merges, in a separate dispatched run. In that window the
   # manifest already names the new version but the tag does not exist yet. A
-  # normal (non-release) push landing in that window re-runs release-please
-  # against this half-updated state: it finds no tag, and if the label has just
-  # flipped, release-please's own "untagged outstanding -> abort" guard appears
-  # not to fire — so it treats the component as never-released and proposes a
-  # bootstrap downgrade (observed once: 0.1.8 -> 0.1.0 with the full history).
+  # push that runs release-please against this half-updated state finds no tag,
+  # and if the label has just flipped, release-please's own "untagged
+  # outstanding -> abort" guard appears not to fire — so it treats the
+  # component as never-released and proposes a bootstrap downgrade (observed
+  # once: 0.1.8 -> 0.1.0 with the full history).
   #
   # Crucially, completing a publish does NOT push to main (it only creates a tag
   # + GitHub release), so nothing re-triggers release-please.yml afterwards. An
@@ -273,27 +301,69 @@ jobs:
   # push happened to re-run release-please, which looks like a cancel, not a
   # defer. So instead we *wait*: poll the label until the publish finishes (or a
   # bounded timeout), then let release-please run in this same run against the
-  # now-consistent state. This job is deliberately outside the `release-please`
-  # concurrency group so release-commit runs can still dispatch publishing.
+  # now-consistent state.
   #
-  # Release commits bypass this wait entirely: their run must reach
-  # `trigger-releases` to dispatch the publish.
+  # This job is deliberately outside the `release-please` concurrency group: a
+  # poll of up to MAX_WAIT must not hold the serialization slot that every other
+  # push's `release-please` job queues on. Dispatch-before-maintenance ordering
+  # comes from `needs: trigger-releases` below, not from concurrency — those two
+  # jobs are otherwise independent.
   #
-  # Three fallbacks if the wait can't resolve cleanly:
+  # The wait is deliberately repo-wide (every merged PR still labeled
+  # `autorelease: pending`, not just this run's). release-please recomputes *all*
+  # components on every run, so any one component sitting in the half-updated
+  # state above is enough to trigger the downgrade — scoping the wait to the PR
+  # this run merged would not be safe.
+  #
+  # Path by push kind:
+  #   * Normal pushes (`release-commit == 'false'`): enter this wait;
+  #     `trigger-releases` is skipped and ignored.
+  #   * Release commits (`release-commit == 'true'`): dispatch publish first via
+  #     `trigger-releases` (not blocked by this wait). After that job succeeds,
+  #     this guard runs so the same workflow can refresh remaining open sibling
+  #     release PRs once half-updated tag/label state clears. A failed or skipped
+  #     trigger fails closed and leaves maintenance off.
+  #   * Anything else (unset/malformed `release-commit`): fails closed — the
+  #     guard is skipped, so maintenance is too.
+  #
+  # Four outcomes if the wait can't resolve cleanly:
   #   * Publish genuinely *stuck* past MAX_WAIT (label never flips, but GitHub is
   #     answering): skip=true, deferring to the next push, so a hung publish
   #     outside this run's control never paints main red.
-  #   * The matching release run already failed/cancelled/timed out: fail the job
-  #     loudly (exit 1), because the pending label now means operator action is
-  #     needed rather than an in-flight publish.
-  #   * GitHub itself unreadable (gh keeps erroring so we can't tell whether a
-  #     publish is in flight): fail the job loudly (exit 1). release-please is
-  #     then skipped via `needs`, and a red guard is the honest signal — better
-  #     than silently guessing "in flight" for 45 min and stranding commits.
+  #   * The matching release run already failed/cancelled/timed out, on an
+  #     *ordinary* push: fail the job loudly (exit 1), because the pending label
+  #     now means operator action is needed rather than an in-flight publish.
+  #   * The same, on a *hotfix push or release commit*: skip=true with notices
+  #     instead of exit 1 — the operator already has the signal from the failed
+  #     publish's own run, and an unrelated stuck package must not redden a
+  #     release that dispatched fine. See fail_failed_releases.
+  #   * GitHub itself unreadable (gh keeps erroring, or answers with something we
+  #     cannot parse, so we can't tell whether a publish is in flight): fail the
+  #     job loudly (exit 1). release-please is then skipped via `needs`, and a red
+  #     guard is the honest signal — better than silently guessing "in flight"
+  #     for 45 min and stranding commits.
   guard-pending-release:
-    needs: [guard-empty-commit, detect-release-commit]
+    needs:
+      - guard-empty-commit
+      - detect-release-commit
+      - trigger-releases
     name: Check for in-flight publish
-    if: needs.detect-release-commit.outputs.release-commit != 'true'
+    # `trigger-releases` is skipped on normal pushes, so do not rely on the
+    # implicit success() gate for needs. Prefer !cancelled() over always() so
+    # a cancelled workflow does not keep polling for up to ~45m.
+    # Strict `== 'true'` / `== 'false'` on release-commit: malformed/unset
+    # detector output fails closed rather than looking like a normal push.
+    if: |
+      !cancelled() &&
+      needs.guard-empty-commit.result == 'success' &&
+      needs.detect-release-commit.result == 'success' &&
+      (
+        needs.detect-release-commit.outputs.release-commit == 'false' ||
+        (
+          needs.detect-release-commit.outputs.release-commit == 'true' &&
+          needs.trigger-releases.result == 'success'
+        )
+      )
     runs-on: ubuntu-latest
     # Backstops the poll loop at the job level (covers checkout + every `gh`
     # round-trip, not just the sleeps). Sits ~10 min above MAX_WAIT (45 min) so
@@ -317,15 +387,26 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ needs.detect-release-commit.outputs.release-commit }}
         run: |
           # No `-e`: the poll loop handles transient `gh` failures itself rather
           # than aborting the job, which would skip the wait entirely.
           set -uo pipefail
-          HEAD_SUBJECT=$(git log -1 --format=%s HEAD)
+          # Checked explicitly: without `-e`, a failure here would leave the
+          # subject empty, silently classify the push as neither hotfix nor
+          # release commit, and route a failed release down the wrong branch.
+          if ! HEAD_SUBJECT=$(git log -1 --format=%s HEAD); then
+            echo "::error::Could not read the HEAD commit subject; cannot classify this push."
+            exit 1
+          fi
           IS_HOTFIX=false
           case "$HEAD_SUBJECT" in
             hotfix\(*|hotfix:*|hotfix!*) IS_HOTFIX=true ;;
           esac
+          IS_RELEASE_COMMIT=false
+          if [ "${RELEASE_COMMIT:-}" = "true" ]; then
+            IS_RELEASE_COMMIT=true
+          fi
 
           # `autorelease: pending` is release-please-action's built-in label,
           # applied to release PRs and cleared to `autorelease: tagged` by
@@ -340,8 +421,18 @@ jobs:
               --label "autorelease: pending" --limit 100 --json number,title
           }
 
+          # Exits non-zero on anything that is not the expected array of PRs, so
+          # the caller can tell "no pending PRs" (empty output, status 0) apart
+          # from "could not read the response". Without the type guard a
+          # valid-JSON body of the wrong shape (an API error object, an HTML
+          # error page) renders as empty output and reads as "nothing pending" —
+          # which would wave release-please through against half-updated state.
+          # `-e` is safe here: an empty string is neither null nor false.
           format_pending() {
-            jq -r '[.[] | "#\(.number) \(.title)"] | join("; ")'
+            jq -er '
+              if type != "array" then error("expected an array of PRs") else . end
+              | [.[] | "#\(.number) \(.title)"] | join("; ")
+            '
           }
 
           # Echoes a line per merged pending PR whose matching release.yml run has
@@ -380,11 +471,13 @@ jobs:
             # an outright error. Runs merely *awaiting* approval have status !=
             # "completed" and are excluded by the status check below.
             #
-            # Any single failed pending release makes this emit a line, and the
-            # caller fails the whole guard closed — even if a sibling PR's publish
-            # is still legitimately in flight. That is intentional: once a human
-            # must intervene, release-please must not run against half-updated
-            # state regardless of what else is mid-publish.
+            # Any single failed pending release makes this emit a line — even if a
+            # sibling PR's publish is still legitimately in flight. That is
+            # intentional: once a human must intervene, release-please must not run
+            # against half-updated state regardless of what else is mid-publish. The
+            # caller decides how loudly to stop: ordinary pushes fail closed, while
+            # hotfix pushes and release commits defer with skip=true (see
+            # fail_failed_releases).
             jq -r --argjson prs "$pending_json" '
               def failed_conclusion:
                 . == "failure" or . == "cancelled" or . == "timed_out" or
@@ -396,17 +489,37 @@ jobs:
             ' <<< "$runs_json"
           }
 
+          # Defer (skip=true, green) rather than fail when a red guard adds no
+          # signal the operator does not already have:
+          #   * Hotfix pushes: the operator is already recovering the failed
+          #     release; this push is the recovery.
+          #   * Release commits: the failed publish's own `release.yml` run is
+          #     already red, so failing here only duplicates it — and because the
+          #     pending set is repo-wide, an unrelated package left stuck days ago
+          #     would otherwise redden a release that dispatched perfectly.
+          # Ordinary pushes still fail loudly: there, a red guard is the only
+          # signal that a stuck pending label needs a human.
           fail_failed_releases() {
+            local defer_reason=""
+            local defer_detail=""
             if [ "$IS_HOTFIX" = true ]; then
-              echo "::notice::Hotfix push detected; release-please is deferred while the failed package release is recovered:"
+              defer_reason="hotfix recovery"
+              defer_detail="The push that triggered this run is a hotfix commit (\`$HEAD_SUBJECT\`)."
+            elif [ "$IS_RELEASE_COMMIT" = true ]; then
+              defer_reason="release commit"
+              defer_detail="This run is a release commit (\`$HEAD_SUBJECT\`); the failed package release is already reported by its own \`release.yml\` run."
+            fi
+
+            if [ -n "$defer_reason" ]; then
+              echo "::notice::Deferring release-please ($defer_reason) while the failed package release is recovered:"
               printf '%s\n' "$FAILED_RELEASES" | while IFS= read -r line; do
                 [ -n "$line" ] && echo "::notice::$line"
               done
               echo "::notice::Fix the failed package release, then manually re-dispatch it before running release-please again."
               {
-                echo "## release-please deferred for hotfix recovery"
+                echo "## release-please deferred ($defer_reason)"
                 echo ""
-                echo "The push that triggered this run is a hotfix commit (\`$HEAD_SUBJECT\`). The following merged release PR(s) are still labeled \`autorelease: pending\`, and their matching \`release.yml\` run has already completed unsuccessfully:"
+                echo "$defer_detail The following merged release PR(s) are still labeled \`autorelease: pending\`, and their matching \`release.yml\` run has already completed unsuccessfully:"
                 echo ""
                 printf '%s\n' "$FAILED_RELEASES"
                 echo ""
@@ -455,7 +568,17 @@ jobs:
               return
             fi
 
-            next_pending=$(printf '%s\n' "$next_pending_json" | format_pending)
+            # Status checked explicitly: `-e` is off, so an unparseable payload
+            # would otherwise yield empty output and be indistinguishable from
+            # "nothing pending". Treat it as a query failure so a sustained one
+            # trips MAX_QUERY_FAILS below instead of proceeding on a guess.
+            if ! next_pending=$(printf '%s\n' "$next_pending_json" | format_pending); then
+              QUERY_FAILS=$((QUERY_FAILS + 1))
+              PENDING="(unreadable GitHub response)"
+              FAILED_RELEASES=""
+              echo "::warning::Could not parse the pending release PR response (${QUERY_FAILS} consecutive)."
+              return
+            fi
             if [ -n "$next_pending" ]; then
               if ! next_failed=$(describe_failed_pending_releases "$next_pending_json"); then
                 QUERY_FAILS=$((QUERY_FAILS + 1))
@@ -538,17 +661,33 @@ jobs:
 
   release-please:
     needs: [guard-empty-commit, detect-release-commit, guard-pending-release]
-    # Fail closed: run only on an explicit `skip=false`. An unset value (guard
-    # crashed or hit its job timeout before writing the output) blocks
-    # release-please rather than letting it recompute against unverified state.
+    # #5161 put `trigger-releases` behind the guard so release commits can refresh
+    # sibling release PRs after dispatch. On ordinary pushes `trigger-releases` is
+    # legitimately skipped, and Actions' default `success()` gate on this job then
+    # fails closed even when the guard ran and wrote `skip=false` — observed as a
+    # green workflow with an empty-step `release-please` skip (runs 30487226539 /
+    # 30487483156). Same pattern as the guard: override with `!cancelled()` and
+    # check every direct dependency by hand. Fail closed unless the guard both
+    # succeeded and positively reported `skip=false` (unset/empty after crash or
+    # hard timeout stays blocked).
     if: |
-      needs.detect-release-commit.outputs.release-commit != 'true' &&
+      !cancelled() &&
+      needs.guard-empty-commit.result == 'success' &&
+      needs.detect-release-commit.result == 'success' &&
+      needs.guard-pending-release.result == 'success' &&
       needs.guard-pending-release.outputs.skip == 'false'
     runs-on: ubuntu-latest
     # Serialize only the release-please action, which mutates shared release
     # branches and reads in-flight release state. Keeping this at job scope lets
-    # release-commit runs dispatch publishing without queueing behind long guard
-    # waits from ordinary pushes.
+    # release-commit runs dispatch publishing immediately via `trigger-releases`
+    # without queueing behind long guard waits from ordinary pushes.
+    #
+    # Batch-merging release PRs will cancel jobs here, and that is the designed
+    # outcome, not a bug to fix by removing the group: GitHub allows only one
+    # *pending* member per group, so a third arrival cancels the waiting one. The
+    # survivor is always the newest, it sees the most up-to-date main, and
+    # release-please recomputes every component — so it does the cancelled jobs'
+    # work too. Expect cancelled runs on main after a release burst.
     concurrency:
       group: release-please
       cancel-in-progress: false

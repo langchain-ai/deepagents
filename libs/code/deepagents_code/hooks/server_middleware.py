@@ -710,17 +710,6 @@ def _invocation_id(
     ),
     logical_event_id: str | None = None,
 ) -> UUID:
-    # Deliberately excludes `run_id`: this id is echoed by the client and
-    # re-derived here to validate the resume, but every `Command(resume=...)`
-    # starts a new run. Mixing `run_id` in made the id differ across the very
-    # boundary it guards, so any event re-derived after a resume (`PostToolUse`
-    # and the subagent events, which run inside the replayed tool wrapper)
-    # always mismatched.
-    #
-    # `prompt_id` takes its place as the per-turn discriminator: the client
-    # advances it once per user prompt and holds it across every resume of that
-    # turn, so tool-call ids reused by a later turn cannot collide with this
-    # one and replay its cached decision from the fulfillment ledger.
     identity = {
         "thread_id": context.thread_id,
         "snapshot_id": snapshot_id,

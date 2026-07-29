@@ -528,6 +528,31 @@ class ChatTextArea(PasteBurstTextArea):
         self._app_blurred = False
         self._refocus_time: float | None = None
 
+    def undo(self) -> None:
+        """Undo one edit batch and restore media owned by that exact edit."""
+        previous_text = self.text
+        super().undo()
+        if self.text == previous_text:
+            return
+
+        owner = self._chat_input_owner
+        tracker = owner._image_tracker if owner is not None else None
+        if owner is None or tracker is None:
+            return
+        # Deliberately bypasses `_sync_media_tracker_to_text`: a pending
+        # `_skip_media_sync_events` token belongs to the edit being undone, and
+        # consuming it here would drop the re-attach this undo exists to perform.
+        tracker.sync_to_text(
+            self.text,
+            previous_text=previous_text,
+            cursor_offset=owner._get_cursor_offset(),
+            undo_previous_text=previous_text,
+        )
+        # The Changed message posted by Textual arrives later. Keep its diff
+        # baseline aligned with the state already synchronized here.
+        owner._prev_text = self.text
+        owner._notify_stranded_media(self.text)
+
     def render_line(self, y: int) -> Strip:
         """Render a single line, appending any argument hint at line end.
 
@@ -2194,6 +2219,34 @@ class ChatInput(Vertical):
             return
         self._image_tracker.sync_to_text(
             text, previous_text=previous_text, cursor_offset=cursor_offset
+        )
+
+    def _notify_stranded_media(self, text: str) -> None:
+        """Warn when an undo restored a placeholder that has lost its media.
+
+        The detached pool is capped, so a delete/undo cycle past the cap can
+        restore a token whose payload is gone. It would otherwise look attached
+        and ship to the model as bare `[image N]` text.
+
+        Args:
+            text: Draft text produced by the undo, used to keep the warning to
+                tokens actually present in the draft.
+        """
+        if self._image_tracker is None:
+            return
+        stranded = [
+            token
+            for token in self._image_tracker.take_stranded_placeholders()
+            if token in text
+        ]
+        if not stranded:
+            return
+        verb = "have" if len(stranded) > 1 else "has"
+        self.app.notify(
+            f"{', '.join(stranded)} no longer {verb} media attached — "
+            "too many deletions to undo. Re-add the file to attach it again.",
+            severity="warning",
+            markup=False,
         )
 
     def on_chat_text_area_typing(

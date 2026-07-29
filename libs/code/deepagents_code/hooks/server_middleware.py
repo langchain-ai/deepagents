@@ -715,13 +715,18 @@ def _invocation_id(
     # starts a new run. Mixing `run_id` in made the id differ across the very
     # boundary it guards, so any event re-derived after a resume (`PostToolUse`
     # and the subagent events, which run inside the replayed tool wrapper)
-    # always mismatched. The remaining fields identify the event uniquely.
+    # always mismatched.
+    #
+    # `prompt_id` takes its place as the per-turn discriminator: the client
+    # advances it once per user prompt and holds it across every resume of that
+    # turn, so tool-call ids reused by a later turn cannot collide with this
+    # one and replay its cached decision from the fulfillment ledger.
     identity = {
         "thread_id": context.thread_id,
         "snapshot_id": snapshot_id,
+        "prompt_id": str(context.prompt_id) if context.prompt_id is not None else "",
         "event": event.event.value,
         "logical_event": _logical_event_identity(
-            context,
             event,
             logical_event_id=logical_event_id,
         ),
@@ -733,7 +738,6 @@ def _invocation_id(
 
 
 def _logical_event_identity(
-    context: HookContext,
     event: (
         PreToolUseEvent
         | PostToolUseEvent
@@ -754,11 +758,10 @@ def _logical_event_identity(
         raise ValueError(msg)
     if isinstance(event, SubagentStartEvent):
         return event.agent.id
-    prompt_id = str(context.prompt_id) if context.prompt_id is not None else ""
     if isinstance(event, SubagentStopEvent):
-        return f"{event.agent.id}:{event.continuation_count}:{prompt_id}"
+        return f"{event.agent.id}:{event.continuation_count}"
     message_hash = hashlib.sha256(event.last_assistant_message.encode()).hexdigest()
-    return f"{event.continuation_count}:{prompt_id}:{message_hash}"
+    return f"{event.continuation_count}:{message_hash}"
 
 
 def _config_thread_id(config: Mapping[str, Any] | None) -> str | None:

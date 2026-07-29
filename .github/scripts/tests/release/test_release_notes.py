@@ -245,9 +245,40 @@ def test_mutation_workflow_commands_are_target_only() -> None:
         if step.get("id") == "draft-model"
     )
     assert "uses" not in draft_step
-    assert draft_step["run"] == (
+    # The step wraps the helper only to capture its stderr into a step output, so
+    # the drafting-failure comment can report why the run failed instead of just
+    # "outcome: failure". That wrapper must not become a place to run other work:
+    # assert the helper is the single command that does anything externally
+    # visible, and that the only thing written is the step-output file.
+    draft_run = draft_step["run"]
+    helper_invocation = (
         "node ./trusted-source/.github/scripts/release/draft-release-notes.js"
     )
+    assert draft_run.count(helper_invocation) == 1
+    draft_commands = "\n".join(
+        line
+        for line in draft_run.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    )
+    assert draft_commands.count("node ") == 1
+    for forbidden in ("git ", "curl", "wget", "npm ", "npx ", "pip ", "eval ", "source "):
+        assert forbidden not in draft_commands
+    # Only $GITHUB_OUTPUT is written; nothing is appended to the environment or
+    # the step summary, and no other file is created.
+    assert draft_commands.count(">>") == 1
+    assert '>> "$GITHUB_OUTPUT"' in draft_commands
+    assert "GITHUB_ENV" not in draft_commands
+    assert "GITHUB_PATH" not in draft_commands
+    # The captured message reaches the failure comment through this output.
+    failure_step = next(
+        step
+        for step in workflow["jobs"]["draft"]["steps"]
+        if step.get("name") == "Comment on drafting failure"
+    )
+    assert failure_step["env"]["DRAFT_ERROR"] == (
+        "${{ steps.draft-model.outputs.error }}"
+    )
+    assert "process.env.DRAFT_ERROR" in failure_step["with"]["script"]
     assert set(draft_step["env"]) == {
         "INPUT_FILE",
         "MODEL_API_KEY",

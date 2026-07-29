@@ -661,12 +661,21 @@ jobs:
 
   release-please:
     needs: [guard-empty-commit, detect-release-commit, guard-pending-release]
-    # Fail closed: run only on an explicit `skip=false`. An unset value (guard
-    # crashed, was skipped, or hit its job timeout before writing the output)
-    # blocks release-please rather than letting it recompute against unverified
-    # state. Release commits reach this job only after successful publish
-    # dispatch and a cleared/authorized pending-label wait above.
-    if: needs.guard-pending-release.outputs.skip == 'false'
+    # #5161 put `trigger-releases` behind the guard so release commits can refresh
+    # sibling release PRs after dispatch. On ordinary pushes `trigger-releases` is
+    # legitimately skipped, and Actions' default `success()` gate on this job then
+    # fails closed even when the guard ran and wrote `skip=false` — observed as a
+    # green workflow with an empty-step `release-please` skip (runs 30487226539 /
+    # 30487483156). Same pattern as the guard: override with `!cancelled()` and
+    # check every direct dependency by hand. Fail closed unless the guard both
+    # succeeded and positively reported `skip=false` (unset/empty after crash or
+    # hard timeout stays blocked).
+    if: |
+      !cancelled() &&
+      needs.guard-empty-commit.result == 'success' &&
+      needs.detect-release-commit.result == 'success' &&
+      needs.guard-pending-release.result == 'success' &&
+      needs.guard-pending-release.outputs.skip == 'false'
     runs-on: ubuntu-latest
     # Serialize only the release-please action, which mutates shared release
     # branches and reads in-flight release state. Keeping this at job scope lets

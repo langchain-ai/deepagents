@@ -228,7 +228,20 @@ The [release-please workflow (`.github/workflows/release-please.yml`)](https://g
 Both must be true. release-please always satisfies both when merging a release PR — a manual `CHANGELOG.md` edit alone will not trigger a release.
 
 > [!NOTE]
-> Merged release PRs dispatch the publish workflow directly and skip the release-please PR-maintenance step for that push. The dispatch job comments on the merged release PR with a direct link to each package's release workflow run. This intentionally keeps publishing from being blocked behind normal release-please updates while another package is publishing. If any next release PR needs to be refreshed after the merge, the next normal push to `main` will handle it.
+> Merging a release PR uses a publish-first dependency chain. `trigger-releases`
+> runs immediately after the release commit is detected and does not wait for the
+> pending-release guard or serialized release-please maintenance. The dispatch job
+> comments on the merged release PR with a direct link to each package's release
+> workflow run. After required `release.yml` dispatches succeed, the same workflow
+> run enters `guard-pending-release`, waits until no merged release PR remains
+> labeled `autorelease: pending`, and only an explicit `skip=false` allows
+> release-please to refresh remaining open release PRs (shared files such as
+> `.release-please-manifest.json` and lockfiles). `update-lockfiles` then runs for
+> PRs returned by that maintenance step.
+>
+> Residual: if the pending guard times out, fails closed, or GitHub state is
+> unreadably stuck, maintenance may still need a later ordinary push / recovery
+> once publish state is consistent.
 
 ### Lockfile Updates
 
@@ -778,7 +791,9 @@ gh pr list --state merged --search "release(<PACKAGE>)" --limit 5
 gh pr edit <PR_NUMBER> --remove-label "autorelease: pending" --add-label "autorelease: tagged"
 ```
 
-The label update is non-fatal in the workflow (`|| true`), so the release itself succeeded—only the label needs fixing.
+On the normal mainline publish path, a failed label swap fails `mark-release`
+after the tag and GitHub release already exist. Treat the package release as
+done and fix only the stuck label so later release-please maintenance can run.
 
 ### Release Failed: Pre-release Checks
 

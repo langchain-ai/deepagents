@@ -260,11 +260,11 @@ jobs:
   # PR's `autorelease: pending` -> `autorelease: tagged` label minutes *after*
   # the release PR merges, in a separate dispatched run. In that window the
   # manifest already names the new version but the tag does not exist yet. A
-  # normal (non-release) push landing in that window re-runs release-please
-  # against this half-updated state: it finds no tag, and if the label has just
-  # flipped, release-please's own "untagged outstanding -> abort" guard appears
-  # not to fire — so it treats the component as never-released and proposes a
-  # bootstrap downgrade (observed once: 0.1.8 -> 0.1.0 with the full history).
+  # push that runs release-please against this half-updated state finds no tag,
+  # and if the label has just flipped, release-please's own "untagged
+  # outstanding -> abort" guard appears not to fire — so it treats the
+  # component as never-released and proposes a bootstrap downgrade (observed
+  # once: 0.1.8 -> 0.1.0 with the full history).
   #
   # Crucially, completing a publish does NOT push to main (it only creates a tag
   # + GitHub release), so nothing re-triggers release-please.yml afterwards. An
@@ -274,10 +274,16 @@ jobs:
   # defer. So instead we *wait*: poll the label until the publish finishes (or a
   # bounded timeout), then let release-please run in this same run against the
   # now-consistent state. This job is deliberately outside the `release-please`
-  # concurrency group so release-commit runs can still dispatch publishing.
+  # concurrency group so `trigger-releases` can still dispatch publishing first.
   #
-  # Release commits bypass this wait entirely: their run must reach
-  # `trigger-releases` to dispatch the publish.
+  # Path by push kind:
+  #   * Normal pushes: enter this wait when detect/empty-commit succeeded
+  #     (`trigger-releases` is skipped and ignored).
+  #   * Release commits: still dispatch publish first via `trigger-releases`
+  #     (not blocked by this wait). After that job succeeds, this guard runs
+  #     so the same workflow can refresh remaining open sibling release PRs
+  #     once half-updated tag/label state clears. A failed or skipped trigger
+  #     fails closed and leaves maintenance off.
   #
   # Three fallbacks if the wait can't resolve cleanly:
   #   * Publish genuinely *stuck* past MAX_WAIT (label never flips, but GitHub is
@@ -291,9 +297,27 @@ jobs:
   #     then skipped via `needs`, and a red guard is the honest signal — better
   #     than silently guessing "in flight" for 45 min and stranding commits.
   guard-pending-release:
-    needs: [guard-empty-commit, detect-release-commit]
+    needs:
+      - guard-empty-commit
+      - detect-release-commit
+      - trigger-releases
     name: Check for in-flight publish
-    if: needs.detect-release-commit.outputs.release-commit != 'true'
+    # `trigger-releases` is skipped on normal pushes, so do not rely on the
+    # implicit success() gate for needs. Prefer !cancelled() over always() so
+    # a cancelled workflow does not keep polling for up to ~45m.
+    # Strict `== 'true'` / `== 'false'` on release-commit: malformed/unset
+    # detector output fails closed rather than looking like a normal push.
+    if: |
+      !cancelled() &&
+      needs.guard-empty-commit.result == 'success' &&
+      needs.detect-release-commit.result == 'success' &&
+      (
+        needs.detect-release-commit.outputs.release-commit == 'false' ||
+        (
+          needs.detect-release-commit.outputs.release-commit == 'true' &&
+          needs.trigger-releases.result == 'success'
+        )
+      )
     runs-on: ubuntu-latest
     # Backstops the poll loop at the job level (covers checkout + every `gh`
     # round-trip, not just the sleeps). Sits ~10 min above MAX_WAIT (45 min) so
@@ -539,16 +563,16 @@ jobs:
   release-please:
     needs: [guard-empty-commit, detect-release-commit, guard-pending-release]
     # Fail closed: run only on an explicit `skip=false`. An unset value (guard
-    # crashed or hit its job timeout before writing the output) blocks
-    # release-please rather than letting it recompute against unverified state.
-    if: |
-      needs.detect-release-commit.outputs.release-commit != 'true' &&
-      needs.guard-pending-release.outputs.skip == 'false'
+    # crashed, was skipped, or hit its job timeout before writing the output)
+    # blocks release-please rather than letting it recompute against unverified
+    # state. Release commits reach this job only after successful publish
+    # dispatch and a cleared/authorized pending-label wait above.
+    if: needs.guard-pending-release.outputs.skip == 'false'
     runs-on: ubuntu-latest
     # Serialize only the release-please action, which mutates shared release
     # branches and reads in-flight release state. Keeping this at job scope lets
-    # release-commit runs dispatch publishing without queueing behind long guard
-    # waits from ordinary pushes.
+    # release-commit runs dispatch publishing immediately via `trigger-releases`
+    # without queueing behind long guard waits from ordinary pushes.
     concurrency:
       group: release-please
       cancel-in-progress: false

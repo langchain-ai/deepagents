@@ -17876,10 +17876,27 @@ class DeepAgentsApp(App):
         self.call_after_refresh(self._chat_input.focus_input)
 
     def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002  # Textual event handler signature
-        """Copy selection to clipboard after click-chain selection updates."""
+        """Copy selection to clipboard after click-chain selection updates.
+
+        The scan is pinned to the active screen captured here, not resolved
+        inside the deferred callback. Textual routes mouse events only to the
+        top of the screen stack (`App.on_event` forwards to `self.screen`), so
+        that is necessarily where the release landed. Without pinning, a
+        selection left behind on the screen below a modal would be scanned too
+        and emit a spurious "copied" toast alongside whatever the user actually
+        clicked (e.g. the Debug Console thread id, which copies itself).
+
+        `self.screen` needs no empty-stack guard: `App.on_event` already
+        dereferenced it to forward this `MouseUp`, and the only code that
+        empties the stack runs after the message loop has stopped.
+        """
         from deepagents_code.clipboard import copy_selection_to_clipboard
 
-        self.call_after_refresh(copy_selection_to_clipboard, self)
+        self.call_after_refresh(
+            copy_selection_to_clipboard,
+            self,
+            screen=self.screen,
+        )
 
     # =========================================================================
     # Model Switching

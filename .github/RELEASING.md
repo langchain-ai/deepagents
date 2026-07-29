@@ -44,22 +44,26 @@ To release a package:
 1. Merge one or more [releasable conventional commits](#releasable-commit-types-and-version-bumping) to `main`
 2. Wait for the release-please action to create/update the release PR (can take a minute or two)
 3. Review the generated changelog in the PR. The published GitHub release body is extracted from the merged package `CHANGELOG.md`, not from the release PR description.
-   1. For `deepagents-code`, follow the [curated release-notes workflow](#releasing-deepagents-code) after moving the PR from draft to ready for review.
+   1. Follow the [curated release-notes workflow](#curated-release-notes) after moving the PR from draft to ready for review. This applies to every release-please managed package.
 4. Merge the release PR after its required checks pass — this triggers the pre-release checks, PyPI publish, and GitHub release
 
 > [!IMPORTANT]
 > `deepagents-code` pins an exact `deepagents==` version in `libs/code/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version `deepagents-code` actually requires. If you intentionally need to ship a release PR with an older SDK pin, add the `release: skip sdk pin check` label before merging. See [Release Failed: Code SDK Pin Is Older Than SDK](#release-failed-code-sdk-pin-is-older-than-sdk) for recovery if a stale pin slips through.
 
-### Releasing `deepagents-code`
+### Curated Release Notes
+
+This applies to **every** package release-please manages. The package under release is derived from the release PR's head branch, so a package added to [`release-please-config.json`](https://github.com/langchain-ai/deepagents/blob/main/release-please-config.json) is covered with no workflow change.
 
 Keep the release PR in draft while changes are still accumulating. When it is ready to release:
 
-1. Mark the PR ready for review. `dcode-release-bot` will post a polished release-notes draft as a PR comment.
+1. Mark the PR ready for review. `release-bot` will post a polished release-notes draft as a PR comment.
 2. Edit the notes in that marked comment as needed (while keeping the version heading intact).
-3. After reviewing & finalizing, comment `@dcode-release-bot apply`. The bot updates the PR's `libs/code/CHANGELOG.md` and mirrors the notes to the PR body.
+3. After reviewing & finalizing, comment `@release-bot apply`. The bot updates that package's `CHANGELOG.md` (e.g. `libs/code/CHANGELOG.md` for `deepagents-code`) and mirrors the notes to the PR body.
 4. Merge normally after the `curated release notes` CI check passes.
 
-Run `@dcode-release-bot draft` to regenerate the draft if the automatic run fails or new changes cause release-please to add changelog entries to the release PR. If release-please updates the PR after the notes were applied, the check will fail until you run `draft` and `apply` again.
+Run `@release-bot draft` to regenerate the draft if the automatic run fails or new changes cause release-please to add changelog entries to the release PR. If release-please updates the PR after the notes were applied, the check will fail until you run `draft` and `apply` again.
+
+During a fanout release each package gets its own release PR, and each needs its own `draft`/`apply`. Commands act only on the PR they are posted to.
 
 The merged changelog is the source for the published GitHub release notes.
 
@@ -71,8 +75,8 @@ The draft and apply jobs reuse the repository's GitHub App credentials to mint s
 
 Configure these repository-level Actions variables, which are also needed by jobs that do not use the release environment:
 
-- `DCODE_RELEASE_BOT_LOGIN`: the App bot login, `<app-slug>[bot]`
-- `DCODE_RELEASE_BOT_ID`: the numeric user ID for that bot login (this is not the GitHub App ID)
+- `RELEASE_BOT_LOGIN`: the App bot login, `<app-slug>[bot]`
+- `RELEASE_BOT_ID`: the numeric user ID for that bot login (this is not the GitHub App ID)
 
 Find the App slug in its GitHub App settings URL, then look up both values with:
 
@@ -81,13 +85,15 @@ APP_SLUG=<app-slug>
 gh api "users/${APP_SLUG}[bot]" --jq '{login, id}'
 ```
 
-Create the `release-dcode` environment without required reviewers or other approval rules, because approval would block automatic drafting. Add `DCODE_RELEASE_MODEL` as an environment variable, using an explicit `provider:model` value with one of the supported providers and a model that supports JSON Schema structured output, and add the matching provider's API key as an environment secret (only the configured provider's key is required). The workflow reads a fixed secret name per provider:
+Create the `release-bot` environment without required reviewers or other approval rules, because approval would block automatic drafting. Add `RELEASE_BOT_MODEL` as an environment variable, using an explicit `provider:model` value with one of the supported providers and a model that supports JSON Schema structured output. The model must also accept an output-token limit of at least 32,768, since the helper requests that ceiling on every provider; a model whose own limit is lower rejects the request outright. Every current OpenAI, Anthropic, and Gemini model an operator would reasonably pick clears it — the exceptions are older small models. Add the matching provider's API key as an environment secret (only the configured provider's key is required). The workflow reads a fixed secret name per provider:
 
-| `DCODE_RELEASE_MODEL` provider | Environment secret name |
+| `RELEASE_BOT_MODEL` provider | Environment secret name |
 | ------------------------------ | ----------------------- |
-| `openai`                       | `OPENAI_API_KEY`        |
-| `anthropic`                    | `ANTHROPIC_API_KEY`     |
-| `google_genai`                 | `GOOGLE_API_KEY`        |
+| `openai` | `OPENAI_API_KEY` |
+| `anthropic` | `ANTHROPIC_API_KEY` |
+| `google_genai` | `GOOGLE_API_KEY` |
+
+For `openai:…`, pick a Chat Completions model (for example `openai:gpt-5.5`). This helper only calls Chat Completions, so Responses-API-only models cannot be used.
 
 A mismatched secret name resolves to an empty key and fails the draft run with "The selected release-note model API key is not configured."
 
@@ -131,7 +137,7 @@ A few rules of thumb for picking a type that respects what *should* end up in us
 - Internal-only work (refactors, test-only changes, CI tweaks, dependency bumps with no behavior change, comment/docstring updates) belongs in a hidden type. These still trigger a release PR rebase if one is open, but never appear in the changelog.
 - Don't smuggle user-visible changes into hidden types (e.g., a `chore:` that adds a feature). The change won't appear in release notes and users will be surprised by undocumented behavior.
 - The release PR description is a preview/control surface generated by release-please. The published GitHub release body comes from the merged package `CHANGELOG.md`, with contributor shoutouts appended by `release.yml`.
-- For `deepagents-code`, use the bot-authored curated-notes comment and `apply` command rather than editing generated files directly. For other packages, edit the package `CHANGELOG.md` first and then mirror the polished section in the release PR body. A later release-please run can regenerate both surfaces; reapply any curation after the PR syncs.
+- Use the bot-authored curated-notes comment and `apply` command rather than editing generated files directly. A later release-please run can regenerate both surfaces; reapply any curation after the PR syncs by running `draft` and then `apply` again.
 
 ## Commit Format
 
@@ -227,8 +233,40 @@ The [release-please workflow (`.github/workflows/release-please.yml`)](https://g
 
 Both must be true. release-please always satisfies both when merging a release PR — a manual `CHANGELOG.md` edit alone will not trigger a release.
 
-> [!NOTE]
-> Merged release PRs dispatch the publish workflow directly and skip the release-please PR-maintenance step for that push. The dispatch job comments on the merged release PR with a direct link to each package's release workflow run. This intentionally keeps publishing from being blocked behind normal release-please updates while another package is publishing. If any next release PR needs to be refreshed after the merge, the next normal push to `main` will handle it.
+### What Happens When You Merge a Release PR
+
+Publishing starts immediately. Housekeeping on the *other* open release PRs happens afterwards, in the same workflow run:
+
+1. **Your package publishes first.** `trigger-releases` fires as soon as the release commit is detected and never waits on anything else. It comments on the merged PR with a direct link to each package's release run — that link is where you watch the actual publish.
+2. **The run waits for publishing to settle.** `guard-pending-release` polls until no merged release PR is still labeled `autorelease: pending`.
+3. **Then the remaining release PRs are refreshed.** release-please updates shared files (notably `.release-please-manifest.json`) on the still-open release PRs, and `update-lockfiles` regenerates their lockfiles.
+
+In the normal case you do not need to think about any of this. Step 3 is the only part that can be quietly skipped — if the other release PRs look stale afterwards, expand *If the other release PRs were not refreshed* below.
+
+<details>
+<summary><b>Why publishing never waits, and why the wait covers the whole repo</b></summary>
+
+**Publishing goes first** so that a publish is never blocked behind housekeeping for some *other* package. Only step 3 is serialized (release-please mutates shared release branches, so two copies must not run at once); steps 1 and 2 are deliberately outside that serialization.
+
+**Step 3 requires an explicit all-clear.** The guard has to positively report "nothing in flight" (`skip=false`) for release-please to run. If the guard crashes, times out, or is skipped, release-please does *not* run — an unknown state is treated as unsafe rather than assumed fine.
+
+**The wait covers every pending release PR in the repo, not just the one you merged.** This looks over-broad but is required: release-please recomputes *all* components on every run, so any single component sitting between "version bumped" and "tag created" is enough to trigger a bootstrap downgrade — it sees no tag, concludes the package was never released, and proposes resetting it to `0.1.0` with the full history. Scoping the wait to your own PR would not be safe.
+
+</details>
+
+<details>
+<summary><b>If the other release PRs were not refreshed</b></summary>
+
+Step 3 can be skipped in the situations below. Skipping it holds up only the refresh of the *other* open release PRs — with one exception: a red `release.yml` means that package did not publish and has to be re-dispatched.
+
+| Situation | What you will see | What to do | When the refresh happens |
+| --- | --- | --- | --- |
+| A publish is still in flight after 45 min | `release-please.yml` green, with a `deferred` step summary | Nothing, unless the publish is genuinely stuck — then clear the label per [Release PR Stuck with "autorelease: pending"](#release-pr-stuck-with-autorelease-pending-label) | Next push to `main` |
+| A publish failed (yours, or a package left stuck earlier) | `release.yml` red; `release-please.yml` green, with a `deferred (release commit)` summary naming the failed run | Fix and re-dispatch the failed package release — this package has **not** published | Next push to `main`, once the failed release is recovered |
+| GitHub's release state is unreadable | `release-please.yml` **red** at `guard-pending-release` | Re-run the job. It refuses to guess whether a publish is in flight rather than recompute against unverified state | When the re-run succeeds |
+| You merged several release PRs at once | Some `release-please` jobs show as **cancelled** | Nothing — this is expected. Only one job may queue per concurrency group | Already done: the surviving (newest) run recomputes every component, covering the cancelled jobs' work |
+
+</details>
 
 ### Lockfile Updates
 
@@ -251,7 +289,7 @@ Release-please uses labels to track the state of release PRs:
 
 | Label | Meaning |
 | ----- | ------- |
-| `autorelease: pending` | Release PR has been merged but not yet tagged/released |
+| `autorelease: pending` | Applied by release-please when it opens the release PR, and carried until the release is tagged. On a **merged** PR it means the release has not been tagged/published yet |
 | `autorelease: tagged` | Release PR has been successfully tagged and released |
 
 Because `skip-github-release: true` is set in the release-please config (we create releases via our own workflow instead of using the one built into release-please), our `release.yml` workflow must update these labels manually for state management! After successfully creating the GitHub release and tag, the `mark-release` job updates the label from `pending` to `tagged`.
@@ -387,7 +425,7 @@ Use the exact `<VERSION>` everywhere except the branch name. For example, beta `
    uv lock --directory <PATH> --python <PYTHON_VERSION>
    ```
 
-   Use the package's required Python version for `<PYTHON_VERSION>`: `3.14` for `acp`, `3.12` for every other package. This mapping is the same one the lock check enforces — see `python_version` in `libs/Makefile` and `_python_version` in `.github/scripts/check_lockfiles_pre_commit.py`. Locking with the wrong version will fail the pre-commit `lock-check`.
+   Use the package's required Python version for `<PYTHON_VERSION>`: `3.14` for `acp`, `3.12` for every other package. This mapping is the same one the lock check enforces — see `python_version` in `libs/Makefile` and `_python_version` in `.github/scripts/checks/check_lockfiles_pre_commit.py`. Locking with the wrong version will fail the pre-commit `lock-check`.
 
    For example, for the SDK:
 
@@ -439,7 +477,7 @@ Use the exact `<VERSION>` everywhere except the branch name. For example, beta `
 
 #### Enrich the published pre-release notes
 
-A regular release has a review point before publication: release-please generates the package changelog in a release PR, and [`deepagents-code` notes are curated](#releasing-deepagents-code) before that PR merges. A pre-release bypasses release-please and has no matching changelog section, so `release.yml` initially publishes only the generated release scaffolding described in step 6. After the workflow succeeds, edit the published GitHub release body in place to add the user-facing notes. This presentation-only edit does not change the tag or published artifacts; do not add the pre-release notes to `CHANGELOG.md`.
+A regular release has a review point before publication: release-please generates the package changelog in a release PR, and [notes are curated](#curated-release-notes) before that PR merges. A pre-release bypasses release-please and has no matching changelog section, so `release.yml` initially publishes only the generated release scaffolding described in step 6. After the workflow succeeds, edit the published GitHub release body in place to add the user-facing notes. This presentation-only edit does not change the tag or published artifacts; do not add the pre-release notes to `CHANGELOG.md`.
 
 Apply the same editorial standard as the regular release-note automation:
 
@@ -646,7 +684,7 @@ A subtler sibling of the empty-commit case. release-please scopes a commit to a 
 
 **Avoid it** by landing lockfile regeneration in a separate `chore(deps):` commit/PR — `chore` is hidden and triggers no release, so only the package with real source changes is released.
 
-The `release_please_scope_check.yml` workflow ([`.github/scripts/check_lockfile_release_scope.py`](https://github.com/langchain-ai/deepagents/blob/main/.github/scripts/check_lockfile_release_scope.py)) catches this at PR time: when a bump-worthy PR changes only a lockfile inside a managed package, it posts a sticky comment naming the affected components and **fails the check**. Resolve it (route the lockfile churn through a `chore(deps):` commit), or — for an intentional lockfile-only release such as a leaf-package security bump — apply the `allow-lockfile-release` label to acknowledge the fan-out and let the PR pass. Applying the label posts a loud bypass warning that lists every touched component — bypassing does **not** stop release-please from opening those release PRs. For the failure to actually gate merges, add the check to the branch's required status checks (repo settings).
+The `release_please_scope_check.yml` workflow ([`.github/scripts/release/check_lockfile_release_scope.py`](https://github.com/langchain-ai/deepagents/blob/main/.github/scripts/release/check_lockfile_release_scope.py)) catches this at PR time: when a bump-worthy PR changes only a lockfile inside a managed package, it posts a sticky comment naming the affected components and **fails the check**. Resolve it (route the lockfile churn through a `chore(deps):` commit), or — for an intentional lockfile-only release such as a leaf-package security bump — apply the `allow-lockfile-release` label to acknowledge the fan-out and let the PR pass. Applying the label posts a loud bypass warning that lists every touched component — bypassing does **not** stop release-please from opening those release PRs. For the failure to actually gate merges, add the check to the branch's required status checks (repo settings).
 
 After merge, `release_please_fanout_watch.yml` is a safety net: if an open `release(<component>):` PR's package path only changed lockfiles on `main` since the last released SHA, it sticky-comments that release PR and fails an advisory check so the fan-out is noticed within minutes. Recovery still follows [Reverting a Merged-but-Unreleased PR](#reverting-a-merged-but-unreleased-pr).
 
@@ -766,7 +804,7 @@ Edit `.release-please-manifest.json` to the last good version for the affected p
 
 ### Release PR Stuck with "autorelease: pending" Label
 
-If a release PR shows `autorelease: pending` after the release workflow completed, the label update step may have failed. This can block release-please from creating new release PRs.
+If a release PR shows `autorelease: pending` after the release workflow ran, the label update step may have failed — on the mainline path `mark-release` will be red. This can block release-please from creating new release PRs.
 
 **To fix manually:**
 
@@ -778,7 +816,9 @@ gh pr list --state merged --search "release(<PACKAGE>)" --limit 5
 gh pr edit <PR_NUMBER> --remove-label "autorelease: pending" --add-label "autorelease: tagged"
 ```
 
-The label update is non-fatal in the workflow (`|| true`), so the release itself succeeded—only the label needs fixing.
+On the normal mainline publish path, a failed label swap fails `mark-release`
+after the tag and GitHub release already exist. Treat the package release as
+done and fix only the stuck label so later release-please maintenance can run.
 
 ### Release Failed: Pre-release Checks
 

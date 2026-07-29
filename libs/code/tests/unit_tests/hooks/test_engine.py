@@ -23,6 +23,7 @@ from deepagents_code.hooks.models.domain import (
     AgentIdentity,
     CompactTrigger,
     DcodeNotification,
+    DcodeNotificationKind,
     HookContext,
     HookDiagnostic,
     HookEvent,
@@ -62,6 +63,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from deepagents_code.hooks.models.domain import HookDomainEvent
+    from deepagents_code.hooks.presenter import HookProgress
     from deepagents_code.json_types import JsonObject
 
 
@@ -208,7 +210,7 @@ def test_snapshot_matches_notification_and_skips_tool_mismatch(tmp_path: Path) -
             {
                 "Notification": [
                     {
-                        "matcher": "permission_.*",
+                        "matcher": "permission_prompt",
                         "hooks": [{"type": "command", "command": "notify"}],
                     }
                 ],
@@ -226,7 +228,7 @@ def test_snapshot_matches_notification_and_skips_tool_mismatch(tmp_path: Path) -
         NotificationEvent(
             event=HookEvent.NOTIFICATION,
             notification=DcodeNotification(
-                type="permission_prompt",
+                type=DcodeNotificationKind.PERMISSION_REQUIRED,
                 message="Approve",
             ),
         ),
@@ -427,7 +429,7 @@ def test_snapshot_rejects_matcher_for_unmatchable_event() -> None:
             NotificationEvent(
                 event=HookEvent.NOTIFICATION,
                 notification=DcodeNotification(
-                    type="permission_prompt",
+                    type=DcodeNotificationKind.PERMISSION_REQUIRED,
                     message="Approve",
                 ),
             ),
@@ -1621,6 +1623,45 @@ async def test_engine_reduces_in_config_order_when_completion_is_reversed(
     assert decision.stop_reason == "stop"
     assert first.read_text() == "first"
     assert second.read_text() == "second"
+
+
+async def test_engine_reports_configured_handler_status(tmp_path: Path) -> None:
+    snapshot = HooksSnapshot.from_config(
+        _config(
+            {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "unused",
+                                "argv": [sys.executable, "-c", "pass"],
+                                "statusMessage": "Loading project context",
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+    )
+    progress: list[HookProgress] = []
+
+    await HookEngine(snapshot).run(
+        _invocation(
+            tmp_path,
+            SessionStartEvent(
+                event=HookEvent.SESSION_START,
+                cause=SessionStartCause.STARTUP,
+            ),
+        ),
+        transcript_path=_transcript_path(tmp_path),
+        on_progress=progress.append,
+    )
+
+    assert [(update.active, update.message) for update in progress] == [
+        (True, "Loading project context"),
+        (False, "Loading project context"),
+    ]
 
 
 async def test_engine_uses_captured_snapshot(tmp_path: Path) -> None:

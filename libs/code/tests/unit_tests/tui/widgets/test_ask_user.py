@@ -315,7 +315,9 @@ class TestAskUserMenu:
             text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
             text_input.focus()
             big = "key=value\n" * 5
-            await text_input._on_paste(events.Paste(big))
+            # Post through the App so Textual's MRO dispatch reaches the
+            # base handlers that perform the insert.
+            pilot.app.post_message(events.Paste(big))
             await pilot.pause()
             assert text_input.text == "[Pasted text #1 +5 lines]"
 
@@ -498,7 +500,9 @@ class TestAskUserMenu:
             other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
             other_input.focus()
             big = "detail\n" * 5
-            await other_input._on_paste(events.Paste(big))
+            # Post through the App so Textual's MRO dispatch reaches the
+            # base handlers that perform the insert.
+            pilot.app.post_message(events.Paste(big))
             await pilot.pause()
             assert other_input.text == "[Pasted text #1 +5 lines]"
 

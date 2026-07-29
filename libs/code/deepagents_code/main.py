@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from deepagents_code.app import AppResult
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.config import Glyphs
+    from deepagents_code.hooks.trust import WorkspaceTrust
     from deepagents_code.mcp_tools import MCPServerInfo, ProjectServerSummary
     from deepagents_code.notifications import PendingNotification
 
@@ -51,16 +52,23 @@ _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE = (
 )
 
 
-class _ProjectMcpTrustAction(Enum):
-    """Actions available in the project MCP trust prompt."""
+class _TrustAction(Enum):
+    """Actions available in any project-scope trust prompt.
+
+    Shared by the project MCP server and project hook prompts; both offer the
+    same allow-once / remember / deny choice over a different subject.
+    """
 
     ALLOW_ONCE = "allow_once"
     REMEMBER = "remember"
     DENY = "deny"
 
 
-class _ProjectMcpTrustPromptOutcome(Enum):
-    """Internal outcomes that are not project MCP trust decisions."""
+class _TrustPromptOutcome(Enum):
+    """Trust-prompt results that are not decisions about the subject.
+
+    Subject-neutral so hook and MCP prompts can report the same abort paths.
+    """
 
     INTERRUPTED = "interrupted"
     """The user pressed Ctrl+C; the caller aborts the run (exit 130)."""
@@ -2318,6 +2326,7 @@ async def run_textual_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    hook_trust: "WorkspaceTrust | None" = None,
     enable_interpreter: bool | None = None,
     interpreter_arg: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
@@ -2376,6 +2385,8 @@ async def run_textual_cli_async(
             `True` to allow, `False` to deny, `None` to fall back to the
             user's per-server scoped approvals (equivalent to `False` for the
             whole-config decision).
+        hook_trust: Policy deciding which workspaces may run project-scoped hook
+            commands. `None` consults only the persisted trust store.
         enable_interpreter: Enable `CodeInterpreterMiddleware` (`js_eval`) on
             the main agent. `None` defers to the sandbox-aware/config default.
         interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state,
@@ -2507,6 +2518,7 @@ async def run_textual_cli_async(
             model_explicitly_set=model_name is not None,
             interpreter_arg=interpreter_arg,
             defer_server_start=defer_server_start,
+            hook_trust=hook_trust,
         )
     except Exception as e:
         logger.debug("App error", exc_info=True)
@@ -2934,25 +2946,32 @@ def _format_project_mcp_checkbox_rows(
     return rows
 
 
-def _project_mcp_picker_has_terminal() -> bool:
-    """Return whether the inline MCP pickers have interactive input and output."""
+def _trust_picker_has_terminal() -> bool:
+    """Return whether the inline trust pickers have interactive input and output."""
     return sys.stdin.isatty() and sys.stderr.isatty()
 
 
-def _run_project_mcp_trust_action_picker(
+def _run_trust_action_picker(
     console: "Console",
-) -> _ProjectMcpTrustAction | _ProjectMcpTrustPromptOutcome | None:
-    """Show the inline project MCP trust action picker.
+    *,
+    remember_label: str = "Allow for this project — until changed",
+) -> _TrustAction | _TrustPromptOutcome | None:
+    """Show the inline allow-once / remember / deny picker for a trust prompt.
+
+    Subject-agnostic: callers describe what is being trusted before calling and
+    supply the label for the persistent option.
 
     Args:
         console: Console to print fallback notices to (stderr).
+        remember_label: Label for the persistent-trust option. Set this to match
+            what the caller actually persists, since scope differs by subject.
 
     Returns:
         The chosen action, `CANCELLED` for Esc or Ctrl+D, `INTERRUPTED` for
         Ctrl+C, or `None` when the inline picker cannot run and the caller should
         use the text fallback.
     """
-    if not _project_mcp_picker_has_terminal():
+    if not _trust_picker_has_terminal():
         return None
 
     try:
@@ -2966,7 +2985,7 @@ def _run_project_mcp_trust_action_picker(
         from prompt_toolkit.output.defaults import create_output
         from prompt_toolkit.styles import Style
     except ImportError:
-        logger.debug("Project MCP action picker unavailable", exc_info=True)
+        logger.debug("Trust action picker unavailable", exc_info=True)
         console.print(
             "[dim]Interactive selector unavailable; falling back to text input.[/dim]",
             highlight=False,
@@ -2977,9 +2996,9 @@ def _run_project_mcp_trust_action_picker(
 
     glyphs = get_glyphs()
     actions = [
-        (_ProjectMcpTrustAction.ALLOW_ONCE, "Allow once"),
-        (_ProjectMcpTrustAction.REMEMBER, "Allow for this project — until changed"),
-        (_ProjectMcpTrustAction.DENY, "Deny"),
+        (_TrustAction.ALLOW_ONCE, "Allow once"),
+        (_TrustAction.REMEMBER, remember_label),
+        (_TrustAction.DENY, "Deny"),
     ]
     selected_index = len(actions) - 1
 
@@ -3024,61 +3043,72 @@ def _run_project_mcp_trust_action_picker(
     @key_bindings.add("escape")
     @key_bindings.add("c-d")
     def _abort(event: KeyPressEvent) -> None:
-        event.app.exit(result=_ProjectMcpTrustPromptOutcome.CANCELLED)
+        event.app.exit(result=_TrustPromptOutcome.CANCELLED)
 
     @key_bindings.add("c-c")
     def _interrupt(event: KeyPressEvent) -> None:
-        event.app.exit(result=_ProjectMcpTrustPromptOutcome.INTERRUPTED)
+        event.app.exit(result=_TrustPromptOutcome.INTERRUPTED)
 
-    app: Application[_ProjectMcpTrustAction | _ProjectMcpTrustPromptOutcome] = (
-        Application(
-            layout=Layout(
-                Window(
-                    FormattedTextControl(_rows, show_cursor=False),
-                    height=len(actions) + 1,
-                    dont_extend_height=True,
-                )
-            ),
-            key_bindings=key_bindings,
-            style=Style.from_dict(
-                {
-                    "prompt.help": "ansibrightblack",
-                    "item.current": "reverse",
-                }
-            ),
-            full_screen=False,
-            erase_when_done=True,
-            output=create_output(stdout=sys.stderr),
-        )
+    app: Application[_TrustAction | _TrustPromptOutcome] = Application(
+        layout=Layout(
+            Window(
+                FormattedTextControl(_rows, show_cursor=False),
+                height=len(actions) + 1,
+                dont_extend_height=True,
+            )
+        ),
+        key_bindings=key_bindings,
+        style=Style.from_dict(
+            {
+                "prompt.help": "ansibrightblack",
+                "item.current": "reverse",
+            }
+        ),
+        full_screen=False,
+        erase_when_done=True,
+        output=create_output(stdout=sys.stderr),
     )
     try:
         return app.run()
     except (RuntimeError, OSError):
-        logger.debug("Project MCP action picker failed", exc_info=True)
+        logger.debug("Trust action picker failed", exc_info=True)
         console.print(
             "[dim]Interactive selector unavailable; falling back to text input.[/dim]",
             highlight=False,
         )
         return None
     except KeyboardInterrupt:
-        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+        return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
         return None
 
 
-def _select_project_mcp_trust_action(
+def _select_trust_action(
     console: "Console",
-) -> _ProjectMcpTrustAction | _ProjectMcpTrustPromptOutcome:
-    """Choose whether to allow once, remember selected servers, or deny.
+    *,
+    remember_label: str = "Allow for this project — until changed",
+) -> _TrustAction | _TrustPromptOutcome:
+    """Choose whether to allow once, remember, or deny a project-scoped subject.
+
+    Falls back to a text prompt when the inline picker cannot run. Every failure
+    mode resolves to a decision the caller can act on without knowing which
+    input path produced it: an unavailable picker degrades to text, and EOF on
+    the text prompt denies rather than aborting, so a non-interactive launch
+    fails closed instead of hanging.
 
     Args:
         console: Console used by the text fallback.
+        remember_label: Label for the persistent-trust option forwarded to the
+            inline picker.
 
     Returns:
         The selected trust action, `CANCELLED` when the user presses Esc or
         Ctrl+D, or `INTERRUPTED` when the user presses Ctrl+C.
     """
-    selected = _run_project_mcp_trust_action_picker(console)
+    selected = _run_trust_action_picker(
+        console,
+        remember_label=remember_label,
+    )
     if selected is not None:
         return selected
 
@@ -3087,19 +3117,19 @@ def _select_project_mcp_trust_action(
             input("Choose [y] allow once / [r] remember / [N] deny: ").strip().lower()
         )
     except KeyboardInterrupt:
-        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+        return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
-        return _ProjectMcpTrustAction.DENY
+        return _TrustAction.DENY
     if answer in {"y", "yes"}:
-        return _ProjectMcpTrustAction.ALLOW_ONCE
+        return _TrustAction.ALLOW_ONCE
     if answer in {"r", "remember", "a", "always"}:
-        return _ProjectMcpTrustAction.REMEMBER
-    return _ProjectMcpTrustAction.DENY
+        return _TrustAction.REMEMBER
+    return _TrustAction.DENY
 
 
 def _run_project_mcp_server_checkbox_picker(
     prompt_servers: Sequence["ProjectServerSummary"], console: "Console"
-) -> list[str] | _ProjectMcpTrustPromptOutcome | None:
+) -> list[str] | _TrustPromptOutcome | None:
     """Show an inline checkbox picker for project MCP servers to remember.
 
     Args:
@@ -3112,7 +3142,7 @@ def _run_project_mcp_server_checkbox_picker(
         `INTERRUPTED` means the user pressed Ctrl+C; `None` means the checkbox UI
         could not run and the caller should fall back to a simpler prompt.
     """
-    if not _project_mcp_picker_has_terminal():
+    if not _trust_picker_has_terminal():
         return None
 
     try:
@@ -3216,13 +3246,13 @@ def _run_project_mcp_server_checkbox_picker(
 
     @key_bindings.add("escape")
     def _cancel(event: KeyPressEvent) -> None:
-        event.app.exit(result=_ProjectMcpTrustPromptOutcome.CANCELLED)
+        event.app.exit(result=_TrustPromptOutcome.CANCELLED)
 
     @key_bindings.add("c-c")
     def _interrupt(event: KeyPressEvent) -> None:
-        event.app.exit(result=_ProjectMcpTrustPromptOutcome.INTERRUPTED)
+        event.app.exit(result=_TrustPromptOutcome.INTERRUPTED)
 
-    app: Application[list[str] | _ProjectMcpTrustPromptOutcome] = Application(
+    app: Application[list[str] | _TrustPromptOutcome] = Application(
         layout=Layout(
             HSplit(
                 [
@@ -3261,16 +3291,16 @@ def _run_project_mcp_server_checkbox_picker(
         )
         return None
     except KeyboardInterrupt:
-        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+        return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
         # Ctrl+D backs out of the picker, same as Esc: cancel rather than
         # silently confirm an empty selection.
-        return _ProjectMcpTrustPromptOutcome.CANCELLED
+        return _TrustPromptOutcome.CANCELLED
 
 
 def _select_project_servers_with_numbers(
     prompt_servers: Sequence["ProjectServerSummary"], console: "Console"
-) -> list[str] | _ProjectMcpTrustPromptOutcome:
+) -> list[str] | _TrustPromptOutcome:
     """Ask which prompted project MCP servers to remember with a text fallback.
 
     Args:
@@ -3295,11 +3325,11 @@ def _select_project_servers_with_numbers(
     try:
         raw = input("Enter numbers to remember (e.g. 1,3), 'all', or blank to abort: ")
     except KeyboardInterrupt:
-        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+        return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
-        return _ProjectMcpTrustPromptOutcome.CANCELLED
+        return _TrustPromptOutcome.CANCELLED
     if not raw.strip():
-        return _ProjectMcpTrustPromptOutcome.CANCELLED
+        return _TrustPromptOutcome.CANCELLED
     if raw.strip().lower() in {"a", "all"}:
         return names
     return [
@@ -3309,7 +3339,7 @@ def _select_project_servers_with_numbers(
 
 def _select_project_servers_to_persist(
     prompt_servers: Sequence["ProjectServerSummary"], console: "Console"
-) -> list[str] | _ProjectMcpTrustPromptOutcome:
+) -> list[str] | _TrustPromptOutcome:
     """Ask which prompted project MCP servers to remember for this project.
 
     Multiple prompted servers use an arrow-key checkbox picker. A single
@@ -3340,8 +3370,8 @@ def _check_mcp_project_trust(
 ) -> (
     bool
     | Literal[
-        _ProjectMcpTrustPromptOutcome.INTERRUPTED,
-        _ProjectMcpTrustPromptOutcome.CANCELLED,
+        _TrustPromptOutcome.INTERRUPTED,
+        _TrustPromptOutcome.CANCELLED,
     ]
     | None
 ):
@@ -3487,18 +3517,18 @@ def _check_mcp_project_trust(
 
     server_count = len(prompt_servers)
     noun = "server" if server_count == 1 else "servers"
-    action = _select_project_mcp_trust_action(prompt_console)
-    if action is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
-        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
-    if action is _ProjectMcpTrustPromptOutcome.CANCELLED:
-        return _ProjectMcpTrustPromptOutcome.CANCELLED
-    if action is _ProjectMcpTrustAction.DENY:
+    action = _select_trust_action(prompt_console)
+    if action is _TrustPromptOutcome.INTERRUPTED:
+        return _TrustPromptOutcome.INTERRUPTED
+    if action is _TrustPromptOutcome.CANCELLED:
+        return _TrustPromptOutcome.CANCELLED
+    if action is _TrustAction.DENY:
         prompt_console.print(
             f"[dim]Denied {server_count} project MCP {noun}.[/dim]",
             highlight=False,
         )
         return False
-    if action is _ProjectMcpTrustAction.ALLOW_ONCE:
+    if action is _TrustAction.ALLOW_ONCE:
         prompt_console.print(
             f"[dim]Allowing {server_count} project MCP {noun} for this "
             "session; remembering 0.[/dim]",
@@ -3509,10 +3539,10 @@ def _check_mcp_project_trust(
     from deepagents_code.model_config import add_enabled_project_mcp_servers
 
     names = _select_project_servers_to_persist(prompt_servers, prompt_console)
-    if names is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
-        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
-    if names is _ProjectMcpTrustPromptOutcome.CANCELLED:
-        return _ProjectMcpTrustPromptOutcome.CANCELLED
+    if names is _TrustPromptOutcome.INTERRUPTED:
+        return _TrustPromptOutcome.INTERRUPTED
+    if names is _TrustPromptOutcome.CANCELLED:
+        return _TrustPromptOutcome.CANCELLED
     if not names:
         prompt_console.print(
             f"[dim]No servers selected; denied {server_count} project MCP "
@@ -3539,6 +3569,102 @@ def _check_mcp_project_trust(
         highlight=False,
     )
     return True
+
+
+_PROJECT_HOOKS_REMEMBER_LABEL = "Always allow hooks in this workspace"
+
+
+def _check_project_hooks_trust(
+    *,
+    trust_flag: bool = False,
+) -> "WorkspaceTrust | _TrustPromptOutcome":
+    """Resolve interactive trust for project-scoped hook commands.
+
+    Returns a policy rather than a Boolean so the decision keeps its scope: the
+    grant applies to the launch workspace, and directories the session later
+    moves into are re-resolved against the persisted trust store.
+
+    Args:
+        trust_flag: Whether the CLI explicitly trusted project hooks.
+
+    Returns:
+        The trust policy to run the session under, `INTERRUPTED` when the user
+        presses Ctrl+C, or `CANCELLED` when the user presses Esc or Ctrl+D to
+        abort startup. Nothing is trusted, and no prompt is shown, unless
+        `DEEPAGENTS_CODE_EXPERIMENTAL` is truthy, since hooks stay off without
+        it.
+    """
+    from rich.console import Console
+    from rich.text import Text
+
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+    from deepagents_code.hooks.loading import project_hooks_path
+    from deepagents_code.hooks.trust import (
+        WorkspaceTrust,
+        is_project_hooks_trusted,
+        trust_project_hooks,
+    )
+    from deepagents_code.project_utils import ProjectContext
+
+    if not is_env_truthy(EXPERIMENTAL):
+        return WorkspaceTrust.none()
+    try:
+        context = ProjectContext.from_user_cwd(Path.cwd())
+        project_root = context.project_root or context.user_cwd
+        config_path = project_hooks_path(project_root)
+        if not config_path.is_file():
+            return WorkspaceTrust.none()
+    except OSError:
+        logger.warning("Could not inspect project hooks configuration", exc_info=True)
+        return WorkspaceTrust.none()
+
+    granted = WorkspaceTrust.for_session(project_root, granted=True)
+    if trust_flag or is_project_hooks_trusted(project_root):
+        return granted
+
+    prompt_console = Console(stderr=True)
+    prompt_console.print()
+    title = Text("Project hooks can execute commands from ", style="bold yellow")
+    title.append(str(config_path))
+    prompt_console.print(title, highlight=False)
+    prompt_console.print(
+        "Only allow hooks for projects you trust. Future edits to this file "
+        "will run without asking again if you always allow.",
+        style="yellow",
+        highlight=False,
+    )
+    action = _select_trust_action(
+        prompt_console,
+        remember_label=_PROJECT_HOOKS_REMEMBER_LABEL,
+    )
+    if action is _TrustPromptOutcome.INTERRUPTED:
+        return action
+    if action is _TrustPromptOutcome.CANCELLED:
+        return action
+    if action is _TrustAction.ALLOW_ONCE:
+        prompt_console.print(
+            "[dim]Allowing project hooks for this session.[/dim]",
+            highlight=False,
+        )
+        return granted
+    if action is _TrustAction.REMEMBER:
+        if not trust_project_hooks(project_root):
+            prompt_console.print(
+                "[yellow]Project hook trust could not be remembered; "
+                "allowing this session only.[/yellow]",
+                highlight=False,
+            )
+        else:
+            prompt_console.print(
+                "[dim]Project hooks trusted for this workspace.[/dim]",
+                highlight=False,
+            )
+        return granted
+    prompt_console.print(
+        "[dim]Project hooks skipped.[/dim]",
+        highlight=False,
+    )
+    return WorkspaceTrust.none()
 
 
 def _verify_interpreter_or_exit() -> None:
@@ -4462,13 +4588,27 @@ def cli_main() -> None:
             )
             if _debug_mcp_project_trust_enabled():
                 sys.exit(0)
-            if mcp_trust_decision is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
+            if mcp_trust_decision is _TrustPromptOutcome.INTERRUPTED:
                 sys.exit(130)
-            if mcp_trust_decision is _ProjectMcpTrustPromptOutcome.CANCELLED:
+            if mcp_trust_decision is _TrustPromptOutcome.CANCELLED:
                 from rich.console import Console as _Console
 
                 _Console(stderr=True).print(
                     "[dim]Aborted; no project MCP servers loaded.[/dim]",
+                    highlight=False,
+                )
+                return
+
+            hook_trust = _check_project_hooks_trust(
+                trust_flag=getattr(args, "trust_project_hooks", False),
+            )
+            if hook_trust is _TrustPromptOutcome.INTERRUPTED:
+                sys.exit(130)
+            if hook_trust is _TrustPromptOutcome.CANCELLED:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(
+                    "[dim]Aborted; project hooks not loaded.[/dim]",
                     highlight=False,
                 )
                 return
@@ -4525,6 +4665,7 @@ def cli_main() -> None:
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
+                        hook_trust=hook_trust,
                         enable_interpreter=enable_interpreter,
                         interpreter_arg=args.interpreter,
                         interpreter_ptc=interpreter_ptc,

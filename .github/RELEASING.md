@@ -89,9 +89,9 @@ Create the `release-bot` environment without required reviewers or other approva
 
 | `RELEASE_BOT_MODEL` provider | Environment secret name |
 | ------------------------------ | ----------------------- |
-| `openai`                       | `OPENAI_API_KEY`        |
-| `anthropic`                    | `ANTHROPIC_API_KEY`     |
-| `google_genai`                 | `GOOGLE_API_KEY`        |
+| `openai` | `OPENAI_API_KEY` |
+| `anthropic` | `ANTHROPIC_API_KEY` |
+| `google_genai` | `GOOGLE_API_KEY` |
 
 A mismatched secret name resolves to an empty key and fails the draft run with "The selected release-note model API key is not configured."
 
@@ -231,31 +231,40 @@ The [release-please workflow (`.github/workflows/release-please.yml`)](https://g
 
 Both must be true. release-please always satisfies both when merging a release PR — a manual `CHANGELOG.md` edit alone will not trigger a release.
 
-> [!NOTE]
-> Merging a release PR uses a publish-first dependency chain. `trigger-releases`
-> runs immediately after the release commit is detected and does not wait for the
-> pending-release guard or serialized release-please maintenance. The dispatch job
-> comments on the merged release PR with a direct link to each package's release
-> workflow run. Once every matched `release.yml` dispatch succeeds, the same
-> workflow run enters `guard-pending-release`, waits until no merged release PR
-> remains labeled `autorelease: pending`, and only an explicit `skip=false` allows
-> release-please to refresh remaining open release PRs (shared files such as
-> `.release-please-manifest.json`). `update-lockfiles` then regenerates lockfiles
-> on the PRs that maintenance step returned.
->
-> The wait covers every pending release PR in the repo, not just the one you
-> merged: release-please recomputes all components on each run, so any single
-> component sitting between "version bumped" and "tag created" is enough to
-> trigger a bootstrap downgrade.
->
-> When maintenance does **not** run, here is what you will see and what to do:
->
-> | Situation | Signal | Action |
-> | --- | --- | --- |
-> | A publish is still in flight after 45 min | `release-please.yml` is green; the guard logs a `deferred` step summary | Nothing, unless the publish is genuinely stuck — then clear the label per [Release PR Stuck with "autorelease: pending"](#release-pr-stuck-with-autorelease-pending-label). The next push runs maintenance. |
-> | The publish failed | `release.yml` is red; `release-please.yml` stays green with a `deferred (release commit)` summary | Fix and re-dispatch the failed package release. Maintenance runs on the next push. |
-> | GitHub state is unreadable | `release-please.yml` is **red** at `guard-pending-release` | Re-run the job. It refuses to guess whether a publish is in flight rather than recompute against unverified state. |
-> | You merged several release PRs at once | Some `release-please` jobs show as **cancelled** | Expected. Only one job may queue per concurrency group; the surviving (newest) run recomputes every component, so it does the cancelled jobs' work. |
+### What Happens When You Merge a Release PR
+
+Publishing starts immediately. Housekeeping on the *other* open release PRs happens afterwards, in the same workflow run:
+
+1. **Your package publishes first.** `trigger-releases` fires as soon as the release commit is detected and never waits on anything else. It comments on the merged PR with a direct link to each package's release run — that link is where you watch the actual publish.
+2. **The run waits for publishing to settle.** `guard-pending-release` polls until no merged release PR is still labeled `autorelease: pending`.
+3. **Then the remaining release PRs are refreshed.** release-please updates shared files (notably `.release-please-manifest.json`) on the still-open release PRs, and `update-lockfiles` regenerates their lockfiles.
+
+In the normal case you do not need to think about any of this. Step 3 is the only part that can be quietly skipped — if the other release PRs look stale afterwards, expand *If the other release PRs were not refreshed* below.
+
+<details>
+<summary><b>Why publishing never waits, and why the wait covers the whole repo</b></summary>
+
+**Publishing goes first** so that a publish is never blocked behind housekeeping for some *other* package. Only step 3 is serialized (release-please mutates shared release branches, so two copies must not run at once); steps 1 and 2 are deliberately outside that serialization.
+
+**Step 3 requires an explicit all-clear.** The guard has to positively report "nothing in flight" (`skip=false`) for release-please to run. If the guard crashes, times out, or is skipped, release-please does *not* run — an unknown state is treated as unsafe rather than assumed fine.
+
+**The wait covers every pending release PR in the repo, not just the one you merged.** This looks over-broad but is required: release-please recomputes *all* components on every run, so any single component sitting between "version bumped" and "tag created" is enough to trigger a bootstrap downgrade — it sees no tag, concludes the package was never released, and proposes resetting it to `0.1.0` with the full history. Scoping the wait to your own PR would not be safe.
+
+</details>
+
+<details>
+<summary><b>If the other release PRs were not refreshed</b></summary>
+
+Step 3 is skipped in the situations below. In every case your own package still published normally, and the refresh happens on the next push to `main`.
+
+| Situation | What you will see | What to do |
+| --- | --- | --- |
+| A publish is still in flight after 45 min | `release-please.yml` green, with a `deferred` step summary | Nothing, unless the publish is genuinely stuck — then clear the label per [Release PR Stuck with "autorelease: pending"](#release-pr-stuck-with-autorelease-pending-label) |
+| A publish failed (yours, or a package left stuck earlier) | `release.yml` red; `release-please.yml` green, with a `deferred (release commit)` summary naming the failed run | Fix and re-dispatch the failed package release |
+| GitHub's release state is unreadable | `release-please.yml` **red** at `guard-pending-release` | Re-run the job. It refuses to guess whether a publish is in flight rather than recompute against unverified state |
+| You merged several release PRs at once | Some `release-please` jobs show as **cancelled** | Nothing — this is expected. Only one job may queue per concurrency group, and the surviving (newest) run recomputes every component, so it covers the cancelled jobs' work |
+
+</details>
 
 ### Lockfile Updates
 

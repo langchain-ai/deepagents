@@ -1314,14 +1314,6 @@ def test_get_option_unknown_returns_none() -> None:
     assert get_option("does.not.exist") is None
 
 
-def test_run_get_unknown_key_returns_error_code(capsys) -> None:
-    args = argparse.Namespace(config_command="get", key="nope", output_format="text")
-    assert run_config_command(args) == 1
-    err = capsys.readouterr().err
-    assert "Unknown config option" in err
-    assert "config --verbose" in err
-
-
 def test_run_get_missing_key_hints_available_keys(capsys) -> None:
     """Bare `config get` explains it needs a key and where to find one."""
     args = argparse.Namespace(config_command="get", key=None, output_format="text")
@@ -1709,9 +1701,11 @@ def _get_json_data(
     return payload["data"]
 
 
-def _get_json_object(key: str, capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
+def _get_json_object(
+    key: str, capsys: pytest.CaptureFixture[str], *, verbose: bool = False
+) -> dict[str, Any]:
     """Return the single-option `config get --json` payload for `key`."""
-    data = _get_json_data(key, capsys)
+    data = _get_json_data(key, capsys, verbose=verbose)
     assert isinstance(data, dict)
     return data
 
@@ -1736,9 +1730,29 @@ def test_options_with_key_prefix_matches_whole_segments_only() -> None:
 
 def test_options_in_group_is_case_insensitive() -> None:
     """Group titles resolve regardless of the case the user typed."""
-    assert options_in_group("cReDeNtIaLs") == options_in_group("Credentials")
+    matched = options_in_group("Credentials")
+    # Non-emptiness first: without it, a regression to always-return-() would
+    # satisfy every assertion below.
+    assert len(matched) > 1
+    assert options_in_group("cReDeNtIaLs") == matched
     assert all(opt.group == "Credentials" for opt in options_in_group("credentials"))
     assert options_in_group("nope") == ()
+
+
+def test_options_with_key_prefix_is_case_insensitive() -> None:
+    """Prefix matching casefolds, so it cannot be skipped by capitalizing.
+
+    Both section matchers must agree on case. When only the group matcher
+    casefolded, `Models` fell through to the narrower `Models` heading while
+    `models` matched every `models.*` key — the same argument selecting
+    different options based on capitalization alone.
+    """
+    lower = options_with_key_prefix("models")
+    assert len(lower) > 1
+    assert options_with_key_prefix("Models") == lower
+    assert options_with_key_prefix("MODELS") == lower
+    # A truncated guess stays unmatched in every case.
+    assert options_with_key_prefix("Model") == ()
 
 
 def test_run_get_exact_key_keeps_single_line_text(capsys) -> None:
@@ -1755,16 +1769,23 @@ def test_run_get_exact_key_json_stays_single_object(capsys) -> None:
     assert "group" not in data
 
 
-def test_run_get_credentials_section_lists_every_credential(capsys) -> None:
+def test_run_get_credentials_section_lists_every_credential(
+    capsys, monkeypatch
+) -> None:
     """`config get credentials` renders the grouped section, not one option."""
+    from deepagents_code.config import console
+
+    monkeypatch.setattr(console, "width", 200)
     assert run_config_command(_get_args("credentials")) == 0
     rendered = capsys.readouterr().out
     assert "Credentials" in rendered
     expected = options_with_key_prefix("credentials")
     assert len(expected) > 1
     assert all(opt.key in rendered for opt in expected)
-    # Secrets stay redacted: a section reports presence only.
-    assert "not configured" in rendered
+    # Credentials render a presence word, never a key value. Matches both
+    # "configured" and "not configured", so this does not depend on which
+    # providers the developer running the suite happens to have set.
+    assert "configured" in rendered
 
 
 @pytest.mark.parametrize("key", ["credentials", "credentials.", "Credentials"])
@@ -1823,31 +1844,187 @@ def test_run_get_section_prefers_key_prefix_over_group_title(capsys) -> None:
 
 
 def test_run_get_group_title_without_matching_prefix_resolves(capsys) -> None:
-    """A heading whose options share no key prefix (`Tools`) still resolves."""
-    assert options_with_key_prefix("tools") == ()
-    rows = _get_json_rows("tools", capsys)
-    assert [row["key"] for row in rows] == [
-        opt.key for opt in options_in_group("Tools")
-    ]
+    """A heading whose options share no key prefix still resolves by title.
+
+    The subject group is derived rather than hardcoded so adding keys under a
+    formerly prefix-less heading retargets the test instead of breaking it.
+    """
+    title = next(
+        group
+        for group in {opt.group for opt in get_config_options()}
+        if not options_with_key_prefix(group) and len(options_in_group(group)) > 1
+    )
+    rows = _get_json_rows(title, capsys)
+    assert [row["key"] for row in rows] == [opt.key for opt in options_in_group(title)]
     assert len(rows) > 1
 
 
 def test_run_get_single_option_section_still_renders_as_a_list(capsys) -> None:
-    """A one-option section stays list-shaped so responses are unambiguous."""
-    prefix = "goals"
-    assert len(options_with_key_prefix(prefix)) == 1
+    """A one-option section stays list-shaped so responses are unambiguous.
+
+    This is what the `is_exact` flag on `_Selection` protects: a single-option
+    section and an exact key both yield one option, so a length check alone
+    would collapse this into the single-key object shape.
+    """
+    prefix = next(
+        segment
+        for segment in dict.fromkeys(
+            key.split(".")[0] for key in option_keys() if "." in key
+        )
+        if len(options_with_key_prefix(segment)) == 1
+    )
     rows = _get_json_rows(prefix, capsys)
-    assert [row["key"] for row in rows] == ["goals.auto_accept_criteria"]
+    assert [row["key"] for row in rows] == [
+        opt.key for opt in options_with_key_prefix(prefix)
+    ]
+    assert len(rows) == 1
 
 
-@pytest.mark.parametrize("key", ["credential", "credentials.open", "nope"])
+def test_run_get_section_is_case_insensitive_end_to_end(capsys) -> None:
+    """A capitalized section selects the same options as the lowercase form.
+
+    Guards the user-visible half of the case fix: `dcode config` prints
+    `Models` as a heading, so typing that heading back must not silently return
+    fewer options than the dotted `models` prefix does.
+    """
+    lower = _get_json_rows("models", capsys)
+    upper = _get_json_rows("Models", capsys)
+    assert [row["key"] for row in upper] == [row["key"] for row in lower]
+    # The `Models` heading is narrower than the prefix, so this only holds
+    # because the prefix tier matched in both casings.
+    assert len(lower) > len(options_in_group("Models"))
+
+
+def test_run_get_exact_key_verbose_json_folds_in_catalog(capsys) -> None:
+    """`config get <key> --verbose --json` adds catalog fields but no `group`.
+
+    The absent `group` key is load-bearing: it is how a consumer tells the
+    single-key object from a section list, so `--verbose` must not introduce it.
+    """
+    data = _get_json_object("interpreter.memory_limit_mb", capsys, verbose=True)
+    assert {
+        "summary",
+        "type",
+        "default",
+        "env_var",
+        "toml_path",
+        "cli_flag",
+    } <= set(data)
+    assert data["default"] == 64
+    assert "group" not in data
+
+
+def test_run_get_exact_key_plain_json_omits_catalog(capsys) -> None:
+    """Without `--verbose`, the single-key payload keeps its original fields."""
+    data = _get_json_object("interpreter.memory_limit_mb", capsys)
+    assert set(data) == {"key", "source", "set", "redacted", "value"}
+
+
+def test_run_get_exact_key_verbose_text_shows_description(capsys) -> None:
+    """`config get <key> --verbose` appends the description and how-to-set."""
+    opt = get_option("interpreter.memory_limit_mb")
+    assert opt is not None
+    assert run_config_command(_get_args(opt.key, verbose=True)) == 0
+    rendered = " ".join(capsys.readouterr().out.split())
+    assert rendered.startswith(f"{opt.key} = ")
+    assert " ".join(opt.summary.split()) in rendered
+    assert "default 64" in rendered
+
+
+def test_run_get_section_json_flags_unreadable_store(stored_auth_dir, capsys) -> None:
+    """A corrupt store is reported in-band on every credential section row.
+
+    Without this a corrupt `auth.json` is indistinguishable from one holding no
+    keys — the silent failure `store_error` exists to prevent.
+    """
+    import json
+
+    stored_auth_dir.mkdir(parents=True, exist_ok=True)
+    (stored_auth_dir / "auth.json").write_text("{ not json", encoding="utf-8")
+    assert run_config_command(_get_args("credentials", "json")) == 0
+    rows = json.loads(capsys.readouterr().out)["data"]
+    assert rows
+    assert all("store_error" in row for row in rows)
+    # Redaction holds even when the store could not be read.
+    assert all(row["value"] is None for row in rows if row["redacted"])
+
+
+def test_run_get_section_text_warns_on_unreadable_store(
+    stored_auth_dir, capsys
+) -> None:
+    """Both section text renderers surface the unreadable-store banner."""
+    stored_auth_dir.mkdir(parents=True, exist_ok=True)
+    (stored_auth_dir / "auth.json").write_text("{ not json", encoding="utf-8")
+    for verbose in (False, True):
+        assert run_config_command(_get_args("credentials", verbose=verbose)) == 0
+        out = capsys.readouterr().out
+        assert "Warning" in out
+        assert "unreadable" in out
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_run_get_section_skips_store_when_no_credentials(monkeypatch) -> None:
+    """A credential-free section never reads the store, and reads it once if not.
+
+    Pins the documented skip in `_run_get_section`: always loading would emit a
+    spurious store warning for sections that cannot consult it, and the JSON
+    would look identical either way.
+    """
+    from deepagents_code import auth_store
+
+    calls = 0
+    real_load = auth_store.load_credentials
+
+    def _counting_load() -> dict:
+        nonlocal calls
+        calls += 1
+        return real_load()
+
+    monkeypatch.setattr(auth_store, "load_credentials", _counting_load)
+
+    assert run_config_command(_get_args("display", "json")) == 0
+    assert calls == 0
+
+    assert run_config_command(_get_args("credentials", "json")) == 0
+    assert calls == 1
+
+
+@pytest.mark.parametrize("key", ["credential", "credentials.open", "nope", "", "."])
 def test_run_get_rejects_partial_matches(key, capsys) -> None:
-    """Truncated keys, partial leaves, and typos stay hard errors."""
+    """Truncated keys, partial leaves, typos, and degenerate input stay errors."""
     assert run_config_command(_get_args(key)) == 1
     err = capsys.readouterr().err
     assert "Unknown config option" in err
     assert "config --verbose" in err
     assert "config get credentials" in err
+
+
+def test_run_get_unknown_key_json_names_sections_too(capsys) -> None:
+    """The JSON error string matches the text branch's wording.
+
+    A consumer surfacing `error` verbatim would otherwise tell a user who
+    mistyped a section that no such *option* exists, steering them away from the
+    section form.
+    """
+    import json
+
+    assert run_config_command(_get_args("nope", "json")) == 1
+    payload = json.loads(capsys.readouterr().out)["data"]
+    assert payload == {"key": "nope", "error": "unknown option or section"}
+
+
+def test_unknown_key_hint_names_a_real_section() -> None:
+    """The hint's example section must actually resolve.
+
+    Mirrors `test_missing_key_example_is_a_real_option` for the section hint, so
+    the error never points at something `config get` would itself reject.
+    """
+    from deepagents_code.client.commands.config import _select_options
+
+    selection = _select_options("credentials")
+    assert selection is not None
+    assert selection.is_exact is False
+    assert len(selection.options) > 1
 
 
 def test_run_path_text_returns_zero() -> None:

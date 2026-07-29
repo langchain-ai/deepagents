@@ -818,11 +818,15 @@ def show_config_help() -> None:
         style=theme.MUTED,
     )
     console.print(
-        "  from `dcode config`. Sections render the grouped view, and emit a",
+        "  from `dcode config`, either matched case-insensitively. Sections",
         style=theme.MUTED,
     )
     console.print(
-        "  JSON list instead of a single object.",
+        "  render the grouped view, and emit a JSON list instead of a single",
+        style=theme.MUTED,
+    )
+    console.print(
+        "  object.",
         style=theme.MUTED,
     )
     console.print()

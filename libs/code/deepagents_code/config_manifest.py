@@ -1595,16 +1595,26 @@ def options_with_key_prefix(prefix: str) -> tuple[ConfigOption, ...]:
     `credentials.openai` but `credential` matches nothing, so `config get` can
     accept a section name without also accepting truncated guesses.
 
+    Matching is case-insensitive, like `options_in_group`. Both matchers must
+    agree on case: `config get` tries this one first and falls back to group
+    titles, so a case-sensitive prefix would let `Models` skip the prefix tier
+    and silently resolve to the narrower `Models` heading instead.
+
     Args:
-        prefix: Dotted key prefix without a trailing dot (e.g. `credentials`).
+        prefix: Dotted key prefix (e.g. `credentials`). A trailing dot is not
+            stripped here — `credentials.` matches nothing, since it would look
+            for keys under `credentials..`. Callers that accept user input
+            should strip it first.
 
     Returns:
         Matching options in manifest order; empty when no key uses `prefix`.
     """
     if not prefix:
         return ()
-    section = f"{prefix}."
-    return tuple(opt for opt in get_config_options() if opt.key.startswith(section))
+    section = f"{prefix.casefold()}."
+    return tuple(
+        opt for opt in get_config_options() if opt.key.casefold().startswith(section)
+    )
 
 
 def options_in_group(title: str) -> tuple[ConfigOption, ...]:
@@ -1612,6 +1622,8 @@ def options_in_group(title: str) -> tuple[ConfigOption, ...]:
 
     Group titles are the human-readable headings `config` prints (`Credentials`,
     `Display`, ...), so a user who read the table can pass one back verbatim.
+    Titles are currently single words; one containing a space would need shell
+    quoting to survive as a single argument.
 
     Args:
         title: Group heading to match, in any case.

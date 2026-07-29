@@ -205,16 +205,16 @@ class TestMutedRichMarkdown:
     )
 
     @staticmethod
-    def _render(renderable: object) -> str:
+    def _render(renderable: object, *, width: int = 80, color: bool = True) -> str:
         import io
 
         from rich.console import Console
 
         console = Console(
             file=io.StringIO(),
-            force_terminal=True,
-            color_system="truecolor",
-            width=80,
+            force_terminal=color,
+            color_system="truecolor" if color else None,
+            width=width,
             legacy_windows=False,
         )
         console.print(renderable)
@@ -239,6 +239,21 @@ class TestMutedRichMarkdown:
         # plain cells should be dim ("2m"), and both must be present.
         assert "\x1b[1;2m" in muted
         assert "\x1b[2m" in muted
+
+    def test_folds_long_table_cells_instead_of_eliding(self) -> None:
+        """Narrow Markdown tables must retain every character in their cells."""
+        source = (
+            "| Tool | Description |\n| --- | --- |\n| a_very_long_tool_name | desc |\n"
+        )
+        # Rendered without color: the name is reassembled from the fragments the
+        # fold leaves on consecutive lines, and interleaved ANSI style codes
+        # would sit between them and break the substring.
+        rendered = self._render(_MutedRichMarkdown(source), width=30, color=False)
+
+        assert "…" not in rendered
+        # The Description cell shares the fold's first line, so drop it before
+        # rejoining the Tool column's fragments.
+        assert "a_very_long_tool_name" in "".join(rendered.replace("desc", "").split())
 
     def test_render_failure_falls_back_to_plain_source(self) -> None:
         """A crash inside Rich markdown rendering must not escape.

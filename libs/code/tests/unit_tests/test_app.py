@@ -16980,7 +16980,7 @@ class TestToolsSlashCommand:
     """Tests for the `/tools` slash command."""
 
     @staticmethod
-    def _display(source: str) -> str:
+    def _display(source: str, *, width: int = 100) -> str:
         """Return the text a markdown `AppMessage` shows for `source`.
 
         The catalog is emitted as markdown source, so assertions about what the
@@ -16989,13 +16989,14 @@ class TestToolsSlashCommand:
 
         Args:
             source: Markdown source as returned by `_render_tool_catalog`.
+            width: Render width in terminal cells.
 
         Returns:
             The rendered display text, laid out at a fixed width.
         """
         from deepagents_code.tui.widgets.messages import _markdown_to_content
 
-        return _markdown_to_content(source, 100).plain
+        return _markdown_to_content(source, width).plain
 
     async def test_mounts_user_echo_then_catalog(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
@@ -17059,6 +17060,12 @@ class TestToolsSlashCommand:
             rendered = catalog[-1].render().plain
 
         assert "1 tool available" in rendered
+        # The column headings and rule prove the source became a real table
+        # rather than degenerating into paragraphs or a list.
+        assert "Tool" in rendered
+        assert "Description" in rendered
+        assert "─" in rendered
+        # Present unescaped, so the markdown source's `read\_file` resolved.
         assert "read_file" in rendered
         assert "Read a file" in rendered
 
@@ -17365,8 +17372,11 @@ class TestToolsSlashCommand:
                 )
             ],
         )
-        # Rich markup in external names/descriptions must survive verbatim and
-        # never be parsed (an unclosed "[" would raise if it were).
+        # Rich markup in external names/descriptions must survive verbatim. It
+        # is not markdown syntax, so the markdown path passes it through
+        # untouched; pinned because the pre-markdown renderer built `Content`,
+        # where an unclosed "[" raised `MarkupError`. This asserts the property
+        # survived the switch, now by a different mechanism.
         rendered = self._display(DeepAgentsApp._render_tool_catalog(catalog))
         assert "[bold]evil[/bold]" in rendered
         assert "[red]x[/red]" in rendered
@@ -17392,12 +17402,95 @@ class TestToolsSlashCommand:
         # exactly the two escaped cells the table declares.
         assert (
             "| read\\_file | Reads \\*any\\* file \\| prints \\`\\_\\_init\\_\\_\\` |"
-            in (source)
+            in source
         )
         # And the escapes resolve back to the literal text the tool reported.
         rendered = self._display(source)
         assert "read_file" in rendered
         assert "Reads *any* file | prints `__init__`" in rendered
+
+    def test_render_escapes_every_markdown_metacharacter(self) -> None:
+        r"""Each character in `_MARKDOWN_ESCAPES` must round-trip verbatim.
+
+        Guards the escape table itself: dropping any single character from it
+        silently changes what the user sees — unescaped `<b>` is swallowed as
+        HTML, `[d](u)` collapses to its link text, `~~x~~` to struck text, and a
+        `\` before punctuation disappears — so each needs a live assertion.
+        """
+        from deepagents_code.app import _MARKDOWN_ESCAPES
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        # One specimen per escaped character. `C:\*t` pins the backslash: a bare
+        # `\` before a letter is already literal in CommonMark, so only a `\`
+        # before punctuation detects a missing escape.
+        description = "*a* _b_ `c` <b>d</b> [e](http://f) ~~g~~ h|i C:\\*t &copy;"
+        # `str.maketrans` keys on codepoints, so compare ordinals. This fails if
+        # a character is added to the table without a specimen added here.
+        specimens = "\\&`*_[]<>|~"
+        assert {ord(char) for char in specimens} == set(_MARKDOWN_ESCAPES)
+        assert all(char in description for char in specimens)
+
+        catalog = build_catalog_from_server_info(
+            [ToolEntry(name="t_n", description=description)], []
+        )
+        # Wide enough that the cell does not wrap, so the substring survives.
+        rendered = self._display(DeepAgentsApp._render_tool_catalog(catalog), width=200)
+        assert description in rendered
+
+    def test_markdown_table_escapes_headers_and_rejects_ragged_rows(self) -> None:
+        """Headers are escaped, and a row that misfits the headers raises."""
+        from deepagents_code.app import _markdown_table
+
+        # Headers are escaped too, so a `|` cannot forge an extra column.
+        assert _markdown_table(("a|b", "c"), []).splitlines()[0] == "| a\\|b | c |"
+
+        # A ragged row must raise rather than emit a table markdown would
+        # silently pad or truncate.
+        for row in (("only",), ("a", "b", "c")):
+            with pytest.raises(ValueError, match="expected 2"):
+                _markdown_table(("A", "B"), [row])
+
+    def test_render_preserves_entities_and_normalizes_line_breaks(self) -> None:
+        from deepagents_code.tool_catalog import ToolCatalog, ToolEntry, ToolGroup
+
+        catalog = ToolCatalog(
+            groups=(
+                ToolGroup(
+                    label="Built-in",
+                    source="built-in",
+                    tools=(
+                        ToolEntry(name="entity_tool", description="literal &copy;"),
+                    ),
+                ),
+            ),
+            mcp_error="failed\n# not a heading\r\n- not a list",
+        )
+        source = DeepAgentsApp._render_tool_catalog(catalog)
+
+        assert "| entity\\_tool | literal \\&copy; |" in source
+        assert "failed # not a heading - not a list" in source
+        rendered = self._display(source)
+        assert "literal &copy;" in rendered
+        assert "failed # not a heading - not a list" in rendered
+        assert "©" not in rendered
+
+    def test_render_folds_long_tool_names_without_ellipsis(self) -> None:
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        name = "a_very_long_tool_name"
+        catalog = build_catalog_from_server_info(
+            [ToolEntry(name=name, description="desc")], []
+        )
+        rendered = self._display(DeepAgentsApp._render_tool_catalog(catalog), width=30)
+
+        assert "…" not in rendered
+        assert name in "".join(rendered.replace("desc", "").split())
 
     def test_render_empty_catalog_reports_zero_without_error(self) -> None:
         from deepagents_code.tool_catalog import build_catalog_from_server_info
@@ -17479,7 +17572,11 @@ class TestToolsSlashCommand:
         source = DeepAgentsApp._render_tool_catalog(catalog)
         assert "| Server | Status |" in source
         assert "| off | awaiting\\_reconnect |" in source
-        assert "awaiting_reconnect:" not in self._display(source)
+        # The status must still reach the user, with no trailing colon where the
+        # empty detail was omitted.
+        rendered = self._display(source)
+        assert "awaiting_reconnect" in rendered
+        assert "awaiting_reconnect:" not in rendered
 
     def test_render_includes_mcp_error(self) -> None:
         from deepagents_code.tool_catalog import (
@@ -17492,10 +17589,13 @@ class TestToolsSlashCommand:
             groups=(ToolGroup(label=BUILT_IN_GROUP, source="built-in", tools=()),),
             mcp_error="MCP discovery failed; showing built-in tools only.",
         )
-        rendered = self._display(DeepAgentsApp._render_tool_catalog(catalog))
-        assert "MCP discovery failed" in rendered
-        # An empty group contributes no heading or table.
-        assert BUILT_IN_GROUP not in rendered
+        source = DeepAgentsApp._render_tool_catalog(catalog)
+        assert "MCP discovery failed" in self._display(source)
+        # An empty group contributes no heading and no table. Asserted on the
+        # source's heading syntax rather than the bare label, which would also
+        # match the "built-in" inside the error text above.
+        assert f"### {BUILT_IN_GROUP}" not in source
+        assert "| Tool | Description |" not in source
 
 
 class TestFetchThreadHistoryData:

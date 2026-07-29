@@ -2012,44 +2012,54 @@ def _truncate(text: str, *, limit: int) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
-_MARKDOWN_ESCAPES = str.maketrans({char: f"\\{char}" for char in "\\`*_[]<>|~"})
+_MARKDOWN_ESCAPES = str.maketrans({char: f"\\{char}" for char in "\\&`*_[]<>|~"})
 """Translation table backing `_escape_markdown`.
 
 Covers the inline constructs Rich's markdown parser acts on (emphasis, code
-spans, links, autolinks/HTML, strikethrough) plus the `|` table-cell separator.
-Block-level punctuation (`#`, `-`, `>`) only has meaning at the start of a line;
-`>` is escaped anyway because it is cheap and keeps a leading `>` from becoming a
-blockquote.
+spans, links, autolinks/HTML, HTML entities, strikethrough) plus the `|`
+table-cell separator. Block-level punctuation (`#`, `-`, `>`) only has meaning
+at the start of a line; line breaks are normalized before translation, and `>`
+is escaped anyway because it is cheap.
 """
 
 
 def _escape_markdown(text: str) -> str:
-    """Backslash-escape markdown syntax so `text` renders verbatim.
+    """Normalize line breaks and escape markdown syntax in external text.
 
     Args:
         text: Display string that may contain markdown punctuation.
 
     Returns:
-        `text` with markdown-significant characters escaped.
+        `text` on one line with markdown-significant characters escaped.
     """
-    return text.translate(_MARKDOWN_ESCAPES)
+    normalized = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    return normalized.translate(_MARKDOWN_ESCAPES)
 
 
 def _markdown_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
     """Build a markdown pipe table whose cells render as literal text.
 
-    Every cell is escaped via `_escape_markdown`, so external text can neither
-    forge additional cells with `|` nor be parsed as markdown.
+    Every header and cell is escaped via `_escape_markdown`, so external text
+    can neither forge additional cells with `|` nor be parsed as markdown.
 
     Args:
-        headers: Column headings, written verbatim (internal strings only).
+        headers: Column headings.
         rows: One sequence of cells per row, each matching `headers` in length.
 
     Returns:
         The table as markdown source.
+
+    Raises:
+        ValueError: If a row's length does not match `headers`. Checked because
+            markdown silently drops surplus cells and pads missing ones, so a
+            ragged row would corrupt the table with no other diagnostic.
     """
+    for row in rows:
+        if len(row) != len(headers):
+            msg = f"row has {len(row)} cells, expected {len(headers)}"
+            raise ValueError(msg)
     lines = [
-        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(_escape_markdown(header) for header in headers) + " |",
         "| " + " | ".join("---" for _ in headers) + " |",
     ]
     lines.extend(
@@ -10112,17 +10122,22 @@ class DeepAgentsApp(App):
 
         Shows a count header, then a heading per group: built-in groups render a
         `Tool`/`Description` markdown table, so a long description wraps inside
-        its cell instead of being clipped by a fixed-width name column, while MCP
-        groups render names only — their descriptions are surfaced via `/mcp`,
-        noted by a pointer line whenever any MCP tools are present. Then a table
-        of any MCP servers that loaded with no tools and a non-`ok` status, and
-        finally a discovery-error notice if the catalog carries one.
+        its own cell instead of spilling back to the left margin and running
+        under the name column the way the previous `ljust`-aligned rows did,
+        while MCP groups render names only — their descriptions are surfaced via
+        `/mcp`, noted by a pointer line whenever any MCP tools are present. Then
+        a table of any MCP servers that loaded with no tools and a non-`ok`
+        status, and finally a discovery-error notice if the catalog carries one.
 
-        Every display string that can originate outside this codebase — tool
-        names and descriptions (MCP servers, or a custom local agent's own
-        tools), MCP server names, statuses, and details — is escaped by
-        `_escape_markdown`, so it renders verbatim and can neither be parsed as
-        markdown nor forge extra table cells with a `|`.
+        Every interpolated display string is escaped by `_escape_markdown`
+        except internal literals and the `int` count: tool names and
+        descriptions (from MCP servers, or a custom local agent's own tools),
+        MCP server names, and the unavailable-server status cell, which carries
+        discovery's own reason text for a disabled server. `catalog.mcp_error`
+        is a generic internal literal but is escaped alongside them so the rule
+        has no exceptions. Escaping keeps every such string on one line and
+        renders it verbatim, so it can neither be parsed as markdown nor forge
+        extra table cells with a `|`.
 
         Args:
             catalog: Collected tool groups, unavailable MCP servers, and any

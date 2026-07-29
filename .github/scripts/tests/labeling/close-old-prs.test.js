@@ -1,7 +1,57 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
 
-const { run, closeBody, ageInDays, COMMENT_MARKER } = require('../../labeling/close-old-prs.js');
+const {
+  run,
+  closeBody,
+  ageInDays,
+  COMMENT_MARKER,
+  RELEASE_PLEASE_BRANCH_PREFIX,
+} = require('../../labeling/close-old-prs.js');
+
+const REPO_ROOT = path.resolve(__dirname, '../../../..');
+
+// RELEASE_PLEASE_BRANCH_PREFIX is a hardcoded literal, not derived, and the
+// same string is duplicated in five other workflows. Nothing else notices when
+// the config that determines the real branch name changes — and here the
+// consequence is closing real release PRs, so pin the coupling explicitly.
+test('the release branch prefix matches release-please-config.json', () => {
+  const config = JSON.parse(fs.readFileSync(
+    path.join(REPO_ROOT, 'release-please-config.json'),
+    'utf8',
+  ));
+
+  // `separate-pull-requests: false` would drop the `--components--<pkg>`
+  // segment entirely, so the prefix would never match.
+  assert.equal(
+    config['separate-pull-requests'], true,
+    'separate-pull-requests drives the --components-- branch segment',
+  );
+  assert.ok(
+    RELEASE_PLEASE_BRANCH_PREFIX.endsWith('--components--'),
+    `expected the prefix to end in --components--, got ${RELEASE_PLEASE_BRANCH_PREFIX}`,
+  );
+
+  // A `target-branch` override (or a renamed default branch) changes the
+  // `<base>` segment; absent one, release-please branches off main.
+  assert.equal(
+    config['target-branch'], undefined,
+    'a target-branch override changes the <base> segment of the branch name',
+  );
+  assert.equal(
+    RELEASE_PLEASE_BRANCH_PREFIX, 'release-please--branches--main--components--',
+  );
+
+  // The exemption only ever fires in the ready-for-review window because
+  // release PRs open as drafts and drafts are skipped earlier. If this flips,
+  // the exemption becomes load-bearing for a release PR's whole life.
+  assert.equal(
+    config['draft-pull-request'], true,
+    'release PRs are expected to open as drafts',
+  );
+});
 
 function httpError(message, status) {
   const error = new Error(message);
@@ -14,8 +64,10 @@ function makeCore() {
     failed: null,
     infos: [],
     warnings: [],
+    errors: [],
     info(message) { this.infos.push(message); },
     warning(message) { this.warnings.push(message); },
+    error(message) { this.errors.push(message); },
     setFailed(message) { this.failed = message; },
   };
 }
@@ -84,19 +136,26 @@ function makeGithub({
           const error = getErrors.get(pull_number);
           if (error) throw error;
           const pr = live.get(pull_number) ?? {};
+          // hasOwn rather than `??` so a fixture can express an explicitly
+          // absent provenance field. GitHub really does return `head.repo:
+          // null` when a fork PR's source repository was deleted, and `?? `
+          // defaults would silently rewrite that into a valid-looking value.
+          const field = (name, fallback) =>
+            Object.hasOwn(pr, name) ? pr[name] : fallback;
+          const headRepo = field('headRepo', 'contributor/deepagents');
           return {
             data: {
-              created_at: pr.created_at ?? '2026-04-01T00:00:00Z',
-              draft: pr.draft ?? false,
+              created_at: field('created_at', '2026-04-01T00:00:00Z'),
+              draft: field('draft', false),
               head: {
-                ref: pr.headRef ?? 'contributor/feature',
-                repo: { full_name: pr.headRepo ?? 'contributor/deepagents' },
+                ref: field('headRef', 'contributor/feature'),
+                repo: headRepo === null ? null : { full_name: headRepo },
               },
               labels: (pr.labels ?? []).map(name => ({ name })),
-              state: pr.state ?? 'open',
+              state: field('state', 'open'),
               user: {
-                login: pr.authorLogin ?? 'contributor',
-                type: pr.authorType ?? 'User',
+                login: field('authorLogin', 'contributor'),
+                type: field('authorType', 'User'),
               },
             },
           };
@@ -175,7 +234,8 @@ test('warns after 14 days and closes after 30 days from opening', async () => {
 
   assert.deepEqual(summary, {
     checked: 4, warned: 1, closed: 1, skipped: 2, skippedRelease: 0,
-    staleCleared: 0, sweepFailure: null, incomplete: false, truncated: false, errors: [],
+    staleCleared: 0, sweepNotFound: 0, sweepTruncated: false, sweepFailure: null,
+    incomplete: false, truncated: false, errors: [],
   });
   assert.equal(calls.createComment.length, 1);
   assert.equal(calls.createComment[0].issue_number, 101);
@@ -195,6 +255,10 @@ test('warns after 14 days and closes after 30 days from opening', async () => {
     name: 'pending-deletion',
   }]);
   assert.equal(core.failed, null);
+  // Ordinary contributor PRs must stay silent. Without this, dropping the
+  // release-label condition from the provenance warning would emit a spurious
+  // "failed provenance" line for every PR in the repo, every day.
+  assert.deepEqual(core.warnings, []);
 });
 
 test('skips genuine release-please PRs without warning or closing', async () => {
@@ -306,16 +370,20 @@ test('matches the head repository case-insensitively', async () => {
   assert.deepEqual(core.warnings, []);
 });
 
-// A genuine release-please PR whose label merely *contains* a release label as
-// a substring must not be exempt — guards against loosening Set.has() into a
-// prefix/substring match.
-test('still warns a release-please PR whose label only resembles a release label', async () => {
+// A label that merely *contains* a release label as a substring is not a
+// release label — guards against loosening Set.has() into a prefix/substring
+// match. Uses a contributor PR because that is where the distinction bites:
+// RELEASE_LABELS decides whether a provenance failure is reported as possible
+// drift, and 'release-notes' must not trip it. (A genuine release PR is exempt
+// on provenance regardless of its labels, so it cannot test this.)
+test('does not report drift for a label that only resembles a release label', async () => {
   const { github, calls } = makeGithub({
     items: [{ number: 107, created_at: '2026-04-23T00:00:00Z' }],
-    live: new Map([[107, releasePleasePr(['release-notes'])]]),
+    live: new Map([[107, { labels: ['release-notes'] }]]),
   });
+  const core = makeCore();
 
-  const summary = await run({ github, context, core: makeCore(), options: { now } });
+  const summary = await run({ github, context, core, options: { now } });
 
   assert.equal(summary.warned, 1);
   assert.equal(summary.skippedRelease, 0);
@@ -327,6 +395,58 @@ test('still warns a release-please PR whose label only resembles a release label
     labels: ['pending-deletion'],
   }]);
   assert.deepEqual(calls.close, []);
+  assert.deepEqual(core.warnings, []);
+});
+
+// The bug the provenance-only exemption exists to prevent. `release` is
+// applied by a continue-on-error step in release-please.yml and RELEASING.md
+// documents hand-editing `autorelease: pending`, so a genuine release PR can
+// hold neither label. Gating the exemption on labels would warn it, then close
+// it 16 days later on a green run.
+test('exempts a release-please PR whose release labels are missing', async () => {
+  const { github, calls } = makeGithub({
+    items: [{ number: 118, created_at: '2026-04-01T00:00:00Z' }],
+    live: new Map([[118, releasePleasePr([])]]),
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  assert.equal(summary.skippedRelease, 1);
+  assert.equal(summary.warned, 0);
+  assert.equal(calls.createComment.length, 0);
+  assert.deepEqual(calls.addLabels, []);
+  assert.deepEqual(calls.close, []);
+  assert.equal(core.failed, null);
+  // Exempt, but the missing label is itself a problem: per RELEASING.md a
+  // stuck/absent `autorelease: pending` blocks future release PRs.
+  assert.ok(
+    core.warnings.some(message =>
+      message.includes('provenance but no release label')),
+    `expected a missing-label warning, got ${JSON.stringify(core.warnings)}`,
+  );
+});
+
+// head.repo is null (not merely different) when a fork PR's source repository
+// was deleted. The exemption must fail closed, and say which field was absent
+// rather than rendering a bare "undefined" that reads like a mismatch.
+test('denies the release exemption when the head repository is absent', async () => {
+  const { github, calls } = makeGithub({
+    items: [{ number: 119, created_at: '2026-04-08T00:00:00Z' }],
+    live: new Map([[119, releasePleasePr(['release'], { headRepo: null })]]),
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  assert.equal(summary.skippedRelease, 0);
+  assert.equal(summary.warned, 1);
+  assert.deepEqual(calls.close, []);
+  assert.ok(
+    core.warnings.some(message =>
+      message.includes('failed provenance') && message.includes('repo <absent>')),
+    `expected an absent-repo provenance warning, got ${JSON.stringify(core.warnings)}`,
+  );
 });
 
 test('sweep clears pending-deletion from a release PR', async () => {
@@ -353,11 +473,55 @@ test('sweep keeps pending-deletion on a contributor PR labeled release', async (
     labeledItems: [{ number: 110, created_at: '2026-04-01T00:00:00Z' }],
     live: new Map([[110, { labels: ['pending-deletion', 'release'] }]]),
   });
+  const core = makeCore();
 
-  const summary = await run({ github, context, core: makeCore(), options: { now } });
+  const summary = await run({ github, context, core, options: { now } });
 
   assert.equal(summary.staleCleared, 0);
   assert.equal(calls.removeLabel.length, 0);
+  // The sweep classifies only; processPr owns the drift/anomaly reporting for a
+  // given PR. Without warnOnAnomaly:false a title-spoofed PR appearing in both
+  // searches emits the identical warning twice per run, raising the noise floor
+  // the real drift signal has to clear.
+  assert.deepEqual(core.warnings, []);
+});
+
+// A PR returned by both searches in one run: the open scan warns it, then the
+// (index-lagged) label query returns it again. The second pass must not
+// re-report the anomaly the first pass already handled.
+test('does not double-report a PR returned by both searches', async () => {
+  const { github } = makeGithub({
+    items: [{ number: 120, created_at: '2026-04-08T00:00:00Z' }],
+    labeledItems: [{ number: 120, created_at: '2026-04-08T00:00:00Z' }],
+    live: new Map([[120, { labels: ['release'] }]]),
+  });
+  const core = makeCore();
+
+  await run({ github, context, core, options: { now } });
+
+  const driftWarnings = core.warnings.filter(message =>
+    message.includes('failed provenance'));
+  assert.equal(driftWarnings.length, 1, JSON.stringify(core.warnings));
+});
+
+// A 404 per PR is routine, but an unlogged `continue` makes a sweep that drops
+// every PR indistinguishable from one with nothing to do.
+test('sweep counts and logs PRs that vanished before it read them', async () => {
+  const { github, calls } = makeGithub({
+    labeledItems: [{ number: 121, created_at: '2026-04-01T00:00:00Z' }],
+    getErrors: new Map([[121, httpError('not found', 404)]]),
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  assert.equal(summary.staleCleared, 0);
+  assert.equal(summary.sweepNotFound, 1);
+  assert.equal(summary.sweepFailure, null);
+  assert.equal(calls.removeLabel.length, 0);
+  assert.equal(core.failed, null);
+  assert.ok(core.infos.some(message =>
+    message.includes('PR #121 not found while sweeping')));
 });
 
 // The label search index lags this run's own mutations, so a PR whose label
@@ -421,8 +585,25 @@ test('hitting the sweep cap warns but does not fail the run', async () => {
 
   assert.equal(summary.staleCleared, 1);
   assert.equal(summary.sweepFailure, null);
+  assert.equal(summary.sweepTruncated, true);
   assert.equal(core.failed, null);
   assert.ok(core.warnings.some(message => message.includes('Reached maxItems cap (1) while sweeping')));
+});
+
+// The sweep defers capped work to the next run only if its order is stable;
+// GitHub search's default relevance order can return the same over-cap subset
+// forever, starving a specific PR rather than deferring it.
+test('sweeps oldest-first so the cap defers work instead of starving it', async () => {
+  const { github, calls } = makeGithub({
+    labeledItems: [{ number: 122, created_at: '2026-04-01T00:00:00Z' }],
+    live: new Map([[122, { state: 'closed', labels: ['pending-deletion'] }]]),
+  });
+
+  await run({ github, context, core: makeCore(), options: { now } });
+
+  const sweepQuery = calls.queries.find(query => query.q.includes('label:"'));
+  assert.equal(sweepQuery.sort, 'created');
+  assert.equal(sweepQuery.order, 'asc');
 });
 
 test('a 404 on label removal is tolerated but not counted as cleared', async () => {

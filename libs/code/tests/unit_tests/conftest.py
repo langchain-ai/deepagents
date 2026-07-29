@@ -231,12 +231,18 @@ def _pin_invoked_name(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, 
     a test that varies the launch name cannot leak it into another.
     """
     from deepagents_code._env_vars import INVOKED_AS
-    from deepagents_code._invocation import DEFAULT_INVOKED_NAME, invoked_name
+    from deepagents_code._invocation import (
+        DEFAULT_INVOKED_NAME,
+        invoked_name,
+        log_nonstandard_invoked_name,
+    )
 
     monkeypatch.setenv(INVOKED_AS, DEFAULT_INVOKED_NAME)
     invoked_name.cache_clear()
+    log_nonstandard_invoked_name.cache_clear()
     yield
     invoked_name.cache_clear()
+    log_nonstandard_invoked_name.cache_clear()
 
 
 @pytest.fixture(autouse=True)

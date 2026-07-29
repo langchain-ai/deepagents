@@ -23,12 +23,23 @@ import sys
 from functools import lru_cache
 from pathlib import PurePath
 
-from deepagents_code._env_vars import INVOKED_AS
+from deepagents_code._env_vars import DEBUG, INVOKED_AS, is_env_truthy
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_INVOKED_NAME = "dcode"
 """Command name assumed when the launch name cannot be determined."""
+
+STANDARD_INVOKED_NAMES = frozenset({"dcode", "deepagents-code"})
+"""Console scripts shipped in `pyproject.toml` (`[project.scripts]`).
+
+Anything else — a per-checkout shim or a user alias — is non-standard and gets a
+one-line note in the Debug Console at launch (see `log_nonstandard_invoked_name`).
+Duplicated here by hand because this module must stay import-light; reading the
+installed entry points at runtime would be slower and can disagree with the shim
+the user actually typed. `test_invocation.py` has a drift guard against
+`pyproject.toml`.
+"""
 
 _MAX_NAME_LENGTH = 64
 
@@ -92,3 +103,31 @@ def invoked_name() -> str:
         if name is not None:
             return name
     return DEFAULT_INVOKED_NAME
+
+
+@lru_cache(maxsize=1)
+def log_nonstandard_invoked_name() -> None:
+    r"""Note a non-standard launch name in the Debug Console, once per process.
+
+    Cached so repeated calls cannot repeat the note; tests that vary the launch
+    environment must call `log_nonstandard_invoked_name.cache_clear()`. Shim
+    users launch through a name this package does not ship (see
+    `STANDARD_INVOKED_NAMES`), and a wrong resume hint is otherwise impossible to
+    trace back to how the name was resolved.
+
+    The level is chosen so the note is never user-facing but always reaches the
+    in-app Debug Console (`Ctrl+\\`): the in-memory buffer floors the package
+    logger at `INFO` and its handler passes `DEBUG` (`_debug_buffer`), so when
+    `DEEPAGENTS_CODE_DEBUG` is off a `DEBUG` record would be filtered before the
+    buffer saw it — `INFO` still prints nothing to the terminal because the
+    buffer is the only handler in the chain. When debug mode is on, `DEBUG` is
+    used so the note also lands in the debug log file.
+    """
+    name = invoked_name()
+    if name in STANDARD_INVOKED_NAMES:
+        return
+    logger.log(
+        logging.DEBUG if is_env_truthy(DEBUG) else logging.INFO,
+        "Invoked as non-standard command %r; resume hints will use this name",
+        name,
+    )

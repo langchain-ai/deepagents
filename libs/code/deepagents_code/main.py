@@ -3717,6 +3717,11 @@ def cli_main() -> None:
         print(build_version_text())  # noqa: T201  # Version output
         sys.exit(0)
 
+    # Note shim/alias launches for the Debug Console only; never prints.
+    from deepagents_code._invocation import log_nonstandard_invoked_name
+
+    log_nonstandard_invoked_name()
+
     # ACP mode does not require Textual, so skip UI dependency checks when
     # the flag is present in raw argv.
     if "--acp" not in sys.argv[1:]:

@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from typing import TYPE_CHECKING
 
 import pytest
 
-from deepagents_code._env_vars import INVOKED_AS
-from deepagents_code._invocation import DEFAULT_INVOKED_NAME, invoked_name
+from deepagents_code._env_vars import DEBUG, INVOKED_AS
+from deepagents_code._invocation import (
+    DEFAULT_INVOKED_NAME,
+    STANDARD_INVOKED_NAMES,
+    invoked_name,
+    log_nonstandard_invoked_name,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -16,14 +22,16 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def _clear_invoked_name_cache() -> Iterator[None]:
-    """Drop the process-lifetime cache around each test.
+    """Drop the process-lifetime caches around each test.
 
     Clearing afterwards too keeps a patched `argv[0]` from leaking into other
-    modules' tests through the cache.
+    modules' tests through the caches.
     """
     invoked_name.cache_clear()
+    log_nonstandard_invoked_name.cache_clear()
     yield
     invoked_name.cache_clear()
+    log_nonstandard_invoked_name.cache_clear()
 
 
 class TestInvokedNameFromArgv:
@@ -161,3 +169,102 @@ class TestInvokedNameFromEnv:
         monkeypatch.setattr(sys, "argv", ["/usr/local/bin/abc"])
 
         assert invoked_name() == "abc"
+
+
+class TestLogNonstandardInvokedName:
+    """The once-per-process Debug Console note for shim/alias launches."""
+
+    def test_logs_at_info_when_debug_mode_off(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """With debug off, INFO passes the package logger's buffer floor.
+
+        A plain DEBUG record would be filtered before reaching the in-memory
+        buffer that backs the Debug Console, so the note would be lost.
+        """
+        monkeypatch.delenv(INVOKED_AS, raising=False)
+        monkeypatch.delenv(DEBUG, raising=False)
+        monkeypatch.setattr(sys, "argv", ["/home/user/.local/bin/abc"])
+
+        with caplog.at_level(logging.INFO, logger="deepagents_code._invocation"):
+            log_nonstandard_invoked_name()
+
+        assert len(caplog.records) == 1
+        record = caplog.records[0]
+        assert record.levelno == logging.INFO
+        assert "'abc'" in record.getMessage()
+
+    def test_logs_at_debug_when_debug_mode_on(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """With debug on, the note uses DEBUG so it joins the debug log file."""
+        monkeypatch.delenv(INVOKED_AS, raising=False)
+        monkeypatch.setenv(DEBUG, "1")
+        monkeypatch.setattr(sys, "argv", ["/home/user/.local/bin/abc"])
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code._invocation"):
+            log_nonstandard_invoked_name()
+
+        assert len(caplog.records) == 1
+        record = caplog.records[0]
+        assert record.levelno == logging.DEBUG
+        assert "'abc'" in record.getMessage()
+
+    @pytest.mark.parametrize("argv0", ["dcode", "deepagents-code"])
+    def test_standard_names_log_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        argv0: str,
+    ) -> None:
+        """The shipped console scripts are ordinary launches; no note."""
+        monkeypatch.delenv(INVOKED_AS, raising=False)
+        monkeypatch.setattr(sys, "argv", [f"/usr/local/bin/{argv0}"])
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code._invocation"):
+            log_nonstandard_invoked_name()
+
+        assert caplog.records == []
+
+    def test_logs_only_once_per_process(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The `invoked_name` cache suppresses repeat calls in one process."""
+        monkeypatch.delenv(INVOKED_AS, raising=False)
+        monkeypatch.delenv(DEBUG, raising=False)
+        monkeypatch.setattr(sys, "argv", ["/home/user/.local/bin/abc"])
+
+        with caplog.at_level(logging.INFO, logger="deepagents_code._invocation"):
+            log_nonstandard_invoked_name()
+            log_nonstandard_invoked_name()
+
+        assert len(caplog.records) == 1
+
+    def test_fallback_name_logs_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Falling back to the default is a standard name; no note."""
+        monkeypatch.delenv(INVOKED_AS, raising=False)
+        monkeypatch.setattr(sys, "argv", ["python3.13"])
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code._invocation"):
+            log_nonstandard_invoked_name()
+
+        assert caplog.records == []
+
+
+def test_standard_names_match_pyproject_scripts() -> None:
+    """Drift guard: `STANDARD_INVOKED_NAMES` covers `[project.scripts]`.
+
+    The set is hand-maintained in `_invocation` (the module must stay
+    import-light), so a console script added to `pyproject.toml` without a
+    matching entry would start logging a spurious "non-standard" note for a
+    shipped command.
+    """
+    import tomllib
+    from pathlib import Path
+
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    scripts = set(tomllib.loads(pyproject.read_text())["project"]["scripts"])
+
+    assert scripts == set(STANDARD_INVOKED_NAMES)

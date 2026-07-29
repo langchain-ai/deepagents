@@ -1137,7 +1137,7 @@ class TestBuildStreamConfig:
         ):
             config = build_stream_config("t-editable", assistant_id=None)
         assert config["metadata"]["lc_versions"] == {
-            "deepagents-code": f"{__version__} (editable)"
+            "deepagents-code": f"{__version__}+editable"
         }
 
     def test_dcode_client_deepagents_version_is_diagnostic_metadata(self) -> None:
@@ -1219,7 +1219,7 @@ class TestBuildStreamConfig:
         ):
             config = build_stream_config("t-editable-sdk", assistant_id=None)
         assert config["metadata"]["lc_versions"] == {
-            "deepagents-code": f"{__version__} (editable)"
+            "deepagents-code": f"{__version__}+editable"
         }
         assert config["metadata"]["dcode_client_deepagents_version"] == "1.2.3"
 

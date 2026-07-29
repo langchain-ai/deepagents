@@ -103,7 +103,7 @@ managed package.
 
 | Actions variable | Value | Type | Purpose |
 | --- | --- | --- | --- |
-| `RELEASE_BOT_MODEL` | Variable | Environment | Model used for changelog generation. |
+| `RELEASE_BOT_MODEL` | Variable | Environment | Model used for changelog generation (`provider:model`). Must support JSON Schema structured output and a 32,768-token output ceiling. For `openai:…`, use a Chat Completions model. See [RELEASING.md](RELEASING.md) for the exact list. |
 | `RELEASE_BOT_ID` | - | Repository | GitHub App bot account user ID. |
 | `RELEASE_BOT_LOGIN` | `langchain-oss-automated-triage[bot]` | Repository | Login ID. |
 

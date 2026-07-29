@@ -124,6 +124,10 @@ class HooksManager:
     ) -> HooksManager:
         """Load hook configuration and return a ready manager.
 
+        Hooks v2 is in progress, so it stays off unless
+        `DEEPAGENTS_CODE_EXPERIMENTAL` is truthy; without it the manager is
+        inert and no hook (client- or server-owned) fires.
+
         Never raises: a failed load yields an inert manager whose lifecycle
         methods are all no-ops.
 
@@ -543,10 +547,14 @@ def _load_runtime(cwd: Path, *, trust: WorkspaceTrust) -> HooksRuntime | None:
         trust: Policy deciding whether project hooks may load.
 
     Returns:
-        The loaded runtime, or `None` when configuration could not be loaded.
+        The loaded runtime, `None` when configuration could not be loaded, and
+        `None` whenever `DEEPAGENTS_CODE_EXPERIMENTAL` is not truthy.
     """
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
     from deepagents_code.hooks.runtime import HooksRuntime
 
+    if not is_env_truthy(EXPERIMENTAL):
+        return None
     try:
         return HooksRuntime.create(cwd=cwd, workspace_trusted=trust.allows(cwd))
     except Exception:

@@ -1,6 +1,7 @@
 """Pytest shim for the curated release-notes Node.js tests."""
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -90,18 +91,24 @@ def test_required_check_is_attached_to_the_validated_pr_head() -> None:
     release_please = RELEASE_PLEASE_WORKFLOW.read_text()
     assert "--ref main" in release_please
     assert "needs.update-lockfiles.result == 'success'" not in release_please
-    # The helper is checked out from main while this YAML comes from the PR, so a
-    # rename must keep older names as fallbacks or the required check breaks for one
-    # merge. Current name has to be tried first.
-    candidates = [
-        line.strip().strip("',")
-        for line in check_workflow.splitlines()
-        if "trusted-source/.github/scripts" in line and line.strip().startswith("'")
-    ]
-    assert candidates[0] == (
-        "./trusted-source/.github/scripts/release/release-notes.js"
-    )
-    assert len(candidates) > 1
+
+
+def test_workflows_reference_helper_scripts_that_exist() -> None:
+    """Catch a helper rename that misses a workflow reference.
+
+    Both workflows load their helpers from a `trusted-source` checkout of `main`,
+    so a path that does not exist fails at runtime rather than at lint time. The
+    check workflow is the worst case: a bad path there breaks a required check.
+    """
+    referenced = set()
+    for workflow in (AUTOMATION_WORKFLOW, CHECK_WORKFLOW):
+        for match in re.finditer(
+            r"\./trusted-source/(\.github/scripts/\S+?\.js)\b", workflow.read_text()
+        ):
+            referenced.add(match.group(1))
+    assert referenced, "expected the workflows to reference helper scripts"
+    missing = sorted(path for path in referenced if not (ROOT / path).is_file())
+    assert not missing, f"workflows reference helper scripts that do not exist: {missing}"
 
 
 def test_release_notes_cover_every_release_please_component() -> None:

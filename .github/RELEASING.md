@@ -278,7 +278,7 @@ Release-please uses labels to track the state of release PRs:
 
 | Label | Meaning |
 | ----- | ------- |
-| `autorelease: pending` | Release PR has been merged but not yet tagged/released |
+| `autorelease: pending` | Applied by release-please when it opens the release PR, and carried until the release is tagged. On a **merged** PR it means the release has not been tagged/published yet |
 | `autorelease: tagged` | Release PR has been successfully tagged and released |
 
 Because `skip-github-release: true` is set in the release-please config (we create releases via our own workflow instead of using the one built into release-please), our `release.yml` workflow must update these labels manually for state management! After successfully creating the GitHub release and tag, the `mark-release` job updates the label from `pending` to `tagged`.

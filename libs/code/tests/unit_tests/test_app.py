@@ -13092,7 +13092,6 @@ class TestMessageTimestampFooters:
             app._session_state.hooks = HooksManager.adopting(
                 runtime,
                 identity=app._session_state.hook_identity,
-                notice=lambda _message: None,
             )
             payload = _ThreadHistoryPayload(
                 [],

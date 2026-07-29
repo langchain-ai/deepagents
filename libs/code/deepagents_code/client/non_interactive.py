@@ -91,6 +91,10 @@ if TYPE_CHECKING:
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.hooks.manager import HooksManager
     from deepagents_code.hooks.models.domain import SessionEndCause
+    from deepagents_code.hooks.presenter import (
+        HookNoticeCallback,
+        HookNoticeSeverity,
+    )
     from deepagents_code.hooks.transcript import TranscriptRecorder
 
 logger = logging.getLogger(__name__)
@@ -192,6 +196,11 @@ class _ConsoleSpinner:
         self._console = console
         self._live: Live | None = None
 
+    @property
+    def is_running(self) -> bool:
+        """Whether the live spinner is active."""
+        return self._live is not None
+
     def start(self, message: str = "Working...") -> None:
         """Start the spinner with the given message.
 
@@ -203,17 +212,26 @@ class _ConsoleSpinner:
         """
         if self._live is not None:
             return
-        renderable = RichSpinner(
-            "dots",
-            text=Text(f" {message}", style="dim"),
-            style="dim",
-        )
+        renderable = self._build_spinner(message)
         try:
             self._live = Live(renderable, console=self._console, transient=True)
             self._live.start()
         except (AttributeError, TypeError, OSError) as exc:
             logger.warning("Spinner start failed: %s", exc)
             self._live = None
+
+    def update(self, message: str) -> None:
+        """Replace the message on a running spinner.
+
+        Args:
+            message: Status text to display next to the spinner.
+        """
+        if self._live is None:
+            return
+        try:
+            self._live.update(self._build_spinner(message))
+        except (AttributeError, TypeError, OSError) as exc:
+            logger.warning("Spinner update failed: %s", exc)
 
     def stop(self) -> None:
         """Stop the spinner if running. Can be restarted with `start`."""
@@ -224,6 +242,14 @@ class _ConsoleSpinner:
                 logger.warning("Spinner stop failed: %s", exc)
             finally:
                 self._live = None
+
+    @staticmethod
+    def _build_spinner(message: str) -> RichSpinner:
+        return RichSpinner(
+            "dots",
+            text=Text(f" {message}", style="dim"),
+            style="dim",
+        )
 
 
 async def _terminate_startup_process(proc: Process) -> None:
@@ -327,6 +353,26 @@ def _inert_hooks() -> HooksManager:
     from deepagents_code.hooks.manager import HooksManager
 
     return HooksManager.inert()
+
+
+def _plain_hook_notice(console: Console) -> HookNoticeCallback:
+    """Build a notice sink that prints hook output without styling.
+
+    Used for hooks loaded before the run owns a spinner; `attach_output` later
+    rebinds the manager's presenter to the styled, spinner-aware sinks.
+
+    Args:
+        console: Destination for notice text.
+
+    Returns:
+        An unstyled notice sink.
+    """
+
+    def notice(message: str, severity: HookNoticeSeverity) -> None:
+        del severity
+        console.print(Text(message), highlight=False)
+
+    return notice
 
 
 @dataclass
@@ -1344,6 +1390,38 @@ async def _run_agent_loop(
     )
     from deepagents_code.hooks.trust import WorkspaceTrust
 
+    hook_owned_spinner = False
+
+    def present_hook_notice(
+        message: str,
+        severity: HookNoticeSeverity,
+    ) -> None:
+        style = (
+            "bold red"
+            if severity == "error"
+            else "yellow"
+            if severity == "warning"
+            else "dim"
+        )
+        console.print(Text(message, style=style), highlight=False)
+
+    def update_hook_status(message: str) -> None:
+        nonlocal hook_owned_spinner
+        if spinner is None:
+            return
+        if message:
+            if spinner.is_running:
+                spinner.update(message)
+            else:
+                spinner.start(message)
+                hook_owned_spinner = True
+        elif hook_owned_spinner:
+            spinner.stop()
+            hook_owned_spinner = False
+        elif spinner.is_running:
+            spinner.update("Working...")
+
+    hook_status = update_hook_status if spinner is not None else None
     resolved_approval_mode = approval_mode or ApprovalMode.MANUAL
     # One headless turn per process, so identity is fixed for the whole run.
     identity = HookSessionIdentity(
@@ -1354,12 +1432,12 @@ async def _run_agent_loop(
     state.hooks = hooks or HooksManager.create(
         cwd=Path.cwd(),
         identity=lambda: identity,
-        notice=lambda notice: console.print(Text(notice), highlight=False),
         # Project hooks require an explicit opt-in, matching `--trust-project-mcp`.
         # Persisted interactive trust deliberately does not carry into headless
         # runs, so CI never inherits a grant made at someone's terminal.
         trust=WorkspaceTrust.explicit_only(Path.cwd(), granted=trust_project_hooks),
     )
+    state.hooks.attach_output(notice=present_hook_notice, status=hook_status)
     state.hooks.apply_graph_context(context)
     context["approval_mode"] = resolved_approval_mode.value
     context["auto_approve"] = resolved_approval_mode is ApprovalMode.YOLO
@@ -1963,7 +2041,9 @@ async def run_non_interactive(
         hooks = HooksManager.create(
             cwd=Path.cwd(),
             identity=lambda: identity,
-            notice=lambda notice: console.print(Text(notice), highlight=False),
+            # Plain output until `_run_agent_loop` attaches the styled,
+            # spinner-aware sinks to this same presenter.
+            notice=_plain_hook_notice(console),
             # Explicit opt-in only; see `_run_agent_loop` for the rationale.
             trust=WorkspaceTrust.explicit_only(Path.cwd(), granted=trust_project_hooks),
         )

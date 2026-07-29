@@ -1419,7 +1419,6 @@ def _manager(runtime: MagicMock) -> HooksManager:
             thread_id="t1",
             approval_mode=ApprovalMode.MANUAL,
         ),
-        notice=lambda _message: None,
     )
 
 
@@ -1439,7 +1438,6 @@ async def test_headless_compact_permission_uses_live_context() -> None:
             approval_mode=approval_mode,
             prompt_id="00000000-0000-4000-8000-000000000001",
         ),
-        notice=lambda _message: None,
     )
     state = StreamState(hooks=hooks)
     state.pending_interrupts["interrupt-1"] = {

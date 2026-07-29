@@ -820,6 +820,34 @@ class TestStartupSequence:
         drain_mock.assert_awaited_once()
         queue_mock.assert_awaited_once()
 
+    async def test_cleanup_agent_task_refreshes_thread_cache(self) -> None:
+        """Agent cleanup should refresh cached `/threads` rows after a turn."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        refresh_mock = MagicMock()
+        app._process_next_from_queue = AsyncMock()  # ty: ignore
+        app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+        app._set_spinner = AsyncMock()  # ty: ignore
+        app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+        app._schedule_thread_cache_refresh = refresh_mock  # ty: ignore
+
+        await app._cleanup_agent_task()
+
+        refresh_mock.assert_called_once_with()
+
+    async def test_schedule_thread_cache_refresh_noops_during_exit(self) -> None:
+        """Shutdown should prevent new background thread-cache refreshes."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._exit = True
+            run_worker_mock = MagicMock()
+            app.run_worker = run_worker_mock  # ty: ignore
+
+            app._schedule_thread_cache_refresh()
+
+            run_worker_mock.assert_not_called()
+
     async def test_schedule_git_branch_refresh_noops_during_exit(self) -> None:
         """Shutdown should prevent new background git refresh tasks."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
@@ -2330,6 +2358,19 @@ class TestThreadCachePrewarm:
             await app._prewarm_threads_cache()
 
         mock_prewarm.assert_awaited_once_with(limit=7)
+
+    async def test_schedule_refresh_runs_prewarm_in_worker(self) -> None:
+        """Scheduling a refresh should re-run the prewarm off the event loop."""
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            prewarm_mock = AsyncMock()
+            app._prewarm_threads_cache = prewarm_mock  # ty: ignore
+            app._schedule_thread_cache_refresh()
+            await pilot.pause()
+
+            prewarm_mock.assert_awaited_once_with()
 
     async def test_show_thread_selector_uses_cached_rows(self) -> None:
         """Thread selector should receive prefetched rows when available."""

@@ -5436,6 +5436,24 @@ class DeepAgentsApp(App):
 
         await prewarm_thread_message_counts(limit=get_thread_limit())
 
+    def _schedule_thread_cache_refresh(self) -> None:
+        """Refresh the cached `/threads` rows in the background.
+
+        The selector paints from the in-memory cache first and only re-queries
+        the session database afterwards, so a thread created mid-session would
+        otherwise be missing from the first paint until that query, the agent
+        scan, and a full row rebuild finish. Refreshing once a turn has written
+        its checkpoints keeps the cache current, so `/threads` shows the new
+        thread (and its updated timestamp and message count) immediately.
+        """
+        if self._exit or not self.is_running:
+            return
+        self.run_worker(
+            self._prewarm_threads_cache,
+            exclusive=True,
+            group="thread-cache-refresh",
+        )
+
     async def _prewarm_model_caches(self) -> None:
         """Prewarm model discovery and profile caches without blocking startup."""
         try:
@@ -15050,6 +15068,9 @@ class DeepAgentsApp(App):
             # `_goal_state_lock` — would never be woken and would deadlock.
             if not self._agent_running and not self._agent_reconciling:
                 self._agent_quiescent.set()
+            # Scheduled after goal reconciliation so the refreshed rows include
+            # every checkpoint this turn produced.
+            self._schedule_thread_cache_refresh()
 
     @staticmethod
     def _convert_messages_to_data(messages: list[Any]) -> list[MessageData]:

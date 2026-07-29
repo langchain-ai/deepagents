@@ -29,6 +29,7 @@ from deepagents_code import theme
 from deepagents_code._ask_user_types import (
     ASK_USER_ANSWERED_SUMMARY,
     ASK_USER_FAILED_SUMMARY,
+    AskUserRowSummary,
 )
 from deepagents_code.config import (
     MODE_DISPLAY_GLYPHS,
@@ -1519,12 +1520,11 @@ class ToolCallMessage(Vertical):
         self._start_time: float | None = None
         self._duration: float | None = None
         self._animation_timer: Timer | None = None
-        # Terminal output this row already earned while it waits for a richer
-        # one. Set for an answered `ask_user`, which stays tracked so the
-        # streamed `ToolMessage` can replace the summary with the full Q&A
-        # transcript; until then the row must not be reported as a teardown
-        # failure. See `defer_success`.
+        # Terminal success this row earned but has not rendered. See
+        # `defer_success`; `_deferred_success_settled` separates "still awaiting
+        # the richer result" from "already fell back to the summary".
         self._deferred_success_output: str | None = None
+        self._deferred_success_settled: bool = False
         # Deferred state for hydration (set by MessageData.to_widget)
         self._deferred_status: str | None = None
         self._deferred_output: str | None = None
@@ -1782,7 +1782,7 @@ class ToolCallMessage(Vertical):
         if class_name in _STATUS_CLASSES:
             self.add_class(class_name)
 
-    def defer_success(self, output: str) -> None:
+    def defer_success(self, output: AskUserRowSummary) -> None:
         """Record a terminal success this row earned but has not yet rendered.
 
         An answered `ask_user` deliberately stays in `_current_tool_messages` so
@@ -1793,18 +1793,38 @@ class ToolCallMessage(Vertical):
         `tool_status="error"`, for a question the user answered normally.
 
         Args:
-            output: Terminal output to settle with if the `ToolMessage` never
-                arrives. Also reported verbatim as the `tool.result` payload by
-                `_dispatch_terminal_tool_result_hooks`, so it must never carry
-                content that may not reach hook scripts — pass the `ask_user`
-                summary constant, never the transcript.
+            output: Summary to settle with if the `ToolMessage` never arrives.
+                Narrowed to `AskUserRowSummary` because a settled row suppresses
+                its expand affordance — there is no transcript behind it — so
+                passing the transcript here would strand it unreadable on the row.
         """
         self._deferred_success_output = output
+        self._deferred_success_settled = False
 
     @property
     def deferred_success_output(self) -> str | None:
-        """Terminal output earned by a row still awaiting a richer one, if any."""
+        """Terminal output for a row that earned a success it did not render.
+
+        Set while the row awaits its richer result and deliberately kept after a
+        fallback settle: `_dispatch_terminal_tool_result_hooks` reads it as the
+        "this row already succeeded" flag, and callers dispatch on either side of
+        the widget mutation, so clearing it on settle would make one of those
+        orders report a fabricated failure.
+        """
         return self._deferred_success_output
+
+    @property
+    def is_awaiting_deferred_result(self) -> bool:
+        """Whether this row still expects a richer result to replace its summary.
+
+        Distinct from `deferred_success_output`, which stays set after a fallback
+        settle. Callers that must not act on an already-settled row — recovering
+        an interrupted turn's `tool_calls`, or imposing a terminal failure — ask
+        this instead.
+        """
+        return self._deferred_success_output is not None and (
+            not self._deferred_success_settled
+        )
 
     def clear_deferred_success(self) -> None:
         """Drop the deferred outcome once an authoritative result supersedes it.
@@ -1814,21 +1834,27 @@ class ToolCallMessage(Vertical):
         redirect back to the deferred success.
         """
         self._deferred_success_output = None
+        self._deferred_success_settled = False
 
     def settle_deferred_success(self) -> bool:
         """Settle this row with its deferred success, if it has one.
 
-        Deliberately does *not* clear the recorded output: the reject sweeps
-        mutate the widget before dispatching terminal hooks, and those hooks read
-        it back to report the success rather than a fabricated failure.
+        Records that the fallback fired but keeps the output: callers dispatch
+        terminal hooks on either side of the widget mutation (`textual_adapter`'s
+        `finalize_pending_tools_with_error` before, its cancel cleanup after),
+        and those hooks read it back to report the success.
 
         Returns:
-            True if the row was settled, False if it had no deferred outcome and
-                the caller should record its own terminal state instead.
+            True if the row was settled, False if it had no deferred outcome, or
+                is already rejected/skipped so `set_success` would ignore it — in
+                both cases the caller should record its own terminal state.
         """
         if self._deferred_success_output is None:
             return False
+        if self._status in {"rejected", "skipped"}:
+            return False
         self.set_success(self._deferred_success_output)
+        self._deferred_success_settled = True
         return True
 
     def set_success(self, result: str = "") -> None:
@@ -1924,11 +1950,16 @@ class ToolCallMessage(Vertical):
             # state rather than flipping to "Error" (which also left the stale
             # `rejected` CSS class alongside `error`).
             return
-        if self.settle_deferred_success():
+        if self.is_awaiting_deferred_result and self.settle_deferred_success():
             # A teardown sweep imposing a generic failure on a row that already
             # succeeded (an answered `ask_user` awaiting its transcript). The
             # authoritative `ToolMessage` calls `clear_deferred_success` first,
-            # so a *real* tool error still lands below.
+            # so a *real* tool error still lands below. Gated on *awaiting* so
+            # the redirect fires once: a row that already fell back keeps no
+            # immunity against a later genuine error.
+            logger.debug(
+                "Suppressed error on tool row with a deferred success: %s", error
+            )
             return
         self._stop_animation()
         self._status = "error"
@@ -1959,10 +1990,14 @@ class ToolCallMessage(Vertical):
             reason: Optional free-text reason supplied via the HITL reject
                 widget; rendered as a dim line beneath the status.
         """
-        if self.settle_deferred_success():
-            # A co-occurring reject in the same interrupt batch sweeps every
-            # tracked row; an answered `ask_user` among them still succeeded and
-            # its answers still reach the model, so it keeps its own outcome.
+        if self.is_awaiting_deferred_result and self.settle_deferred_success():
+            # A turn-cancel sweep rejecting every tracked row; an answered
+            # `ask_user` among them still succeeded, so it keeps its own outcome.
+            # (Interrupt rejections leave these rows tracked instead — see
+            # `_pop_rows_without_deferred_success`.)
+            logger.debug(
+                "Suppressed rejection on tool row with a deferred success: %s", reason
+            )
             return
         self._stop_animation()
         self._status = "rejected"
@@ -2285,8 +2320,9 @@ class ToolCallMessage(Vertical):
         if self._tool_name == "edit_file" and self._status == "success":
             return True
 
-        # See `_ALWAYS_PREVIEW_TOOLS`: the formatter, not the raw size thresholds
-        # below, decides whether these have anything left to reveal.
+        # See `_ALWAYS_PREVIEW_TOOLS`: the formatter decides whether these have
+        # anything left to reveal, rather than the raw size thresholds below.
+        # (A formatter that cannot parse its input may delegate back to them.)
         if self._tool_name in _ALWAYS_PREVIEW_TOOLS:
             return self._format_output(output, is_preview=True).truncation is not None
 
@@ -3103,12 +3139,15 @@ class ToolCallMessage(Vertical):
         still supporting the collapsed `N answers` affordance.
 
         Returns:
-            The question count, or zero when the arguments are malformed —
-                anything `ask_user._validate_questions` would reject before
-                interrupting, including a missing, non-string, or blank
-                `question`. `_args` holds the raw streamed tool call, populated at
-                mount time before pydantic validation, so those shapes do reach
-                here and must degrade rather than raise.
+            The question count, or zero unless `questions` is a non-empty list of
+                dicts each carrying non-blank `question` text. Deliberately
+                narrower than `ask_user._validate_questions`, which also rejects
+                an unknown `type` and a `choices`/`type` mismatch: this only
+                guards the fields the count reads. `_args` is unvalidated on two
+                of the three paths that populate it — the streamed tool call
+                (`textual_adapter`) and the persisted store
+                (`message_store.to_widget`) — so malformed shapes do reach here
+                and must degrade rather than raise.
         """
         questions = self._args.get("questions")
         if not isinstance(questions, list) or not questions:
@@ -3147,14 +3186,13 @@ class ToolCallMessage(Vertical):
         question_count = self._ask_user_question_count()
         if question_count == 0:
             # Route through the generic path rather than returning the body bare:
-            # `ask_user` is in `_ALWAYS_PREVIEW_TOOLS`, so `_format_output`'s size
-            # thresholds no longer apply to it and an arbitrarily long body would
-            # otherwise fill the collapsed row with no expand affordance.
+            # `ask_user` is in `_ALWAYS_PREVIEW_TOOLS`, so the size thresholds in
+            # `_has_expandable_output`/`_update_output_display` no longer gate it
+            # and an arbitrarily long body would otherwise fill the collapsed row
+            # with no expand affordance. `_format_generic_output` reapplies them.
             return self._format_generic_output(output, is_preview=is_preview)
 
         if not is_preview:
-            # The transcript contains unrestricted user text. Keep it opaque and
-            # render it literally instead of parsing an unescaped text protocol.
             return FormattedOutput(content=Content(output))
 
         summary = (
@@ -3162,7 +3200,17 @@ class ToolCallMessage(Vertical):
             if self._status == "error"
             else ASK_USER_ANSWERED_SUMMARY
         )
-        noun = "answer" if question_count == 1 else "answers"
+        if self._deferred_success_settled:
+            # No authoritative ToolMessage arrived, so this row contains only
+            # the fallback summary. There is no transcript for expansion to
+            # reveal; advertising the question count would create a dead affordance.
+            return FormattedOutput(content=Content.styled(summary, "dim"))
+        # On the failure path the transcript holds `(error: ...)` placeholders,
+        # not answers, so count the questions instead of promising answers.
+        if self._status == "error":
+            noun = "question" if question_count == 1 else "questions"
+        else:
+            noun = "answer" if question_count == 1 else "answers"
         return FormattedOutput(
             content=Content.styled(summary, "dim"),
             truncation=f"{question_count} {noun}",

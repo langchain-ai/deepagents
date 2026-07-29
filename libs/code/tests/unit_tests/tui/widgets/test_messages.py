@@ -18,6 +18,7 @@ from textual.content import Content
 from textual.widgets import Markdown, Static
 
 from deepagents_code import theme
+from deepagents_code._ask_user_types import ASK_USER_ANSWERED_SUMMARY
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import (
@@ -965,10 +966,49 @@ class TestToolCallMessageDeferredSuccess:
 
             app.msg.defer_success("User answered")
             assert app.msg.settle_deferred_success() is True
-            # Not cleared: the reject sweeps mutate the widget *before*
-            # dispatching terminal hooks, which read this back to report the
+            # Not cleared: a caller may dispatch terminal hooks on either side of
+            # the widget mutation, and those hooks read this back to report the
             # success rather than a fabricated failure.
             assert app.msg.deferred_success_output == "User answered"
+            # Settled, though — so the row is no longer *awaiting* a result.
+            assert app.msg.is_awaiting_deferred_result is False
+
+    async def test_awaiting_flag_tracks_the_deferral_lifecycle(self) -> None:
+        """`is_awaiting_deferred_result` is the PENDING half of the deferral."""
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.msg.is_awaiting_deferred_result is False
+
+            app.msg.defer_success("User answered")
+            assert app.msg.is_awaiting_deferred_result is True
+
+            app.msg.clear_deferred_success()
+            assert app.msg.is_awaiting_deferred_result is False
+            assert app.msg.deferred_success_output is None
+
+    async def test_settled_row_is_not_immune_to_a_later_error(self) -> None:
+        """The fallback redirect fires once; it is not a permanent latch.
+
+        `settle_deferred_success` keeps the recorded output so terminal hooks can
+        read it back, so a redirect keyed on that value alone would silently
+        swallow every later `set_error` on the row for the rest of the session.
+        Gating on *awaiting* instead means the fallback protects the row once and
+        a subsequent genuine failure still renders.
+        """
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.defer_success("User answered")
+            app.msg.set_error("Agent error before tool result")
+            await pilot.pause()
+            assert app.msg._status == "success"
+
+            app.msg.set_error("something genuinely broke later")
+            await pilot.pause()
+
+            assert app.msg._status == "error"
+            assert app.msg._output == "something genuinely broke later"
 
 
 class TestToolCallMessageStatusTint:
@@ -2053,6 +2093,17 @@ class TestToolCallMessageAskUserOutput:
         assert result.content.plain == "User answered"
         assert result.truncation == "2 answers"
 
+    def test_fallback_summary_does_not_advertise_expansion(self) -> None:
+        """A row without an authoritative transcript has nothing to expand."""
+        msg = ToolCallMessage("ask_user", self._ARGS)
+        msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
+        msg.settle_deferred_success()
+
+        result = msg._format_ask_user_output(ASK_USER_ANSWERED_SUMMARY, is_preview=True)
+
+        assert result.content.plain == ASK_USER_ANSWERED_SUMMARY
+        assert result.truncation is None
+
     def test_literal_cancelled_answer_still_says_answered(self) -> None:
         """Free-form answer text must not be interpreted as control state."""
         msg = ToolCallMessage("ask_user", {"questions": [{"question": "Name?"}]})
@@ -2080,8 +2131,10 @@ class TestToolCallMessageAskUserOutput:
         )
 
         assert result.content.plain == "Question failed"
-        # Expandable, so the `(error: <detail>)` reason stays reachable.
-        assert result.truncation == "1 answer"
+        # Expandable, so the `(error: <detail>)` reason stays reachable — but
+        # counted as questions, since the transcript behind the expand holds
+        # `(error: ...)` placeholders and no answers.
+        assert result.truncation == "1 question"
 
     def test_user_typed_error_placeholder_still_says_answered(self) -> None:
         """The `(error: ...)` sentinel is in-band, so status decides, not text.

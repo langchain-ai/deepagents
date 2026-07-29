@@ -6765,6 +6765,11 @@ class TestRunAgentTaskMediaTracker:
             assert app._ui_adapter is not None
 
             pending_tool = MagicMock()
+            # Match the real widget's default: an unset MagicMock attribute is
+            # truthy, which `_dispatch_terminal_tool_result_hooks` reads as "this
+            # row already succeeded" and reports as a success with no tool.error.
+            pending_tool.deferred_success_output = None
+            pending_tool.is_awaiting_deferred_result = False
             app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}
 
             with patch(
@@ -6799,6 +6804,11 @@ class TestRunAgentTaskMediaTracker:
             assert app._ui_adapter is not None
 
             pending_tool = MagicMock()
+            # Match the real widget's default: an unset MagicMock attribute is
+            # truthy, which `_dispatch_terminal_tool_result_hooks` reads as "this
+            # row already succeeded" and reports as a success with no tool.error.
+            pending_tool.deferred_success_output = None
+            pending_tool.is_awaiting_deferred_result = False
             app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}
 
             exc = RemoteException(

@@ -253,49 +253,63 @@ class TestParseAnswers:
         )
         assert _extract_tool_message(cmd).status == "success"
 
-    def test_malformed_payload_is_explicit_error(self) -> None:
-        cmd = _parse_answers(
-            "not-a-dict",
-            [{"question": "Name?", "type": "text"}],
-            "tc-1",
-        )
-        assert (
-            "A: (error: invalid ask_user response payload)"
-            in _extract_tool_message_content(cmd)
+    @pytest.mark.parametrize(
+        ("response", "expected_detail"),
+        [
+            ("not-a-dict", "invalid ask_user response payload"),
+            ({}, "missing ask_user answers payload"),
+            ({"answers": "Alice"}, "invalid ask_user answers payload"),
+            (
+                {"status": "unexpected", "answers": ["Alice"]},
+                "invalid ask_user response status",
+            ),
+        ],
+        ids=["not-a-dict", "missing-answers", "non-list-answers", "unknown-status"],
+    )
+    def test_malformed_payloads_are_explicit_errors(
+        self, response: object, expected_detail: str
+    ) -> None:
+        """Every malformed payload errors the `ToolMessage`, not just its text.
+
+        The status is asserted alongside the transcript because the two are set in
+        different places: a regression that narrowed the `status=` expression to,
+        say, a caller-supplied status rather than the locally reassigned one would
+        keep every transcript assertion green while re-marking these payloads as
+        successful — the exact bug this branch exists to prevent, and the value
+        that now also drives the row badge on reload.
+        """
+        message = _extract_tool_message(
+            _parse_answers(response, [{"question": "Name?", "type": "text"}], "tc-1")
         )
 
-    def test_missing_answers_on_answered_status_is_explicit_error(self) -> None:
-        cmd = _parse_answers(
-            {},
-            [{"question": "Name?", "type": "text"}],
-            "tc-1",
-        )
-        assert (
-            "A: (error: missing ask_user answers payload)"
-            in _extract_tool_message_content(cmd)
-        )
+        assert message.status == "error"
+        assert f"A: (error: {expected_detail})" in str(message.content)
 
-    def test_non_list_answers_payload_is_explicit_error(self) -> None:
-        cmd = _parse_answers(
-            {"answers": "Alice"},
-            [{"question": "Name?", "type": "text"}],
-            "tc-1",
-        )
-        assert (
-            "A: (error: invalid ask_user answers payload)"
-            in _extract_tool_message_content(cmd)
-        )
+    def test_caller_declared_error_detail_wins_over_a_local_one(self) -> None:
+        """An explicit `error` from the caller is the root cause; keep it.
 
-    def test_unknown_status_is_explicit_error(self) -> None:
-        cmd = _parse_answers(
-            {"status": "unexpected", "answers": ["Alice"]},
-            [{"question": "Name?", "type": "text"}],
-            "tc-1",
+        A caller that declares `status="error"` knows why. A payload that instead
+        claims `"answered"` and fails validation here may still carry a stale
+        `error` field, and that must not describe a defect this function found —
+        so the two details are tracked separately rather than overwriting.
+        """
+        declared = _extract_tool_message(
+            _parse_answers(
+                {"status": "error", "error": "widget crashed", "answers": "bad"},
+                [{"question": "Name?", "type": "text"}],
+                "tc-1",
+            )
         )
-        assert (
-            "A: (error: invalid ask_user response status)"
-            in _extract_tool_message_content(cmd)
+        assert "A: (error: widget crashed)" in str(declared.content)
+
+        stale = _extract_tool_message(
+            _parse_answers(
+                {"status": "answered", "error": "stale", "answers": "bad"},
+                [{"question": "Name?", "type": "text"}],
+                "tc-1",
+            )
         )
+        assert "A: (error: invalid ask_user answers payload)" in str(stale.content)
 
     def test_answer_count_mismatch_is_an_error(self) -> None:
         """A short answer list is a failed prompt, not a partial one.

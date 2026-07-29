@@ -170,8 +170,13 @@ def _parse_answers(
     Returns:
         `Command` containing a formatted `ToolMessage` with Q&A pairs.
     """
+    # Untrusted: holds whatever `status` the resume payload carried until the
+    # branches below normalize it to one of answered/cancelled/error.
     status: str = "answered"
     error_text: str | None = None
+    # Detail supplied by a caller that declared the failure itself, kept apart
+    # from `error_text` so the two cannot clobber each other in either order.
+    client_error_text: str | None = None
     answers_are_strings = False
     answers: list[str]
     if not isinstance(response, dict):
@@ -188,6 +193,14 @@ def _parse_answers(
         response_status = response_dict.get("status")
         if isinstance(response_status, str):
             status = response_status
+
+        if status == "error":
+            # Read before local validation can flip `status` to "error" itself:
+            # a payload claiming "answered" may carry a stale `error` field, and
+            # that must not end up describing a failure detected here.
+            response_error = response_dict.get("error")
+            if isinstance(response_error, str) and response_error:
+                client_error_text = response_error
 
         if "answers" not in response_dict:
             if status == "answered":
@@ -217,11 +230,7 @@ def _parse_answers(
                 status = "error"
                 error_text = "invalid ask_user answers payload"
 
-        if status == "error":
-            response_error = response_dict.get("error")
-            if isinstance(response_error, str) and response_error:
-                error_text = response_error
-        elif status == "cancelled":
+        if status == "cancelled":
             answers = [ASK_USER_CANCELLED_ANSWER for _ in questions]
         elif status == "answered":
             if len(answers) != len(questions):
@@ -229,8 +238,7 @@ def _parse_answers(
                 # silently re-attributes every answer after the gap to the wrong
                 # question, and a long one drops the extras — either way the
                 # payload is untrustworthy, and a `"success"` transcript would
-                # hand the model a confident wrong Q->A pairing. Every other
-                # malformed-payload branch here fails the same way.
+                # hand the model a confident wrong Q->A pairing.
                 logger.error(
                     "ask_user answer count mismatch: expected %d, got %d; "
                     "returning explicit error answers",
@@ -242,7 +250,7 @@ def _parse_answers(
                     f"ask_user answer count mismatch (expected {len(questions)}, "
                     f"got {len(answers)})"
                 )
-        else:
+        elif status != "error":
             logger.error(
                 "ask_user received unknown status %r; returning explicit error answers",
                 status,
@@ -252,7 +260,9 @@ def _parse_answers(
             error_text = "invalid ask_user response status"
 
     if status == "error":
-        detail = error_text or "ask_user interaction failed"
+        # A caller that declared the failure knows the root cause; a detail
+        # derived here describes a payload defect found while trusting it.
+        detail = client_error_text or error_text or "ask_user interaction failed"
         answers = [format_ask_user_error_answer(detail) for _ in questions]
 
     additional_kwargs: dict[str, object] = {}
@@ -284,12 +294,10 @@ def _parse_answers(
                     name="ask_user",
                     tool_call_id=tool_call_id,
                     additional_kwargs=additional_kwargs,
-                    # A failed prompt must not be recorded as a successful one.
-                    # `status` defaults to `"success"`, which told the model the
-                    # tool had succeeded and gave the row a success badge: this
-                    # value feeds `normalize_tool_status` on the live stream and
-                    # the `case "error"` arm of `_restore_deferred_state` on
-                    # reload. A cancel stays `"success"` — it is a user choice,
+                    # Feeds `normalize_tool_status` on the live stream and the
+                    # `case "error"` arm of `_restore_deferred_state` on reload,
+                    # so a failed prompt must not be left at the `"success"`
+                    # default. A cancel stays `"success"` — it is a user choice,
                     # not a tool failure.
                     status="error" if status == "error" else "success",
                 )

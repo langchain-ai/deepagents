@@ -4,11 +4,9 @@ Extracted from `ask_user` so `textual_adapter` can import `AskUserRequest` at
 module level — and `app` can reference the types at type-check time — without
 pulling in the langchain middleware stack.
 
-Only the TypedDicts are consumed by both sides. The rest is colocated here so the
-whole wire format stays in one file and neither side has to import the other: the
-answer placeholders and `format_ask_user_transcript` are tool-side (`ask_user`),
-while the `ASK_USER_*_SUMMARY` strings are TUI-side row labels that all double as
-`tool.result` hook payloads, as their docstrings note.
+This is the shared wire format for the tool, the TUI, and `auto_mode`, colocated
+so no consumer has to import another. Each symbol's own docstring records which
+side produces it and which reads it.
 """
 
 from __future__ import annotations
@@ -113,10 +111,11 @@ AskUserWidgetResult = AskUserAnswered | AskUserCancelled
 ASK_USER_NO_ANSWER = "(no answer)"
 """Placeholder for a question with no positionally matching answer.
 
-Defensive fallback for callers that pass fewer answers than questions. The
-middleware validates answer counts before formatting, so its normal paths do
-not produce this value. A question the user deliberately left blank renders as
-an empty `A:` line instead, never as this placeholder.
+Unreachable from `_parse_answers` today: every branch there emits exactly
+`len(questions)` answers, and the answered branch rejects a mismatch outright
+rather than formatting it. Kept as a guard for any future caller that formats a
+transcript without that check. A question the user deliberately left blank
+renders as an empty `A:` line instead, never as this placeholder.
 """
 
 ASK_USER_CANCELLED_ANSWER = "(cancelled)"
@@ -125,45 +124,70 @@ ASK_USER_CANCELLED_ANSWER = "(cancelled)"
 ASK_USER_ERROR_ANSWER_PREFIX = "(error: "
 """Prefix of the placeholder recorded for every question when the prompt fails.
 
-The full placeholder is `(error: <detail>)`. Producer-side only: nothing in-tree
-matches on it. The TUI derives its row summary from the recorded tool status
-instead, because the placeholder is in-band — the prefix alone cannot distinguish
-a failed prompt from a user who typed `(error: ...)` as their answer.
+The full placeholder is `(error: <detail>)`. Producer-side only: no production
+code matches on it (tests assert the literal). The TUI derives its row summary
+from the recorded tool status instead, because the placeholder is in-band — the
+prefix alone cannot distinguish a failed prompt from a user who typed
+`(error: ...)` as their answer.
 """
 
-ASK_USER_ANSWERED_SUMMARY = "User answered"
+AskUserRowSummary = Literal["User answered", "Question failed"]
+"""The summaries an `ask_user` row may collapse to.
+
+Narrows `ToolCallMessage.defer_success` so the transcript cannot be passed where
+a summary belongs — the constraint that keeps user-typed answers out of
+`tool.result` hook payloads. The literals restate the two constants below
+because `Literal[...]` cannot reference a name; keep them in step.
+"""
+
+ASK_USER_ANSWERED_SUMMARY: AskUserRowSummary = "User answered"
 """One-line summary shown for an answered `ask_user` row before it is expanded.
 
-Doubles as the `tool.result` hook payload's `tool_output` for an answered
-prompt, deliberately in place of the transcript, so user-typed answers are not
-forwarded to hook scripts. Rewording this string changes that hook contract as
+Doubles as the `tool.result` hook payload's `tool_output` for an answered prompt
+whose `ToolMessage` arrived, deliberately in place of the transcript, so
+user-typed answers are not forwarded to hook scripts. When no `ToolMessage`
+arrives the hook reports `ASK_USER_ANSWERED_NO_RESULT_SUMMARY` instead, while
+the row still settles to this string. Rewording changes that hook contract as
 well as the row; see `textual_adapter` and its `tool.result` tests.
+"""
+
+ASK_USER_ANSWERED_NO_RESULT_SUMMARY = "User answered (no tool result)"
+"""The `tool.result` hook payload for an answered prompt that never completed.
+
+Reported by `_dispatch_terminal_tool_result_hooks` when a teardown closes out a
+row still awaiting its `ToolMessage` — the agent crashed, the stream ended, or
+the user cancelled the turn. The status stays `"success"` because the user did
+answer, and `ask_user` results double as authorization records; this distinct
+body is what lets an audit consumer tell "answers delivered and the tool
+completed" from "answers delivered, then the turn died". Hook contract: rewording
+it changes what those consumers see.
 """
 
 ASK_USER_CANCELLED_SUMMARY = "Question cancelled"
 """The `tool.result` hook payload's `tool_output` for the cancelled path.
 
-Rewording it changes that hook contract. No longer rendered on a row: a live
-cancel calls `set_rejected` (which records no output), and a transcript of
-`(cancelled)` placeholders from a non-TUI client is summarized from the recorded
-status like any other, so it reads as `ASK_USER_ANSWERED_SUMMARY`.
+Rewording it changes that hook contract. Not rendered on any row: a live cancel
+calls `set_rejected` (which records no output), and a transcript of `(cancelled)`
+placeholders from a non-TUI client is summarized from the recorded status like
+any other, so it reads as `ASK_USER_ANSWERED_SUMMARY`. The cancel banner in
+`textual_adapter` shares this wording but deliberately not this constant — it is
+user-facing prose, not the hook contract.
 """
 
-ASK_USER_FAILED_SUMMARY = "Question failed"
-"""One-line summary shown for an `ask_user` prompt that errored.
+ASK_USER_FAILED_SUMMARY: AskUserRowSummary = "Question failed"
+"""One-line summary shown for an `ask_user` prompt the middleware reported failed.
 
-Like `ASK_USER_ANSWERED_SUMMARY`, this doubles as the `tool.result` hook
-payload's `tool_output` for a failed prompt — deliberately in place of the
-transcript, whose `(error: ...)` placeholders carry an arbitrary detail string.
-Rewording it changes that hook contract as well as the row.
+Also the `tool.result` hook payload's `tool_output` on that path — an answered
+prompt whose `ToolMessage` came back with `status="error"` — deliberately in
+place of the transcript, whose `(error: ...)` placeholders carry an arbitrary
+detail string. Live widget failures are not this: they report their own error
+text (see `textual_adapter`'s invalid-payload and cancel branches). Rewording
+changes that hook contract as well as the row.
 """
 
 
 def format_ask_user_error_answer(detail: str) -> str:
     """Render the placeholder answer recorded for every question on failure.
-
-    Keeps the closing paren together with `ASK_USER_ERROR_ANSWER_PREFIX` so the
-    sentinel is not split between the constant and its producer.
 
     Args:
         detail: Human-readable reason the prompt failed.

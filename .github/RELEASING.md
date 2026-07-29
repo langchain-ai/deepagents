@@ -236,16 +236,26 @@ Both must be true. release-please always satisfies both when merging a release P
 > runs immediately after the release commit is detected and does not wait for the
 > pending-release guard or serialized release-please maintenance. The dispatch job
 > comments on the merged release PR with a direct link to each package's release
-> workflow run. After required `release.yml` dispatches succeed, the same workflow
-> run enters `guard-pending-release`, waits until no merged release PR remains
-> labeled `autorelease: pending`, and only an explicit `skip=false` allows
+> workflow run. Once every matched `release.yml` dispatch succeeds, the same
+> workflow run enters `guard-pending-release`, waits until no merged release PR
+> remains labeled `autorelease: pending`, and only an explicit `skip=false` allows
 > release-please to refresh remaining open release PRs (shared files such as
-> `.release-please-manifest.json` and lockfiles). `update-lockfiles` then runs for
-> PRs returned by that maintenance step.
+> `.release-please-manifest.json`). `update-lockfiles` then regenerates lockfiles
+> on the PRs that maintenance step returned.
 >
-> Residual: if the pending guard times out, fails closed, or GitHub state is
-> unreadably stuck, maintenance may still need a later ordinary push / recovery
-> once publish state is consistent.
+> The wait covers every pending release PR in the repo, not just the one you
+> merged: release-please recomputes all components on each run, so any single
+> component sitting between "version bumped" and "tag created" is enough to
+> trigger a bootstrap downgrade.
+>
+> When maintenance does **not** run, here is what you will see and what to do:
+>
+> | Situation | Signal | Action |
+> | --- | --- | --- |
+> | A publish is still in flight after 45 min | `release-please.yml` is green; the guard logs a `deferred` step summary | Nothing, unless the publish is genuinely stuck — then clear the label per [Release PR Stuck with "autorelease: pending"](#release-pr-stuck-with-autorelease-pending-label). The next push runs maintenance. |
+> | The publish failed | `release.yml` is red; `release-please.yml` stays green with a `deferred (release commit)` summary | Fix and re-dispatch the failed package release. Maintenance runs on the next push. |
+> | GitHub state is unreadable | `release-please.yml` is **red** at `guard-pending-release` | Re-run the job. It refuses to guess whether a publish is in flight rather than recompute against unverified state. |
+> | You merged several release PRs at once | Some `release-please` jobs show as **cancelled** | Expected. Only one job may queue per concurrency group; the surviving (newest) run recomputes every component, so it does the cancelled jobs' work. |
 
 ### Lockfile Updates
 
@@ -783,7 +793,7 @@ Edit `.release-please-manifest.json` to the last good version for the affected p
 
 ### Release PR Stuck with "autorelease: pending" Label
 
-If a release PR shows `autorelease: pending` after the release workflow completed, the label update step may have failed. This can block release-please from creating new release PRs.
+If a release PR shows `autorelease: pending` after the release workflow ran, the label update step may have failed — on the mainline path `mark-release` will be red. This can block release-please from creating new release PRs.
 
 **To fix manually:**
 

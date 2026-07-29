@@ -2,6 +2,7 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const DEFAULT_BYPASS_LABEL = 'do-not-close';
 const DEFAULT_PENDING_DELETION_LABEL = 'pending-deletion';
+const RELEASE_LABELS = new Set(['release', 'autorelease: pending']);
 const DEFAULT_WARNING_DAYS = 14;
 const DEFAULT_CLOSE_DAYS = 30;
 const DEFAULT_MAX_ITEMS = 1000;
@@ -44,6 +45,10 @@ function isTransient(status) {
 
 function labelNames(labels) {
   return labels.map(label => typeof label === 'string' ? label : label.name);
+}
+
+function isReleasePr({ labels }) {
+  return labelNames(labels).some(label => RELEASE_LABELS.has(label));
 }
 
 async function ensureLabel({ github, owner, repo, name, color, description }) {
@@ -248,6 +253,18 @@ async function processPr({
     core.info(`PR #${number} is a draft; skipping`);
     return 'skipped';
   }
+  if (isReleasePr(live)) {
+    await removeIssueLabel({
+      github,
+      owner,
+      repo,
+      issueNumber: number,
+      name: pendingDeletionLabel,
+      existingLabels: live.labels,
+    });
+    core.info(`PR #${number} is a release PR; skipping`);
+    return 'skipped';
+  }
   if (live.labels.includes(bypassLabel)) {
     await removeIssueLabel({
       github,
@@ -379,6 +396,7 @@ async function sweepStalePendingDeletionLabels({
 
         const stale = live.state !== 'open'
           || live.draft
+          || isReleasePr(live)
           || live.labels.includes(bypassLabel);
         if (!stale) continue;
 

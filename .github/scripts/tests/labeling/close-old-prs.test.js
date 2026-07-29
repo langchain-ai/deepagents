@@ -171,6 +171,77 @@ test('warns after 14 days and closes after 30 days from opening', async () => {
   assert.equal(core.failed, null);
 });
 
+test('skips PRs labeled release without warning or closing', async () => {
+  const { github, calls } = makeGithub({
+    items: [{ number: 105, created_at: '2026-04-08T00:00:00Z' }],
+    live: new Map([[105, { labels: ['release'] }]]),
+  });
+  const core = makeCore();
+
+  const summary = await run({ github, context, core, options: { now } });
+
+  assert.equal(summary.skipped, 1);
+  assert.equal(calls.createComment.length, 0);
+  assert.equal(calls.updateComment.length, 0);
+  assert.equal(calls.addLabels.length, 0);
+  assert.equal(calls.removeLabel.length, 0);
+  assert.deepEqual(calls.close, []);
+  assert.ok(core.infos.some(message => message.includes('release PR; skipping')));
+});
+
+test('skips PRs labeled autorelease: pending without warning or closing', async () => {
+  const { github, calls } = makeGithub({
+    items: [{ number: 106, created_at: '2026-04-08T00:00:00Z' }],
+    live: new Map([[106, { labels: ['autorelease: pending'] }]]),
+  });
+
+  const summary = await run({ github, context, core: makeCore(), options: { now } });
+
+  assert.equal(summary.skipped, 1);
+  assert.equal(calls.createComment.length, 0);
+  assert.equal(calls.updateComment.length, 0);
+  assert.equal(calls.addLabels.length, 0);
+  assert.equal(calls.removeLabel.length, 0);
+  assert.deepEqual(calls.close, []);
+});
+
+test('still warns a normal non-release PR after 14 days', async () => {
+  const { github, calls } = makeGithub({
+    items: [{ number: 107, created_at: '2026-04-23T00:00:00Z' }],
+  });
+
+  const summary = await run({ github, context, core: makeCore(), options: { now } });
+
+  assert.equal(summary.warned, 1);
+  assert.equal(calls.createComment.length, 1);
+  assert.deepEqual(calls.addLabels, [{
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    issue_number: 107,
+    labels: ['pending-deletion'],
+  }]);
+  assert.deepEqual(calls.close, []);
+});
+
+test('sweep clears pending-deletion from a release PR', async () => {
+  const { github, calls } = makeGithub({
+    labeledItems: [{ number: 108, created_at: '2026-04-01T00:00:00Z' }],
+    live: new Map([[108, { labels: ['pending-deletion', 'release'] }]]),
+  });
+
+  const summary = await run({ github, context, core: makeCore(), options: { now } });
+
+  assert.equal(summary.staleCleared, 1);
+  assert.deepEqual(calls.removeLabel, [{
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    issue_number: 108,
+    name: 'pending-deletion',
+  }]);
+  assert.equal(calls.createComment.length, 0);
+  assert.deepEqual(calls.close, []);
+});
+
 test('warns an old PR that was never warned instead of closing it', async () => {
   const { github, calls } = makeGithub({
     items: [{ number: 201, created_at: '2026-04-01T00:00:00Z' }],

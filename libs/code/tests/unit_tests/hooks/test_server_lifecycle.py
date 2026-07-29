@@ -753,6 +753,24 @@ def test_emit_stop_false_skips_after_agent(
     invoke.assert_not_called()
 
 
+def test_hook_state_keys_are_private_to_each_graph() -> None:
+    from deepagents.middleware._state import private_state_field_names
+
+    private = private_state_field_names(ServerHooksState)
+    assert "_hooks_stop_continuation_count" in private
+    assert "_hooks_pre_tool_outcomes" in private
+
+
+def test_after_model_update_keys_are_private() -> None:
+    from deepagents.middleware._state import private_state_field_names
+
+    middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
+    runtime = MagicMock()
+    runtime.context = {"thread_id": "t1", "approval_mode": "manual"}
+    update = middleware._after_model({"messages": []}, runtime)
+    assert set(update) <= private_state_field_names(ServerHooksState)
+
+
 def test_subagent_start_deny_returns_error_tool_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

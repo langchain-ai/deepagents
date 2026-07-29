@@ -16,6 +16,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     Any,
     Literal,
     NotRequired,
@@ -35,6 +36,7 @@ from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ContextT,
+    PrivateStateAttr,
     ResponseT,
     hook_config,
 )
@@ -102,10 +104,17 @@ class _PreToolState(TypedDict):
 
 
 class ServerHooksState(AgentState[Any]):
-    """Agent state extensions for server-owned hook middleware."""
+    """Agent state extensions for server-owned hook middleware.
 
-    _hooks_stop_continuation_count: NotRequired[int]
-    _hooks_pre_tool_outcomes: NotRequired[dict[str, _PreToolState]]
+    Both keys are marked `PrivateStateAttr`: they are per-graph bookkeeping with
+    no meaning in a parent agent, and reducer-less keys returned by parallel
+    subagents collide on a `LastValue` channel.
+    """
+
+    _hooks_stop_continuation_count: NotRequired[Annotated[int, PrivateStateAttr]]
+    _hooks_pre_tool_outcomes: NotRequired[
+        Annotated[dict[str, _PreToolState], PrivateStateAttr]
+    ]
 
 
 class _SessionHookGate(TypedDict):

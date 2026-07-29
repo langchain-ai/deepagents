@@ -18,6 +18,7 @@ from textual.widgets import Checkbox, Input, Select, Static
 from textual.widgets._select import SelectCurrent
 
 from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
+from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.sessions import ThreadInfo
 from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
 from deepagents_code.tui.widgets.thread_selector import (
@@ -3073,6 +3074,24 @@ def _app_test_double(app: DeepAgentsApp) -> Any:  # noqa: ANN401
     return app
 
 
+def _mock_session_state(thread_id: str) -> MagicMock:
+    """Return mocked session state carrying a real, inert hooks coordinator.
+
+    Thread switching runs `SessionEnd` through the coordinator, so a bare
+    `MagicMock` would hand back an unawaitable attribute.
+
+    Args:
+        thread_id: Thread the mocked session starts on.
+
+    Returns:
+        A `MagicMock` session state with `thread_id` and `hooks` populated.
+    """
+    state = MagicMock()
+    state.thread_id = thread_id
+    state.hooks = HooksManager.inert()
+    return state
+
+
 def _get_widget_text(widget: Static) -> str:
     """Extract text content from a message widget.
 
@@ -3125,8 +3144,7 @@ class TestResumeThread:
             side_effect=lambda w: mounted.append(w)
         )
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "thread-123"
+        app._session_state = _mock_session_state("thread-123")
         app._thread_switching = True
 
         await app._resume_thread("thread-999")
@@ -3144,8 +3162,7 @@ class TestResumeThread:
         offer_cwd_switch = AsyncMock(return_value="continue")
         _app_test_double(app)._offer_thread_cwd_switch = offer_cwd_switch
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "thread-123"
+        app._session_state = _mock_session_state("thread-123")
 
         await app._resume_thread("thread-123")
 
@@ -3186,8 +3203,7 @@ class TestResumeThread:
 
         _app_test_double(app)._offer_thread_cwd_switch = offer_cwd_switch
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "thread-123"
+        app._session_state = _mock_session_state("thread-123")
 
         await app._resume_thread("thread-123")
 
@@ -3201,8 +3217,7 @@ class TestResumeThread:
 
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "old-thread"
+        app._session_state = _mock_session_state("old-thread")
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
         _app_test_double(app)._clear_messages = AsyncMock()
@@ -3232,8 +3247,10 @@ class TestResumeThread:
         app._queued_widgets.clear.assert_called_once()
         _app_test_double(app)._clear_messages.assert_awaited_once()
         assert app._context_tokens == 0
-        app._fetch_thread_history_data.assert_awaited_once_with("new-thread")
-        app._load_thread_history.assert_awaited_once_with(
+        _app_test_double(app)._fetch_thread_history_data.assert_awaited_once_with(
+            "new-thread"
+        )
+        _app_test_double(app)._load_thread_history.assert_awaited_once_with(
             thread_id="new-thread",
             preloaded_payload=mock_payload,
         )
@@ -3244,8 +3261,7 @@ class TestResumeThread:
 
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "old-thread"
+        app._session_state = _mock_session_state("old-thread")
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
         _app_test_double(app)._clear_messages = AsyncMock()
@@ -3303,8 +3319,7 @@ class TestResumeThread:
 
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "old-thread"
+        app._session_state = _mock_session_state("old-thread")
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
         from deepagents_code.app import _ThreadHistoryPayload
@@ -3338,8 +3353,7 @@ class TestResumeThread:
 
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "old-thread"
+        app._session_state = _mock_session_state("old-thread")
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
         mock_payload = MagicMock()
@@ -3369,8 +3383,7 @@ class TestResumeThread:
         """Failed prefetch should not clear current conversation state."""
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "old-thread"
+        app._session_state = _mock_session_state("old-thread")
         fetch_history_mock = AsyncMock(
             side_effect=RuntimeError("checkpoint read failed")
         )
@@ -3394,8 +3407,7 @@ class TestResumeThread:
         """Prefetch failures should release switch lock and restore input state."""
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "old-thread"
+        app._session_state = _mock_session_state("old-thread")
         app._chat_input = MagicMock()
         _app_test_double(app)._mount_message = AsyncMock()
 
@@ -3417,8 +3429,7 @@ class TestResumeThread:
 
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "old-thread"
+        app._session_state = _mock_session_state("old-thread")
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
         _app_test_double(app)._fetch_thread_history_data = AsyncMock(return_value=[])

@@ -586,10 +586,6 @@ jobs:
             echo "::error::Invalid n_retries (non-negative integer): $HARBOR_N_RETRIES"
             exit 1
           fi
-          retry_reward_flag=()
-          if [ "$HARBOR_N_RETRIES" -ne 0 ]; then
-            retry_reward_flag=(--retry-if-reward-below 1.0)
-          fi
           if ! [[ "$HARBOR_CATEGORY" =~ ^[A-Za-z0-9_.-]+$ ]]; then
             echo "::error::Invalid Harbor category: $HARBOR_CATEGORY"
             exit 1
@@ -676,7 +672,9 @@ jobs:
           from harbor.registry.client.package import PackageDatasetClient
 
           # shard_matrix.py is pure stdlib; import it from the checkout (repo root).
-          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts"))
+          sys.path.insert(
+              0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts", "evals")
+          )
           from shard_matrix import select_shard_tasks, task_display_name
 
           ds = os.environ["HARBOR_DATASET"]
@@ -780,24 +778,19 @@ jobs:
             "$GITHUB_WORKSPACE/.github/scripts/evals/validate_agent_graph.py" \
             "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
           HARBOR_AGENT_GRAPH="$HARBOR_AGENT_IMPL"
-          experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
-          experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
-          experiment_branch=$(printf '%s' "$HARBOR_BRANCH" | tr -c '[:alnum:]._-' '-')
-          experiment_branch="${experiment_branch}-$(printf '%s' "$HARBOR_BRANCH" | sha256sum | cut -c1-8)"
-          experiment_category=$(printf '%s' "$HARBOR_CATEGORY" | tr -c '[:alnum:]._-' '-')
           # Precedence: explicit override > tau3-subset name hook > the value
           # resolved above (local-path-aware `local/...` or the registry ref).
           # The override uses a dedicated var the tau3 step never writes, so it
           # can't be clobbered.
           HARBOR_LANGSMITH_DATASET="${HARBOR_LS_DATASET_OVERRIDE:-${HARBOR_LANGSMITH_DATASET_NAME:-$HARBOR_LANGSMITH_DATASET}}"
-          # Scope the experiment name by category so each category's dataset gets
-          # its own experiment: one model spans three datasets, and a single
-          # experiment name shared across them double-counts runs in LangSmith.
-          # Shards within a category still share this name, so Harbor's LangSmith
-          # plugin reuses one session per category and converges them; the run id +
-          # attempt keep a later dispatch or re-run separate. HARBOR_LANGSMITH_DATASET
-          # is already set (local-path-aware) in the dataset-resolution block above.
-          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_branch}-${experiment_agent}-${experiment_model}${experiment_category:+-$experiment_category}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          # Experiment (LangSmith project) name from the shared helper — the single
+          # source of truth. prep computes the same names to hand the usage collector,
+          # and combine recomputes them to map usage back, so they can't drift. Scoped
+          # by category (one model spans three datasets) and by run id/attempt (keep
+          # re-runs separate); shards of a category share it, so harbor's stock plugin
+          # (>=harbor-langsmith 0.3.0) converges them into one experiment. Reads
+          # HARBOR_MODEL/BRANCH/AGENT_IMPL/CATEGORY + GITHUB_RUN_ID/ATTEMPT from the env.
+          HARBOR_LANGSMITH_EXPERIMENT="$(python3 "$GITHUB_WORKSPACE/.github/scripts/evals/experiment_name.py")"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_EXPERIMENT=$HARBOR_LANGSMITH_EXPERIMENT" >> "$GITHUB_ENV"
@@ -856,7 +849,6 @@ jobs:
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
             --max-retries "$HARBOR_N_RETRIES" \
-            "${retry_reward_flag[@]}" \
             --agent-timeout-multiplier "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" \
             --environment-build-timeout-multiplier "$HARBOR_ENV_BUILD_TIMEOUT_MULTIPLIER" \
             "${verification_flag[@]}" \
@@ -936,7 +928,7 @@ jobs:
               echo "- Included tasks: all"
             fi
             echo "- Rollouts per task: ${HARBOR_ROLLOUTS_PER_TASK}"
-            echo "- Configured retries per eligible failed trial: ${HARBOR_N_RETRIES}"
+            echo "- Configured retries per failed trial (--max-retries): ${HARBOR_N_RETRIES}"
             echo "- Agent timeout multiplier: ${HARBOR_AGENT_TIMEOUT_MULTIPLIER}"
             if [ "$SHARD_EMPTY" = "true" ]; then
               echo "- Actual retries: 0"

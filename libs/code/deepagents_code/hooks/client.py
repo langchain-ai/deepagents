@@ -21,22 +21,11 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.models.domain import HookDecision
     from deepagents_code.hooks.models.transport import HookInvocationRequest
     from deepagents_code.hooks.runtime import HooksRuntime
-    from deepagents_code.json_types import JsonObject
 
 logger = logging.getLogger(__name__)
 
 _FulfillmentKey = tuple[str, UUID]
-
-
-class HooksSnapshotChangedError(RuntimeError):
-    """A hook resume was attempted against a stale configuration snapshot.
-
-    Raised when a resumed interrupt carries a different `snapshot_id` than the
-    session's live runtime, which happens when a checkpoint is replayed after
-    the hooks configuration changed. The turn cannot be resumed safely; the
-    caller should surface this and restart rather than apply a decision made
-    against stale hooks.
-    """
+_ResumePayload = dict[str, object]
 
 
 @dataclass(slots=True)
@@ -87,7 +76,7 @@ class HookFulfillmentLedger:
 async def fulfill_hook_invocation(
     runtime: HooksRuntime,
     request: HookInvocationRequest,
-) -> JsonObject:
+) -> dict[str, object]:
     """Execute a server-owned hook request and return a resume payload.
 
     Args:
@@ -98,15 +87,14 @@ async def fulfill_hook_invocation(
         JSON-compatible resume value for `Command(resume=...)`.
 
     Raises:
-        HooksSnapshotChangedError: If the request snapshot does not match this
-            session.
+        ValueError: If the request snapshot does not match this session.
     """
     if request.snapshot_id != runtime.snapshot_id:
         msg = (
             f"Hook snapshot mismatch: request {request.snapshot_id} != "
             f"runtime {runtime.snapshot_id}"
         )
-        raise HooksSnapshotChangedError(msg)
+        raise ValueError(msg)
 
     async def execute() -> HookInvocationResponse:
         decision = await runtime.invoke(request.invocation)
@@ -128,7 +116,7 @@ async def fulfill_hook_invocation(
 async def fulfill_hook_interrupt(
     runtime: HooksRuntime,
     interrupt_value: object,
-) -> JsonObject | None:
+) -> dict[str, object] | None:
     """Fulfill a raw interrupt value when it is a hook invocation.
 
     Args:
@@ -147,7 +135,7 @@ async def fulfill_hook_interrupt(
 async def fulfill_pending_hook_interrupts(
     runtime: HooksRuntime,
     pending: Mapping[str, object],
-) -> dict[str, JsonObject]:
+) -> dict[str, dict[str, object]]:
     """Fulfill pending hook interrupts into a resume map keyed by interrupt id.
 
     Args:
@@ -160,7 +148,7 @@ async def fulfill_pending_hook_interrupts(
     Raises:
         RuntimeError: If a payload is not a valid hook interrupt.
     """
-    resumes: dict[str, JsonObject] = {}
+    resumes: dict[str, dict[str, object]] = {}
     for interrupt_id, payload in pending.items():
         resume_value = await fulfill_hook_interrupt(runtime, payload)
         if resume_value is None:

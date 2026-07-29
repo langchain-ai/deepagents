@@ -6864,6 +6864,7 @@ class DeepAgentsApp(App):
         self._session_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._provisional_cost_usd = 0.0
         self._refresh_session_cost_display()
+        self._maybe_warn_session_cost()
 
     @property
     def _displayed_cost_usd(self) -> float:
@@ -6874,23 +6875,22 @@ class DeepAgentsApp(App):
         """Show the server total plus any spend it has not accounted for yet."""
         if self._status_bar:
             self._status_bar.set_cost(self._displayed_cost_usd)
-        self._maybe_warn_session_cost()
 
     def _maybe_warn_session_cost(self) -> None:
-        """Warn once when the active conversation exceeds its cost threshold."""
+        """Warn once when authoritative conversation cost exceeds its threshold."""
         threshold_usd = self._cost_warning_threshold_usd
-        displayed_cost_usd = self._displayed_cost_usd
+        session_cost_usd = self._session_cost_usd
         if (
             threshold_usd is None
             or self._cost_warning_shown
-            or displayed_cost_usd <= threshold_usd
+            or session_cost_usd <= threshold_usd
         ):
             return
 
         self._cost_warning_shown = True
         self.notify(
             (
-                f"Estimated conversation cost is {format_cost(displayed_cost_usd)}, "
+                f"Estimated conversation cost is {format_cost(session_cost_usd)}, "
                 f"above your {format_cost(threshold_usd)} warning threshold. "
                 "Use /cost for details."
             ),

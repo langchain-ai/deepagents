@@ -51,7 +51,7 @@ def test_cost_warning_loader_accepts_zero(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_cost_warning_is_strict_and_shown_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Only cost above the threshold warns, including provisional spend."""
+    """Only authoritative cost above the threshold warns once."""
     monkeypatch.setattr(
         "deepagents_code.app._load_cost_warning_threshold_usd",
         lambda: 1.0,
@@ -63,6 +63,9 @@ def test_cost_warning_is_strict_and_shown_once(monkeypatch: pytest.MonkeyPatch) 
         notify.assert_not_called()
 
         app._add_provisional_cost(0.01)
+        notify.assert_not_called()
+
+        app._set_session_cost(1.01)
         notify.assert_called_once_with(
             (
                 "Estimated conversation cost is $1.01, above your $1.00 "
@@ -74,8 +77,8 @@ def test_cost_warning_is_strict_and_shown_once(monkeypatch: pytest.MonkeyPatch) 
             markup=False,
         )
 
-        app._set_session_cost(1.01)
         app._add_provisional_cost(0.5)
+        app._set_session_cost(1.51)
         assert notify.call_count == 1
 
 

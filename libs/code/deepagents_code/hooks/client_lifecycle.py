@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -15,7 +13,6 @@ from deepagents_code.hooks.models.domain import (
     DcodeNotificationKind,
     HookContext,
     HookDecision,
-    HookDiagnostic,
     HookDomainEvent,
     HookEvent,
     HookInvocation,
@@ -36,22 +33,27 @@ from deepagents_code.hooks.models.domain import (
     UserPromptSubmitDecision,
     UserPromptSubmitEvent,
 )
+from deepagents_code.hooks.permissions import (
+    PermissionHookOutcome,
+    permission_hook_outcome,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from pathlib import Path
     from typing import Protocol
+
+    from deepagents_code.hooks.presenter import HookPresenter
 
     class _ClientHooksRuntime(Protocol):
         @property
         def cwd(self) -> Path: ...
 
+        @property
+        def presenter(self) -> HookPresenter: ...
+
         def configured_events(self) -> frozenset[HookEvent]: ...
 
         async def invoke(self, invocation: HookInvocation) -> HookDecision: ...
-
-
-logger = logging.getLogger(__name__)
 
 
 class ClientHookStopError(RuntimeError):
@@ -105,10 +107,14 @@ class ClientHookContext:
 
 @dataclass(slots=True)
 class ClientHookService:
-    """Execute client-owned events and apply their common side effects."""
+    """Execute client-owned events and apply their common side effects.
+
+    User-facing output goes through the runtime's presenter, which the owning
+    `HooksManager` also holds. The service never wraps or replaces it, so there
+    is exactly one presenter per session.
+    """
 
     runtime: _ClientHooksRuntime
-    notice: Callable[[str], None] | None = None
     # SessionStart context accumulated per thread, consumed by
     # `take_session_context` for injection into the next model turn.
     _pending_context: dict[str, list[str]] = field(default_factory=dict)
@@ -279,6 +285,40 @@ class ClientHookService:
             raise TypeError(msg)
         return decision
 
+    async def resolve_permission(
+        self,
+        context: ClientHookContext,
+        call: ToolCallData,
+    ) -> PermissionHookOutcome:
+        """Resolve a permission hook and present user-facing attribution once.
+
+        The returned HITL decision carries the raw hook reason (or stop reason)
+        for model-visible resume payloads. Attribution text is emitted only
+        through the shared presenter.
+
+        Args:
+            context: Current client session context.
+            call: Tool action awaiting approval.
+
+        Returns:
+            Shared approval, rejection, or unresolved result.
+        """
+        decision = await self.permission_request(context, call)
+        outcome = permission_hook_outcome(decision)
+        if outcome.decision is None:
+            return outcome
+        permission = (
+            decision.permission
+            if decision.continue_processing
+            else PermissionEffect(
+                behavior="deny",
+                reason=decision.stop_reason or "Permission stopped by hook",
+                interrupt=True,
+            )
+        )
+        self.present_permission(call.name, permission)
+        return outcome
+
     async def notification(
         self,
         context: ClientHookContext,
@@ -345,6 +385,19 @@ class ClientHookService:
         """
         return event in self.runtime.configured_events()
 
+    def present_permission(
+        self,
+        tool_name: str,
+        permission: PermissionEffect,
+    ) -> None:
+        """Surface attribution for a hook-owned permission decision.
+
+        Args:
+            tool_name: Display name of the affected tool.
+            permission: Normalized permission effect.
+        """
+        self.runtime.presenter.present_permission(tool_name, permission)
+
     async def _invoke(
         self,
         context: ClientHookContext,
@@ -360,31 +413,5 @@ class ClientHookService:
             event=event,
         )
         decision = await self.runtime.invoke(invocation)
-        self._apply_common_effects(decision)
+        self.runtime.presenter.present_decision(decision)
         return decision
-
-    def _apply_common_effects(self, decision: HookDecision) -> None:
-        for diagnostic in decision.diagnostics:
-            _log_diagnostic(diagnostic)
-        for notice in decision.user_notices:
-            if self.notice is None:
-                logger.warning("Hook user notice: %s", notice)
-                continue
-            try:
-                self.notice(notice)
-            except Exception:
-                logger.warning("Failed to surface hook user notice", exc_info=True)
-        for sequence in decision.terminal_sequences:
-            sys.stdout.write(sequence)
-        if decision.terminal_sequences:
-            sys.stdout.flush()
-
-
-def _log_diagnostic(diagnostic: HookDiagnostic) -> None:
-    message = "Hook diagnostic %s: %s"
-    if diagnostic.severity == "error":
-        logger.error(message, diagnostic.code, diagnostic.message)
-    elif diagnostic.severity == "warning":
-        logger.warning(message, diagnostic.code, diagnostic.message)
-    else:
-        logger.debug(message, diagnostic.code, diagnostic.message)

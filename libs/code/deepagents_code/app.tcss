@@ -39,6 +39,10 @@ Screen {
     display: block;
 }
 
+.message-timestamp-footer.-tool-group-collapsed-accessory {
+    display: none;
+}
+
 /* Chat area - main scrollable messages area.
    No horizontal padding so message blocks span the same full width as the
    input box below (whose border is flush to both edges). The scrollbar is

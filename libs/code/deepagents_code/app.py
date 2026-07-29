@@ -15764,10 +15764,11 @@ class DeepAgentsApp(App):
                 self._active_tool_group is not None
                 and self._active_tool_group.is_attached
             ):
+                accessories = (footer,) if footer is not None else ()
                 if is_groupable_tool:
-                    self._active_tool_group.add_member(widget)
+                    self._active_tool_group.add_member(widget, *accessories)
                 elif is_groupable_diff:
-                    self._active_tool_group.add_collapsible(widget)
+                    self._active_tool_group.add_collapsible(widget, *accessories)
 
         self._schedule_message_height_measurement(message_data.id)
         self._sync_transcript_spacers(messages)
@@ -15922,16 +15923,22 @@ class DeepAgentsApp(App):
 
         run_tools: list[ToolCallMessage] = []
         run_collapsible: list[Widget] = []
+        run_accessories: dict[Widget, list[Widget]] = {}
         run_anchor: Widget | None = None
 
         async def flush() -> None:
-            nonlocal run_tools, run_collapsible, run_anchor
+            nonlocal run_tools, run_collapsible, run_accessories, run_anchor
             if run_tools and run_anchor is not None:
                 await self._mount_tool_group_summary(
-                    messages, run_tools, run_collapsible, run_anchor
+                    messages,
+                    run_tools,
+                    run_collapsible,
+                    run_accessories,
+                    run_anchor,
                 )
             run_tools = []
             run_collapsible = []
+            run_accessories = {}
             run_anchor = None
 
         # One repaint for the whole regroup — a single hydration or boundary
@@ -15939,7 +15946,11 @@ class DeepAgentsApp(App):
         with self.batch_update():
             for child in list(messages.children):
                 if child.has_class(_MESSAGE_TIMESTAMP_FOOTER_CLASS):
-                    continue  # footers are transparent to grouping
+                    if run_collapsible:
+                        run_accessories.setdefault(run_collapsible[-1], []).append(
+                            child
+                        )
+                    continue
                 if isinstance(child, ToolCallMessage):
                     groupable = (
                         child.tool_name not in _TOOL_GROUP_EXCLUSIONS
@@ -15973,12 +15984,17 @@ class DeepAgentsApp(App):
         messages: Container,
         tools: list[ToolCallMessage],
         collapsible: list[Widget],
+        accessories: dict[Widget, list[Widget]],
         anchor: Widget,
     ) -> None:
         """Insert a `ToolGroupSummary` before `anchor` and collapse the run."""
         if not anchor.is_attached:
             return
-        summary = ToolGroupSummary(tools=list(tools), collapsible=list(collapsible))
+        summary = ToolGroupSummary(
+            tools=list(tools),
+            collapsible=list(collapsible),
+            accessories=accessories,
+        )
         for widget in collapsible:
             widget.add_class("-grouped")
         try:

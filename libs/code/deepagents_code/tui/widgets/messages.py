@@ -3510,6 +3510,9 @@ def summarize_live_tool_group(
     return _join_segments(segments)
 
 
+_TOOL_GROUP_COLLAPSED_ACCESSORY_CLASS = "-tool-group-collapsed-accessory"
+
+
 class ToolGroupSummary(Static):
     """Collapsed one-line stand-in for an assistant step's tool calls.
 
@@ -3557,6 +3560,7 @@ class ToolGroupSummary(Static):
         self,
         tools: list[ToolCallMessage] | None = None,
         collapsible: list[Widget] | None = None,
+        accessories: dict[Widget, list[Widget]] | None = None,
         *,
         live: bool = False,
         **kwargs: Any,
@@ -3568,6 +3572,8 @@ class ToolGroupSummary(Static):
                 empty for a live group that grows via `add_member`.
             collapsible: Every widget hidden/shown with the group, including the
                 tool widgets and any interleaved diff previews.
+            accessories: Widgets whose collapsed state follows their owning
+                collapsible without overriding their independent CSS visibility.
             live: When True, animate progress and accept new members until
                 `close`. When False, render a finalized past-tense summary.
             **kwargs: Additional arguments passed to `Static`.
@@ -3575,6 +3581,9 @@ class ToolGroupSummary(Static):
         super().__init__("", **kwargs)
         self._tools = list(tools or [])
         self._collapsible = list(collapsible or [])
+        self._accessories = {
+            owner: list(widgets) for owner, widgets in (accessories or {}).items()
+        }
         self._accepting_members = live
         self._finalized = not live
         self._spinner_pos = 0
@@ -3595,25 +3604,25 @@ class ToolGroupSummary(Static):
         self._render_line()
         self._sync_timer()
 
-    def add_member(self, tool: ToolCallMessage, *extra: Widget) -> None:
-        """Add a tool (and any associated widgets) to a live group."""
+    def add_member(self, tool: ToolCallMessage, *accessories: Widget) -> None:
+        """Add a tool and its accessories to a live group."""
         tool.add_class("-grouped")
         self._tools.append(tool)
         self._collapsible.append(tool)
-        for widget in extra:
-            widget.add_class("-grouped")
-            self._collapsible.append(widget)
+        if accessories:
+            self._accessories[tool] = list(accessories)
         self._present_text = self._past_text = self._present_key = None
         self._apply_visibility()
         in_progress = self._sync_lifecycle()
         self._render_line(in_progress=in_progress)
 
-    def add_collapsible(self, widget: Widget) -> None:
-        """Attach a non-tool widget (e.g. a diff) to be folded with the group."""
+    def add_collapsible(self, widget: Widget, *accessories: Widget) -> None:
+        """Attach a non-tool widget and its accessories to the group."""
         widget.add_class("-grouped")
         self._collapsible.append(widget)
-        if widget.is_attached:
-            widget.display = not self._collapsed
+        if accessories:
+            self._accessories[widget] = list(accessories)
+        self._apply_collapsible_visibility(widget, visible=not self._collapsed)
 
     def close(self) -> None:
         """Stop accepting members and finalize after every tool settles.
@@ -3634,6 +3643,14 @@ class ToolGroupSummary(Static):
             # Every tool failed and was ejected — nothing left to summarize.
             self.remove()
 
+    def _release_collapsible(self, widget: Widget) -> None:
+        """Release a widget and its accessories from the group."""
+        if widget in self._collapsible:
+            self._collapsible.remove(widget)
+        widget.remove_class("-grouped")
+        for accessory in self._accessories.pop(widget, []):
+            accessory.remove_class(_TOOL_GROUP_COLLAPSED_ACCESSORY_CLASS)
+
     def reveal_pending(self) -> None:
         """Remove unfinished tool calls from the collapsed group."""
         pending = [tool for tool in self._tools if tool.is_pending]
@@ -3641,9 +3658,7 @@ class ToolGroupSummary(Static):
             return
         for tool in pending:
             self._tools.remove(tool)
-            if tool in self._collapsible:
-                self._collapsible.remove(tool)
-            tool.remove_class("-grouped")
+            self._release_collapsible(tool)
             if tool.is_attached and not tool._awaiting_approval:
                 tool.display = True
         self._present_text = self._past_text = self._present_key = None
@@ -3651,11 +3666,10 @@ class ToolGroupSummary(Static):
         if self._tools:
             self._render_line(in_progress=in_progress)
             return
-        for widget in self._collapsible:
-            widget.remove_class("-grouped")
+        for widget in list(self._collapsible):
+            self._release_collapsible(widget)
             if widget.is_attached:
                 widget.display = True
-        self._collapsible.clear()
         if self.is_attached:
             self.remove()
 
@@ -3714,9 +3728,7 @@ class ToolGroupSummary(Static):
             return
         for tool in failed:
             self._tools.remove(tool)
-            if tool in self._collapsible:
-                self._collapsible.remove(tool)
-            tool.remove_class("-grouped")
+            self._release_collapsible(tool)
             if tool.is_attached:
                 tool.display = True
         self._present_text = self._past_text = self._present_key = None
@@ -3764,12 +3776,19 @@ class ToolGroupSummary(Static):
             logger.exception("ToolGroupSummary spinner tick failed; stopping timer")
             self._stop_timer()
 
+    def _apply_collapsible_visibility(self, widget: Widget, *, visible: bool) -> None:
+        """Apply group visibility to a widget and its accessories."""
+        if widget.is_attached and widget.display != visible:
+            widget.display = visible
+        for accessory in self._accessories.get(widget, []):
+            if accessory.is_attached:
+                accessory.set_class(not visible, _TOOL_GROUP_COLLAPSED_ACCESSORY_CLASS)
+
     def _apply_visibility(self) -> None:
         """Show or hide every folded widget per the collapsed state."""
         visible = not self._collapsed
         for widget in self._collapsible:
-            if widget.is_attached and widget.display != visible:
-                widget.display = visible
+            self._apply_collapsible_visibility(widget, visible=visible)
 
     def _render_line(
         self, *, in_progress: bool | None = None, layout: bool = True

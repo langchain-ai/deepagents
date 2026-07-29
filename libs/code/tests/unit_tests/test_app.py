@@ -32706,6 +32706,7 @@ class TestToolGroupCollapse:
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t-approval-group")
         app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
         async with app.run_test() as pilot:
             messages = app.query_one("#messages", Container)
             stale = ToolCallMessage("grep", {"pattern": "old"})
@@ -32723,9 +32724,15 @@ class TestToolGroupCollapse:
 
             summary = app._active_tool_group
             assert summary is not None
+            completed_footer = app.query_one(
+                f"#{completed.id}-timestamp-footer", Static
+            )
+            pending_footer = app.query_one(f"#{pending.id}-timestamp-footer", Static)
             assert stale.display is False
             assert completed.display is False
+            assert completed_footer.display is False
             assert pending.display is False
+            assert pending_footer.display is False
 
             app._reveal_pending_tool_calls()
             await pilot.pause()
@@ -32734,7 +32741,9 @@ class TestToolGroupCollapse:
             assert stale.display is False
             assert stale_group.is_attached
             assert completed.display is False
+            assert completed_footer.display is False
             assert pending.display is True
+            assert pending_footer.display is True
             assert not pending.has_class("-grouped")
             assert summary._finalized is True
             assert summary._tools == [completed]
@@ -32905,10 +32914,21 @@ class TestToolGroupCollapse:
             summaries = list(app.query(ToolGroupSummary))
             assert len(summaries) == 1
             assert t1.display is False
+            assert footer.display is False
             assert t2.display is False
             rendered = summaries[0].render()
             assert isinstance(rendered, Content)
             assert "Read 2 files" in rendered.plain
+
+            summaries[0].toggle()
+            await pilot.pause()
+            assert t1.display is True
+            assert footer.display is True
+            assert t2.display is True
+
+            footer.remove_class("message-timestamp-footer-visible")
+            await pilot.pause()
+            assert footer.display is False
 
     async def test_regroup_is_idempotent(self) -> None:
         """Re-running regroup does not create duplicate summaries."""
@@ -33010,6 +33030,7 @@ class TestToolGroupCollapse:
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t-live")
         app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
         async with app.run_test() as pilot:
             messages = app.query_one("#messages", Container)
             await messages.remove_children()
@@ -33021,8 +33042,10 @@ class TestToolGroupCollapse:
 
             # A live group was opened and the tool hidden from the start.
             summaries = list(app.query(ToolGroupSummary))
+            footer = app.query_one(f"#{tool.id}-timestamp-footer", Static)
             assert len(summaries) == 1
             assert tool.display is False
+            assert footer.display is False
             assert app._active_tool_group is summaries[0]
 
             # A boundary closes the group and flips it to past tense.
@@ -33034,7 +33057,12 @@ class TestToolGroupCollapse:
             assert isinstance(rendered, Content)
             assert "Read 1 file" in rendered.plain
             assert tool.display is False
+            assert footer.display is False
+
+            summaries[0].toggle()
             await pilot.pause()
+            assert tool.display is True
+            assert footer.display is True
 
     @pytest.mark.parametrize("tool_name", ["ask_user", "edit_file", "write_todos"])
     async def test_mount_leaves_excluded_tools_expanded(self, tool_name: str) -> None:

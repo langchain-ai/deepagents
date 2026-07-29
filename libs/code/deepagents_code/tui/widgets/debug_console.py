@@ -1,9 +1,11 @@
 r"""Read-only in-app Debug Console modal.
 
 Toggled with `Ctrl+\` (or the hidden `/debug` command), this overlay shows a
-point-in-time session/runtime snapshot plus a live tail of recent
+live session/runtime snapshot plus a live tail of recent
 `deepagents_code.*` log records sourced from the in-memory ring buffer in
-`_debug_buffer`. It never mutates session state.
+`_debug_buffer`. The snapshot is seeded at open and, when the host supplies a
+`snapshot_provider`, rebuilt on the same refresh tick as the log tail. It never
+mutates session state.
 """
 
 from __future__ import annotations
@@ -59,7 +61,8 @@ class SnapshotField(NamedTuple):
 
     The four named fields keep the display strings and their interaction metadata
     explicit at construction sites. `copyable` opts a row into click-to-copy, and
-    `thread_id` enables a resolvable `(langsmith)` trace link for the thread row.
+    `thread_id` enables a resolvable `(open in langsmith)` trace link for the
+    thread row.
     """
 
     label: str
@@ -67,8 +70,8 @@ class SnapshotField(NamedTuple):
     copyable: bool = False
     """Whether `value` can be clicked to copy it to the clipboard."""
     thread_id: str | None = None
-    """A LangSmith thread id whose ``(langsmith)`` trace link is appended to the
-    row once the URL resolves. `None` disables the link."""
+    """A LangSmith thread id whose ``(open in langsmith)`` trace link is appended
+    to the row once the URL resolves. `None` disables the link."""
 
 
 _SNAPSHOT_COPY_META = "snapshot_copy"
@@ -758,6 +761,7 @@ class DebugConsoleScreen(ModalScreen[None]):
         self,
         snapshot: Sequence[SnapshotField],
         *,
+        snapshot_provider: Callable[[], Sequence[SnapshotField]] | None = None,
         cleared_upto: int = 0,
         on_clear: Callable[[int], None] | None = None,
         click_to_copy: bool = _CLICK_TO_COPY_DEFAULT,
@@ -766,7 +770,11 @@ class DebugConsoleScreen(ModalScreen[None]):
         """Initialize with a captured *snapshot* of session/runtime fields.
 
         Args:
-            snapshot: Ordered `SnapshotField` rows rendered in the header.
+            snapshot: Ordered `SnapshotField` rows rendered on first paint.
+            snapshot_provider: Optional callable that rebuilds the snapshot from
+                live host state. When set, the header is refreshed on the same
+                tick as the log tail whenever the provider returns a different
+                row list. Omit for a freeze-frame header (e.g. unit tests).
             cleared_upto: Absolute emission index a prior `Ctrl+L` cleared up to.
                 The console starts rendering from here so a clear persists across
                 close/reopen; records emitted after it still appear.
@@ -779,6 +787,7 @@ class DebugConsoleScreen(ModalScreen[None]):
         """
         super().__init__()
         self._snapshot = list(snapshot)
+        self._snapshot_provider = snapshot_provider
         self._records: list[InMemoryLogRecord] = []
         # Absolute index of the next unrendered log record (incremental writes),
         # seeded from any persisted clear so reopening honors the last Ctrl+L.
@@ -792,6 +801,12 @@ class DebugConsoleScreen(ModalScreen[None]):
         # Seed links resolved elsewhere in this process (normally the welcome
         # banner) so reopening the console does not briefly render without one.
         self._langsmith_urls = self._cached_langsmith_urls()
+        # Thread ids a lookup worker has already been scheduled for, so the
+        # refresh tick never stacks overlapping lookups for the same thread.
+        self._langsmith_attempted: set[str] = set()
+        # Whether the last provider poll raised, so a persistent failure logs a
+        # single WARNING instead of one per refresh tick.
+        self._snapshot_poll_failing = False
 
     def _cached_langsmith_urls(self) -> dict[str, str]:
         """Return immediately available LangSmith URLs for snapshot threads."""
@@ -853,19 +868,75 @@ class DebugConsoleScreen(ModalScreen[None]):
 
     def on_mount(self) -> None:
         """Start the refresh timer and render the current buffer contents."""
-        self.set_interval(_REFRESH_INTERVAL, self._poll_logs)
-        self._poll_logs()
+        self.set_interval(_REFRESH_INTERVAL, self._on_refresh_tick)
+        self._on_refresh_tick()
         self._resolve_langsmith_links()
         self.call_after_refresh(self.query_one("#debug-log", _DebugLogView).focus)
 
+    def _on_refresh_tick(self) -> None:
+        """Rebuild the snapshot header (when live) and append new log records."""
+        self._poll_snapshot()
+        self._poll_logs()
+
+    def _poll_snapshot(self) -> None:
+        """Rebuild the snapshot header from the host provider, if configured.
+
+        Reuses the log-tail timer so the header tracks live session state (message
+        counts, tokens, thread id, …) without a second schedule. Failures are
+        swallowed with a WARNING so a misbehaving provider cannot tear down the
+        diagnostic overlay or its log tail. Only the transition into failure logs
+        at WARNING: a provider that keeps raising would otherwise emit a
+        traceback every tick into the very ring buffer the console is tailing,
+        flooding out the records the user opened it to read. Repeats stay at
+        DEBUG, and a later success re-arms the WARNING.
+        """
+        if self._snapshot_provider is None:
+            return
+        try:
+            self._poll_snapshot_once()
+        except Exception:  # a diagnostic must never crash the app it inspects
+            if self._snapshot_poll_failing:
+                logger.debug("Debug console snapshot poll failed again", exc_info=True)
+            else:
+                self._snapshot_poll_failing = True
+                logger.warning("Debug console snapshot poll failed", exc_info=True)
+        else:
+            self._snapshot_poll_failing = False
+
+    def _poll_snapshot_once(self) -> None:
+        """Refresh `self._snapshot` from the provider when its rows changed."""
+        if self._snapshot_provider is None:
+            return
+        next_snapshot = list(self._snapshot_provider())
+        if next_snapshot == self._snapshot:
+            return
+        self._snapshot = next_snapshot
+        self._refresh_snapshot()
+        # A thread switch mid-open needs a fresh LangSmith resolve for any new
+        # ids; unchanged ids keep their cached URLs and are skipped inside.
+        self._resolve_langsmith_links()
+
     def _resolve_langsmith_links(self) -> None:
-        """Kick off background resolution of `(langsmith)` links for the snapshot."""
+        """Kick off background resolution of `(open in langsmith)` snapshot links.
+
+        Each thread id gets at most one lookup per console open. The refresh tick
+        calls this on every snapshot change, and a resolved URL is only recorded
+        on success, so without a separate guard a slow or failing lookup would be
+        restarted every 500 ms. `asyncio.wait_for` cannot cancel the blocking SDK
+        call inside `asyncio.to_thread`, so those retries would pile up executor
+        threads and network requests for as long as the console stays open.
+        Attempted ids therefore stay marked even after the worker finishes;
+        reopening the console retries with a fresh screen.
+        """
         thread_ids = {
             field.thread_id
             for field in self._snapshot
-            if field.thread_id and field.thread_id not in self._langsmith_urls
+            if field.thread_id
+            and field.thread_id not in self._langsmith_urls
+            and field.thread_id not in self._langsmith_attempted
         }
         for thread_id in thread_ids:
+            self._langsmith_attempted.add(thread_id)
             self.run_worker(
                 self._fetch_langsmith_link(thread_id),
                 exclusive=False,
@@ -1042,7 +1113,7 @@ class DebugConsoleScreen(ModalScreen[None]):
             parts.append(field.value)
         url = self._langsmith_urls.get(field.thread_id) if field.thread_id else None
         if url:
-            parts.extend(("  ", ("(langsmith)", TStyle(link=url))))
+            parts.extend(("  ", ("(open in langsmith)", TStyle(link=url))))
         return Content.assemble(*parts)
 
     @staticmethod

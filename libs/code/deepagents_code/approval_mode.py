@@ -26,6 +26,17 @@ APPROVAL_MODE_NAMESPACE: tuple[str, str] = ("deepagents_code", "approval_mode")
 YOLO_ACKNOWLEDGEMENT_POLICY_VERSION = "2026-07-14"
 """Version of the unrestricted-mode warning that must be acknowledged."""
 
+YOLO_WARNING_KEY = "yolo"
+"""`[warnings].suppress` key that mutes the recurring "YOLO is active" toast.
+
+Suppression is cosmetic: YOLO still requires an explicit acknowledgement to
+enter (a modal in the TUI, a console prompt for `--yolo`), still honors the
+`startup.yolo_switcher` setting, and still shows a persistent `YOLO`
+status-bar indicator the whole time it is active. Because the acknowledgement
+is once per policy version, that indicator is the only remaining in-session
+signal for a returning user who has muted the toast.
+"""
+
 AUTO_NOTICE_VERSION = "2026-07-24"
 """Version of the first-run Auto mode education notice.
 

@@ -11,8 +11,12 @@ import base64
 import io
 import logging
 import sys
-from typing import Self
+from typing import TYPE_CHECKING, Self
 from unittest.mock import MagicMock, patch
+
+from textual.app import App, ComposeResult
+from textual.screen import ModalScreen
+from textual.widgets import Static
 
 from deepagents_code.clipboard import (
     _copy_osc52,
@@ -21,6 +25,38 @@ from deepagents_code.clipboard import (
     copy_text_with_feedback,
     logger as clipboard_logger,
 )
+
+if TYPE_CHECKING:
+    from textual.pilot import Pilot
+
+_BASE_TEXT = "hello base world"
+
+
+class _SelectionApp(App[None]):
+    """App whose base screen holds selectable text."""
+
+    def compose(self) -> ComposeResult:
+        yield Static(_BASE_TEXT, id="base-static")
+
+
+class _SelectableModal(ModalScreen[None]):
+    """Modal pushed over `_SelectionApp`, with its own selectable text."""
+
+    def compose(self) -> ComposeResult:
+        yield Static("modal text", id="modal-static")
+
+
+async def _select_base_text(pilot: Pilot[None]) -> Static:
+    """Select text on the base screen the way a user would, and return its widget.
+
+    Returns:
+        The base-screen widget left holding a live text selection.
+    """
+    await pilot.triple_click("#base-static")
+    await pilot.pause()
+    base_static = pilot.app.query_one("#base-static", Static)
+    assert base_static.text_selection is not None
+    return base_static
 
 
 class TestCopyTextToClipboard:
@@ -323,7 +359,7 @@ class TestCopySelectionToClipboard:
         widget = MagicMock()
         widget.text_selection = selection
         widget.get_selection.return_value = ("selected text", None)
-        mock_app.query.return_value = [widget]
+        mock_app.screen.query.return_value = [widget]
 
         with patch(
             "deepagents_code.clipboard.copy_text_to_clipboard",
@@ -343,7 +379,7 @@ class TestCopySelectionToClipboard:
         widget = MagicMock()
         widget.text_selection = selection
         widget.get_selection.return_value = ("selected text", None)
-        mock_app.query.return_value = [widget]
+        mock_app.screen.query.return_value = [widget]
 
         with patch(
             "deepagents_code.clipboard.copy_text_to_clipboard",
@@ -367,7 +403,7 @@ class TestCopySelectionToClipboard:
         widget.is_attached = True
         widget.text_selection = SELECT_ALL
         widget.get_selection.return_value = ("full widget text", None)
-        mock_app.query.return_value = [widget]
+        mock_app.screen.query.return_value = [widget]
 
         with patch(
             "deepagents_code.clipboard.copy_text_to_clipboard",
@@ -383,7 +419,7 @@ class TestCopySelectionToClipboard:
         mock_widget = MagicMock()
         mock_widget.text_selection = MagicMock()
         mock_widget.get_selection.side_effect = AttributeError("No selection")
-        mock_app.query.return_value = [mock_widget]
+        mock_app.screen.query.return_value = [mock_widget]
 
         with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
             copy_selection_to_clipboard(mock_app)
@@ -407,7 +443,7 @@ class TestCopySelectionToClipboard:
         type(detached).text_selection = PropertyMock(
             side_effect=AssertionError("text_selection must not be read"),
         )
-        mock_app.query.return_value = [detached]
+        mock_app.screen.query.return_value = [detached]
 
         with patch(
             "deepagents_code.clipboard.copy_text_to_clipboard",
@@ -436,7 +472,7 @@ class TestCopySelectionToClipboard:
         sibling.text_selection = MagicMock(end=1)
         sibling.get_selection.return_value = ("sibling text", None)
 
-        mock_app.query.return_value = [racy, sibling]
+        mock_app.screen.query.return_value = [racy, sibling]
 
         with (
             caplog.at_level(logging.DEBUG, logger="deepagents_code"),
@@ -451,6 +487,60 @@ class TestCopySelectionToClipboard:
         assert "Skipping widget" in caplog.text
 
 
+class TestSelectionCopyScreenScope:
+    """A modal must not copy the selection left behind on the screen below it."""
+
+    async def test_skips_selection_on_screen_below_active_modal(self) -> None:
+        app = _SelectionApp()
+        async with app.run_test() as pilot:
+            base_static = await _select_base_text(pilot)
+            app.push_screen(_SelectableModal())
+            await pilot.pause()
+
+            with patch(
+                "deepagents_code.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy:
+                copy_selection_to_clipboard(app, screen=app.screen)
+
+            # The transcript selection survives the modal, it just isn't copied.
+            assert base_static.text_selection is not None
+
+        copy.assert_not_called()
+
+    async def test_copies_selection_from_the_requested_screen(self) -> None:
+        app = _SelectionApp()
+        async with app.run_test() as pilot:
+            await _select_base_text(pilot)
+            base_screen = app.screen
+            app.push_screen(_SelectableModal())
+            await pilot.pause()
+
+            with patch(
+                "deepagents_code.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy:
+                copy_selection_to_clipboard(app, screen=base_screen)
+
+        assert copy.call_count == 1
+        assert _BASE_TEXT in copy.call_args.args[1]
+
+    async def test_defaults_to_the_active_screen(self) -> None:
+        app = _SelectionApp()
+        async with app.run_test() as pilot:
+            await _select_base_text(pilot)
+            app.push_screen(_SelectableModal())
+            await pilot.pause()
+
+            with patch(
+                "deepagents_code.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy:
+                copy_selection_to_clipboard(app)
+
+        copy.assert_not_called()
+
+
 class TestAppSelectionCopy:
     """Regression coverage for click-chain selection copy timing."""
 
@@ -463,7 +553,11 @@ class TestAppSelectionCopy:
             DeepAgentsApp.on_mouse_up(mock_app, event)
 
         copy.assert_not_called()
-        mock_app.call_after_refresh.assert_called_once_with(copy, mock_app)
+        mock_app.call_after_refresh.assert_called_once_with(
+            copy,
+            mock_app,
+            screen=mock_app.screen,
+        )
 
 
 class TestClipboardLogger:

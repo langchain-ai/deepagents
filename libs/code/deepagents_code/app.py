@@ -17661,10 +17661,21 @@ class DeepAgentsApp(App):
         self.call_after_refresh(self._chat_input.focus_input)
 
     def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002  # Textual event handler signature
-        """Copy selection to clipboard after click-chain selection updates."""
+        """Copy selection to clipboard after click-chain selection updates.
+
+        The scan is pinned to the screen the release landed on, so a selection
+        left behind on the transcript underneath a modal cannot race that
+        modal's own copy action (e.g. clicking the Debug Console thread id).
+        """
         from deepagents_code.clipboard import copy_selection_to_clipboard
 
-        self.call_after_refresh(copy_selection_to_clipboard, self)
+        if not self.screen_stack:
+            return
+        self.call_after_refresh(
+            copy_selection_to_clipboard,
+            self,
+            screen=self.screen,
+        )
 
     # =========================================================================
     # Model Switching

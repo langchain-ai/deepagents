@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from textual.app import App
+    from textual.screen import Screen
 
 _PREVIEW_MAX_LENGTH = 40
 
@@ -141,15 +142,28 @@ def copy_text_with_feedback(
     return success
 
 
-def copy_selection_to_clipboard(app: App) -> None:
-    """Copy selected text from app widgets to clipboard.
+def copy_selection_to_clipboard(app: App, *, screen: Screen | None = None) -> None:
+    """Copy selected text from one screen's widgets to the clipboard.
 
-    This queries all widgets for their text_selection and copies
-    any selected text to the system clipboard.
+    Scanning is scoped to a single screen because selections are per-screen and
+    survive a modal being pushed on top: `App.query` is rooted at the app's
+    default (compose) screen, so an unscoped scan would copy a stale transcript
+    selection when the click actually landed inside a modal — racing that
+    modal's own copy action for the clipboard.
+
+    Args:
+        app: The active Textual app, used for the clipboard backend and toasts.
+        screen: Screen whose widgets are scanned for selections. Defaults to the
+            app's active screen.
     """
+    if screen is None:
+        if not app.screen_stack:
+            return
+        screen = app.screen
+
     selected_texts = []
 
-    for widget in app.query("*"):
+    for widget in screen.query("*"):
         # Skip detached widgets before touching `text_selection` — the
         # property reads `widget.screen.selections`, which raises `NoScreen`
         # for transient toasts mid-mount. `hasattr` is not a safe precheck

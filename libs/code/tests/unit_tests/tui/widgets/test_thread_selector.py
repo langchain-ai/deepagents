@@ -3363,6 +3363,61 @@ class TestResumeThread:
         assert session_state is not None
         assert session_state.previous_thread_id == "old-thread"
 
+    async def test_successful_switch_points_back_to_previous_thread(self) -> None:
+        """A switch surfaces the thread just left, like `/clear` does.
+
+        Without the hint, the outgoing thread's ID scrolls out of reach the
+        moment history is replaced.
+        """
+        app = self._switch_app()
+        mount_message = AsyncMock()
+        _app_test_double(app)._mount_message = mount_message
+
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=True),
+            ),
+            patch.object(app, "_schedule_thread_message_link") as schedule,
+        ):
+            await app._resume_thread("new-thread")
+
+        contents = [
+            _get_widget_text(call.args[0]) for call in mount_message.call_args_list
+        ]
+        assert "Previous thread: old-thread (Resume with /threads -r)" in contents
+        schedule.assert_called_once()
+        assert schedule.call_args.kwargs == {
+            "prefix": "Previous thread",
+            "thread_id": "old-thread",
+            "suffix": " (Resume with /threads -r)",
+        }
+
+    async def test_switch_omits_previous_thread_without_checkpoint(self) -> None:
+        """A switch away from an empty thread advertises nothing to resume.
+
+        `-r` can only reach threads with a checkpoint row, so hinting at one
+        without would be a dead end.
+        """
+        app = self._switch_app()
+        mount_message = AsyncMock()
+        _app_test_double(app)._mount_message = mount_message
+
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=False),
+            ),
+            patch.object(app, "_schedule_thread_message_link") as schedule,
+        ):
+            await app._resume_thread("new-thread")
+
+        contents = [
+            _get_widget_text(call.args[0]) for call in mount_message.call_args_list
+        ]
+        assert not any(text.startswith("Previous thread:") for text in contents)
+        schedule.assert_not_called()
+
     async def test_successful_switch_rearms_already_on_thread_toast(self) -> None:
         """A real switch clears suppression so the next no-op toasts again.
 

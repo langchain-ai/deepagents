@@ -12811,47 +12811,9 @@ class DeepAgentsApp(App):
                     prefix="Started new thread",
                     thread_id=new_thread_id,
                 )
-                previous_thread_id = self._session_state.previous_thread_id
-                if previous_thread_id:
-                    import sqlite3
-
-                    from deepagents_code.sessions import thread_exists
-
-                    # Best-effort: on any failure just suppress the hint (never
-                    # crash `/clear`), but log unexpected errors loudly so a
-                    # real bug isn't silently read as "not resumable".
-                    try:
-                        previous_thread_is_resumable = await thread_exists(
-                            previous_thread_id
-                        )
-                    except (sqlite3.Error, OSError):
-                        logger.debug(
-                            "Could not check whether previous thread %s is resumable",
-                            previous_thread_id,
-                            exc_info=True,
-                        )
-                        previous_thread_is_resumable = False
-                    except Exception:
-                        logger.warning(
-                            "Unexpected error checking previous thread %s resumability",
-                            previous_thread_id,
-                            exc_info=True,
-                        )
-                        previous_thread_is_resumable = False
-                else:
-                    previous_thread_is_resumable = False
-                if previous_thread_id and previous_thread_is_resumable:
-                    resume_hint = " (Resume with /threads -r)"
-                    previous_msg_widget = AppMessage(
-                        f"Previous thread: {previous_thread_id}{resume_hint}"
-                    )
-                    await self._mount_message(previous_msg_widget)
-                    self._schedule_thread_message_link(
-                        previous_msg_widget,
-                        prefix="Previous thread",
-                        thread_id=previous_thread_id,
-                        suffix=resume_hint,
-                    )
+                await self._mount_previous_thread_hint(
+                    self._session_state.previous_thread_id
+                )
                 await self._reload_hooks()
                 if not await self._run_session_start_hook(SessionStartCause.CLEAR):
                     return
@@ -15447,6 +15409,60 @@ class DeepAgentsApp(App):
                 suffix=suffix,
             ),
             exclusive=False,
+        )
+
+    async def _mount_previous_thread_hint(self, previous_thread_id: str | None) -> None:
+        """Point the user back at the thread the session just left.
+
+        Shared by every path that moves the session off a thread — `/clear`,
+        `/force-clear`, and a mid-session thread switch — so a one-step way
+        back is always offered. Threads with no checkpoint row are skipped:
+        `-r` can't resume them, so advertising an abandoned empty thread would
+        be a dead end.
+
+        Args:
+            previous_thread_id: The thread the session left, or `None` when it
+                has never left one.
+        """
+        if not previous_thread_id:
+            return
+
+        import sqlite3
+
+        from deepagents_code.sessions import thread_exists
+
+        # Best-effort: on any failure just suppress the hint (never crash the
+        # caller), but log unexpected errors loudly so a real bug isn't
+        # silently read as "not resumable".
+        try:
+            resumable = await thread_exists(previous_thread_id)
+        except (sqlite3.Error, OSError):
+            logger.debug(
+                "Could not check whether previous thread %s is resumable",
+                previous_thread_id,
+                exc_info=True,
+            )
+            return
+        except Exception:
+            logger.warning(
+                "Unexpected error checking previous thread %s resumability",
+                previous_thread_id,
+                exc_info=True,
+            )
+            return
+        if not resumable:
+            return
+
+        resume_hint = " (Resume with /threads -r)"
+        previous_msg_widget = AppMessage(
+            f"Previous thread: {previous_thread_id}{resume_hint}"
+        )
+        await self._mount_message(previous_msg_widget)
+        self._schedule_thread_message_link(
+            previous_msg_widget,
+            prefix="Previous thread",
+            thread_id=previous_thread_id,
+            suffix=resume_hint,
         )
 
     async def _load_thread_history(
@@ -22816,6 +22832,10 @@ class DeepAgentsApp(App):
             # below can still raise, so the rollback path restores this pointer
             # explicitly rather than relying on statement order.
             self._session_state.previous_thread_id = prev_session_thread
+
+            # Mounted under the "Resumed thread" note so the thread the user
+            # just left is one command away, exactly as `/clear` offers.
+            await self._mount_previous_thread_hint(prev_session_thread)
 
             # Landing on a new thread re-arms the same-thread toast, so stepping
             # back to a thread and re-selecting it announces itself again.

@@ -142,25 +142,19 @@ def copy_text_with_feedback(
     return success
 
 
-def copy_selection_to_clipboard(app: App, *, screen: Screen | None = None) -> None:
+def copy_selection_to_clipboard(app: App, *, screen: Screen) -> None:
     """Copy selected text from one screen's widgets to the clipboard.
 
-    Scanning is scoped to a single screen because selections are per-screen and
-    survive a modal being pushed on top: `App.query` is rooted at the app's
-    default (compose) screen, so an unscoped scan would copy a stale transcript
-    selection when the click actually landed inside a modal — racing that
-    modal's own copy action for the clipboard.
+    Selections live on the screen that owns them (`Screen.selections`) and
+    survive a modal being pushed on top, so a scan has to target exactly one
+    screen. `screen` is required rather than defaulting to the active screen
+    because this runs deferred, by which point the active screen may no longer
+    be the one the caller meant — the caller pins it at event time instead.
 
     Args:
         app: The active Textual app, used for the clipboard backend and toasts.
-        screen: Screen whose widgets are scanned for selections. Defaults to the
-            app's active screen.
+        screen: Screen whose widgets are scanned for selections.
     """
-    if screen is None:
-        if not app.screen_stack:
-            return
-        screen = app.screen
-
     selected_texts = []
 
     for widget in screen.query("*"):

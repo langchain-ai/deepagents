@@ -360,12 +360,18 @@ class TestCopySelectionToClipboard:
         widget.text_selection = selection
         widget.get_selection.return_value = ("selected text", None)
         mock_app.screen.query.return_value = [widget]
+        # The scan must be screen-scoped. Without this, a regression to
+        # `app.query` would fail below with the opaque "copy not called"
+        # (a `MagicMock` query yields nothing) rather than naming the cause.
+        mock_app.query.side_effect = AssertionError(
+            "selection scan must query the screen, not the app",
+        )
 
         with patch(
             "deepagents_code.clipboard.copy_text_to_clipboard",
             return_value=(True, None),
         ) as copy:
-            copy_selection_to_clipboard(mock_app)
+            copy_selection_to_clipboard(mock_app, screen=mock_app.screen)
 
         copy.assert_called_once_with(mock_app, "selected text")
         mock_app.notify.assert_called_once()
@@ -385,7 +391,7 @@ class TestCopySelectionToClipboard:
             "deepagents_code.clipboard.copy_text_to_clipboard",
             return_value=(False, "no clipboard mechanism"),
         ):
-            copy_selection_to_clipboard(mock_app)
+            copy_selection_to_clipboard(mock_app, screen=mock_app.screen)
 
         mock_app.notify.assert_called_once_with(
             "Failed to copy - no clipboard method available",
@@ -409,7 +415,7 @@ class TestCopySelectionToClipboard:
             "deepagents_code.clipboard.copy_text_to_clipboard",
             return_value=(True, None),
         ) as copy:
-            copy_selection_to_clipboard(mock_app)
+            copy_selection_to_clipboard(mock_app, screen=mock_app.screen)
 
         copy.assert_called_once_with(mock_app, "full widget text")
 
@@ -422,7 +428,7 @@ class TestCopySelectionToClipboard:
         mock_app.screen.query.return_value = [mock_widget]
 
         with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
-            copy_selection_to_clipboard(mock_app)
+            copy_selection_to_clipboard(mock_app, screen=mock_app.screen)
 
         assert "Failed to get selection from widget" in caplog.text
         assert "No selection" in caplog.text
@@ -449,7 +455,7 @@ class TestCopySelectionToClipboard:
             "deepagents_code.clipboard.copy_text_to_clipboard",
             return_value=(True, None),
         ) as copy:
-            copy_selection_to_clipboard(mock_app)
+            copy_selection_to_clipboard(mock_app, screen=mock_app.screen)
 
         copy.assert_not_called()
 
@@ -481,16 +487,50 @@ class TestCopySelectionToClipboard:
                 return_value=(True, None),
             ) as copy,
         ):
-            copy_selection_to_clipboard(mock_app)
+            copy_selection_to_clipboard(mock_app, screen=mock_app.screen)
 
         copy.assert_called_once_with(mock_app, "sibling text")
         assert "Skipping widget" in caplog.text
 
 
 class TestSelectionCopyScreenScope:
-    """A modal must not copy the selection left behind on the screen below it."""
+    """The scan copies the passed screen's selection and no other screen's."""
+
+    async def test_copies_only_the_active_screens_selection(self) -> None:
+        """Scanning the modal copies its own selection, not the one below it.
+
+        Covers both directions at once, so an over-correction that skips modal
+        screens entirely fails here instead of passing a suite that only ever
+        asserts the negative case.
+        """
+        app = _SelectionApp()
+        async with app.run_test() as pilot:
+            base_static = await _select_base_text(pilot)
+            app.push_screen(_SelectableModal())
+            await pilot.pause()
+            await pilot.triple_click("#modal-static")
+            await pilot.pause()
+
+            with patch(
+                "deepagents_code.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy:
+                copy_selection_to_clipboard(app, screen=app.screen)
+
+            # The base-screen selection survives the modal, it just isn't copied.
+            assert base_static.text_selection is not None
+            assert copy.call_count == 1
+            copied = copy.call_args.args[1]
+            assert "modal text" in copied
+            assert _BASE_TEXT not in copied
 
     async def test_skips_selection_on_screen_below_active_modal(self) -> None:
+        """A selection stranded under the modal is left alone, not copied.
+
+        The original defect: `App.query` is rooted at the app's default screen,
+        so an unscoped scan reached this selection even though the click landed
+        in the modal.
+        """
         app = _SelectionApp()
         async with app.run_test() as pilot:
             base_static = await _select_base_text(pilot)
@@ -503,17 +543,22 @@ class TestSelectionCopyScreenScope:
             ) as copy:
                 copy_selection_to_clipboard(app, screen=app.screen)
 
-            # The transcript selection survives the modal, it just isn't copied.
             assert base_static.text_selection is not None
+            copy.assert_not_called()
 
-        copy.assert_not_called()
+    async def test_honors_a_screen_that_is_not_the_active_one(self) -> None:
+        """The passed screen wins even when another screen is on top.
 
-    async def test_copies_selection_from_the_requested_screen(self) -> None:
+        Pins the contract that makes pinning-at-event-time work: the caller's
+        screen is used verbatim, never re-resolved to whatever is active now.
+        """
         app = _SelectionApp()
         async with app.run_test() as pilot:
             await _select_base_text(pilot)
             base_screen = app.screen
             app.push_screen(_SelectableModal())
+            await pilot.pause()
+            await pilot.triple_click("#modal-static")
             await pilot.pause()
 
             with patch(
@@ -522,23 +567,10 @@ class TestSelectionCopyScreenScope:
             ) as copy:
                 copy_selection_to_clipboard(app, screen=base_screen)
 
-        assert copy.call_count == 1
-        assert _BASE_TEXT in copy.call_args.args[1]
-
-    async def test_defaults_to_the_active_screen(self) -> None:
-        app = _SelectionApp()
-        async with app.run_test() as pilot:
-            await _select_base_text(pilot)
-            app.push_screen(_SelectableModal())
-            await pilot.pause()
-
-            with patch(
-                "deepagents_code.clipboard.copy_text_to_clipboard",
-                return_value=(True, None),
-            ) as copy:
-                copy_selection_to_clipboard(app)
-
-        copy.assert_not_called()
+            assert copy.call_count == 1
+            copied = copy.call_args.args[1]
+            assert _BASE_TEXT in copied
+            assert "modal text" not in copied
 
 
 class TestAppSelectionCopy:

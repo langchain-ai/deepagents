@@ -257,14 +257,14 @@ In the normal case you do not need to think about any of this. Step 3 is the onl
 <details>
 <summary><b>If the other release PRs were not refreshed</b></summary>
 
-Step 3 is skipped in the situations below. In every case your own package still published normally, and the refresh happens on the next push to `main`.
+Step 3 can be skipped in the situations below. Skipping it holds up only the refresh of the *other* open release PRs — with one exception: a red `release.yml` means that package did not publish and has to be re-dispatched.
 
-| Situation | What you will see | What to do |
-| --- | --- | --- |
-| A publish is still in flight after 45 min | `release-please.yml` green, with a `deferred` step summary | Nothing, unless the publish is genuinely stuck — then clear the label per [Release PR Stuck with "autorelease: pending"](#release-pr-stuck-with-autorelease-pending-label) |
-| A publish failed (yours, or a package left stuck earlier) | `release.yml` red; `release-please.yml` green, with a `deferred (release commit)` summary naming the failed run | Fix and re-dispatch the failed package release |
-| GitHub's release state is unreadable | `release-please.yml` **red** at `guard-pending-release` | Re-run the job. It refuses to guess whether a publish is in flight rather than recompute against unverified state |
-| You merged several release PRs at once | Some `release-please` jobs show as **cancelled** | Nothing — this is expected. Only one job may queue per concurrency group, and the surviving (newest) run recomputes every component, so it covers the cancelled jobs' work |
+| Situation | What you will see | What to do | When the refresh happens |
+| --- | --- | --- | --- |
+| A publish is still in flight after 45 min | `release-please.yml` green, with a `deferred` step summary | Nothing, unless the publish is genuinely stuck — then clear the label per [Release PR Stuck with "autorelease: pending"](#release-pr-stuck-with-autorelease-pending-label) | Next push to `main` |
+| A publish failed (yours, or a package left stuck earlier) | `release.yml` red; `release-please.yml` green, with a `deferred (release commit)` summary naming the failed run | Fix and re-dispatch the failed package release — this package has **not** published | Next push to `main`, once the failed release is recovered |
+| GitHub's release state is unreadable | `release-please.yml` **red** at `guard-pending-release` | Re-run the job. It refuses to guess whether a publish is in flight rather than recompute against unverified state | When the re-run succeeds |
+| You merged several release PRs at once | Some `release-please` jobs show as **cancelled** | Nothing — this is expected. Only one job may queue per concurrency group | Already done: the surviving (newest) run recomputes every component, covering the cancelled jobs' work |
 
 </details>
 

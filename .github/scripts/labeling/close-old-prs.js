@@ -2,12 +2,40 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const DEFAULT_BYPASS_LABEL = 'do-not-close';
 const DEFAULT_PENDING_DELETION_LABEL = 'pending-deletion';
+// Why release PRs are exempt at all: release-please keeps one long-lived PR
+// per package and updates it in place rather than opening a new one (see
+// .github/RELEASING.md), so "days since opened" — the only staleness signal
+// this workflow has — is meaningless for them by construction.
+//
+// The two labels have different owners, and both are matched because either
+// can be missing at a given moment:
+//   * `release` is this repo's own, derived from the `release(scope):` title
+//     type via .github/scripts/labeling/pr-labeler-config.json (typeToLabel).
+//     On release-please's own PRs it is applied by a `continue-on-error` step
+//     in release-please.yml, so it can silently fail to appear.
+//   * `autorelease: pending` is release-please-action's built-in label,
+//     applied atomically when it opens the PR. This is the reliable one — do
+//     not drop it as "redundant with release".
+// `autorelease: tagged` is deliberately absent: release.yml only flips
+// pending -> tagged in the post-merge job, so an open PR never carries it.
 const RELEASE_LABELS = new Set(['release', 'autorelease: pending']);
 const DEFAULT_WARNING_DAYS = 14;
 const DEFAULT_CLOSE_DAYS = 30;
 const DEFAULT_MAX_ITEMS = 1000;
 const COMMENT_MARKER = '<!-- old-pr-auto-close -->';
 const WORKFLOW_BOT_LOGIN = 'github-actions[bot]';
+// Same value as WORKFLOW_BOT_LOGIN today, but a distinct identity: this is
+// "who opens release PRs" (release-please runs on GITHUB_TOKEN), whereas
+// WORKFLOW_BOT_LOGIN is "who authored this workflow's own comments". Moving
+// release-please to a GitHub App token would change only this one.
+const RELEASE_PLEASE_AUTHOR = 'github-actions[bot]';
+// Derived from release-please-config.json: `separate-pull-requests: true`
+// produces `release-please--branches--<base>--components--<pkg>` branches.
+// Flipping that to false (or renaming the default branch) drops the
+// `--components--<pkg>` suffix and would disarm the exemption — isReleasePr
+// warns when a release label appears without matching provenance, so that
+// drift surfaces in the log rather than silently closing release PRs.
+const RELEASE_PLEASE_BRANCH_PREFIX = 'release-please--branches--main--components--';
 
 function parsePositiveInt(value, fallback, name) {
   if (value === undefined || value === null || value === '') return fallback;
@@ -47,8 +75,45 @@ function labelNames(labels) {
   return labels.map(label => typeof label === 'string' ? label : label.name);
 }
 
-function isReleasePr({ labels }) {
-  return labelNames(labels).some(label => RELEASE_LABELS.has(label));
+// `labels` is already normalized to strings by getLivePr.
+function isReleasePr(
+  { labels, authorLogin, authorType, headRef, headRepo },
+  { owner, repo, core, number },
+) {
+  const hasReleaseLabel = labels.some(label => RELEASE_LABELS.has(label));
+  // The unified labeler derives `release` from the contributor-controlled PR
+  // title (pr_lint.yml allows `release` as a title type, and pr_labeler.yml
+  // runs on pull_request_target for outside contributors), so the label alone
+  // would let any PR opt itself out of cleanup indefinitely. Require
+  // release-please's bot identity and a same-repository release branch as
+  // trusted provenance before exempting the PR.
+  const failures = [];
+  if (authorLogin !== RELEASE_PLEASE_AUTHOR || authorType !== 'Bot') {
+    failures.push(`author ${authorLogin}/${authorType}`);
+  }
+  if (typeof headRef !== 'string'
+    || !headRef.startsWith(RELEASE_PLEASE_BRANCH_PREFIX)
+    || headRef.length <= RELEASE_PLEASE_BRANCH_PREFIX.length) {
+    failures.push(`branch ${headRef}`);
+  }
+  if (typeof headRepo !== 'string'
+    || headRepo.toLowerCase() !== `${owner}/${repo}`.toLowerCase()) {
+    failures.push(`repo ${headRepo}`);
+  }
+
+  // A release label without matching provenance is ambiguous: either a
+  // title-spoofed contributor PR (correctly denied the exemption) or a genuine
+  // release PR whose provenance drifted — a renamed default branch, a
+  // separate-pull-requests flip, or a token change. The second case silently
+  // reintroduces the bug this exemption exists to fix, so say so rather than
+  // letting the PR fall through to the normal warn/close path unremarked.
+  if (hasReleaseLabel && failures.length > 0) {
+    core.warning(
+      `PR #${number} carries a release label but failed provenance ` +
+      `(${failures.join('; ')}); treating it as a normal PR`,
+    );
+  }
+  return hasReleaseLabel && failures.length === 0;
 }
 
 async function ensureLabel({ github, owner, repo, name, color, description }) {
@@ -92,8 +157,11 @@ async function ensureIssueLabel({ github, owner, repo, issueNumber, name, existi
   existingLabels.push(name);
 }
 
+// Returns true only when this call actually removed the label, so callers can
+// count real removals rather than no-ops.
 async function removeIssueLabel({ github, owner, repo, issueNumber, name, existingLabels }) {
-  if (!existingLabels.includes(name)) return;
+  if (!existingLabels.includes(name)) return false;
+  let removed = true;
   try {
     await github.rest.issues.removeLabel({
       owner,
@@ -102,11 +170,14 @@ async function removeIssueLabel({ github, owner, repo, issueNumber, name, existi
       name,
     });
   } catch (error) {
-    // Already gone (manual removal or a concurrent run) is fine.
+    // Already gone (manual removal or a concurrent run) is fine, but this run
+    // is not what cleared it, so it must not be counted as a removal.
     if (error.status !== 404) throw error;
+    removed = false;
   }
   const index = existingLabels.indexOf(name);
   if (index !== -1) existingLabels.splice(index, 1);
+  return removed;
 }
 
 async function findMarkerComment({ github, owner, repo, issueNumber }) {
@@ -147,8 +218,12 @@ async function getLivePr({ github, owner, repo, number }) {
     pull_number: number,
   });
   return {
+    authorLogin: pr.user?.login,
+    authorType: pr.user?.type,
     createdAt: pr.created_at,
     draft: pr.draft === true,
+    headRef: pr.head?.ref,
+    headRepo: pr.head?.repo?.full_name,
     labels: labelNames(pr.labels ?? []),
     state: pr.state,
   };
@@ -253,7 +328,7 @@ async function processPr({
     core.info(`PR #${number} is a draft; skipping`);
     return 'skipped';
   }
-  if (isReleasePr(live)) {
+  if (isReleasePr(live, { owner, repo, core, number })) {
     await removeIssueLabel({
       github,
       owner,
@@ -263,7 +338,7 @@ async function processPr({
       existingLabels: live.labels,
     });
     core.info(`PR #${number} is a release PR; skipping`);
-    return 'skipped';
+    return 'skippedRelease';
   }
   if (live.labels.includes(bypassLabel)) {
     await removeIssueLabel({
@@ -294,7 +369,8 @@ async function processPr({
       issue_number: number,
       body: warningBody({ warningDays, closeDays, bypassLabel }),
     });
-    // Apply at warning time so the PR is filterable until close, draft, or bypass.
+    // Apply at warning time so the PR is filterable until it stops being a
+    // close candidate (closed, draft, release, or bypassed).
     await ensureIssueLabel({
       github,
       owner,
@@ -359,6 +435,13 @@ async function processPr({
 // The primary open-PR search omits drafts (`draft:false`) and closed PRs, so a
 // separate label query is needed to clear pending-deletion after those
 // transitions (or after a manual close).
+//
+// The `stale` test below deliberately mirrors processPr's full exemption set,
+// including the release check, even though an open non-draft release PR is
+// also handled there. The duplication earns its place because processPr never
+// sees PRs past the maxItems cap or dropped by a partial search failure, and
+// because letting the two exemption sets drift is how a PR ends up skipped by
+// one path while keeping a pending-deletion label applied by the other.
 async function sweepStalePendingDeletionLabels({
   github,
   core,
@@ -383,7 +466,10 @@ async function sweepStalePendingDeletionLabels({
             `Reached maxItems cap (${maxItems}) while sweeping ` +
             `${pendingDeletionLabel}; some labeled PRs were not checked.`,
           );
-          return cleared;
+          // The cap is not a failure: the sweep is idempotent and the next
+          // daily run picks up whatever was missed. Same rationale as the
+          // primary search's truncation warning.
+          return { cleared, failure: null };
         }
 
         let live;
@@ -396,11 +482,14 @@ async function sweepStalePendingDeletionLabels({
 
         const stale = live.state !== 'open'
           || live.draft
-          || isReleasePr(live)
+          || isReleasePr(live, { owner, repo, core, number: item.number })
           || live.labels.includes(bypassLabel);
         if (!stale) continue;
 
-        await removeIssueLabel({
+        // The label search index lags the label mutations this same run makes
+        // in processPr, so a PR can surface here with the label already gone.
+        // Only count and log removals that actually happened.
+        const removed = await removeIssueLabel({
           github,
           owner,
           repo,
@@ -408,6 +497,7 @@ async function sweepStalePendingDeletionLabels({
           name: pendingDeletionLabel,
           existingLabels: live.labels,
         });
+        if (!removed) continue;
         cleared += 1;
         core.info(
           `Cleared ${pendingDeletionLabel} from PR #${item.number} ` +
@@ -416,12 +506,15 @@ async function sweepStalePendingDeletionLabels({
       }
     }
   } catch (error) {
-    core.warning(
-      `pending-deletion sweep failed after clearing ${cleared} label(s) ` +
-      `(HTTP ${error.status ?? 'unknown'}): ${error.message}`,
-    );
+    // Report the failure to the caller so the run fails. A sweep that dies on
+    // its first PR otherwise looks identical to one with nothing to do — the
+    // same reasoning as searchOpenPrs returning `incomplete`.
+    const failure = `pending-deletion sweep failed after clearing ${cleared} label(s) ` +
+      `(HTTP ${error.status ?? 'unknown'}): ${error.message}`;
+    core.warning(failure);
+    return { cleared, failure };
   }
-  return cleared;
+  return { cleared, failure: null };
 }
 
 async function run({ github, context, core, options = {} }) {
@@ -473,7 +566,21 @@ async function run({ github, context, core, options = {} }) {
   const { items: prs, incomplete, truncated } = await searchOpenPrs({ github, owner, repo, maxItems, core });
   core.info(`Found ${prs.length} open PR(s)`);
 
-  const summary = { checked: 0, warned: 0, closed: 0, skipped: 0, staleCleared: 0, incomplete, truncated, errors: [] };
+  // `skipped` stays the total across every skip reason; `skippedRelease` is a
+  // sub-count so an exemption that starts over-applying (a spoofing vector, or
+  // a loosened provenance check making PRs immortal) is visible as a jump in
+  // one number rather than hidden among young/draft/closed/bypassed PRs.
+  const summary = {
+    checked: 0,
+    warned: 0,
+    closed: 0,
+    skipped: 0,
+    skippedRelease: 0,
+    staleCleared: 0,
+    incomplete,
+    truncated,
+    errors: [],
+  };
   for (const item of prs) {
     summary.checked += 1;
     try {
@@ -489,7 +596,12 @@ async function run({ github, context, core, options = {} }) {
         warningDays,
         closeDays,
       });
-      summary[result] += 1;
+      if (result === 'skippedRelease') {
+        summary.skipped += 1;
+        summary.skippedRelease += 1;
+      } else {
+        summary[result] += 1;
+      }
     } catch (error) {
       const status = error.status ?? 'unknown';
       const transient = isTransient(status);
@@ -501,7 +613,7 @@ async function run({ github, context, core, options = {} }) {
     }
   }
 
-  const staleCleared = await sweepStalePendingDeletionLabels({
+  const { cleared: staleCleared, failure: sweepFailure } = await sweepStalePendingDeletionLabels({
     github,
     core,
     owner,
@@ -511,10 +623,12 @@ async function run({ github, context, core, options = {} }) {
     maxItems,
   });
   summary.staleCleared = staleCleared;
+  summary.sweepFailure = sweepFailure;
 
   core.info(
     `Checked ${summary.checked}; warned ${summary.warned}; ` +
-    `closed ${summary.closed}; skipped ${summary.skipped}; ` +
+    `closed ${summary.closed}; skipped ${summary.skipped} ` +
+    `(${summary.skippedRelease} release); ` +
     `cleared stale ${pendingDeletionLabel} ${summary.staleCleared}; ` +
     `errors ${summary.errors.length}`,
   );
@@ -524,6 +638,9 @@ async function run({ github, context, core, options = {} }) {
   const problems = summary.errors.map(error => `#${error.number}: ${error.message}`);
   if (incomplete) {
     problems.unshift('PR search did not complete; processed a partial list');
+  }
+  if (sweepFailure) {
+    problems.push(sweepFailure);
   }
   if (problems.length > 0) {
     core.setFailed(problems.join('; '));

@@ -52,11 +52,12 @@ def _run_cli_main(argv: list[str]) -> subprocess.CompletedProcess[str]:
         from deepagents_code.main import cli_main
 
         argv = ["deepagents", *json.loads(sys.argv[1])]
-        # An intentional prerelease SDK pin can make `doctor` exit unhealthy;
+        # An intentional monorepo SDK pin skew can make `doctor` exit unhealthy;
         # omit that environment-specific check while testing startup bootstrap.
+        # Editable installs resolve the pin through `_sdk_requirement_for_cli`.
         requirement_patch = (
             patch(
-                "deepagents_code.extras_info.sdk_requirement_from_cli",
+                "deepagents_code.extras_info._sdk_requirement_for_cli",
                 return_value=None,
             )
             if argv[1:] == ["doctor", "--json"]

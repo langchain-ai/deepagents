@@ -36,4 +36,4 @@ jobs:
           enable-cache: "false"
 
       - name: "✅ Verify pyproject.toml & _version.py Match"
-        run: python .github/scripts/check_version_equality.py
+        run: python .github/scripts/checks/check_version_equality.py

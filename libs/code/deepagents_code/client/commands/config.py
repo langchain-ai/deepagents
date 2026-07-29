@@ -704,20 +704,26 @@ def _config_paths() -> list[tuple[str, Any, bool]]:
     from pathlib import Path
 
     from deepagents_code.config import _GLOBAL_DOTENV_PATH, _find_dotenv_from_start_path
+    from deepagents_code.hooks.loading import project_hooks_path
     from deepagents_code.model_config import (
         DEFAULT_CONFIG_PATH,
         DEFAULT_STATE_DIR,
         RECENT_MODELS_FILENAME,
     )
+    from deepagents_code.project_utils import ProjectContext
 
     base = DEFAULT_CONFIG_PATH.parent
     project_dotenv = _find_dotenv_from_start_path(Path.cwd())
+    project_context = ProjectContext.from_user_cwd(Path.cwd())
+    project_root = project_context.project_root or project_context.user_cwd
 
     candidates: list[tuple[str, Path | None]] = [
         ("config.toml", DEFAULT_CONFIG_PATH),
         ("project .env", project_dotenv),
         ("global .env", _GLOBAL_DOTENV_PATH),
-        ("hooks.json", base / "hooks.json"),
+        ("project hooks.json", project_hooks_path(project_root)),
+        ("user hooks.json", base / "hooks.json"),
+        ("hooks trust", DEFAULT_STATE_DIR / "hooks_trust.json"),
         ("auth.json", DEFAULT_STATE_DIR / "auth.json"),
         ("recent models", DEFAULT_STATE_DIR / RECENT_MODELS_FILENAME),
     ]

@@ -17,7 +17,7 @@
 - Agent creation (`agent.py`)
 - Built-in tools (`tools.py`: `http_request`, `web_search`, `fetch_url`)
 - MCP config loader and per-server allow/deny lists (`mcp_tools.py`, `model_config.py`)
-- Hook dispatcher (`hooks.py`)
+- Hook runtimes (`hooks/`)
 - Sandbox integration factory (`integrations/sandbox_factory.py`, `integrations/sandbox_provider.py`)
 - Session persistence (`sessions.py`)
 - Configuration system (`config.py`, `model_config.py`)
@@ -126,7 +126,7 @@
 | C3  | Agent Engine                | LangGraph agent graph running inside `langgraph dev` server, assembled by `create_cli_agent`                        | framework-controlled | Yes      | `agent.create_cli_agent`, `agent._add_interrupt_on`, `server_graph.make_graph`                    |
 | C4  | Built-in Tools              | `http_request`, `web_search` (Tavily), `fetch_url` (HTML→markdown)                                                 | framework-controlled | Partial¹ | `tools.http_request`, `tools.web_search`, `tools.fetch_url`                                       |
 | C5  | MCP Loader & Trust          | Discovers/loads `.mcp.json`, validates server configs, applies per-server allow/deny lists + interactive approval    | framework-controlled | No²      | `mcp_tools.resolve_and_load_mcp_tools`, `model_config.load_mcp_server_trust_lists`, `main._check_mcp_project_trust` |
-| C6  | Hook Dispatcher             | Fires subprocess commands on agent lifecycle events                                                                 | framework-controlled | No³      | `hooks.dispatch_hook`, `hooks._run_single_hook`                                                   |
+| C6  | Hook Runtime                | Fires subprocess commands on agent lifecycle events                                                                 | framework-controlled | No³      | `hooks.runtime.HooksRuntime`, `hooks.runner.run_command_handler`                                  |
 | C7  | Sandbox Integration         | Creates/destroys remote sandboxes (Daytona, LangSmith, Modal, Runloop, AgentCore)                                  | framework-controlled | No⁴      | `integrations.sandbox_factory.create_sandbox`                                                     |
 | C8  | Session Persistence         | SQLite checkpoint store for LangGraph thread state                                                                  | framework-controlled | Yes      | `sessions.get_db_path`, `sessions.generate_thread_id`                                             |
 | C9  | Configuration System        | TOML config, env vars, `AGENTS.md` system prompts, model config                                                    | user-controlled      | N/A      | `config.settings`, `model_config.ModelConfig`, `~/.deepagents/config.toml`                        |
@@ -142,7 +142,7 @@
 **Notes:**
 1. `http_request` and `fetch_url` enabled by default; `web_search` requires `TAVILY_API_KEY`.
 2. MCP servers only load if `.mcp.json` config files are present.
-3. Hooks only execute if `~/.deepagents/hooks.json` exists.
+3. User hooks load from `~/.deepagents/hooks.json`. Project hooks load from `.deepagents/hooks.json` only after interactive workspace trust or the headless `--trust-project-hooks` opt-in.
 4. Sandbox mode requires explicit `--sandbox` CLI flag.
 5. Both TUI and non-interactive modes now always spawn a local LangGraph dev server and connect via `RemoteAgent`.
 6. `LocalContextMiddleware` is added whenever `LocalShellBackend` or an `_AsyncExecutableBackend` is in use (`agent.py:create_cli_agent`).
@@ -200,7 +200,7 @@
 | TB2  | LLM Decision → Tool Execution         | HITL gate on all side-effecting tool calls                                 | Interrupt map, allow-list check, auto-approve toggle                            | LLM reasoning; what user approves                             |
 | TB3  | Tool Result → LLM Context             | Tool outputs re-enter the context window                                   | Unicode warnings on URLs in args; markdownify HTML conversion                   | Content of fetched web pages, MCP responses, search results   |
 | TB4  | MCP Config → Process / Network        | `.mcp.json` triggers subprocess spawn or network connection                | Schema validation; per-server allow/deny lists + interactive approval prompt    | What the MCP process does once trusted and running            |
-| TB5  | Hooks Config → Subprocess             | `hooks.json` commands execute as local subprocesses                        | JSON structure validation, 5-second timeout                                     | Command content (user-authored); env vars available to child  |
+| TB5  | Hooks Config → Subprocess             | `hooks.json` commands execute as local subprocesses                        | Workspace trust for project hooks, schema validation, bounded execution, sanitized environment | Command content (user-authored) |
 | TB6  | Setup Script → Sandbox Execution      | User-supplied script runs inside sandbox at startup                        | `shlex.quote()` wrapping; `string.Template.safe_substitute`                     | Script content (user-authored); sandbox network access        |
 | TB7  | External LLM API → Agent State        | LLM API responses drive tool call decisions                                | LLM client configuration, model selection, request params                       | LLM output content; provider-side safety                      |
 | TB8  | CLI → Server Subprocess IPC           | Config passed from CLI to `langgraph dev` subprocess via `DA_SERVER_*` env vars | `ServerConfig.to_env()` serialization; env var scoping to parent+child process | Subprocess environment post-fork; /proc visibility to same-uid processes |

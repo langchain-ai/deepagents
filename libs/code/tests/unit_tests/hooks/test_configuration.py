@@ -11,6 +11,8 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import ValidationError
 
+from deepagents_code._env_vars import EXPERIMENTAL
+from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks import migration
 from deepagents_code.hooks.capabilities import (
     DEFAULT_COMMAND_TIMEOUT_SECONDS,
@@ -22,6 +24,7 @@ from deepagents_code.hooks.loading import (
     compute_snapshot_id,
     load_hooks_config,
 )
+from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
 from deepagents_code.hooks.migration import migrate_legacy_hooks
 from deepagents_code.hooks.models.config import HooksConfig
 from deepagents_code.hooks.models.domain import HookEvent, HookOwner
@@ -482,3 +485,20 @@ def test_snapshot_rejects_matcher_for_unmatchable_event() -> None:
 
     assert snapshot.handlers[HookEvent.STOP] == ()
     assert [item.code for item in snapshot.diagnostics] == ["unsupported_matcher"]
+
+
+def test_hooks_v2_requires_experimental_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No runtime loads — so no hook fires — until experimental mode is on."""
+
+    def build() -> HooksManager:
+        return HooksManager.create(
+            cwd=tmp_path,
+            identity=lambda: HookSessionIdentity("t-1", ApprovalMode.MANUAL),
+            notice=lambda _message: None,
+        )
+
+    assert not build().enabled
+    monkeypatch.setenv(EXPERIMENTAL, "1")
+    assert build().enabled

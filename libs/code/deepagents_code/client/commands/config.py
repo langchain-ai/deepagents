@@ -497,7 +497,12 @@ def _print_config_table(
 
     console.print()
     _print_store_warning(store_error)
-    for group in iter_groups(row.option for row in resolved):
+    groups = list(iter_groups(row.option for row in resolved))
+    for index, group in enumerate(groups):
+        if index:
+            # Blank line separates groups but never trails the last one, so the
+            # output ends on content rather than an empty line.
+            console.print()
         console.print(f"[bold]{group}[/bold]")
         table = Table.grid(padding=(0, 2))
         table.add_column()
@@ -515,7 +520,6 @@ def _print_config_table(
                 Text(_source_label(row.source, option=row.option)),
             )
         console.print(table, highlight=False)
-        console.print()
 
 
 def _print_config_verbose(
@@ -531,7 +535,10 @@ def _print_config_verbose(
 
     console.print()
     _print_store_warning(store_error)
-    for group in iter_groups(row.option for row in resolved):
+    groups = list(iter_groups(row.option for row in resolved))
+    for index, group in enumerate(groups):
+        if index:
+            console.print()
         console.print(f"[bold]{group}[/bold]")
         for row in resolved:
             if row.option.group != group:
@@ -547,7 +554,6 @@ def _print_config_verbose(
             console.print(
                 f"    {_sources_line(row.option)}", highlight=False, style="dim"
             )
-        console.print()
 
 
 _GET_KEY_EXAMPLE = "interpreter.memory_limit_mb"

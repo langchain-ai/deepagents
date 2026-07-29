@@ -87,6 +87,7 @@ def test_load_hooks_config_precedence_and_snapshot_hash(tmp_path: Path) -> None:
         for group in untrusted.config.hooks[HookEvent.SESSION_START]
     ] == ["user-hook"]
     assert untrusted.sources == (user_dir / "hooks.json",)
+    assert not untrusted.project_source_loaded
 
     loaded = load_hooks_config(
         project_root=project_dir,
@@ -99,6 +100,7 @@ def test_load_hooks_config_precedence_and_snapshot_hash(tmp_path: Path) -> None:
         "project-hook",
         "user-hook",
     ]
+    assert loaded.project_source_loaded
     assert loaded.snapshot_id == compute_snapshot_id(loaded.config)
     assert loaded.snapshot_id == compute_snapshot_id(
         HooksConfig.model_validate(

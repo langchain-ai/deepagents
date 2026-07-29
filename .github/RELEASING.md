@@ -85,13 +85,15 @@ APP_SLUG=<app-slug>
 gh api "users/${APP_SLUG}[bot]" --jq '{login, id}'
 ```
 
-Create the `release-bot` environment without required reviewers or other approval rules, because approval would block automatic drafting. Add `RELEASE_BOT_MODEL` as an environment variable, using an explicit `provider:model` value with one of the supported providers and a model that supports JSON Schema structured output, and add the matching provider's API key as an environment secret (only the configured provider's key is required). The workflow reads a fixed secret name per provider:
+Create the `release-bot` environment without required reviewers or other approval rules, because approval would block automatic drafting. Add `RELEASE_BOT_MODEL` as an environment variable, using an explicit `provider:model` value with one of the supported providers and a model that supports JSON Schema structured output. The model must also accept an output-token limit of at least 32,768, since the helper requests that ceiling on every provider; a model whose own limit is lower rejects the request outright. Every current OpenAI, Anthropic, and Gemini model an operator would reasonably pick clears it — the exceptions are older small models. Add the matching provider's API key as an environment secret (only the configured provider's key is required). The workflow reads a fixed secret name per provider:
 
 | `RELEASE_BOT_MODEL` provider | Environment secret name |
 | ------------------------------ | ----------------------- |
 | `openai` | `OPENAI_API_KEY` |
 | `anthropic` | `ANTHROPIC_API_KEY` |
 | `google_genai` | `GOOGLE_API_KEY` |
+
+For `openai:…`, pick a Chat Completions model (for example `openai:gpt-5.5`). This helper only calls Chat Completions, so Responses-API-only models cannot be used.
 
 A mismatched secret name resolves to an empty key and fails the draft run with "The selected release-note model API key is not configured."
 

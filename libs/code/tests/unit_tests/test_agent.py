@@ -3517,7 +3517,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
             ), f"Unexpected shell middleware on subagent {name!r}"
 
     def test_subagent_middleware_combines_shell_and_configurable_model(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Restrictive shell + implicit model should yield both middlewares.
 
@@ -3525,10 +3525,12 @@ class TestCreateCliAgentShellMiddlewareWiring:
         `ConfigurableModelMiddleware`, which would let a runtime `/model` switch
         clobber the pinned model.
         """
+        from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.agent import ShellAllowListMiddleware
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
+        monkeypatch.setenv(EXPERIMENTAL, "1")
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
@@ -4846,6 +4848,7 @@ class TestCreateCliAgentInterpreterWiring:
     def test_single_hitl_slot_precedes_server_hooks(
         self,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
         *,
         auto_mode_enabled: bool,
     ) -> None:
@@ -4857,8 +4860,10 @@ class TestCreateCliAgentInterpreterWiring:
         stay behind whichever one is installed so its `after_model` `PreToolUse`
         pass resolves before approval routing.
         """
+        from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
+        monkeypatch.setenv(EXPERIMENTAL, "1")
         middleware = self._capture_middleware(
             tmp_path, auto_mode_enabled=auto_mode_enabled
         )

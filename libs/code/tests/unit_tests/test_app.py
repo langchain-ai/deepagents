@@ -6790,9 +6790,12 @@ class TestRunAgentTaskMediaTracker:
             assert app._ui_adapter is not None
 
             pending_tool = MagicMock()
-            # Match the real widget's default: an unset MagicMock attribute is
-            # truthy, which `_dispatch_terminal_tool_result_hooks` reads as "this
-            # row already succeeded" and reports as a success with no tool.error.
+            # Match the real widget's default. An unset MagicMock attribute is
+            # truthy, and each of these is read by a different consumer, so both
+            # must be set: `deferred_success_output` by
+            # `_dispatch_terminal_tool_result_hooks` (which would report a success
+            # with no tool.error) and `is_awaiting_deferred_result` by
+            # `set_error`/`set_rejected` (which would redirect to a settle).
             pending_tool.deferred_success_output = None
             pending_tool.is_awaiting_deferred_result = False
             app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}
@@ -6829,9 +6832,12 @@ class TestRunAgentTaskMediaTracker:
             assert app._ui_adapter is not None
 
             pending_tool = MagicMock()
-            # Match the real widget's default: an unset MagicMock attribute is
-            # truthy, which `_dispatch_terminal_tool_result_hooks` reads as "this
-            # row already succeeded" and reports as a success with no tool.error.
+            # Match the real widget's default. An unset MagicMock attribute is
+            # truthy, and each of these is read by a different consumer, so both
+            # must be set: `deferred_success_output` by
+            # `_dispatch_terminal_tool_result_hooks` (which would report a success
+            # with no tool.error) and `is_awaiting_deferred_result` by
+            # `set_error`/`set_rejected` (which would redirect to a settle).
             pending_tool.deferred_success_output = None
             pending_tool.is_awaiting_deferred_result = False
             app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}

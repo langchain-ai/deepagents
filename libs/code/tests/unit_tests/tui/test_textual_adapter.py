@@ -20,6 +20,7 @@ from rich.console import Console
 from deepagents_code import config as config_module
 from deepagents_code._ask_user_types import (
     ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
+    ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY,
     ASK_USER_ANSWERED_SUMMARY,
     ASK_USER_CANCELLED_SUMMARY,
     ASK_USER_FAILED_SUMMARY,
@@ -55,6 +56,7 @@ from deepagents_code.tui.textual_adapter import (
     SessionStats,
     TextualUIAdapter,
     _build_interrupted_ai_message,
+    _dispatch_tool_result_hook,
     _format_rubric_details,
     _format_rubric_event,
     _handle_interrupt_cleanup,
@@ -62,6 +64,7 @@ from deepagents_code.tui.textual_adapter import (
     _is_auto_mode_classifier_chunk,
     _is_summarization_chunk,
     _read_mentioned_file,
+    _set_running_unless_deferred,
     execute_task_textual,
 )
 from deepagents_code.tui.widgets.messages import (
@@ -261,11 +264,7 @@ class TestTextualUIAdapterInit:
             request_approval=_mock_approval,
             set_active_message=MagicMock(),
         )
-        tool_widget = MagicMock()
-        tool_widget.tool_name = "read_file"
-        tool_widget.args = {"path": "notes.txt"}
-        tool_widget.deferred_success_output = None
-        tool_widget.is_awaiting_deferred_result = False
+        tool_widget = _make_tool_widget("read_file", {"path": "notes.txt"})
         adapter._current_tool_messages = {"call-1": tool_widget}
 
         with patch(
@@ -309,11 +308,7 @@ class TestInterruptCleanup:
             set_active_message=set_active,
         )
 
-        tool_widget = MagicMock()
-        tool_widget._tool_name = "read_file"
-        tool_widget._args = {"path": "notes.txt"}
-        tool_widget.deferred_success_output = None
-        tool_widget.is_awaiting_deferred_result = False
+        tool_widget = _make_tool_widget("read_file", {"path": "notes.txt"})
         adapter._current_tool_messages = {"call-1": tool_widget}
 
         show_calls: list[bool] = []
@@ -367,16 +362,7 @@ class TestInterruptCleanup:
             request_approval=_mock_approval,
             set_active_message=MagicMock(),
         )
-        tool_widget = MagicMock()
-        # Public accessors feed the terminal-hook payload; the private backing
-        # fields feed the interrupted-AIMessage rebuild — set both consistently,
-        # mirroring the real `ToolCallMessage` where the accessors read these.
-        tool_widget.tool_name = "execute"
-        tool_widget.args = {"command": "sleep 100"}
-        tool_widget._tool_name = "execute"
-        tool_widget._args = {"command": "sleep 100"}
-        tool_widget.deferred_success_output = None
-        tool_widget.is_awaiting_deferred_result = False
+        tool_widget = _make_tool_widget("execute", {"command": "sleep 100"})
         adapter._current_tool_messages = {"call-1": tool_widget}
         agent = SimpleNamespace(aupdate_state=AsyncMock())
 
@@ -429,13 +415,11 @@ class TestInterruptCleanup:
             set_active_message=MagicMock(),
         )
         questions = [{"question": "Deploy to prod?"}]
-        ask_widget = MagicMock()
-        ask_widget.tool_name = "ask_user"
-        ask_widget.args = {"questions": questions}
-        ask_widget._tool_name = "ask_user"
-        ask_widget._args = {"questions": questions}
-        ask_widget.deferred_success_output = ASK_USER_ANSWERED_SUMMARY
-        ask_widget.is_awaiting_deferred_result = True
+        ask_widget = _make_tool_widget(
+            "ask_user",
+            {"questions": questions},
+            deferred_success_output=ASK_USER_ANSWERED_SUMMARY,
+        )
         adapter._current_tool_messages = {"ask-1": ask_widget}
         saved: list[Any] = []
 
@@ -504,13 +488,7 @@ class TestInterruptCleanup:
             request_approval=_mock_approval,
             set_active_message=MagicMock(),
         )
-        tool_widget = MagicMock()
-        tool_widget.tool_name = "execute"
-        tool_widget.args = {"command": "sleep 100"}
-        tool_widget._tool_name = "execute"
-        tool_widget._args = {"command": "sleep 100"}
-        tool_widget.deferred_success_output = None
-        tool_widget.is_awaiting_deferred_result = False
+        tool_widget = _make_tool_widget("execute", {"command": "sleep 100"})
         adapter._current_tool_messages = {"call-1": tool_widget}
         agent = SimpleNamespace(aupdate_state=_record_update)
 
@@ -852,11 +830,7 @@ class TestInterruptCleanup:
         async def _capture(*_args: object, **_kwargs: object) -> None:  # noqa: RUF029
             captured.append(get_tracing_context().get("enabled"))
 
-        tool_widget = MagicMock()
-        tool_widget._tool_name = "read_file"
-        tool_widget._args = {"path": "notes.txt"}
-        tool_widget.deferred_success_output = None
-        tool_widget.is_awaiting_deferred_result = False
+        tool_widget = _make_tool_widget("read_file", {"path": "notes.txt"})
 
         agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
         adapter = TextualUIAdapter(
@@ -1028,11 +1002,7 @@ class TestInterruptCleanupTokenPersist:
         async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
             captured.append(values)
 
-        tool_widget = MagicMock()
-        tool_widget._tool_name = "read_file"
-        tool_widget._args = {"path": "notes.txt"}
-        tool_widget.deferred_success_output = None
-        tool_widget.is_awaiting_deferred_result = False
+        tool_widget = _make_tool_widget("read_file", {"path": "notes.txt"})
 
         agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
         adapter = TextualUIAdapter(
@@ -4765,7 +4735,7 @@ class TestExecuteTaskTextualAskUser:
             user_input="hello",
             agent=agent,
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+            session_state=_session_state(auto_approve=False),
             adapter=adapter,
         )
 
@@ -5526,6 +5496,13 @@ def _make_tool_widget(
 ) -> MagicMock:
     """Create a MagicMock that mimics a ToolCallMessage widget.
 
+    Sets the public `tool_name`/`args` properties *and* the private
+    `_tool_name`/`_args` fields, because different consumers read different ones
+    (`_dispatch_terminal_tool_result_hooks` the properties,
+    `_build_interrupted_ai_message` the privates). Use this rather than assembling
+    a double inline, so the deferral pair below cannot drift into the illegal
+    combination.
+
     Args:
         name: Tool name the double reports.
         args: Tool args the double reports.
@@ -5533,6 +5510,8 @@ def _make_tool_widget(
             row still awaiting its `ToolMessage`.
     """
     widget = MagicMock()
+    widget.tool_name = name
+    widget.args = args or {}
     widget._tool_name = name
     widget._args = args or {}
     # Both deferral attributes must be set explicitly. Left unset, MagicMock
@@ -5544,6 +5523,134 @@ def _make_tool_widget(
     widget.deferred_success_output = deferred_success_output
     widget.is_awaiting_deferred_result = deferred_success_output is not None
     return widget
+
+
+class TestAskUserHookBodySanitization:
+    """`tool.result` for `ask_user` can never carry the answer transcript.
+
+    The per-call-site substitution is positional: it depends on a live entry in the
+    turn-local `deferred_tool_result_hooks` dict. These tests pin the structural
+    backstop in `_dispatch_tool_result_hook`, which holds for any branch — including
+    a `ToolMessage` that arrives on a later turn, when no deferral entry survives.
+    """
+
+    def test_transcript_is_replaced_on_the_success_path(self) -> None:
+        """A raw transcript is swapped for the answered summary."""
+        with patch(
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as dispatch:
+            _dispatch_tool_result_hook(
+                "ask_user",
+                "ask-1",
+                {"questions": [{"question": "Name?"}]},
+                "success",
+                "Q: Name?\nA: Alice",
+            )
+
+        payload = dispatch.call_args[0][1]
+        assert payload["tool_output"] == ASK_USER_ANSWERED_SUMMARY
+        assert "Alice" not in str(payload)
+
+    def test_transcript_is_replaced_on_the_error_path(self) -> None:
+        """A failed prompt reports the failure summary, not its `(error: ...)` body."""
+        with patch(
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as dispatch:
+            _dispatch_tool_result_hook(
+                "ask_user",
+                "ask-1",
+                {},
+                "error",
+                "Q: Name?\nA: (error: some arbitrary detail)",
+            )
+
+        payload = dispatch.call_args[0][1]
+        assert payload["tool_output"] == ASK_USER_FAILED_SUMMARY
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(ASK_USER_ANSWERED_SUMMARY, id="answered"),
+            pytest.param(ASK_USER_ANSWERED_NO_RESULT_SUMMARY, id="no-result"),
+            pytest.param(ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY, id="not-delivered"),
+            pytest.param(ASK_USER_CANCELLED_SUMMARY, id="cancelled"),
+            pytest.param(ASK_USER_FAILED_SUMMARY, id="failed"),
+            # Widget-failure bodies are free text by design (see
+            # `ASK_USER_FAILED_SUMMARY`'s docstring) and contain no user input, so
+            # the guard must be a denylist of the transcript shape rather than an
+            # allowlist of constants — otherwise it rewrites these.
+            pytest.param("ask_user not supported by this UI", id="unsupported"),
+            pytest.param("invalid ask_user answers payload", id="invalid-payload"),
+        ],
+    )
+    def test_legitimate_bodies_pass_through(self, body: str) -> None:
+        """Every body a real call site passes must survive unchanged.
+
+        Guards against the backstop silently rewriting a legitimate body — which
+        would break the hook contracts those constants document.
+        """
+        with patch(
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as dispatch:
+            _dispatch_tool_result_hook("ask_user", "ask-1", {}, "success", body)
+
+        assert dispatch.call_args[0][1]["tool_output"] == body
+
+    def test_other_tools_are_untouched(self) -> None:
+        """The substitution is scoped to `ask_user` and must not affect any other."""
+        with patch(
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as dispatch:
+            _dispatch_tool_result_hook("read_file", "call-1", {}, "success", "contents")
+
+        assert dispatch.call_args[0][1]["tool_output"] == "contents"
+
+
+class TestSetRunningDeferredGuard:
+    """A spinner must never visibly un-answer an `ask_user` row.
+
+    The `set_running` sweeps run *after* the `ask_user` resolution loop in the same
+    `pending_interrupts` pass, and are not namespace scoped for the main agent, so a
+    batch mixing a question with a gated or hook-resolved tool reaches the answered
+    row.
+    """
+
+    def test_awaiting_row_is_skipped(self) -> None:
+        """An answered row keeps its outcome instead of spinning."""
+        widget = _make_tool_widget(
+            "ask_user",
+            {"questions": [{"question": "Name?"}]},
+            deferred_success_output=ASK_USER_ANSWERED_SUMMARY,
+        )
+
+        _set_running_unless_deferred(widget)
+
+        widget.set_running.assert_not_called()
+
+    def test_ordinary_row_still_runs(self) -> None:
+        """A gated sibling waiting to execute must still get its spinner."""
+        widget = _make_tool_widget("execute", {"command": "ls"})
+
+        _set_running_unless_deferred(widget)
+
+        widget.set_running.assert_called_once_with()
+
+    def test_settled_row_still_runs(self) -> None:
+        """A row that already fell back has no outcome left to protect.
+
+        Mirrors `_pop_rows_not_awaiting_deferred_result`: the immunity is scoped to
+        rows still waiting, so it cannot be spent and then relied on.
+        """
+        widget = _make_tool_widget(
+            "ask_user",
+            {"questions": [{"question": "Name?"}]},
+            deferred_success_output=ASK_USER_ANSWERED_SUMMARY,
+        )
+        widget.is_awaiting_deferred_result = False
+
+        _set_running_unless_deferred(widget)
+
+        widget.set_running.assert_called_once_with()
 
 
 class _MutatingItemsDict(dict):  # noqa: FURB189  # must subclass dict to override C-level iteration
@@ -5706,12 +5813,21 @@ class TestDictIterationSafety:
 
         assert _build_interrupted_ai_message({}, widgets) is None
 
-    def test_settled_deferred_row_is_recoverable_again(self) -> None:
-        """Only an *awaiting* row is skipped, not one that already fell back.
+    def test_settled_deferred_row_is_omitted_too(self) -> None:
+        """A row that already fell back is skipped as well, not only an awaiting one.
 
-        Guards the distinction `is_awaiting_deferred_result` draws: a settled row
-        keeps `deferred_success_output` set so terminal hooks can read it back, so
-        keying the skip on that value alone would drop a row the graph may not own.
+        The hazard is that the graph *owns* this tool call: `defer_success` is only
+        ever called after the `ask_user` interrupt fired, which happens after the
+        model node commits, so the checkpoint already holds the `AIMessage` with
+        this `tool_call`. Settling the row is a rendering event — it does not
+        un-own the call. Appending it here would emit a second `tool_use` with no
+        matching `tool_result`, which the provider rejects turns later as an opaque
+        400.
+
+        So the skip keys on `deferred_success_output`, not
+        `is_awaiting_deferred_result`. A settled-but-still-tracked row is reachable:
+        a permission hook returning `plan.interrupted` settles it via
+        `set_rejected` without popping it, and the turn still resumes.
         """
         widget = _make_tool_widget(
             "ask_user",
@@ -5722,8 +5838,7 @@ class TestDictIterationSafety:
 
         result = _build_interrupted_ai_message({}, {"ask-1": widget})
 
-        assert result is not None
-        assert [tc["id"] for tc in result.tool_calls] == ["ask-1"]
+        assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -7590,16 +7705,20 @@ class TestToolHooksTextual:
     async def test_answered_ask_user_settles_when_a_sibling_is_cancelled(
         self,
     ) -> None:
-        """Cancelling one question must not leave an answered sibling spinning.
+        """Cancelling one question reports the answered sibling as undelivered.
 
-        A cancel halts the turn without resuming, and that abort returns before
-        both the clean-stream-end close-out and the cancel cleanup — so the
-        answered row is still tracked, awaiting a `ToolMessage` the abort
-        guarantees will never arrive. The `finally` backstop is the only thing
-        that closes it, and it has to produce the *deferred* outcome rather than
-        its generic "Agent error before tool result": otherwise the row spins for
-        the rest of the session and audit hooks are told a question the user
-        answered had failed.
+        A cancel halts the turn by returning *before* `Command(resume=...)`, so the
+        resume payload — including this row's answers — is discarded. The answers
+        never reach the graph, and the inline widget is already unmounted, so they
+        are unrecoverable.
+
+        The row must therefore not spin for the rest of the session, and must not
+        report the ordinary answered success either: `ask_user` results double as
+        authorization records, and a `"success"` here would record an authorization
+        that never took effect. It settles as an error carrying
+        `ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY`, distinct from
+        `ASK_USER_ANSWERED_NO_RESULT_SUMMARY` (answers delivered, tool never
+        completed).
         """
         mounted: list[ToolCallMessage] = []
 
@@ -7673,20 +7792,21 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
-        # The answered row reached a terminal success rather than staying pending.
+        # The answered row reached a terminal state rather than staying pending,
+        # and it reports the delivery failure rather than a success.
         answered_row = next(
             row for row in mounted if row._args["questions"] == answered_qs
         )
-        assert answered_row.is_success is True
-        assert answered_row._output == ASK_USER_ANSWERED_SUMMARY
+        assert answered_row.is_success is False
+        assert answered_row._output == ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY
         # Nothing is left tracked to leak into the next turn's sweeps.
         assert adapter._current_tool_messages == {}
-        # Its `tool.use` is closed by a success that says the result never came,
-        # not by the abort's generic failure.
+        # Its `tool.use` is closed by an error naming the discarded answers — never
+        # by a success, and never carrying the answer text.
         payloads = {
             c[0][1]["tool_id"]: c[0][1]
             for c in mock_dispatch_background.call_args_list
@@ -7696,9 +7816,12 @@ class TestToolHooksTextual:
             "tool_name": "ask_user",
             "tool_id": "ask-1",
             "tool_args": {"questions": answered_qs},
-            "tool_status": "success",
-            "tool_output": ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
+            "tool_status": "error",
+            "tool_output": ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY,
         }
+        # Whole-payload equality above already excludes it, but assert explicitly:
+        # the answer must not reach a hook script by any route.
+        assert "Alice" not in str(mock_dispatch_background.call_args_list)
         assert payloads["ask-2"]["tool_status"] == "error"
         assert payloads["ask-2"]["tool_output"] == ASK_USER_CANCELLED_SUMMARY
 
@@ -7813,7 +7936,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -7883,7 +8006,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 
@@ -8117,7 +8240,7 @@ class TestToolHooksTextual:
                 user_input="hello",
                 agent=agent,
                 assistant_id="assistant",
-                session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
+                session_state=_session_state(auto_approve=False),
                 adapter=adapter,
             )
 

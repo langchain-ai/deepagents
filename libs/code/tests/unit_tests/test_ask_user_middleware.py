@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock, patch
@@ -310,6 +311,51 @@ class TestParseAnswers:
             )
         )
         assert "A: (error: invalid ask_user answers payload)" in str(stale.content)
+
+    def test_error_status_without_a_detail_uses_the_default(self) -> None:
+        """The third arm of the detail chain: neither a caller nor a local detail.
+
+        `status="error"` with no `error` field and a well-formed answer list reaches
+        neither `client_error_text` nor `local_error_text`, so the generic fallback
+        is what the model sees.
+        """
+        message = _extract_tool_message(
+            _parse_answers(
+                {"status": "error", "answers": [""]},
+                [{"question": "Name?", "type": "text"}],
+                "tc-1",
+            )
+        )
+
+        assert message.status == "error"
+        assert "A: (error: ask_user interaction failed)" in str(message.content)
+
+    def test_non_string_answers_are_coerced_loudly(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A coerced answer is presented to the model as the user's own words.
+
+        The coercion is deliberate — the model still gets something per question —
+        but it also silently withholds the authorization receipt, so an operator
+        relying on that receipt needs a reason for its absence.
+        """
+        with caplog.at_level(logging.WARNING):
+            message = _extract_tool_message(
+                _parse_answers(
+                    {"answers": [42]},
+                    [{"question": "How many?", "type": "text"}],
+                    "tc-1",
+                    thread_id="thread-1",
+                    turn_id="turn-1",
+                )
+            )
+
+        assert message.status == "success"
+        assert "A: 42" in str(message.content)
+        assert ASK_USER_AUTHORIZATION_METADATA_KEY not in message.additional_kwargs
+        assert any(
+            "non-string answer element" in record.message for record in caplog.records
+        )
 
     def test_answer_count_mismatch_is_an_error(self) -> None:
         """A short answer list is a failed prompt, not a partial one.

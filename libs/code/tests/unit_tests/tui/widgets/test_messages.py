@@ -1,6 +1,7 @@
 """Unit tests for message widgets markup safety."""
 
 import asyncio
+import logging
 from time import time
 from types import SimpleNamespace
 from typing import ClassVar
@@ -920,7 +921,7 @@ class TestToolCallMessageDeferredSuccess:
         app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.msg.defer_success("User answered")
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
             app.msg.set_rejected()
             await pilot.pause()
 
@@ -932,7 +933,7 @@ class TestToolCallMessageDeferredSuccess:
         app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.msg.defer_success("User answered")
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
             app.msg.set_error("Agent error before tool result")
             await pilot.pause()
 
@@ -949,7 +950,7 @@ class TestToolCallMessageDeferredSuccess:
         app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.msg.defer_success("User answered")
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
             app.msg.clear_deferred_success()
             app.msg.set_error("Q: Name?\nA: (error: count mismatch)")
             await pilot.pause()
@@ -964,7 +965,7 @@ class TestToolCallMessageDeferredSuccess:
             await pilot.pause()
             assert app.msg.settle_deferred_success() is False
 
-            app.msg.defer_success("User answered")
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
             assert app.msg.settle_deferred_success() is True
             # Not cleared: a caller may dispatch terminal hooks on either side of
             # the widget mutation, and those hooks read this back to report the
@@ -980,7 +981,7 @@ class TestToolCallMessageDeferredSuccess:
             await pilot.pause()
             assert app.msg.is_awaiting_deferred_result is False
 
-            app.msg.defer_success("User answered")
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
             assert app.msg.is_awaiting_deferred_result is True
 
             app.msg.clear_deferred_success()
@@ -999,7 +1000,7 @@ class TestToolCallMessageDeferredSuccess:
         app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
         async with app.run_test() as pilot:
             await pilot.pause()
-            app.msg.defer_success("User answered")
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
             app.msg.set_error("Agent error before tool result")
             await pilot.pause()
             assert app.msg._status == "success"
@@ -2093,16 +2094,111 @@ class TestToolCallMessageAskUserOutput:
         assert result.content.plain == "User answered"
         assert result.truncation == "2 answers"
 
-    def test_fallback_summary_does_not_advertise_expansion(self) -> None:
-        """A row without an authoritative transcript has nothing to expand."""
+    async def test_fallback_summary_suppression_survives_rehydration(self) -> None:
+        """A rebuilt fallback row still advertises no expansion.
+
+        The suppression is derived from the recorded output, not from
+        `_deferred_success_settled`, precisely because that flag is not persisted by
+        `MessageStore`. Virtualization alone re-creates the widget — scrolling a
+        settled row out of the viewport and back is enough — so a flag-based check
+        would resurrect the dead affordance mid-session: a "… 2 answers" hint over a
+        body that is only `"User answered"`.
+        """
+        app = _tool_msg_app("ask_user", self._ARGS)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # A fresh widget carrying only what the store round-trips: status and
+            # output. No deferred state at all.
+            app.msg.set_success(ASK_USER_ANSWERED_SUMMARY)
+            await pilot.pause()
+
+            assert app.msg._deferred_success_settled is False
+            assert app.msg.has_expandable_output is False
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is False
+
+    async def test_settle_is_idempotent(self) -> None:
+        """A second settle is a no-op, so callers need no `awaiting` guard.
+
+        `set_error`/`set_rejected` both call it unguarded to redirect a teardown
+        sweep; if it re-fired, a row that had already fallen back would keep
+        immunity against a later genuine error forever.
+        """
+        app = _tool_msg_app("ask_user", self._ARGS)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
+
+            assert app.msg.settle_deferred_success() is True
+            assert app.msg.settle_deferred_success() is False
+            # The output stays readable for a later terminal-hook sweep.
+            assert app.msg.deferred_success_output == ASK_USER_ANSWERED_SUMMARY
+            assert app.msg.is_awaiting_deferred_result is False
+
+    def test_settle_declines_a_rejected_row(self) -> None:
+        """A rejected row keeps its terminal state; the caller records its own.
+
+        Low-reachability today (the sweeps pop deferred rows before rejecting
+        them), pinned so deleting the guard is a deliberate act.
+        """
         msg = ToolCallMessage("ask_user", self._ARGS)
+        msg.set_rejected()
         msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
-        msg.settle_deferred_success()
 
-        result = msg._format_ask_user_output(ASK_USER_ANSWERED_SUMMARY, is_preview=True)
+        assert msg.settle_deferred_success() is False
+        assert msg._status == "rejected"
 
-        assert result.content.plain == ASK_USER_ANSWERED_SUMMARY
-        assert result.truncation is None
+    def test_set_success_keeps_a_command_trailer_in_an_answer(self) -> None:
+        """`ask_user` output is user-authored, so no trailer stripping.
+
+        `_strip_success_exit_line` would otherwise eat an answer that happens to end
+        in a command-success trailer. The sibling `execute` case is covered by
+        `test_set_success_strips_trailer`.
+        """
+        answer = "Q: Paste the output\nA: [Command succeeded with exit code 0]"
+        msg = ToolCallMessage("ask_user", self._ARGS)
+
+        msg.set_success(answer)
+
+        assert msg._output == answer
+
+    async def test_unusable_question_args_fall_back_and_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Malformed `questions` degrades to generic formatting, loudly and once.
+
+        The collapsed row then shows the transcript rather than a summary — the
+        opposite of the design — so it must not pass in silence. `_args` is
+        unvalidated on the streamed and persisted paths, so this is reachable.
+        """
+        app = _tool_msg_app("ask_user", {"questions": "not-a-list"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with caplog.at_level(logging.WARNING):
+                app.msg._format_ask_user_output(self._TRANSCRIPT, is_preview=True)
+                app.msg._format_ask_user_output(self._TRANSCRIPT, is_preview=True)
+
+        warnings = [
+            record
+            for record in caplog.records
+            if "no usable `questions` args" in record.message
+        ]
+        assert len(warnings) == 1
+
+    async def test_fallback_summary_does_not_advertise_expansion(self) -> None:
+        """A row without an authoritative transcript has nothing to expand."""
+        app = _tool_msg_app("ask_user", self._ARGS)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
+            app.msg.settle_deferred_success()
+            await pilot.pause()
+
+            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert preview.plain == ASK_USER_ANSWERED_SUMMARY
+            assert app.msg.has_expandable_output is False
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is False
 
     def test_literal_cancelled_answer_still_says_answered(self) -> None:
         """Free-form answer text must not be interpreted as control state."""

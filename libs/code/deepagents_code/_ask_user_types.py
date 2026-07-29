@@ -125,10 +125,10 @@ ASK_USER_ERROR_ANSWER_PREFIX = "(error: "
 """Prefix of the placeholder recorded for every question when the prompt fails.
 
 The full placeholder is `(error: <detail>)`. Producer-side only: no production
-code matches on it (tests assert the literal). The TUI derives its row summary
-from the recorded tool status instead, because the placeholder is in-band — the
-prefix alone cannot distinguish a failed prompt from a user who typed
-`(error: ...)` as their answer.
+code matches on it — `test_ask_user_types` is the only consumer, and it asserts
+against this constant. The TUI derives its row summary from the recorded tool
+status instead, because the placeholder is in-band — the prefix alone cannot
+distinguish a failed prompt from a user who typed `(error: ...)` as their answer.
 """
 
 AskUserRowSummary = Literal["User answered", "Question failed"]
@@ -136,8 +136,13 @@ AskUserRowSummary = Literal["User answered", "Question failed"]
 
 Narrows `ToolCallMessage.defer_success` so the transcript cannot be passed where
 a summary belongs — the constraint that keeps user-typed answers out of
-`tool.result` hook payloads. The literals restate the two constants below
-because `Literal[...]` cannot reference a name; keep them in step.
+`tool.result` hook payloads.
+
+Of the four `*_SUMMARY` constants below, only `ASK_USER_ANSWERED_SUMMARY` and
+`ASK_USER_FAILED_SUMMARY` are members: the other two are hook bodies that no row
+ever renders. `Literal[...]` cannot reference a plain string constant, so those
+two values are restated here; both are annotated with this alias, so `ty` rejects
+a reword that drifts. `test_row_summary_alias_matches_its_constants` pins it too.
 """
 
 ASK_USER_ANSWERED_SUMMARY: AskUserRowSummary = "User answered"
@@ -155,12 +160,33 @@ ASK_USER_ANSWERED_NO_RESULT_SUMMARY = "User answered (no tool result)"
 """The `tool.result` hook payload for an answered prompt that never completed.
 
 Reported by `_dispatch_terminal_tool_result_hooks` when a teardown closes out a
-row still awaiting its `ToolMessage` — the agent crashed, the stream ended, or
-the user cancelled the turn. The status stays `"success"` because the user did
-answer, and `ask_user` results double as authorization records; this distinct
-body is what lets an audit consumer tell "answers delivered and the tool
-completed" from "answers delivered, then the turn died". Hook contract: rewording
-it changes what those consumers see.
+row carrying a deferred success — the agent crashed, the stream ended, or the
+user cancelled the turn. The guard there matches an already-settled row too, not
+only one still awaiting its `ToolMessage`; see
+`ToolCallMessage.deferred_success_output`.
+
+The status stays `"success"` because the answers did reach the graph and only the
+tool's own completion was lost, and `ask_user` results double as authorization
+records; this distinct body is what lets an audit consumer tell "answers
+delivered and the tool completed" from "answers delivered, then the turn died".
+When the answers were never delivered at all the hook reports
+`ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY` with `tool_status="error"` instead.
+Hook contract: rewording it changes what those consumers see.
+"""
+
+ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY = "User answered (answers not delivered)"
+"""The `tool.result` hook payload for answers the turn discarded before resuming.
+
+Reported with `tool_status="error"` when a sibling question in the same batch was
+cancelled: `textual_adapter` aborts the turn *before* `Command(resume=...)`, so
+the resume payload — including this prompt's answers — is dropped, and the inline
+widget is already unmounted, making the answers unrecoverable. The user answered,
+but nothing downstream ever saw it.
+
+Distinct from `ASK_USER_ANSWERED_NO_RESULT_SUMMARY`, and an error rather than a
+success, precisely because `ask_user` results double as authorization records: a
+`"success"` here would record an authorization that never took effect. Hook
+contract: rewording it changes what audit consumers see.
 """
 
 ASK_USER_CANCELLED_SUMMARY = "Question cancelled"

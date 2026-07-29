@@ -169,6 +169,8 @@ jobs:
         id: draft-model
         continue-on-error: true
         env:
+          # The configured model must accept an output-token limit of at least
+          # 32,768; lower-limit models are intentionally unsupported.
           MODEL_SPEC: ${{ vars.RELEASE_BOT_MODEL }}
           # Put only the configured provider's credential in this process. The
           # deterministic helper sends one request to a fixed provider endpoint;
@@ -180,7 +182,33 @@ jobs:
                 '' }}
           INPUT_FILE: ${{ steps.prepare.outputs.input }}
           OUTPUT_FILE: ${{ steps.prepare.outputs.output }}
-        run: node ./trusted-source/.github/scripts/release/draft-release-notes.js
+        # Capture the helper's stderr into a step output so its message reaches
+        # the PR comment. A `run:` step publishes no outputs of its own, and the
+        # failure-comment step can only report what it can read — so without this
+        # every failure here collapses into "the drafting step did not succeed",
+        # and the messages that name RELEASE_BOT_MODEL, the rejected model, and
+        # the remedy stay buried in the Actions log. The steps either side of this
+        # one already do the same thing via core.setOutput.
+        #
+        # Safe to publish: the helper never interpolates MODEL_API_KEY into an
+        # error (the key is sent only in request headers), and a provider error
+        # body is truncated before it is thrown.
+        run: |
+          if err="$(node ./trusted-source/.github/scripts/release/draft-release-notes.js 2>&1 >/dev/null)"; then
+            exit 0
+          fi
+          # Random delimiter: the message embeds a provider-supplied error body,
+          # so a fixed one could be closed early by the content itself.
+          delimiter="EOF_$(openssl rand -hex 16)"
+          {
+            printf 'error<<%s\n' "$delimiter"
+            printf '%s\n' "$err"
+            printf '%s\n' "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+          # Also annotate, so the reason is visible in the run summary without
+          # expanding this step. Folded to one line: ::error:: takes no newlines.
+          printf '::error::%s\n' "$(printf '%s' "$err" | tr '\n' ' ')"
+          exit 1
 
       - name: Post bot-authored curated draft
         id: post
@@ -226,6 +254,7 @@ jobs:
           BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN }}
           BOT_ID: ${{ vars.RELEASE_BOT_ID }}
           PREPARE_ERROR: ${{ steps.prepare.outputs.error }}
+          DRAFT_ERROR: ${{ steps.draft-model.outputs.error }}
           POST_ERROR: ${{ steps.post.outputs.error }}
           DRAFT_OUTCOME: ${{ steps.draft-model.outcome }}
           CHECKOUT_TRUSTED_OUTCOME: ${{ steps.checkout-trusted.outcome }}
@@ -233,7 +262,12 @@ jobs:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const number = Number(process.env.PR_NUMBER);
+            // Causal order: prepare runs first, so its failure means drafting
+            // never ran; drafting's failure means posting never ran. Report the
+            // earliest step that actually failed, and fall back to the outcome
+            // only when no step captured a reason.
             const details = process.env.PREPARE_ERROR
+              || process.env.DRAFT_ERROR
               || process.env.POST_ERROR
               || (process.env.CHECKOUT_TRUSTED_OUTCOME !== 'success'
                 ? 'Checking out the trusted automation failed; see the workflow logs.'

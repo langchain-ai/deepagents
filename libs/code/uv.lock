@@ -2768,7 +2768,7 @@ wheels = [
 
 [[package]]
 name = "langchain-daytona"
-version = "0.0.7"
+version = "0.0.8"
 source = { editable = "../partners/daytona" }
 dependencies = [
     { name = "daytona" },

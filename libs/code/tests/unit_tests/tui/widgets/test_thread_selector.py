@@ -3399,6 +3399,33 @@ class TestResumeThread:
             "Already on thread: old-thread",
         ]
 
+    async def test_failure_after_switch_restores_previous_thread_pointer(self) -> None:
+        """A raise after the back-pointer is set must not leave previous == current.
+
+        `previous_thread_id` is recorded once the switch is materially complete,
+        but `_run_session_start_hook` runs after that and can raise. Without an
+        explicit restore, rollback would put the session back on the outgoing
+        thread while the back-pointer still named it, making a later bare
+        `/threads -r` a no-op with nowhere to step back to.
+        """
+        app = self._switch_app()
+        session_state = app._session_state
+        assert session_state is not None
+        session_state.previous_thread_id = "grandparent-thread"
+        _app_test_double(app)._offer_thread_cwd_switch = AsyncMock(
+            return_value="continue"
+        )
+        # Raise on the post-switch call; succeed on the rollback call so the
+        # rollback path itself completes.
+        _app_test_double(app)._run_session_start_hook = AsyncMock(
+            side_effect=[RuntimeError("hook exploded"), True]
+        )
+
+        await app._resume_thread("new-thread")
+
+        assert session_state.thread_id == "old-thread"
+        assert session_state.previous_thread_id == "grandparent-thread"
+
     async def test_failure_restores_previous_thread_ids(self) -> None:
         """If _clear_messages raises, thread IDs should be restored."""
         from textual.css.query import NoMatches as _NoMatches

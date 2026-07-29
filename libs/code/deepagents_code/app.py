@@ -9759,7 +9759,16 @@ class DeepAgentsApp(App):
                 asyncio.to_thread(build_langsmith_thread_url, thread_id),
                 timeout=2.0,
             )
-        except (TimeoutError, Exception):  # noqa: BLE001  # Resilient non-interactive mode error handling
+        except Exception:  # Resilient non-interactive mode error handling
+            # Unlinked thread IDs are the only symptom, and they look identical
+            # to tracing simply being unconfigured — so log the cause. Covers a
+            # rejected `LANGSMITH_API_KEY`, a changed LangSmith payload shape,
+            # and network failures, none of which the user can otherwise see.
+            logger.debug(
+                "Could not resolve LangSmith thread URL for %s; rendering plain text",
+                thread_id,
+                exc_info=True,
+            )
             url = None
 
         if url:
@@ -22662,6 +22671,7 @@ class DeepAgentsApp(App):
         # Save previous state for rollback on failure
         prev_thread_id = self._lc_thread_id
         prev_session_thread = self._session_state.thread_id
+        prev_previous_thread = self._session_state.previous_thread_id
         prev_cwd = Path(self._cwd)
 
         cwd_choice = await self._offer_thread_cwd_switch(
@@ -22730,8 +22740,10 @@ class DeepAgentsApp(App):
             # The switch succeeded: record the thread we just left so a
             # subsequent bare `/threads -r` steps back to it rather than
             # resolving `previous == current` and reporting "Already on
-            # thread". Set only after the last statement that can raise, so a
-            # failed switch (handled below) never leaves a stale pointer.
+            # thread". Set once the switch is materially complete -- the thread
+            # ID is committed and history is loaded. `_run_session_start_hook`
+            # below can still raise, so the rollback path restores this pointer
+            # explicitly rather than relying on statement order.
             self._session_state.previous_thread_id = prev_session_thread
 
             # Landing on a new thread re-arms the same-thread toast, so stepping
@@ -22754,6 +22766,11 @@ class DeepAgentsApp(App):
             # Restore previous thread IDs so the user can retry
             self._session_state.thread_id = prev_session_thread
             self._lc_thread_id = prev_thread_id
+            # Also restore the back-pointer. A raise after it was set (the
+            # session-start hook) would otherwise leave `previous == current`,
+            # making a later bare `/threads -r` a no-op with nowhere to step
+            # back to.
+            self._session_state.previous_thread_id = prev_previous_thread
             self._update_welcome_banner(
                 prev_session_thread,
                 missing_message=(

@@ -40,6 +40,7 @@ from deepagents_code.hooks.models.domain import (
     HookInvocation,
     PermissionEffect,
     PostToolUseDecision,
+    PostToolUseEvent,
     PreCompactDecision,
     PreCompactEvent,
     PreToolUseDecision,
@@ -70,6 +71,7 @@ from deepagents_code.hooks.server_middleware import (
     _tool_result_text,
 )
 from deepagents_code.hooks.snapshot import HooksSnapshot
+from deepagents_code.hooks.tools import to_wire_tool_result
 from deepagents_code.hooks.transcript import SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
 
 if TYPE_CHECKING:
@@ -82,7 +84,9 @@ class _ReplayState(BaseModel):
     completed: bool
 
 
-def _request(event: PreToolUseEvent | None = None) -> HookInvocationRequest:
+def _request(
+    event: PreToolUseEvent | PostToolUseEvent | None = None,
+) -> HookInvocationRequest:
     invocation = HookInvocation(
         context=HookContext(
             thread_id="thread-1",
@@ -113,6 +117,43 @@ def test_hook_interrupt_payload_round_trip() -> None:
     assert is_hook_interrupt_payload(payload)
     assert parse_hook_interrupt_payload(payload) == request
     assert parse_hook_interrupt_payload({"type": "ask_user"}) is None
+
+
+def test_post_tool_use_command_result_round_trips_interrupt() -> None:
+    """`task` returns `Command`; that JSON must parse without ToolMessage coercion."""
+    result = Command(
+        update={
+            "messages": [
+                ToolMessage(
+                    content="subagent done",
+                    name="task",
+                    tool_call_id="call-task",
+                    status="success",
+                )
+            ]
+        }
+    )
+    request = _request(
+        PostToolUseEvent(
+            event=HookEvent.POST_TOOL_USE,
+            call=ToolCallData(
+                id="call-task",
+                name="task",
+                args={"subagent_type": "general-purpose"},
+            ),
+            result=to_wire_tool_result(result),
+            duration_ms=10,
+        )
+    )
+    payload = build_hook_interrupt_payload(request)
+    parsed = parse_hook_interrupt_payload(payload)
+
+    assert parsed is not None
+    assert parsed == request
+    assert isinstance(parsed.invocation.event, PostToolUseEvent)
+    assert parsed.invocation.event.result["update"]["messages"][0]["tool_call_id"] == (
+        "call-task"
+    )
 
 
 def test_hook_resume_value_validates_identity() -> None:

@@ -33,6 +33,7 @@ from deepagents_code.hooks.models.transport import (
     HookInvocationRequest,
     HookInvocationResponse,
 )
+from deepagents_code.hooks.tools import to_wire_tool_result
 
 _COMMON_WIRE_INPUT = {
     "session_id": "thread-1",
@@ -287,8 +288,8 @@ def test_domain_event_union_selects_event_model() -> None:
     assert event.event is HookEvent.NOTIFICATION
 
 
-def test_post_tool_use_accepts_native_tool_message() -> None:
-    result = ToolMessage(content="done", tool_call_id="call-1")
+def test_post_tool_use_accepts_json_tool_result() -> None:
+    result = to_wire_tool_result(ToolMessage(content="done", tool_call_id="call-1"))
 
     event = PostToolUseEvent(
         event=HookEvent.POST_TOOL_USE,
@@ -296,7 +297,7 @@ def test_post_tool_use_accepts_native_tool_message() -> None:
         result=result,
     )
 
-    assert event.result is result
+    assert event.result == result
 
 
 def test_domain_models_reject_unknown_fields() -> None:

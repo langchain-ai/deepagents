@@ -11,12 +11,6 @@ from uuid import (
     UUID,  # ruff:ignore[typing-only-standard-library-import] - Pydantic resolves model annotations at runtime.
 )
 
-from langchain_core.messages import (  # ruff:ignore[typing-only-third-party-import] - Pydantic runtime annotation.
-    ToolMessage,
-)
-from langgraph.types import (
-    Command,  # ruff:ignore[typing-only-third-party-import] - Pydantic runtime annotation.
-)
 from pydantic import BaseModel, ConfigDict, Field
 
 from deepagents_code.approval_mode import (  # ruff:ignore[typing-only-first-party-import] - Pydantic runtime annotation.
@@ -24,6 +18,7 @@ from deepagents_code.approval_mode import (  # ruff:ignore[typing-only-first-par
 )
 from deepagents_code.json_types import (  # ruff:ignore[typing-only-first-party-import] - Pydantic runtime annotation.
     JsonObject,
+    JsonValue,
 )
 
 
@@ -205,11 +200,17 @@ class PreToolUseEvent(_DomainModel):
 
 
 class PostToolUseEvent(_DomainModel):
-    """Domain payload for `PostToolUse`."""
+    """Domain payload for `PostToolUse`.
+
+    `result` is the JSON projection of the native tool return value
+    (`to_wire_tool_result`), not a live `Command` / `ToolMessage`. The live
+    value stays in the tool wrapper for decision application; only JSON crosses
+    the interrupt boundary to the client.
+    """
 
     event: Literal[HookEvent.POST_TOOL_USE]
     call: ToolCallData
-    result: Command[str] | ToolMessage
+    result: JsonValue
     duration_ms: int | None = None
 
 

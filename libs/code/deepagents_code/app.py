@@ -3257,7 +3257,7 @@ class DeepAgentsApp(App):
         self._last_thread_unchanged: tuple[str, float] | None = None
         """Most recent same-thread toast, as `(text, monotonic timestamp)`.
 
-        The same-model counterpart of `_last_model_unchanged`, for re-selecting
+        The same-thread counterpart of `_last_model_unchanged`, for re-selecting
         the thread the session is already on.
         """
 
@@ -22621,6 +22621,11 @@ class DeepAgentsApp(App):
                     f"Already on thread: {thread_id}",
                     self._last_thread_unchanged,
                 )
+                # Log unconditionally, outside the toast dedup: the toast is
+                # transient and may be suppressed, so this is the only durable
+                # record that the resume was a deliberate no-op rather than a
+                # dropped command. Mirrors the same-model path.
+                logger.info("Thread unchanged (%s); resume was a no-op", thread_id)
             else:
                 from deepagents_code.hooks.models.domain import (
                     SessionEndCause,
@@ -22796,23 +22801,35 @@ class DeepAgentsApp(App):
 
     def _notify_unchanged_once(
         self, message: str, last: tuple[str, float] | None
-    ) -> tuple[str, float] | None:
-        """Toast a no-op notice unless an identical toast is still on-screen.
+    ) -> tuple[str, float]:
+        """Toast a no-op notice unless an identical toast is presumed on-screen.
 
-        Re-selecting the model or thread the session is already on is transient
-        feedback, not part of the conversation, so it surfaces as a toast rather
-        than an inline chat message. Suppression lasts only for the toast
-        lifetime, so a later intentional no-op selection can toast again.
+        A no-op re-selection — of the model or thread the session is already on,
+        for example — is transient feedback, not part of the conversation, so it
+        surfaces as a toast rather than an inline chat message.
+
+        Suppression is time-based: it lasts one `NOTIFICATION_TIMEOUT`, which
+        matches the toast lifetime only because `notify` is called without a
+        `timeout` override. Nothing inspects live toast state, so "on-screen" is
+        a presumption — a toast the user clicked away still suppresses. Once the
+        window expires, a later intentional no-op selection can toast again.
+
+        Callers own the record: pass the field you keep it in and assign the
+        result straight back, or dedup silently stops working. Separate fields
+        per call site keep unrelated notices from suppressing each other.
 
         Args:
             message: The notice to toast. Interpolated identifiers are rendered
-                literally — markup parsing is always disabled.
+                literally — `markup=False` is load-bearing, because identifiers
+                containing square brackets would otherwise crash Textual's toast
+                renderer when parsed as Rich markup.
             last: The caller's previous `(text, monotonic timestamp)` record, or
                 `None` when nothing has been toasted yet.
 
         Returns:
-            The record the caller should store: the new toast's text and
-                timestamp, or `last` unchanged when the toast was suppressed.
+            The record the caller should store, never `None`: the new toast's
+                text and timestamp, or `last` unchanged when suppressed. Only
+                the explicit re-arm sites clear a caller's field.
         """
         now = _monotonic()
         if (

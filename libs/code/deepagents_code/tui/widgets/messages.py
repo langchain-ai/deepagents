@@ -4358,7 +4358,12 @@ class AppMessage(Static):
         self.styles.pointer = "pointer" if event_targets_link(event) else "text"
 
     def on_leave(self) -> None:
-        """Reset the pointer shape when the mouse leaves the message."""
+        """Restore the pointer shape when the mouse leaves the message.
+
+        `"text"` restates this widget's CSS default rather than clearing the
+        inline style, so a subclass declaring a different `pointer` would be
+        forced back to `text` on leave.
+        """
         self.styles.pointer = "text"
 
 

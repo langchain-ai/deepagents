@@ -3364,13 +3364,40 @@ class TestResumeThread:
         assert session_state.previous_thread_id == "old-thread"
 
     async def test_successful_switch_rearms_already_on_thread_toast(self) -> None:
-        """Landing on a thread lets a later no-op resume toast again."""
+        """A real switch clears suppression so the next no-op toasts again.
+
+        Without the reset, re-selecting A after an A -> B -> A round trip would
+        be swallowed by the stale suppression entry left by the first no-op.
+        Mirrors the same-model counterpart in `test_model_switch.py`.
+        """
         app = self._switch_app()
-        app._last_thread_unchanged = ("Already on thread: old-thread", 100.0)
+        notify_mock = MagicMock()
+        _app_test_double(app).notify = notify_mock
+        _app_test_double(app)._offer_thread_cwd_switch = AsyncMock(
+            return_value="continue"
+        )
 
-        await app._resume_thread("new-thread")
+        # Hold the clock still so a second toast is attributable to the reset
+        # rather than to the toast lifetime quietly expiring.
+        with patch("deepagents_code.app._monotonic", return_value=100.0):
+            # No-op records the suppression entry.
+            await app._resume_thread("old-thread")
+            # Real switches away and back must clear it.
+            await app._resume_thread("new-thread")
+            await app._resume_thread("old-thread")
+            # Identical message, same instant on the clock: only the reset can
+            # let this through.
+            await app._resume_thread("old-thread")
 
-        assert app._last_thread_unchanged is None
+        unchanged_toasts = [
+            call.args[0]
+            for call in notify_mock.call_args_list
+            if call.args[0].startswith("Already on thread")
+        ]
+        assert unchanged_toasts == [
+            "Already on thread: old-thread",
+            "Already on thread: old-thread",
+        ]
 
     async def test_failure_restores_previous_thread_ids(self) -> None:
         """If _clear_messages raises, thread IDs should be restored."""
@@ -4191,9 +4218,25 @@ class TestBuildThreadMessage:
         assert style.link == url
 
     async def test_linked_content_matches_plain_app_message_styling(self) -> None:
-        """Every span should be dim italic so linked notes match unlinked ones."""
+        """Linked notes carry the same styling `AppMessage` gives plain strings.
+
+        The expected style is read off a real `AppMessage` rather than hardcoded,
+        so that if `AppMessage` stops styling plain strings `dim italic` this
+        fails instead of silently locking in the divergence it exists to catch.
+        `AppMessage` records the style as an unresolved spec string, so compare
+        parsed styles rather than span representations.
+        """
         from textual.content import Content
         from textual.style import Style as TStyle
+
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        plain_spans = AppMessage("Previous thread: tid-123").render()._spans
+        assert len(plain_spans) == 1
+        plain_style = plain_spans[0].style
+        expected = (
+            TStyle.parse(plain_style) if isinstance(plain_style, str) else plain_style
+        )
 
         app = DeepAgentsApp()
         url = "https://smith.langchain.com/o/org/projects/p/proj/t/tid-123"
@@ -4204,11 +4247,13 @@ class TestBuildThreadMessage:
             )
 
         assert isinstance(result, Content)
+        # Sum the spans to prove every character is styled, not just that the
+        # spans present are correct: an unstyled gap is the original regression.
         covered = 0
         for span in result._spans:
             assert isinstance(span.style, TStyle)
-            assert span.style.dim is True
-            assert span.style.italic is True
+            assert span.style.dim == expected.dim
+            assert span.style.italic == expected.italic
             covered += span.end - span.start
         assert covered == len(result.plain)
 

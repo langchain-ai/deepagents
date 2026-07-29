@@ -103,7 +103,6 @@ managed package.
 
 | Actions variable | Value | Type | Purpose |
 | --- | --- | --- | --- |
-| `RELEASE_BOT_CLI_VERSION` | Variable | Environment | `deepagents-code` version to use. |
 | `RELEASE_BOT_MODEL` | Variable | Environment | Model used for changelog generation. |
 | `RELEASE_BOT_ID` | - | Repository | GitHub App bot account user ID. |
 | `RELEASE_BOT_LOGIN` | `langchain-oss-automated-triage[bot]` | Repository | Login ID. |

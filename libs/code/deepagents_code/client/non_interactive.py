@@ -1342,6 +1342,7 @@ async def _run_agent_loop(
         SessionEndCause,
         SessionStartCause,
     )
+    from deepagents_code.hooks.trust import WorkspaceTrust
 
     resolved_approval_mode = approval_mode or ApprovalMode.MANUAL
     # One headless turn per process, so identity is fixed for the whole run.
@@ -1355,7 +1356,9 @@ async def _run_agent_loop(
         identity=lambda: identity,
         notice=lambda notice: console.print(Text(notice), highlight=False),
         # Project hooks require an explicit opt-in, matching `--trust-project-mcp`.
-        workspace_trusted=trust_project_hooks,
+        # Persisted interactive trust deliberately does not carry into headless
+        # runs, so CI never inherits a grant made at someone's terminal.
+        trust=WorkspaceTrust.explicit_only(Path.cwd(), granted=trust_project_hooks),
     )
     state.hooks.apply_graph_context(context)
     context["approval_mode"] = resolved_approval_mode.value
@@ -1931,6 +1934,7 @@ async def run_non_interactive(
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
         from deepagents_code.hooks.models.domain import HookEvent
+        from deepagents_code.hooks.trust import WorkspaceTrust
 
         enable_shell = bool(settings.shell_allow_list)
         shell_is_unrestricted = isinstance(
@@ -1960,7 +1964,8 @@ async def run_non_interactive(
             cwd=Path.cwd(),
             identity=lambda: identity,
             notice=lambda notice: console.print(Text(notice), highlight=False),
-            workspace_trusted=trust_project_hooks,
+            # Explicit opt-in only; see `_run_agent_loop` for the rationale.
+            trust=WorkspaceTrust.explicit_only(Path.cwd(), granted=trust_project_hooks),
         )
         # Permission hooks need every gated call to reach the client, so they
         # override both middleware shortcuts that would skip HITL entirely.

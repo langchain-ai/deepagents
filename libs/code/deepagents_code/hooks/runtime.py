@@ -21,6 +21,7 @@ from deepagents_code.hooks.models.domain import (
 from deepagents_code.hooks.snapshot import HooksSnapshot
 from deepagents_code.hooks.transcript import TranscriptStore
 from deepagents_code.model_config import DEFAULT_CONFIG_DIR
+from deepagents_code.project_utils import ProjectContext
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -52,6 +53,15 @@ class HooksRuntime:
     transcripts: TranscriptStore
     engine: HookEngine
     cwd: Path
+    workspace_trusted: bool
+    """Trust decision resolved for `cwd` when this runtime was frozen.
+
+    Scoped to `cwd` by construction: a runtime is never reused across working
+    directories, so `HooksManager` discards it and re-resolves trust whenever the
+    session moves.
+    """
+
+    project_hooks_loaded: bool
     fulfillments: HookFulfillmentLedger
 
     @classmethod
@@ -67,7 +77,9 @@ class HooksRuntime:
 
         Args:
             cwd: Session working directory.
-            workspace_trusted: Whether project-scoped hooks may be loaded.
+            workspace_trusted: Whether project-scoped hooks may be loaded for
+                `cwd`, already resolved by the caller from `WorkspaceTrust`. The
+                runtime treats it as fixed for its lifetime.
             config_dir: Alternate user config directory for tests.
             transcript_root: Alternate transcript store root for tests.
                 Defaults to `~/.deepagents/transcripts` regardless of
@@ -77,8 +89,10 @@ class HooksRuntime:
         Returns:
             A runtime ready to execute invocations for this session.
         """
+        project_context = ProjectContext.from_user_cwd(cwd)
+        project_root = project_context.project_root or project_context.user_cwd
         loaded = load_hooks_config(
-            project_root=cwd,
+            project_root=project_root,
             workspace_trusted=workspace_trusted,
             config_dir=config_dir,
         )
@@ -97,7 +111,9 @@ class HooksRuntime:
             snapshot=snapshot,
             transcripts=store,
             engine=engine,
-            cwd=cwd,
+            cwd=project_context.user_cwd,
+            workspace_trusted=workspace_trusted,
+            project_hooks_loaded=loaded.project_source_loaded,
             fulfillments=HookFulfillmentLedger(),
         )
 
@@ -148,7 +164,13 @@ class HooksRuntime:
 
         Returns:
             Event-specific decision with notices, sequences, and diagnostics.
+
+        Raises:
+            PermissionError: If project handlers were loaded without workspace trust.
         """
+        if self.project_hooks_loaded and not self.workspace_trusted:
+            msg = "Project hooks cannot execute before workspace trust is granted"
+            raise PermissionError(msg)
         prepared = self.prepare_invocation(invocation)
         return await self.engine.run(
             prepared.invocation,

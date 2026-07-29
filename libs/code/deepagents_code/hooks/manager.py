@@ -27,6 +27,7 @@ from deepagents_code.hooks.permissions import (
     PermissionPlan,
     permission_hook_outcome,
 )
+from deepagents_code.hooks.trust import WorkspaceTrust
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -103,6 +104,9 @@ class HooksManager:
     identity: SessionIdentityProvider
     notice: Callable[[str], None]
     _runtime: HooksRuntime | None = None
+    trust: WorkspaceTrust = field(default_factory=WorkspaceTrust)
+    """Policy re-resolved on every reload; the manager is its only interpreter."""
+
     _service: ClientHookService | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
@@ -116,7 +120,7 @@ class HooksManager:
         cwd: Path,
         identity: SessionIdentityProvider,
         notice: Callable[[str], None],
-        workspace_trusted: bool = False,
+        trust: WorkspaceTrust | None = None,
     ) -> HooksManager:
         """Load hook configuration and return a ready manager.
 
@@ -127,12 +131,14 @@ class HooksManager:
             cwd: Session working directory used to resolve hook configuration.
             identity: Reads current thread, approval mode, and prompt id.
             notice: Surfaces hook `systemMessage` notices to the user.
-            workspace_trusted: Whether project-scoped hooks may be loaded.
+            trust: Project-hook trust policy. Defaults to trusting nothing
+                beyond what the persisted trust store already records.
 
         Returns:
             A manager owning the loaded runtime, or an inert one on failure.
         """
-        return cls(identity, notice, _load_runtime(cwd, trusted=workspace_trusted))
+        policy = trust if trust is not None else WorkspaceTrust.none()
+        return cls(identity, notice, _load_runtime(cwd, trust=policy), policy)
 
     @classmethod
     def adopting(
@@ -186,22 +192,25 @@ class HooksManager:
         service = self._service
         return service is not None and service.has_handlers(event)
 
-    async def reload(self, *, cwd: Path, workspace_trusted: bool = False) -> None:
+    async def reload(self, *, cwd: Path) -> None:
         """Rebuild the runtime after the session working directory changes.
+
+        Workspace trust is re-resolved for `cwd`, so moving from a trusted
+        project into an untrusted one drops project hooks instead of carrying
+        the previous grant forward.
 
         Pending `SessionStart` context is dropped with the old runtime, matching
         the lifecycle boundary that triggers a reload.
 
         Args:
             cwd: New session working directory.
-            workspace_trusted: Whether project-scoped hooks may be loaded.
         """
         import asyncio
 
         self._runtime = await asyncio.to_thread(
             _load_runtime,
             cwd,
-            trusted=workspace_trusted,
+            trust=self.trust,
         )
         self._service = self._build_service()
 
@@ -523,11 +532,23 @@ class HooksManager:
         )
 
 
-def _load_runtime(cwd: Path, *, trusted: bool) -> HooksRuntime | None:
+def _load_runtime(cwd: Path, *, trust: WorkspaceTrust) -> HooksRuntime | None:
+    """Resolve workspace trust for `cwd` and load a runtime under it.
+
+    Trust is resolved here rather than by the caller so that a reload after a
+    working-directory change re-reads the trust store for the new directory.
+
+    Args:
+        cwd: Session working directory.
+        trust: Policy deciding whether project hooks may load.
+
+    Returns:
+        The loaded runtime, or `None` when configuration could not be loaded.
+    """
     from deepagents_code.hooks.runtime import HooksRuntime
 
     try:
-        return HooksRuntime.create(cwd=cwd, workspace_trusted=trusted)
+        return HooksRuntime.create(cwd=cwd, workspace_trusted=trust.allows(cwd))
     except Exception:
         logger.exception("Failed to load hook configuration; hooks disabled")
         return None

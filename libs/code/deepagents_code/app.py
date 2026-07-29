@@ -605,7 +605,7 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.models.domain import (
         SessionStartCause,
     )
-    from deepagents_code.hooks.presenter import HookNoticeSeverity, HookPresenter
+    from deepagents_code.hooks.presenter import HookNoticeSeverity
     from deepagents_code.hooks.trust import WorkspaceTrust
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
@@ -4367,14 +4367,6 @@ class DeepAgentsApp(App):
                 lambda: asyncio.create_task(self._run_session_start_sequence()),
             )
 
-    def _create_hook_presenter(self) -> HookPresenter:
-        from deepagents_code.hooks.presenter import HookPresenter
-
-        return HookPresenter(
-            notice=self._notify_hook_feedback,
-            status=self._update_hook_status,
-        )
-
     def _notify_hook_feedback(
         self,
         message: str,
@@ -4422,7 +4414,8 @@ class DeepAgentsApp(App):
         session_state.hooks = HooksManager.create(
             cwd=Path(self._cwd),
             identity=session_state.hook_identity,
-            presenter=self._create_hook_presenter(),
+            notice=self._notify_hook_feedback,
+            status=self._update_hook_status,
             trust=self._hook_trust,
         )
         # Re-read the app-owned selection last so a mode change during
@@ -4443,7 +4436,8 @@ class DeepAgentsApp(App):
             self._detached_hooks = HooksManager.adopting(
                 None,
                 identity=self._hook_identity,
-                presenter=self._create_hook_presenter(),
+                notice=self._notify_hook_feedback,
+                status=self._update_hook_status,
             )
         return self._detached_hooks
 

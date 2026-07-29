@@ -50,6 +50,11 @@ class HookEngine:
         are reduced in stable configuration order, independent of completion
         order.
 
+        The returned diagnostics are scoped to this invocation. Configuration
+        diagnostics collected while the snapshot loaded belong to whoever owns
+        the snapshot, which presents them once per load; repeating them here
+        would re-surface the same warning on every hook that runs.
+
         Args:
             invocation: Native lifecycle invocation.
             transcript_path: Materialized client transcript path.
@@ -75,11 +80,7 @@ class HookEngine:
             return self.adapter.to_domain_decision(
                 invocation,
                 (),
-                diagnostics=(
-                    *self.snapshot.diagnostics,
-                    *match.diagnostics,
-                    diagnostic,
-                ),
+                diagnostics=(*match.diagnostics, diagnostic),
             )
 
         event = invocation.event.event
@@ -105,10 +106,7 @@ class HookEngine:
         return self.adapter.to_domain_decision(
             invocation,
             results,
-            diagnostics=(
-                *self.snapshot.diagnostics,
-                *match.diagnostics,
-            ),
+            diagnostics=match.diagnostics,
         )
 
 

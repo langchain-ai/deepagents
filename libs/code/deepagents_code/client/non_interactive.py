@@ -92,8 +92,8 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.manager import HooksManager
     from deepagents_code.hooks.models.domain import SessionEndCause
     from deepagents_code.hooks.presenter import (
+        HookNoticeCallback,
         HookNoticeSeverity,
-        HookPresenter,
     )
     from deepagents_code.hooks.transcript import TranscriptRecorder
 
@@ -212,7 +212,7 @@ class _ConsoleSpinner:
         """
         if self._live is not None:
             return
-        renderable = self._renderable(message)
+        renderable = self._build_spinner(message)
         try:
             self._live = Live(renderable, console=self._console, transient=True)
             self._live.start()
@@ -229,7 +229,7 @@ class _ConsoleSpinner:
         if self._live is None:
             return
         try:
-            self._live.update(self._renderable(message))
+            self._live.update(self._build_spinner(message))
         except (AttributeError, TypeError, OSError) as exc:
             logger.warning("Spinner update failed: %s", exc)
 
@@ -244,7 +244,7 @@ class _ConsoleSpinner:
                 self._live = None
 
     @staticmethod
-    def _renderable(message: str) -> RichSpinner:
+    def _build_spinner(message: str) -> RichSpinner:
         return RichSpinner(
             "dots",
             text=Text(f" {message}", style="dim"),
@@ -355,25 +355,24 @@ def _inert_hooks() -> HooksManager:
     return HooksManager.inert()
 
 
-def _plain_hook_presenter(console: Console) -> HookPresenter:
-    """Build a presenter that prints notices plainly and shows no status.
+def _plain_hook_notice(console: Console) -> HookNoticeCallback:
+    """Build a notice sink that prints hook output without styling.
 
     Used for hooks loaded before the run owns a spinner; `attach_output` later
-    rebinds this same presenter to the styled, spinner-aware sinks.
+    rebinds the manager's presenter to the styled, spinner-aware sinks.
 
     Args:
         console: Destination for notice text.
 
     Returns:
-        A presenter with an unstyled notice sink.
+        An unstyled notice sink.
     """
-    from deepagents_code.hooks.presenter import HookPresenter
 
     def notice(message: str, severity: HookNoticeSeverity) -> None:
         del severity
         console.print(Text(message), highlight=False)
 
-    return HookPresenter(notice=notice)
+    return notice
 
 
 @dataclass
@@ -1389,7 +1388,6 @@ async def _run_agent_loop(
         SessionEndCause,
         SessionStartCause,
     )
-    from deepagents_code.hooks.presenter import HookPresenter
     from deepagents_code.hooks.trust import WorkspaceTrust
 
     hook_owned_spinner = False
@@ -1431,25 +1429,15 @@ async def _run_agent_loop(
         approval_mode=resolved_approval_mode,
         prompt_id=prompt_id,
     )
-    if hooks is not None:
-        state.hooks = hooks
-        state.hooks.attach_output(notice=present_hook_notice, status=hook_status)
-    else:
-        state.hooks = HooksManager.create(
-            cwd=Path.cwd(),
-            identity=lambda: identity,
-            presenter=HookPresenter(
-                notice=present_hook_notice,
-                status=hook_status,
-            ),
-            # Project hooks require an explicit opt-in, matching `--trust-project-mcp`.
-            # Persisted interactive trust deliberately does not carry into headless
-            # runs, so CI never inherits a grant made at someone's terminal.
-            trust=WorkspaceTrust.explicit_only(
-                Path.cwd(),
-                granted=trust_project_hooks,
-            ),
-        )
+    state.hooks = hooks or HooksManager.create(
+        cwd=Path.cwd(),
+        identity=lambda: identity,
+        # Project hooks require an explicit opt-in, matching `--trust-project-mcp`.
+        # Persisted interactive trust deliberately does not carry into headless
+        # runs, so CI never inherits a grant made at someone's terminal.
+        trust=WorkspaceTrust.explicit_only(Path.cwd(), granted=trust_project_hooks),
+    )
+    state.hooks.attach_output(notice=present_hook_notice, status=hook_status)
     state.hooks.apply_graph_context(context)
     context["approval_mode"] = resolved_approval_mode.value
     context["auto_approve"] = resolved_approval_mode is ApprovalMode.YOLO
@@ -2055,7 +2043,7 @@ async def run_non_interactive(
             identity=lambda: identity,
             # Plain output until `_run_agent_loop` attaches the styled,
             # spinner-aware sinks to this same presenter.
-            presenter=_plain_hook_presenter(console),
+            notice=_plain_hook_notice(console),
             # Explicit opt-in only; see `_run_agent_loop` for the rationale.
             trust=WorkspaceTrust.explicit_only(Path.cwd(), granted=trust_project_hooks),
         )

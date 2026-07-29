@@ -7,12 +7,14 @@ from typing import TYPE_CHECKING
 
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
-from deepagents_code.hooks.presenter import HookNoticeSeverity, HookPresenter
+from deepagents_code.hooks.models.domain import PermissionEffect
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     import pytest
+
+    from deepagents_code.hooks.presenter import HookNoticeSeverity, HookPresenter
 
 
 def _write_project_hooks(root: Path) -> Path:
@@ -37,11 +39,10 @@ def _isolate_hook_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
     )
 
 
-def _manager(cwd: Path, presenter: HookPresenter | None = None) -> HooksManager:
+def _manager(cwd: Path) -> HooksManager:
     return HooksManager.create(
         cwd=cwd,
         identity=lambda: HookSessionIdentity("thread", ApprovalMode.MANUAL),
-        presenter=presenter,
     )
 
 
@@ -53,15 +54,39 @@ async def test_reload_keeps_one_presenter_shared_with_the_runtime(
     _isolate_hook_config(tmp_path, monkeypatch)
     first = _write_project_hooks(tmp_path / "first")
     second = _write_project_hooks(tmp_path / "second")
-    presenter = HookPresenter()
 
-    manager = _manager(first, presenter)
-    assert manager.presenter is presenter
+    manager = _manager(first)
+    presenter = manager.presenter
+    assert _runtime_presenter(manager) is presenter
 
     await manager.reload(cwd=second)
 
     assert manager.presenter is presenter
     assert _runtime_presenter(manager) is presenter
+
+
+def test_create_binds_sinks_to_the_manager_owned_presenter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Callers pass sinks, never a presenter; the manager builds and owns it."""
+    _isolate_hook_config(tmp_path, monkeypatch)
+    root = _write_project_hooks(tmp_path / "project")
+    notices: list[tuple[str, str]] = []
+
+    manager = HooksManager.create(
+        cwd=root,
+        identity=lambda: HookSessionIdentity("thread", ApprovalMode.MANUAL),
+        notice=lambda message, severity: notices.append((message, severity)),
+    )
+
+    assert _runtime_presenter(manager) is manager.presenter
+    manager.presenter.present_permission(
+        "shell",
+        PermissionEffect(behavior="deny", reason="nope"),
+    )
+
+    assert notices == [("PermissionRequest hook denied shell: nope", "warning")]
 
 
 def test_attach_output_binds_sinks_and_replays_load_diagnostics(

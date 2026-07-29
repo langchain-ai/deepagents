@@ -128,7 +128,8 @@ class HooksManager:
         *,
         cwd: Path,
         identity: SessionIdentityProvider,
-        presenter: HookPresenter | None = None,
+        notice: HookNoticeCallback | None = None,
+        status: HookStatusCallback | None = None,
         trust: WorkspaceTrust | None = None,
     ) -> HooksManager:
         """Load hook configuration and return a ready manager.
@@ -139,9 +140,9 @@ class HooksManager:
         Args:
             cwd: Session working directory used to resolve hook configuration.
             identity: Reads current thread, approval mode, and prompt id.
-            presenter: Presents notices, diagnostics, and progress. When
-                omitted, a sinkless one is created and output is only logged
-                until `attach_output` binds it to a UI.
+            notice: Sink for user-visible notices. When omitted, output is only
+                logged until `attach_output` binds a sink.
+            status: Sink for transient hook-owned status text.
             trust: Project-hook trust policy. Defaults to trusting nothing
                 beyond what the persisted trust store already records.
 
@@ -149,10 +150,10 @@ class HooksManager:
             A manager owning the loaded runtime, or an inert one on failure.
         """
         policy = trust if trust is not None else WorkspaceTrust.none()
-        resolved = presenter if presenter is not None else HookPresenter()
-        runtime = _load_runtime(cwd, trust=policy, presenter=resolved)
+        presenter = HookPresenter(notice=notice, status=status)
+        runtime = _load_runtime(cwd, trust=policy, presenter=presenter)
         _present_load_diagnostics(runtime)
-        return cls(identity, resolved, runtime, policy)
+        return cls(identity, presenter, runtime, policy)
 
     @classmethod
     def adopting(
@@ -160,31 +161,28 @@ class HooksManager:
         runtime: HooksRuntime | None,
         *,
         identity: SessionIdentityProvider,
-        presenter: HookPresenter | None = None,
+        notice: HookNoticeCallback | None = None,
+        status: HookStatusCallback | None = None,
     ) -> HooksManager:
         """Wrap an already-loaded runtime.
 
         A supplied runtime brought its own presenter, so that one is adopted
-        rather than displaced; `presenter`'s sinks are copied onto it to keep a
-        single instance.
+        rather than displaced; the given sinks are bound onto it so the runtime
+        and the manager keep sharing a single instance.
 
         Args:
             runtime: Preloaded runtime, or `None` when loading failed.
             identity: Reads current thread, approval mode, and prompt id.
-            presenter: Presents notices, diagnostics, and progress.
+            notice: Sink for user-visible notices.
+            status: Sink for transient hook-owned status text.
 
         Returns:
             A manager owning `runtime`.
         """
         if runtime is None:
-            return cls(
-                identity, presenter if presenter is not None else HookPresenter()
-            )
-        if presenter is not None:
-            runtime.presenter.attach(
-                notice=presenter.notice,
-                status=presenter.status,
-            )
+            return cls(identity, HookPresenter(notice=notice, status=status))
+        if notice is not None or status is not None:
+            runtime.presenter.attach(notice=notice, status=status)
         return cls(identity, runtime.presenter, runtime)
 
     @classmethod

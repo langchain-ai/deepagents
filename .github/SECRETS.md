@@ -92,20 +92,21 @@ This environment is intentionally uncredentialed. `.github/workflows/integration
 
 Will expand as needed.
 
-### `release-dcode`
+### `release-bot`
 
-This environment supports curated Deep Agents Code release-note drafting.
+This environment supports curated release-note drafting for every release-please
+managed package.
 
 | Secret | Condition | Purpose |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | `DCODE_RELEASE_MODEL` starts with `openai:` | Draft structured release notes with OpenAI. |
+| `OPENAI_API_KEY` | `RELEASE_BOT_MODEL` starts with `openai:` | Draft structured release notes with OpenAI. |
 
 | Actions variable | Value | Type | Purpose |
 | --- | --- | --- | --- |
-| `DCODE_RELEASE_CLI_VERSION` | Variable | Environment | `deepagents-code` version to use. |
-| `DCODE_RELEASE_MODEL` | Variable | Environment | Model used for changelog generation. |
-| `DCODE_RELEASE_BOT_ID` | - | Repository | GitHub App bot account user ID. |
-| `DCODE_RELEASE_BOT_LOGIN` | `langchain-oss-automated-triage[bot]` | Repository | Login ID. |
+| `RELEASE_BOT_CLI_VERSION` | Variable | Environment | `deepagents-code` version to use. |
+| `RELEASE_BOT_MODEL` | Variable | Environment | Model used for changelog generation. |
+| `RELEASE_BOT_ID` | - | Repository | GitHub App bot account user ID. |
+| `RELEASE_BOT_LOGIN` | `langchain-oss-automated-triage[bot]` | Repository | Login ID. |
 
 Of the model-provider credentials, only the credential for the configured provider is required. Prefer a provider project or service-account key limited to model inference, with model allowlists and spend limits where supported. The workflow also uses the repository GitHub App credentials for repository mutations.
 

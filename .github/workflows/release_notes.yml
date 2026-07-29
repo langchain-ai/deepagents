@@ -1,4 +1,6 @@
-# Draft and apply curated release notes for ready deepagents-code release PRs.
+# Draft and apply curated release notes for any ready release-please release PR.
+# The package under release is derived from the PR head ref, so every component in
+# release-please-config.json is covered.
 # All automation runs from a trusted `main` checkout (`trusted-source`); the ambient
 # GITHUB_TOKEN is read-only for contents. Release PR content is read only through
 # GitHub's API at the validated commit SHA and treated as untrusted data; it is
@@ -10,7 +12,7 @@
 # specific helper steps that receive a short-lived GitHub App token. (The validate job's
 # permission/readiness feedback comments use the default GITHUB_TOKEN.)
 
-name: "📝 Curate dcode release notes"
+name: "📝 Curate release notes"
 
 on:
   pull_request_target:
@@ -22,7 +24,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: dcode-release-notes-${{ github.event.pull_request.number || github.event.issue.number }}
+  group: release-notes-${{ github.event.pull_request.number || github.event.issue.number }}
   cancel-in-progress: false
 
 jobs:
@@ -37,7 +39,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request_target' ||
       (github.event.issue.pull_request &&
-        contains(github.event.comment.body, '@dcode-release-bot') &&
+        contains(github.event.comment.body, '@release-bot') &&
         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -64,11 +66,11 @@ jobs:
         id: validate
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
-          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN || vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID || vars.DCODE_RELEASE_BOT_ID }}
         with:
           script: |
-            const { validateTrigger } = require('./trusted-source/.github/scripts/release/dcode-release-notes.js');
+            const { validateTrigger } = require('./trusted-source/.github/scripts/release/release-notes.js');
             const result = await validateTrigger({
               github,
               context,
@@ -81,7 +83,7 @@ jobs:
               core.setOutput(key, result[key] ?? '');
             }
 
-      # A transient error while validating an insider's manual @dcode-release-bot
+      # A transient error while validating an insider's manual @release-bot
       # command would otherwise leave only a red job in the Actions tab; surface it
       # on the PR so the maintainer who ran the command knows to retry. Scoped to the
       # manual (issue_comment) path so a transient failure on an unrelated
@@ -96,7 +98,7 @@ jobs:
               await github.rest.issues.createComment({
                 ...context.repo,
                 issue_number: context.payload.issue.number,
-                body: 'Could not validate the `@dcode-release-bot` command because of a workflow error; see the run logs and try the command again.',
+                body: 'Could not validate the `@release-bot` command because of a workflow error; see the run logs and try the command again.',
               });
             } catch (error) {
               core.warning(`Could not post the validation-failure comment: ${error instanceof Error ? error.message : String(error)}`);
@@ -108,7 +110,7 @@ jobs:
     if: needs.validate.outputs.should-run == 'true' && needs.validate.outputs.command == 'draft'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: release-dcode
+    environment: release-bot
     permissions:
       contents: read
     steps:
@@ -138,7 +140,7 @@ jobs:
           PR_HEAD: ${{ needs.validate.outputs.head }}
         with:
           script: |
-            const { prepareDraft } = require('./trusted-source/.github/scripts/release/dcode-release-notes.js');
+            const { prepareDraft } = require('./trusted-source/.github/scripts/release/release-notes.js');
             try {
               const result = await prepareDraft({
                 github,
@@ -167,18 +169,18 @@ jobs:
         id: draft-model
         continue-on-error: true
         env:
-          MODEL_SPEC: ${{ vars.DCODE_RELEASE_MODEL }}
+          MODEL_SPEC: ${{ vars.RELEASE_BOT_MODEL || vars.DCODE_RELEASE_MODEL }}
           # Put only the configured provider's credential in this process. The
           # deterministic helper sends one request to a fixed provider endpoint;
           # model output is never interpreted as a tool call or URL.
           MODEL_API_KEY: >-
-            ${{ startsWith(vars.DCODE_RELEASE_MODEL, 'openai:') && secrets.OPENAI_API_KEY ||
-                startsWith(vars.DCODE_RELEASE_MODEL, 'anthropic:') && secrets.ANTHROPIC_API_KEY ||
-                startsWith(vars.DCODE_RELEASE_MODEL, 'google_genai:') && secrets.GOOGLE_API_KEY ||
+            ${{ startsWith(vars.RELEASE_BOT_MODEL || vars.DCODE_RELEASE_MODEL, 'openai:') && secrets.OPENAI_API_KEY ||
+                startsWith(vars.RELEASE_BOT_MODEL || vars.DCODE_RELEASE_MODEL, 'anthropic:') && secrets.ANTHROPIC_API_KEY ||
+                startsWith(vars.RELEASE_BOT_MODEL || vars.DCODE_RELEASE_MODEL, 'google_genai:') && secrets.GOOGLE_API_KEY ||
                 '' }}
           INPUT_FILE: ${{ steps.prepare.outputs.input }}
           OUTPUT_FILE: ${{ steps.prepare.outputs.output }}
-        run: node ./trusted-source/.github/scripts/release/draft-dcode-release-notes.js
+        run: node ./trusted-source/.github/scripts/release/draft-release-notes.js
 
       - name: Post bot-authored curated draft
         id: post
@@ -189,12 +191,12 @@ jobs:
           DRAFT_STATE: ${{ steps.prepare.outputs.state }}
           DRAFT_OUTPUT: ${{ steps.prepare.outputs.output }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
-          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN || vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID || vars.DCODE_RELEASE_BOT_ID }}
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
-            const { postDraft } = require('./trusted-source/.github/scripts/release/dcode-release-notes.js');
+            const { postDraft } = require('./trusted-source/.github/scripts/release/release-notes.js');
             try {
               await postDraft({
                 github,
@@ -221,8 +223,8 @@ jobs:
           PR_NUMBER: ${{ needs.validate.outputs.number }}
           PR_HEAD: ${{ needs.validate.outputs.head }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
-          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN || vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID || vars.DCODE_RELEASE_BOT_ID }}
           PREPARE_ERROR: ${{ steps.prepare.outputs.error }}
           POST_ERROR: ${{ steps.post.outputs.error }}
           DRAFT_OUTCOME: ${{ steps.draft-model.outcome }}
@@ -237,7 +239,7 @@ jobs:
                 ? 'Checking out the trusted automation failed; see the workflow logs.'
                 : `The drafting step did not succeed (outcome: ${process.env.DRAFT_OUTCOME || 'skipped'}); see the workflow logs.`);
             try {
-              const { postDraftFailure } = require('./trusted-source/.github/scripts/release/dcode-release-notes.js');
+              const { postDraftFailure } = require('./trusted-source/.github/scripts/release/release-notes.js');
               await postDraftFailure({
                 github,
                 ...context.repo,
@@ -258,7 +260,7 @@ jobs:
               await github.rest.issues.createComment({
                 ...context.repo,
                 issue_number: number,
-                body: `Automatic release-note drafting failed.\n\n${details}\n\nAfter resolving the issue, a maintainer should run \`@dcode-release-bot draft\` again.`,
+                body: `Automatic release-note drafting failed.\n\n${details}\n\nAfter resolving the issue, a maintainer should run \`@release-bot draft\` again.`,
               });
             }
 
@@ -274,7 +276,7 @@ jobs:
     if: needs.validate.outputs.should-run == 'true' && needs.validate.outputs.command == 'apply'
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: release-dcode
+    environment: release-bot
     permissions:
       contents: read
     steps:
@@ -302,14 +304,14 @@ jobs:
           PR_NUMBER: ${{ needs.validate.outputs.number }}
           PR_HEAD: ${{ needs.validate.outputs.head }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
-          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
-          APPLY_STATE: ${{ runner.temp }}/dcode-release-apply.json
-          CHANGELOG_FILE: ${{ runner.temp }}/dcode-release-changelog.md
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN || vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID || vars.DCODE_RELEASE_BOT_ID }}
+          APPLY_STATE: ${{ runner.temp }}/release-notes-apply.json
+          CHANGELOG_FILE: ${{ runner.temp }}/release-notes-changelog.md
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
-            const { prepareApply } = require('./trusted-source/.github/scripts/release/dcode-release-notes.js');
+            const { prepareApply } = require('./trusted-source/.github/scripts/release/release-notes.js');
             try {
               await prepareApply({
                 github,
@@ -336,12 +338,12 @@ jobs:
           APPLY_STATE: ${{ steps.prepare-apply.outputs.state }}
           CHANGELOG_FILE: ${{ steps.prepare-apply.outputs.changelog }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
-          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN || vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID || vars.DCODE_RELEASE_BOT_ID }}
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
-            const { createApplyCommit } = require('./trusted-source/.github/scripts/release/dcode-release-notes.js');
+            const { createApplyCommit } = require('./trusted-source/.github/scripts/release/release-notes.js');
             try {
               const result = await createApplyCommit({
                 github,
@@ -367,12 +369,12 @@ jobs:
           APPLY_STATE: ${{ steps.prepare-apply.outputs.state }}
           APPLIED_HEAD: ${{ steps.commit.outputs.applied-head }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
-          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN || vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID || vars.DCODE_RELEASE_BOT_ID }}
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
-            const { publishAppliedState } = require('./trusted-source/.github/scripts/release/dcode-release-notes.js');
+            const { publishAppliedState } = require('./trusted-source/.github/scripts/release/release-notes.js');
             try {
               await publishAppliedState({
                 github,
@@ -398,8 +400,8 @@ jobs:
           PR_NUMBER: ${{ needs.validate.outputs.number }}
           PR_HEAD: ${{ needs.validate.outputs.head }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
-          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN || vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID || vars.DCODE_RELEASE_BOT_ID }}
           PREPARE_ERROR: ${{ steps.prepare-apply.outputs.error }}
           COMMIT_ERROR: ${{ steps.commit.outputs.error }}
           PUBLISH_ERROR: ${{ steps.publish.outputs.error }}
@@ -415,7 +417,7 @@ jobs:
               || process.env.PUBLISH_ERROR
               || `commit=${process.env.COMMIT_OUTCOME || 'skipped'}; see the workflow logs.`;
             try {
-              const { postApplyFailure } = require('./trusted-source/.github/scripts/release/dcode-release-notes.js');
+              const { postApplyFailure } = require('./trusted-source/.github/scripts/release/release-notes.js');
               await postApplyFailure({
                 github,
                 ...context.repo,

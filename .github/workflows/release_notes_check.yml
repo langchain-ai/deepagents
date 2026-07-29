@@ -1,9 +1,10 @@
-# Required merge gate for curated deepagents-code release notes. Pull-request runs
+# Required merge gate for curated release notes on every release-please component.
+# Pull-request runs
 # attach the native required status to the PR commit. Comment/manual runs execute
 # trusted automation from main and explicitly refresh that status on the validated
 # release head.
 
-name: "📝 dcode curated release notes check"
+name: "📝 Curated release notes check"
 
 on:
   pull_request:
@@ -24,7 +25,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: dcode-release-notes-check-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+  group: release-notes-check-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
   cancel-in-progress: false
 
 jobs:
@@ -46,16 +47,25 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
-          BOT_LOGIN: ${{ vars.DCODE_RELEASE_BOT_LOGIN }}
-          BOT_ID: ${{ vars.DCODE_RELEASE_BOT_ID }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN || vars.DCODE_RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID || vars.DCODE_RELEASE_BOT_ID }}
         with:
           script: |
-            // PR workflow YAML can land before main gets the nested layout.
-            // Prefer nested; fall back to the flat path still present on main.
+            // This workflow's YAML comes from the PR, but the helper is checked out
+            // from main, so a rename lands here one merge before it lands there.
+            // Try the current name first and fall back to the older ones, newest
+            // first, so the required check keeps working across the rename.
             const fs = require('fs');
-            const nestedHelper = './trusted-source/.github/scripts/release/dcode-release-notes.js';
-            const flatHelper = './trusted-source/.github/scripts/dcode-release-notes.js';
-            const helperPath = fs.existsSync(nestedHelper) ? nestedHelper : flatHelper;
+            const candidates = [
+              './trusted-source/.github/scripts/release/release-notes.js',
+              './trusted-source/.github/scripts/release/dcode-release-notes.js',
+              './trusted-source/.github/scripts/dcode-release-notes.js',
+            ];
+            const helperPath = candidates.find(candidate => fs.existsSync(candidate));
+            if (!helperPath) {
+              core.setFailed(`No curated release-notes helper found on main; looked for: ${candidates.join(', ')}`);
+              return;
+            }
             const { checkCuratedState, isReleaseBranchPr } = require(helperPath);
             const number = Number(process.env.PR_NUMBER);
             if (!Number.isSafeInteger(number) || number <= 0) {
@@ -66,7 +76,7 @@ jobs:
             const { owner, repo } = context.repo;
             const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: number });
             if (!isReleaseBranchPr(pr)) {
-              core.info('Not the deepagents-code release PR; curated release notes are not required.');
+              core.info('Not a release-please release PR; curated release notes are not required.');
               return;
             }
             let refreshCheck = null;
@@ -123,7 +133,7 @@ jobs:
                             : 'Review the bot-authored draft, then run:',
                           '',
                           '```',
-                          '@dcode-release-bot apply',
+                          '@release-bot apply',
                           '```',
                         ].join('\n')
                       : `Validation result: ${result.status}.`,

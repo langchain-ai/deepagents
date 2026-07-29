@@ -60,6 +60,18 @@ uv sync --all-groups      # install the package + all dependency groups
 
 Prefer the package's `make` targets for standard workflows; use `uv run ...` for direct one-off commands.
 
+### Windows & AppLocker / WDAC Troubleshooting
+
+If `uv` fails to execute on Windows with `WinError 4551` (`An Application Control policy has blocked this file`), your system may be enforcing Application Control policies (AppLocker or Windows Defender Application Control) that restrict standalone executable binaries running outside approved directories.
+
+In this environment, you can install the package in editable mode and run tests directly using standard `pip` and `pytest`:
+
+```bash
+cd libs/deepagents
+python -m pip install -e .[test]
+python -m pytest tests/unit_tests
+```
+
 ## Common commands
 
 Run these from inside a package directory (e.g. `libs/deepagents`). They are consistent across the core SDK packages (`deepagents`, `code`); run `make help` to see what a given package supports:

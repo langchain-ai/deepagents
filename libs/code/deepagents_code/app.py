@@ -578,6 +578,7 @@ if TYPE_CHECKING:
         Callable,
         Coroutine,
         Mapping,
+        Sequence,
     )
 
     from deepagents.backends import CompositeBackend
@@ -2010,6 +2011,62 @@ def _truncate(text: str, *, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
+
+
+_MARKDOWN_ESCAPES = str.maketrans({char: f"\\{char}" for char in "\\&`*_[]<>|~"})
+"""Translation table backing `_escape_markdown`.
+
+Covers the inline constructs Rich's markdown parser acts on (emphasis, code
+spans, links, autolinks/HTML, HTML entities, strikethrough) plus the `|`
+table-cell separator. Block-level punctuation (`#`, `-`, `>`) only has meaning
+at the start of a line; line breaks are normalized before translation, and `>`
+is escaped anyway because it is cheap.
+"""
+
+
+def _escape_markdown(text: str) -> str:
+    """Normalize line breaks and escape markdown syntax in external text.
+
+    Args:
+        text: Display string that may contain markdown punctuation.
+
+    Returns:
+        `text` on one line with markdown-significant characters escaped.
+    """
+    normalized = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    return normalized.translate(_MARKDOWN_ESCAPES)
+
+
+def _markdown_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
+    """Build a markdown pipe table whose cells render as literal text.
+
+    Every header and cell is escaped via `_escape_markdown`, so external text
+    can neither forge additional cells with `|` nor be parsed as markdown.
+
+    Args:
+        headers: Column headings.
+        rows: One sequence of cells per row, each matching `headers` in length.
+
+    Returns:
+        The table as markdown source.
+
+    Raises:
+        ValueError: If a row's length does not match `headers`. Checked because
+            markdown silently drops surplus cells and pads missing ones, so a
+            ragged row would corrupt the table with no other diagnostic.
+    """
+    for row in rows:
+        if len(row) != len(headers):
+            msg = f"row has {len(row)} cells, expected {len(headers)}"
+            raise ValueError(msg)
+    lines = [
+        "| " + " | ".join(_escape_markdown(header) for header in headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    lines.extend(
+        "| " + " | ".join(_escape_markdown(cell) for cell in row) + " |" for row in rows
+    )
+    return "\n".join(lines)
 
 
 def _log_task_exception(task: asyncio.Task[Any]) -> None:
@@ -10073,7 +10130,9 @@ class DeepAgentsApp(App):
                 ),
             )
 
-        await self._mount_message(AppMessage(self._render_tool_catalog(catalog)))
+        await self._mount_message(
+            AppMessage(self._render_tool_catalog(catalog), markdown=True)
+        )
 
     def _mcp_server_info_for_tools(self) -> list[MCPServerInfo]:
         """Return MCP metadata matching the tools bound to the running agent.
@@ -10092,80 +10151,92 @@ class DeepAgentsApp(App):
         ]
 
     @staticmethod
-    def _render_tool_catalog(catalog: ToolCatalog) -> Content:
-        """Render a tool catalog as chat `Content`.
+    def _render_tool_catalog(catalog: ToolCatalog) -> str:
+        """Render a tool catalog as markdown source.
 
-        Shows a count header, then each group's heading with its rows:
-        built-in groups render aligned `name  description` rows, while MCP
-        groups render names only — their descriptions are surfaced via `/mcp`,
-        noted by a pointer line whenever any MCP tools are present. Then any MCP
-        servers that loaded with no tools and a non-`ok` status, and finally a
-        discovery-error notice if the catalog carries one. Every display
-        string — tool names/descriptions and MCP server names/statuses, some of
-        which are external — is added as a plain-text span (via `Content.styled`
-        or a `(text, style)` tuple) that is never parsed as markup.
+        Shows a count header, then a heading per group: built-in groups render a
+        `Tool`/`Description` markdown table, so a long description wraps inside
+        its own cell instead of spilling back to the left margin and running
+        under the name column the way the previous `ljust`-aligned rows did,
+        while MCP groups render names only — their descriptions are surfaced via
+        `/mcp`, noted by a pointer line whenever any MCP tools are present. Then
+        a table of any MCP servers that loaded with no tools and a non-`ok`
+        status, and finally a discovery-error notice if the catalog carries one.
+
+        Every interpolated display string is escaped by `_escape_markdown`
+        except internal literals and the `int` count: tool names and
+        descriptions (from MCP servers, or a custom local agent's own tools),
+        MCP server names, and the unavailable-server status cell, which carries
+        discovery's own reason text for a disabled server. `catalog.mcp_error`
+        is a generic internal literal but is escaped alongside them so the rule
+        has no exceptions. Escaping keeps every such string on one line and
+        renders it verbatim, so it can neither be parsed as markdown nor forge
+        extra table cells with a `|`.
 
         Args:
             catalog: Collected tool groups, unavailable MCP servers, and any
                 discovery-error notice.
 
         Returns:
-            Assembled `Content` ready to mount in an `AppMessage`.
+            Markdown source ready to mount in a markdown `AppMessage`.
         """
         from deepagents_code.tool_catalog import unavailable_server_display
 
         total = sum(len(group.tools) for group in catalog.groups)
         noun = "tool" if total == 1 else "tools"
 
-        parts: list[str | Content | tuple[str, str | TStyle]] = [
-            Content.styled(f"{total} {noun} available", "bold"),
-        ]
-
-        def _section(heading: str, rows: list[tuple[str, str]]) -> None:
-            """Append a bold heading and left-aligned `label  detail` rows."""
-            if not rows:
-                return
-            width = max(len(label) for label, _ in rows)
-            parts.extend(("\n\n", Content.styled(heading, "bold")))
-            for label, detail in rows:
-                row = f"  {label.ljust(width)}  {detail}".rstrip()
-                parts.extend(("\n", (row, "dim")))
+        blocks: list[str] = [f"**{total} {noun} available**"]
 
         has_mcp_tools = False
         for group in catalog.groups:
+            if not group.tools:
+                continue
+            blocks.append(f"### {_escape_markdown(group.label)}")
             if group.source == "mcp":
-                has_mcp_tools = has_mcp_tools or bool(group.tools)
-                rows = [(entry.name, "") for entry in group.tools]
+                has_mcp_tools = True
+                blocks.append(
+                    "\n".join(
+                        f"- {_escape_markdown(entry.name)}" for entry in group.tools
+                    )
+                )
             else:
-                rows = [(entry.name, entry.description) for entry in group.tools]
-            _section(group.label, rows)
+                blocks.append(
+                    _markdown_table(
+                        ("Tool", "Description"),
+                        [(entry.name, entry.description) for entry in group.tools],
+                    )
+                )
 
         if has_mcp_tools:
-            parts.extend(
-                ("\n\n", ("MCP tool descriptions are available in /mcp.", "dim"))
-            )
+            blocks.append("MCP tool descriptions are available in /mcp.")
 
         def _unavailable_row(server: UnavailableServer) -> tuple[str, str]:
-            """Map an unavailable server to a `(name, detail)` row for `_section`.
+            """Map an unavailable server to a `(name, status)` table row.
 
             Args:
                 server: An MCP server discovered with no usable tools.
 
             Returns:
-                A `(name, detail)` pair for `_section` to align and render.
+                A `(name, status)` pair of unescaped cells for `_markdown_table`.
             """
             label, detail = unavailable_server_display(server)
             return (server.name, f"{label}: {detail}" if detail else label)
 
-        _section(
-            "Unavailable MCP servers",
-            [_unavailable_row(server) for server in catalog.unavailable],
-        )
+        if catalog.unavailable:
+            blocks.extend(
+                (
+                    "### Unavailable MCP servers",
+                    _markdown_table(
+                        ("Server", "Status"),
+                        [_unavailable_row(server) for server in catalog.unavailable],
+                    ),
+                )
+            )
 
         if catalog.mcp_error:
-            parts.extend(("\n\n", (catalog.mcp_error, "dim")))
+            blocks.append(_escape_markdown(catalog.mcp_error))
 
-        return Content.assemble(*parts)
+        return "\n\n".join(blocks)
 
     def _goal_state_update(self) -> dict[str, Any]:
         """Build checkpoint state for goal/rubric metadata managed by the TUI.

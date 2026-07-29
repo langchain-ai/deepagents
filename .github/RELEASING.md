@@ -715,6 +715,18 @@ Use `release-deps: acknowledged` only for this coordinated release order. If the
 
 The follow-up sticky is independent of the label: a release PR that resolves cleanly still gets one whenever a sibling's *published* metadata caps the new line, because resolution only proves the changed package installs — not that its reverse-dependents still do. The sticky clears itself once nothing is outstanding. Packages listed under a "could not be determined" warning are neither confirmed clean nor confirmed to owe a release; re-run the job before treating that list as exhaustive.
 
+#### What `release-deps: acknowledged` does to each check
+
+The label means "the release dependencies were reviewed," never "they are resolved." It no longer skips any job — every check still runs and still reports, so the outstanding work stays on the PR:
+
+| Check | Effect of the label |
+| --- | --- |
+| [`📦 Check Release Dependencies`](#releasing-a-new-line-ahead-of-its-dependents) | Resolves in report-only mode: the check goes green, and the sticky still lists the follow-up releases the public install graph needs. |
+| `📦 Check Dependency Freshness` | No effect on whether it runs. It is advisory in all cases, and its comment stays on the PR. |
+| `🔗 Check SDK Pin` | Clears the hard failure on a **prerelease** pin, recording that the pin was reviewed. Stale-pin behaviour is unchanged (advisory; `release.yml` enforces it at publish). |
+
+Because the label stops the release-dependency check from *blocking* without stopping it from *reporting*, treat everything still on the PR after applying it as a to-do list for the release sequence.
+
 ### Overriding a Merged Commit's Changelog Entry
 
 Append a `BEGIN_COMMIT_OVERRIDE` block (shown below) to the **merged PR's body** when release-please needs to use a different message than the actual squash-merge commit. release-please reads merged PR bodies on every run within its lookback window and uses the override in place of the original commit message — no history rewrite, no force-push.

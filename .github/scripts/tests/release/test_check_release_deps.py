@@ -2,23 +2,29 @@
 
 import json
 import subprocess
-import tomllib
 
 import pytest
+import tomllib
 from check_release_deps import (
     BYPASS_LABEL,
     COMMENT_MARKER,
+    CheckResult,
+    FollowUpConflict,
+    PyPIRequestError,
     ResolverFailure,
     _affected_extras,
+    _comment_body,
     _failure_markdown,
     _relevant_log,
     _toml_value,
     _write_output,
     build_resolver_manifest,
     check_release_dependencies,
+    find_follow_up_conflicts,
     is_transient_resolver_error,
     load_release_packages,
     main,
+    run_check,
     run_resolver,
 )
 
@@ -119,7 +125,10 @@ dependencies = []
     )
     monkeypatch.setattr("check_release_deps.run_resolver", run_resolver)
 
-    assert check_release_dependencies("base-sha", "head-sha") == 0
+    result = check_release_dependencies("base-sha", "head-sha")
+
+    assert result.changed is True
+    assert result.failures == []
     assert len(resolver_paths) == len(manifests)
     assert len({path.parent for path in resolver_paths}) == len(manifests)
 
@@ -138,7 +147,11 @@ def test_check_release_dependencies_noop_when_no_manifests_changed(monkeypatch) 
 
     monkeypatch.setattr("check_release_deps.run_resolver", run_resolver)
 
-    assert check_release_dependencies("base-sha", "head-sha") == 0
+    result = check_release_dependencies("base-sha", "head-sha")
+
+    assert result.changed is False
+    assert result.failures == []
+    assert result.followups == []
 
 
 def test_run_resolver_allows_prereleases_for_all_extras(monkeypatch, tmp_path) -> None:
@@ -235,11 +248,11 @@ def test_main_fails_closed_on_unexpected_error(monkeypatch) -> None:
     monkeypatch.setenv("BASE_SHA", "base-sha")
     monkeypatch.setenv("HEAD_SHA", "head-sha")
 
-    def boom(_base, _head) -> int:
+    def boom(_base, _head, *, acked=False, fetcher=None) -> int:
         msg = "kaboom"
         raise RuntimeError(msg)
 
-    monkeypatch.setattr("check_release_deps.check_release_dependencies", boom)
+    monkeypatch.setattr("check_release_deps.run_check", boom)
 
     assert main() == 2
 
@@ -435,7 +448,7 @@ dependencies = ["langchain-daytona==9.9.9"]
 
     monkeypatch.setattr("check_release_deps.run_resolver", run_resolver)
 
-    assert check_release_dependencies("base-sha", "head-sha") == 1
+    assert run_check("base-sha", "head-sha", acked=False) == 1
 
     written = output.read_text(encoding="utf-8")
     assert "failed<<" in written
@@ -484,8 +497,448 @@ dependencies = ["langchain-daytona>=0.1"]
     # The job still fails closed (exit 1) on a transient error, but emits an
     # empty comment_body so the workflow keeps any existing comment untouched
     # rather than posting transient noise.
-    assert check_release_dependencies("base-sha", "head-sha") == 1
+    assert run_check("base-sha", "head-sha", acked=False) == 1
 
     written = output.read_text(encoding="utf-8")
     assert "\ntrue\n" in written
     assert COMMENT_MARKER not in written
+
+
+# --- Follow-up conflict analysis -------------------------------------------
+
+
+def _pypi_payload(
+    version: str, requires_dist: list[str] | None
+) -> dict[str, object]:
+    return {
+        "info": {"name": "pkg", "version": version, "requires_dist": requires_dist},
+        "releases": {version: [{"requires_dist": None, "yanked": False}]},
+    }
+
+
+def _write_manifest(tmp_path, manifest: str, content: str) -> None:
+    path = tmp_path / manifest
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def test_find_follow_up_conflicts_flags_published_upper_bound(
+    monkeypatch, tmp_path
+) -> None:
+    manifest = "libs/code/pyproject.toml"
+    _write_manifest(
+        tmp_path,
+        manifest,
+        """
+[project]
+name = "deepagents-code"
+version = "0.1.0"
+dependencies = ["deepagents==0.7.0"]
+""".strip(),
+    )
+    payloads = {"deepagents": _pypi_payload("0.6.12", ["langchain>=1.0"])}
+
+    monkeypatch.setattr("check_release_deps.REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "check_release_deps.load_release_packages",
+        lambda: {"libs/code": "deepagents-code", "libs/deepagents": "deepagents"},
+    )
+
+    conflicts, unavailable = find_follow_up_conflicts(
+        [manifest], ["libs/code"], fetcher=lambda name: payloads[name]
+    )
+
+    assert unavailable == ()
+    assert len(conflicts) == 1
+    conflict = conflicts[0]
+    assert conflict.dependency_name == "deepagents"
+    assert conflict.requirement == "==0.7.0"
+    assert conflict.published_constraint is None
+    assert "does not declare this dependency" in conflict.reason
+
+
+def test_find_follow_up_conflicts_flags_conflicting_published_range(
+    monkeypatch, tmp_path
+) -> None:
+    manifest = "libs/code/pyproject.toml"
+    _write_manifest(
+        tmp_path,
+        manifest,
+        """
+[project]
+name = "deepagents-code"
+version = "0.1.0"
+dependencies = ["deepagents>=0.7,<0.8"]
+""".strip(),
+    )
+
+    monkeypatch.setattr("check_release_deps.REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "check_release_deps.load_release_packages",
+        lambda: {"libs/code": "deepagents-code", "libs/deepagents": "deepagents"},
+    )
+
+    def fetch(name: str) -> dict[str, object]:
+        return {"deepagents": _pypi_payload("0.6.12", ["langchain>=1.0"])}[name]
+
+    conflicts, _ = find_follow_up_conflicts(
+        [manifest], ["libs/code"], fetcher=fetch
+    )
+    assert len(conflicts) == 1
+    assert conflicts[0].dependency_name == "deepagents"
+
+
+def test_find_follow_up_conflicts_covers_multiple_partners(monkeypatch, tmp_path) -> None:
+    """Every conflicting partner is listed, not just the first uv would proof."""
+    manifest = "libs/code/pyproject.toml"
+    _write_manifest(
+        tmp_path,
+        manifest,
+        """
+[project]
+name = "deepagents-code"
+version = "0.1.0"
+dependencies = ["deepagents==0.7.0"]
+
+[project.optional-dependencies]
+daytona = ["langchain-daytona>=0.1.0"]
+modal = ["langchain-modal>=0.1.0"]
+""".strip(),
+    )
+    payloads = {
+        "deepagents": _pypi_payload("0.6.12", ["langchain>=1.0"]),
+        # Both partners still cap deepagents below the head requirement.
+        "langchain-daytona": _pypi_payload("0.0.8", ["deepagents>=0.6,<0.7"]),
+        "langchain-modal": _pypi_payload("0.0.8", ["deepagents>=0.6,<0.7"]),
+    }
+
+    monkeypatch.setattr("check_release_deps.REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "check_release_deps.load_release_packages",
+        lambda: {
+            "libs/code": "deepagents-code",
+            "libs/deepagents": "deepagents",
+            "libs/partners/daytona": "langchain-daytona",
+            "libs/partners/modal": "langchain-modal",
+        },
+    )
+
+    conflicts, unavailable = find_follow_up_conflicts(
+        [manifest], ["libs/code"], fetcher=lambda name: payloads[name]
+    )
+
+    assert unavailable == ()
+    flagged = {conflict.dependency_name for conflict in conflicts}
+    assert {"langchain-daytona", "langchain-modal"} <= flagged
+    partner_conflicts = [
+        conflict
+        for conflict in conflicts
+        if conflict.dependency_name.startswith("langchain-")
+    ]
+    # Each partner conflict explains the root cause: their published release
+    # still caps `deepagents` below the line this branch requires.
+    assert all(
+        conflict.published_constraint is None
+        and "does not declare this dependency" in conflict.reason
+        for conflict in partner_conflicts
+    )
+
+
+def test_find_follow_up_conflicts_skips_local_and_self_requirements(
+    monkeypatch, tmp_path
+) -> None:
+    manifest = "libs/code/pyproject.toml"
+    _write_manifest(
+        tmp_path,
+        manifest,
+        """
+[project]
+name = "deepagents-code"
+version = "0.1.0"
+dependencies = ["deepagents==0.7.0", "deepagents-acp>=0.1"]
+
+[tool.uv.sources]
+deepagents = { path = "../deepagents" }
+""".strip(),
+    )
+    monkeypatch.setattr("check_release_deps.REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "check_release_deps.load_release_packages",
+        lambda: {
+            "libs/code": "deepagents-code",
+            "libs/deepagents": "deepagents",
+            "libs/acp": "deepagents-acp",
+        },
+    )
+
+    fetched = []
+
+    def fetch(name: str) -> dict[str, object]:
+        fetched.append(name)
+        return _pypi_payload("0.1.0", ["deepagents-acp>=0.1"])
+
+    conflicts, _ = find_follow_up_conflicts([manifest], ["libs/code"], fetcher=fetch)
+
+    # The path-sourced `deepagents` requirement never reaches PyPI analysis.
+    assert fetched == ["deepagents-acp"]
+    assert conflicts == []
+
+
+def test_find_follow_up_conflicts_reports_unavailable_without_claiming_releases(
+    monkeypatch, tmp_path
+) -> None:
+    manifest = "libs/code/pyproject.toml"
+    _write_manifest(
+        tmp_path,
+        manifest,
+        """
+[project]
+name = "deepagents-code"
+version = "0.1.0"
+dependencies = ["deepagents>=0.7"]
+""".strip(),
+    )
+    monkeypatch.setattr("check_release_deps.REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "check_release_deps.load_release_packages",
+        lambda: {"libs/code": "deepagents-code", "libs/deepagents": "deepagents"},
+    )
+
+    def fetch(name: str) -> dict[str, object]:
+        msg = f"PyPI request failed for {name}: boom"
+        raise PyPIRequestError(msg, transient=True)
+
+    conflicts, unavailable = find_follow_up_conflicts(
+        [manifest], ["libs/code"], fetcher=fetch
+    )
+
+    assert conflicts == []
+    assert unavailable == ("deepagents",)
+
+
+def test_failure_markdown_includes_follow_up_section() -> None:
+    failure = _failure(log="No solution found: deepagents==0.7.0 is unavailable")
+    conflict = FollowUpConflict(
+        manifest_path="libs/code/pyproject.toml",
+        package_name="deepagents-code",
+        dependency_name="deepagents",
+        requirement="==0.7.0",
+        published_constraint=">=0.6,<0.7",
+        reason="published 0.6.12 constrains it to `>=0.6,<0.7`",
+    )
+
+    markdown = _failure_markdown(
+        [failure], include_marker=True, followups=[conflict]
+    )
+
+    assert "### Follow-up releases needed" in markdown
+    assert "`deepagents-code`" in markdown
+    assert "`deepagents`" in markdown
+    assert "`==0.7.0`" in markdown
+    assert "`>=0.6,<0.7`" in markdown
+    # The section lands above the raw resolver log.
+    assert markdown.index("### Follow-up releases needed") < markdown.index("```text")
+
+
+def test_failure_markdown_lists_all_partner_conflicts_not_only_first(
+    tmp_path, monkeypatch
+) -> None:
+    failure = _failure(log="No solution found when resolving dependencies")
+    conflicts = [
+        FollowUpConflict(
+            manifest_path="libs/code/pyproject.toml",
+            package_name="deepagents-code",
+            dependency_name=name,
+            requirement=">=0.1.0",
+            published_constraint=">=0.6,<0.7",
+            reason="published 0.0.8 constrains it to `>=0.6,<0.7`",
+        )
+        for name in ("langchain-daytona", "langchain-modal", "langchain-runloop")
+    ]
+
+    markdown = _failure_markdown(
+        [failure], include_marker=False, followups=conflicts
+    )
+
+    for name in ("langchain-daytona", "langchain-modal", "langchain-runloop"):
+        assert f"`{name}`" in markdown
+
+
+def test_publish_candidates_section_stays_version_agnostic() -> None:
+    failure = _failure()
+    conflict = FollowUpConflict(
+        manifest_path="libs/code/pyproject.toml",
+        package_name="deepagents-code",
+        dependency_name="deepagents",
+        requirement="==0.7.0",
+        published_constraint=">=0.6,<0.7",
+        reason="published 0.6.12 constrains it to `>=0.6,<0.7`",
+    )
+
+    markdown = _failure_markdown(
+        [failure], include_marker=True, followups=[conflict]
+    )
+
+    # Headings and prose never freeze a specific version line into the template;
+    # only the data-driven table cells carry concrete pins.
+    headings = [
+        line for line in markdown.splitlines() if line.startswith("#")
+    ]
+    assert all("0.7" not in heading and "0.6" not in heading for heading in headings)
+
+
+def test_ack_soft_run_writes_sticky_and_exits_zero(monkeypatch, tmp_path) -> None:
+    manifest = "libs/code/pyproject.toml"
+    _write_manifest(
+        tmp_path,
+        manifest,
+        """
+[project]
+name = "deepagents-code"
+version = "0.1.0"
+dependencies = ["deepagents==0.7.0"]
+""".strip(),
+    )
+    output = tmp_path / "github_output"
+    summary = tmp_path / "github_summary"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+
+    monkeypatch.setattr("check_release_deps.REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "check_release_deps.load_release_packages",
+        lambda: {"libs/code": "deepagents-code", "libs/deepagents": "deepagents"},
+    )
+    monkeypatch.setattr(
+        "check_release_deps.changed_manifests",
+        lambda _base, _head, _packages: [manifest],
+    )
+
+    def run_resolver(_manifest_path, log_path) -> bool:
+        log_path.write_text(
+            "No solution found: deepagents==0.7.0 is not available",
+            encoding="utf-8",
+        )
+        return False
+
+    monkeypatch.setattr("check_release_deps.run_resolver", run_resolver)
+    monkeypatch.setattr(
+        "check_release_deps.fetch_pypi_json",
+        lambda name: _pypi_payload("0.6.12", ["langchain>=1.0"]),
+    )
+
+    assert run_check("base-sha", "head-sha", acked=True) == 0
+
+    written = output.read_text(encoding="utf-8")
+    assert "\nfalse\n" in written
+    assert COMMENT_MARKER in written
+    body_start = written.index(COMMENT_MARKER)
+    body = written[body_start:]
+    assert "acknowledged bypass" in body
+    assert "### Follow-up releases needed after merge" in body
+    assert "### Resolution failures (reported, not blocking)" in body
+    assert "`deepagents`" in body
+    summary_text = summary.read_text(encoding="utf-8")
+    assert "acknowledged bypass" in summary_text
+    assert COMMENT_MARKER not in summary_text
+
+
+def test_ack_soft_run_clean_resolve_reports_no_followups(monkeypatch, tmp_path) -> None:
+    manifest = "libs/code/pyproject.toml"
+    _write_manifest(
+        tmp_path,
+        manifest,
+        """
+[project]
+name = "deepagents-code"
+version = "0.1.0"
+dependencies = ["deepagents>=0.6"]
+""".strip(),
+    )
+    output = tmp_path / "github_output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+
+    monkeypatch.setattr("check_release_deps.REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "check_release_deps.load_release_packages",
+        lambda: {"libs/code": "deepagents-code", "libs/deepagents": "deepagents"},
+    )
+    monkeypatch.setattr(
+        "check_release_deps.changed_manifests",
+        lambda _base, _head, _packages: [manifest],
+    )
+
+    def run_resolver(_manifest_path, log_path) -> bool:
+        log_path.write_text("resolved\n", encoding="utf-8")
+        return True
+
+    monkeypatch.setattr("check_release_deps.run_resolver", run_resolver)
+
+    def fetch(name: str) -> dict[str, object]:
+        # Published deepagents-code already allows the required deepagents range.
+        return _pypi_payload("0.1.49", ["deepagents>=0.6,<0.8"])
+
+    monkeypatch.setattr("check_release_deps.fetch_pypi_json", fetch)
+
+    assert run_check("base-sha", "head-sha", acked=True) == 0
+
+    written = output.read_text(encoding="utf-8")
+    assert "\nfalse\n" in written
+    assert "no sibling follow-up releases are required" in written
+
+
+def test_transient_unavailable_pypi_does_not_claim_needs_release(
+    monkeypatch, tmp_path
+) -> None:
+    manifest = "libs/code/pyproject.toml"
+    _write_manifest(
+        tmp_path,
+        manifest,
+        """
+[project]
+name = "deepagents-code"
+version = "0.1.0"
+dependencies = ["deepagents>=0.7"]
+""".strip(),
+    )
+    monkeypatch.setattr("check_release_deps.REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        "check_release_deps.load_release_packages",
+        lambda: {"libs/code": "deepagents-code", "libs/deepagents": "deepagents"},
+    )
+
+    def fetch(name: str) -> dict[str, object]:
+        msg = f"PyPI request failed for {name}: connection reset"
+        raise PyPIRequestError(msg, transient=True)
+
+    conflicts, unavailable = find_follow_up_conflicts(
+        [manifest], ["libs/code"], fetcher=fetch
+    )
+    result = CheckResult(
+        changed=True,
+        failures=[],
+        followups=conflicts,
+        unavailable=unavailable,
+    )
+
+    body = _comment_body(result, acked=True)
+
+    assert conflicts == []
+    assert unavailable == ("deepagents",)
+    assert "### Follow-up releases needed" not in body
+    assert "PyPI metadata could not be fetched" in body
+    assert "deepagents" in body
+
+
+def test_ack_comment_without_marker_or_conflict_still_explains_bypass(
+    monkeypatch, tmp_path
+) -> None:
+    result = CheckResult(changed=True, failures=[], followups=[], unavailable=())
+
+    body = _comment_body(result, acked=True)
+
+    assert body.startswith(COMMENT_MARKER)
+    assert "acknowledged bypass" in body
+    assert BYPASS_LABEL in body
+    assert "coordinated release order" in body

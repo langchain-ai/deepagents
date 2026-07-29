@@ -5849,6 +5849,29 @@ class TestIsWarningSuppressed:
 
         assert is_warning_suppressed("ripgrep", config_path) is False
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            'warnings = "ripgrep"',
+            'warnings = ["ripgrep"]',
+            "warnings = 3",
+        ],
+    )
+    def test_returns_false_when_warnings_is_not_a_table(
+        self, tmp_path, body: str
+    ) -> None:
+        """Fails open when `warnings` is hand-edited into a non-table.
+
+        `warnings = ["ripgrep"]` is a plausible typo given the key is
+        documented as `warnings.suppress`. It must not raise: callers treat
+        an exception here as fatal, and one of them warns that YOLO is
+        active.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(f"{body}\n")
+
+        assert is_warning_suppressed("ripgrep", config_path) is False
+
 
 class TestSuppressWarning:
     """Tests for suppress_warning() function."""

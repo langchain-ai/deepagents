@@ -13,6 +13,7 @@ from deepagents_code.hooks.engine import HookEngine
 from deepagents_code.hooks.loading import load_hooks_config
 from deepagents_code.hooks.models.domain import (
     HookDecision,
+    HookEvent,
     HookInvocation,
     SubagentStartEvent,
     SubagentStopEvent,
@@ -68,9 +69,10 @@ class HooksRuntime:
             cwd: Session working directory.
             workspace_trusted: Whether project-scoped hooks may be loaded.
             config_dir: Alternate user config directory for tests.
-            transcript_root: Alternate transcript store root. Defaults to
-                `~/.deepagents/transcripts`, or `{config_dir}/transcripts` when
-                an alternate user configuration directory is provided.
+            transcript_root: Alternate transcript store root for tests.
+                Defaults to `~/.deepagents/transcripts` regardless of
+                `config_dir` (project and test hook configs must not relocate
+                the global transcript store).
 
         Returns:
             A runtime ready to execute invocations for this session.
@@ -85,8 +87,11 @@ class HooksRuntime:
             diagnostics=loaded.diagnostics,
             snapshot_id=loaded.snapshot_id,
         )
-        user_config_dir = config_dir or DEFAULT_CONFIG_DIR
-        store = TranscriptStore(transcript_root or user_config_dir / "transcripts")
+        store = TranscriptStore(
+            transcript_root
+            if transcript_root is not None
+            else DEFAULT_CONFIG_DIR / "transcripts"
+        )
         engine = HookEngine(snapshot)
         return cls(
             snapshot=snapshot,
@@ -110,6 +115,14 @@ class HooksRuntime:
         return tuple(
             sorted(event.value for event in self.snapshot.configured_server_events())
         )
+
+    def configured_events(self) -> frozenset[HookEvent]:
+        """Return every event with at least one configured handler.
+
+        Returns:
+            Immutable configured event set.
+        """
+        return self.snapshot.configured_events()
 
     def append_messages(
         self,

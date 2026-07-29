@@ -24,7 +24,7 @@ from deepagents_code.hooks.loading import (
 )
 from deepagents_code.hooks.migration import migrate_legacy_hooks
 from deepagents_code.hooks.models.config import HooksConfig
-from deepagents_code.hooks.models.domain import HookEvent
+from deepagents_code.hooks.models.domain import HookEvent, HookOwner
 from deepagents_code.hooks.snapshot import HooksSnapshot
 
 if TYPE_CHECKING:
@@ -44,6 +44,7 @@ def test_registry_covers_all_hook_events() -> None:
         HookEvent.USER_PROMPT_SUBMIT
     ).default_timeout_seconds == pytest.approx(30.0)
     assert get_event_spec(HookEvent.PRE_COMPACT).matcher_field == "trigger"
+    assert get_event_spec(HookEvent.PRE_COMPACT).owner is HookOwner.SERVER
 
 
 def test_load_hooks_config_precedence_and_snapshot_hash(tmp_path: Path) -> None:
@@ -164,6 +165,10 @@ def test_legacy_migration_maps_equivalent_lifecycle_events(
     ]
     assert prompt_legacy_events == ["session.start", "user.prompt"]
     assert compact_legacy_events == ["context.offload", "context.compact"]
+    assert (
+        HookEvent.PRE_COMPACT
+        in HooksSnapshot.from_config(migrated).configured_server_events()
+    )
     assert HookEvent.SESSION_START not in migrated.hooks
     assert HookEvent.PRE_TOOL_USE not in migrated.hooks
     for groups in migrated.hooks.values():

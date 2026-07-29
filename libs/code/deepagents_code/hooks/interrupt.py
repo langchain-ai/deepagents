@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, TypeAlias
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
@@ -13,7 +13,6 @@ from deepagents_code.hooks.models.transport import (  # noqa: TC001 - Pydantic r
     HookInvocationRequest,
     HookInvocationResponse,
 )
-from deepagents_code.json_types import JsonObject
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -32,10 +31,10 @@ class HookInvocationInterrupt(BaseModel):
 
 HOOK_INVOCATION_INTERRUPT_ADAPTER = TypeAdapter(HookInvocationInterrupt)
 
-HookResumeValue: TypeAlias = JsonObject
+HookResumeValue: TypeAlias = dict[str, Any]
 
 
-def build_hook_interrupt_payload(request: HookInvocationRequest) -> JsonObject:
+def build_hook_interrupt_payload(request: HookInvocationRequest) -> dict[str, Any]:
     """Serialize a hook invocation request for `interrupt()`.
 
     Args:

@@ -6790,6 +6790,14 @@ class TestRunAgentTaskMediaTracker:
             assert app._ui_adapter is not None
 
             pending_tool = MagicMock()
+            # Match the real widget's default. An unset MagicMock attribute is
+            # truthy, and each of these is read by a different consumer, so both
+            # must be set: `deferred_success_output` by
+            # `_dispatch_terminal_tool_result_hooks` (which would report a success
+            # with no tool.error) and `is_awaiting_deferred_result` by
+            # `set_error`/`set_rejected` (which would redirect to a settle).
+            pending_tool.deferred_success_output = None
+            pending_tool.is_awaiting_deferred_result = False
             app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}
 
             with patch(
@@ -6824,6 +6832,14 @@ class TestRunAgentTaskMediaTracker:
             assert app._ui_adapter is not None
 
             pending_tool = MagicMock()
+            # Match the real widget's default. An unset MagicMock attribute is
+            # truthy, and each of these is read by a different consumer, so both
+            # must be set: `deferred_success_output` by
+            # `_dispatch_terminal_tool_result_hooks` (which would report a success
+            # with no tool.error) and `is_awaiting_deferred_result` by
+            # `set_error`/`set_rejected` (which would redirect to a settle).
+            pending_tool.deferred_success_output = None
+            pending_tool.is_awaiting_deferred_result = False
             app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}
 
             exc = RemoteException(
@@ -13092,7 +13108,6 @@ class TestMessageTimestampFooters:
             app._session_state.hooks = HooksManager.adopting(
                 runtime,
                 identity=app._session_state.hook_identity,
-                notice=lambda _message: None,
             )
             payload = _ThreadHistoryPayload(
                 [],
@@ -16979,6 +16994,25 @@ class TestYoloActiveWarning:
 class TestToolsSlashCommand:
     """Tests for the `/tools` slash command."""
 
+    @staticmethod
+    def _display(source: str, *, width: int = 100) -> str:
+        """Return the text a markdown `AppMessage` shows for `source`.
+
+        The catalog is emitted as markdown source, so assertions about what the
+        user actually sees (names and descriptions with their escapes resolved,
+        table cells laid out) must go through the same renderer the widget uses.
+
+        Args:
+            source: Markdown source as returned by `_render_tool_catalog`.
+            width: Render width in terminal cells.
+
+        Returns:
+            The rendered display text, laid out at a fixed width.
+        """
+        from deepagents_code.tui.widgets.messages import _markdown_to_content
+
+        return _markdown_to_content(source, width).plain
+
     async def test_mounts_user_echo_then_catalog(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
         from deepagents_code.tool_catalog import ToolEntry
@@ -17015,10 +17049,40 @@ class TestToolsSlashCommand:
         first, second = (c.args[0] for c in mount.await_args_list)
         assert isinstance(first, UserMessage)
         assert isinstance(second, AppMessage)
-        rendered = second._content.plain
+        assert second._is_markdown
+        rendered = self._display(str(second._content))
         assert "read_file" in rendered
         assert "search_docs" in rendered
         assert "docs" in rendered
+
+    async def test_mounted_catalog_renders_markdown_table(self) -> None:
+        """The mounted message renders through the widget's own markdown path."""
+        tool_node = SimpleNamespace(
+            tools_by_name={"read_file": SimpleNamespace(description="Read a file")}
+        )
+        agent = MagicMock()
+        agent.nodes = {"tools": SimpleNamespace(bound=tool_node)}
+        app = DeepAgentsApp(agent=agent)
+        app._server_kwargs = None
+
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            await app._handle_command("/tools")
+            await pilot.pause()
+
+            catalog = [m for m in app.query(AppMessage) if m._is_markdown]
+            assert catalog
+            rendered = catalog[-1].render().plain
+
+        assert "1 tool available" in rendered
+        # The column headings and rule prove the source became a real table
+        # rather than degenerating into paragraphs or a list.
+        assert "Tool" in rendered
+        assert "Description" in rendered
+        assert "─" in rendered
+        # Present unescaped, so the markdown source's `read\_file` resolved.
+        assert "read_file" in rendered
+        assert "Read a file" in rendered
 
     async def test_built_in_failure_still_shows_mcp(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
@@ -17047,7 +17111,7 @@ class TestToolsSlashCommand:
         assert mount.await_count == 3
         catalog_msg = mount.await_args_list[-1].args[0]
         assert isinstance(catalog_msg, AppMessage)
-        assert "search_docs" in catalog_msg._content.plain
+        assert "search_docs" in self._display(str(catalog_msg._content))
 
     async def test_custom_local_agent_uses_its_bound_tools(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
@@ -17081,7 +17145,7 @@ class TestToolsSlashCommand:
 
         compile_.assert_not_called()
         assert mount.await_count == 2
-        rendered = mount.await_args_list[-1].args[0]._content.plain
+        rendered = self._display(str(mount.await_args_list[-1].args[0]._content))
         assert rendered.count("custom_search") == 1
         assert "Search custom data" in rendered
         assert rendered.count("search_docs") == 1
@@ -17099,7 +17163,7 @@ class TestToolsSlashCommand:
             await app._handle_command("/tools")
 
         assert mount.await_count == 2
-        rendered = mount.await_args_list[-1].args[0]._content.plain
+        rendered = self._display(str(mount.await_args_list[-1].args[0]._content))
         assert "0 tools available" in rendered
         assert "cannot be enumerated" not in rendered
         assert "still has its built-in tools" not in rendered
@@ -17126,7 +17190,9 @@ class TestToolsSlashCommand:
         assert mount.await_count == 3
         notice = mount.await_args_list[1].args[0]
         assert "cannot be enumerated" in str(notice._content)
-        assert "search_docs" in mount.await_args_list[-1].args[0]._content.plain
+        assert "search_docs" in self._display(
+            str(mount.await_args_list[-1].args[0]._content)
+        )
 
     async def test_remote_agent_reports_unavailable_mcp_server(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo
@@ -17151,7 +17217,7 @@ class TestToolsSlashCommand:
         notice = str(mount.await_args_list[1].args[0]._content)
         assert "cannot be enumerated" in notice
         assert "showing MCP information only" in notice
-        rendered = mount.await_args_list[-1].args[0]._content.plain
+        rendered = self._display(str(mount.await_args_list[-1].args[0]._content))
         assert "Unavailable MCP servers" in rendered
         assert "notion" in rendered
         assert "Login required" in rendered
@@ -17178,7 +17244,7 @@ class TestToolsSlashCommand:
         ):
             await app._handle_command("/tools")
 
-        rendered = mount.await_args_list[-1].args[0]._content.plain
+        rendered = self._display(str(mount.await_args_list[-1].args[0]._content))
         assert "search_docs" in rendered
         assert "Unavailable MCP servers" not in rendered
 
@@ -17208,7 +17274,7 @@ class TestToolsSlashCommand:
         ):
             await app._handle_command("/tools")
 
-        rendered = mount.await_args_list[-1].args[0]._content.plain
+        rendered = self._display(str(mount.await_args_list[-1].args[0]._content))
         assert "notion" in rendered
         assert "Re-enabled — press Ctrl+R to load." in rendered
         assert "disabled by user" not in rendered
@@ -17234,7 +17300,7 @@ class TestToolsSlashCommand:
         catalog = build_catalog_from_server_info(
             [ToolEntry(name="read_file", description="Read a file")], servers
         )
-        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
+        rendered = self._display(DeepAgentsApp._render_tool_catalog(catalog))
         assert "1 tool available" in rendered
         assert "Unavailable MCP servers" in rendered
         assert "broken" in rendered
@@ -17264,7 +17330,9 @@ class TestToolsSlashCommand:
             assistant_id="agent", enable_interpreter=True, fs_tools=None
         )
         assert mount.await_count == 2
-        assert "js_eval" in mount.await_args_list[-1].args[0]._content.plain
+        assert "js_eval" in self._display(
+            str(mount.await_args_list[-1].args[0]._content)
+        )
 
     async def test_built_in_failure_without_mcp_is_honest(self) -> None:
         app = DeepAgentsApp(agent=MagicMock())
@@ -17319,23 +17387,137 @@ class TestToolsSlashCommand:
                 )
             ],
         )
-        # Rich markup in external names/descriptions must survive verbatim and
-        # never be parsed (an unclosed "[" would raise if it were).
-        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
+        # Rich markup in external names/descriptions must survive verbatim. It
+        # is not markdown syntax, so the markdown path passes it through
+        # untouched; pinned because the pre-markdown renderer built `Content`,
+        # where an unclosed "[" raised `MarkupError`. This asserts the property
+        # survived the switch, now by a different mechanism.
+        rendered = self._display(DeepAgentsApp._render_tool_catalog(catalog))
         assert "[bold]evil[/bold]" in rendered
         assert "[red]x[/red]" in rendered
         assert "[i]srv" in rendered
 
+    def test_render_escapes_markdown_syntax(self) -> None:
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        catalog = build_catalog_from_server_info(
+            [
+                ToolEntry(
+                    name="read_file",
+                    description="Reads *any* file | prints `__init__`",
+                )
+            ],
+            [],
+        )
+        source = DeepAgentsApp._render_tool_catalog(catalog)
+        # A `|` in a description must not forge an extra table cell: the row is
+        # exactly the two escaped cells the table declares.
+        assert (
+            "| read\\_file | Reads \\*any\\* file \\| prints \\`\\_\\_init\\_\\_\\` |"
+            in source
+        )
+        # And the escapes resolve back to the literal text the tool reported.
+        rendered = self._display(source)
+        assert "read_file" in rendered
+        assert "Reads *any* file | prints `__init__`" in rendered
+
+    def test_render_escapes_every_markdown_metacharacter(self) -> None:
+        r"""Each character in `_MARKDOWN_ESCAPES` must round-trip verbatim.
+
+        Guards the escape table itself: dropping any single character from it
+        silently changes what the user sees — unescaped `<b>` is swallowed as
+        HTML, `[d](u)` collapses to its link text, `~~x~~` to struck text, and a
+        `\` before punctuation disappears — so each needs a live assertion.
+        """
+        from deepagents_code.app import _MARKDOWN_ESCAPES
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        # One specimen per escaped character. `C:\*t` pins the backslash: a bare
+        # `\` before a letter is already literal in CommonMark, so only a `\`
+        # before punctuation detects a missing escape.
+        description = "*a* _b_ `c` <b>d</b> [e](http://f) ~~g~~ h|i C:\\*t &copy;"
+        # `str.maketrans` keys on codepoints, so compare ordinals. This fails if
+        # a character is added to the table without a specimen added here.
+        specimens = "\\&`*_[]<>|~"
+        assert {ord(char) for char in specimens} == set(_MARKDOWN_ESCAPES)
+        assert all(char in description for char in specimens)
+
+        catalog = build_catalog_from_server_info(
+            [ToolEntry(name="t_n", description=description)], []
+        )
+        # Wide enough that the cell does not wrap, so the substring survives.
+        rendered = self._display(DeepAgentsApp._render_tool_catalog(catalog), width=200)
+        assert description in rendered
+
+    def test_markdown_table_escapes_headers_and_rejects_ragged_rows(self) -> None:
+        """Headers are escaped, and a row that misfits the headers raises."""
+        from deepagents_code.app import _markdown_table
+
+        # Headers are escaped too, so a `|` cannot forge an extra column.
+        assert _markdown_table(("a|b", "c"), []).splitlines()[0] == "| a\\|b | c |"
+
+        # A ragged row must raise rather than emit a table markdown would
+        # silently pad or truncate.
+        for row in (("only",), ("a", "b", "c")):
+            with pytest.raises(ValueError, match="expected 2"):
+                _markdown_table(("A", "B"), [row])
+
+    def test_render_preserves_entities_and_normalizes_line_breaks(self) -> None:
+        from deepagents_code.tool_catalog import ToolCatalog, ToolEntry, ToolGroup
+
+        catalog = ToolCatalog(
+            groups=(
+                ToolGroup(
+                    label="Built-in",
+                    source="built-in",
+                    tools=(
+                        ToolEntry(name="entity_tool", description="literal &copy;"),
+                    ),
+                ),
+            ),
+            mcp_error="failed\n# not a heading\r\n- not a list",
+        )
+        source = DeepAgentsApp._render_tool_catalog(catalog)
+
+        assert "| entity\\_tool | literal \\&copy; |" in source
+        assert "failed # not a heading - not a list" in source
+        rendered = self._display(source)
+        assert "literal &copy;" in rendered
+        assert "failed # not a heading - not a list" in rendered
+        assert "©" not in rendered
+
+    def test_render_folds_long_tool_names_without_ellipsis(self) -> None:
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        name = "a_very_long_tool_name"
+        catalog = build_catalog_from_server_info(
+            [ToolEntry(name=name, description="desc")], []
+        )
+        rendered = self._display(DeepAgentsApp._render_tool_catalog(catalog), width=30)
+
+        assert "…" not in rendered
+        assert name in "".join(rendered.replace("desc", "").split())
+
     def test_render_empty_catalog_reports_zero_without_error(self) -> None:
         from deepagents_code.tool_catalog import build_catalog_from_server_info
 
-        rendered = DeepAgentsApp._render_tool_catalog(
-            build_catalog_from_server_info([], [])
-        ).plain
+        rendered = self._display(
+            DeepAgentsApp._render_tool_catalog(build_catalog_from_server_info([], []))
+        )
         assert "0 tools available" in rendered
 
-    def test_render_plural_noun_and_column_alignment(self) -> None:
+    def test_render_plural_noun_and_built_in_table(self) -> None:
         from deepagents_code.tool_catalog import (
+            BUILT_IN_GROUP,
             ToolEntry,
             build_catalog_from_server_info,
         )
@@ -17347,13 +17529,38 @@ class TestToolsSlashCommand:
             ],
             [],
         )
-        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
-        assert "2 tools available" in rendered
-        # Shorter name padded to the widest name in the group so columns align.
-        assert f"  {'ls'.ljust(len('read_file'))}  list" in rendered
-        assert "  read_file  read" in rendered
+        source = DeepAgentsApp._render_tool_catalog(catalog)
+        assert "**2 tools available**" in source
+        # Built-in tools render as a markdown table so long descriptions wrap in
+        # their cell instead of being clipped by a fixed-width name column.
+        assert f"### {BUILT_IN_GROUP}" in source
+        assert "| Tool | Description |" in source
+        assert "| --- | --- |" in source
+        assert "| ls | list |" in source
+        assert "| read\\_file | read |" in source
         # No MCP groups → the `/mcp` descriptions pointer must not appear.
-        assert "MCP tool descriptions are available in /mcp." not in rendered
+        assert "MCP tool descriptions are available in /mcp." not in source
+
+    def test_render_mcp_tools_are_names_only(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_code.tool_catalog import build_catalog_from_server_info
+
+        catalog = build_catalog_from_server_info(
+            [],
+            [
+                MCPServerInfo(
+                    name="docs",
+                    transport="http",
+                    tools=(MCPToolInfo(name="search_docs", description="Search docs"),),
+                    status="ok",
+                )
+            ],
+        )
+        source = DeepAgentsApp._render_tool_catalog(catalog)
+        assert "### docs" in source
+        assert "- search\\_docs" in source
+        assert "Search docs" not in source
+        assert "MCP tool descriptions are available in /mcp." in source
 
     def test_render_unavailable_without_detail_omits_colon(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo
@@ -17377,8 +17584,13 @@ class TestToolsSlashCommand:
                 )
             ],
         )
-        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
-        assert "  off  awaiting_reconnect" in rendered
+        source = DeepAgentsApp._render_tool_catalog(catalog)
+        assert "| Server | Status |" in source
+        assert "| off | awaiting\\_reconnect |" in source
+        # The status must still reach the user, with no trailing colon where the
+        # empty detail was omitted.
+        rendered = self._display(source)
+        assert "awaiting_reconnect" in rendered
         assert "awaiting_reconnect:" not in rendered
 
     def test_render_includes_mcp_error(self) -> None:
@@ -17392,8 +17604,13 @@ class TestToolsSlashCommand:
             groups=(ToolGroup(label=BUILT_IN_GROUP, source="built-in", tools=()),),
             mcp_error="MCP discovery failed; showing built-in tools only.",
         )
-        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
-        assert "MCP discovery failed" in rendered
+        source = DeepAgentsApp._render_tool_catalog(catalog)
+        assert "MCP discovery failed" in self._display(source)
+        # An empty group contributes no heading and no table. Asserted on the
+        # source's heading syntax rather than the bare label, which would also
+        # match the "built-in" inside the error text above.
+        assert f"### {BUILT_IN_GROUP}" not in source
+        assert "| Tool | Description |" not in source
 
 
 class TestFetchThreadHistoryData:

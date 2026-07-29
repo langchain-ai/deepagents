@@ -4622,6 +4622,19 @@ class AppMessage(Static):
         """Open style-embedded hyperlinks on single click."""
         open_style_link(event)
 
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer cursor over embedded links, text cursor elsewhere."""
+        self.styles.pointer = "pointer" if event_targets_link(event) else "text"
+
+    def on_leave(self) -> None:
+        """Restore the pointer shape when the mouse leaves the message.
+
+        `"text"` restates this widget's CSS default rather than clearing the
+        inline style, so a subclass declaring a different `pointer` would be
+        forced back to `text` on leave.
+        """
+        self.styles.pointer = "text"
+
 
 class SummarizationMessage(AppMessage):
     """Widget displaying a summarization completion notification."""

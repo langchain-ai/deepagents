@@ -3254,6 +3254,13 @@ class DeepAgentsApp(App):
         they cannot drift out of sync.
         """
 
+        self._last_thread_unchanged: tuple[str, float] | None = None
+        """Most recent same-thread toast, as `(text, monotonic timestamp)`.
+
+        The same-thread counterpart of `_last_model_unchanged`, for re-selecting
+        the thread the session is already on.
+        """
+
         self._model_install_switching = False
         """True while a provider extra install-then-switch flow is active."""
 
@@ -9740,7 +9747,10 @@ class DeepAgentsApp(App):
                 (e.g. `' (Resume with /threads -r)'`).
 
         Returns:
-            `Content` with a clickable thread ID, or a plain string.
+            `Content` with a clickable thread ID, or a plain string. The
+                `Content` carries the same dim italic styling `AppMessage`
+                applies to plain strings so linked and unlinked thread notes
+                look identical apart from the link.
         """
         from deepagents_code.config import build_langsmith_thread_url
 
@@ -9749,14 +9759,24 @@ class DeepAgentsApp(App):
                 asyncio.to_thread(build_langsmith_thread_url, thread_id),
                 timeout=2.0,
             )
-        except (TimeoutError, Exception):  # noqa: BLE001  # Resilient non-interactive mode error handling
+        except Exception:  # Resilient non-interactive mode error handling
+            # Unlinked thread IDs are the only symptom, and they look identical
+            # to tracing simply being unconfigured — so log the cause. Covers a
+            # rejected `LANGSMITH_API_KEY`, a changed LangSmith payload shape,
+            # and network failures, none of which the user can otherwise see.
+            logger.debug(
+                "Could not resolve LangSmith thread URL for %s; rendering plain text",
+                thread_id,
+                exc_info=True,
+            )
             url = None
 
         if url:
+            note_style = TStyle(dim=True, italic=True)
             return Content.assemble(
-                f"{prefix}: ",
-                (thread_id, TStyle(link=url)),
-                suffix,
+                (f"{prefix}: ", note_style),
+                (thread_id, TStyle(dim=True, italic=True, link=url)),
+                (suffix, note_style),
             )
         return f"{prefix}: {thread_id}{suffix}"
 
@@ -22620,7 +22640,15 @@ class DeepAgentsApp(App):
             if cwd_choice == "abort":
                 return
             if await asyncio.to_thread(self._cwd_paths_equal, self._cwd, prev_cwd):
-                await self._mount_message(AppMessage(f"Already on thread: {thread_id}"))
+                self._last_thread_unchanged = self._notify_unchanged_once(
+                    f"Already on thread: {thread_id}",
+                    self._last_thread_unchanged,
+                )
+                # Log unconditionally, outside the toast dedup: the toast is
+                # transient and may be suppressed, so this is the only durable
+                # record that the resume was a deliberate no-op rather than a
+                # dropped command. Mirrors the same-model path.
+                logger.info("Thread unchanged (%s); resume was a no-op", thread_id)
             else:
                 from deepagents_code.hooks.models.domain import (
                     SessionEndCause,
@@ -22643,6 +22671,7 @@ class DeepAgentsApp(App):
         # Save previous state for rollback on failure
         prev_thread_id = self._lc_thread_id
         prev_session_thread = self._session_state.thread_id
+        prev_previous_thread = self._session_state.previous_thread_id
         prev_cwd = Path(self._cwd)
 
         cwd_choice = await self._offer_thread_cwd_switch(
@@ -22711,9 +22740,15 @@ class DeepAgentsApp(App):
             # The switch succeeded: record the thread we just left so a
             # subsequent bare `/threads -r` steps back to it rather than
             # resolving `previous == current` and reporting "Already on
-            # thread". Set only after the last statement that can raise, so a
-            # failed switch (handled below) never leaves a stale pointer.
+            # thread". Set once the switch is materially complete -- the thread
+            # ID is committed and history is loaded. `_run_session_start_hook`
+            # below can still raise, so the rollback path restores this pointer
+            # explicitly rather than relying on statement order.
             self._session_state.previous_thread_id = prev_session_thread
+
+            # Landing on a new thread re-arms the same-thread toast, so stepping
+            # back to a thread and re-selecting it announces itself again.
+            self._last_thread_unchanged = None
             if not await self._run_session_start_hook(SessionStartCause.RESUME):
                 return
         except Exception as exc:
@@ -22731,6 +22766,11 @@ class DeepAgentsApp(App):
             # Restore previous thread IDs so the user can retry
             self._session_state.thread_id = prev_session_thread
             self._lc_thread_id = prev_thread_id
+            # Also restore the back-pointer. A raise after it was set (the
+            # session-start hook) would otherwise leave `previous == current`,
+            # making a later bare `/threads -r` a no-op with nowhere to step
+            # back to.
+            self._session_state.previous_thread_id = prev_previous_thread
             self._update_welcome_banner(
                 prev_session_thread,
                 missing_message=(
@@ -22789,6 +22829,48 @@ class DeepAgentsApp(App):
         if hint:
             body += f" {hint}"
         await self._mount_message(ErrorMessage(body))
+
+    def _notify_unchanged_once(
+        self, message: str, last: tuple[str, float] | None
+    ) -> tuple[str, float]:
+        """Toast a no-op notice unless an identical toast is presumed on-screen.
+
+        A no-op re-selection — of the model or thread the session is already on,
+        for example — is transient feedback, not part of the conversation, so it
+        surfaces as a toast rather than an inline chat message.
+
+        Suppression is time-based: it lasts one `NOTIFICATION_TIMEOUT`, which
+        matches the toast lifetime only because `notify` is called without a
+        `timeout` override. Nothing inspects live toast state, so "on-screen" is
+        a presumption — a toast the user clicked away still suppresses. Once the
+        window expires, a later intentional no-op selection can toast again.
+
+        Callers own the record: pass the field you keep it in and assign the
+        result straight back, or dedup silently stops working. Separate fields
+        per call site keep unrelated notices from suppressing each other.
+
+        Args:
+            message: The notice to toast. Interpolated identifiers are rendered
+                literally — `markup=False` is load-bearing, because identifiers
+                containing square brackets would otherwise crash Textual's toast
+                renderer when parsed as Rich markup.
+            last: The caller's previous `(text, monotonic timestamp)` record, or
+                `None` when nothing has been toasted yet.
+
+        Returns:
+            The record the caller should store, never `None`: the new toast's
+                text and timestamp, or `last` unchanged when suppressed. Only
+                the explicit re-arm sites clear a caller's field.
+        """
+        now = _monotonic()
+        if (
+            last is not None
+            and last[0] == message
+            and (now - last[1]) < self.NOTIFICATION_TIMEOUT
+        ):
+            return last
+        self.notify(message, markup=False)
+        return (message, now)
 
     async def _switch_model(
         self,
@@ -22939,22 +23021,10 @@ class DeepAgentsApp(App):
                 self._sync_status_model()
                 params_suffix = _format_model_params(extra_kwargs)
                 if announce_unchanged:
-                    message = f"Already using {current}{params_suffix}"
-                    # Suppress only while the previous identical toast is
-                    # presumed still on-screen. Once it expires, a later
-                    # intentional no-op selection must be able to toast again.
-                    now = _monotonic()
-                    last = self._last_model_unchanged
-                    if (
-                        last is None
-                        or last[0] != message
-                        or (now - last[1]) >= self.NOTIFICATION_TIMEOUT
-                    ):
-                        # A no-op re-selection is transient feedback, not part
-                        # of the conversation, so surface it as a toast rather
-                        # than an inline chat message.
-                        self.notify(message, markup=False)
-                        self._last_model_unchanged = (message, now)
+                    self._last_model_unchanged = self._notify_unchanged_once(
+                        f"Already using {current}{params_suffix}",
+                        self._last_model_unchanged,
+                    )
                 logger.info(
                     "Model unchanged (%s); model_params=%s",
                     current,

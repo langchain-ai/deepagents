@@ -4654,6 +4654,116 @@ class TestAppMessageOnClickOpensLink:
         event.stop.assert_not_called()
 
 
+class _AppMessageApp(App[None]):
+    """Minimal app that mounts an `AppMessage` for runtime pointer tests."""
+
+    def compose(self) -> ComposeResult:
+        yield AppMessage("Resumed thread: tid-1", id="app-msg")
+
+
+class TestAppMessageLinkPointer:
+    """Tests for the pointer cursor shown when hovering embedded links."""
+
+    @staticmethod
+    def _move_event(
+        *, link: str | None = None, meta: dict | None = None
+    ) -> SimpleNamespace:
+        """Build a minimal mouse-move-like event exposing the hovered style."""
+        return SimpleNamespace(style=SimpleNamespace(link=link, meta=meta or {}))
+
+    async def test_hovering_link_sets_pointer_cursor(self) -> None:
+        """An OSC 8 `Style(link=...)` span switches the pointer to pointer."""
+        async with _AppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+
+            msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
+
+            assert msg.styles.pointer == "pointer"
+
+    async def test_hovering_text_keeps_text_pointer(self) -> None:
+        """Plain message text keeps the text pointer."""
+        async with _AppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+
+            msg.on_mouse_move(self._move_event())  # ty: ignore
+
+            assert msg.styles.pointer == "text"
+
+    async def test_leave_resets_pointer(self) -> None:
+        """Leaving the message resets the pointer after a link hover."""
+        async with _AppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+            msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
+
+            msg.on_leave()
+
+            assert msg.styles.pointer == "text"
+
+    async def test_link_then_text_resets_pointer_without_leaving(self) -> None:
+        """Moving off a link onto plain text resets the pointer without leaving.
+
+        `on_leave` cannot cover this: the mouse stays inside the widget, so only
+        the handler's non-link branch clears the inline `pointer` set by the
+        previous move. Without it the hand cursor sticks over non-link text.
+        """
+        async with _AppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+            msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
+            assert msg.styles.pointer == "pointer"
+
+            msg.on_mouse_move(self._move_event())  # ty: ignore
+
+            assert msg.styles.pointer == "text"
+
+
+class _LinkedAppMessageApp(App[None]):
+    """Mounts an `AppMessage` whose thread ID is a real OSC 8 link span."""
+
+    PREFIX = "Resumed thread: "
+    URL = "https://smith.langchain.com/o/org/projects/p/proj/t/tid-123"
+
+    def compose(self) -> ComposeResult:
+        from textual.content import Content
+        from textual.style import Style as TStyle
+
+        note = TStyle(dim=True, italic=True)
+        yield AppMessage(
+            Content.assemble(
+                (self.PREFIX, note),
+                ("tid-123", TStyle(dim=True, italic=True, link=self.URL)),
+            ),
+            id="app-msg",
+        )
+
+
+class TestAppMessagePointerEventDelivery:
+    """Pins that Textual actually delivers hover events to `AppMessage`.
+
+    Every other pointer test in this repo calls `on_mouse_move` directly with a
+    stand-in event, which cannot catch Textual routing `MouseMove` elsewhere or
+    leaving `event.style` unpopulated at the hovered offset. This drives a real
+    `pilot.hover` instead, so the delivery assumption the whole family of
+    pointer handlers shares is verified in one place.
+    """
+
+    async def test_hover_over_real_link_span_toggles_pointer(self) -> None:
+        """Hovering a real link span sets the pointer and moving off resets it."""
+        async with _LinkedAppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+            # `AppMessage` pads by 1 column, so content offset N sits at N + 1.
+            link_x = len(_LinkedAppMessageApp.PREFIX) + 1
+            prefix_x = 1
+
+            await pilot.hover("#app-msg", offset=(prefix_x, 0))
+            assert msg.styles.pointer == "text"
+
+            await pilot.hover("#app-msg", offset=(link_x, 0))
+            assert msg.styles.pointer == "pointer"
+
+            await pilot.hover("#app-msg", offset=(prefix_x, 0))
+            assert msg.styles.pointer == "text"
+
+
 class TestMountMessageIdSync:
     """Tests for widget id sync in `_mount_message`."""
 

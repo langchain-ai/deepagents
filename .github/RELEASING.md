@@ -93,7 +93,7 @@ Create the `release-bot` environment without required reviewers or other approva
 | `anthropic`                    | `ANTHROPIC_API_KEY`     |
 | `google_genai`                 | `GOOGLE_API_KEY`        |
 
-For `openai:…`, pick a Chat Completions model (for example `openai:gpt-5.5`). This helper only calls Chat Completions, so Responses-API-only models cannot be used. It rejects two patterns up front, mirroring `langchain-openai`: exactly the prefixes `gpt-5-pro`, `gpt-5.2-pro`, `gpt-5.4-pro`, and `gpt-5.5-pro` (matched as prefixes, so date-suffixed variants are covered), and any model name containing `codex`. That list is a fast path, not a general `*-pro` rule — a future `-pro` release it does not name will pass validation and then fail at the API, where the draft-failure comment reports OpenAI's own explanation.
+For `openai:…`, pick a Chat Completions model (for example `openai:gpt-5.5`). This helper only calls Chat Completions, so Responses-API-only models cannot be used.
 
 A mismatched secret name resolves to an empty key and fails the draft run with "The selected release-note model API key is not configured."
 

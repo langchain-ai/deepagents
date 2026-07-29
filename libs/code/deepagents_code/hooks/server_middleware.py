@@ -612,7 +612,6 @@ def _invoke_hook(
         raise RuntimeError(msg)
     run_id = _run_id(config, context.thread_id)
     invocation_id = _invocation_id(
-        run_id=run_id,
         snapshot_id=gate["snapshot_id"],
         context=context,
         event=event,
@@ -699,7 +698,6 @@ def _run_id(config: Mapping[str, Any] | None, thread_id: str) -> str:
 
 def _invocation_id(
     *,
-    run_id: str,
     snapshot_id: str,
     context: HookContext,
     event: (
@@ -712,8 +710,13 @@ def _invocation_id(
     ),
     logical_event_id: str | None = None,
 ) -> UUID:
+    # Deliberately excludes `run_id`: this id is echoed by the client and
+    # re-derived here to validate the resume, but every `Command(resume=...)`
+    # starts a new run. Mixing `run_id` in made the id differ across the very
+    # boundary it guards, so any event re-derived after a resume (`PostToolUse`
+    # and the subagent events, which run inside the replayed tool wrapper)
+    # always mismatched. The remaining fields identify the event uniquely.
     identity = {
-        "run_id": run_id,
         "thread_id": context.thread_id,
         "snapshot_id": snapshot_id,
         "event": event.event.value,

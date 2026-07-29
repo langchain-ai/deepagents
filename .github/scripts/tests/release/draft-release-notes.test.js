@@ -14,8 +14,41 @@ function structured(notes) {
 
 test('model spec requires a supported explicit provider', () => {
   assert.deepEqual(draft.parseModelSpec('openai:gpt-test'), { provider: 'openai', model: 'gpt-test' });
+  assert.deepEqual(draft.parseModelSpec('openai:gpt-5.5'), { provider: 'openai', model: 'gpt-5.5' });
   assert.throws(() => draft.parseModelSpec('gpt-test'), /provider:model/);
   assert.throws(() => draft.parseModelSpec('other:model'), /Unsupported/);
+});
+
+test('openai Responses-API-only models are rejected before any request', () => {
+  // Mirrors langchain-openai's Responses-only prefixes + substring "codex".
+  for (const model of ['gpt-5-pro', 'gpt-5.5-pro', 'gpt-5.5-pro-2026-03-01', 'gpt-5.4-codex', 'codex-mini-latest']) {
+    assert.equal(draft.openaiModelUsesResponsesApiOnly(model), true);
+    assert.throws(
+      () => draft.parseModelSpec(`openai:${model}`),
+      /Responses-API-only[\s\S]*RELEASE_BOT_MODEL|RELEASE_BOT_MODEL[\s\S]*Responses-API-only/,
+    );
+    assert.throws(
+      () => draft.providerRequest('openai', model, 'secret-reference', 'source'),
+      /Responses-API-only/,
+    );
+  }
+  // Ordinary Chat Completions models stay allowed, including date-suffixed non-pro ids.
+  for (const model of ['gpt-5.5', 'gpt-5.4', 'gpt-4.1', 'o3-mini']) {
+    assert.equal(draft.openaiModelUsesResponsesApiOnly(model), false);
+    assert.deepEqual(draft.parseModelSpec(`openai:${model}`), { provider: 'openai', model });
+  }
+});
+
+test('provider requests share one raised output-token ceiling across providers', () => {
+  // Large enough that reasoning + visible notes fit; still a ceiling, not a spend target.
+  assert.equal(draft.MAX_OUTPUT_TOKENS, 32768);
+  assert.ok(draft.MAX_OUTPUT_TOKENS > 4096);
+  const openai = draft.providerRequest('openai', 'gpt-5.5', 'secret-reference', 'source');
+  const anthropic = draft.providerRequest('anthropic', 'model', 'secret-reference', 'source');
+  const google = draft.providerRequest('google_genai', 'model', 'secret-reference', 'source');
+  assert.equal(openai.body.max_completion_tokens, draft.MAX_OUTPUT_TOKENS);
+  assert.equal(anthropic.body.max_tokens, draft.MAX_OUTPUT_TOKENS);
+  assert.equal(google.body.generationConfig.maxOutputTokens, draft.MAX_OUTPUT_TOKENS);
 });
 
 test('provider requests use fixed endpoints and keep source text in the body', () => {

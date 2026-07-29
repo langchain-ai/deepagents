@@ -25,6 +25,42 @@ const RESPONSE_SCHEMA = {
 
 const PROVIDERS = new Set(['anthropic', 'google_genai', 'openai']);
 
+// Ceiling shared by every provider branch. Reasoning models (OpenAI o-series /
+// gpt-5.x with default reasoning, Anthropic extended thinking) charge latent
+// tokens against the same budget as visible output, so the cap must cover both.
+// It is a hard ceiling, not a target — raising it does not increase cost when
+// the model stops normally. Stay well under provider hard limits (gpt-5.5: 128k).
+const MAX_OUTPUT_TOKENS = 32768;
+
+// Mirrors langchain-openai's `_RESPONSES_API_ONLY_PREFIXES` /
+// `_model_prefers_responses_api()` (langchain_openai.chat_models.base). Those
+// models reject Chat Completions; this helper only calls
+// `/v1/chat/completions`, so configuring one via RELEASE_BOT_MODEL produces a
+// confusing HTTP error unless we fail fast here. Keep in sync when that list
+// changes. Out of scope: adding Responses API support.
+const OPENAI_RESPONSES_API_ONLY_PREFIXES = [
+  'gpt-5-pro',
+  'gpt-5.2-pro',
+  'gpt-5.4-pro',
+  'gpt-5.5-pro',
+];
+
+function openaiModelUsesResponsesApiOnly(model) {
+  return (
+    OPENAI_RESPONSES_API_ONLY_PREFIXES.some(prefix => model.startsWith(prefix))
+    || model.includes('codex')
+  );
+}
+
+function assertOpenAiChatCompletionsCompatible(model) {
+  if (!openaiModelUsesResponsesApiOnly(model)) return;
+  throw new Error(
+    `RELEASE_BOT_MODEL openai model ${JSON.stringify(model)} is Responses-API-only `
+    + 'and cannot be used with this helper (Chat Completions). Pick a Chat Completions '
+    + 'model such as openai:gpt-5.5 — OpenAI *-pro and *codex* models are not supported.',
+  );
+}
+
 function parseModelSpec(spec) {
   const separator = spec.indexOf(':');
   if (separator <= 0 || separator === spec.length - 1) {
@@ -34,6 +70,9 @@ function parseModelSpec(spec) {
   const model = spec.slice(separator + 1);
   if (!PROVIDERS.has(provider)) {
     throw new Error(`Unsupported release-note model provider: ${provider}`);
+  }
+  if (provider === 'openai') {
+    assertOpenAiChatCompletionsCompatible(model);
   }
   return { provider, model };
 }
@@ -49,6 +88,9 @@ function sourcePrompt(source) {
 function providerRequest(provider, model, key, source) {
   const prompt = sourcePrompt(source);
   if (provider === 'openai') {
+    // Defense in depth: parseModelSpec already rejects these, but providerRequest
+    // is also exported and must not build a guaranteed-to-fail Chat Completions body.
+    assertOpenAiChatCompletionsCompatible(model);
     return {
       url: 'https://api.openai.com/v1/chat/completions',
       headers: {
@@ -69,7 +111,7 @@ function providerRequest(provider, model, key, source) {
             schema: RESPONSE_SCHEMA,
           },
         },
-        max_completion_tokens: 4096,
+        max_completion_tokens: MAX_OUTPUT_TOKENS,
       },
     };
   }
@@ -83,7 +125,7 @@ function providerRequest(provider, model, key, source) {
       },
       body: {
         model,
-        max_tokens: 4096,
+        max_tokens: MAX_OUTPUT_TOKENS,
         system: SYSTEM_PROMPT,
         messages: [{ role: 'user', content: prompt }],
         output_config: {
@@ -105,7 +147,7 @@ function providerRequest(provider, model, key, source) {
       systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       generationConfig: {
-        maxOutputTokens: 4096,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
         responseMimeType: 'application/json',
         responseJsonSchema: RESPONSE_SCHEMA,
       },
@@ -209,7 +251,9 @@ if (require.main === module) {
 }
 
 module.exports = {
+  MAX_OUTPUT_TOKENS,
   draftReleaseNotes,
+  openaiModelUsesResponsesApiOnly,
   parseModelSpec,
   providerRequest,
   responseText,

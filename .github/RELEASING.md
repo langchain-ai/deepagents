@@ -93,6 +93,8 @@ Create the `release-bot` environment without required reviewers or other approva
 | `anthropic`                    | `ANTHROPIC_API_KEY`     |
 | `google_genai`                 | `GOOGLE_API_KEY`        |
 
+For `openai:…`, pick a Chat Completions model (for example `openai:gpt-5.5`). OpenAI models that are Responses-API-only — the `*-pro` line (`gpt-5-pro`, `gpt-5.2-pro`, `gpt-5.4-pro`, `gpt-5.5-pro`, …) and any model name containing `codex` — are rejected up front; this helper only calls Chat Completions.
+
 A mismatched secret name resolves to an empty key and fails the draft run with "The selected release-note model API key is not configured."
 
 For the check to actually gate merges, add the literal `curated release notes` workflow job name to `main`'s required status checks (repo settings). Without that required check, failures remain visible on the PR but do not prevent a stale or unapplied changelog from being merged. The job reports a passing status on non-release PRs, so requiring it does not block unrelated work.

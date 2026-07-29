@@ -103,7 +103,7 @@ managed package.
 
 | Actions variable | Value | Type | Purpose |
 | --- | --- | --- | --- |
-| `RELEASE_BOT_MODEL` | Variable | Environment | Model used for changelog generation. |
+| `RELEASE_BOT_MODEL` | Variable | Environment | Model used for changelog generation (`provider:model`). For `openai:…`, use a Chat Completions model (not `*-pro` / `*codex*`). |
 | `RELEASE_BOT_ID` | - | Repository | GitHub App bot account user ID. |
 | `RELEASE_BOT_LOGIN` | `langchain-oss-automated-triage[bot]` | Repository | Login ID. |
 

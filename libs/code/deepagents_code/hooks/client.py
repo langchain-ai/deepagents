@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
-import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -18,14 +16,10 @@ from deepagents_code.hooks.models.transport import HookInvocationResponse
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
-    from deepagents_code.hooks.models.domain import HookDecision
     from deepagents_code.hooks.models.transport import HookInvocationRequest
     from deepagents_code.hooks.runtime import HooksRuntime
 
-logger = logging.getLogger(__name__)
-
 _FulfillmentKey = tuple[str, UUID]
-_ResumePayload = dict[str, object]
 
 
 @dataclass(slots=True)
@@ -98,7 +92,7 @@ async def fulfill_hook_invocation(
 
     async def execute() -> HookInvocationResponse:
         decision = await runtime.invoke(request.invocation)
-        _apply_client_side_effects(decision)
+        runtime.presenter.present_decision(decision)
         return HookInvocationResponse(
             protocol_version=1,
             invocation_id=request.invocation_id,
@@ -156,17 +150,3 @@ async def fulfill_pending_hook_interrupts(
             raise RuntimeError(msg)
         resumes[interrupt_id] = resume_value
     return resumes
-
-
-def _apply_client_side_effects(decision: HookDecision) -> None:
-    """Surface user notices and emit validated terminal sequences.
-
-    `systemMessage` must never become model context; notices are logged for the
-    operator. Terminal sequences were allowlisted in the reducer.
-    """
-    for notice in decision.user_notices:
-        logger.warning("Hook user notice: %s", notice)
-    for sequence in decision.terminal_sequences:
-        sys.stdout.write(sequence)
-    if decision.terminal_sequences:
-        sys.stdout.flush()

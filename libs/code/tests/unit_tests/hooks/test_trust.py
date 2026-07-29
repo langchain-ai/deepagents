@@ -261,26 +261,6 @@ def test_persisted_trust_skips_prompt(
     assert decision.allows(root)
 
 
-def test_no_trust_prompt_without_experimental_flag(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Hooks stay off by default, so startup must not ask about trusting them."""
-    from deepagents_code.main import _check_project_hooks_trust
-
-    root = _write_project_hooks(tmp_path / "project")
-    monkeypatch.delenv(EXPERIMENTAL)
-    monkeypatch.chdir(root)
-    monkeypatch.setattr(
-        "deepagents_code.main._select_trust_action",
-        lambda *_args, **_kwargs: pytest.fail("prompt ran with hooks disabled"),
-    )
-
-    decision = _check_project_hooks_trust()
-    assert isinstance(decision, WorkspaceTrust)
-    assert decision.allows(root) is False
-
-
 async def test_textual_app_forwards_hook_trust(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

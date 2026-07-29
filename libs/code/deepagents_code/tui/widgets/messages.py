@@ -4404,9 +4404,34 @@ class _MutedRichMarkdown:
     }
 
     def __init__(self, markup: str) -> None:
-        from rich.markdown import Markdown as RichMarkdown
+        from rich.markdown import (
+            Markdown as RichMarkdown,
+            MarkdownElement,
+            TableElement,
+        )
+        from rich.table import Table
 
-        self._markdown = RichMarkdown(markup)
+        class _FoldingTableElement(TableElement):
+            """Render long Markdown table cells by folding instead of eliding."""
+
+            def __rich_console__(  # noqa: PLW3201  # Rich renderable protocol
+                self, console: RichConsole, options: ConsoleOptions
+            ) -> RenderResult:
+                for renderable in super().__rich_console__(console, options):
+                    if isinstance(renderable, Table):
+                        for column in renderable.columns:
+                            column.overflow = "fold"
+                    yield renderable
+
+        class _FoldingMarkdown(RichMarkdown):
+            """Rich Markdown variant that never ellipsizes table cells."""
+
+            elements: ClassVar[dict[str, type[MarkdownElement]]] = {
+                **RichMarkdown.elements,
+                "table_open": _FoldingTableElement,
+            }
+
+        self._markdown = _FoldingMarkdown(markup)
         self._markup = markup
 
     def __rich_console__(  # noqa: PLW3201  # Rich renderable protocol
@@ -4621,6 +4646,19 @@ class AppMessage(Static):
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
         """Open style-embedded hyperlinks on single click."""
         open_style_link(event)
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer cursor over embedded links, text cursor elsewhere."""
+        self.styles.pointer = "pointer" if event_targets_link(event) else "text"
+
+    def on_leave(self) -> None:
+        """Restore the pointer shape when the mouse leaves the message.
+
+        `"text"` restates this widget's CSS default rather than clearing the
+        inline style, so a subclass declaring a different `pointer` would be
+        forced back to `text` on leave.
+        """
+        self.styles.pointer = "text"
 
 
 class SummarizationMessage(AppMessage):

@@ -23,9 +23,14 @@ permissions:
 jobs:
   check-dependency-freshness:
     name: "compare dependency minimums with PyPI"
+    # Runs on every release PR, including ones carrying `release-deps:
+    # acknowledged`. The label records that the release dependencies were
+    # reviewed, not that they are current, so the advisory stays on the PR
+    # instead of disappearing behind a skipped job. This check never blocks a
+    # merge (the script always exits 0), so running it under the label costs
+    # nothing but keeps the record.
     if: >-
-      startsWith(github.event.pull_request.title, 'release(') &&
-      !contains(github.event.pull_request.labels.*.name, 'release-deps: acknowledged')
+      startsWith(github.event.pull_request.title, 'release(')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -82,9 +87,12 @@ jobs:
             const stale = staleRaw === 'true';
             const indeterminate = process.env.INDETERMINATE === 'true';
 
-            // Empty outputs mean the check was skipped (bypass/non-release) or
-            // crashed. Skips resolve the advisory; crashes preserve its last
-            // known result while the failed job explains that no result exists.
+            // Empty outputs mean the check was skipped or crashed. A skip now
+            // only happens when the PR is not (or is no longer) titled
+            // `release(...)` — the bypass label no longer skips this job — so
+            // resolving the advisory on a skip correctly cleans up after a
+            // rename. Crashes preserve the last known result while the failed
+            // job explains that no result exists.
             const crashed = staleRaw === '' && result !== 'skipped';
 
             try {

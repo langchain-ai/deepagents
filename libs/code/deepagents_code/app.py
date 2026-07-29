@@ -252,6 +252,47 @@ def _coerce_session_cost_usd(value: object) -> float:
     return cost_usd if math.isfinite(cost_usd) and cost_usd >= 0 else 0.0
 
 
+def _load_cost_warning_threshold_usd() -> float | None:
+    """Load the optional non-negative conversation cost warning threshold.
+
+    Returns:
+        The configured threshold, or `None` when warnings are disabled.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("warnings.cost_threshold_usd")
+    if option is None:
+        logger.warning("Cost warning config option is missing; warning is disabled")
+        return None
+
+    value, source = resolve_scalar(option, toml_data=load_config_toml())
+    if value is None:
+        return None
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        logger.warning(
+            "Ignoring %s=%r from %s (expected a finite number >= 0)",
+            option.key,
+            value,
+            source,
+        )
+        return None
+
+    threshold_usd = float(value)
+    if not math.isfinite(threshold_usd) or threshold_usd < 0:
+        logger.warning(
+            "Ignoring %s=%r from %s (expected a finite number >= 0)",
+            option.key,
+            value,
+            source,
+        )
+        return None
+    return threshold_usd
+
+
 def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
     """Report persisted goal/rubric channels that are present but malformed.
 
@@ -3630,6 +3671,14 @@ class DeepAgentsApp(App):
         self._thread_restored_cost_usd: float = 0.0
         """Checkpoint cost without a local per-model breakdown."""
 
+        self._cost_warning_threshold_usd: float | None = (
+            _load_cost_warning_threshold_usd()
+        )
+        """Configured USD threshold, or `None` when cost warnings are disabled."""
+
+        self._cost_warning_shown: bool = False
+        """Whether the active conversation already crossed its warning threshold."""
+
         # Session lazy state & startup
         self._session_state: TextualSessionState | None = None
         """Auto-approve + thread state shared with `execute_task_textual`.
@@ -6825,6 +6874,31 @@ class DeepAgentsApp(App):
         """Show the server total plus any spend it has not accounted for yet."""
         if self._status_bar:
             self._status_bar.set_cost(self._displayed_cost_usd)
+        self._maybe_warn_session_cost()
+
+    def _maybe_warn_session_cost(self) -> None:
+        """Warn once when the active conversation exceeds its cost threshold."""
+        threshold_usd = self._cost_warning_threshold_usd
+        displayed_cost_usd = self._displayed_cost_usd
+        if (
+            threshold_usd is None
+            or self._cost_warning_shown
+            or displayed_cost_usd <= threshold_usd
+        ):
+            return
+
+        self._cost_warning_shown = True
+        self.notify(
+            (
+                f"Estimated conversation cost is {format_cost(displayed_cost_usd)}, "
+                f"above your {format_cost(threshold_usd)} warning threshold. "
+                "Use /cost for details."
+            ),
+            title="Cost warning",
+            severity="warning",
+            timeout=8,
+            markup=False,
+        )
 
     def _reset_thread_usage(self, cost_usd: float = 0.0) -> None:
         """Start local usage details for a newly activated thread.
@@ -6833,6 +6907,7 @@ class DeepAgentsApp(App):
             cost_usd: Cumulative cost restored from that thread's checkpoint.
         """
         self._thread_stats = SessionStats()
+        self._cost_warning_shown = False
         self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._set_session_cost(self._thread_restored_cost_usd)
 

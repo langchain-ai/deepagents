@@ -1340,6 +1340,13 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ),
     # --- Warnings ------------------------------------------------------
     ConfigOption(
+        key="warnings.cost_threshold_usd",
+        group="Warnings",
+        summary="Warn when a conversation's estimated USD cost exceeds this value.",
+        kind=OptionKind.FLOAT,
+        toml_keys=("warnings", "cost_threshold_usd"),
+    ),
+    ConfigOption(
         key="warnings.suppress",
         group="Warnings",
         summary=(

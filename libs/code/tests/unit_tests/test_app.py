@@ -6790,6 +6790,14 @@ class TestRunAgentTaskMediaTracker:
             assert app._ui_adapter is not None
 
             pending_tool = MagicMock()
+            # Match the real widget's default. An unset MagicMock attribute is
+            # truthy, and each of these is read by a different consumer, so both
+            # must be set: `deferred_success_output` by
+            # `_dispatch_terminal_tool_result_hooks` (which would report a success
+            # with no tool.error) and `is_awaiting_deferred_result` by
+            # `set_error`/`set_rejected` (which would redirect to a settle).
+            pending_tool.deferred_success_output = None
+            pending_tool.is_awaiting_deferred_result = False
             app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}
 
             with patch(
@@ -6824,6 +6832,14 @@ class TestRunAgentTaskMediaTracker:
             assert app._ui_adapter is not None
 
             pending_tool = MagicMock()
+            # Match the real widget's default. An unset MagicMock attribute is
+            # truthy, and each of these is read by a different consumer, so both
+            # must be set: `deferred_success_output` by
+            # `_dispatch_terminal_tool_result_hooks` (which would report a success
+            # with no tool.error) and `is_awaiting_deferred_result` by
+            # `set_error`/`set_rejected` (which would redirect to a settle).
+            pending_tool.deferred_success_output = None
+            pending_tool.is_awaiting_deferred_result = False
             app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}
 
             exc = RemoteException(
@@ -13092,7 +13108,6 @@ class TestMessageTimestampFooters:
             app._session_state.hooks = HooksManager.adopting(
                 runtime,
                 identity=app._session_state.hook_identity,
-                notice=lambda _message: None,
             )
             payload = _ThreadHistoryPayload(
                 [],
@@ -26240,9 +26255,15 @@ class TestLiveApprovalModeWrites:
         assert app._session_state.approval_mode is ApprovalMode.MANUAL
         assert app._approval_mode_blocked is False
 
-    async def test_session_init_keeps_mode_changed_during_construction(self) -> None:
+    async def test_session_init_keeps_mode_changed_during_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.approval_mode import ApprovalMode
 
+        # `HooksRuntime.create` is the construction seam probed below, and it
+        # only runs in experimental mode.
+        monkeypatch.setenv(EXPERIMENTAL, "1")
         app = DeepAgentsApp(approval_mode=ApprovalMode.MANUAL)
 
         def change_mode_during_construction(**_kwargs: object) -> None:
@@ -26257,12 +26278,19 @@ class TestLiveApprovalModeWrites:
         assert app._session_state is not None
         assert app._session_state.approval_mode is ApprovalMode.AUTO
 
-    async def test_session_init_builds_one_state_for_concurrent_callers(self) -> None:
+    async def test_session_init_builds_one_state_for_concurrent_callers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The startup worker and the inline startup fallback must not race.
 
         Idempotency rests on construction staying free of `await`; reintroducing
         one would let both callers pass the guard and build two states.
         """
+        from deepagents_code._env_vars import EXPERIMENTAL
+
+        # `HooksRuntime.create` is the construction seam counted below, and it
+        # only runs in experimental mode.
+        monkeypatch.setenv(EXPERIMENTAL, "1")
         app = DeepAgentsApp()
         creations = 0
 

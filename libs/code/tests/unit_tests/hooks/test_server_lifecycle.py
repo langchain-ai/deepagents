@@ -52,6 +52,7 @@ from deepagents_code.hooks.models.transport import (
     HookInvocationRequest,
     HookInvocationResponse,
 )
+from deepagents_code.hooks.presenter import HookPresenter
 from deepagents_code.hooks.runtime import HooksRuntime
 from deepagents_code.hooks.server_middleware import (
     ServerHooksMiddleware,
@@ -500,7 +501,12 @@ def test_pre_tool_allow_bypasses_hitl_and_preserves_context(
     handler.assert_called_once_with(request)
 
 
-def test_server_pre_tool_node_runs_before_stock_hitl(tmp_path: Path) -> None:
+def test_server_pre_tool_node_runs_before_stock_hitl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code._env_vars import EXPERIMENTAL
+
+    monkeypatch.setenv(EXPERIMENTAL, "1")
     model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
     model.profile = {"max_input_tokens": 200000}
     graph, _backend = create_cli_agent(
@@ -849,7 +855,6 @@ async def test_fulfill_hook_invocation_runs_engine(tmp_path: Path) -> None:
 
 async def test_fulfillment_is_idempotent_in_flight_and_after_completion(
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -881,21 +886,25 @@ async def test_fulfillment_is_idempotent_in_flight_and_after_completion(
         ),
         encoding="utf-8",
     )
-    runtime = HooksRuntime.create(cwd=tmp_path, config_dir=config_dir)
+    notices: list[tuple[str, str]] = []
+    runtime = HooksRuntime.create(
+        cwd=tmp_path,
+        config_dir=config_dir,
+        presenter=HookPresenter(
+            notice=lambda message, severity: notices.append((message, severity))
+        ),
+    )
     request = _request().model_copy(update={"snapshot_id": runtime.snapshot_id})
 
-    with caplog.at_level("WARNING", logger="deepagents_code.hooks.client"):
-        first, second = await asyncio.gather(
-            fulfill_hook_invocation(runtime, request),
-            fulfill_hook_invocation(runtime, request),
-        )
-        third = await fulfill_hook_invocation(runtime, request)
+    first, second = await asyncio.gather(
+        fulfill_hook_invocation(runtime, request),
+        fulfill_hook_invocation(runtime, request),
+    )
+    third = await fulfill_hook_invocation(runtime, request)
 
     assert first == second == third
     assert marker.read_text() == "x"
-    assert [record.message for record in caplog.records].count(
-        "Hook user notice: once"
-    ) == 1
+    assert notices == [("once", "information")]
 
 
 def test_snapshot_configured_server_events() -> None:

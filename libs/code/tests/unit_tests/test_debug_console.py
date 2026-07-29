@@ -1086,7 +1086,7 @@ class TestDebugConsoleScreen:
             await pilot.pause()
 
             snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
-            assert "(langsmith)" not in _widget_text(snapshot_widget)
+            assert "(open in langsmith)" not in _widget_text(snapshot_widget)
 
             screen._langsmith_urls["thread-abc"] = (
                 "https://smith.langchain.com/o/org/projects/p/proj/t/thread-abc"
@@ -1094,7 +1094,7 @@ class TestDebugConsoleScreen:
             screen._refresh_snapshot()
             await pilot.pause()
 
-            assert "(langsmith)" in _widget_text(snapshot_widget)
+            assert "(open in langsmith)" in _widget_text(snapshot_widget)
 
     async def test_cached_langsmith_link_renders_on_first_frame_without_lookup(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1117,7 +1117,7 @@ class TestDebugConsoleScreen:
             await pilot.pause()
 
             snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
-            assert "(langsmith)" in _widget_text(snapshot_widget)
+            assert "(open in langsmith)" in _widget_text(snapshot_widget)
 
         lookup.assert_not_called()
 
@@ -1476,9 +1476,10 @@ class TestDebugConsoleScreen:
             await pilot.pause()
 
             snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
-            # Row renders "Thread  thread-abc  (langsmith)": label (6) + 2-space
-            # gutter = col 8, value (10 chars) spans 8-17, 2-space gap, then
-            # "(langsmith)" starts at col 20. An x offset of 22 is inside it.
+            # Row renders "Thread  thread-abc  (open in langsmith)": label (6)
+            # + 2-space gutter = col 8, value (10 chars) spans 8-17, 2-space gap,
+            # then "(open in langsmith)" starts at col 20. An x offset of 22 is
+            # inside it.
             await pilot.click(snapshot_widget, offset=(22, 0))
             await pilot.pause()
 
@@ -1520,8 +1521,8 @@ class TestDebugConsoleScreen:
             await pilot.pause()
 
             snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
-            # "(langsmith)" starts at col 20 (see the toggle-off test); x=22 is
-            # inside it.
+            # "(open in langsmith)" starts at col 20 (see the toggle-off test);
+            # x=22 is inside it.
             await pilot.click(snapshot_widget, offset=(22, 0))
             await pilot.pause()
 

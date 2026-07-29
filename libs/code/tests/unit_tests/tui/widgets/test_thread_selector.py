@@ -4306,6 +4306,42 @@ class TestConvertMessagesToData:
         assert result[0].tool_status == ToolStatus.SUCCESS
         assert result[0].tool_output == "file contents"
 
+    def test_reloaded_ask_user_row_keeps_its_questions(self) -> None:
+        """A reloaded `ask_user` row needs its questions to render answers.
+
+        `_format_ask_user_output` takes its answer count from the structured
+        questions in `tool_args` — recovered from the preceding
+        `AIMessage.tool_calls[].args`, never from the `ToolMessage`. Without them
+        the row degrades to generic formatting, so this pins the args plumbing the
+        whole feature rests on.
+        """
+        from deepagents_code._ask_user_types import ASK_USER_FAILED_SUMMARY
+        from deepagents_code.tui.widgets.message_store import ToolStatus
+        from deepagents_code.tui.widgets.messages import ToolCallMessage
+
+        args = {"questions": [{"question": "Deploy?"}]}
+        msgs = [
+            self._make_ai(
+                tool_calls=[{"id": "tc-1", "name": "ask_user", "args": args}]
+            ),
+            self._make_tool(
+                "Q: Deploy?\nA: (error: ask_user interaction failed)",
+                tool_call_id="tc-1",
+                status="error",
+            ),
+        ]
+        result = DeepAgentsApp._convert_messages_to_data(msgs)
+
+        assert len(result) == 1
+        assert result[0].tool_args == args
+        assert result[0].tool_status == ToolStatus.ERROR
+
+        widget = result[0].to_widget()
+        assert isinstance(widget, ToolCallMessage)
+        widget._restore_deferred_state()
+        formatted = widget._format_ask_user_output(str(widget._output), is_preview=True)
+        assert formatted.content.plain == ASK_USER_FAILED_SUMMARY
+
     def test_tool_call_error_status(self) -> None:
         """ToolMessage with error status should set ERROR on the tool data."""
         from deepagents_code.tui.widgets.message_store import ToolStatus

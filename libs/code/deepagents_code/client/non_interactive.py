@@ -780,12 +780,13 @@ def _process_message_chunk(
             logger.exception("Failed to format tool output")
             tool_output = UNRENDERABLE_TOOL_OUTPUT
         # Headless always dispatches tool.result for every ToolMessage — there
-        # are no widgets to skip. The TUI handles ToolMessages in three branches
-        # in `textual_adapter.execute_task_textual`: the widget-backed path and
-        # an `else` for unmounted tools both dispatch (mirroring this
-        # always-dispatch behavior), while the `completed_tool_result_ids` branch
-        # suppresses a duplicate rather than dispatching. See the parity contract
-        # in `_tool_stream` for the full guarantee.
+        # are no widgets to skip. The TUI handles ToolMessages in four branches
+        # in `textual_adapter.execute_task_textual`: the widget-backed path, a
+        # deferred-`ask_user` path for a row that never mounted, and an `else` for
+        # unmounted tools all dispatch (mirroring this always-dispatch behavior),
+        # while the `completed_tool_result_ids` branch suppresses a duplicate
+        # rather than dispatching. See the parity contract in `_tool_stream` for
+        # the full guarantee.
         if tool_status == "error":
             dispatch_hook_fire_and_forget(
                 "tool.error",

@@ -47,7 +47,15 @@ if TYPE_CHECKING:
         def __call__(self, *, approximate: bool = False) -> None: ...
 
 
-from deepagents_code._ask_user_types import AskUserRequest
+from deepagents_code._ask_user_types import (
+    ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
+    ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY,
+    ASK_USER_ANSWERED_SUMMARY,
+    ASK_USER_CANCELLED_SUMMARY,
+    ASK_USER_FAILED_SUMMARY,
+    AskUserRequest,
+    AskUserRowSummary,
+)
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
 from deepagents_code._session_stats import (
@@ -155,6 +163,28 @@ def _dispatch_tool_error_hook(tool_name: str) -> None:
     dispatch_hook_fire_and_forget("tool.error", build_tool_error_payload(tool_name))
 
 
+def _is_ask_user_transcript(body: str) -> bool:
+    """Whether a string is a `Q:`/`A:` transcript carrying user-typed answers.
+
+    Matches the exact shape `format_ask_user_transcript` generates, rather than
+    allow-listing the permitted bodies: several legitimate `ask_user` hook bodies
+    are free-text widget-failure messages (`_ASK_USER_UNSUPPORTED_ERROR`, the
+    invalid-payload text), and an allowlist would silently rewrite the next one
+    someone adds. The transcript is the one thing that must never be sent, and it
+    is machine-generated, so its shape is reliable.
+
+    This is a send-side refusal, not a parse: it never interprets answer content,
+    and a false positive costs a summary in a hook body rather than leaking one.
+
+    Args:
+        body: Candidate `tool.result` body.
+
+    Returns:
+        True if `body` looks like a generated Q&A transcript.
+    """
+    return body.startswith("Q: ") and "\nA: " in body
+
+
 def _dispatch_tool_result_hook(
     tool_name: str,
     tool_id: str | None,
@@ -166,13 +196,52 @@ def _dispatch_tool_result_hook(
 
     `tool_output` is truncated to `HOOK_TOOL_OUTPUT_LIMIT` inside the shared
     payload builder.
+
+    For `ask_user`, a body that is a Q&A transcript is replaced with a summary.
+    Each call site already passes a summary, but that correctness is positional —
+    it depends on a live `deferred_tool_result_hooks` entry, which is turn-local, so
+    a `ToolMessage` arriving on a later turn (or via a future branch) would
+    otherwise fall through to a path that dispatches the raw transcript. Enforcing
+    it here by tool name makes "user-typed answers never reach `tool.result`" hold
+    structurally rather than per-branch.
     """
+    if tool_name == "ask_user" and _is_ask_user_transcript(tool_output):
+        logger.error(
+            "Refusing to send an ask_user answer transcript to hooks "
+            "(tool_id=%s, status=%s); substituting a summary",
+            tool_id,
+            tool_status,
+        )
+        tool_output = (
+            ASK_USER_FAILED_SUMMARY
+            if tool_status == "error"
+            else ASK_USER_ANSWERED_SUMMARY
+        )
     dispatch_hook_fire_and_forget(
         "tool.result",
         build_tool_result_payload(
             tool_name, tool_id, tool_args, tool_status, tool_output
         ),
     )
+
+
+class DeferredToolResultHook(NamedTuple):
+    """A `tool.result` payload held back until the authoritative result arrives.
+
+    Used for an answered `ask_user`: the middleware owns the final status, and the
+    hook body must be the sanitized summary rather than the transcript of the
+    user's answers.
+    """
+
+    tool_args: dict[str, Any]
+    """Args from the interrupt, since the streamed message carries none."""
+
+    tool_output: AskUserRowSummary
+    """Sanitized `tool_output`; never the answers.
+
+    Typed as `AskUserRowSummary` rather than `str` so the "never the transcript"
+    constraint in the class docstring is checked rather than merely documented.
+    """
 
 
 def _dispatch_terminal_tool_result_hooks(
@@ -189,12 +258,20 @@ def _dispatch_terminal_tool_result_hooks(
     real `tool_name`/`args`, so the "every `tool.use` is closed by a matching
     terminal event" guarantee holds on those paths too.
 
+    A row carrying a deferred success (`ToolCallMessage.defer_success`) is the
+    exception: it already reached a successful outcome, so it is reported as
+    `tool_status="success"` with `ASK_USER_ANSWERED_NO_RESULT_SUMMARY` instead of
+    `tool_output`, and no `tool.error` is emitted for it. This matches a row that
+    has already fallen back to its summary as well as one still awaiting its
+    result — see `ToolCallMessage.deferred_success_output`.
+
     TUI-only: the headless surface reaches the equivalent state through
     `_run_agent_loop`'s orphan drain rather than widgets.
 
     Args:
         tool_messages: Map of tool-call id to its widget for the pending tools.
-        tool_output: Terminal output string recorded on each `tool.result`.
+        tool_output: Terminal output string recorded on each `tool.result`, except
+            for rows with a deferred success (see above).
 
     Returns:
         The tool-call ids that received terminal hooks. Callers track these
@@ -204,6 +281,27 @@ def _dispatch_terminal_tool_result_hooks(
     """
     dispatched: list[str] = []
     for tool_id, tool_msg in list(tool_messages.items()):
+        if tool_msg.deferred_success_output is not None:
+            # The tool already succeeded (an answered `ask_user`). Reporting the
+            # generic failure here would tell audit hooks a question errored that
+            # the user answered normally — and `ask_user` results double as
+            # authorization records. But every caller that gets here is a teardown
+            # (crash, torn stream, cancel), so the result never arrived: report a
+            # body that says so rather than the plain answered summary, and never
+            # the answers themselves.
+            #
+            # The answers did reach the graph on these paths. Where they provably
+            # did not, the caller settles the row itself with
+            # `ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY` before this sweep runs.
+            _dispatch_tool_result_hook(
+                tool_msg.tool_name,
+                tool_id,
+                tool_msg.args,
+                "success",
+                ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
+            )
+            dispatched.append(tool_id)
+            continue
         _dispatch_tool_error_hook(tool_msg.tool_name)
         _dispatch_tool_result_hook(
             tool_msg.tool_name,
@@ -214,6 +312,103 @@ def _dispatch_terminal_tool_result_hooks(
         )
         dispatched.append(tool_id)
     return dispatched
+
+
+def _pop_rows_not_awaiting_deferred_result(
+    tool_messages: dict[str, ToolCallMessage],
+) -> dict[str, ToolCallMessage]:
+    """Remove rows a rejection sweep may terminate immediately.
+
+    An answered `ask_user` remains tracked while the resumed graph produces its
+    authoritative `ToolMessage`. A co-occurring bare HITL rejection still resumes
+    when an answer is pending, so consuming that row here would discard the full
+    transcript or a validation error that arrives on the resumed stream.
+
+    Gates on `is_awaiting_deferred_result`, deliberately *not* the
+    `deferred_success_output is not None` used by
+    `_dispatch_terminal_tool_result_hooks`: an already-settled row has nothing left
+    to wait for, so a rejection sweep may consume it.
+
+    Args:
+        tool_messages: Mutable map of currently tracked tool rows.
+
+    Returns:
+        Rows not awaiting a deferred result, removed from `tool_messages`.
+    """
+    popped: dict[str, ToolCallMessage] = {}
+    for tool_id in list(tool_messages):
+        if not tool_messages[tool_id].is_awaiting_deferred_result:
+            popped[tool_id] = tool_messages.pop(tool_id)
+    return popped
+
+
+def _pop_rows_awaiting_deferred_result(
+    tool_messages: dict[str, ToolCallMessage],
+) -> dict[str, ToolCallMessage]:
+    """Remove the rows still waiting on a deferred result.
+
+    The complement of `_pop_rows_not_awaiting_deferred_result`, for the one caller
+    that must terminate exactly those rows: an abort that discards the resume
+    payload, so the `ToolMessage` they wait for provably never comes.
+
+    Args:
+        tool_messages: Mutable map of currently tracked tool rows.
+
+    Returns:
+        Rows awaiting a deferred result, removed from `tool_messages`.
+    """
+    popped: dict[str, ToolCallMessage] = {}
+    for tool_id in list(tool_messages):
+        if tool_messages[tool_id].is_awaiting_deferred_result:
+            popped[tool_id] = tool_messages.pop(tool_id)
+    return popped
+
+
+def _set_running_unless_deferred(tool_msg: ToolCallMessage) -> None:
+    """Show the running spinner, unless the row already has its own outcome.
+
+    An answered `ask_user` is not an ungated sibling waiting to run: it is tracked
+    only until its `ToolMessage` lands, and a spinner would visibly un-answer the
+    row in the meantime. Every `set_running` sweep over `_current_tool_messages`
+    must go through here, because those sweeps run *after* the `ask_user`
+    resolution loop in the same `pending_interrupts` pass and are not namespace
+    scoped for the main agent — so a batch mixing a question with a gated or
+    hook-resolved tool reaches the answered row.
+
+    Args:
+        tool_msg: Row to move into the running state.
+    """
+    if tool_msg.is_awaiting_deferred_result:
+        return
+    tool_msg.set_running()
+
+
+def _reject_tracked_rows(
+    adapter: TextualUIAdapter,
+    *,
+    reason: str | None = None,
+) -> list[str]:
+    """Terminally reject every tracked row a rejection sweep may consume.
+
+    Gives each row a terminal state before teardown so none is left frozen on a
+    stale "Running...", then closes its `tool.use` with a terminal hook. Rows
+    awaiting a deferred result are left tracked: an answered `ask_user` makes the
+    turn resume, so it still expects its authoritative `ToolMessage` — see
+    `_pop_rows_not_awaiting_deferred_result`.
+
+    Args:
+        adapter: Adapter owning the tracked rows.
+        reason: Optional free-text rejection reason rendered on each row.
+
+    Returns:
+        The tool-call ids that received terminal hooks, for the caller's
+            `completed_tool_result_ids` tracking.
+    """
+    rejected = _pop_rows_not_awaiting_deferred_result(adapter._current_tool_messages)
+    for tool_msg in rejected.values():
+        tool_msg.set_rejected(reason=reason)
+        adapter._sync_tool_widget(tool_msg)
+    return _dispatch_terminal_tool_result_hooks(rejected, "Tool approval rejected")
 
 
 def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
@@ -540,8 +735,17 @@ class TextualUIAdapter:
         # before the widget updates so a `set_error` failure can't skip it.
         _dispatch_terminal_tool_result_hooks(self._current_tool_messages, error)
         for tool_msg in list(self._current_tool_messages.values()):
-            tool_msg.set_error(error)
-            self._sync_tool_widget(tool_msg)
+            # Guarded per row: this is the last-resort backstop, so one widget
+            # failing to render must not abort the sweep and leave the remaining
+            # rows tracked across turns (the `clear()` below would be skipped too).
+            try:
+                tool_msg.set_error(error)
+                self._sync_tool_widget(tool_msg)
+            except Exception:
+                logger.exception(
+                    "Failed to finalize pending %s row with an error",
+                    tool_msg.tool_name,
+                )
         self._current_tool_messages.clear()
 
         # Clear active streaming message to avoid stale "active" state in the store.
@@ -570,6 +774,25 @@ def _build_interrupted_ai_message(
     # Reconstruct tool_calls from displayed tool messages
     tool_calls = []
     for tool_id, tool_widget in list(current_tool_messages.items()):
+        if tool_widget.deferred_success_output is not None:
+            # An answered `ask_user` stays tracked until its `ToolMessage`
+            # arrives, so a cancel lands here with the row still present. The
+            # graph already owns this tool call in its checkpoint, so adding it
+            # would append a second `tool_use` with no matching `tool_result` —
+            # which the provider rejects, surfacing turns later as an opaque 400
+            # with nothing pointing back to the cancelled question.
+            #
+            # Gated on `deferred_success_output`, not `is_awaiting_deferred_result`:
+            # the hazard is that the graph owns the call, which stays true once the
+            # row has fallen back to its summary. A settled row can still be
+            # tracked here (a permission hook returning `plan.interrupted` settles
+            # it without popping it), and it must be omitted too.
+            logger.info(
+                "Omitting tool call %s from interrupted AIMessage; the graph "
+                "already owns it via its deferred result",
+                tool_id,
+            )
+            continue
         tool_calls.append(
             {
                 "id": tool_id,
@@ -943,6 +1166,23 @@ async def execute_task_textual(
     # synthetic messages would otherwise re-dispatch `tool.result`; this set
     # suppresses those duplicates.
     completed_tool_result_ids: set[str] = set()
+    # `ask_user` answers are private user input, so its terminal hook carries a
+    # sanitized summary rather than the transcript. Wait for the authoritative
+    # ToolMessage before dispatching it so the hook status matches the result
+    # persisted to the thread and sent to the model.
+    #
+    # Popped only when that ToolMessage arrives; an entry here is simply abandoned
+    # if it never does. Abandoning it does not leave the `tool.use` unterminated:
+    # the teardown sweeps close the row out, reading the outcome `defer_success`
+    # recorded on the widget itself.
+    #
+    # Turn-local, so nothing leaks across turns. The intent is that this dict and
+    # that widget flag stay in step — set both when deferring, and let the same
+    # ToolMessage clear both — but they can legitimately diverge: the entry is
+    # added unconditionally while `defer_success` needs a mounted row, so a torn-
+    # down DOM leaves an entry with no flag (logged at the deferral site, and
+    # handled by the no-widget branch in the `ToolMessage` handler).
+    deferred_tool_result_hooks: dict[str, DeferredToolResultHook] = {}
 
     # Track pending text and assistant messages PER NAMESPACE to avoid interleaving
     # when multiple subagents stream in parallel
@@ -1501,10 +1741,31 @@ async def execute_task_textual(
 
                         # Update tool call status with output
                         tool_id = getattr(message, "tool_call_id", None)
+                        deferred_hook = (
+                            deferred_tool_result_hooks.pop(tool_id, None)
+                            if tool_id
+                            else None
+                        )
+                        # This streamed result owns the status; the deferral only
+                        # replaces the hook body to keep answers out of hook
+                        # scripts. A failure reports the constant failure summary
+                        # rather than the `(error: ...)` transcript.
+                        hook_output: str
+                        if deferred_hook is None:
+                            hook_output = output_str
+                        elif tool_status == "error":
+                            hook_output = ASK_USER_FAILED_SUMMARY
+                        else:
+                            hook_output = deferred_hook.tool_output
                         if tool_id and tool_id in adapter._current_tool_messages:
                             # Pop before the widget calls so the dict drains even
                             # if set_success/set_error raises.
                             tool_msg = adapter._current_tool_messages.pop(tool_id)
+                            # This result is authoritative, so it supersedes any
+                            # deferred outcome — including with an error, which
+                            # `set_error` would otherwise redirect back to the
+                            # deferred success.
+                            tool_msg.clear_deferred_success()
                             # Dispatch the terminal hooks *before* touching the
                             # widget: a render failure must never drop this tool's
                             # tool.result/tool.error (which would leave its
@@ -1517,7 +1778,7 @@ async def execute_task_textual(
                                 tool_id,
                                 tool_msg.args,
                                 tool_status,
-                                output_str,
+                                hook_output,
                             )
                             # Update the widget last, guarded: a set_success/
                             # set_error failure must not abort the turn and drop
@@ -1539,7 +1800,35 @@ async def execute_task_textual(
                             # cleared, so it lands here — consume the id and skip
                             # re-dispatch to avoid a duplicate tool.result (with
                             # mismatched `{}` args).
+                            if deferred_hook is not None:
+                                # Contradictory: a deferred row is kept out of the
+                                # sweeps that populate `completed_tool_result_ids`,
+                                # so its terminal hook cannot already have fired.
+                                # Skipping is still right (a second dispatch would
+                                # duplicate), but the invariant broke — say so
+                                # rather than dropping the popped hook in silence.
+                                logger.error(
+                                    "ask_user tool_id %s had both a deferred hook "
+                                    "and an already-dispatched terminal result; "
+                                    "skipping re-dispatch",
+                                    tool_id,
+                                )
                             completed_tool_result_ids.discard(tool_id)
+                        elif tool_id and deferred_hook is not None:
+                            # No widget: the row never mounted (a torn-down DOM),
+                            # so `tool_msg.args` is unavailable and the generic
+                            # `else` below would report `{}` args plus the raw
+                            # transcript. Use the interrupt's own args and the
+                            # sanitized output instead.
+                            if tool_status == "error":
+                                _dispatch_tool_error_hook(tool_name)
+                            _dispatch_tool_result_hook(
+                                tool_name,
+                                tool_id,
+                                deferred_hook.tool_args,
+                                tool_status,
+                                hook_output,
+                            )
                         else:
                             # The tool call was never mounted — either it has no
                             # tool_call_id, or its streamed args never parsed so
@@ -1936,23 +2225,26 @@ async def execute_task_textual(
                             answers = result.get("answers", [])
                             if isinstance(answers, list):
                                 resume_payload[interrupt_id] = {"answers": answers}
-                                output = "User answered"
-                                tool_msg = adapter._current_tool_messages.pop(
-                                    tool_id, None
+                                # Keep the row alive until the middleware emits
+                                # the ToolMessage that is persisted and sent to
+                                # the model. It owns validation and final status;
+                                # only the hook body is replaced to keep answers
+                                # out of hook scripts.
+                                deferred_tool_result_hooks[tool_id] = (
+                                    DeferredToolResultHook(
+                                        tool_args=tool_args,
+                                        tool_output=ASK_USER_ANSWERED_SUMMARY,
+                                    )
                                 )
-                                _dispatch_tool_result_hook(
-                                    "ask_user", tool_id, tool_args, "success", output
-                                )
-                                completed_tool_result_ids.add(tool_id)
-                                if tool_msg is not None:
-                                    try:
-                                        tool_msg.set_success(output)
-                                        adapter._sync_tool_widget(tool_msg)
-                                    except Exception:
-                                        logger.exception(
-                                            "Failed to update ask_user row for %s",
-                                            tool_id,
-                                        )
+                                ask_row = adapter._current_tool_messages.get(tool_id)
+                                if ask_row is not None:
+                                    # Record the outcome on the row too, so the
+                                    # teardown sweeps — which treat any tracked
+                                    # row as a failure, and which this deferral
+                                    # newly exposes it to — settle it as the
+                                    # success it earned. Only the constant
+                                    # summary, never the answers.
+                                    ask_row.defer_success(ASK_USER_ANSWERED_SUMMARY)
                                 else:
                                     logger.warning(
                                         "ask_user tool_id %s missing from "
@@ -1960,6 +2252,7 @@ async def execute_task_textual(
                                         tool_id,
                                     )
                             else:
+                                output = "invalid ask_user answers payload"
                                 logger.error(
                                     "ask_user answered payload had non-list "
                                     "answers: %s",
@@ -1967,11 +2260,10 @@ async def execute_task_textual(
                                 )
                                 resume_payload[interrupt_id] = {
                                     "status": "error",
-                                    "error": "invalid ask_user answers payload",
+                                    "error": output,
                                     "answers": ["" for _ in questions],
                                 }
                                 any_rejected = True
-                                output = "invalid ask_user answers payload"
                                 tool_msg = adapter._current_tool_messages.pop(
                                     tool_id, None
                                 )
@@ -1999,7 +2291,7 @@ async def execute_task_textual(
                             # resume so the agent can react to the failure.
                             ask_user_cancelled = True
                             tool_msg = adapter._current_tool_messages.pop(tool_id, None)
-                            output = "Question cancelled"
+                            output = ASK_USER_CANCELLED_SUMMARY
                             _dispatch_tool_error_hook("ask_user")
                             _dispatch_tool_result_hook(
                                 "ask_user", tool_id, tool_args, "error", output
@@ -2092,7 +2384,7 @@ async def execute_task_textual(
                             action_requests,
                             adapter._current_tool_messages,
                         ):
-                            tool_msg.set_running()
+                            _set_running_unless_deferred(tool_msg)
                             adapter._sync_tool_widget(tool_msg)
                     else:
                         all_action_requests = action_requests
@@ -2139,7 +2431,7 @@ async def execute_task_textual(
                             for tool_msg in rows:
                                 resolved_row_ids.add(id(tool_msg))
                                 if hook_decision["type"] == "approve":
-                                    tool_msg.set_running()
+                                    _set_running_unless_deferred(tool_msg)
                                     tool_name = request.get("name")
                                     args = request.get("args")
                                     if tool_name in {
@@ -2161,7 +2453,7 @@ async def execute_task_textual(
                             decisions = merge_permission_decisions(plan, [])
                             for tool_msg in adapter._current_tool_messages.values():
                                 if id(tool_msg) not in resolved_row_ids:
-                                    tool_msg.set_running()
+                                    _set_running_unless_deferred(tool_msg)
                                     adapter._sync_tool_widget(tool_msg)
                             resume_payload[interrupt_id] = {"decisions": decisions}
                             continue
@@ -2179,7 +2471,7 @@ async def execute_task_textual(
                             ):
                                 if id(tool_msg) in resolved_row_ids:
                                     continue
-                                tool_msg.set_running()
+                                _set_running_unless_deferred(tool_msg)
                                 adapter._sync_tool_widget(tool_msg)
                             continue
 
@@ -2272,7 +2564,7 @@ async def execute_task_textual(
                                     adapter._current_tool_messages,
                                 )
                                 for tool_msg in tool_msgs:
-                                    tool_msg.set_running()
+                                    _set_running_unless_deferred(tool_msg)
                                     adapter._sync_tool_widget(tool_msg)
                                 for action_request in action_requests:
                                     tool_name = action_request.get("name")
@@ -2316,7 +2608,7 @@ async def execute_task_textual(
                                     adapter._current_tool_messages,
                                 )
                                 for tool_msg in tool_msgs:
-                                    tool_msg.set_running()
+                                    _set_running_unless_deferred(tool_msg)
                                     adapter._sync_tool_widget(tool_msg)
                                 for action_request in action_requests:
                                     tool_name = action_request.get("name")
@@ -2354,21 +2646,12 @@ async def execute_task_textual(
                                 # without the rejected context. A supplied
                                 # reason likewise resumes either kind of run.
                                 if reject_message is None and graph_input is None:
-                                    # The whole turn aborts: give every tracked
-                                    # row a terminal state before teardown so
-                                    # none is left frozen on a stale "Running...".
-                                    for tool_msg in list(
-                                        adapter._current_tool_messages.values()
-                                    ):
-                                        tool_msg.set_rejected(reason=reject_message)
-                                        adapter._sync_tool_widget(tool_msg)
+                                    # The whole turn aborts.
                                     completed_tool_result_ids.update(
-                                        _dispatch_terminal_tool_result_hooks(
-                                            adapter._current_tool_messages,
-                                            "Tool approval rejected",
+                                        _reject_tracked_rows(
+                                            adapter, reason=reject_message
                                         )
                                     )
-                                    adapter._current_tool_messages.clear()
                                     any_rejected = True
                                 else:
                                     # The run resumes, so only reviewed calls are
@@ -2392,7 +2675,7 @@ async def execute_task_textual(
                                         for tool_msg in tracked_tool_msgs.values():
                                             if id(tool_msg) in rejected_ids:
                                                 continue
-                                            tool_msg.set_running()
+                                            _set_running_unless_deferred(tool_msg)
                                             adapter._sync_tool_widget(tool_msg)
                             else:
                                 logger.warning(
@@ -2403,18 +2686,9 @@ async def execute_task_textual(
                                     RejectDecision(type="reject")
                                     for _ in action_requests
                                 ]
-                                for tool_msg in list(
-                                    adapter._current_tool_messages.values()
-                                ):
-                                    tool_msg.set_rejected()
-                                    adapter._sync_tool_widget(tool_msg)
                                 completed_tool_result_ids.update(
-                                    _dispatch_terminal_tool_result_hooks(
-                                        adapter._current_tool_messages,
-                                        "Tool approval rejected",
-                                    )
+                                    _reject_tracked_rows(adapter)
                                 )
-                                adapter._current_tool_messages.clear()
                                 any_rejected = True
                         else:
                             logger.warning(
@@ -2424,18 +2698,9 @@ async def execute_task_textual(
                             decisions = [
                                 RejectDecision(type="reject") for _ in action_requests
                             ]
-                            for tool_msg in list(
-                                adapter._current_tool_messages.values()
-                            ):
-                                tool_msg.set_rejected()
-                                adapter._sync_tool_widget(tool_msg)
                             completed_tool_result_ids.update(
-                                _dispatch_terminal_tool_result_hooks(
-                                    adapter._current_tool_messages,
-                                    "Tool approval rejected",
-                                )
+                                _reject_tracked_rows(adapter)
                             )
-                            adapter._current_tool_messages.clear()
                             any_rejected = True
 
                         decisions = merge_permission_decisions(plan, decisions)
@@ -2450,11 +2715,56 @@ async def execute_task_textual(
                 if suppress_resumed_output and (
                     ask_user_cancelled or not pending_ask_user
                 ):
+                    # An answered `ask_user` can still be tracked here when a
+                    # *separate* `ask_user` call in the same batch was cancelled
+                    # (one widget cancels its whole prompt, never one question of
+                    # it, so this needs two parallel `ask_user` tool calls — which
+                    # `ASK_USER_SYSTEM_PROMPT` discourages but nothing forbids). This
+                    # `return` happens *before* `Command(resume=resume_payload)`
+                    # below, so those answers are discarded: they never reach the
+                    # graph, and the inline widget is already unmounted, making them
+                    # unrecoverable. Settle each row as a delivery failure rather
+                    # than letting the `finally` backstop record the ordinary
+                    # answered success — `ask_user` results double as authorization
+                    # records, and this authorization never took effect.
+                    undelivered = _pop_rows_awaiting_deferred_result(
+                        adapter._current_tool_messages
+                    )
+                    for tool_id, tool_msg in undelivered.items():
+                        _dispatch_tool_error_hook(tool_msg.tool_name)
+                        _dispatch_tool_result_hook(
+                            tool_msg.tool_name,
+                            tool_id,
+                            tool_msg.args,
+                            "error",
+                            ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY,
+                        )
+                        completed_tool_result_ids.add(tool_id)
+                        try:
+                            # Clear first: `set_error` would otherwise redirect
+                            # back to the deferred success.
+                            tool_msg.clear_deferred_success()
+                            tool_msg.set_error(ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY)
+                            adapter._sync_tool_widget(tool_msg)
+                        except Exception:
+                            logger.exception(
+                                "Failed to settle undelivered ask_user row %s",
+                                tool_id,
+                            )
+
                     message = (
                         "Question cancelled. Tell the agent what you'd like instead."
                         if ask_user_cancelled
                         else "Command rejected. Tell the agent what you'd like instead."
                     )
+                    if undelivered:
+                        # The user typed answers and they are now gone; saying so
+                        # is the only way they learn not to wait for a response.
+                        message = (
+                            "Question cancelled, so answers to the other "
+                            "question(s) in this batch were not sent. Tell the "
+                            "agent what you'd like instead."
+                        )
                     await adapter._mount_message(AppMessage(message))
                     turn_stats.wall_time_seconds = time.monotonic() - start_time
                     # Model call already completed (HITL interrupt fires after
@@ -2489,6 +2799,48 @@ async def execute_task_textual(
                         adapter._current_tool_messages,
                         "Stream ended before tool result",
                     )
+                    # Hooks-only above, per the contract in the comment: a row
+                    # keeps whatever it rendered. A deferred row rendered
+                    # *nothing* terminal though — an answered `ask_user` is still
+                    # showing its paused-pending look — so settle those, or the
+                    # row stays pending for the rest of the session, showing
+                    # neither the answers nor a failure.
+                    for tool_id, tool_msg in list(
+                        adapter._current_tool_messages.items()
+                    ):
+                        try:
+                            if tool_msg.settle_deferred_success():
+                                adapter._sync_tool_widget(tool_msg)
+                        except Exception:
+                            logger.exception(
+                                "Failed to settle deferred %s row %s at stream end",
+                                tool_msg.tool_name,
+                                tool_id,
+                            )
+                            # `clear()` below drops this row for good, so nothing
+                            # will retry: without a fallback it stays frozen on its
+                            # paused-pending look for the rest of the session.
+                            try:
+                                tool_msg.clear_deferred_success()
+                                tool_msg.set_error("Stream ended before tool result")
+                                adapter._sync_tool_widget(tool_msg)
+                            except Exception:
+                                logger.exception(
+                                    "Fallback terminal render also failed for %s "
+                                    "row %s; surfacing to the user",
+                                    tool_msg.tool_name,
+                                    tool_id,
+                                )
+                                # A permanently stuck row is user-visible damage;
+                                # a file-only log would leave them waiting on a
+                                # spinner that never resolves.
+                                await adapter._mount_message(
+                                    AppMessage(
+                                        f"A {tool_msg.tool_name} row could not be "
+                                        "updated and may stay stuck; its result was "
+                                        "still recorded."
+                                    )
+                                )
                     adapter._current_tool_messages.clear()
                 # The end-of-stream diagnostic for buffered tool calls that never
                 # fired a `tool.use` runs in the `finally` below, not here, so it

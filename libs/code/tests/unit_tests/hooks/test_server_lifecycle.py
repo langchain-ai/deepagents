@@ -7,13 +7,20 @@ import json
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NotRequired
 from unittest.mock import MagicMock
 from uuid import uuid4
 
 import pytest
+from deepagents import create_deep_agent
+from deepagents.backends import StateBackend
+from deepagents.middleware import CompiledSubAgent, SubAgentMiddleware
+from deepagents.middleware._state import private_state_field_names
+from langchain.agents import create_agent
+from langchain.agents.middleware.types import AgentState
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import START, StateGraph
 from langgraph.types import Command
@@ -72,13 +79,169 @@ from deepagents_code.hooks.snapshot import HooksSnapshot
 from deepagents_code.hooks.transcript import SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
 
 if TYPE_CHECKING:
-    from langchain_core.runnables import RunnableConfig
+    from collections.abc import Callable, Sequence
+
+    from langchain_core.language_models import LanguageModelInput
+    from langchain_core.runnables import Runnable, RunnableConfig
+    from langchain_core.tools import BaseTool
 
     from deepagents_code._cli_context import CLIContext
 
 
 class _ReplayState(BaseModel):
     completed: bool
+
+
+class _ToolCallingFakeChatModel(GenericFakeChatModel):
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable[..., Any] | BaseTool],
+        *,
+        tool_choice: str | None = None,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        _ = tools, tool_choice, kwargs
+        return self
+
+
+class _PublicHookState(AgentState[Any]):
+    _hooks_stop_continuation_count: NotRequired[int]
+    _hooks_pre_tool_outcomes: NotRequired[dict[str, Any]]
+
+
+def _hook_state_subagent(*, name: str, content: str) -> CompiledSubAgent:
+    def finish(_state: _PublicHookState) -> dict[str, Any]:
+        return {
+            "_hooks_stop_continuation_count": 1,
+            "_hooks_pre_tool_outcomes": {
+                name: {"behavior": "none", "reason": None, "context": []}
+            },
+            "messages": [AIMessage(content=content)],
+        }
+
+    return CompiledSubAgent(
+        name=name,
+        description=f"Return {content}.",
+        runnable=RunnableLambda(finish),
+    )
+
+
+def test_server_hook_state_fields_are_private() -> None:
+    private_fields = private_state_field_names(ServerHooksState)
+
+    assert "_hooks_pre_tool_outcomes" in private_fields
+    assert "_hooks_stop_continuation_count" in private_fields
+
+
+def test_task_omits_private_server_hook_state_from_subagent_update() -> None:
+    subagent = _hook_state_subagent(name="child", content="child complete")
+    model = _ToolCallingFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {
+                                "description": "Run the child",
+                                "subagent_type": "child",
+                            },
+                            "id": "call-child",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="parent complete"),
+            ]
+        )
+    )
+    agent = create_agent(
+        model=model,
+        middleware=[
+            SubAgentMiddleware(
+                backend=StateBackend(),
+                subagents=[subagent],
+                private_state_keys=private_state_field_names(ServerHooksState),
+            )
+        ],
+        state_schema=_PublicHookState,
+    )
+
+    result = agent.invoke({"messages": [HumanMessage(content="delegate")]})
+
+    assert "_hooks_pre_tool_outcomes" not in result
+    assert "_hooks_stop_continuation_count" not in result
+    tool_messages = [
+        message for message in result["messages"] if isinstance(message, ToolMessage)
+    ]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].content == "child complete"
+
+
+def test_parallel_tasks_do_not_merge_subagent_server_hook_state(
+    tmp_path: Path,
+) -> None:
+    model = _ToolCallingFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {
+                                "description": "Run the first child",
+                                "subagent_type": "first",
+                            },
+                            "id": "call-first",
+                            "type": "tool_call",
+                        },
+                        {
+                            "name": "task",
+                            "args": {
+                                "description": "Run the second child",
+                                "subagent_type": "second",
+                            },
+                            "id": "call-second",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(content="parent complete"),
+            ]
+        )
+    )
+    checkpointer = InMemorySaver()
+    agent = create_deep_agent(
+        model=model,
+        middleware=[ServerHooksMiddleware(cwd=tmp_path)],
+        subagents=[
+            _hook_state_subagent(name="first", content="first complete"),
+            _hook_state_subagent(name="second", content="second complete"),
+        ],
+        checkpointer=checkpointer,
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": str(uuid4())}}
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="run both children")]},
+        config=config,
+    )
+
+    tool_messages = {
+        message.tool_call_id: message.content
+        for message in result["messages"]
+        if isinstance(message, ToolMessage)
+    }
+    assert tool_messages == {
+        "call-first": "first complete",
+        "call-second": "second complete",
+    }
+    state = agent.get_state(config).values
+    assert "first" not in state.get("_hooks_pre_tool_outcomes", {})
+    assert "second" not in state.get("_hooks_pre_tool_outcomes", {})
+    assert "_hooks_stop_continuation_count" not in state
 
 
 def _request(event: PreToolUseEvent | None = None) -> HookInvocationRequest:

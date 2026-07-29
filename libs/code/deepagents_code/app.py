@@ -3327,6 +3327,14 @@ class DeepAgentsApp(App):
         self._goal_proposal_worker: Worker[None] | None = None
         """Active worker drafting or mounting a goal criteria proposal."""
 
+        self._goal_preference_task: asyncio.Task[None] | None = None
+        """`/goal` flow detached from the App message pump.
+
+        Set when the one-time Auto criteria preference modal is still owed, so
+        the flow cannot be awaited on the pump (see `_start_goal_proposal`).
+        Holding the reference keeps the task from being GC'd mid-flight and lets
+        tests await the continuation deterministically."""
+
         self._goal_review_task: asyncio.Task[None] | None = None
         """Active task awaiting a mounted goal criteria review decision."""
 
@@ -8496,25 +8504,36 @@ class DeepAgentsApp(App):
             if self.screen is screen:
                 screen.dismiss()
 
-    async def _ensure_goal_auto_accept_preference(self) -> None:
-        """Ask once, on the first Auto-mode goal, how to handle criteria.
+    def _goal_auto_accept_prompt_pending(self) -> bool:
+        """Return whether a `/goal` action still owes the Auto criteria prompt.
 
-        Only prompts in Auto mode: the preference has no effect in Manual
+        Only Auto mode is prompted: the preference has no effect in Manual
         (always reviews) or YOLO (always applies), so a Manual/YOLO user is
         asked the first time they act on a goal after switching to Auto instead.
 
-        Fail closed to review when the modal times out or fails to mount. Saving
-        still records the one-time marker so a wedged prompt cannot loop, and the
-        orphaned modal is dismissed so it cannot linger over goal drafting.
+        Callers use this to decide whether the goal flow must run off the App
+        message pump before it can open the modal.
         """
         if self._session_state is None:
-            return
+            return False
         from deepagents_code.approval_mode import ApprovalMode
 
         mode = getattr(self._session_state, "approval_mode", None)
         if mode is not ApprovalMode.AUTO:
-            return
-        if not self._should_prompt_goal_auto_accept_preference():
+            return False
+        return self._should_prompt_goal_auto_accept_preference()
+
+    async def _ensure_goal_auto_accept_preference(self) -> None:
+        """Ask once, on the first Auto-mode goal, how to handle criteria.
+
+        Fail closed to review when the modal times out or fails to mount. Saving
+        still records the one-time marker so a wedged prompt cannot loop, and the
+        orphaned modal is dismissed so it cannot linger over goal drafting.
+
+        Must not be awaited on the App message pump — see
+        `_start_goal_proposal`.
+        """
+        if not self._goal_auto_accept_prompt_pending():
             return
 
         from deepagents_code.tui.widgets.launch_init import (
@@ -11041,15 +11060,9 @@ class DeepAgentsApp(App):
             if not grader_arg:
                 await self._mount_message(AppMessage("Usage: /goal amend <feedback>"))
                 return
-            await self._ensure_goal_auto_accept_preference()
-            self._cancel_goal_proposal_worker()
-            await self._cancel_pending_goal_review(context="goal-amend cleanup")
-            async with self._goal_state_mutation_boundary():
-                self._clear_pending_goal_rubric()
-                await self._persist_goal_rubric_state()
-            self._goal_proposal_worker = self.run_worker(
-                self._propose_goal_amendment(grader_arg),
-                exclusive=False,
+            await self._start_goal_proposal(
+                lambda: self._propose_goal_amendment(grader_arg),
+                cleanup_context="goal-amend cleanup",
             )
             return
 
@@ -11092,16 +11105,108 @@ class DeepAgentsApp(App):
 
         objective = remainder
         await self._mount_message(UserMessage(command))
-        await self._ensure_goal_auto_accept_preference()
+        await self._start_goal_proposal(
+            lambda: self._propose_goal_rubric(objective),
+            cleanup_context="goal replacement cleanup",
+        )
+
+    async def _start_goal_proposal(
+        self,
+        proposal: Callable[[], Coroutine[Any, Any, None]],
+        *,
+        cleanup_context: str,
+    ) -> None:
+        """Begin a goal proposal, asking for the Auto criteria policy first.
+
+        The one-time preference modal is awaited, and `/goal` is dispatched from
+        `on_chat_input_submitted`, which is itself awaited inline on the App
+        message pump. Awaiting the modal there blocks the pump, so it never
+        receives the Enter/Esc key events it needs to resolve and the whole app
+        looks frozen until the modal watchdog fires. When the prompt is still
+        owed, the flow therefore runs as a detached task so the handler returns
+        and the pump stays free to route keys to the modal. This mirrors the
+        install-then-switch flow, which runs its credential modal off the pump
+        for the same reason.
+
+        Without a pending prompt (the overwhelmingly common case) nothing opens a
+        modal, so the flow stays inline and `/goal` keeps drafting within the
+        submission that asked for it.
+
+        Args:
+            proposal: Builds the drafting coroutine to hand to the goal proposal
+                worker. Deferred so a preflight failure cannot strand an
+                un-awaited coroutine.
+            cleanup_context: Label for the pending-review cancellation log.
+        """
+        if self._goal_auto_accept_prompt_pending():
+            # Returning while the prompt is open means another `/goal` can arrive
+            # (an external caller, or a queue drain), so refuse a second flow
+            # rather than stacking modals over an unanswered one.
+            pending = self._goal_preference_task
+            if pending is not None and not pending.done():
+                self.notify(
+                    "Answer the goal criteria prompt first.",
+                    severity="warning",
+                    timeout=5,
+                )
+                return
+            task = asyncio.create_task(
+                self._prompt_then_start_goal_proposal(
+                    proposal,
+                    cleanup_context=cleanup_context,
+                ),
+                name="goal-criteria-preference",
+            )
+            self._goal_preference_task = task
+            task.add_done_callback(_log_task_exception)
+            return
+        await self._start_goal_proposal_now(proposal, cleanup_context=cleanup_context)
+
+    async def _prompt_then_start_goal_proposal(
+        self,
+        proposal: Callable[[], Coroutine[Any, Any, None]],
+        *,
+        cleanup_context: str,
+    ) -> None:
+        """Answer the Auto criteria prompt, then start the goal proposal.
+
+        Runs off the App message pump (see `_start_goal_proposal`) so the
+        preference modal can receive keys.
+
+        Args:
+            proposal: Builds the drafting coroutine for the proposal worker.
+            cleanup_context: Label for the pending-review cancellation log.
+        """
+        try:
+            await self._ensure_goal_auto_accept_preference()
+            await self._start_goal_proposal_now(
+                proposal,
+                cleanup_context=cleanup_context,
+            )
+        except Exception:
+            logger.exception("Failed to start goal proposal after criteria prompt")
+            await self._mount_message(
+                ErrorMessage("Could not start the goal. Please try again."),
+            )
+
+    async def _start_goal_proposal_now(
+        self,
+        proposal: Callable[[], Coroutine[Any, Any, None]],
+        *,
+        cleanup_context: str,
+    ) -> None:
+        """Clear stale goal proposal state and start the drafting worker.
+
+        Args:
+            proposal: Builds the drafting coroutine for the proposal worker.
+            cleanup_context: Label for the pending-review cancellation log.
+        """
         self._cancel_goal_proposal_worker()
-        await self._cancel_pending_goal_review(context="goal replacement cleanup")
+        await self._cancel_pending_goal_review(context=cleanup_context)
         async with self._goal_state_mutation_boundary():
             self._clear_pending_goal_rubric()
             await self._persist_goal_rubric_state()
-        self._goal_proposal_worker = self.run_worker(
-            self._propose_goal_rubric(objective),
-            exclusive=False,
-        )
+        self._goal_proposal_worker = self.run_worker(proposal(), exclusive=False)
 
     @staticmethod
     def _goal_usage_text() -> str:
@@ -16638,6 +16743,11 @@ class DeepAgentsApp(App):
             self._agent_worker.cancel()
         if self._git_branch_refresh_task is not None:
             self._git_branch_refresh_task.cancel()
+        # A `/goal` flow parked on the criteria preference modal is detached from
+        # the message pump, so nothing else would cancel it before the loop is
+        # torn down.
+        if self._goal_preference_task is not None:
+            self._goal_preference_task.cancel()
         if self._external_event_source_task is not None:
             self._external_event_source_task.cancel()
         # Cancellation alone is not enough: the task's `finally` block runs

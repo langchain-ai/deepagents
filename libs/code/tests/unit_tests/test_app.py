@@ -965,9 +965,9 @@ class TestStartupSequence:
         async with app.run_test() as pilot:
             await pilot.pause()
             self._force_auto_mode(app)
-            command_task = asyncio.create_task(
-                app._handle_goal_command("/goal ship passkeys"),
-            )
+            # The command returns once the prompt is detached from the message
+            # pump, so the rest of the flow is awaited via its task.
+            await app._handle_goal_command("/goal ship passkeys")
             await pilot.pause()
 
             assert isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
@@ -976,7 +976,8 @@ class TestStartupSequence:
             assert options.highlighted == 0
 
             await pilot.press("escape")
-            await asyncio.wait_for(command_task, timeout=2)
+            assert app._goal_preference_task is not None
+            await asyncio.wait_for(app._goal_preference_task, timeout=2)
             await pilot.pause()
 
         assert "auto_accept_criteria = false" in DEFAULT_CONFIG_PATH.read_text(
@@ -984,6 +985,133 @@ class TestStartupSequence:
         )
         assert has_shown_goal_auto_accept_prompt() is True
         assert DeepAgentsApp._should_prompt_goal_auto_accept_preference() is False
+        assert app._goal_proposal_worker is not None
+
+    async def test_goal_preference_prompt_responsive_through_message_pump(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The criteria prompt must accept keys via the real submission path.
+
+        Regression test: `/goal <objective>` is dispatched from the App's
+        `on_chat_input_submitted` handler, which is awaited inline on the App
+        message pump. Awaiting the preference modal anywhere in that chain blocks
+        the pump, so the modal never receives the Enter/Esc key events it needs
+        to resolve and the whole app looks frozen until the watchdog fires. The
+        flow now runs off the pump, so submitting through the real
+        `ChatInput.Submitted` path and pressing Escape must resolve the modal.
+        """
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.tui.widgets.chat_input import ChatInput
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
+        app = DeepAgentsApp(agent=MagicMock())
+        app.run_worker = MagicMock()  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self._force_auto_mode(app)
+            # Idle session, so the submission is processed instead of queued.
+            app._agent_running = False
+            app._connecting = False
+            app._startup_sequence_running = False
+            app._server_startup_error = None
+
+            assert app._chat_input is not None
+            app._chat_input.post_message(
+                ChatInput.Submitted("/goal ship passkeys", "command"),
+            )
+            for _ in range(60):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen):
+                    break
+            assert isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+
+            # With the pump free, Escape must reach the modal and resolve it.
+            await pilot.press("escape")
+            for _ in range(60):
+                await pilot.pause(0.05)
+                if not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen):
+                    break
+            assert not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+            assert app._goal_preference_task is not None
+            await asyncio.wait_for(app._goal_preference_task, timeout=2)
+
+        assert app._goal_proposal_worker is not None
+
+    async def test_second_goal_refused_while_criteria_prompt_is_open(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An unanswered criteria prompt is not stacked under a second `/goal`."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
+        app = DeepAgentsApp(agent=MagicMock())
+        app.run_worker = MagicMock()  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self._force_auto_mode(app)
+            await app._handle_goal_command("/goal ship passkeys")
+            await pilot.pause()
+            first_task = app._goal_preference_task
+            assert first_task is not None
+
+            await app._handle_goal_command("/goal ship magic links")
+            await pilot.pause()
+
+            assert app._goal_preference_task is first_task
+            assert isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+            assert len(app.screen_stack) == 2
+
+            await pilot.press("escape")
+            await asyncio.wait_for(first_task, timeout=2)
+
+    async def test_goal_amend_prompt_responsive_through_message_pump(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """`/goal amend` shares the create path's off-pump preference prompt."""
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+        from deepagents_code.tui.widgets.chat_input import ChatInput
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        self._clear_goal_auto_accept_prompt_marker()
+        app = DeepAgentsApp(agent=MagicMock())
+        app.run_worker = MagicMock()  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self._force_auto_mode(app)
+            app._agent_running = False
+            app._connecting = False
+            app._startup_sequence_running = False
+            app._server_startup_error = None
+            app._active_goal = "ship passkeys"
+            app._goal_status = "active"
+
+            assert app._chat_input is not None
+            app._chat_input.post_message(
+                ChatInput.Submitted("/goal amend also cover recovery", "command"),
+            )
+            for _ in range(60):
+                await pilot.pause(0.05)
+                if isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen):
+                    break
+            assert isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+
+            await pilot.press("escape")
+            for _ in range(60):
+                await pilot.pause(0.05)
+                if not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen):
+                    break
+            assert not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+            assert app._goal_preference_task is not None
+            await asyncio.wait_for(app._goal_preference_task, timeout=2)
+
         assert app._goal_proposal_worker is not None
 
     async def test_goal_create_skips_preference_prompt_when_decided(

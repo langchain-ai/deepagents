@@ -587,7 +587,7 @@ jobs:
             }
             if (!prs.length) return;
             const { owner, repo } = context.repo;
-            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
+            const { h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
             for (const pr of prs) {
               try {
                 const labels = await h.labelPR(pr.number, { title: pr.title });
@@ -706,7 +706,7 @@ jobs:
   # emit no pull_request event and the required "curated release notes" check
   # does not re-run on the new head on its own. This job dispatches the check workflow
   # so it re-validates the release PR and posts its stale-notes warning comment when
-  # new generated Code entries appear. The dispatched workflow explicitly publishes
+  # new generated entries appear. The dispatched workflow explicitly publishes
   # the required check on the validated PR head, because the dispatch run's native
   # job status belongs to main rather than to that release commit.
   #
@@ -716,14 +716,14 @@ jobs:
   # deliberately does NOT gate on `needs.update-lockfiles.result` — combined with
   # `always()`, a lockfile-update failure (which is loud on its own: that job goes red)
   # still lets the gate fire against the current head rather than silently skipping it.
-  dispatch-code-release-notes-check:
+  dispatch-release-notes-check:
     needs: [release-please, update-lockfiles]
     if: |
       always() &&
       needs.release-please.result == 'success' &&
       needs.release-please.outputs.prs != '[]' &&
       needs.release-please.outputs.prs != ''
-    name: Dispatch dcode release-notes check
+    name: Dispatch release-notes check
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -731,17 +731,30 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RELEASE_PRS: ${{ needs.release-please.outputs.prs }}
     steps:
-      - name: Dispatch checks for updated deepagents-code release PRs
+      - name: Dispatch checks for updated release PRs
         run: |
           set -euo pipefail
+          # Match any component's release PR, mirroring releaseTarget() in
+          # .github/scripts/release/release-notes.js: the head ref must carry the
+          # release-please prefix and the title must name that same component with a
+          # well-formed version. Comparing the component with startswith (not a
+          # regex) avoids having to escape component names like
+          # `langchain-vercel-sandbox`. This filter only avoids pointless dispatches
+          # — the dispatched workflow re-validates the PR itself.
+          #
           # Capture jq output separately: a jq failure inside `mapfile < <(...)`
           # process substitution does not trip `set -e` (mapfile itself returns 0),
           # so an unparseable prs payload would otherwise silently dispatch nothing.
-          if ! numbers=$(jq -r '.[] | select(
-              .title | test("^release\\(deepagents-code\\): [0-9A-Za-z][0-9A-Za-z.+-]*$")
-            ) | select(
-              .headBranchName == "release-please--branches--main--components--deepagents-code"
-            ) | .number' <<< "$RELEASE_PRS"); then
+          if ! numbers=$(jq -r '
+              "release-please--branches--main--components--" as $prefix
+              | .[]
+              | select(.headBranchName | startswith($prefix))
+              | . as $pr
+              | ($pr.headBranchName | ltrimstr($prefix)) as $component
+              | select($component != "")
+              | select($pr.title | startswith("release(" + $component + "): "))
+              | select($pr.title | test("^release\\([^()]+\\): [0-9A-Za-z][0-9A-Za-z.+-]*$"))
+              | $pr.number' <<< "$RELEASE_PRS"); then
             echo "::error::Failed to parse release-please prs output for curated-notes dispatch."
             exit 1
           fi
@@ -752,7 +765,7 @@ jobs:
           failed=0
           for number in "${RELEASES[@]}"; do
             [ -n "$number" ] || continue
-            if ! gh workflow run dcode_release_notes_check.yml \
+            if ! gh workflow run release_notes_check.yml \
               --repo "$GITHUB_REPOSITORY" \
               --ref main \
               -f "pr_number=$number"; then

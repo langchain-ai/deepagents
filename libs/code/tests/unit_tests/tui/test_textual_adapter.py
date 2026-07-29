@@ -7705,7 +7705,12 @@ class TestToolHooksTextual:
     async def test_answered_ask_user_settles_when_a_sibling_is_cancelled(
         self,
     ) -> None:
-        """Cancelling one question reports the answered sibling as undelivered.
+        """Cancelling one `ask_user` call reports an answered sibling as undelivered.
+
+        Needs two parallel `ask_user` tool calls: a single widget cancels its whole
+        prompt, never one question within it. `ASK_USER_SYSTEM_PROMPT` tells the
+        model to group questions into one call, so this is an edge case — but
+        nothing enforces it, and the data loss below is silent without this.
 
         A cancel halts the turn by returning *before* `Command(resume=...)`, so the
         resume payload — including this row's answers — is discarded. The answers

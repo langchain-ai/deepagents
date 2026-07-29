@@ -2716,7 +2716,10 @@ async def execute_task_textual(
                     ask_user_cancelled or not pending_ask_user
                 ):
                     # An answered `ask_user` can still be tracked here when a
-                    # sibling question in the same batch was cancelled. This
+                    # *separate* `ask_user` call in the same batch was cancelled
+                    # (one widget cancels its whole prompt, never one question of
+                    # it, so this needs two parallel `ask_user` tool calls — which
+                    # `ASK_USER_SYSTEM_PROMPT` discourages but nothing forbids). This
                     # `return` happens *before* `Command(resume=resume_payload)`
                     # below, so those answers are discarded: they never reach the
                     # graph, and the inline widget is already unmounted, making them

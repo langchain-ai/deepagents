@@ -605,6 +605,7 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.models.domain import (
         SessionStartCause,
     )
+    from deepagents_code.hooks.trust import WorkspaceTrust
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
     from deepagents_code.plugins.models import (
@@ -2777,6 +2778,7 @@ class DeepAgentsApp(App):
         model_explicitly_set: bool = False,
         interpreter_arg: bool | None = None,
         defer_server_start: bool = False,
+        hook_trust: WorkspaceTrust | None = None,
         title: str | None = None,
         sub_title: str | None = None,
         **kwargs: Any,
@@ -2844,6 +2846,10 @@ class DeepAgentsApp(App):
                 `server_kwargs`.
             defer_server_start: Whether to keep app-owned server startup paused
                 until the user configures credentials or explicitly picks a model.
+            hook_trust: Policy deciding which workspaces may run project-scoped
+                hook commands. Handed to the hooks coordinator, the only
+                component that resolves it. `None` consults just the persisted
+                trust store.
             title: Override the Textual `App.title` shown in the optional
                 header bar (shown when `DEEPAGENTS_CODE_SHOW_HEADER` is set or
                 the installation is stale).
@@ -2867,6 +2873,13 @@ class DeepAgentsApp(App):
             self.sub_title = sub_title
 
         self._register_custom_themes()
+        self._hook_trust: WorkspaceTrust | None = hook_trust
+        """Project-hook trust policy, forwarded verbatim to `HooksManager`.
+
+        Carried rather than applied: session state — and therefore the hooks
+        coordinator that owns and resolves this policy — cannot be built until
+        after construction. The app never inspects it.
+        """
 
         self.theme = _load_theme_preference()
         """Active Textual theme name.
@@ -4385,12 +4398,12 @@ class DeepAgentsApp(App):
             return
         # Loading stays on the event loop deliberately: it is a cheap config
         # read, and `to_thread` races server-ready startup tests that only
-        # yield a few event-loop turns. Interactive sessions keep project hooks
-        # off until a dedicated workspace-trust prompt lands.
+        # yield a few event-loop turns.
         session_state.hooks = HooksManager.create(
             cwd=Path(self._cwd),
             identity=session_state.hook_identity,
             notice=lambda message: self.notify(message, markup=False),
+            trust=self._hook_trust,
         )
         # Re-read the app-owned selection last so a mode change during
         # construction cannot be overwritten by the freshly built state.
@@ -4423,7 +4436,11 @@ class DeepAgentsApp(App):
         )
 
     async def _reload_hooks(self) -> None:
-        """Reload hook configuration after the session working directory moves."""
+        """Reload hook configuration after the session working directory moves.
+
+        Trust is re-resolved by the coordinator for the new directory, so hooks
+        from an untrusted project are never picked up on the old grant.
+        """
         from pathlib import Path
 
         await self._hooks.reload(cwd=Path(self._cwd))
@@ -17845,10 +17862,27 @@ class DeepAgentsApp(App):
         self.call_after_refresh(self._chat_input.focus_input)
 
     def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002  # Textual event handler signature
-        """Copy selection to clipboard after click-chain selection updates."""
+        """Copy selection to clipboard after click-chain selection updates.
+
+        The scan is pinned to the active screen captured here, not resolved
+        inside the deferred callback. Textual routes mouse events only to the
+        top of the screen stack (`App.on_event` forwards to `self.screen`), so
+        that is necessarily where the release landed. Without pinning, a
+        selection left behind on the screen below a modal would be scanned too
+        and emit a spurious "copied" toast alongside whatever the user actually
+        clicked (e.g. the Debug Console thread id, which copies itself).
+
+        `self.screen` needs no empty-stack guard: `App.on_event` already
+        dereferenced it to forward this `MouseUp`, and the only code that
+        empties the stack runs after the message loop has stopped.
+        """
         from deepagents_code.clipboard import copy_selection_to_clipboard
 
-        self.call_after_refresh(copy_selection_to_clipboard, self)
+        self.call_after_refresh(
+            copy_selection_to_clipboard,
+            self,
+            screen=self.screen,
+        )
 
     # =========================================================================
     # Model Switching
@@ -23208,6 +23242,7 @@ async def run_textual_app(
     model_explicitly_set: bool = False,
     interpreter_arg: bool | None = None,
     defer_server_start: bool = False,
+    hook_trust: WorkspaceTrust | None = None,
     title: str | None = None,
     sub_title: str | None = None,
 ) -> AppResult:
@@ -23266,6 +23301,9 @@ async def run_textual_app(
             explicit opt-out from a sandbox-suppressed default.
         defer_server_start: Whether to keep app-owned server startup paused
             until credentials or a model are configured from inside the TUI.
+        hook_trust: Policy deciding which workspaces may run project-scoped hook
+            commands. Forwarded to the app's hooks coordinator, which resolves it
+            on load and on every working-directory change.
         title: Override the Textual `App.title` shown in the optional header
             bar (gated on `DEEPAGENTS_CODE_SHOW_HEADER`, or shown automatically
             when the installation is stale). When `None`, the default
@@ -23299,6 +23337,7 @@ async def run_textual_app(
         model_explicitly_set=model_explicitly_set,
         interpreter_arg=interpreter_arg,
         defer_server_start=defer_server_start,
+        hook_trust=hook_trust,
         title=title,
         sub_title=sub_title,
     )

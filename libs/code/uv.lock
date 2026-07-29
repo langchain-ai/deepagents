@@ -3115,7 +3115,7 @@ test = [
 
 [[package]]
 name = "langchain-runloop"
-version = "0.0.6"
+version = "0.0.7"
 source = { editable = "../partners/runloop" }
 dependencies = [
     { name = "deepagents" },

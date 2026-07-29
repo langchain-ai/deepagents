@@ -66,8 +66,8 @@ jobs:
         id: validate
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN || vars.DCODE_RELEASE_BOT_LOGIN }}
-          BOT_ID: ${{ vars.RELEASE_BOT_ID || vars.DCODE_RELEASE_BOT_ID }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID }}
         with:
           script: |
             const { validateTrigger } = require('./trusted-source/.github/scripts/release/release-notes.js');
@@ -169,14 +169,14 @@ jobs:
         id: draft-model
         continue-on-error: true
         env:
-          MODEL_SPEC: ${{ vars.RELEASE_BOT_MODEL || vars.DCODE_RELEASE_MODEL }}
+          MODEL_SPEC: ${{ vars.RELEASE_BOT_MODEL }}
           # Put only the configured provider's credential in this process. The
           # deterministic helper sends one request to a fixed provider endpoint;
           # model output is never interpreted as a tool call or URL.
           MODEL_API_KEY: >-
-            ${{ startsWith(vars.RELEASE_BOT_MODEL || vars.DCODE_RELEASE_MODEL, 'openai:') && secrets.OPENAI_API_KEY ||
-                startsWith(vars.RELEASE_BOT_MODEL || vars.DCODE_RELEASE_MODEL, 'anthropic:') && secrets.ANTHROPIC_API_KEY ||
-                startsWith(vars.RELEASE_BOT_MODEL || vars.DCODE_RELEASE_MODEL, 'google_genai:') && secrets.GOOGLE_API_KEY ||
+            ${{ startsWith(vars.RELEASE_BOT_MODEL, 'openai:') && secrets.OPENAI_API_KEY ||
+                startsWith(vars.RELEASE_BOT_MODEL, 'anthropic:') && secrets.ANTHROPIC_API_KEY ||
+                startsWith(vars.RELEASE_BOT_MODEL, 'google_genai:') && secrets.GOOGLE_API_KEY ||
                 '' }}
           INPUT_FILE: ${{ steps.prepare.outputs.input }}
           OUTPUT_FILE: ${{ steps.prepare.outputs.output }}
@@ -191,8 +191,8 @@ jobs:
           DRAFT_STATE: ${{ steps.prepare.outputs.state }}
           DRAFT_OUTPUT: ${{ steps.prepare.outputs.output }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN || vars.DCODE_RELEASE_BOT_LOGIN }}
-          BOT_ID: ${{ vars.RELEASE_BOT_ID || vars.DCODE_RELEASE_BOT_ID }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID }}
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
@@ -223,8 +223,8 @@ jobs:
           PR_NUMBER: ${{ needs.validate.outputs.number }}
           PR_HEAD: ${{ needs.validate.outputs.head }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN || vars.DCODE_RELEASE_BOT_LOGIN }}
-          BOT_ID: ${{ vars.RELEASE_BOT_ID || vars.DCODE_RELEASE_BOT_ID }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID }}
           PREPARE_ERROR: ${{ steps.prepare.outputs.error }}
           POST_ERROR: ${{ steps.post.outputs.error }}
           DRAFT_OUTCOME: ${{ steps.draft-model.outcome }}
@@ -304,8 +304,8 @@ jobs:
           PR_NUMBER: ${{ needs.validate.outputs.number }}
           PR_HEAD: ${{ needs.validate.outputs.head }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN || vars.DCODE_RELEASE_BOT_LOGIN }}
-          BOT_ID: ${{ vars.RELEASE_BOT_ID || vars.DCODE_RELEASE_BOT_ID }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID }}
           APPLY_STATE: ${{ runner.temp }}/release-notes-apply.json
           CHANGELOG_FILE: ${{ runner.temp }}/release-notes-changelog.md
         with:
@@ -338,8 +338,8 @@ jobs:
           APPLY_STATE: ${{ steps.prepare-apply.outputs.state }}
           CHANGELOG_FILE: ${{ steps.prepare-apply.outputs.changelog }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN || vars.DCODE_RELEASE_BOT_LOGIN }}
-          BOT_ID: ${{ vars.RELEASE_BOT_ID || vars.DCODE_RELEASE_BOT_ID }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID }}
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
@@ -369,8 +369,8 @@ jobs:
           APPLY_STATE: ${{ steps.prepare-apply.outputs.state }}
           APPLIED_HEAD: ${{ steps.commit.outputs.applied-head }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN || vars.DCODE_RELEASE_BOT_LOGIN }}
-          BOT_ID: ${{ vars.RELEASE_BOT_ID || vars.DCODE_RELEASE_BOT_ID }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID }}
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
@@ -400,8 +400,8 @@ jobs:
           PR_NUMBER: ${{ needs.validate.outputs.number }}
           PR_HEAD: ${{ needs.validate.outputs.head }}
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
-          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN || vars.DCODE_RELEASE_BOT_LOGIN }}
-          BOT_ID: ${{ vars.RELEASE_BOT_ID || vars.DCODE_RELEASE_BOT_ID }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID }}
           PREPARE_ERROR: ${{ steps.prepare-apply.outputs.error }}
           COMMIT_ERROR: ${{ steps.commit.outputs.error }}
           PUBLISH_ERROR: ${{ steps.publish.outputs.error }}

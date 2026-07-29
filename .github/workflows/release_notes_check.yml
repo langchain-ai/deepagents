@@ -47,8 +47,8 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
-          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN || vars.DCODE_RELEASE_BOT_LOGIN }}
-          BOT_ID: ${{ vars.RELEASE_BOT_ID || vars.DCODE_RELEASE_BOT_ID }}
+          BOT_LOGIN: ${{ vars.RELEASE_BOT_LOGIN }}
+          BOT_ID: ${{ vars.RELEASE_BOT_ID }}
         with:
           script: |
             // This workflow's YAML comes from the PR, but the helper is checked out

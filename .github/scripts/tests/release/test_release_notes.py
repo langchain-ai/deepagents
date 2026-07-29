@@ -225,8 +225,9 @@ def test_mutation_workflow_commands_are_target_only() -> None:
             for step in privileged_steps
         )
 
+    # No long-lived bot PAT: repository mutations go through short-lived App tokens.
+    # This also covers the old DCODE_RELEASE_BOT_TOKEN name as a substring.
     assert "RELEASE_BOT_TOKEN" not in automation
-    assert "DCODE_RELEASE_BOT_TOKEN" not in automation
 
     # Untrusted release text goes through a deterministic one-request helper, not
     # an agent/tool loop. Only the selected model key is placed in that

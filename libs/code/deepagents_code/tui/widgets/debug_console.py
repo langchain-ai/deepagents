@@ -61,7 +61,8 @@ class SnapshotField(NamedTuple):
 
     The four named fields keep the display strings and their interaction metadata
     explicit at construction sites. `copyable` opts a row into click-to-copy, and
-    `thread_id` enables a resolvable `(langsmith)` trace link for the thread row.
+    `thread_id` enables a resolvable `(open in langsmith)` trace link for the
+    thread row.
     """
 
     label: str
@@ -69,8 +70,8 @@ class SnapshotField(NamedTuple):
     copyable: bool = False
     """Whether `value` can be clicked to copy it to the clipboard."""
     thread_id: str | None = None
-    """A LangSmith thread id whose ``(langsmith)`` trace link is appended to the
-    row once the URL resolves. `None` disables the link."""
+    """A LangSmith thread id whose ``(open in langsmith)`` trace link is appended
+    to the row once the URL resolves. `None` disables the link."""
 
 
 _SNAPSHOT_COPY_META = "snapshot_copy"
@@ -916,7 +917,7 @@ class DebugConsoleScreen(ModalScreen[None]):
         self._resolve_langsmith_links()
 
     def _resolve_langsmith_links(self) -> None:
-        """Kick off background resolution of `(langsmith)` links for the snapshot.
+        """Kick off background resolution of `(open in langsmith)` snapshot links.
 
         Each thread id gets at most one lookup per console open. The refresh tick
         calls this on every snapshot change, and a resolved URL is only recorded
@@ -1112,7 +1113,7 @@ class DebugConsoleScreen(ModalScreen[None]):
             parts.append(field.value)
         url = self._langsmith_urls.get(field.thread_id) if field.thread_id else None
         if url:
-            parts.extend(("  ", ("(langsmith)", TStyle(link=url))))
+            parts.extend(("  ", ("(open in langsmith)", TStyle(link=url))))
         return Content.assemble(*parts)
 
     @staticmethod

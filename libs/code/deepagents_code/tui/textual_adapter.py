@@ -1701,19 +1701,14 @@ async def execute_task_textual(
                             ),
                             seen_message_ids=seen_usage_message_ids,
                         )
-                    if recorded_usage is not None:
-                        captured_input_tokens = max(
-                            captured_input_tokens,
-                            recorded_usage.input_tokens + recorded_usage.output_tokens,
-                        )
-                        if (
-                            recorded_usage.cost_usd is not None
-                            and adapter._on_provisional_cost
-                        ):
-                            # Display-only: the graph checkpoints the same spend
-                            # and streams the authoritative total, which
-                            # supersedes this estimate.
-                            adapter._on_provisional_cost(recorded_usage.cost_usd)
+                    if recorded_usage is not None and (
+                        recorded_usage.cost_usd is not None
+                        and adapter._on_provisional_cost
+                    ):
+                        # Display-only: the graph checkpoints the same spend
+                        # and streams the authoritative total, which
+                        # supersedes this estimate.
+                        adapter._on_provisional_cost(recorded_usage.cost_usd)
 
                     # Skip subagent outputs - only render main agent content in chat
                     if not is_main_agent:
@@ -1737,6 +1732,14 @@ async def execute_task_textual(
                     # not assistant output for the conversation transcript.
                     if _is_auto_mode_classifier_chunk(metadata):
                         continue
+
+                    # Only a visible top-level model call represents the active
+                    # conversation context. Hidden usage was still recorded above.
+                    if recorded_usage is not None:
+                        captured_input_tokens = max(
+                            captured_input_tokens,
+                            recorded_usage.input_tokens + recorded_usage.output_tokens,
+                        )
 
                     # Regular (non-summarization) chunks resumed — summarization
                     # has finished. Mount the notification and reset the spinner.

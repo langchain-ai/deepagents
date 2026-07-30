@@ -2200,6 +2200,7 @@ def _usage_chunk(
     *,
     input_tokens: int,
     output_tokens: int,
+    total_tokens: int | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> tuple[Any, ...]:
     """Build a `messages`-stream chunk carrying only `usage_metadata`."""
@@ -2210,7 +2211,11 @@ def _usage_chunk(
         usage_metadata={
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
+            "total_tokens": (
+                total_tokens
+                if total_tokens is not None
+                else input_tokens + output_tokens
+            ),
         },
     )
     return ((), "messages", (message, metadata or {}))
@@ -2265,14 +2270,20 @@ class TestExecuteTaskTextualUsageStats:
         assert turn_stats.total_cost_usd == pytest.approx(0.42)
         assert cost_updates == [0.42]
 
-    async def test_records_hidden_subagent_and_summarization_usage(self) -> None:
-        """Subagent and summarization spend still accumulate even when hidden."""
+    async def test_records_hidden_subagent_and_summarization_usage(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Hidden calls count toward cost, but not the active context size."""
+        from deepagents_code.app import DeepAgentsApp
 
         async def mount_message(_: object) -> None:
             await asyncio.sleep(0)
 
         turn_stats = SessionStats()
         cost_updates: list[float] = []
+        app = DeepAgentsApp()
+        status_bar = MagicMock()
+        monkeypatch.setattr(app, "_status_bar", status_bar)
 
         def record_cost(cost_usd: float) -> None:
             cost_updates.append(cost_usd)
@@ -2283,18 +2294,24 @@ class TestExecuteTaskTextualUsageStats:
             request_approval=_mock_approval,
         )
         adapter._on_provisional_cost = record_cost
+        adapter._on_tokens_update = app._on_tokens_update
+        adapter._on_tokens_pending = app._show_pending_tokens
+        adapter._on_tokens_show = app._show_tokens
 
         main_usage = _usage_chunk(input_tokens=40, output_tokens=10)
+        hidden_usage = _usage_chunk(input_tokens=400, output_tokens=100)
         subagent_usage = (
             ("tools:task:subagent",),
-            main_usage[1],
-            main_usage[2],
+            hidden_usage[1],
+            hidden_usage[2],
         )
         chunks = [
+            main_usage,
             subagent_usage,
             _usage_chunk(
-                input_tokens=25,
-                output_tokens=5,
+                input_tokens=0,
+                output_tokens=0,
+                total_tokens=800,
                 metadata={"lc_source": "summarization"},
             ),
             ((), "messages", (_text_message("Done."), {})),
@@ -2315,14 +2332,91 @@ class TestExecuteTaskTextualUsageStats:
                 turn_stats=turn_stats,
             )
 
-        assert turn_stats.request_count == 2
-        assert turn_stats.input_tokens == 65
-        assert turn_stats.output_tokens == 15
-        assert cost_updates == [0.1, 0.1]
+        assert turn_stats.request_count == 3
+        assert turn_stats.input_tokens == 1240
+        assert turn_stats.output_tokens == 110
+        assert turn_stats.total_cost_usd == pytest.approx(0.3)
+        assert cost_updates == [0.1, 0.1, 0.1]
+        assert app._context_tokens == 50
+        status_bar.show_pending_tokens.assert_called_once_with()
+        status_bar.set_tokens.assert_called_once_with(50, approximate=False)
+        assert turn_stats.per_kind["assistant"].request_count == 1
         assert turn_stats.per_kind["subagent"].request_count == 1
         assert turn_stats.per_kind["offload"].request_count == 1
+        assert turn_stats.per_kind["assistant"].cost_usd == pytest.approx(0.1)
         assert turn_stats.per_kind["subagent"].cost_usd == pytest.approx(0.1)
         assert turn_stats.per_kind["offload"].cost_usd == pytest.approx(0.1)
+        app._thread_stats = turn_stats
+        app._set_session_cost(turn_stats.total_cost_usd)
+        cost_summary = app._format_cost_summary()
+        assert "Assistant: $0.10" in cost_summary
+        assert "Subagents: $0.10" in cost_summary
+        assert "Offload: $0.10" in cost_summary
+
+    async def test_interrupt_persists_only_main_agent_context_tokens(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Interrupt recovery must not persist a larger hidden call's context."""
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        token_updates: list[tuple[int, bool]] = []
+        adapter._on_tokens_update = lambda count, *, approximate=False: (
+            token_updates.append((count, approximate))
+        )
+        main_usage = _usage_chunk(
+            input_tokens=0,
+            output_tokens=0,
+            total_tokens=120,
+        )
+        hidden_usage = _usage_chunk(input_tokens=600, output_tokens=100)
+        chunks = [
+            main_usage,
+            (
+                ("tools:task:subagent",),
+                hidden_usage[1],
+                hidden_usage[2],
+            ),
+            _usage_chunk(
+                input_tokens=0,
+                output_tokens=0,
+                total_tokens=1000,
+                metadata={"lc_source": "summarization"},
+            ),
+        ]
+        agent = _RaisingAgent(chunks, asyncio.CancelledError())
+        update_state = AsyncMock()
+        monkeypatch.setattr(agent, "aupdate_state", update_state, raising=False)
+        turn_stats = SessionStats()
+
+        with (
+            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.1),
+        ):
+            mock_settings.model_name = "gpt-5.5"
+            mock_settings.model_provider = "openai"
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+                turn_stats=turn_stats,
+            )
+
+        assert turn_stats.request_count == 3
+        assert turn_stats.input_tokens == 1720
+        assert turn_stats.output_tokens == 100
+        assert turn_stats.total_cost_usd == pytest.approx(0.3)
+        assert update_state.await_count == 1
+        assert update_state.await_args is not None
+        cancellation_values = update_state.await_args.args[1]
+        assert cancellation_values["_context_tokens"] == 120
+        assert token_updates == [(120, False)]
 
 
 class TestSessionCostEvents:

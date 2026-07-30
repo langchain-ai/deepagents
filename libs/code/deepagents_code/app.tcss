@@ -406,12 +406,28 @@ stay borderless and flush-left. */
     background: transparent;
 }
 
-.ask-user-menu .ask-user-other-input {
-    margin: 1 1 0 1;
+/* One Other checkbox + its free-text field. Keep height content-sized so
+   multiple open Other rows don't stretch under TextArea's default 1fr. */
+.ask-user-menu .ask-user-other-slot {
     height: auto;
-    min-height: 3;
-    max-height: 10;
+    margin: 0;
+    padding: 0;
+}
+
+.ask-user-menu .ask-user-other-input {
+    /* Indent under the checkbox label; no top gap after the choice row. */
+    margin: 0 1 0 3;
+    height: auto;
+    min-height: 1;
+    max-height: 6;
     background: transparent;
+}
+
+/* Beat TextArea DEFAULT_CSS `height: 1fr` when several Other fields are open. */
+.ask-user-menu AskUserTextArea.ask-user-other-input {
+    height: auto;
+    min-height: 1;
+    max-height: 6;
 }
 
 /* ChatTextArea: override TextArea's built-in $surface background */

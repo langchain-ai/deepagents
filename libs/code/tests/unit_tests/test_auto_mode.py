@@ -4560,6 +4560,83 @@ async def test_classifier_unavailable_emits_single_event_for_batch(
     assert unavailable_events[0]["reason"] == reason
 
 
+def _ask_user_call(questions: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "name": "ask_user",
+        "args": {"questions": questions},
+        "id": "ask-1",
+        "type": "tool_call",
+    }
+
+
+class TestAskUserQuestionCount:
+    """Tests for `_ask_user_question_count` shape validation."""
+
+    def test_counts_multi_select_question(self) -> None:
+        call = _ask_user_call(
+            [
+                {
+                    "question": "Toppings?",
+                    "type": "multi_select",
+                    "choices": [{"value": "cheese"}, {"value": "olives"}],
+                },
+                {"question": "Name?", "type": "text"},
+            ]
+        )
+        assert _ask_user_question_count(cast("Any", call)) == 2
+
+    def test_rejects_multi_select_without_choices(self) -> None:
+        call = _ask_user_call(
+            [{"question": "Toppings?", "type": "multi_select", "choices": []}]
+        )
+        assert _ask_user_question_count(cast("Any", call)) is None
+
+    def test_rejects_multi_select_with_non_string_choice(self) -> None:
+        call = _ask_user_call(
+            [
+                {
+                    "question": "Toppings?",
+                    "type": "multi_select",
+                    "choices": [{"value": 1}],
+                }
+            ]
+        )
+        assert _ask_user_question_count(cast("Any", call)) is None
+
+    def test_counts_every_declared_question_type(self) -> None:
+        """Guards the drift that would silently drop same-turn authorization.
+
+        An unrecognized type makes this return `None`, which makes
+        `_same_turn_user_answers` yield no trusted directives — with no error.
+        """
+        for question_type in sorted(QUESTION_TYPES):
+            question: dict[str, Any] = {"question": "Q?", "type": question_type}
+            if question_type in CHOICE_QUESTION_TYPES:
+                question["choices"] = [{"value": "a"}]
+            call = _ask_user_call([question])
+            assert _ask_user_question_count(cast("Any", call)) == 1
+
+    def test_rejects_unknown_question_type(self) -> None:
+        call = _ask_user_call([{"question": "Q?", "type": "multiselect"}])
+        assert _ask_user_question_count(cast("Any", call)) is None
+
+    def test_rejects_non_boolean_required(self) -> None:
+        """`_validate_questions` now raises on this rather than letting it here.
+
+        Kept as a regression test for the counting side: if this check were
+        dropped, a `required` that pydantic coerced would stop voiding
+        authorization silently, but the two layers would disagree again.
+        """
+        call = _ask_user_call([{"question": "Q?", "type": "text", "required": "false"}])
+        assert _ask_user_question_count(cast("Any", call)) is None
+
+    def test_rejects_text_question_carrying_choices(self) -> None:
+        call = _ask_user_call(
+            [{"question": "Name?", "type": "text", "choices": [{"value": "a"}]}]
+        )
+        assert _ask_user_question_count(cast("Any", call)) is None
+
+
 def _mixed_fallback_plan(key: str, ai_message: AIMessage) -> dict[str, Any]:
     """Build a plan that blocks one call as unavailable and escalates the other."""
     assert len(ai_message.tool_calls) == 2, "plan assumes a two-call batch"
@@ -5081,83 +5158,6 @@ def test_resolved_scopes_evict_least_recently_used(tmp_path: Path) -> None:
     assert len(middleware._emitted_events) == _MAX_EMITTED_EVENT_SCOPES
     assert "scope-0" in middleware._emitted_events
     assert "scope-1" not in middleware._emitted_events
-
-
-def _ask_user_call(questions: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "name": "ask_user",
-        "args": {"questions": questions},
-        "id": "ask-1",
-        "type": "tool_call",
-    }
-
-
-class TestAskUserQuestionCount:
-    """Tests for `_ask_user_question_count` shape validation."""
-
-    def test_counts_multi_select_question(self) -> None:
-        call = _ask_user_call(
-            [
-                {
-                    "question": "Toppings?",
-                    "type": "multi_select",
-                    "choices": [{"value": "cheese"}, {"value": "olives"}],
-                },
-                {"question": "Name?", "type": "text"},
-            ]
-        )
-        assert _ask_user_question_count(cast("Any", call)) == 2
-
-    def test_rejects_multi_select_without_choices(self) -> None:
-        call = _ask_user_call(
-            [{"question": "Toppings?", "type": "multi_select", "choices": []}]
-        )
-        assert _ask_user_question_count(cast("Any", call)) is None
-
-    def test_rejects_multi_select_with_non_string_choice(self) -> None:
-        call = _ask_user_call(
-            [
-                {
-                    "question": "Toppings?",
-                    "type": "multi_select",
-                    "choices": [{"value": 1}],
-                }
-            ]
-        )
-        assert _ask_user_question_count(cast("Any", call)) is None
-
-    def test_counts_every_declared_question_type(self) -> None:
-        """Guards the drift that would silently drop same-turn authorization.
-
-        An unrecognized type makes this return `None`, which makes
-        `_same_turn_user_answers` yield no trusted directives — with no error.
-        """
-        for question_type in sorted(QUESTION_TYPES):
-            question: dict[str, Any] = {"question": "Q?", "type": question_type}
-            if question_type in CHOICE_QUESTION_TYPES:
-                question["choices"] = [{"value": "a"}]
-            call = _ask_user_call([question])
-            assert _ask_user_question_count(cast("Any", call)) == 1
-
-    def test_rejects_unknown_question_type(self) -> None:
-        call = _ask_user_call([{"question": "Q?", "type": "multiselect"}])
-        assert _ask_user_question_count(cast("Any", call)) is None
-
-    def test_rejects_non_boolean_required(self) -> None:
-        """`_validate_questions` now raises on this rather than letting it here.
-
-        Kept as a regression test for the counting side: if this check were
-        dropped, a `required` that pydantic coerced would stop voiding
-        authorization silently, but the two layers would disagree again.
-        """
-        call = _ask_user_call([{"question": "Q?", "type": "text", "required": "false"}])
-        assert _ask_user_question_count(cast("Any", call)) is None
-
-    def test_rejects_text_question_carrying_choices(self) -> None:
-        call = _ask_user_call(
-            [{"question": "Name?", "type": "text", "choices": [{"value": "a"}]}]
-        )
-        assert _ask_user_question_count(cast("Any", call)) is None
 
 
 async def test_headless_guard_rejects_gated_mcp_without_execution() -> None:

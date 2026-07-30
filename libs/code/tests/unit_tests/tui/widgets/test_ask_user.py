@@ -744,14 +744,20 @@ class TestAskUserMenu:
             await pilot.press("space")
             await pilot.pause()
             assert [o.checked for o in options] == [True, False, False]
-            assert glyphs.checkbox_checked in str(options[0].render())
-            assert glyphs.checkbox_empty in str(options[1].render())
+            assert glyphs.checkbox_checked in str(
+                options[0].query_one(".inline-prompt-option-label", Static).render()
+            )
+            assert glyphs.checkbox_empty in str(
+                options[1].query_one(".inline-prompt-option-label", Static).render()
+            )
 
             # Moving the cursor off a checked option must not clear its glyph.
             await pilot.press("down")
             await pilot.pause()
             assert [o.checked for o in options] == [True, False, False]
-            assert glyphs.checkbox_checked in str(options[0].render())
+            assert glyphs.checkbox_checked in str(
+                options[0].query_one(".inline-prompt-option-label", Static).render()
+            )
 
     async def test_multi_select_other_combines_with_predefined_choices(self) -> None:
         """Other free-text is appended after toggled predefined values."""
@@ -1146,8 +1152,14 @@ class TestAskUserMenu:
         keeps the box visible. CI resolves the Unicode glyphs, so without this
         the ASCII branch is never exercised.
         """
+        # The checkbox comes from ask_user's `_label_content`, but the cursor
+        # gutter renders through `_inline_prompt`'s own `get_glyphs` import.
         monkeypatch.setattr(
             "deepagents_code.tui.widgets.ask_user.get_glyphs",
+            lambda: ASCII_GLYPHS,
+        )
+        monkeypatch.setattr(
+            "deepagents_code.tui.widgets._inline_prompt.get_glyphs",
             lambda: ASCII_GLYPHS,
         )
         app = _AskUserTestApp(
@@ -1168,8 +1180,15 @@ class TestAskUserMenu:
             await pilot.press("space")
             await pilot.pause()
 
-            assert str(options[0].render()) == f"{ASCII_GLYPHS.cursor} [x] red"
-            assert str(options[1].render()) == "  [ ] blue"
+            def rendered(option: _MultiSelectOption, css_class: str) -> str:
+                return str(option.query_one(f".{css_class}", Static).render())
+
+            cursor_cls = "inline-prompt-option-cursor"
+            label_cls = "inline-prompt-option-label"
+            assert rendered(options[0], cursor_cls) == f"{ASCII_GLYPHS.cursor} "
+            assert rendered(options[0], label_cls) == "[x] red"
+            assert rendered(options[1], cursor_cls) != ASCII_GLYPHS.cursor
+            assert rendered(options[1], label_cls) == "[ ] blue"
 
     async def test_multi_select_mixed_with_other_question_types(self) -> None:
         app = _AskUserTestApp(

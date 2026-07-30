@@ -12,14 +12,13 @@ ToolMessage batch in the preserved suffix. Two per-TM paths:
     via the shared eviction helper, then replace the message with a
     `TOO_LARGE_TOOL_MSG` stub.
 
-Results already smaller than the slice size are left untouched -- rewriting
-them would not shrink the batch and would falsely tell the agent its output
-was truncated.
+Small results are replaced only when doing so reduces the aggregate tail.
+For `read_file`, that replacement can be a compact pointer to the original
+path; other tools use the shared offload stub.
 """
 
 from __future__ import annotations
 
-import asyncio
 import uuid
 from typing import TYPE_CHECKING, Any, cast
 
@@ -81,14 +80,13 @@ def _build_tool_call_index(messages: list[AnyMessage]) -> dict[str, dict[str, An
 
 
 def _slice_read_file_tm(msg: ToolMessage, original_path: str) -> ToolMessage:
-    """Slice a `read_file` ToolMessage's content to ~4k head chars and append a path-pointer notice.
+    """Reduce a `read_file` result and append a pointer to the original path.
 
     `read_file` results don't need a fresh `/large_tool_results/{tcid}` write -- the
     full file is already on the backend at `original_path`, and the agent can
-    recover with `read_file(file_path=original_path, offset=N, limit=K)`. The
-    truncation notice mirrors `READ_FILE_TRUNCATION_MSG` in shape so the
-    agent encounters a consistent format whether the tool truncated itself
-    or the middleware did.
+    recover with `read_file(file_path=original_path, offset=N, limit=K)`.
+    Results over `_SLICE_CHARS` retain a head preview, while smaller results
+    get a compact pointer that can still reduce a collectively oversized batch.
 
     Media blocks (image/audio/video) are dropped rather than carried over: this
     path runs *because* the batch overflowed the context window, so keeping an
@@ -101,6 +99,8 @@ def _slice_read_file_tm(msg: ToolMessage, original_path: str) -> ToolMessage:
     content = _extract_text_from_message(msg)
     has_media = any(block["type"] != "text" for block in msg.content_blocks)
     truncated = len(content) > _SLICE_CHARS
+    omitted = bool(content) and not truncated and not has_media
+    clipped_content = "" if omitted else content[:_SLICE_CHARS]
     notice = ""
     if truncated:
         notice += (
@@ -109,32 +109,19 @@ def _slice_read_file_tm(msg: ToolMessage, original_path: str) -> ToolMessage:
             f"Use read_file with offset and limit parameters to retrieve specific portions. "
             f"For example, to read the first 100 lines, call read_file with file_path='{original_path}', offset=0, limit=100.]"
         )
+    if omitted:
+        notice += (
+            f"[Output was omitted due to context window size limits. "
+            f"The full content is at {original_path}. "
+            f"Use read_file with offset and limit parameters to retrieve specific portions.]"
+        )
     if has_media:
         notice += (
             f"\n\n[Media content was removed due to context window size limits. "
             f"The original file is at {original_path}. "
             f"Call read_file with file_path='{original_path}' to view it again.]"
         )
-    return msg.model_copy(update={"content": content[:_SLICE_CHARS] + notice})
-
-
-def _is_worth_clipping(msg: ToolMessage) -> bool:
-    """Whether clipping `msg` can actually shrink the batch.
-
-    A result already smaller than the slice size has nothing to give: the
-    replacement is a fixed truncation notice (or, on the generic path, a
-    `TOO_LARGE_TOOL_MSG` stub with a head+tail preview) that can easily be
-    *longer* than the result it replaces. Rewriting it only destroys a result
-    that was never the problem and tells the agent its output was truncated
-    when it wasn't.
-
-    Media blocks always count as worth clipping -- an inline base64 payload is
-    exactly the kind of bulk this path exists to shed, and its size doesn't
-    show up in the extracted text.
-    """
-    if any(block["type"] != "text" for block in msg.content_blocks):
-        return True
-    return len(_extract_text_from_message(msg)) > _SLICE_CHARS
+    return msg.model_copy(update={"content": clipped_content + notice})
 
 
 def _read_file_original_path(msg: ToolMessage, tc_index: dict[str, dict[str, Any]]) -> str | None:
@@ -154,11 +141,9 @@ def _clip_one_tail_message(
 ) -> ToolMessage | None:
     """Apply the appropriate per-TM clip: read_file slice vs generic eviction.
 
-    Returns `None` -- keep the original -- for results too small to be worth
-    clipping.
+    The caller compares the replacement with the aggregate tail before
+    deciding whether to use it.
     """
-    if not _is_worth_clipping(msg):
-        return None
     original_path = _read_file_original_path(msg, tc_index)
     if original_path is not None:
         return _slice_read_file_tm(msg, original_path)
@@ -172,8 +157,6 @@ async def _aclip_one_tail_message(
     large_tool_results_prefix: str,
 ) -> ToolMessage | None:
     """Async variant of `_clip_one_tail_message`."""
-    if not _is_worth_clipping(msg):
-        return None
     original_path = _read_file_original_path(msg, tc_index)
     if original_path is not None:
         return _slice_read_file_tm(msg, original_path)
@@ -193,8 +176,10 @@ def _clip_overflow_tail(
 
     Engages only when `preserved_messages` ends with consecutive ToolMessages
     whose combined token count reaches `_derive_overflow_clip_threshold_tokens()`.
-    Only TMs big enough for clipping to help are rewritten, so results that
-    weren't the problem survive intact. Each clipped non-`read_file` TM is
+    Results are considered in order until the aggregate tail fits. A
+    replacement is used only when it reduces the measured token count, except
+    for media-bearing `read_file` results whose removed payload may not be
+    represented by the token counter. Each clipped non-`read_file` TM is
     written under `large_tool_results/{tool_call_id}` and replaced in-place by
     an offload-pointer ToolMessage.
 
@@ -208,20 +193,30 @@ def _clip_overflow_tail(
     if found is None:
         return preserved_messages, []
     start, tail = found
-    if token_counter(tail) < _derive_overflow_clip_threshold_tokens(keep, max_input_tokens):
+    threshold = _derive_overflow_clip_threshold_tokens(keep, max_input_tokens)
+    current_tokens = token_counter(tail)
+    if current_tokens < threshold:
         return preserved_messages, []
     tc_index = _build_tool_call_index(preserved_messages)
-    new_tail: list[AnyMessage] = []
+    new_tail: list[AnyMessage] = list(tail)
     any_clipped = False
-    for m in tail:
+    for i, m in enumerate(tail):
+        if current_tokens < threshold:
+            break
         r = _clip_one_tail_message(m, tc_index, backend, large_tool_results_prefix)
-        if r is not None:
-            if r.id is None:
-                r = r.model_copy(update={"id": str(uuid.uuid4())})
-            new_tail.append(r)
-            any_clipped = True
-        else:
-            new_tail.append(m)
+        if r is None:
+            continue
+        if r.id is None:
+            r = r.model_copy(update={"id": str(uuid.uuid4())})
+        candidate_tail = [*new_tail[:i], r, *new_tail[i + 1 :]]
+        candidate_tokens = token_counter(candidate_tail)
+        original_path = _read_file_original_path(m, tc_index)
+        removed_media = original_path is not None and any(block["type"] != "text" for block in m.content_blocks)
+        if candidate_tokens >= current_tokens and not removed_media:
+            continue
+        new_tail = candidate_tail
+        current_tokens = candidate_tokens
+        any_clipped = True
     if not any_clipped:
         return preserved_messages, []
     return [*preserved_messages[:start], *new_tail], new_tail
@@ -236,25 +231,35 @@ async def _aclip_overflow_tail(
     token_counter: TokenCounter,
     large_tool_results_prefix: str,
 ) -> tuple[list[AnyMessage], list[AnyMessage]]:
-    """Async variant of `_clip_overflow_tail`. Offloads each clipped tail TM concurrently."""
+    """Async variant of `_clip_overflow_tail`."""
     found = _find_tail_tool_message_batch(preserved_messages)
     if found is None:
         return preserved_messages, []
     start, tail = found
-    if token_counter(tail) < _derive_overflow_clip_threshold_tokens(keep, max_input_tokens):
+    threshold = _derive_overflow_clip_threshold_tokens(keep, max_input_tokens)
+    current_tokens = token_counter(tail)
+    if current_tokens < threshold:
         return preserved_messages, []
     tc_index = _build_tool_call_index(preserved_messages)
-    results = await asyncio.gather(*(_aclip_one_tail_message(m, tc_index, backend, large_tool_results_prefix) for m in tail))
-    new_tail: list[AnyMessage] = []
+    new_tail: list[AnyMessage] = list(tail)
     any_clipped = False
-    for r, m in zip(results, tail, strict=True):
-        if r is not None:
-            if r.id is None:
-                r = r.model_copy(update={"id": str(uuid.uuid4())})  # noqa: PLW2901
-            new_tail.append(r)
-            any_clipped = True
-        else:
-            new_tail.append(m)
+    for i, m in enumerate(tail):
+        if current_tokens < threshold:
+            break
+        r = await _aclip_one_tail_message(m, tc_index, backend, large_tool_results_prefix)
+        if r is None:
+            continue
+        if r.id is None:
+            r = r.model_copy(update={"id": str(uuid.uuid4())})
+        candidate_tail = [*new_tail[:i], r, *new_tail[i + 1 :]]
+        candidate_tokens = token_counter(candidate_tail)
+        original_path = _read_file_original_path(m, tc_index)
+        removed_media = original_path is not None and any(block["type"] != "text" for block in m.content_blocks)
+        if candidate_tokens >= current_tokens and not removed_media:
+            continue
+        new_tail = candidate_tail
+        current_tokens = candidate_tokens
+        any_clipped = True
     if not any_clipped:
         return preserved_messages, []
     return [*preserved_messages[:start], *new_tail], new_tail

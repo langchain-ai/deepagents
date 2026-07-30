@@ -3,26 +3,29 @@
 from __future__ import annotations
 
 import tempfile
+from typing import TYPE_CHECKING
 
-import pytest
-from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, MessageLikeRepresentation, ToolMessage
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware._overflow_clip import _aclip_overflow_tail, _clip_overflow_tail
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 def _backend() -> FilesystemBackend:
     return FilesystemBackend(root_dir=tempfile.mkdtemp(), virtual_mode=True)
 
 
-def _read_file_turn(tool_call_id: str, path: str, content: str | list[dict]) -> list[AnyMessage]:
+def _read_file_turn(tool_call_id: str, path: str, content: str | list[str | dict]) -> list[AnyMessage]:
     ai = AIMessage(content="", tool_calls=[{"id": tool_call_id, "name": "read_file", "args": {"file_path": path}}])
     tm = ToolMessage(tool_call_id=tool_call_id, name="read_file", content=content)
     return [ai, tm]
 
 
-def _chars(msgs: list[AnyMessage]) -> int:
-    return sum(len(str(m.content)) for m in msgs)
+def _chars(msgs: Iterable[MessageLikeRepresentation]) -> int:
+    return sum(len(str(m.content if isinstance(m, BaseMessage) else m)) for m in msgs)
 
 
 def _mixed_batch() -> list[AnyMessage]:
@@ -37,6 +40,21 @@ def _mixed_batch() -> list[AnyMessage]:
         ),
         ToolMessage(tool_call_id="big", name="read_file", content="x" * 10_000),
         ToolMessage(tool_call_id="small", name="grep", content="tiny"),
+    ]
+
+
+def _small_generic_batch() -> list[AnyMessage]:
+    """Two generic results that overflow only when counted together."""
+    return [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"id": "first", "name": "grep", "args": {"pattern": "x"}},
+                {"id": "second", "name": "grep", "args": {"pattern": "y"}},
+            ],
+        ),
+        ToolMessage(tool_call_id="first", name="grep", content="x" * 3_000),
+        ToolMessage(tool_call_id="second", name="grep", content="y" * 3_000),
     ]
 
 
@@ -65,15 +83,15 @@ def test_image_read_file_result_is_replaced_by_a_path_pointer() -> None:
     assert "aGVsbG8=" not in clipped.content
 
 
-def test_small_results_are_left_untouched() -> None:
-    """Results already smaller than the slice size are skipped, not rewritten (#4954).
+def test_small_sibling_is_left_untouched_once_batch_fits() -> None:
+    """Clipping stops once the batch fits, preserving later small results (#4954).
 
     The sibling is a non-`read_file` result, which is always offloaded when
     selected -- so surviving intact proves it was never selected.
     """
     messages = _mixed_batch()
 
-    # Batch is 10_004 "tokens"; clipping the big result alone drops it to 4.
+    # Batch is 10_004 "tokens"; clipping the big result alone drops it below 5_000.
     new_messages = _clip(messages, _chars, keep_tokens=5_000)
 
     assert "Output was truncated" in new_messages[-2].content
@@ -90,7 +108,39 @@ def test_nothing_to_clip_leaves_messages_alone() -> None:
     assert new_messages[-1].content == "short"
 
 
-@pytest.mark.asyncio
+def test_individually_small_results_are_clipped_until_batch_fits() -> None:
+    """Collectively large generic results can be reduced below the batch limit."""
+    messages = _small_generic_batch()
+
+    new_messages = _clip(messages, _chars, keep_tokens=5_000)
+
+    assert "saved in the filesystem" in new_messages[-2].content
+    assert new_messages[-1].content == "y" * 3_000
+    assert _chars(new_messages[-2:]) < 5_000
+
+
+def test_individually_small_read_results_use_path_pointer() -> None:
+    """Collectively large `read_file` results can be replaced by path pointers."""
+    messages: list[AnyMessage] = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"id": "first", "name": "read_file", "args": {"file_path": "/first.txt"}},
+                {"id": "second", "name": "read_file", "args": {"file_path": "/second.txt"}},
+            ],
+        ),
+        ToolMessage(tool_call_id="first", name="read_file", content="x" * 3_000),
+        ToolMessage(tool_call_id="second", name="read_file", content="y" * 3_000),
+    ]
+
+    new_messages = _clip(messages, _chars, keep_tokens=5_000)
+
+    assert "Output was omitted" in new_messages[-2].content
+    assert "/first.txt" in new_messages[-2].content
+    assert new_messages[-1].content == "y" * 3_000
+    assert _chars(new_messages[-2:]) < 5_000
+
+
 async def test_async_clip_matches_sync_selection() -> None:
     """The async path clips the same subset as the sync path (#4954)."""
     new_messages, _ = await _aclip_overflow_tail(
@@ -104,3 +154,19 @@ async def test_async_clip_matches_sync_selection() -> None:
 
     assert "Output was truncated" in new_messages[-2].content
     assert new_messages[-1].content == "tiny"
+
+
+async def test_async_individually_small_results_are_clipped() -> None:
+    """The async path also reduces collectively large generic results."""
+    new_messages, _ = await _aclip_overflow_tail(
+        _small_generic_batch(),
+        _backend(),
+        keep=("tokens", 5_000),
+        max_input_tokens=1000,
+        token_counter=_chars,
+        large_tool_results_prefix="/large_tool_results",
+    )
+
+    assert "saved in the filesystem" in new_messages[-2].content
+    assert new_messages[-1].content == "y" * 3_000
+    assert _chars(new_messages[-2:]) < 5_000

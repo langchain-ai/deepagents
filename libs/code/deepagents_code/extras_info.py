@@ -523,11 +523,18 @@ def _parse_version(value: str | None) -> Version | None:
 
 
 def _with_editable_local_version(value: str) -> str:
-    """Add an `editable` local segment to a normalized version string.
+    """Return `value` with an `editable` PEP 440 local segment appended.
 
-    Returns:
-        The version with an `editable` local segment, or the original value when
-            it cannot be parsed.
+    Mirrors `deepagents._version._with_editable_local_version`, which stamps
+    `lc_versions["deepagents"]` the same way, so both entries in a trace share
+    one encoding. Kept local because the SDK helper only exists in releases
+    newer than the exact `deepagents` pin.
+
+    The base version is re-emitted in canonical PEP 440 form, so the result can
+    differ from `value` beyond the added segment (`1.0.0-alpha1` becomes
+    `1.0.0a1+editable`). An existing local segment is preserved and extended
+    rather than clobbered (`1.0+build` becomes `1.0+build.editable`), which makes
+    this non-idempotent. Unparseable input is returned unchanged.
     """
     parsed = _parse_version(value)
     if parsed is None:

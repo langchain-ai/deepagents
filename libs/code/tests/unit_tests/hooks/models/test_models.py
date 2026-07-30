@@ -287,16 +287,14 @@ def test_domain_event_union_selects_event_model() -> None:
     assert event.event is HookEvent.NOTIFICATION
 
 
-def test_post_tool_use_accepts_native_tool_message() -> None:
-    result = ToolMessage(content="done", tool_call_id="call-1")
-
-    event = PostToolUseEvent(
-        event=HookEvent.POST_TOOL_USE,
+def test_post_tool_use_accepts_json_tool_result() -> None:
+    event = PostToolUseEvent.from_tool_result(
+        ToolMessage(content="done", tool_call_id="call-1"),
         call=ToolCallData(id="call-1", name="write_file", args={}),
-        result=result,
     )
 
-    assert event.result is result
+    assert isinstance(event.result, dict)
+    assert event.result.get("content") == "done"
 
 
 def test_domain_models_reject_unknown_fields() -> None:

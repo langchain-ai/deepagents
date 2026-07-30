@@ -30499,6 +30499,200 @@ class TestCanBypassQueue:
         assert app._pending_messages[0].text == "/clear"
 
 
+class TestScheduleOffMessagePump:
+    """Coverage for detached slash-command continuations."""
+
+    async def test_continuation_runs_and_is_forgotten(self) -> None:
+        """A scheduled continuation runs and clears its tracking entry."""
+        app = DeepAgentsApp()
+        ran = asyncio.Event()
+
+        async def _work() -> None:  # noqa: RUF029  # scheduled as a coroutine
+            ran.set()
+
+        task = app._schedule_off_message_pump(_work(), context="demo")
+
+        assert task is not None
+        await asyncio.wait_for(task, timeout=2.0)
+        assert ran.is_set()
+        await asyncio.sleep(0)  # let the done-callback fire
+        assert "demo" not in app._modal_command_tasks
+
+    async def test_different_context_is_refused(self) -> None:
+        """A second mutation continuation is refused while one is active.
+
+        The command handler returns as soon as the continuation is detached, so
+        another install or update can arrive while its prompt is still up. The
+        global guard prevents differently keyed environment mutations from
+        racing each other.
+        """
+        app = DeepAgentsApp()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        second_ran = False
+
+        async def _first() -> None:
+            started.set()
+            await release.wait()
+
+        async def _second() -> None:  # noqa: RUF029  # scheduled as a coroutine
+            nonlocal second_ran
+            second_ran = True
+
+        first = app._schedule_off_message_pump(_first(), context="update")
+        assert first is not None
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        with patch.object(app, "notify") as notify:
+            assert app._schedule_off_message_pump(_second(), context="install") is None
+
+        # Pin the wording and severity: these tests never call `run_test()`, so
+        # the real `notify` never renders and a broken message would go unnoticed.
+        notify.assert_called_once_with(
+            "Another install or update is in progress — answer its prompt if "
+            "one is open.",
+            severity="warning",
+            timeout=5,
+        )
+        release.set()
+        await asyncio.wait_for(first, timeout=2.0)
+        assert second_ran is False
+
+    async def test_continuation_blocks_and_then_resumes_queue(self) -> None:
+        """Queued work waits for the detached continuation's full lifetime."""
+        app = DeepAgentsApp()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        processed: list[str] = []
+        continuation: asyncio.Task[None] | None = None
+
+        async def _mutation() -> None:
+            started.set()
+            await release.wait()
+
+        async def _process(value: str, _mode: str) -> None:  # noqa: RUF029  # replaces an awaited coroutine method
+            nonlocal continuation
+            processed.append(value)
+            if value == "update":
+                continuation = app._schedule_off_message_pump(
+                    _mutation(), context="update"
+                )
+
+        app._process_message = _process  # ty: ignore
+        app._pending_messages.extend(
+            [
+                QueuedMessage(text="update", mode="command"),
+                QueuedMessage(text="next agent turn", mode="normal"),
+            ]
+        )
+
+        await app._process_next_from_queue()
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        assert processed == ["update"]
+        assert [message.text for message in app._pending_messages] == [
+            "next agent turn"
+        ]
+
+        assert continuation is not None
+        release.set()
+        await asyncio.wait_for(continuation, timeout=2.0)
+        for _ in range(10):
+            if processed == ["update", "next agent turn"]:
+                break
+            await asyncio.sleep(0)
+
+        assert processed == ["update", "next agent turn"]
+        assert not app._pending_messages
+
+    async def test_environment_mutations_share_one_lock(self) -> None:
+        """Command and worker installs cannot rewrite the environment together."""
+        app = DeepAgentsApp()
+        first_started = asyncio.Event()
+        second_started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _install_extra(
+            _extra: str, *, force: bool, auto_restart: bool
+        ) -> bool:
+            assert force is False
+            assert auto_restart is False
+            first_started.set()
+            await release.wait()
+            return True
+
+        async def _install_package(_package: str) -> None:  # noqa: RUF029  # patched async mutation implementation
+            second_started.set()
+
+        with (
+            patch.object(app, "_install_extra_unlocked", side_effect=_install_extra),
+            patch.object(
+                app,
+                "_perform_package_install_unlocked",
+                side_effect=_install_package,
+            ),
+        ):
+            extra_task = asyncio.create_task(app._install_extra("provider"))
+            await asyncio.wait_for(first_started.wait(), timeout=2.0)
+            package_task = asyncio.create_task(app._perform_package_install("package"))
+            await asyncio.sleep(0)
+
+            assert not second_started.is_set()
+
+            release.set()
+            await asyncio.gather(extra_task, package_task)
+
+        assert second_started.is_set()
+
+    async def test_cancel_modal_command_tasks_cancels_a_pending_continuation(
+        self,
+    ) -> None:
+        """The helper cancels a continuation and reports which ones it hit."""
+        app = DeepAgentsApp()
+        started = asyncio.Event()
+
+        async def _blocked() -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        task = app._schedule_off_message_pump(_blocked(), context="demo")
+        assert task is not None
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        assert app._cancel_modal_command_tasks() == {task}
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2.0)
+
+    async def test_exit_cancels_a_continuation_waiting_on_its_modal(self) -> None:
+        """`exit()` itself cancels a continuation parked on a modal.
+
+        Covers the wiring, not just the helper: a refactor of `exit()` that drops
+        the `_cancel_modal_command_tasks()` call would otherwise leave a
+        continuation running past teardown with a green suite.
+        """
+        app = DeepAgentsApp()
+        started = asyncio.Event()
+
+        async def _blocked() -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            task = app._schedule_off_message_pump(_blocked(), context="demo")
+            assert task is not None
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+
+            app.exit()
+            for _ in range(40):
+                if task.done():
+                    break
+                await asyncio.sleep(0.05)
+
+        assert task.cancelled()
+
+
 def _banner_query_raiser(app: DeepAgentsApp, exc: Exception) -> Callable[..., Widget]:
     """Return a `query_one` stand-in that raises for the welcome banner only.
 

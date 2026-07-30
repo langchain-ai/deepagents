@@ -43,6 +43,7 @@ from deepagents.middleware._message_eviction import (
     _build_evicted_content,
     _create_content_preview,
     _extract_text_from_message,
+    _preview_note,
 )
 from deepagents.middleware.filesystem import (
     EMPTY_CONTENT_WARNING,
@@ -3105,6 +3106,38 @@ class TestFilesystemMiddleware:
             # Should have all lines
             for i in range(num_lines):
                 assert f"line {i}" in preview
+
+
+class TestPreviewNote:
+    def test_explains_marker_when_preview_is_truncated(self):
+        preview = _create_content_preview("\n".join(f"line {i}" for i in range(20)))
+        note = _preview_note(preview)
+        assert note == (
+            "Here is a preview showing the head and tail of the result "
+            "(lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):"
+        )
+
+    def test_omits_marker_explanation_when_nothing_omitted(self):
+        preview = _create_content_preview("\n".join(f"line {i}" for i in range(3)))
+        assert _preview_note(preview) == "Here is a preview of the result:"
+
+    def test_custom_subject(self):
+        assert _preview_note("line 1", subject="content") == "Here is a preview of the content:"
+
+    def test_matches_sandbox_capture_marker(self):
+        note = _preview_note("head\n... [42 lines truncated] ...\ntail")
+        assert "lines of the form" in note
+
+    def test_offloaded_tool_message_omits_marker_explanation_for_short_content(self):
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=10)
+        tool_message = ToolMessage(content="x" * 5000, tool_call_id="test_short")
+
+        result = middleware._intercept_large_tool_result(tool_message)
+
+        assert isinstance(result, ToolMessage)
+        assert "Here is a preview of the result:" in result.content
+        assert "lines of the form" not in result.content
 
 
 class TestExtractTextFromMessage:

@@ -78,6 +78,7 @@ from deepagents.middleware._message_eviction import (
     _create_content_preview,
     _extract_text_from_message,
     _offload_tool_message_content,
+    _preview_note,
 )
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware._video import (
@@ -1247,7 +1248,7 @@ TOO_LARGE_HUMAN_MSG = """Message content too large and was saved to the filesyst
 
 You can read the full content using the read_file tool with pagination (offset and limit parameters).
 
-Here is a preview showing the head and tail of the content:
+{preview_note}
 
 {content_sample}
 """
@@ -1296,6 +1297,7 @@ def _build_truncated_human_message(message: HumanMessage, file_path: str) -> Hum
     content_sample = _create_content_preview(content_str)
     replacement_text = TOO_LARGE_HUMAN_MSG.format(
         file_path=file_path,
+        preview_note=_preview_note(content_sample, subject="content"),
         content_sample=content_sample,
     )
     evicted = _build_evicted_human_content(message, replacement_text)
@@ -2547,6 +2549,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         return TOO_LARGE_TOOL_MSG.format(
             tool_call_id=tool_call_id,
             file_path=capture_path,
+            preview_note=_preview_note(content_sample),
             content_sample=content_sample,
         )
 

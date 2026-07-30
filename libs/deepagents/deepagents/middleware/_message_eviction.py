@@ -11,6 +11,7 @@ Used by:
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, cast
 
 from langchain_core.messages import BaseMessage, ToolMessage
@@ -28,10 +29,36 @@ You can read the result from the filesystem by using the read_file tool, but mak
 
 You can do this by specifying an offset and limit in the read_file tool call. For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
 
-Here is a preview showing the head and tail of the result (lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):
+{preview_note}
 
 {content_sample}
 """
+
+_TRUNCATION_MARKER_TEMPLATE = "... [{omitted_lines} lines truncated] ..."
+"""Marker inserted between the head and tail of a preview when lines are omitted."""
+
+_TRUNCATION_MARKER_PATTERN = re.compile(r"\.\.\. \[\d+ lines truncated\] \.\.\.")
+"""Matches `_TRUNCATION_MARKER_TEMPLATE`, including markers emitted by the sandbox capture wrapper."""
+
+_PREVIEW_NOTE = "Here is a preview of the {subject}:"
+_PREVIEW_NOTE_WITH_MARKERS = "Here is a preview showing the head and tail of the {subject} (lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):"
+
+
+def _preview_note(content_sample: str, *, subject: str = "result") -> str:
+    """Build the sentence introducing `content_sample`.
+
+    The head/tail wording and the truncation-marker explanation are only
+    included when `content_sample` actually contains a truncation marker.
+
+    Args:
+        content_sample: The rendered preview the note will introduce.
+        subject: Noun describing what is being previewed, e.g. `result`.
+
+    Returns:
+        A single-sentence note ending in a colon.
+    """
+    template = _PREVIEW_NOTE_WITH_MARKERS if _TRUNCATION_MARKER_PATTERN.search(content_sample) else _PREVIEW_NOTE
+    return template.format(subject=subject)
 
 
 def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines: int = 5) -> str:
@@ -57,7 +84,8 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
     tail = [line[:1000] for line in lines[-tail_lines:]]
 
     head_sample = format_content_with_line_numbers(head, start_line=1)
-    truncation_notice = f"\n... [{len(lines) - head_lines - tail_lines} lines truncated] ...\n"
+    marker = _TRUNCATION_MARKER_TEMPLATE.format(omitted_lines=len(lines) - head_lines - tail_lines)
+    truncation_notice = f"\n{marker}\n"
     tail_sample = format_content_with_line_numbers(tail, start_line=len(lines) - tail_lines + 1)
 
     return head_sample + truncation_notice + tail_sample
@@ -134,10 +162,12 @@ def _offload_tool_message_content(
     result = backend.write(file_path, content_str)
     if result is None or result.error:
         return None
+    content_sample = _create_content_preview(content_str)
     replacement_text = TOO_LARGE_TOOL_MSG.format(
         tool_call_id=message.tool_call_id,
         file_path=file_path,
-        content_sample=_create_content_preview(content_str),
+        preview_note=_preview_note(content_sample),
+        content_sample=content_sample,
     )
     return _build_evicted_tool_message(message, _build_evicted_content(message, replacement_text))
 
@@ -154,9 +184,11 @@ async def _aoffload_tool_message_content(
     result = await backend.awrite(file_path, content_str)
     if result is None or result.error:
         return None
+    content_sample = _create_content_preview(content_str)
     replacement_text = TOO_LARGE_TOOL_MSG.format(
         tool_call_id=message.tool_call_id,
         file_path=file_path,
-        content_sample=_create_content_preview(content_str),
+        preview_note=_preview_note(content_sample),
+        content_sample=content_sample,
     )
     return _build_evicted_tool_message(message, _build_evicted_content(message, replacement_text))

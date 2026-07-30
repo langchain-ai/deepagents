@@ -66,8 +66,36 @@ def _dist(
     return dist
 
 
-_EDITABLE_JSON = '{"url": "file:///src/deepagents", "dir_info": {"editable": true}}'
-"""A realistic PEP 610 payload as `pip install -e` writes it."""
+def _editable_json(root: Path) -> str:
+    """Build a PEP 610 payload as `pip install -e <root>` writes it.
+
+    `root.as_uri()` keeps the URL valid on Windows, where a POSIX-style literal
+    such as `file:///src/deepagents` is not a usable path.
+    """
+    return json.dumps({"url": root.as_uri(), "dir_info": {"editable": True}})
+
+
+@pytest.fixture
+def editable_root(tmp_path: Path) -> Path:
+    """A source root laid out like an editable `deepagents` checkout."""
+    root = tmp_path / "workspace" / "libs" / "deepagents"
+    (root / "deepagents").mkdir(parents=True)
+    return root
+
+
+@pytest.fixture(autouse=True)
+def _running_from_editable_root(editable_root: Path) -> Iterator[None]:
+    """Place the running module inside `editable_root` for every test.
+
+    `_is_editable_install` only credits an editable record whose source root
+    contains the module being imported, so the fixtures have to agree about where
+    that module lives. Tests that need them to disagree patch this themselves.
+    """
+    with patch(
+        "deepagents._version._running_package_root",
+        return_value=(editable_root / "deepagents").resolve(),
+    ):
+        yield
 
 
 def _real_dist(
@@ -145,20 +173,14 @@ class TestWithEditableLocalVersion:
 class TestIsEditableInstall:
     """Tests for `_is_editable_install`."""
 
-    def test_true_when_pep610_marks_editable(self) -> None:
-        editable = _dist(
-            name="deepagents",
-            direct_url={
-                "url": "file:///tmp/deepagents",
-                "dir_info": {"editable": True},
-            },
-        )
+    def test_true_when_pep610_marks_editable(self, editable_root: Path) -> None:
+        editable = _dist(raw=_editable_json(editable_root))
         with patch("deepagents._version.distributions", return_value=[editable]):
             assert _is_editable_install() is True
 
-    def test_false_for_non_editable_local_dir_install(self) -> None:
+    def test_false_for_non_editable_local_dir_install(self, editable_root: Path) -> None:
         local_dir = _dist(
-            direct_url={"url": "file:///src/deepagents", "dir_info": {}},
+            direct_url={"url": editable_root.as_uri(), "dir_info": {}},
         )
         with patch("deepagents._version.distributions", return_value=[local_dir]):
             assert _is_editable_install() is False
@@ -179,29 +201,21 @@ class TestIsEditableInstall:
         with patch("deepagents._version.distributions", return_value=[egg_info]):
             assert _is_editable_install() is False
 
-    def test_ignores_cwd_egg_info_shadowing_editable_install(self) -> None:
+    def test_ignores_cwd_egg_info_shadowing_editable_install(self, editable_root: Path) -> None:
         """A local `*.egg-info` without PEP 610 data must not hide site-packages."""
         egg_info = _dist(direct_url=None)
-        editable = _dist(
-            direct_url={"url": "file:///src/deepagents", "dir_info": {"editable": True}},
-        )
+        editable = _dist(raw=_editable_json(editable_root))
         with patch("deepagents._version.distributions", return_value=[egg_info, editable]):
             assert _is_editable_install() is True
 
-    def test_ignores_other_editable_distributions(self) -> None:
+    def test_ignores_other_editable_distributions(self, editable_root: Path) -> None:
         """Only `deepagents` counts — a sibling editable lib must not qualify."""
-        other = _dist(
-            name="langchain-core",
-            direct_url={"url": "file:///src/core", "dir_info": {"editable": True}},
-        )
+        other = _dist(name="langchain-core", raw=_editable_json(editable_root))
         with patch("deepagents._version.distributions", return_value=[other]):
             assert _is_editable_install() is False
 
-    def test_matches_name_case_insensitively(self) -> None:
-        renamed = _dist(
-            name="DeepAgents",
-            direct_url={"url": "file:///src/deepagents", "dir_info": {"editable": True}},
-        )
+    def test_matches_name_case_insensitively(self, editable_root: Path) -> None:
+        renamed = _dist(name="DeepAgents", raw=_editable_json(editable_root))
         with patch("deepagents._version.distributions", return_value=[renamed]):
             assert _is_editable_install() is True
 
@@ -253,7 +267,7 @@ class TestIsEditableInstall:
         with patch("deepagents._version.distributions", return_value=[unreadable]):
             assert _is_editable_install() is False
 
-    def test_unreadable_direct_url_does_not_abort_scan(self) -> None:
+    def test_unreadable_direct_url_does_not_abort_scan(self, editable_root: Path) -> None:
         """A read failure must be contained per-distribution, not end the scan.
 
         The outer backstop would also swallow this `OSError`, but only by giving
@@ -262,18 +276,14 @@ class TestIsEditableInstall:
         """
         unreadable = _dist()
         unreadable.read_text.side_effect = OSError("unreadable path")
-        editable = _dist(
-            direct_url={"url": "file:///src/deepagents", "dir_info": {"editable": True}},
-        )
+        editable = _dist(raw=_editable_json(editable_root))
         with patch("deepagents._version.distributions", return_value=[unreadable, editable]):
             assert _is_editable_install() is True
 
-    def test_malformed_direct_url_does_not_abort_scan(self) -> None:
+    def test_malformed_direct_url_does_not_abort_scan(self, editable_root: Path) -> None:
         """Same containment requirement for unparseable JSON."""
         broken = _dist(raw="{not json")
-        editable = _dist(
-            direct_url={"url": "file:///src/deepagents", "dir_info": {"editable": True}},
-        )
+        editable = _dist(raw=_editable_json(editable_root))
         with patch("deepagents._version.distributions", return_value=[broken, editable]):
             assert _is_editable_install() is True
 
@@ -286,11 +296,11 @@ class TestIsEditableInstallAgainstRealMetadata:
     `MagicMock` cases cannot.
     """
 
-    def test_detects_real_editable_dist_info(self, tmp_path: Path) -> None:
+    def test_detects_real_editable_dist_info(self, tmp_path: Path, editable_root: Path) -> None:
         dist = _real_dist(
             tmp_path,
             dirname="deepagents-0.7.0.dist-info",
-            direct_url=_EDITABLE_JSON,
+            direct_url=_editable_json(editable_root),
         )
         with patch("deepagents._version.distributions", return_value=[dist]):
             assert _is_editable_install() is True
@@ -300,7 +310,7 @@ class TestIsEditableInstallAgainstRealMetadata:
         with patch("deepagents._version.distributions", return_value=[dist]):
             assert _is_editable_install() is False
 
-    def test_real_egg_info_does_not_shadow_editable_install(self, tmp_path: Path) -> None:
+    def test_real_egg_info_does_not_shadow_editable_install(self, tmp_path: Path, editable_root: Path) -> None:
         """Reproduces the layout that makes the single-lookup form wrong.
 
         `setuptools` leaves a `deepagents.egg-info/` in the source tree, and it is
@@ -314,12 +324,12 @@ class TestIsEditableInstallAgainstRealMetadata:
         editable = _real_dist(
             tmp_path / "site-packages",
             dirname="deepagents-0.7.0.dist-info",
-            direct_url=_EDITABLE_JSON,
+            direct_url=_editable_json(editable_root),
         )
         with patch("deepagents._version.distributions", return_value=[egg_info, editable]):
             assert _is_editable_install() is True
 
-    def test_corrupt_neighbor_does_not_abort_scan(self, tmp_path: Path) -> None:
+    def test_corrupt_neighbor_does_not_abort_scan(self, tmp_path: Path, editable_root: Path) -> None:
         """An unreadable *unrelated* distribution must not mask a later editable one.
 
         `Distribution.name` parses `METADATA`, so non-UTF-8 bytes raise
@@ -335,12 +345,12 @@ class TestIsEditableInstallAgainstRealMetadata:
         editable = _real_dist(
             tmp_path / "b",
             dirname="deepagents-0.7.0.dist-info",
-            direct_url=_EDITABLE_JSON,
+            direct_url=_editable_json(editable_root),
         )
         with patch("deepagents._version.distributions", return_value=[corrupt, editable]):
             assert _is_editable_install() is True
 
-    def test_metadata_less_dist_info_does_not_raise(self, tmp_path: Path) -> None:
+    def test_metadata_less_dist_info_does_not_raise(self, tmp_path: Path, editable_root: Path) -> None:
         """A partial install leaves a `*.dist-info` whose real `.name` is `None`.
 
         `AttributeError` from `None.lower()` is not caught by the scan's backstop,
@@ -350,7 +360,7 @@ class TestIsEditableInstallAgainstRealMetadata:
         editable = _real_dist(
             tmp_path / "b",
             dirname="deepagents-0.7.0.dist-info",
-            direct_url=_EDITABLE_JSON,
+            direct_url=_editable_json(editable_root),
         )
         with patch("deepagents._version.distributions", return_value=[ghost, editable]):
             assert _is_editable_install() is True
@@ -362,6 +372,106 @@ class TestIsEditableInstallAgainstRealMetadata:
             direct_url="{not json",
         )
         with patch("deepagents._version.distributions", return_value=[dist]):
+            assert _is_editable_install() is False
+
+
+class TestEditableRecordMustSupplyRunningModule:
+    """An editable record only counts if it supplies the module being imported.
+
+    An environment can hold more than one `deepagents` record — for example a
+    wheel earlier on `sys.path` and an unrelated editable checkout later on it.
+    Only one of them actually provides the imported code, and crediting the wrong
+    one would report a published install as a workspace build.
+    """
+
+    def test_unrelated_editable_checkout_does_not_mark_wheel_editable(self, tmp_path: Path) -> None:
+        """The running wheel must not inherit another checkout's editable status."""
+        elsewhere = tmp_path / "some" / "other" / "checkout"
+        elsewhere.mkdir(parents=True)
+        wheel = _real_dist(tmp_path / "site-packages", dirname="deepagents-0.7.0.dist-info")
+        unrelated_editable = _real_dist(
+            tmp_path / "other-env",
+            dirname="deepagents-0.7.0.dist-info",
+            direct_url=_editable_json(elsewhere),
+        )
+        running_from = tmp_path / "site-packages" / "deepagents"
+        running_from.mkdir(parents=True)
+        with (
+            patch(
+                "deepagents._version._running_package_root",
+                return_value=running_from.resolve(),
+            ),
+            patch(
+                "deepagents._version.distributions",
+                return_value=[wheel, unrelated_editable],
+            ),
+        ):
+            assert _is_editable_install() is False
+
+    def test_editable_wins_when_it_supplies_the_running_module(self, tmp_path: Path, editable_root: Path) -> None:
+        """An unrelated editable record ahead of ours must not shadow the real one."""
+        elsewhere = tmp_path / "some" / "other" / "checkout"
+        elsewhere.mkdir(parents=True)
+        unrelated_editable = _real_dist(
+            tmp_path / "other-env",
+            dirname="deepagents-0.7.0.dist-info",
+            direct_url=_editable_json(elsewhere),
+        )
+        ours = _real_dist(
+            tmp_path / "site-packages",
+            dirname="deepagents-0.7.0.dist-info",
+            direct_url=_editable_json(editable_root),
+        )
+        with patch(
+            "deepagents._version.distributions",
+            return_value=[unrelated_editable, ours],
+        ):
+            assert _is_editable_install() is True
+
+    def test_src_layout_source_root_still_matches(self, tmp_path: Path) -> None:
+        """A `src/` layout puts the package below the recorded root, not at it."""
+        root = tmp_path / "project"
+        package = root / "src" / "deepagents"
+        package.mkdir(parents=True)
+        dist = _real_dist(
+            tmp_path / "site-packages",
+            dirname="deepagents-0.7.0.dist-info",
+            direct_url=_editable_json(root),
+        )
+        with (
+            patch(
+                "deepagents._version._running_package_root",
+                return_value=package.resolve(),
+            ),
+            patch("deepagents._version.distributions", return_value=[dist]),
+        ):
+            assert _is_editable_install() is True
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            pytest.param("https://example.com/deepagents", id="non-file-scheme"),
+            pytest.param("", id="empty"),
+        ],
+    )
+    def test_false_when_source_url_is_unusable(self, url: str) -> None:
+        """An editable record we cannot locate cannot be correlated, so it is skipped."""
+        dist = _dist(raw=json.dumps({"url": url, "dir_info": {"editable": True}}))
+        with patch("deepagents._version.distributions", return_value=[dist]):
+            assert _is_editable_install() is False
+
+    def test_false_when_source_url_absent(self) -> None:
+        dist = _dist(raw=json.dumps({"dir_info": {"editable": True}}))
+        with patch("deepagents._version.distributions", return_value=[dist]):
+            assert _is_editable_install() is False
+
+    def test_false_when_running_module_location_is_unknown(self, editable_root: Path) -> None:
+        """Some frozen interpreters have no `__file__`, so nothing can be correlated."""
+        editable = _dist(raw=_editable_json(editable_root))
+        with (
+            patch("deepagents._version._running_package_root", return_value=None),
+            patch("deepagents._version.distributions", return_value=[editable]),
+        ):
             assert _is_editable_install() is False
 
 

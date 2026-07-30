@@ -6,6 +6,9 @@ import json
 import logging
 from functools import cache
 from importlib.metadata import Distribution, distributions
+from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from packaging.version import InvalidVersion, Version
 
@@ -41,11 +44,11 @@ def _distribution_name(dist: Distribution) -> str:
     return name.lower().replace("_", "-")
 
 
-def _direct_url_marks_editable(dist: Distribution) -> bool:
-    """Return whether `dist` has PEP 610 metadata marking it editable.
+def _read_direct_url(dist: Distribution) -> dict[str, object] | None:
+    """Return `dist`'s parsed PEP 610 payload, or `None` when it is unusable.
 
-    Unreadable or unparseable `direct_url.json` reports non-editable rather than
-    raising, so one bad distribution cannot abort the caller's scan.
+    Unreadable or unparseable metadata reports `None` rather than raising, so one
+    bad distribution cannot abort the caller's scan.
     """
     try:
         raw = dist.read_text("direct_url.json")
@@ -56,50 +59,118 @@ def _direct_url_marks_editable(dist: Distribution) -> bool:
         # unreachable through the stdlib's `PathDistribution` and is kept only as
         # insurance against third-party `Distribution` implementations.
         logger.debug("Could not read direct_url.json", exc_info=True)
-        return False
+        return None
     if not raw:
         # Normal and common: non-editable installs omit the file entirely, as
         # does the source-tree `*.egg-info`. Deliberately not logged.
-        return False
+        return None
     try:
         data = json.loads(raw)
     except (RecursionError, ValueError):
         # `ValueError` covers `json.JSONDecodeError`; pathologically nested
         # input raises `RecursionError`, which is not a `ValueError`.
         logger.debug("Malformed direct_url.json", exc_info=True)
-        return False
-    if not isinstance(data, dict):
-        return False
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _file_url_to_path(url: str) -> Path | None:
+    """Convert a `file://` URL to a local path, or `None` when it is not one."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:  # e.g. an invalid IPv6 host
+        logger.debug("Unparseable direct_url.json url", exc_info=True)
+        return None
+    if parsed.scheme != "file":
+        return None
+    path = url2pathname(parsed.path)
+    if parsed.netloc and parsed.netloc != "localhost":
+        # A UNC path such as `file://server/share/proj`.
+        path = f"//{parsed.netloc}{path}"
+    return Path(path)
+
+
+def _editable_source_root(dist: Distribution) -> Path | None:
+    """Return `dist`'s editable source root, or `None` when it is not editable.
+
+    `None` also covers an editable record whose source location cannot be
+    determined, since such a record cannot be correlated with the running module.
+    """
+    data = _read_direct_url(dist)
+    if data is None:
+        return None
     dir_info = data.get("dir_info")
-    if not isinstance(dir_info, dict):
+    if not isinstance(dir_info, dict) or dir_info.get("editable") is not True:
+        return None
+    url = data.get("url")
+    if not isinstance(url, str):
+        return None
+    return _file_url_to_path(url)
+
+
+def _running_package_root() -> Path | None:
+    """Return the directory of the `deepagents` package being imported.
+
+    `None` when the location cannot be determined — `__file__` is absent in some
+    frozen and embedded interpreters. Separate function so tests can substitute a
+    location without touching the real install layout.
+    """
+    try:
+        return Path(__file__).resolve().parent
+    except (NameError, OSError, ValueError):
+        logger.debug("Could not locate the running deepagents package", exc_info=True)
+        return None
+
+
+def _is_under(root: Path, candidate: Path) -> bool:
+    """Return whether `candidate` is `root` or lives inside it."""
+    try:
+        resolved = root.resolve()
+    except OSError:
+        logger.debug("Could not resolve editable source root", exc_info=True)
         return False
-    return dir_info.get("editable") is True
+    return resolved == candidate or resolved in candidate.parents
 
 
 def _is_editable_install() -> bool:
-    """Whether any installed distribution named `deepagents` is editable.
+    """Whether the `deepagents` package being imported is an editable install.
 
     Scans every installed distribution named `deepagents` for PEP 610
-    `direct_url.json` with `dir_info.editable: true`.
+    `direct_url.json` with `dir_info.editable: true`, and reports `True` only for
+    a record whose source root actually contains the module this code is running
+    from.
 
-    A bare `importlib.metadata.distribution("deepagents")` lookup is not enough.
-    Because `setuptools` leaves a gitignored `deepagents.egg-info/` in the source
-    tree after any local build, and the cwd is on `sys.path` for `-c`, `-m`, and
-    the REPL, that `*.egg-info` is discovered *first* when running from the
-    checkout. It carries no `direct_url.json`, so the single-lookup form reports
-    "not editable" and never consults the real editable install in
-    site-packages. Scanning past it is what makes detection correct.
+    Both halves are load-bearing, and they guard opposite errors:
+
+    - Scanning, rather than a single `importlib.metadata.distribution` lookup,
+      avoids a false negative. `setuptools` leaves a gitignored
+      `deepagents.egg-info/` in the source tree after any local build, and the cwd
+      is on `sys.path` for `-c`, `-m`, and the REPL, so that `*.egg-info` is found
+      *first* when running from the checkout. It carries no `direct_url.json`, so
+      the single-lookup form reports "not editable" and never consults the real
+      editable install in site-packages.
+    - Correlating against the running module avoids a false positive. An
+      environment can hold more than one `deepagents` record — a wheel earlier on
+      `sys.path` and an unrelated editable checkout later on it. Only the wheel's
+      code is actually imported, so marking it `+editable` because some other
+      checkout exists would attribute a workspace build to a published install.
 
     Per-distribution metadata failures are contained by the helpers above, so one
     unreadable distribution cannot end the scan early and mask a later editable
     one. Missing or unparseable metadata reports non-editable, keeping version
     reporting best-effort rather than a source of construction failures.
     """
+    package_root = _running_package_root()
+    if package_root is None:
+        # Without a location for the running module, no editable record can be
+        # attributed to it, so report the plain release version.
+        return False
     try:
         for dist in distributions():
             if _distribution_name(dist) != "deepagents":
                 continue
-            if _direct_url_marks_editable(dist):
+            source_root = _editable_source_root(dist)
+            if source_root is not None and _is_under(source_root, package_root):
                 return True
     except (OSError, TypeError, ValueError):
         # Backstop for `distributions()` itself: it yields lazily, so a broken

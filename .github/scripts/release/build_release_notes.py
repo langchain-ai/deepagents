@@ -1544,7 +1544,15 @@ def _write_github_output(body: str) -> None:
 
 
 def _write_step_summary(
-    package: str, version: str, repository: str, sha: str, warnings: list[str]
+    package: str,
+    version: str,
+    repository: str,
+    sha: str,
+    warnings: list[str],
+    *,
+    actor: str,
+    base_branch: str,
+    default_branch: str,
 ) -> None:
     """Surface warnings on the run summary, where a reviewer will see them.
 
@@ -1557,10 +1565,31 @@ def _write_step_summary(
     Referencing CI-only variables like ``$GITHUB_REPOSITORY`` would produce a
     block that fails when pasted into the operator's shell, which is the only
     place it is ever meant to run.
+
+    *actor*, *base_branch*, and *default_branch* are forwarded so the snippet
+    rebuilds the body this run published rather than a subtly different one.
+    They are keyword-only and required: every one of them can silently drop an
+    attribution line, so a caller must decide rather than inherit a default.
     """
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
     if not summary_path or not warnings:
         return
+    # Carry the flags that change the body's *content*, so a pasted rebuild
+    # reproduces this run. `--actor` supplies the `Released by:` line when the
+    # release commit has no merged PR to read the merger from, and
+    # `--base-branch` drives the `Released from ...` provenance line. Flags the
+    # workflow passes only to avoid re-deriving what the script can work out
+    # itself (`--working-dir`, `--is-prerelease`, `--repo-root`) are omitted to
+    # keep the snippet short.
+    provenance = [f'--actor "{actor}"'] if actor else []
+    if base_branch and base_branch != (default_branch or "main"):
+        provenance.append(f'--base-branch "{base_branch}"')
+        # Only needed when the repository default differs from the script's own
+        # `--default-branch` default; passing it verbatim keeps the
+        # base-vs-default comparison, and so the provenance line, identical to
+        # this run's. Omitted otherwise so the common case stays uncluttered.
+        if default_branch and default_branch != "main":
+            provenance.append(f'--default-branch "{default_branch}"')
     lines = [
         "### ⚠️ Release notes built with warnings",
         "",
@@ -1573,6 +1602,7 @@ def _write_step_summary(
         "python .github/scripts/release/build_release_notes.py \\",
         f'  --package "{package}" --version "{version}" \\',
         f'  --sha "{sha}" --repo "{repository}" \\',
+        *(f"  {flag} \\" for flag in provenance),
         "  --out /tmp/release-body.md",
         "",
         f'gh release edit "{package}=={version}" --repo "{repository}" \\',
@@ -1734,7 +1764,16 @@ def main() -> None:
     warnings.sort(key=lambda w: "INCOMPLETE" not in w)
     for warning in warnings:
         print(f"::warning::{warning}", file=sys.stderr)
-    _write_step_summary(args.package, args.version, args.repo, args.sha, warnings)
+    _write_step_summary(
+        args.package,
+        args.version,
+        args.repo,
+        args.sha,
+        warnings,
+        actor=args.actor,
+        base_branch=args.base_branch,
+        default_branch=args.default_branch,
+    )
 
     if args.github_output:
         _write_github_output(body)

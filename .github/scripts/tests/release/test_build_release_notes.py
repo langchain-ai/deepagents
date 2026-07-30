@@ -3029,6 +3029,90 @@ class TestCli:
         assert "build_release_notes.py" in written
         assert "--out /tmp/release-body.md" in written
 
+    def test_recovery_snippet_carries_the_provenance_flags(
+        self, tmp_path: Path
+    ) -> None:
+        """The snippet must rebuild *this* body, not a subtly different one.
+
+        `--actor` supplies `Released by:` when the release commit has no merged
+        PR, and `--base-branch` drives `Released from ...`. Dropping them yields
+        a snippet whose output is missing attribution lines the published body
+        has — and step 3 of the documented procedure pastes that straight into
+        `gh release edit`.
+        """
+        commits = _create_history(tmp_path)
+        summary = tmp_path / "summary.md"
+        summary.touch()
+        env = {**os.environ, "GITHUB_STEP_SUMMARY": str(summary)}
+        result = _run_cli(
+            tmp_path,
+            *self._base_args(tmp_path, commits["hotfix"]),
+            "--actor", "octocat",
+            "--base-branch", "v1.0",
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        written = summary.read_text()
+        assert '--actor "octocat"' in written
+        assert '--base-branch "v1.0"' in written
+        # Redundant when it matches the script's own default: the rebuild
+        # already compares `v1.0` against `main` and annotates provenance.
+        assert "--default-branch" not in written
+        # Every continued line must still end in a backslash, or the shell runs
+        # a truncated command and the flags after the break become no-ops.
+        snippet = written.split("```bash")[1].split("--out")[0]
+        assert all(
+            line.rstrip().endswith("\\") for line in snippet.strip().splitlines()
+        ), snippet
+
+    def test_recovery_snippet_omits_base_branch_on_a_default_branch_release(
+        self, tmp_path: Path
+    ) -> None:
+        """`--base-branch main` would be noise: it annotates nothing.
+
+        `build_base_body` skips the provenance line when the release branch is
+        the default one, so the snippet has nothing to reproduce.
+        """
+        commits = _create_history(tmp_path)
+        summary = tmp_path / "summary.md"
+        summary.touch()
+        env = {**os.environ, "GITHUB_STEP_SUMMARY": str(summary)}
+        result = _run_cli(
+            tmp_path,
+            *self._base_args(tmp_path, commits["hotfix"]),
+            "--base-branch", "main",
+            "--default-branch", "main",
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        written = summary.read_text()
+        assert "--base-branch" not in written
+
+    def test_recovery_snippet_carries_a_non_main_default_branch(
+        self, tmp_path: Path
+    ) -> None:
+        """Without it the rebuild compares against `main` and can disagree.
+
+        A release cut from `main` in a repo whose default is `develop` earns a
+        provenance line in CI; a snippet passing only `--base-branch main`
+        would compare it to the script's `main` default and drop that line.
+        """
+        commits = _create_history(tmp_path)
+        summary = tmp_path / "summary.md"
+        summary.touch()
+        env = {**os.environ, "GITHUB_STEP_SUMMARY": str(summary)}
+        result = _run_cli(
+            tmp_path,
+            *self._base_args(tmp_path, commits["hotfix"]),
+            "--base-branch", "main",
+            "--default-branch", "develop",
+            env=env,
+        )
+        assert result.returncode == 0, result.stderr
+        written = summary.read_text()
+        assert '--base-branch "main"' in written
+        assert '--default-branch "develop"' in written
+
     def test_incomplete_warnings_are_emitted_first(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3062,7 +3146,16 @@ class TestCli:
     ) -> None:
         summary = tmp_path / "summary.md"
         monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-        brn._write_step_summary("example", "1.0.1", "acme/example", "abc123", [])
+        brn._write_step_summary(
+            "example",
+            "1.0.1",
+            "acme/example",
+            "abc123",
+            [],
+            actor="octocat",
+            base_branch="v1.0",
+            default_branch="main",
+        )
         assert not summary.exists()
 
 

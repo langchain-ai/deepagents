@@ -3,22 +3,28 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from deepagents_code.hooks.capabilities import get_event_spec
 from deepagents_code.hooks.envelope import HookEnvelopeAdapter
 from deepagents_code.hooks.models.domain import HookDiagnostic
+from deepagents_code.hooks.presenter import HookProgress
 from deepagents_code.hooks.runner import (
     MAX_HOOK_OUTPUT_BYTES,
+    HandlerResult,
     run_command_handler,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from deepagents_code.hooks.models.domain import HookDecision, HookInvocation
-    from deepagents_code.hooks.snapshot import HooksSnapshot
+    from deepagents_code.hooks.snapshot import HookHandler, HooksSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +42,7 @@ class HookEngine:
         *,
         transcript_path: Path,
         agent_transcript_path: Path | None = None,
+        on_progress: Callable[[HookProgress], None] | None = None,
     ) -> HookDecision:
         """Execute matching handlers and return a normalized decision.
 
@@ -43,10 +50,16 @@ class HookEngine:
         are reduced in stable configuration order, independent of completion
         order.
 
+        The returned diagnostics are scoped to this invocation. Configuration
+        diagnostics collected while the snapshot loaded belong to whoever owns
+        the snapshot, which presents them once per load; repeating them here
+        would re-surface the same warning on every hook that runs.
+
         Args:
             invocation: Native lifecycle invocation.
             transcript_path: Materialized client transcript path.
             agent_transcript_path: Materialized subagent transcript path.
+            on_progress: Optional handler lifecycle callback.
 
         Returns:
             The event-specific decision produced by ordered hook reduction.
@@ -67,11 +80,7 @@ class HookEngine:
             return self.adapter.to_domain_decision(
                 invocation,
                 (),
-                diagnostics=(
-                    *self.snapshot.diagnostics,
-                    *match.diagnostics,
-                    diagnostic,
-                ),
+                diagnostics=(*match.diagnostics, diagnostic),
             )
 
         event = invocation.event.event
@@ -82,12 +91,14 @@ class HookEngine:
         )
         results = await asyncio.gather(
             *(
-                run_command_handler(
+                _run_handler(
                     handler,
                     payload,
                     cwd=invocation.context.cwd,
                     default_timeout=event_default,
                     max_output_bytes=self.max_output_bytes,
+                    operation_id=f"{id(invocation):x}:{handler.id}",
+                    on_progress=on_progress,
                 )
                 for handler in match.handlers
             )
@@ -95,8 +106,59 @@ class HookEngine:
         return self.adapter.to_domain_decision(
             invocation,
             results,
-            diagnostics=(
-                *self.snapshot.diagnostics,
-                *match.diagnostics,
+            diagnostics=match.diagnostics,
+        )
+
+
+async def _run_handler(
+    handler: HookHandler,
+    payload: bytes,
+    *,
+    cwd: Path,
+    default_timeout: float,
+    max_output_bytes: int,
+    operation_id: str,
+    on_progress: Callable[[HookProgress], None] | None,
+) -> HandlerResult:
+    message = (handler.status_message or "").strip()
+    _report_progress(
+        on_progress,
+        HookProgress(
+            operation_id=operation_id,
+            handler_id=handler.id,
+            event=handler.event,
+            message=message,
+            active=True,
+        ),
+    )
+    try:
+        return await run_command_handler(
+            handler,
+            payload,
+            cwd=cwd,
+            default_timeout=default_timeout,
+            max_output_bytes=max_output_bytes,
+        )
+    finally:
+        _report_progress(
+            on_progress,
+            HookProgress(
+                operation_id=operation_id,
+                handler_id=handler.id,
+                event=handler.event,
+                message=message,
+                active=False,
             ),
         )
+
+
+def _report_progress(
+    callback: Callable[[HookProgress], None] | None,
+    update: HookProgress,
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(update)
+    except Exception:
+        logger.warning("Hook progress callback failed", exc_info=True)

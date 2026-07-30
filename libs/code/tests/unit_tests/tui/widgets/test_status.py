@@ -389,6 +389,59 @@ class TestTokenDisplay:
             display = pilot.app.query_one("#tokens-display")
             assert "5.0K" in str(display.render())
 
+    async def test_context_usage_shows_percent_and_raw_count(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_context_limit(20_000)
+            bar.set_tokens(5_000)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert str(display.render()) == "25% / 5,000 tokens"
+            assert not display.has_class("warning")
+            assert not display.has_class("error")
+
+    async def test_context_usage_turns_yellow_at_40_percent(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_context_limit(10_000)
+            bar.set_tokens(4_000)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert str(display.render()) == "40% / 4,000 tokens"
+            assert display.has_class("warning")
+            assert not display.has_class("error")
+
+    async def test_context_usage_turns_red_at_60_percent(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_context_limit(10_000)
+            bar.set_tokens(6_000)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert str(display.render()) == "60% / 6,000 tokens"
+            assert display.has_class("error")
+            assert not display.has_class("warning")
+
+    async def test_context_limit_change_reformats_cached_count(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5_000, approximate=True)
+            await pilot.pause()
+            bar.set_context_limit(10_000)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert str(display.render()) == "50% / 5,000+ tokens"
+            assert display.has_class("warning")
+
+    async def test_invalid_context_limit_uses_count_only(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_context_limit(0)
+            bar.set_tokens(5_000)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert str(display.render()) == "5.0K tokens"
+
     async def test_show_pending_tokens_shows_unknown_placeholder(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)

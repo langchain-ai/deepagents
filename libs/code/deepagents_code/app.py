@@ -14414,6 +14414,7 @@ class DeepAgentsApp(App):
             logger.debug("Screen stack empty during model sync", exc_info=True)
         if self._status_bar is None:
             return
+        self._status_bar.set_context_limit(settings.model_context_limit)
         if not provider or not model:
             logger.warning(
                 "Settings missing model identity at status sync "

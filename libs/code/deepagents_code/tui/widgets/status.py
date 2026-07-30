@@ -288,6 +288,14 @@ class StatusBar(Horizontal):
         color: $text-muted;
     }
 
+    StatusBar .status-tokens.warning {
+        color: $warning;
+    }
+
+    StatusBar .status-tokens.error {
+        color: $error;
+    }
+
     StatusBar .status-rubric {
         width: auto;
         padding: 0 1;
@@ -378,6 +386,12 @@ class StatusBar(Horizontal):
 
     _CWD_WIDTH_THRESHOLD = 70
     """Hide cwd display below this terminal width."""
+
+    _TOKEN_WARNING_THRESHOLD = 0.4
+    """Show context usage in yellow at or above 40 percent."""
+
+    _TOKEN_ERROR_THRESHOLD = 0.6
+    """Show context usage in red at or above 60 percent."""
 
     def on_resize(self, event: events.Resize) -> None:
         """Hide the cwd on very narrow terminals.
@@ -729,6 +743,8 @@ class StatusBar(Horizontal):
     """
     _has_token_count: bool = False
     """Whether the status bar has displayed a real token count this session."""
+    _context_limit: int | None = None
+    """Maximum input tokens for the active model, when known."""
 
     def watch_tokens(self, new_value: int) -> None:
         """Update token display when count changes."""
@@ -756,17 +772,30 @@ class StatusBar(Horizontal):
         except NoMatches:
             return
 
-        # Hide when empty so the widget's padding doesn't reserve a blank gap.
+        display.remove_class("warning", "error")
         display.display = count > 0
-        if count > 0:
-            suffix = "+" if approximate else ""
-            # Format with K suffix for thousands
-            if count >= 1000:  # noqa: PLR2004  # Count formatting threshold
-                display.update(f"{count / 1000:.1f}K{suffix} tokens")
-            else:
-                display.update(f"{count}{suffix} tokens")
-        else:
+        if count <= 0:
             display.update("")
+            return
+
+        suffix = "+" if approximate else ""
+        if self._context_limit is not None:
+            ratio = count / self._context_limit
+            percent = int(ratio * 100)
+            display.update(f"{percent}% / {count:,}{suffix} tokens")
+            if ratio >= self._TOKEN_ERROR_THRESHOLD:
+                display.add_class("error")
+            elif ratio >= self._TOKEN_WARNING_THRESHOLD:
+                display.add_class("warning")
+        elif count >= 1000:  # noqa: PLR2004  # Count formatting threshold
+            display.update(f"{count / 1000:.1f}K{suffix} tokens")
+        else:
+            display.update(f"{count}{suffix} tokens")
+
+    def set_context_limit(self, limit: int | None) -> None:
+        """Set the active model's context-window size."""
+        self._context_limit = limit if isinstance(limit, int) and limit > 0 else None
+        self._render_tokens(self.tokens, approximate=self._approximate)
 
     def set_rubric_label(self, label: str) -> None:
         """Set the rubric status label.

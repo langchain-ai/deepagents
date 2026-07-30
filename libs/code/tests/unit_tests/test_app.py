@@ -331,8 +331,10 @@ class TestInitialPromptOnMount:
         ):
             mock_settings.model_provider = "openai"
             mock_settings.model_name = "gpt-5.5"
+            mock_settings.model_context_limit = 200_000
             await app.on_mount()
 
+        status_bar.set_context_limit.assert_called_once_with(200_000)
         status_bar.set_model.assert_called_once_with(
             provider="openai", model="gpt-5.5", effort="medium"
         )

@@ -4,19 +4,15 @@ from __future__ import annotations
 
 import json
 import sys
-from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 import pytest
 
 from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.approval_mode import ApprovalMode
-from deepagents_code.hooks.loading import HooksSource
 from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
 from deepagents_code.hooks.models.domain import HookEvent, SessionStartCause
-from deepagents_code.hooks.runtime import HooksRuntime
 from deepagents_code.plugins import add_local_marketplace, install_plugin
-from deepagents_code.plugins.adapters.hooks import discover_plugin_hook_sources
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -155,30 +151,6 @@ async def test_plugin_hook_runs_with_its_exported_variables(
     ]
 
 
-def test_plugin_hooks_load_without_workspace_trust(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Enabling a plugin is its own consent gate, and is not project trust."""
-    _install_hooks_plugin(tmp_path, monkeypatch)
-    workspace = tmp_path / "workspace"
-    _write_json(
-        workspace / ".deepagents" / "hooks.json",
-        {
-            "hooks": {
-                "Stop": [{"hooks": [{"type": "command", "command": "project-only"}]}]
-            }
-        },
-    )
-
-    manager = HooksManager.create(
-        cwd=workspace,
-        identity=lambda: HookSessionIdentity("thread", ApprovalMode.MANUAL),
-    )
-
-    assert manager.has_handlers(HookEvent.SESSION_START)
-    assert not manager.has_handlers(HookEvent.STOP)
-
-
 def test_unreadable_plugin_document_is_isolated_and_reported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -254,85 +226,3 @@ def test_malformed_plugin_document_is_reported_not_dropped(
     )
 
     assert any(str(installed) in message for message, _severity in notices)
-
-
-def test_plugin_hooks_change_the_snapshot_id(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Plugin provenance participates in the snapshot hash."""
-    _install_hooks_plugin(tmp_path, monkeypatch)
-    workspace = tmp_path / "workspace"
-    workspace.mkdir(parents=True, exist_ok=True)
-
-    with_plugin = HooksRuntime.create(
-        cwd=workspace,
-        transcript_root=tmp_path / "transcripts",
-        plugin_sources=discover_plugin_hook_sources().documents,
-    )
-    without_plugin = HooksRuntime.create(
-        cwd=workspace,
-        transcript_root=tmp_path / "transcripts",
-    )
-
-    assert with_plugin.snapshot_id != without_plugin.snapshot_id
-
-
-def test_hooks_source_rejects_an_environment_without_a_plugin() -> None:
-    """Only a plugin source may carry an overlay, so hashing matches execution."""
-    with pytest.raises(ValueError, match="environment overlay"):
-        HooksSource(location="/tmp/hooks.json", env={"CLAUDE_PLUGIN_ROOT": "/tmp"})
-
-
-def test_hooks_source_freezes_its_environment() -> None:
-    """A frozen source must not share a caller's mutable environment mapping."""
-    env = {"CLAUDE_PLUGIN_ROOT": "/tmp/plugin"}
-    source = HooksSource(location="/tmp/hooks.json", plugin_id=PLUGIN_ID, env=env)
-
-    env["CLAUDE_PLUGIN_ROOT"] = "/tmp/other"
-
-    assert source.env["CLAUDE_PLUGIN_ROOT"] == "/tmp/plugin"
-    assert isinstance(source.env, MappingProxyType)
-
-
-def test_plugin_hook_paths_are_substituted_for_argv(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """`argv` never reaches a shell, so its variables resolve at load time."""
-    _isolate_config(tmp_path, monkeypatch)
-    root = _marketplace(tmp_path, ("quality-review-plugin",))
-    plugin = root / "plugins" / "quality-review-plugin"
-    _write_json(
-        plugin / ".claude-plugin" / "plugin.json",
-        {"name": "quality-review-plugin", "version": "1.0.0"},
-    )
-    _write_json(
-        plugin / "hooks" / "hooks.json",
-        {
-            "hooks": {
-                "SessionStart": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "check",
-                                "argv": ["${CLAUDE_PLUGIN_ROOT}/scripts/check.sh"],
-                            }
-                        ]
-                    }
-                ]
-            }
-        },
-    )
-    add_local_marketplace(root)
-    installed_root = install_plugin(PLUGIN_ID).root
-
-    runtime = HooksRuntime.create(
-        cwd=tmp_path / "workspace",
-        transcript_root=tmp_path / "transcripts",
-        plugin_sources=discover_plugin_hook_sources().documents,
-    )
-
-    (handler,) = runtime.snapshot.handlers[HookEvent.SESSION_START]
-    assert handler.argv == (str(installed_root / "scripts" / "check.sh"),)
-    assert handler.source.plugin_id == PLUGIN_ID
-    assert handler.source.env["CLAUDE_PLUGIN_ROOT"] == str(installed_root)

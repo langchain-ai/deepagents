@@ -867,6 +867,52 @@ jobs:
             needs.build.outputs.is-prerelease != 'true' }}
           draft: false
 
+      # `release-notes` is fail-open: a failed notes job still reaches this
+      # point and publishes an empty body. Emit an ::error:: here so the
+      # green `mark-release` job — the one the maintainer actually sees on the
+      # workflow summary — names the symptom instead of leaving the empty
+      # release page as the only evidence. Runs for failure, cancelled, and
+      # skipped alike: all three produce an empty body.
+      - name: Surface failed release notes
+        if: needs.release-notes.result != 'success'
+        env:
+          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
+          ACTOR: ${{ github.actor }}
+          BASE_BRANCH: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+          REPOSITORY: ${{ github.repository }}
+          NOTES_RESULT: ${{ needs.release-notes.result }}
+        run: |
+          echo "::error title=Release notes job ${NOTES_RESULT}::\
+          GitHub release ${PKG_NAME}==${VERSION} was published with an empty body. \
+          See the job summary for the recovery command."
+          {
+            echo ""
+            echo "### ❌ Release notes job ${NOTES_RESULT}"
+            echo ""
+            echo "\`${PKG_NAME}==${VERSION}\` was published with an **empty body**. \
+          Rebuild and apply the notes (see RELEASING.md > Release Notes Job \
+          Failed or GitHub Release Body Is Empty):"
+            echo ""
+            echo '```bash'
+            echo "python .github/scripts/release/build_release_notes.py \\"
+            echo "  --package \"${PKG_NAME}\" --version \"${VERSION}\" \\"
+            echo "  --sha \"${RELEASE_SHA}\" --repo \"${REPOSITORY}\" \\"
+            echo "  --actor \"${ACTOR}\" --base-branch \"${BASE_BRANCH}\" \\"
+            if [ "${BASE_BRANCH}" != "${DEFAULT_BRANCH:-main}" ] \
+              && [ "${DEFAULT_BRANCH:-main}" != "main" ]; then
+              echo "  --default-branch \"${DEFAULT_BRANCH}\" \\"
+            fi
+            echo "  --out /tmp/release-body.md"
+            echo ""
+            echo "gh release edit \"${PKG_NAME}==${VERSION}\" --repo \"${REPOSITORY}\" \\"
+            echo "  --notes-file /tmp/release-body.md"
+            echo '```'
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # Mark the release PR as tagged so release-please knows it's been released
       # This is required because skip-github-release is true in release-please config
       - name: Update release PR label

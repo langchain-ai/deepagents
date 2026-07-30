@@ -850,6 +850,8 @@ done and fix only the stuck label so later release-please maintenance can run.
 
 The `release-notes` job builds the published GitHub release body from the package `CHANGELOG.md`, contributor shoutouts, and a collapsible package-scoped git log. It is intentionally fail-open: if the job fails or produces an empty body, the publish to PyPI and the GitHub tag still succeed. The release is real — do **not** re-dispatch the full publish workflow for the same version.
 
+A failed notes job is surfaced in the `mark-release` job of the same workflow run: look for an `::error::` annotation ("Release notes job failed") and a job summary with a paste-ready rebuild command. Degraded bodies (built with warnings) are instead summarized by the `release-notes` job itself under "⚠️ Release notes built with warnings."
+
 To rebuild and apply the release body manually:
 
 1. **Check out the release commit locally.** Use the same SHA that was used for the release (visible in the workflow run's "Resolved release target" summary, or via `gh pr view <pr-number> --json mergeCommit --jq .mergeCommit.oid`).

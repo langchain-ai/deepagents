@@ -15,11 +15,17 @@ from textual.widgets._select import SelectOverlay
 import deepagents_code.tui.widgets.debug_console as debug_console_mod
 from deepagents_code._debug_buffer import InMemoryLogRecord, get_log_buffer
 from deepagents_code.app import DeepAgentsApp
+from deepagents_code.tui.widgets._copy_spans import COPY_LABEL_META, COPY_TEXT_META
 from deepagents_code.tui.widgets.debug_console import (
     DebugConsoleScreen,
     SnapshotField,
     _DebugLogView,
     _record_matches_filter,
+)
+from deepagents_code.tui.widgets.message_store import (
+    MessageData,
+    MessageStore,
+    MessageType,
 )
 
 if TYPE_CHECKING:
@@ -135,6 +141,147 @@ class TestDebugConsoleScreen:
 
             # Exactly one new record appended; already-consumed records not re-written.
             assert len(log.records) == before + 1
+
+    async def test_snapshot_provider_refreshes_header_on_poll(self) -> None:
+        """A live provider rewrites the header when session state changes."""
+        current = {"Messages": "0"}
+
+        def provider() -> list[SnapshotField]:
+            return [SnapshotField("Messages", current["Messages"])]
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                provider(),
+                snapshot_provider=provider,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
+            assert "0" in _widget_text(snapshot_widget)
+
+            current["Messages"] = "3 (3 rendered)"
+            screen._poll_snapshot()
+            await pilot.pause()
+
+            text = _widget_text(snapshot_widget)
+            assert "Messages" in text
+            assert "3 (3 rendered)" in text
+
+    async def test_snapshot_provider_skips_redraw_when_unchanged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Equal snapshots must not thrash the snapshot widget."""
+        calls = {"update": 0}
+
+        def provider() -> list[SnapshotField]:
+            return [SnapshotField("Messages", "1")]
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                provider(),
+                snapshot_provider=provider,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            original_refresh = screen._refresh_snapshot
+
+            def counting_refresh() -> None:
+                calls["update"] += 1
+                original_refresh()
+
+            monkeypatch.setattr(screen, "_refresh_snapshot", counting_refresh)
+
+            screen._poll_snapshot()
+            screen._poll_snapshot()
+            await pilot.pause()
+
+        assert calls["update"] == 0
+
+    async def test_snapshot_provider_failure_keeps_console_alive(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failing provider degrades the header tick without dismissing the modal."""
+
+        def provider() -> list[SnapshotField]:
+            msg = "snapshot provider boom"
+            raise RuntimeError(msg)
+
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Messages", "0")],
+                snapshot_provider=provider,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            with caplog.at_level(
+                logging.WARNING,
+                logger="deepagents_code.tui.widgets.debug_console",
+            ):
+                screen._poll_snapshot()
+            await pilot.pause()
+
+            assert isinstance(app.screen, DebugConsoleScreen)
+            assert "0" in _widget_text(
+                screen.query_one(".debug-console-snapshot", Static)
+            )
+            assert any(
+                "snapshot poll failed" in record.message for record in caplog.records
+            )
+
+    def test_repeated_snapshot_provider_failures_warn_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A stuck provider must not flood the buffer the console is tailing."""
+        failing = True
+
+        def provider() -> list[SnapshotField]:
+            if failing:
+                msg = "snapshot provider boom"
+                raise RuntimeError(msg)
+            return [SnapshotField("Messages", "1")]
+
+        screen = DebugConsoleScreen(
+            [SnapshotField("Messages", "0")], snapshot_provider=provider
+        )
+
+        with caplog.at_level(
+            logging.DEBUG, logger="deepagents_code.tui.widgets.debug_console"
+        ):
+            for _ in range(3):
+                screen._poll_snapshot()
+
+            warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+            assert len(warnings) == 1
+            assert len(caplog.records) == 3
+
+            # Recovering re-arms the WARNING so a later failure is still loud.
+            caplog.clear()
+            failing = False
+            screen._poll_snapshot()
+            failing = True
+            screen._poll_snapshot()
+
+        rearmed = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(rearmed) == 1
+
+    async def test_refresh_tick_polls_snapshot_and_logs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The shared interval drives both the snapshot header and log tail."""
+        calls: list[str] = []
+        screen = DebugConsoleScreen(_snapshot())
+        monkeypatch.setattr(screen, "_poll_snapshot", lambda: calls.append("snapshot"))
+        monkeypatch.setattr(screen, "_poll_logs", lambda: calls.append("logs"))
+
+        screen._on_refresh_tick()
+
+        assert calls == ["snapshot", "logs"]
 
     async def test_live_tail_stays_bounded(
         self, monkeypatch: pytest.MonkeyPatch
@@ -940,7 +1087,7 @@ class TestDebugConsoleScreen:
             await pilot.pause()
 
             snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
-            assert "(langsmith)" not in _widget_text(snapshot_widget)
+            assert "(open in langsmith)" not in _widget_text(snapshot_widget)
 
             screen._langsmith_urls["thread-abc"] = (
                 "https://smith.langchain.com/o/org/projects/p/proj/t/thread-abc"
@@ -948,7 +1095,7 @@ class TestDebugConsoleScreen:
             screen._refresh_snapshot()
             await pilot.pause()
 
-            assert "(langsmith)" in _widget_text(snapshot_widget)
+            assert "(open in langsmith)" in _widget_text(snapshot_widget)
 
     async def test_cached_langsmith_link_renders_on_first_frame_without_lookup(
         self, monkeypatch: pytest.MonkeyPatch
@@ -971,9 +1118,42 @@ class TestDebugConsoleScreen:
             await pilot.pause()
 
             snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
-            assert "(langsmith)" in _widget_text(snapshot_widget)
+            assert "(open in langsmith)" in _widget_text(snapshot_widget)
 
         lookup.assert_not_called()
+
+    async def test_langsmith_lookup_is_not_restarted_while_unresolved(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Snapshot churn must not stack overlapping lookups for one thread."""
+        app = _Harness()
+        async with app.run_test() as pilot:
+            screen = DebugConsoleScreen(
+                [SnapshotField("Thread", "thread-abc", thread_id="thread-abc")]
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            # Close the coroutine the real worker would have consumed so the
+            # stub does not leave a never-awaited coroutine behind.
+            run_worker = MagicMock(side_effect=lambda work, **_: work.close())
+            monkeypatch.setattr(screen, "run_worker", run_worker)
+
+            # A snapshot that keeps changing (message counts tick) but never
+            # resolves the URL: the id is already in flight, so no new worker.
+            screen._resolve_langsmith_links()
+            screen._resolve_langsmith_links()
+
+            run_worker.assert_not_called()
+
+            # A thread switch still resolves the newly seen id exactly once.
+            screen._snapshot = [
+                SnapshotField("Thread", "thread-xyz", thread_id="thread-xyz")
+            ]
+            screen._resolve_langsmith_links()
+            screen._resolve_langsmith_links()
+
+            assert run_worker.call_count == 1
 
     async def test_clicking_thread_value_copies_it(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1131,10 +1311,8 @@ class TestDebugConsoleScreen:
                 span
                 for span in content.spans
                 if isinstance(span.style, debug_console_mod.TStyle)
-                and span.style.meta.get(debug_console_mod._SNAPSHOT_COPY_META)
-                == "thread-abc"
-                and span.style.meta.get(debug_console_mod._SNAPSHOT_COPY_LABEL_META)
-                == "Thread"
+                and span.style.meta.get(COPY_TEXT_META) == "thread-abc"
+                and span.style.meta.get(COPY_LABEL_META) == "Thread"
             ]
             assert any(
                 content.plain[span.start : span.end] == "thread-abc"
@@ -1297,9 +1475,10 @@ class TestDebugConsoleScreen:
             await pilot.pause()
 
             snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
-            # Row renders "Thread  thread-abc  (langsmith)": label (6) + 2-space
-            # gutter = col 8, value (10 chars) spans 8-17, 2-space gap, then
-            # "(langsmith)" starts at col 20. An x offset of 22 is inside it.
+            # Row renders "Thread  thread-abc  (open in langsmith)": label (6)
+            # + 2-space gutter = col 8, value (10 chars) spans 8-17, 2-space gap,
+            # then "(open in langsmith)" starts at col 20. An x offset of 22 is
+            # inside it.
             await pilot.click(snapshot_widget, offset=(22, 0))
             await pilot.pause()
 
@@ -1341,8 +1520,8 @@ class TestDebugConsoleScreen:
             await pilot.pause()
 
             snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
-            # "(langsmith)" starts at col 20 (see the toggle-off test); x=22 is
-            # inside it.
+            # "(open in langsmith)" starts at col 20 (see the toggle-off test);
+            # x=22 is inside it.
             await pilot.click(snapshot_widget, offset=(22, 0))
             await pilot.pause()
 
@@ -1643,6 +1822,83 @@ class TestDebugConsoleToggle:
             assert thread_field.value.startswith("(unavailable:")
             assert thread_field.copyable is False
             assert thread_field.thread_id is None
+
+    async def test_build_snapshot_counts_thread_messages(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            assert _snapshot_dict(app._build_debug_snapshot())["Messages"] == "0"
+
+            for index in range(3):
+                app._message_store.append(
+                    MessageData(type=MessageType.USER, content=f"msg {index}")
+                )
+
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Messages"] == "3 (3 rendered)"
+
+    async def test_build_snapshot_message_count_reports_rendered_window(self) -> None:
+        """A virtualized thread reports its full count, not the mounted window."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            total = MessageStore.WINDOW_SIZE + 5
+            app._message_store.bulk_load(
+                [
+                    MessageData(type=MessageType.USER, content=str(index))
+                    for index in range(total)
+                ]
+            )
+
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert (
+                snapshot["Messages"] == f"{total} ({MessageStore.WINDOW_SIZE} rendered)"
+            )
+
+    async def test_build_snapshot_message_count_resets_with_transcript(self) -> None:
+        """Clearing the transcript (thread switch/reset) zeroes the count."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            app._message_store.append(
+                MessageData(type=MessageType.USER, content="hello")
+            )
+            assert _snapshot_dict(app._build_debug_snapshot())["Messages"] != "0"
+
+            await app._clear_messages()
+
+            assert _snapshot_dict(app._build_debug_snapshot())["Messages"] == "0"
+
+    async def test_open_debug_console_wires_live_snapshot_provider(self) -> None:
+        """The host refreshes message count while the console stays open."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test() as pilot:
+            app._open_debug_console()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, DebugConsoleScreen)
+            assert screen._snapshot_provider is not None
+            assert getattr(screen._snapshot_provider, "__func__", None) is (
+                DeepAgentsApp._build_debug_snapshot
+            )
+            assert getattr(screen._snapshot_provider, "__self__", None) is app
+
+            snapshot_widget = screen.query_one(".debug-console-snapshot", Static)
+            screen._poll_snapshot()
+            await pilot.pause()
+            before_value = _snapshot_dict(screen._snapshot)["Messages"]
+            before_total = app._message_store.total_count
+
+            app._message_store.append(
+                MessageData(type=MessageType.USER, content="live-snapshot-marker")
+            )
+            screen._poll_snapshot()
+            await pilot.pause()
+
+            after_total = before_total + 1
+            expected = f"{after_total} ({app._message_store.visible_count} rendered)"
+            after_value = _snapshot_dict(screen._snapshot)["Messages"]
+            assert after_value != before_value
+            assert after_value == expected
+            assert expected in _widget_text(snapshot_widget)
 
     async def test_build_snapshot_version_and_cwd_are_copyable(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")

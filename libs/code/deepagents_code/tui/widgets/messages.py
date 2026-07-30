@@ -22,9 +22,15 @@ from textual.message import Message
 from textual.message_pump import NoActiveAppError
 from textual.reactive import var
 from textual.selection import Selection
+from textual.style import Style as TStyle
 from textual.widgets import Static
 
 from deepagents_code import theme
+from deepagents_code._ask_user_types import (
+    ASK_USER_ANSWERED_SUMMARY,
+    ASK_USER_FAILED_SUMMARY,
+    AskUserRowSummary,
+)
 from deepagents_code.config import (
     MODE_DISPLAY_GLYPHS,
     detect_mode_prefix,
@@ -68,6 +74,7 @@ if TYPE_CHECKING:
     from textual.widgets._markdown import MarkdownStream
 
     from deepagents_code.input import MediaTracker
+    from deepagents_code.theme import ThemeColors
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +163,26 @@ _COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
 }
 
 
+# Tools whose collapsed body is always the formatter's compact preview, no
+# matter how short the raw output is, and whose expandability is therefore
+# decided by the formatter rather than by the raw size thresholds. `write_todos`
+# renders a per-item summary; `ask_user` renders a one-line summary so a
+# two-line transcript still keeps its answers behind an expand click.
+_ALWAYS_PREVIEW_TOOLS: frozenset[str] = frozenset({"write_todos", "ask_user"})
+
+
+# An `ask_user` row whose recorded output is exactly one of these holds only a
+# fallback summary — no `ToolMessage` transcript ever arrived — so there is
+# nothing for an expand click to reveal. Recognized by value rather than by the
+# `_deferred_success_settled` flag so the suppression also holds for a row rebuilt
+# from the message store, where that flag is not persisted (a rehydrated row is
+# always already terminal). A real transcript always begins `Q: `, so it can never
+# collide with these.
+_ASK_USER_ROW_SUMMARIES: frozenset[str] = frozenset(
+    {ASK_USER_ANSWERED_SUMMARY, ASK_USER_FAILED_SUMMARY}
+)
+
+
 # Long-running tools whose completed status row reports how long they ran
 # ("Took <duration>") when a run was timed, instead of being hidden. `execute`
 # shells and `task` subagent dispatches can both run for a while, so the elapsed
@@ -164,6 +191,13 @@ _TIMED_SUCCESS_TOOLS: set[str] = {
     "execute",
     "task",
 }
+
+
+# CSS classes applied to a `ToolCallMessage` to tint the whole row by terminal
+# outcome (see its `DEFAULT_CSS`). Running/pending states carry none of these.
+_STATUS_CLASSES: frozenset[str] = frozenset(
+    {"-status-success", "-status-error", "-status-rejected", "-status-skipped"}
+)
 
 
 _SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
@@ -241,13 +275,108 @@ def _select_prompt_body(widget: Static) -> None:
     }
 
 
+@dataclass(frozen=True, slots=True)
+class _UserMessageFull:
+    """A user message short enough to render verbatim."""
+
+    text: str
+    """The original body, unmodified."""
+
+
+@dataclass(frozen=True, slots=True)
+class _UserMessageCollapsed:
+    """A user message elided to head + tail for transcript display.
+
+    Each variant names only the fields that mean something for it, so states
+    like "not collapsed but 5 hidden lines" are unrepresentable and consumers
+    dispatch by `isinstance` rather than reading an overloaded flag.
+    """
+
+    head: str
+    """Leading slice kept verbatim, rendered above the elision marker."""
+
+    tail: str
+    """Trailing slice kept verbatim, rendered below the elision marker."""
+
+    hidden_lines: int
+    """Newlines in the elided middle."""
+
+    hidden_chars: int
+    """Characters in the elided middle.
+
+    Reported in place of `hidden_lines` for single-line bodies (base64 blobs,
+    minified JSON), where "+0 lines" would imply nothing was hidden.
+    """
+
+    @property
+    def text(self) -> str:
+        """Single-string collapsed form, for callers that cannot emit spans.
+
+        Returns:
+            Head and tail joined by an elision marker.
+        """
+        ellipsis = get_glyphs().ellipsis
+        return (
+            f"{self.head}\n{ellipsis} +{self.hidden_lines} lines {ellipsis}\n"
+            f"{self.tail}"
+        )
+
+
+_UserMessageDisplay = _UserMessageFull | _UserMessageCollapsed
+"""Either form a user-message body can take in the transcript."""
+
+
+def _will_collapse(text: str) -> bool:
+    """Return whether `text` exceeds the transcript display threshold.
+
+    Single source of truth for the threshold, shared by `_collapse_user_message`
+    and `UserMessage.will_truncate` so the render decision and the expand
+    affordance can never disagree.
+
+    Args:
+        text: Candidate body text.
+
+    Returns:
+        `True` when the body is long enough to collapse.
+    """
+    return len(text) > _USER_MSG_MAX_DISPLAY_CHARS
+
+
+def _collapse_user_message(text: str) -> _UserMessageDisplay:
+    """Collapse a very long user message for transcript display.
+
+    Keeps the first and last portions and elides the middle. This mirrors
+    Claude Code's `UserPromptMessage` head+tail truncation for rendering
+    performance.
+
+    Args:
+        text: Full message content.
+
+    Returns:
+        `_UserMessageCollapsed` when the body exceeds the display threshold,
+        otherwise `_UserMessageFull` carrying the original text.
+    """
+    if not _will_collapse(text):
+        return _UserMessageFull(text=text)
+    hidden_start = _USER_MSG_TRUNCATE_HEAD_CHARS
+    hidden_end = len(text) - _USER_MSG_TRUNCATE_TAIL_CHARS
+    return _UserMessageCollapsed(
+        head=text[:_USER_MSG_TRUNCATE_HEAD_CHARS],
+        tail=text[-_USER_MSG_TRUNCATE_TAIL_CHARS:],
+        # Counted over a range rather than a slice so a multi-megabyte paste
+        # does not allocate a copy of its own middle on every render.
+        hidden_lines=text.count("\n", hidden_start, hidden_end),
+        hidden_chars=hidden_end - hidden_start,
+    )
+
+
 def _truncate_for_display(text: str) -> str:
     """Truncate very long user message text for display in the conversation.
 
-    Keeps the first and last portions and replaces the middle with an elision
-    marker showing the number of newlines in the hidden region.  This mirrors
-    Claude Code's `UserPromptMessage` head+tail truncation for rendering
-    performance.
+    Thin string-returning wrapper around `_collapse_user_message` for
+    `QueuedUserMessage.render` and tests, which only need the joined text.
+    `UserMessage.render` consumes the head/tail fields directly so it can
+    interleave the clickable affordance between them.
 
     Args:
         text: Full message content.
@@ -256,17 +385,31 @@ def _truncate_for_display(text: str) -> str:
         Truncated text with an elision marker, or the original text when
         it does not exceed the display threshold.
     """
-    if len(text) <= _USER_MSG_MAX_DISPLAY_CHARS:
-        return text
-    head = text[:_USER_MSG_TRUNCATE_HEAD_CHARS]
-    tail = text[-_USER_MSG_TRUNCATE_TAIL_CHARS:]
-    hidden_text = text[_USER_MSG_TRUNCATE_HEAD_CHARS:-_USER_MSG_TRUNCATE_TAIL_CHARS]
-    hidden_lines = hidden_text.count("\n")
-    return f"{head}\n… +{hidden_lines} lines …\n{tail}"
+    return _collapse_user_message(text).text
 
 
 class UserMessage(Static):
-    """Widget displaying a user message."""
+    """Widget displaying a user message.
+
+    Very long messages are collapsed in the transcript by default (head+tail
+    elision) to protect scrollback performance. The full text remains on the
+    widget for copy/select, and the collapsed form is reversible via click or
+    Ctrl+O.
+    """
+
+    class ExpansionChanged(Message):
+        """Posted when the collapsed-body expansion state changes."""
+
+        def __init__(self, widget: UserMessage, expanded: bool) -> None:
+            """Initialize an expansion-state message.
+
+            Args:
+                widget: The user message whose expansion state changed.
+                expanded: Whether the full body is now shown.
+            """
+            super().__init__()
+            self.widget = widget
+            self.expanded = expanded
 
     DEFAULT_CSS = """
     UserMessage {
@@ -276,6 +419,16 @@ class UserMessage(Static):
         background: transparent;
         border-left: wide $primary;
         pointer: text;
+        /* The expand affordance carries `@click` meta, which Textual styles as
+           a link (underline, and bold on an accent block when hovered).
+           Neutralize both so the hint renders as plain inherited-colour dim
+           italic, matching every other "click or Ctrl+O" hint in this module.
+           Bold in particular has to go: it cancels dim in most terminals. */
+        link-color: $text;
+        link-style: not underline;
+        link-color-hover: $text;
+        link-background-hover: transparent;
+        link-style-hover: not bold not underline;
     }
 
     UserMessage.-cancelled {
@@ -283,6 +436,8 @@ class UserMessage(Static):
     }
     """
     """`-cancelled` dims a prompt whose turn was interrupted by the user."""
+
+    _expanded: var[bool] = var(False)
 
     def __init__(
         self,
@@ -309,6 +464,29 @@ class UserMessage(Static):
         self._content = content
         self._media_snapshot = media_snapshot
         self._detect_mode = detect_mode
+        self._deferred_expanded = False
+        # Last expansion value published to the message store. Deduping against
+        # it keeps the reactive's initialization watcher and the deferred
+        # restore from re-emitting a value the store already holds.
+        self._published_expanded = False
+
+    @staticmethod
+    def will_truncate(content: str) -> bool:
+        """Return whether `content` would collapse in the transcript.
+
+        Prefer the `has_expandable_body` property when a widget is in hand: it
+        applies the same mode-prefix stripping as `render()`, so it cannot
+        disagree with what is actually on screen. This static form is for
+        callers that only have the raw string and know no prefix applies.
+
+        Args:
+            content: Candidate user-message body (mode prefix already stripped
+                when applicable — matching what `render()` collapses).
+
+        Returns:
+            `True` when the body exceeds the display character threshold.
+        """
+        return _will_collapse(content)
 
     @property
     def raw_text(self) -> str:
@@ -325,9 +503,51 @@ class UserMessage(Static):
         """Media tracker state captured when the message was submitted."""
         return self._media_snapshot
 
+    def _body_for_display(self) -> str:
+        """Return the message body after stripping a detected mode trigger.
+
+        Unlike `_prefix_and_body`, this does not look up theme colors, so it is
+        safe to call before mount (e.g. `has_expandable_body` / Ctrl+O routing).
+
+        Returns:
+            Body text used for collapse decisions (`has_expandable_body`).
+        """
+        content = self._content
+        mode_match = detect_mode_prefix(content) if self._detect_mode else None
+        if mode_match:
+            prefix_text, _mode = mode_match
+            return content[len(prefix_text) :]
+        return content
+
+    @property
+    def has_expandable_body(self) -> bool:
+        """Whether this message is long enough to collapse/expand in display."""
+        return self.will_truncate(self._body_for_display())
+
     def set_cancelled(self) -> None:
         """Dim the message to mark its turn as interrupted by the user."""
         self.add_class("-cancelled")
+
+    def toggle_expanded(self) -> None:
+        """Toggle between collapsed and full-body transcript display."""
+        if not self.has_expandable_body:
+            return
+        self._expanded = not self._expanded
+
+    def action_toggle_expand(self) -> None:
+        """Textual `@click` target for the expand/collapse affordance."""
+        self.toggle_expanded()
+
+    def watch__expanded(self, expanded: bool) -> None:
+        """Relayout and publish user-driven expansion for virtualization."""
+        self.refresh(layout=True)
+        # Publish only genuine changes: dedupe against the store's known value
+        # to drop the reactive's initialization watcher and the deferred
+        # restore, and require `is_attached` so `_expanded` set in pre-mount
+        # test setup does not `post_message` on a detached widget.
+        if self.is_attached and expanded != self._published_expanded:
+            self._published_expanded = expanded
+            self.post_message(self.ExpansionChanged(self, expanded))
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Return selected text, preferring the full content over the render.
@@ -371,6 +591,11 @@ class UserMessage(Static):
     def _build_full_render(self) -> Content:
         """Build a Content from the full content without display truncation.
 
+        Omits the expand/collapse hint spans in both the collapsed and expanded
+        states, so select-all yields only the original message body. Drag
+        selections do not route here (see `get_selection`) and can still pick up
+        hint text along with the body.
+
         Returns:
             Content with the mode prefix glyph and the full message body.
         """
@@ -382,33 +607,34 @@ class UserMessage(Static):
         _select_prompt_body(self)
 
     def on_mount(self) -> None:
-        """Add CSS classes for mode-specific border and ASCII border type."""
+        """Add mode/ASCII CSS classes and restore deferred expansion state."""
         mode_match = detect_mode_prefix(self._content) if self._detect_mode else None
         if mode_match:
             _prefix, mode = mode_match
             self.add_class(f"-mode-{mode.replace('_', '-')}")
         if is_ascii_mode():
             self.add_class("-ascii")
+        # The store already holds the restored state, so record it as published
+        # first; the assignment below then dedupes instead of re-emitting it.
+        self._published_expanded = self._deferred_expanded
+        if self._deferred_expanded:
+            self._expanded = True
+            self._deferred_expanded = False
 
-    def render(self) -> Content:
-        """Render the styled user message.
+    def _append_highlighted_body(
+        self,
+        parts: list[str | tuple[str, str] | Content],
+        content: str,
+        *,
+        colors: ThemeColors,
+    ) -> None:
+        """Append body text to `parts`, highlighting @mentions and /commands.
 
-        Returns:
-            Styled Content with mode prefix and highlighted mentions.
+        Args:
+            parts: Accumulator for `Content.assemble`.
+            content: Body text to highlight and append.
+            colors: Active theme colors.
         """
-        colors = theme.get_theme_colors(self)
-
-        # Use mode-specific prefix indicator when content starts with a
-        # mode trigger character (e.g. "!" for shell, "/" for commands).
-        # The display glyph may differ from the trigger (e.g. "$" for shell).
-        prefix, content = self._prefix_and_body()
-        parts: list[str | tuple[str, str]] = [prefix]
-
-        # Truncate very long content for display so large pastes don't flood
-        # the conversation.  The full text is still available for copy/select.
-        content = _truncate_for_display(content)
-
-        # Highlight @mentions and /commands in the content
         last_end = 0
         for match in INPUT_HIGHLIGHT_PATTERN.finditer(content):
             start, end = match.span()
@@ -442,6 +668,87 @@ class UserMessage(Static):
         if last_end < len(content):
             parts.append(content[last_end:])
 
+    @staticmethod
+    def _hint_style() -> TStyle:
+        """Style for the expand/collapse affordance.
+
+        Returns:
+            Dim italic style carrying the `@click` hit-target meta.
+        """
+        # `@click` meta is what Textual uses for Markdown links; body text stays
+        # free of meta so regular clicks select/copy without toggling. The
+        # link-* rules in `DEFAULT_CSS` keep Textual's automatic link styling
+        # from overriding the dim italic.
+        return TStyle(dim=True, italic=True) + TStyle.from_meta(
+            {"@click": "toggle_expand"}
+        )
+
+    @classmethod
+    def _collapse_hint_content(cls, collapsed: _UserMessageCollapsed) -> Content:
+        """Build the clickable "show full message" affordance.
+
+        Args:
+            collapsed: The collapse result describing the elided middle.
+
+        Returns:
+            Dim hit-target Content wired to `action_toggle_expand`.
+        """
+        ellipsis = get_glyphs().ellipsis
+        # A single-line paste (base64 blob, minified JSON) hides no newlines, so
+        # "+0 lines" would read as "nothing is hidden" exactly when the most is.
+        if collapsed.hidden_lines:
+            amount = f"+{collapsed.hidden_lines:,} lines"
+        else:
+            amount = f"+{collapsed.hidden_chars:,} characters"
+        return Content.styled(
+            f"{ellipsis} {amount} · click or Ctrl+O to show full message",
+            cls._hint_style(),
+        )
+
+    @classmethod
+    def _expand_hint_content(cls) -> Content:
+        """Build the clickable "collapse" affordance shown when expanded.
+
+        Returns:
+            Dim hit-target Content wired to `action_toggle_expand`.
+        """
+        return Content.styled("click or Ctrl+O to collapse", cls._hint_style())
+
+    def render(self) -> Content:
+        """Render the styled user message.
+
+        Returns:
+            Styled Content with mode prefix and highlighted mentions. Long
+            messages are collapsed by default with a clickable expand
+            affordance; when expanded they show the full body plus a collapse
+            hint. Select-all still uses `_build_full_render` (no hints).
+        """
+        colors = theme.get_theme_colors(self)
+
+        # Use mode-specific prefix indicator when content starts with a
+        # mode trigger character (e.g. "!" for shell, "/" for commands).
+        # The display glyph may differ from the trigger (e.g. "$" for shell).
+        prefix, body = self._prefix_and_body()
+        parts: list[str | tuple[str, str] | Content] = [prefix]
+        collapse = _collapse_user_message(body)
+
+        if isinstance(collapse, _UserMessageFull):
+            self._append_highlighted_body(parts, body, colors=colors)
+            return Content.assemble(*parts)
+
+        if self._expanded:
+            self._append_highlighted_body(parts, body, colors=colors)
+            parts.extend(("\n", self._expand_hint_content()))
+            return Content.assemble(*parts)
+
+        # Collapsed: head + clickable elision line + tail. The middle marker is
+        # the affordance (not a second trailing line) so the collapse stays
+        # one glanceable region instead of an invisible middle ellipsis. Head
+        # and tail come from the collapse result rather than being re-sliced
+        # here, so the reported amount always describes the gap on screen.
+        self._append_highlighted_body(parts, collapse.head, colors=colors)
+        parts.extend(("\n", self._collapse_hint_content(collapse), "\n"))
+        self._append_highlighted_body(parts, collapse.tail, colors=colors)
         return Content.assemble(*parts)
 
 
@@ -741,7 +1048,7 @@ class SkillMessage(Vertical):
                     Content.styled(
                         f"{ellipsis} {remaining} more lines"
                         " — click or Ctrl+O to expand",
-                        "dim",
+                        "dim italic",
                     )
                 )
         else:
@@ -808,7 +1115,7 @@ class SkillMessage(Vertical):
             self._hint_widget.update(
                 Content.styled(
                     f"{ellipsis} {remaining} more lines — click or Ctrl+O to expand",
-                    "dim",
+                    "dim italic",
                 )
             )
 
@@ -1131,6 +1438,25 @@ class ToolCallMessage(Vertical):
         color: $text-muted;
     }
 
+    /* Terminal outcome tints the row: green success, red error, amber
+       rejected/skipped. A faint background keeps text readable across
+       light/dark/ansi themes while the border carries the primary signal. */
+    ToolCallMessage.-status-success {
+        border-left: wide $success;
+        background: $success 8%;
+    }
+
+    ToolCallMessage.-status-error {
+        border-left: wide $error;
+        background: $error 10%;
+    }
+
+    ToolCallMessage.-status-rejected,
+    ToolCallMessage.-status-skipped {
+        border-left: wide $warning;
+        background: $warning 8%;
+    }
+
     ToolCallMessage:hover {
         border-left: wide $tool-hover;
     }
@@ -1206,6 +1532,14 @@ class ToolCallMessage(Vertical):
         self._start_time: float | None = None
         self._duration: float | None = None
         self._animation_timer: Timer | None = None
+        # Terminal success this row earned but has not rendered. See
+        # `defer_success`; `_deferred_success_settled` separates "still awaiting
+        # the richer result" from "already fell back to the summary".
+        self._deferred_success_output: str | None = None
+        self._deferred_success_settled: bool = False
+        # One-shot guard so `_format_ask_user_output` reports unusable `questions`
+        # args once per widget rather than on every re-render.
+        self._ask_user_args_warned: bool = False
         # Deferred state for hydration (set by MessageData.to_widget)
         self._deferred_status: str | None = None
         self._deferred_output: str | None = None
@@ -1335,6 +1669,7 @@ class ToolCallMessage(Vertical):
                 self._status = "success"
                 self._output = output
                 self._duration = duration
+                self._apply_status_class("success")
                 if self._tool_name in _TIMED_SUCCESS_TOOLS and duration is not None:
                     self._show_timed_success_status(duration)
                 else:
@@ -1343,6 +1678,7 @@ class ToolCallMessage(Vertical):
             case "error":
                 self._status = "error"
                 self._output = output
+                self._apply_status_class("error")
                 if self._status_widget:
                     self._status_widget.add_class("error")
                     error_icon = get_glyphs().error
@@ -1353,6 +1689,7 @@ class ToolCallMessage(Vertical):
                 self._update_output_display()
             case "rejected":
                 self._status = "rejected"
+                self._apply_status_class("rejected")
                 if self._status_widget:
                     self._status_widget.add_class("rejected")
                     error_icon = get_glyphs().error
@@ -1363,6 +1700,7 @@ class ToolCallMessage(Vertical):
                 self._update_reject_reason_display()
             case "skipped":
                 self._status = "skipped"
+                self._apply_status_class("skipped")
                 if self._status_widget:
                     self._status_widget.add_class("rejected")
                     self._status_widget.update(Content.styled("- Skipped", "dim"))
@@ -1442,6 +1780,109 @@ class ToolCallMessage(Vertical):
             self._animation_timer.stop()
             self._animation_timer = None
 
+    def _apply_status_class(self, status: str) -> None:
+        """Tint the whole row to match a terminal outcome.
+
+        Swaps the `-status-*` CSS class so the row border and background
+        reflect success/error/rejected/skipped. Running and pending states keep
+        the default `$tool` accent, so they clear any prior status class.
+
+        Args:
+            status: Terminal status name (`success`, `error`, `rejected`,
+                `skipped`); any other value clears the tint.
+        """
+        for name in _STATUS_CLASSES:
+            self.remove_class(name)
+        class_name = f"-status-{status}"
+        if class_name in _STATUS_CLASSES:
+            self.add_class(class_name)
+
+    def defer_success(self, output: AskUserRowSummary) -> None:
+        """Record a terminal success this row earned but has not yet rendered.
+
+        An answered `ask_user` deliberately stays in `_current_tool_messages` so
+        the streamed `ToolMessage` can settle it with the full Q&A transcript.
+        That leaves the row non-terminal in the meantime, and every teardown
+        sweep treats a still-tracked row as a failure — so without this the row
+        renders as rejected or as an agent error, and its `tool.result` reports
+        `tool_status="error"`, for a question the user answered normally.
+
+        Args:
+            output: Summary to settle with if the `ToolMessage` never arrives.
+                Narrowed to `AskUserRowSummary` because `_format_ask_user_output`
+                recognizes exactly those values as "no transcript behind this row"
+                and suppresses the expand affordance for them. Passing the
+                transcript here would strand it unreadable on the row.
+        """
+        self._deferred_success_output = output
+        self._deferred_success_settled = False
+
+    @property
+    def deferred_success_output(self) -> str | None:
+        """Terminal output for a row that earned a success it did not render.
+
+        Set while the row awaits its richer result and deliberately kept after a
+        fallback settle, because a settled row can still be tracked in
+        `_current_tool_messages` and swept again later (`textual_adapter`'s
+        `finally` backstop). `_dispatch_terminal_tool_result_hooks` reads this as
+        the "this row already succeeded" flag, so clearing it on settle would make
+        that later sweep report a fabricated failure.
+        """
+        return self._deferred_success_output
+
+    @property
+    def is_awaiting_deferred_result(self) -> bool:
+        """Whether this row still expects a richer result to replace its summary.
+
+        Distinct from `deferred_success_output`, which stays set after a fallback
+        settle. Callers that must not act on an already-settled row — recovering
+        an interrupted turn's `tool_calls`, or imposing a terminal failure — ask
+        this instead.
+        """
+        return self._deferred_success_output is not None and (
+            not self._deferred_success_settled
+        )
+
+    def clear_deferred_success(self) -> None:
+        """Drop the deferred outcome once an authoritative result supersedes it.
+
+        Called when the streamed `ToolMessage` settles the row, so its real
+        status wins — including an error, which `set_error` would otherwise
+        redirect back to the deferred success.
+        """
+        self._deferred_success_output = None
+        self._deferred_success_settled = False
+
+    def settle_deferred_success(self) -> bool:
+        """Settle this row with its deferred success, if it is awaiting one.
+
+        Idempotent: a row that already fell back returns False rather than
+        re-rendering, so callers need no `is_awaiting_deferred_result` guard of
+        their own. Records that the fallback fired but keeps the output — see
+        `deferred_success_output` for why a later sweep still needs to read it.
+
+        Returns:
+            True if the row was settled. False if it had no deferred outcome, has
+                already settled, or is rejected/skipped so `set_success` would
+                ignore it — in each case the caller should record its own terminal
+                state.
+        """
+        output = self._deferred_success_output
+        if output is None or self._deferred_success_settled:
+            # Mirrors `is_awaiting_deferred_result`, spelled out so the type
+            # checker can narrow `output` to `str`.
+            return False
+        if self._status in {"rejected", "skipped"}:
+            return False
+        # Before `set_success`, which re-renders synchronously. Nothing in that
+        # render path reads this flag today (`_format_ask_user_output` derives
+        # "no transcript" from the output value instead, so the suppression also
+        # survives rehydration), but ordering the flag first keeps the object
+        # consistent for anything the render does reach.
+        self._deferred_success_settled = True
+        self.set_success(output)
+        return True
+
     def set_success(self, result: str = "") -> None:
         """Mark the tool call as successful.
 
@@ -1468,8 +1909,15 @@ class ToolCallMessage(Vertical):
             if self._tool_name in _TIMED_SUCCESS_TOOLS and elapsed is not None
             else None
         )
-        # Strip redundant success trailer — the UI already conveys success
-        self._output = _strip_success_exit_line(result)
+        # Strip redundant command success trailers — the UI already conveys
+        # success. `ask_user` output is a user-authored Q&A transcript, though,
+        # so text that resembles a command trailer must remain verbatim.
+        self._output = (
+            result
+            if self._tool_name == "ask_user"
+            else _strip_success_exit_line(result)
+        )
+        self._apply_status_class("success")
         if self._duration is not None:
             self._show_timed_success_status(self._duration)
         else:
@@ -1528,8 +1976,24 @@ class ToolCallMessage(Vertical):
             # state rather than flipping to "Error" (which also left the stale
             # `rejected` CSS class alongside `error`).
             return
+        if self.settle_deferred_success():
+            # A teardown sweep imposing a generic failure on a row that already
+            # succeeded (an answered `ask_user` awaiting its transcript). The
+            # authoritative `ToolMessage` calls `clear_deferred_success` first, so
+            # a *real* tool error still lands below. `settle_deferred_success` is
+            # idempotent, so the redirect fires once: a row that already fell back
+            # keeps no immunity against a later genuine error.
+            #
+            # INFO, not DEBUG: turning a failure into a success is the single
+            # highest-stakes decision on this path, and the always-on debug ring
+            # buffer that backs the in-app console only captures INFO and above.
+            logger.info(
+                "Suppressed error on tool row with a deferred success: %s", error
+            )
+            return
         self._stop_animation()
         self._status = "error"
+        self._apply_status_class("error")
         # For shell commands, prepend the full command so users can see what failed
         command = self._args.get("command") if self._tool_name == "execute" else None
         if command and isinstance(command, str) and command.strip():
@@ -1556,8 +2020,19 @@ class ToolCallMessage(Vertical):
             reason: Optional free-text reason supplied via the HITL reject
                 widget; rendered as a dim line beneath the status.
         """
+        if self.settle_deferred_success():
+            # A turn-cancel sweep rejecting every tracked row; an answered
+            # `ask_user` among them still succeeded, so it keeps its own outcome.
+            # (Interrupt rejections leave these rows tracked instead — see
+            # `_pop_rows_not_awaiting_deferred_result`.) INFO for the same reason
+            # as the redirect in `set_error`.
+            logger.info(
+                "Suppressed rejection on tool row with a deferred success: %s", reason
+            )
+            return
         self._stop_animation()
         self._status = "rejected"
+        self._apply_status_class("rejected")
         if reason and reason.strip():
             self._reject_reason = reason.strip()
         if self._status_widget:
@@ -1589,6 +2064,7 @@ class ToolCallMessage(Vertical):
         """Mark the tool call as skipped (due to another rejection)."""
         self._stop_animation()
         self._status = "skipped"
+        self._apply_status_class("skipped")
         if self._status_widget:
             self._status_widget.remove_class("pending")
             self._status_widget.add_class("rejected")  # Use same styling as rejected
@@ -1778,14 +2254,35 @@ class ToolCallMessage(Vertical):
             "web_search": self._format_web_output,
             "fetch_url": self._format_web_output,
             "task": self._format_task_output,
+            "ask_user": self._format_ask_user_output,
         }
 
         formatter = formatters.get(self._tool_name)
         if formatter:
             return formatter(output, is_preview=is_preview)
 
+        return self._format_generic_output(output, is_preview=is_preview)
+
+    def _format_generic_output(
+        self, output: str, *, is_preview: bool = False
+    ) -> FormattedOutput:
+        """Format output using generic size-based truncation.
+
+        Used for tools with no dedicated formatter, and by a dedicated formatter
+        that cannot parse its input and so must still cap an arbitrarily long
+        body rather than dumping it into the collapsed row.
+
+        Args:
+            output: Tool output. `_format_output` has stripped trailing whitespace
+                and leading newlines, but deliberately preserves the first line's
+                leading indentation — do not assume it is fully trimmed.
+            is_preview: Whether to truncate for the collapsed row.
+
+        Returns:
+            FormattedOutput, carrying truncation info only when `is_preview` and
+                the body exceeds the line or character threshold.
+        """
         if is_preview:
-            # Fallback for unknown tools: use generic truncation
             lines = output.split("\n")
             if len(lines) > self._PREVIEW_LINES:
                 return self._format_lines_output(lines, is_preview=True)
@@ -1856,7 +2353,10 @@ class ToolCallMessage(Vertical):
         if self._tool_name == "edit_file" and self._status == "success":
             return True
 
-        if self._tool_name == "write_todos":
+        # See `_ALWAYS_PREVIEW_TOOLS`: the formatter decides whether these have
+        # anything left to reveal, rather than the raw size thresholds below.
+        # (A formatter that cannot parse its input may delegate back to them.)
+        if self._tool_name in _ALWAYS_PREVIEW_TOOLS:
             return self._format_output(output, is_preview=True).truncation is not None
 
         lines = output.split("\n")
@@ -2664,6 +3164,101 @@ class ToolCallMessage(Vertical):
 
         return FormattedOutput(content=content, truncation=truncation)
 
+    def _ask_user_question_count(self) -> int:
+        """Return the number of valid question objects in this tool call.
+
+        The count comes from the structured tool arguments rather than parsing
+        the free-form transcript. This keeps arbitrary answer text opaque while
+        still supporting the collapsed `N answers` affordance.
+
+        Returns:
+            The question count, or zero unless `questions` is a non-empty list of
+                dicts each carrying non-blank `question` text. Deliberately looser
+                than `ask_user._validate_questions` — it accepts payloads that
+                rejects, such as an unknown `type` or a `choices`/`type` mismatch —
+                because it only needs to guard the fields the count reads. Of the
+                three paths that populate `_args`, only the `ask_user` interrupt
+                (validated in `textual_adapter` via `ask_user_adapter`) is checked;
+                the streamed tool call and the persisted store
+                (`message_store.to_widget`) are not, so malformed shapes do reach
+                here and must degrade rather than raise.
+        """
+        questions = self._args.get("questions")
+        if not isinstance(questions, list) or not questions:
+            return 0
+        if not all(
+            isinstance(question, dict)
+            and isinstance(question.get("question"), str)
+            and bool(question["question"].strip())
+            for question in questions
+        ):
+            return 0
+        return len(questions)
+
+    def _format_ask_user_output(
+        self, output: str, *, is_preview: bool = False
+    ) -> FormattedOutput:
+        """Format an `ask_user` result for the collapsed or expanded row.
+
+        The inline question widget is unmounted once answered, so this row is the
+        only place the answers stay visible in the live session — the thread's
+        own `ToolMessage` is what a reload re-renders from. Collapsed, the row
+        keeps a one-line summary; expanded, it shows what was sent back.
+
+        The summary is derived from the recorded status, never from the answer
+        text (the question count only labels the expand affordance). The
+        placeholders are in-band, so a user who types `(cancelled)` or
+        `(error: ...)` must not have their answer read as control state. The cost
+        is that a cancelled prompt resumed by a non-TUI client — which `ask_user`
+        records as `status="success"` with `(cancelled)` placeholders — reads as
+        answered until expanded.
+
+        Returns:
+            FormattedOutput with the status-derived summary when `is_preview`, or
+                the output rendered literally when expanded. A row holding only a
+                fallback summary advertises no expansion. Falls back to generic
+                formatting when the structured question args are unavailable.
+        """
+        question_count = self._ask_user_question_count()
+        if question_count == 0:
+            # Route through the generic path rather than returning the body bare:
+            # `ask_user` is in `_ALWAYS_PREVIEW_TOOLS`, so the size thresholds in
+            # `_has_expandable_output`/`_update_output_display` no longer gate it
+            # and an arbitrarily long body would otherwise fill the collapsed row
+            # with no expand affordance. `_format_generic_output` reapplies them.
+            if not self._ask_user_args_warned:
+                # Once per widget: this runs on every re-render, and the
+                # condition cannot change without a new `_args`.
+                self._ask_user_args_warned = True
+                logger.warning(
+                    "ask_user row has no usable `questions` args (got %r); the "
+                    "collapsed row will show the transcript instead of a summary",
+                    self._args.get("questions"),
+                )
+            return self._format_generic_output(output, is_preview=is_preview)
+
+        if output in _ASK_USER_ROW_SUMMARIES:
+            # No authoritative ToolMessage arrived, so this row holds only the
+            # fallback summary. There is no transcript for expansion to reveal;
+            # advertising the question count would create a dead affordance.
+            return FormattedOutput(content=Content.styled(output, "dim"))
+
+        if not is_preview:
+            return FormattedOutput(content=Content(output))
+
+        if self._status == "error":
+            # The transcript holds `(error: ...)` placeholders, not answers, so
+            # count the questions instead of promising answers.
+            summary = ASK_USER_FAILED_SUMMARY
+            noun = "question" if question_count == 1 else "questions"
+        else:
+            summary = ASK_USER_ANSWERED_SUMMARY
+            noun = "answer" if question_count == 1 else "answers"
+        return FormattedOutput(
+            content=Content.styled(summary, "dim"),
+            truncation=f"{question_count} {noun}",
+        )
+
     def _update_output_display(self) -> None:
         """Update the output display based on expanded state."""
         # Guard: all widgets must be initialized before updating display state
@@ -2746,15 +3341,15 @@ class ToolCallMessage(Vertical):
                 ellipsis = get_glyphs().ellipsis
                 self._hint_widget.update(
                     Content.styled(
-                        f"{ellipsis} {self._output_hint_keys()} to expand", "dim"
+                        f"{ellipsis} {self._output_hint_keys()} to expand", "dim italic"
                     )
                 )
                 self._hint_widget.display = True
                 return
             # Truncate the preview only when the output is large enough to
-            # warrant it; `write_todos` always uses its compact per-item preview
+            # warrant it; `_ALWAYS_PREVIEW_TOOLS` use their compact preview
             # regardless of size.
-            is_preview = needs_truncation or self._tool_name == "write_todos"
+            is_preview = needs_truncation or self._tool_name in _ALWAYS_PREVIEW_TOOLS
             # Pass the raw output, not `output_stripped`: `_format_output`
             # normalizes whitespace while preserving the first line's leading
             # indentation. Pre-stripping here flattens that indent on line 0 only,
@@ -2773,7 +3368,7 @@ class ToolCallMessage(Vertical):
                     Content.styled(
                         f"{ellipsis} {result.truncation} — "
                         f"{self._output_hint_keys()} to expand",
-                        "dim",
+                        "dim italic",
                     )
                 )
                 self._hint_widget.display = True
@@ -3809,9 +4404,34 @@ class _MutedRichMarkdown:
     }
 
     def __init__(self, markup: str) -> None:
-        from rich.markdown import Markdown as RichMarkdown
+        from rich.markdown import (
+            Markdown as RichMarkdown,
+            MarkdownElement,
+            TableElement,
+        )
+        from rich.table import Table
 
-        self._markdown = RichMarkdown(markup)
+        class _FoldingTableElement(TableElement):
+            """Render long Markdown table cells by folding instead of eliding."""
+
+            def __rich_console__(  # noqa: PLW3201  # Rich renderable protocol
+                self, console: RichConsole, options: ConsoleOptions
+            ) -> RenderResult:
+                for renderable in super().__rich_console__(console, options):
+                    if isinstance(renderable, Table):
+                        for column in renderable.columns:
+                            column.overflow = "fold"
+                    yield renderable
+
+        class _FoldingMarkdown(RichMarkdown):
+            """Rich Markdown variant that never ellipsizes table cells."""
+
+            elements: ClassVar[dict[str, type[MarkdownElement]]] = {
+                **RichMarkdown.elements,
+                "table_open": _FoldingTableElement,
+            }
+
+        self._markdown = _FoldingMarkdown(markup)
         self._markup = markup
 
     def __rich_console__(  # noqa: PLW3201  # Rich renderable protocol
@@ -4026,6 +4646,19 @@ class AppMessage(Static):
     def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
         """Open style-embedded hyperlinks on single click."""
         open_style_link(event)
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer cursor over embedded links, text cursor elsewhere."""
+        self.styles.pointer = "pointer" if event_targets_link(event) else "text"
+
+    def on_leave(self) -> None:
+        """Restore the pointer shape when the mouse leaves the message.
+
+        `"text"` restates this widget's CSS default rather than clearing the
+        inline style, so a subclass declaring a different `pointer` would be
+        forced back to `text` on leave.
+        """
+        self.styles.pointer = "text"
 
 
 class SummarizationMessage(AppMessage):

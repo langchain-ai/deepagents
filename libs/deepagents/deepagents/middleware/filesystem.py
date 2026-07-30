@@ -219,11 +219,8 @@ def _multimodal_block_supported(
     if not isinstance(block_type, str):
         return True
     if block_type == "file" and "base64" not in block:
-        # URL-/file-ID-backed file references (e.g. `{"file_id": ...}`,
-        # `{"url": ...}`) aren't `read_file`'s inline base64 attachments and
-        # commonly need no `mime_type` at all; providers handle these through
-        # their own upload/hosting path, so leave them untouched rather than
-        # guessing support from a missing field.
+        # URL-/file-ID-backed file references are provider-managed and often don't
+        # include a `mime_type`, so leave them untouched.
         return True
     if block_type == "file" and block.get("mime_type") != _PDF_MIME_TYPE:
         # Non-PDF base64 `file` blocks (`.docx`, `.pptx`, ...) aren't described

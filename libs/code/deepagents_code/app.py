@@ -3798,6 +3798,9 @@ class DeepAgentsApp(App):
         self._thread_has_restored_model_usage: bool = False
         """Whether checkpoint history proves model usage predating local stats."""
 
+        self._thread_has_completed_turn: bool = False
+        """Whether a turn completed since the active thread was loaded."""
+
         # Session lazy state & startup
         self._session_state: TextualSessionState | None = None
         """Auto-approve + thread state shared with `execute_task_textual`.
@@ -4447,6 +4450,7 @@ class DeepAgentsApp(App):
         self._ui_adapter._on_tokens_show = self._show_tokens
         self._ui_adapter._on_session_cost = self._set_session_cost
         self._ui_adapter._on_provisional_cost = self._add_provisional_cost
+        self._ui_adapter._on_stream_complete = self._mark_thread_turn_completed
 
         if self._server_startup_deferred:
             await self._mount_deferred_start_notice()
@@ -7366,7 +7370,13 @@ class DeepAgentsApp(App):
         self._thread_has_restored_model_usage = (
             has_restored_model_usage or self._thread_restored_cost_usd > 0
         )
+        self._thread_has_completed_turn = False
         self._set_session_cost(self._thread_restored_cost_usd)
+
+    def _mark_thread_turn_completed(self) -> None:
+        """Record a clean stream end for the thread that owns the active turn."""
+        if self._inflight_thread_id == self._lc_thread_id:
+            self._thread_has_completed_turn = True
 
     def _add_provisional_cost(self, cost_usd: float) -> None:
         """Show one streamed request's estimate ahead of the graph's total.
@@ -7406,20 +7416,19 @@ class DeepAgentsApp(App):
                         "request and pricing details were not persisted. This does "
                         "not mean the usage was free."
                     )
+                if self._thread_has_completed_turn:
+                    return (
+                        "We couldn't track the requests so far because the provider "
+                        "didn't report token usage. Requests from providers that "
+                        "report usage will appear here."
+                    )
                 return "No model usage recorded for this thread yet."
-            request_noun = "request was" if request_count == 1 else "requests were"
             lines = [
-                "Cost estimate unavailable",
-                "",
                 (
-                    f"{request_count} model {request_noun} recorded, but none could "
-                    "be priced. This does not mean the usage was free."
-                ),
-                *self._unpriced_request_lines(),
-                (
-                    "Common causes include missing catalog pricing, non-token-based "
-                    "billing, or incomplete usage metadata."
-                ),
+                    "We couldn't calculate costs for the requests so far because "
+                    "pricing isn't available for the models used. Unpriced usage "
+                    "may still count toward subscription limits or incur charges."
+                )
             ]
             if has_unknown_restored_usage:
                 lines.extend(

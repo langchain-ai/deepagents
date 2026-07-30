@@ -739,6 +739,9 @@ class TextualUIAdapter:
         a second authority: every server total replaces what this accumulated.
         """
 
+        self._on_stream_complete: Callable[[], None] | None = None
+        """Called only after the agent stream reaches a clean end."""
+
     def _sync_tool_widget(self, tool_msg: ToolCallMessage) -> None:
         """Sync a tool widget when the app provided a store callback.
 
@@ -946,7 +949,7 @@ def _read_mentioned_file(file_path: Path, max_embed_bytes: int) -> str:
             "use read_file tool to view)"
         )
     content = file_path.read_text(encoding="utf-8")
-    return f"\n### {file_path.name}\nPath: `{file_path}`\n`text\n{content}\n`"
+    return f"\n### {file_path.name}\nPath: `{file_path}`\n```text\n{content}\n```"
 
 
 def _is_renderable_subagent_event(data: Any, *, is_main_agent: bool) -> bool:  # noqa: ANN401  # custom-stream payload is dynamic
@@ -3037,6 +3040,11 @@ async def execute_task_textual(
         captured_input_tokens,
         captured_output_tokens,
     )
+    if adapter._on_stream_complete:
+        try:
+            adapter._on_stream_complete()
+        except Exception:
+            logger.warning("on_stream_complete callback failed", exc_info=True)
     return turn_stats
 
 

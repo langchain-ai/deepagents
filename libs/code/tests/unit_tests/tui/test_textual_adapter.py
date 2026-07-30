@@ -168,6 +168,7 @@ class TestTextualUIAdapterInit:
         assert adapter._on_tokens_update is None
         assert adapter._on_tokens_pending is None
         assert adapter._on_tokens_show is None
+        assert adapter._on_stream_complete is None
 
     def test_on_tool_complete_defaults_to_none_and_accepts_callback(self) -> None:
         """Verify `on_tool_complete` is optional and can be assigned via init."""
@@ -1818,6 +1819,52 @@ class _FailingApprovalStoreAgent(_SequencedAgent):
         _ = (namespace, key, value)
         msg = "approval-mode store unavailable"
         raise RuntimeError(msg)
+
+
+class TestExecuteTaskTextualStreamCompletion:
+    """Report only clean stream endings to the app."""
+
+    async def test_clean_stream_calls_completion_callback(self) -> None:
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        callback = MagicMock()
+        adapter._on_stream_complete = callback
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent([]),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+        )
+
+        callback.assert_called_once_with()
+
+    async def test_interrupted_stream_skips_completion_callback(self) -> None:
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        callback = MagicMock()
+        adapter._on_stream_complete = callback
+
+        with patch(
+            "deepagents_code.tui.textual_adapter._handle_interrupt_cleanup",
+            new_callable=AsyncMock,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_RaisingAgent([], asyncio.CancelledError()),
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+            )
+
+        callback.assert_not_called()
 
 
 class TestExecuteTaskTextualTurnMarkers:

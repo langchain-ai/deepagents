@@ -394,6 +394,18 @@ class TestCostDisplayCallbacks:
 
         assert summary == "No model usage recorded for this thread yet."
 
+    def test_cost_summary_explains_unreported_usage_after_completed_turn(self) -> None:
+        app = DeepAgentsApp()
+        app._thread_has_completed_turn = True
+
+        summary = app._format_cost_summary()
+
+        assert summary == (
+            "We couldn't track the requests so far because the provider didn't "
+            "report token usage. Requests from providers that report usage will "
+            "appear here."
+        )
+
     async def test_resumed_zero_cost_usage_is_not_reported_as_unused(self) -> None:
         """Checkpoint history preserves usage when its total cannot prove it."""
         from deepagents_code.app import _ThreadHistoryPayload
@@ -429,14 +441,9 @@ class TestCostDisplayCallbacks:
         summary = app._format_cost_summary()
 
         assert summary == (
-            "Cost estimate unavailable\n"
-            "\n"
-            "1 model request was recorded, but none could be priced. This does "
-            "not mean the usage was free.\n"
-            "Pricing was unavailable for:\n"
-            "- example:unknown-model — 1 request\n"
-            "Common causes include missing catalog pricing, non-token-based "
-            "billing, or incomplete usage metadata."
+            "We couldn't calculate costs for the requests so far because pricing "
+            "isn't available for the models used. Unpriced usage may still count "
+            "toward subscription limits or incur charges."
         )
 
     def test_cost_summary_includes_total_and_type_model_breakdown(self) -> None:

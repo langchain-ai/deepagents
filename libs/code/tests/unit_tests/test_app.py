@@ -82,7 +82,7 @@ from deepagents_code.goal_state_notice import (
 )
 from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.media_utils import ImageData, VideoData
-from deepagents_code.tui.textual_adapter import RubricEvaluationEnd
+from deepagents_code.tui.textual_adapter import RubricEvaluationEnd, TextualUIAdapter
 from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
 from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.goal_review import (
@@ -7294,6 +7294,32 @@ class TestCopyCommand:
 
 class TestRunAgentTaskMediaTracker:
     """Tests image tracker wiring from app into textual execution."""
+
+    async def test_completed_turn_marks_unreported_usage(self) -> None:
+        """A completed turn remains distinguishable when usage metadata is absent."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            def execute(**kwargs: object) -> SessionStats:
+                adapter = cast("TextualUIAdapter", kwargs["adapter"])
+                callback = adapter._on_stream_complete
+                assert callable(callback)
+                callback()
+                return SessionStats()
+
+            with patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
+                side_effect=execute,
+            ):
+                await app._run_agent_task("hello")
+
+            assert app._thread_stats.request_count == 0
+            assert app._format_cost_summary() == (
+                "We couldn't track the requests so far because the provider didn't "
+                "report token usage. Requests from providers that report usage will "
+                "appear here."
+            )
 
     async def test_run_agent_task_passes_image_tracker(self) -> None:
         """`_run_agent_task` should forward the shared image tracker."""

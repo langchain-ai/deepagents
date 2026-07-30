@@ -8,6 +8,8 @@ from textual.widgets.option_list import Option
 from deepagents_code.config import get_glyphs
 from deepagents_code.tui.modals.plugin_manager.models import _MarketplaceRow, _PluginRow
 
+_NO_SUPPORTED_COMPONENTS = "No supported components (skills/MCP/hooks)."
+
 
 def _plugin_options(
     rows: tuple[_PluginRow, ...],
@@ -106,6 +108,8 @@ def _component_summary_lines(row: _PluginRow) -> list[str]:
         lines.append(f"Skills: {row.skill_count}")
     if row.mcp_server_names:
         lines.append(f"MCP: {', '.join(row.mcp_server_names)}")
+    if row.hook_events:
+        lines.append(f"Hooks: {', '.join(row.hook_events)}")
     if row.unsupported_components:
         names = ", ".join(f"{name}/" for name in row.unsupported_components)
         lines.append(f"Unsupported (not loaded): {names}")
@@ -118,33 +122,33 @@ def _unsupported_summary(components: tuple[str, ...]) -> str:
 
 def _will_install_lines(row: _PluginRow) -> list[str]:
     lines = _component_summary_lines(row)
-    if row.skill_names or row.mcp_server_names or row.skill_count:
+    if row.skill_names or row.mcp_server_names or row.hook_events or row.skill_count:
         return lines
     if row.unsupported_components:
         return [
-            "No supported components (skills/MCP).",
+            _NO_SUPPORTED_COMPONENTS,
             _unsupported_summary(row.unsupported_components),
         ]
     if row.skill_count is None:
         return [
             (
-                "Skills and MCP servers if present "
-                "(agents/, commands/, and hooks/ are not loaded)."
+                "Skills, MCP servers, and hooks if present "
+                "(agents/ and commands/ are not loaded)."
             )
         ]
     return [
-        "No supported components (skills/MCP).",
-        "agents/, commands/, and hooks/ are not loaded by deepagents-code.",
+        _NO_SUPPORTED_COMPONENTS,
+        "agents/ and commands/ are not loaded by deepagents-code.",
     ]
 
 
 def _installed_component_lines(row: _PluginRow) -> list[str]:
     lines = _component_summary_lines(row)
     if lines:
-        has_supported = bool(row.skill_names or row.mcp_server_names)
+        has_supported = bool(row.skill_names or row.mcp_server_names or row.hook_events)
         if not has_supported and row.unsupported_components:
             return [
-                "No supported components (skills/MCP).",
+                _NO_SUPPORTED_COMPONENTS,
                 _unsupported_summary(row.unsupported_components),
             ]
         return lines

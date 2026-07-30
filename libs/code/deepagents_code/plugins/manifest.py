@@ -21,12 +21,12 @@ _MANIFEST_RELATIVE_PATHS = (
     Path(".claude-plugin") / "plugin.json",
     Path(".codex-plugin") / "plugin.json",
 )
-_PATH_COMPONENT_FIELDS = {"skills", "mcpServers"}
+_PATH_COMPONENT_FIELDS = {"skills", "mcpServers", "hooks"}
 _UNSUPPORTED_COMPONENT_DIRS: tuple[UnsupportedComponent, ...] = (
     "agents",
     "commands",
-    "hooks",
 )
+_HOOKS_DOCUMENT_NAME = "hooks.json"
 _NAME_RE = re.compile(r"^[^\s]+$")
 
 
@@ -169,6 +169,27 @@ def _inline_mcp(value: object) -> JsonObject:
     return {}
 
 
+def _inline_hooks(value: object) -> JsonObject:
+    """Normalize an inline manifest `hooks` object to `hooks.json` document form.
+
+    Both the wrapped `{"hooks": {"PreToolUse": [...]}}` document and the bare
+    `{"PreToolUse": [...]}` event map are accepted, since plugin authors write
+    either shape inline.
+
+    Returns:
+        A document with a top-level `hooks` object, or an empty object.
+    """
+    if not isinstance(value, dict):
+        return {}
+    normalized = json_object(value)
+    if not normalized:
+        return {}
+    wrapped = normalized.get("hooks")
+    if isinstance(wrapped, dict):
+        return {"hooks": wrapped}
+    return {"hooks": normalized}
+
+
 def load_manifest(
     root: Path, *, fallback_name: str | None = None
 ) -> tuple[PluginManifest | None, Path | None, tuple[str, ...]]:
@@ -207,7 +228,7 @@ def load_manifest(
         declaration = raw.get(field_name)
         if declaration is None:
             continue
-        if field_name == "mcpServers" and isinstance(declaration, dict):
+        if field_name in {"mcpServers", "hooks"} and isinstance(declaration, dict):
             continue
         paths = _resolve_component_paths(declaration, root, field_name, warnings)
         if paths:
@@ -221,6 +242,7 @@ def load_manifest(
         version=version,
         component_paths=component_paths,
         inline_mcp=_inline_mcp(raw.get("mcpServers")),
+        inline_hooks=_inline_hooks(raw.get("hooks")),
         display_name=(
             display_name_value if isinstance(display_name_value, str) else None
         ),
@@ -241,6 +263,24 @@ def _existing_component_path(path: Path, plugin_root: Path) -> tuple[Path, ...]:
         return ()
     else:
         return (resolved,)
+
+
+def _hooks_document_paths(path: Path, plugin_root: Path) -> tuple[Path, ...]:
+    """Resolve a declared hooks component to the document files it contributes.
+
+    A declaration may name the `hooks.json` document directly or the directory
+    holding it, so directories are narrowed to their `hooks.json`.
+
+    Returns:
+        Existing hook document paths contained by the plugin root.
+    """
+    try:
+        is_dir = path.is_dir()
+    except OSError:
+        logger.warning("Could not inspect plugin hooks path %s", path)
+        return ()
+    target = path / _HOOKS_DOCUMENT_NAME if is_dir else path
+    return _existing_component_path(target, plugin_root)
 
 
 def _unsupported_component_dirs(
@@ -290,11 +330,21 @@ def build_inventory(
         *metadata_paths.get("mcpServers", ()),
     )
 
+    hook_files = (
+        *_hooks_document_paths(plugin_root / "hooks", plugin_root),
+        *(
+            document
+            for path in metadata_paths.get("hooks", ())
+            for document in _hooks_document_paths(path, plugin_root)
+        ),
+    )
+
     unsupported = _unsupported_component_dirs(plugin_root)
 
     return ComponentInventory(
         skills=tuple(dict.fromkeys(skills)),
         mcp_files=tuple(dict.fromkeys(mcp_files)),
+        hook_files=tuple(dict.fromkeys(hook_files)),
         unsupported=unsupported,
         warnings=tuple(warnings),
     )

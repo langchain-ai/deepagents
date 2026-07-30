@@ -74,6 +74,12 @@ def _list_plugin_skill_names(instance: PluginInstance) -> tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
+def _plugin_hook_events(instance: PluginInstance) -> tuple[str, ...]:
+    from deepagents_code.plugins.adapters.hooks import plugin_hook_event_names
+
+    return plugin_hook_event_names(instance)
+
+
 def _plugin_mcp_server_names(instance: PluginInstance) -> tuple[str, ...]:
     from deepagents_code.plugins.adapters.mcp import plugin_mcp_server_entries
 
@@ -223,6 +229,7 @@ def _row_from_instance(
     skill_names = _list_plugin_skill_names(instance) if instance else ()
     mcp_names = _plugin_mcp_server_names(instance) if instance else ()
     login_servers = _plugin_mcp_login_servers(instance) if instance else ()
+    hook_events = _plugin_hook_events(instance) if instance else ()
     unsupported = instance.inventory.unsupported if instance else ()
     session_loaded = plugin_id in loaded_plugin_ids
     return _PluginRow(
@@ -239,6 +246,7 @@ def _row_from_instance(
         else None,
         mcp_server_names=mcp_names,
         mcp_login_servers=login_servers,
+        hook_events=hook_events,
         unsupported_components=unsupported,
         session_loaded=session_loaded,
         load_error=load_error,

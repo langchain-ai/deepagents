@@ -25,9 +25,11 @@ from deepagents_code.model_config import DEFAULT_CONFIG_DIR
 from deepagents_code.project_utils import ProjectContext
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from langchain_core.messages import BaseMessage
+
+    from deepagents_code.hooks.loading import HooksSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +77,7 @@ class HooksRuntime:
         config_dir: Path | None = None,
         transcript_root: Path | None = None,
         presenter: HookPresenter | None = None,
+        plugin_sources: Sequence[tuple[HooksSource, Mapping[str, object]]] = (),
     ) -> HooksRuntime:
         """Load configuration once and freeze a session runtime.
 
@@ -90,6 +93,9 @@ class HooksRuntime:
                 the global transcript store).
             presenter: Shared user-facing presenter. A private one is created
                 when omitted, so output is logged rather than surfaced.
+            plugin_sources: Hook documents contributed by enabled plugins, which
+                the caller discovers so the runtime stays independent of plugin
+                state. Merged last, holding the least authority.
 
         Returns:
             A runtime ready to execute invocations for this session.
@@ -100,12 +106,9 @@ class HooksRuntime:
             project_root=project_root,
             workspace_trusted=workspace_trusted,
             config_dir=config_dir,
+            documents=plugin_sources,
         )
-        snapshot = HooksSnapshot.from_config(
-            loaded.config,
-            diagnostics=loaded.diagnostics,
-            snapshot_id=loaded.snapshot_id,
-        )
+        snapshot = HooksSnapshot.from_loaded(loaded)
         store = TranscriptStore(
             transcript_root
             if transcript_root is not None

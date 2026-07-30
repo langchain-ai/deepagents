@@ -30,6 +30,7 @@ class _PluginRow:
     mcp_connected: bool | None = None
     mcp_server_names: tuple[str, ...] = ()
     mcp_login_servers: tuple[str, ...] = ()
+    hook_events: tuple[str, ...] = ()
     unsupported_components: tuple[UnsupportedComponent, ...] = ()
     session_loaded: bool = False
     load_error: str | None = None

@@ -612,14 +612,20 @@ def _load_runtime(
     """
     from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
     from deepagents_code.hooks.runtime import HooksRuntime
+    from deepagents_code.plugins.adapters.hooks import discover_plugin_hook_sources
+    from deepagents_code.project_utils import ProjectContext
 
     if not is_env_truthy(EXPERIMENTAL):
         return None
     try:
+        project_context = ProjectContext.from_user_cwd(cwd)
         return HooksRuntime.create(
             cwd=cwd,
             workspace_trusted=trust.allows(cwd),
             presenter=presenter,
+            plugin_sources=discover_plugin_hook_sources(
+                project_dir=project_context.project_root or project_context.user_cwd
+            ),
         )
     except Exception:
         logger.exception("Failed to load hook configuration; hooks disabled")

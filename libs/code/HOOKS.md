@@ -10,8 +10,9 @@ Hooks are user-configured shell commands that run at agent lifecycle events. Eac
 | --- | --- | --- |
 | User | `~/.deepagents/hooks.json` | Always (when the file exists) |
 | Project | `{project_root}/.deepagents/hooks.json` | Only after workspace trust |
+| Plugin | `hooks/hooks.json` inside an installed plugin | Whenever the plugin is enabled |
 
-When both scopes load, project matcher groups are applied first, then user groups. A project handler that stops further processing therefore wins over lower-precedence user handlers for the same event.
+Matcher groups are applied project first, then user, then plugin. A handler that stops further processing wins over every lower-precedence handler for the same event, so a project hook preempts a user hook and both preempt a third-party plugin hook.
 
 ### Project workspace trust
 
@@ -22,6 +23,38 @@ Project-scoped hooks can execute arbitrary commands from the repository. Before 
 - Cancelling the prompt (Esc / Ctrl+D) aborts startup.
 - Denying skips project hooks for the session and continues with user hooks only.
 - Headless / CI runs do not prompt; pass `--trust-project-hooks` to opt in for that run.
+
+### Plugin hooks
+
+A plugin contributes hooks from `hooks/hooks.json` in its root, from a `hooks` path in its `plugin.json` manifest, or from an inline manifest `hooks` object. The document uses exactly the same shape as a user or project `hooks.json`.
+
+Installing and enabling the plugin is the consent gate — workspace trust governs project hooks only, so it neither grants nor withholds a plugin's hooks. Review a plugin before enabling it; the plugin manager lists the events each one hooks. Because the set of server-owned events is fixed when a session starts, newly enabled plugin hooks take effect after `/reload`.
+
+Plugin handlers run with their plugin's variables both substituted into `command` / `argv` and exported to their environment:
+
+| Variable | Value |
+| --- | --- |
+| `CLAUDE_PLUGIN_ROOT`, `PLUGIN_ROOT` | The plugin's root directory |
+| `CLAUDE_PLUGIN_DATA`, `PLUGIN_DATA` | The plugin's writable data directory |
+| `CLAUDE_PROJECT_DIR` | The project root |
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/format.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
 
 ## Events and matchers
 

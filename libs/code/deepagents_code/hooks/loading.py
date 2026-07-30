@@ -4,9 +4,12 @@ Precedence (highest first, earlier in reduction order):
 
 1. Project: `{project_root}/.deepagents/hooks.json`
 2. User: `~/.deepagents/hooks.json` (or `config_dir/hooks.json` in tests)
+3. Plugin: `hooks.json` documents contributed by enabled plugins
 
 Sources are concatenated per event. Project groups precede user groups so a
-project `continue: false` wins before lower-precedence handlers run.
+project `continue: false` wins before lower-precedence handlers run, and
+third-party plugin groups run last so a user's own configuration can preempt
+them.
 
 Legacy list-shaped documents are migrated only for events whose lifecycle
 semantics genuinely match Hooks v2.
@@ -19,9 +22,8 @@ import json
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import (  # noqa: TC003 - used in runtime dataclass fields and path ops
-    Path,
-)
+from pathlib import Path
+from types import MappingProxyType
 
 from pydantic import ValidationError
 
@@ -39,6 +41,38 @@ from deepagents_code.model_config import DEFAULT_CONFIG_DIR
 
 logger = logging.getLogger(__name__)
 _LEGACY_HOOKS_REMOVAL_DATE = "September 1, 2026"
+_EMPTY_ENV: Mapping[str, str] = MappingProxyType({})
+
+
+@dataclass(frozen=True, slots=True)
+class HooksSource:
+    """Provenance for the matcher groups contributed by one configuration source.
+
+    Attributes:
+        location: Path of the document the groups were read from, used to locate
+            diagnostics.
+        origin: Stable identity of a source whose authority is not its path,
+            currently a plugin id. `None` for the project and user files. Unlike
+            `location` it is portable across machines, so it is what the snapshot
+            hash records.
+        env: Environment overlay applied to every handler from this source, on
+            top of the sanitized process environment.
+    """
+
+    location: str
+    origin: str | None = None
+    env: Mapping[str, str] = _EMPTY_ENV
+
+
+@dataclass(frozen=True, slots=True)
+class SourcedGroup:
+    """A matcher group paired with the source that contributed it."""
+
+    source: HooksSource
+    group: MatcherGroup
+
+
+_EMPTY_GROUPS: Mapping[HookEvent, tuple[SourcedGroup, ...]] = MappingProxyType({})
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +83,9 @@ class LoadedHooksConfig:
     diagnostics: tuple[HookDiagnostic, ...]
     sources: tuple[Path, ...]
     snapshot_id: str
+    groups: Mapping[HookEvent, tuple[SourcedGroup, ...]] = _EMPTY_GROUPS
+    """Merged matcher groups with provenance, in the same order as `config`."""
+
     project_source_loaded: bool = False
     """Whether the project-scoped source was selected and successfully loaded.
 
@@ -88,6 +125,7 @@ def load_hooks_config(
     workspace_trusted: bool,
     config_dir: Path | None = None,
     paths: Sequence[Path] | None = None,
+    documents: Sequence[tuple[HooksSource, Mapping[str, object]]] = (),
 ) -> LoadedHooksConfig:
     """Load, validate, merge, and hash Hooks v2 configuration.
 
@@ -98,15 +136,24 @@ def load_hooks_config(
         paths: Explicit trusted source paths in precedence order (highest first).
             When omitted, project hooks are included only for trusted workspaces,
             followed by user hooks.
+        documents: Already-decoded documents with their provenance, merged after
+            every file source so they hold the least authority. Used for plugin
+            hooks, which are not read from a configuration path.
 
     Returns:
         Frozen load result with canonical `snapshot_id` and explicit project
         source provenance.
     """
     diagnostics: list[HookDiagnostic] = []
-    merged: dict[HookEvent, list[MatcherGroup]] = {}
+    merged: dict[HookEvent, list[SourcedGroup]] = {}
     loaded_paths: list[Path] = []
     project_source_loaded = False
+
+    def _merge(document: HooksConfig, source: HooksSource) -> None:
+        for event, groups in document.hooks.items():
+            merged.setdefault(event, []).extend(
+                SourcedGroup(source=source, group=group) for group in groups
+            )
 
     def _ingest(path: Path, *, as_project: bool) -> None:
         nonlocal project_source_loaded
@@ -118,8 +165,7 @@ def load_hooks_config(
         if as_project:
             project_source_loaded = True
         loaded_paths.append(resolved)
-        for event, groups in document.hooks.items():
-            merged.setdefault(event, []).extend(groups)
+        _merge(document, HooksSource(location=str(resolved)))
 
     if paths is not None:
         for path in dict.fromkeys(
@@ -137,33 +183,63 @@ def load_hooks_config(
     else:
         _ingest(user_hooks_path(config_dir), as_project=False)
 
-    config = HooksConfig(hooks=merged)
+    for source, raw_document in documents:
+        document, document_diagnostics = _validate_hooks_document(
+            raw_document, Path(source.location)
+        )
+        diagnostics.extend(document_diagnostics)
+        if document is not None:
+            _merge(document, source)
+
+    groups = MappingProxyType(
+        {event: tuple(sourced) for event, sourced in merged.items()}
+    )
+    config = HooksConfig(
+        hooks={
+            event: [sourced.group for sourced in sourced_groups]
+            for event, sourced_groups in groups.items()
+        }
+    )
     return LoadedHooksConfig(
         config=config,
         diagnostics=tuple(diagnostics),
         sources=tuple(loaded_paths),
-        snapshot_id=compute_snapshot_id(config),
+        snapshot_id=compute_snapshot_id(config, groups=groups),
+        groups=groups,
         project_source_loaded=project_source_loaded,
     )
 
 
-def compute_snapshot_id(config: HooksConfig) -> str:
+def compute_snapshot_id(
+    config: HooksConfig,
+    *,
+    groups: Mapping[HookEvent, Sequence[SourcedGroup]] | None = None,
+) -> str:
     """Return the canonical SHA-256 snapshot id for `config`.
 
     Args:
         config: Validated Hooks v2 configuration.
+        groups: Matching sourced groups, so provenance participates in the hash.
 
     Returns:
         Lowercase hex digest of the canonical JSON serialization.
     """
-    return hashlib.sha256(canonical_hooks_bytes(config)).hexdigest()
+    return hashlib.sha256(canonical_hooks_bytes(config, groups=groups)).hexdigest()
 
 
-def canonical_hooks_bytes(config: HooksConfig) -> bytes:
+def canonical_hooks_bytes(
+    config: HooksConfig,
+    *,
+    groups: Mapping[HookEvent, Sequence[SourcedGroup]] | None = None,
+) -> bytes:
     """Serialize configuration into a stable byte representation.
 
     Args:
         config: Validated Hooks v2 configuration.
+        groups: Matching sourced groups. When supplied, each group additionally
+            records its non-file origin and environment overlay, so enabling a
+            plugin that contributes hooks changes the snapshot id. Groups from
+            the project and user files serialize identically either way.
 
     Returns:
         UTF-8 JSON with sorted keys, event order fixed to `HookEvent`, and
@@ -172,9 +248,7 @@ def canonical_hooks_bytes(config: HooksConfig) -> bytes:
     """
     payload = {
         "hooks": {
-            event.value: [
-                _canonical_group(group) for group in config.hooks.get(event, [])
-            ]
+            event.value: _canonical_groups(event, config, groups)
             for event in HookEvent
             if event in config.hooks
         }
@@ -187,7 +261,25 @@ def canonical_hooks_bytes(config: HooksConfig) -> bytes:
     ).encode("utf-8")
 
 
-def _canonical_group(group: MatcherGroup) -> dict[str, object]:
+def _canonical_groups(
+    event: HookEvent,
+    config: HooksConfig,
+    groups: Mapping[HookEvent, Sequence[SourcedGroup]] | None,
+) -> list[dict[str, object]]:
+    """Serialize one event's groups, annotating provenance when it is known.
+
+    Returns:
+        Canonical group payloads in configuration order.
+    """
+    sourced = None if groups is None else groups.get(event)
+    if sourced is None:
+        return [_canonical_group(group) for group in config.hooks.get(event, [])]
+    return [_canonical_group(item.group, source=item.source) for item in sourced]
+
+
+def _canonical_group(
+    group: MatcherGroup, *, source: HooksSource | None = None
+) -> dict[str, object]:
     raw = group.model_dump(
         mode="json", by_alias=True, exclude_none=True, exclude_defaults=True
     )
@@ -203,6 +295,10 @@ def _canonical_group(group: MatcherGroup) -> dict[str, object]:
     matcher = raw.get("matcher")
     if matcher is not None:
         result["matcher"] = matcher
+    if source is not None and source.origin is not None:
+        result["origin"] = source.origin
+        if source.env:
+            result["env"] = dict(sorted(source.env.items()))
     return result
 
 

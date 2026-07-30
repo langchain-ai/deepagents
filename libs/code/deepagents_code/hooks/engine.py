@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from deepagents_code.hooks.capabilities import get_event_spec
+from deepagents_code.hooks.env import sanitize_hook_environ
 from deepagents_code.hooks.envelope import HookEnvelopeAdapter
 from deepagents_code.hooks.models.domain import HookDiagnostic
 from deepagents_code.hooks.presenter import HookProgress
@@ -138,6 +139,7 @@ async def _run_handler(
             cwd=cwd,
             default_timeout=default_timeout,
             max_output_bytes=max_output_bytes,
+            env=_handler_env(handler),
         )
     finally:
         _report_progress(
@@ -150,6 +152,26 @@ async def _run_handler(
                 active=False,
             ),
         )
+
+
+def _handler_env(handler: HookHandler) -> dict[str, str] | None:
+    """Overlay a handler's source environment onto the sanitized process one.
+
+    Plugin handlers need their plugin root and data directory on the environment
+    to resolve bundled scripts. The overlay is applied last so a plugin cannot be
+    starved of its own variables, but it is layered over the sanitized
+    environment so secret stripping still applies.
+
+    Args:
+        handler: Handler about to run.
+
+    Returns:
+        The launch environment, or `None` to let the runner build the default.
+    """
+    overlay = handler.source.env
+    if not overlay:
+        return None
+    return {**sanitize_hook_environ(), **overlay}
 
 
 def _report_progress(

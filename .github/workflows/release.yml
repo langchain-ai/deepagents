@@ -501,6 +501,7 @@ jobs:
           path: _workflow
           sparse-checkout: |
             .github/scripts/release/build_release_notes.py
+          sparse-checkout-cone-mode: false
 
       # Build the release body with the shared script. This replaces the
       # previous inline bash steps so the same logic can be reused locally

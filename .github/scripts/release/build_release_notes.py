@@ -456,15 +456,23 @@ def _run_gh(args: list[str]) -> subprocess.CompletedProcess[str] | None:
         return None
 
 
-def _gh_api(endpoint: str, *, repo: str = "", jq: str = "") -> str:
-    """Run ``gh api`` and return stdout, or empty string on failure."""
+def _gh_api(
+    endpoint: str,
+    *,
+    repo: str = "",
+    jq: str = "",
+) -> tuple[str, str | None]:
+    """Run ``gh api`` and return its output and any failure detail."""
     cmd = ["api", endpoint]
     if jq:
         cmd.extend(["--jq", jq])
     result = _run_gh(cmd)
     if result is None:
-        return ""
-    return result.stdout.strip() if result.returncode == 0 else ""
+        return "", "gh executable not found"
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        return "", detail or f"exit status {result.returncode}"
+    return result.stdout.strip(), None
 
 
 def _gh_pr_view(pr_num: str, repo: str, fields: str) -> dict | None:
@@ -523,7 +531,7 @@ def collect_contributors(
     seen_prs: set[str] = set()
 
     for sha in shas:
-        pr_num = _gh_api(
+        pr_num, _ = _gh_api(
             f"/repos/{repository}/commits/{sha}/pulls",
             jq=". [0].number // empty",
         )
@@ -598,6 +606,7 @@ def resolve_releaser(
     actor: str,
     *,
     offline: bool = False,
+    warnings: list[str] | None = None,
 ) -> str:
     """Resolve who shipped the release. Mirrors the bash logic."""
     if offline:
@@ -605,10 +614,15 @@ def resolve_releaser(
 
     releaser = ""
     if release_commit:
-        pr_num = _gh_api(
+        pr_num, api_error = _gh_api(
             f"/repos/{repository}/commits/{release_commit}/pulls",
             jq=". [0].number // empty",
         )
+        if api_error and warnings is not None:
+            warnings.append(
+                "releaser lookup: commit-pulls API failed: "
+                f"{api_error} — falling back to actor"
+            )
         if pr_num:
             result = _run_gh([
                 "pr", "view", pr_num,
@@ -618,6 +632,16 @@ def resolve_releaser(
             ])
             if result is not None and result.returncode == 0:
                 releaser = result.stdout.strip()
+            elif warnings is not None:
+                if result is None:
+                    detail = "gh executable not found"
+                else:
+                    detail = result.stderr.strip() or result.stdout.strip()
+                    detail = detail or f"exit status {result.returncode}"
+                warnings.append(
+                    f"releaser lookup: gh pr view #{pr_num} failed: "
+                    f"{detail} — falling back to actor"
+                )
 
     if not releaser:
         releaser = actor
@@ -818,7 +842,12 @@ def build_release_notes(
             prev_tag,
             repository,
         )
-        releaser = resolve_releaser(repository, release_commit, actor)
+        releaser = resolve_releaser(
+            repository,
+            release_commit,
+            actor,
+            warnings=warnings,
+        )
 
     # Build base body.
     base_body = build_base_body(

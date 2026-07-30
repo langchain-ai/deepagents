@@ -53,6 +53,17 @@ def _workflow_step(step_id: str, *, job: str = "release-notes") -> str:
     return next(step["run"] for step in steps if step.get("id") == step_id)
 
 
+def test_release_notes_script_checkout_uses_non_cone_mode() -> None:
+    with WORKFLOW_PATH.open() as file:
+        workflow = yaml.safe_load(file)
+    steps = workflow["jobs"]["release-notes"]["steps"]
+    checkout = next(
+        step for step in steps if step.get("name") == "Check out release-notes script"
+    )
+
+    assert checkout["with"]["sparse-checkout-cone-mode"] is False
+
+
 def test_temporary_repo_disables_inherited_commit_signing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

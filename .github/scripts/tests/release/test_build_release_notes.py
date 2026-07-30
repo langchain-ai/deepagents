@@ -515,6 +515,59 @@ class TestReleaseCommit:
         assert commit == head
 
 
+# ── Releaser resolution ─────────────────────────────────────────────────
+
+
+class TestResolveReleaser:
+    def test_warns_when_commit_pulls_lookup_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        failure = subprocess.CompletedProcess(
+            args=["gh"],
+            returncode=1,
+            stdout="",
+            stderr="HTTP 500",
+        )
+        monkeypatch.setattr(brn, "_run_gh", lambda _args: failure)
+        warnings: list[str] = []
+
+        releaser = brn.resolve_releaser(
+            REPOSITORY,
+            "abc123",
+            "dispatcher",
+            warnings=warnings,
+        )
+
+        assert releaser == "dispatcher"
+        assert warnings == [
+            "releaser lookup: commit-pulls API failed: HTTP 500 — falling back to actor"
+        ]
+
+    def test_no_warning_when_commit_has_no_pull_request(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        success = subprocess.CompletedProcess(
+            args=["gh"],
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+        monkeypatch.setattr(brn, "_run_gh", lambda _args: success)
+        warnings: list[str] = []
+
+        releaser = brn.resolve_releaser(
+            REPOSITORY,
+            "abc123",
+            "dispatcher",
+            warnings=warnings,
+        )
+
+        assert releaser == "dispatcher"
+        assert warnings == []
+
+
 # ── Body finalization / size budget ─────────────────────────────────────────
 
 

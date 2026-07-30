@@ -25,12 +25,23 @@ def _resolve_sha_step() -> str:
 
 
 def _git(repository: Path, *args: str) -> str:
+    """Run git in *repository*, raising with git's own diagnosis when it fails.
+
+    `check=True` would raise a `CalledProcessError` whose message carries only
+    argv and the exit status, which turns an infrastructure failure into an
+    undebuggable report.
+    """
     result = subprocess.run(
         ["git", "-C", str(repository), *args],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"git {' '.join(args)} failed (exit {result.returncode}):\n"
+            f"{result.stdout}\n{result.stderr}"
+        )
     return result.stdout.strip()
 
 
@@ -39,6 +50,10 @@ def _initialize_repository(repository: Path) -> str:
     _git(repository, "config", "user.email", "release-test@example.com")
     _git(repository, "config", "user.name", "Release Test")
     _git(repository, "config", "commit.gpgSign", "false")
+    # Background maintenance forked by `git commit` can hold the repository
+    # locks while the next command runs, failing it with a lock error.
+    _git(repository, "config", "gc.auto", "0")
+    _git(repository, "config", "maintenance.auto", "false")
 
     package = repository / PACKAGE_PATH
     package.mkdir(parents=True)

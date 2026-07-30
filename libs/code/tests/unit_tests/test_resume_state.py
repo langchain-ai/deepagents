@@ -392,9 +392,32 @@ class TestCostDisplayCallbacks:
 
         summary = app._format_cost_summary()
 
-        assert summary == (
-            "No cost data available yet. Send a message to begin tracking "
-            "estimated costs for this thread."
+        assert summary == "No model usage recorded for this thread yet."
+
+    async def test_resumed_zero_cost_usage_is_not_reported_as_unused(self) -> None:
+        """Checkpoint history preserves usage when its total cannot prove it."""
+        from deepagents_code.app import _ThreadHistoryPayload
+
+        app = DeepAgentsApp(thread_id="thread-1")
+        payload = _ThreadHistoryPayload(
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+            session_cost_usd=0.0,
+            transcript_messages=(AIMessage(content=""),),
+        )
+
+        await app._load_thread_history(
+            thread_id="thread-1",
+            preloaded_payload=payload,
+        )
+
+        assert app._thread_stats.request_count == 0
+        assert app._format_cost_summary() == (
+            "Cost estimate unavailable\n\n"
+            "Earlier model usage was restored for this thread, but its request "
+            "and pricing details were not persisted. This does not mean the usage "
+            "was free."
         )
 
     def test_cost_summary_guides_thread_with_unpriced_usage(self) -> None:
@@ -406,8 +429,14 @@ class TestCostDisplayCallbacks:
         summary = app._format_cost_summary()
 
         assert summary == (
-            "No estimated cost yet. Keep chatting—costs will appear here when "
-            "pricing data is available."
+            "Cost estimate unavailable\n"
+            "\n"
+            "1 model request was recorded, but none could be priced. This does "
+            "not mean the usage was free.\n"
+            "Pricing was unavailable for:\n"
+            "- example:unknown-model — 1 request\n"
+            "Common causes include missing catalog pricing, non-token-based "
+            "billing, or incomplete usage metadata."
         )
 
     def test_cost_summary_includes_total_and_type_model_breakdown(self) -> None:
@@ -523,9 +552,43 @@ class TestCostDisplayCallbacks:
 
         summary = app._format_cost_summary()
 
+        assert "Estimated cost for priced requests: $0.00" in summary
+        assert "1 of 2 recorded requests is included." in summary
+        assert "example:unknown-model — 1 request" in summary
+        assert "The full thread cost may be higher." in summary
+        assert "example:free-model: $0.00" in summary
+        assert "The recorded request was priced at $0.00." not in summary
+
+    @pytest.mark.parametrize(
+        ("request_count", "expected"),
+        [
+            (1, "The recorded request was priced at $0.00."),
+            (2, "All 2 recorded requests were priced at $0.00."),
+        ],
+    )
+    def test_cost_summary_explains_fully_priced_zero_cost(
+        self,
+        request_count: int,
+        expected: str,
+    ) -> None:
+        stats = SessionStats()
+        for _ in range(request_count):
+            stats.record_request(
+                "free-model",
+                100,
+                10,
+                provider="example",
+                cost_usd=0.0,
+            )
+        app = DeepAgentsApp()
+        app._thread_stats = stats
+
+        summary = app._format_cost_summary()
+
         assert "Estimated thread cost: $0.00" in summary
         assert "example:free-model: $0.00" in summary
-        assert "Requests without known pricing are excluded." in summary
+        assert expected in summary
+        assert "Your provider's bill may still differ" in summary
 
     async def test_checkpoint_reconcile_never_writes_cost(self) -> None:
         """The client reads the graph's total; it never back-fills the channel."""

@@ -1920,6 +1920,21 @@ class _ThreadHistoryPayload:
     goal_criteria_request_active: bool = False
     """Whether a newer or unfinished criteria request remains in the checkpoint."""
 
+    @property
+    def has_model_usage(self) -> bool:
+        """Whether restored state contains evidence of model usage."""
+        if self.session_cost_usd > 0 or self.context_tokens > 0:
+            return True
+        if any(
+            message.type in {MessageType.ASSISTANT, MessageType.TOOL}
+            for message in self.messages
+        ):
+            return True
+        return any(
+            getattr(message, "type", None) == "ai"
+            for message in self.transcript_messages
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class _PendingGoalProposal:
@@ -3779,6 +3794,9 @@ class DeepAgentsApp(App):
 
         self._thread_restored_cost_usd: float = 0.0
         """Checkpoint cost without a local per-model breakdown."""
+
+        self._thread_has_restored_model_usage: bool = False
+        """Whether checkpoint history proves model usage predating local stats."""
 
         # Session lazy state & startup
         self._session_state: TextualSessionState | None = None
@@ -7331,14 +7349,23 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.set_cost(self._displayed_cost_usd)
 
-    def _reset_thread_usage(self, cost_usd: float = 0.0) -> None:
+    def _reset_thread_usage(
+        self,
+        cost_usd: float = 0.0,
+        *,
+        has_restored_model_usage: bool = False,
+    ) -> None:
         """Start local usage details for a newly activated thread.
 
         Args:
             cost_usd: Cumulative cost restored from that thread's checkpoint.
+            has_restored_model_usage: Whether restored history contains model usage.
         """
         self._thread_stats = SessionStats()
         self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
+        self._thread_has_restored_model_usage = (
+            has_restored_model_usage or self._thread_restored_cost_usd > 0
+        )
         self._set_session_cost(self._thread_restored_cost_usd)
 
     def _add_provisional_cost(self, cost_usd: float) -> None:
@@ -7364,18 +7391,79 @@ class DeepAgentsApp(App):
             User-facing estimated cost summary for the active thread.
         """
         displayed_cost_usd = self._displayed_cost_usd
-        if displayed_cost_usd <= 0 and not self._thread_stats.priced_request_count:
-            if self._thread_stats.request_count:
-                return (
-                    "No estimated cost yet. Keep chatting—costs will appear here "
-                    "when pricing data is available."
+        request_count = self._thread_stats.request_count
+        priced_request_count = self._thread_stats.priced_request_count
+        has_unknown_restored_usage = (
+            self._thread_has_restored_model_usage
+            and self._thread_restored_cost_usd <= 0
+        )
+        if displayed_cost_usd <= 0 and not priced_request_count:
+            if not request_count:
+                if has_unknown_restored_usage:
+                    return (
+                        "Cost estimate unavailable\n\n"
+                        "Earlier model usage was restored for this thread, but its "
+                        "request and pricing details were not persisted. This does "
+                        "not mean the usage was free."
+                    )
+                return "No model usage recorded for this thread yet."
+            request_noun = "request was" if request_count == 1 else "requests were"
+            lines = [
+                "Cost estimate unavailable",
+                "",
+                (
+                    f"{request_count} model {request_noun} recorded, but none could "
+                    "be priced. This does not mean the usage was free."
+                ),
+                *self._unpriced_request_lines(),
+                (
+                    "Common causes include missing catalog pricing, non-token-based "
+                    "billing, or incomplete usage metadata."
+                ),
+            ]
+            if has_unknown_restored_usage:
+                lines.extend(
+                    [
+                        "",
+                        (
+                            "Earlier restored model usage also has no persisted "
+                            "request or pricing details."
+                        ),
+                    ]
                 )
-            return (
-                "No cost data available yet. Send a message to begin tracking "
-                "estimated costs for this thread."
-            )
+            return "\n".join(lines)
 
-        lines = [f"Estimated thread cost: {format_cost(displayed_cost_usd)}"]
+        has_unpriced_requests = priced_request_count < request_count
+        heading = (
+            "Estimated cost for priced requests"
+            if has_unpriced_requests or has_unknown_restored_usage
+            else "Estimated thread cost"
+        )
+        lines = [f"{heading}: {format_cost(displayed_cost_usd)}"]
+        if has_unpriced_requests:
+            included_verb = "is" if priced_request_count == 1 else "are"
+            lines.extend(
+                [
+                    "",
+                    (
+                        f"{priced_request_count} of {request_count} recorded requests "
+                        f"{included_verb} included."
+                    ),
+                    *self._unpriced_request_lines(),
+                ]
+            )
+        if has_unknown_restored_usage:
+            lines.extend(
+                [
+                    "",
+                    (
+                        "Earlier restored model usage has no persisted request or "
+                        "pricing details."
+                    ),
+                ]
+            )
+        if has_unpriced_requests or has_unknown_restored_usage:
+            lines.append("The full thread cost may be higher.")
         priced_kinds = [
             (kind, self._thread_stats.per_kind[kind])
             for kind in USAGE_KIND_ORDER
@@ -7426,9 +7514,56 @@ class DeepAgentsApp(App):
                 "Some current-session usage is included only in the total because "
                 "detailed usage metadata was unavailable."
             )
-        if self._thread_stats.priced_request_count < self._thread_stats.request_count:
-            lines.append("Requests without known pricing are excluded.")
+        if (
+            displayed_cost_usd <= 0
+            and not has_unpriced_requests
+            and not has_unknown_restored_usage
+        ):
+            priced_summary = (
+                "The recorded request was priced at $0.00."
+                if priced_request_count == 1
+                else (
+                    f"All {priced_request_count} recorded requests were priced at "
+                    "$0.00."
+                )
+            )
+            lines.append(
+                f"{priced_summary} "
+                "Your provider's bill may still differ due to subscriptions, "
+                "credits, or fees not represented here."
+            )
         return "\n".join(lines)
+
+    def _unpriced_request_lines(self) -> list[str]:
+        """Describe model requests omitted because no price was available.
+
+        Returns:
+            Lines naming each unpriced model and its omitted request count.
+        """
+        lines = ["Pricing was unavailable for:"]
+        named_request_count = 0
+        for model in self._thread_stats.per_model.values():
+            request_count = model.request_count - model.priced_request_count
+            if request_count <= 0:
+                continue
+            named_request_count += request_count
+            label = (
+                f"{model.provider}:{model.model_name}"
+                if model.provider
+                else model.model_name
+            )
+            request_noun = "request" if request_count == 1 else "requests"
+            lines.append(f"- {label} — {request_count} {request_noun}")
+
+        unknown_request_count = (
+            self._thread_stats.request_count
+            - self._thread_stats.priced_request_count
+            - named_request_count
+        )
+        if unknown_request_count > 0:
+            request_noun = "request" if unknown_request_count == 1 else "requests"
+            lines.append(f"- Unknown model — {unknown_request_count} {request_noun}")
+        return lines
 
     def _sync_session_cost_from_state(self, state_values: Mapping[str, Any]) -> None:
         """Adopt the checkpoint's cumulative cost as the displayed total.
@@ -16297,7 +16432,10 @@ class DeepAgentsApp(App):
             # Restore checkpoint metadata even when a thread has no messages.
             # Cost is cumulative thread state, while context tokens are the latest
             # model context; neither depends on transcript rendering succeeding.
-            self._reset_thread_usage(payload.session_cost_usd)
+            self._reset_thread_usage(
+                payload.session_cost_usd,
+                has_restored_model_usage=payload.has_model_usage,
+            )
             if payload.context_tokens > 0:
                 self._on_tokens_update(payload.context_tokens)
 

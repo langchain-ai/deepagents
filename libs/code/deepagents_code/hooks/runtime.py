@@ -114,7 +114,12 @@ class HooksRuntime:
             documents=plugin_sources,
             document_diagnostics=plugin_diagnostics,
         )
-        snapshot = HooksSnapshot.from_loaded(loaded)
+        snapshot = HooksSnapshot.from_config(
+            loaded.config,
+            groups=loaded.groups,
+            diagnostics=loaded.diagnostics,
+            snapshot_id=loaded.snapshot_id,
+        )
         store = TranscriptStore(
             transcript_root
             if transcript_root is not None

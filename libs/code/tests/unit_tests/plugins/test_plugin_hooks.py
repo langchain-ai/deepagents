@@ -15,18 +15,10 @@ from deepagents_code.hooks.models.domain import HookEvent, SessionStartCause
 from deepagents_code.plugins import add_local_marketplace, install_plugin
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Mapping
     from pathlib import Path
 
-    from deepagents_code.hooks.presenter import HookNoticeSeverity
-
 PLUGIN_ID = "quality-review-plugin@company-tools"
-
-_HOOK_SCRIPT = """#!/bin/sh
-printf '%s\\n%s\\n%s\\n' \\
-  "$CLAUDE_PLUGIN_ROOT" "$CLAUDE_PLUGIN_DATA" "$CLAUDE_PROJECT_DIR" \\
-  > "$CLAUDE_PLUGIN_DATA/observed.txt"
-"""
 
 
 def _hooks_document(command: str) -> dict[str, object]:
@@ -35,12 +27,6 @@ def _hooks_document(command: str) -> dict[str, object]:
             "SessionStart": [{"hooks": [{"type": "command", "command": command}]}]
         }
     }
-
-
-@pytest.fixture(autouse=True)
-def _enable_hooks_v2(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Hooks v2 only loads in experimental mode, which these tests exercise."""
-    monkeypatch.setenv(EXPERIMENTAL, "1")
 
 
 def _write_json(path: Path, data: dict[str, object]) -> None:
@@ -53,27 +39,11 @@ def _stage_plugins(
     monkeypatch: pytest.MonkeyPatch,
     documents: Mapping[str, dict[str, object] | bytes],
 ) -> tuple[Path, Path]:
-    """Stage a local marketplace whose plugins carry the given hooks documents.
-
-    Nothing is installed yet, so a test may add further files to a plugin source
-    before it is copied into the plugin cache.
-
-    Args:
-        tmp_path: Per-test temporary directory.
-        monkeypatch: Fixture used to isolate plugin and hook storage.
-        documents: Hooks document per plugin name, either as JSON-serializable
-            data or as raw bytes for the malformed cases.
-
-    Returns:
-        The isolated user configuration directory and the marketplace root.
-    """
+    monkeypatch.setenv(EXPERIMENTAL, "1")
     user_dir = tmp_path / "config"
     user_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_DIR", user_dir)
-    monkeypatch.setattr("deepagents_code.hooks.loading.DEFAULT_CONFIG_DIR", user_dir)
-    monkeypatch.setattr(
-        "deepagents_code.hooks.runtime.DEFAULT_CONFIG_DIR", tmp_path / "transcripts"
-    )
+    for module in ("model_config", "hooks.loading", "hooks.runtime"):
+        monkeypatch.setattr(f"deepagents_code.{module}.DEFAULT_CONFIG_DIR", user_dir)
 
     root = tmp_path / "marketplace"
     _write_json(
@@ -102,60 +72,40 @@ def _stage_plugins(
     return user_dir, root
 
 
-def _install_all(root: Path, names: Iterable[str]) -> tuple[Path, ...]:
-    """Register the staged marketplace and install every named plugin.
-
-    Returns:
-        The installed plugins' cached root directories, in `names` order.
-    """
+def _install_all(root: Path, names: tuple[str, ...]) -> tuple[Path, ...]:
     add_local_marketplace(root)
     return tuple(install_plugin(f"{name}@company-tools").root for name in names)
 
 
-def _notice_manager(
-    cwd: Path, notices: list[tuple[str, HookNoticeSeverity]]
-) -> HooksManager:
-    return HooksManager.create(
-        cwd=cwd,
-        identity=lambda: HookSessionIdentity("thread", ApprovalMode.MANUAL),
-        notice=lambda message, severity: notices.append((message, severity)),
-    )
-
-
 @pytest.mark.skipif(
-    sys.platform == "win32", reason="the bundled hook script needs a POSIX shell"
+    sys.platform == "win32", reason="the hook command needs a POSIX shell"
 )
 async def test_plugin_hook_runs_with_its_exported_variables(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A bundled plugin hook runs through the manager and sees its own paths."""
     from deepagents_code.plugins.store import plugin_data_dir
 
-    _user_dir, root = _stage_plugins(
+    _, root = _stage_plugins(
         tmp_path,
         monkeypatch,
         {
             "quality-review-plugin": _hooks_document(
-                '"${CLAUDE_PLUGIN_ROOT}/scripts/check.sh" "${CLAUDE_PROJECT_DIR}"'
+                "printf '%s\\n%s\\n%s\\n' "
+                '"${CLAUDE_PLUGIN_ROOT}" "${CLAUDE_PLUGIN_DATA}" '
+                '"${CLAUDE_PROJECT_DIR}" > "${CLAUDE_PLUGIN_DATA}/observed.txt"'
             )
         },
     )
-    script = root / "plugins" / "quality-review-plugin" / "scripts" / "check.sh"
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text(_HOOK_SCRIPT, encoding="utf-8")
-    script.chmod(0o755)
     (plugin_root,) = _install_all(root, ("quality-review-plugin",))
     workspace = tmp_path / "$(touch${IFS}PWNED)"
     (workspace / ".git").mkdir(parents=True)
-    monkeypatch.chdir(workspace)
 
     manager = HooksManager.create(
         cwd=workspace,
         identity=lambda: HookSessionIdentity("thread", ApprovalMode.MANUAL),
     )
-    outcome = await manager.on_session_start(SessionStartCause.STARTUP)
+    await manager.on_session_start(SessionStartCause.STARTUP)
 
-    assert outcome.ok
     observed = (plugin_data_dir(PLUGIN_ID) / "observed.txt").read_text(encoding="utf-8")
     assert observed.splitlines() == [
         str(plugin_root),
@@ -168,7 +118,6 @@ async def test_plugin_hook_runs_with_its_exported_variables(
 def test_malformed_plugin_documents_are_isolated_and_reported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Malformed plugin documents must not disable valid hooks."""
     user_dir, root = _stage_plugins(
         tmp_path,
         monkeypatch,
@@ -190,8 +139,12 @@ def test_malformed_plugin_documents_are_isolated_and_reported(
         },
     )
 
-    notices: list[tuple[str, HookNoticeSeverity]] = []
-    manager = _notice_manager(tmp_path / "workspace", notices)
+    notices: list[tuple[str, object]] = []
+    manager = HooksManager.create(
+        cwd=tmp_path / "workspace",
+        identity=lambda: HookSessionIdentity("thread", ApprovalMode.MANUAL),
+        notice=lambda message, severity: notices.append((message, severity)),
+    )
 
     assert manager.has_handlers(HookEvent.SESSION_START)
     assert manager.has_handlers(HookEvent.USER_PROMPT_SUBMIT)

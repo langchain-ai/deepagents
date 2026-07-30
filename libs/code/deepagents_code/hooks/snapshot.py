@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from re import Pattern
 
-    from deepagents_code.hooks.loading import HooksSource, LoadedHooksConfig
+    from deepagents_code.hooks.loading import HooksSource
     from deepagents_code.hooks.models.config import HooksConfig
     from deepagents_code.hooks.models.domain import HookInvocation
 
@@ -77,16 +77,18 @@ class HooksSnapshot:
         cls,
         config: HooksConfig,
         *,
+        groups: Mapping[HookEvent, Sequence[SourcedGroup]] | None = None,
         diagnostics: tuple[HookDiagnostic, ...] = (),
         snapshot_id: str | None = None,
     ) -> HooksSnapshot:
         """Build an immutable runtime snapshot from validated configuration.
 
-        Handlers carry a default source that contributes no environment overlay.
-        Use `from_loaded` to preserve the provenance a load produced.
+        Invalid matcher groups become diagnostics and are excluded.
 
         Args:
             config: Validated Hooks v2 configuration.
+            groups: Matcher groups with source provenance. Plain configurations
+                use a source with no environment overlay.
             diagnostics: Diagnostics retained from configuration loading.
             snapshot_id: Optional precomputed canonical hash. When omitted, it
                 is derived from `config`.
@@ -97,66 +99,20 @@ class HooksSnapshot:
         Raises:
             ValueError: If `snapshot_id` disagrees with the canonical config.
         """
-        canonical_id = compute_snapshot_id(config)
+        canonical_id = compute_snapshot_id(config, groups=groups)
         if snapshot_id is not None and snapshot_id != canonical_id:
             msg = "Provided snapshot_id does not match canonical configuration"
             raise ValueError(msg)
-        return cls._compile(
-            {
-                event: tuple(
-                    SourcedGroup(source=UNSOURCED, group=group) for group in groups
-                )
-                for event, groups in config.hooks.items()
-            },
-            snapshot_id=canonical_id,
-            diagnostics=diagnostics,
-        )
-
-    @classmethod
-    def from_loaded(cls, loaded: LoadedHooksConfig) -> HooksSnapshot:
-        """Build a snapshot from a load result, preserving per-group provenance.
-
-        Args:
-            loaded: Result of `load_hooks_config`.
-
-        Returns:
-            A snapshot whose handlers know the environment their source requires.
-        """
-        return cls._compile(
-            loaded.groups,
-            snapshot_id=loaded.snapshot_id,
-            diagnostics=loaded.diagnostics,
-        )
-
-    @classmethod
-    def _compile(
-        cls,
-        sourced: Mapping[HookEvent, Sequence[SourcedGroup]],
-        *,
-        snapshot_id: str,
-        diagnostics: tuple[HookDiagnostic, ...],
-    ) -> HooksSnapshot:
-        """Compile matcher groups into ordered, immutable handlers.
-
-        Invalid matcher groups are rejected here with a warning diagnostic; their
-        handlers are never added to the snapshot.
-
-        Args:
-            sourced: Matcher groups per event, in configuration order, each with
-                the source that contributed it.
-            snapshot_id: Canonical hash of the configuration being compiled.
-            diagnostics: Diagnostics retained from configuration loading.
-
-        Returns:
-            The compiled snapshot.
-        """
+        sourced = groups or {
+            event: tuple((UNSOURCED, group) for group in event_groups)
+            for event, event_groups in config.hooks.items()
+        }
         expanded: dict[HookEvent, tuple[HookHandler, ...]] = {}
         compile_diagnostics: list[HookDiagnostic] = list(diagnostics)
         for event, event_groups in sourced.items():
             matcher_field = get_event_spec(event).matcher_field
             handlers: list[HookHandler] = []
-            for group_index, sourced_group in enumerate(event_groups):
-                source, group = sourced_group.source, sourced_group.group
+            for group_index, (source, group) in enumerate(event_groups):
                 if matcher_field is None and group.matcher not in {None, "", "*"}:
                     message = (
                         f"Rejected hook group {event.value}:{group_index}: "
@@ -192,15 +148,16 @@ class HooksSnapshot:
                         HookHandler(
                             id=f"{event.value}:{group_index}:{handler_index}",
                             event=event,
-                            command=source.resolve_shell_variables(spec.command),
+                            command=source.resolve_variables(
+                                spec.command, shell_syntax=True
+                            ),
                             timeout=spec.timeout,
                             status_message=spec.status_message,
                             matcher=matcher,
                             matcher_text=group.matcher,
                             argv=(
                                 tuple(
-                                    source.resolve_path_variables(part)
-                                    for part in spec.argv
+                                    source.resolve_variables(part) for part in spec.argv
                                 )
                                 if spec.argv is not None
                                 else None
@@ -211,7 +168,7 @@ class HooksSnapshot:
             expanded[event] = tuple(handlers)
         return cls(
             handlers=MappingProxyType(expanded),
-            snapshot_id=snapshot_id,
+            snapshot_id=canonical_id,
             diagnostics=tuple(compile_diagnostics),
         )
 

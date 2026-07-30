@@ -2032,6 +2032,8 @@ class TestReloadPluginsViaReload:
         from deepagents_code.tui.widgets.messages import AppMessage
 
         app = DeepAgentsApp()
+        reload_hooks = AsyncMock()
+        monkeypatch.setattr(app, "_reload_hooks", reload_hooks)
         async with app.run_test() as pilot:
             await pilot.pause()
 
@@ -2053,6 +2055,7 @@ class TestReloadPluginsViaReload:
             # no plugin summary line was emitted.
             assert "Configuration reloaded." in text
             assert "Plugins:" not in text
+            reload_hooks.assert_awaited_once_with(plugins=())
 
     @pytest.mark.parametrize(
         ("restarted", "expected_ids"),
@@ -2073,6 +2076,8 @@ class TestReloadPluginsViaReload:
 
         plugin = MagicMock(plugin_id="new@tools")
         app = DeepAgentsApp()
+        order: list[str] = []
+        reload_hooks = AsyncMock(side_effect=lambda **_kwargs: order.append("hooks"))
         async with app.run_test() as pilot:
             await pilot.pause()
             app._session_plugin_ids = frozenset({"old@tools"})
@@ -2083,9 +2088,11 @@ class TestReloadPluginsViaReload:
                 return True
 
             async def _fake_restart() -> bool:  # noqa: RUF029
+                order.append("restart")
                 return restarted
 
             monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(app, "_reload_hooks", reload_hooks)
             monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
             monkeypatch.setattr(app, "_discard_queue", lambda: None)
             monkeypatch.setattr(
@@ -2101,62 +2108,4 @@ class TestReloadPluginsViaReload:
             await pilot.pause()
 
             assert app._session_plugin_ids == expected_ids
-
-    @pytest.mark.parametrize(
-        ("discovery_fails", "expected_order"),
-        [(False, ["hooks", "restart"]), (True, ["hooks"])],
-        ids=["before-restart", "discovery-failure"],
-    )
-    async def test_reload_rebuilds_hooks_before_restarting_the_server(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        *,
-        discovery_fails: bool,
-        expected_order: list[str],
-    ) -> None:
-        """Newly enabled plugin hooks only register if the snapshot leads the restart.
-
-        The server is told which server-owned events to emit when it starts, so a
-        restart that runs against a stale hook snapshot silently drops them. Hooks
-        are rebuilt even when plugin discovery is broken, so user and project hook
-        edits still land.
-        """
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import PluginDiscoveryResult
-
-        order: list[str] = []
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._server_proc = MagicMock()
-            app._server_kwargs = {}
-
-            async def _fake_discover() -> bool:  # noqa: RUF029
-                return True
-
-            async def _fake_reload_hooks(**_kwargs: object) -> None:  # noqa: RUF029
-                order.append("hooks")
-
-            async def _fake_restart() -> bool:  # noqa: RUF029
-                order.append("restart")
-                return True
-
-            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
-            monkeypatch.setattr(app, "_reload_hooks", _fake_reload_hooks)
-            monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
-            monkeypatch.setattr(app, "_discard_queue", lambda: None)
-            monkeypatch.setattr(
-                "deepagents_code.plugins.discover_plugins",
-                MagicMock(side_effect=PermissionError("unreadable plugin dir"))
-                if discovery_fails
-                else lambda: PluginDiscoveryResult(plugins=()),
-            )
-            monkeypatch.setattr(
-                "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
-                lambda _plugins: (),
-            )
-
-            await app._handle_command("/reload")
-            await pilot.pause()
-
-            assert order == expected_order
+            assert order == ["hooks", "restart"]

@@ -8,8 +8,6 @@ from textual.widgets.option_list import Option
 from deepagents_code.config import get_glyphs
 from deepagents_code.tui.modals.plugin_manager.models import _MarketplaceRow, _PluginRow
 
-_NO_SUPPORTED_COMPONENTS = "No supported components (skills/MCP/hooks)."
-
 
 def _plugin_options(
     rows: tuple[_PluginRow, ...],
@@ -126,7 +124,7 @@ def _will_install_lines(row: _PluginRow) -> list[str]:
         return lines
     if row.unsupported_components:
         return [
-            _NO_SUPPORTED_COMPONENTS,
+            "No supported components (skills/MCP/hooks).",
             _unsupported_summary(row.unsupported_components),
         ]
     if row.skill_count is None:
@@ -137,7 +135,7 @@ def _will_install_lines(row: _PluginRow) -> list[str]:
             )
         ]
     return [
-        _NO_SUPPORTED_COMPONENTS,
+        "No supported components (skills/MCP/hooks).",
         "agents/ and commands/ are not loaded by deepagents-code.",
     ]
 
@@ -147,7 +145,7 @@ def _installed_component_lines(row: _PluginRow) -> list[str]:
     if lines:
         if not row.has_supported_components and row.unsupported_components:
             return [
-                _NO_SUPPORTED_COMPONENTS,
+                "No supported components (skills/MCP/hooks).",
                 _unsupported_summary(row.unsupported_components),
             ]
         return lines

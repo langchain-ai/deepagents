@@ -38,25 +38,7 @@ Plugin handlers receive their plugin's path variables in the environment. Shell-
 | `CLAUDE_PLUGIN_DATA`, `PLUGIN_DATA` | The plugin's writable data directory |
 | `CLAUDE_PROJECT_DIR` | The project root |
 
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/format.sh\""
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Setting `argv` instead avoids shell quoting entirely because those handlers execute directly.
+For example, use `"command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/format.sh\""`. Setting `argv` instead avoids shell quoting entirely because those handlers execute directly.
 
 ## Events and matchers
 

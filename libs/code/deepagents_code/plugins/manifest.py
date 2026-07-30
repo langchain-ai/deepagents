@@ -26,7 +26,6 @@ _UNSUPPORTED_COMPONENT_DIRS: tuple[UnsupportedComponent, ...] = (
     "agents",
     "commands",
 )
-_HOOKS_DOCUMENT_NAME = "hooks.json"
 _NAME_RE = re.compile(r"^[^\s]+$")
 
 
@@ -170,14 +169,10 @@ def _inline_mcp(value: object) -> JsonObject:
 
 
 def _inline_hooks(value: object) -> JsonObject:
-    """Normalize an inline manifest `hooks` object to `hooks.json` document form.
-
-    Both the wrapped `{"hooks": {"PreToolUse": [...]}}` document and the bare
-    `{"PreToolUse": [...]}` event map are accepted, since plugin authors write
-    either shape inline.
+    """Normalize inline hooks to `hooks.json` document form.
 
     Returns:
-        A document with a top-level `hooks` object, or an empty object.
+        A wrapped hooks document, or an empty object.
     """
     if not isinstance(value, dict):
         return {}
@@ -266,20 +261,16 @@ def _existing_component_path(path: Path, plugin_root: Path) -> tuple[Path, ...]:
 
 
 def _hooks_document_paths(path: Path, plugin_root: Path) -> tuple[Path, ...]:
-    """Resolve a declared hooks component to the document files it contributes.
-
-    A declaration may name the `hooks.json` document directly or the directory
-    holding it, so directories are narrowed to their `hooks.json`.
+    """Resolve a declared hooks file or directory.
 
     Returns:
-        Existing hook document paths contained by the plugin root.
+        Existing hook document paths inside the plugin root.
     """
     try:
-        is_dir = path.is_dir()
+        target = path / "hooks.json" if path.is_dir() else path
     except OSError:
         logger.warning("Could not inspect plugin hooks path %s", path)
         return ()
-    target = path / _HOOKS_DOCUMENT_NAME if is_dir else path
     return _existing_component_path(target, plugin_root)
 
 

@@ -139,9 +139,6 @@ async def _run_handler(
             cwd=cwd,
             default_timeout=default_timeout,
             max_output_bytes=max_output_bytes,
-            # A plugin source's variables are layered over the sanitized
-            # environment, so a plugin keeps its own paths without escaping
-            # secret stripping.
             env={**sanitize_hook_environ(), **handler.source.env},
         )
     finally:

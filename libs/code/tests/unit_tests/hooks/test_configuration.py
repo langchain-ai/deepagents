@@ -57,7 +57,7 @@ def test_plugin_source_uses_windows_environment_references(
     monkeypatch.setattr("deepagents_code.hooks.loading.os.name", "nt")
 
     assert (
-        source.resolve_shell_variables('"${PLUGIN_ROOT}/check.cmd"')
+        source.resolve_variables('"${PLUGIN_ROOT}/check.cmd"', shell_syntax=True)
         == '"%PLUGIN_ROOT%/check.cmd"'
     )
 

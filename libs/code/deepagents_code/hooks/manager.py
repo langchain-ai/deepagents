@@ -626,7 +626,7 @@ def _load_runtime(
         return None
     try:
         project_context = ProjectContext.from_user_cwd(cwd)
-        plugin_hooks = discover_plugin_hook_sources(
+        plugin_sources, plugin_diagnostics = discover_plugin_hook_sources(
             project_dir=project_context.project_root or project_context.user_cwd,
             plugins=plugins,
         )
@@ -634,8 +634,8 @@ def _load_runtime(
             cwd=cwd,
             workspace_trusted=trust.allows(cwd),
             presenter=presenter,
-            plugin_sources=plugin_hooks.documents,
-            plugin_diagnostics=plugin_hooks.diagnostics,
+            plugin_sources=plugin_sources,
+            plugin_diagnostics=plugin_diagnostics,
         )
     except Exception:
         logger.exception("Failed to load hook configuration; hooks disabled")

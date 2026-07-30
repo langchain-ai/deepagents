@@ -49,17 +49,7 @@ _LEGACY_HOOKS_REMOVAL_DATE = "September 1, 2026"
 
 @dataclass(frozen=True, slots=True)
 class HooksSource:
-    """Provenance for the matcher groups contributed by one configuration source.
-
-    Attributes:
-        location: Path of the document the groups were read from.
-        plugin_id: Plugin that contributed the groups, or `None` for the project
-            and user files. Portable across machines, unlike `location`, so it is
-            what the snapshot hash records.
-        env: Environment overlay applied to every handler from this source. Only
-            a plugin source may carry one, so two sources that hash alike also
-            execute alike.
-    """
+    """Origin and environment for matcher groups from one hooks document."""
 
     location: str
     plugin_id: str | None = None
@@ -76,34 +66,22 @@ class HooksSource:
             raise ValueError(msg)
         object.__setattr__(self, "env", MappingProxyType(dict(self.env)))
 
-    def resolve_path_variables(self, value: str) -> str:
-        """Resolve this source's path placeholders for direct-exec arguments.
+    def resolve_variables(self, value: str, *, shell_syntax: bool = False) -> str:
+        """Resolve direct arguments, or adapt shell references for Windows.
 
         Returns:
-            The argument with this source's path variables resolved.
+            The resolved argument or command.
         """
+        if shell_syntax and os.name != "nt":
+            return value
         for key, replacement in self.env.items():
-            value = value.replace(f"${{{key}}}", replacement)
-        return value
-
-    def resolve_shell_variables(self, value: str) -> str:
-        """Use the host shell's environment syntax in a command.
-
-        Returns:
-            The command with host-compatible variable references.
-        """
-        if os.name == "nt":
-            for key in self.env:
-                value = value.replace(f"${{{key}}}", f"%{key}%")
+            value = value.replace(
+                f"${{{key}}}", f"%{key}%" if shell_syntax else replacement
+            )
         return value
 
 
-@dataclass(frozen=True, slots=True)
-class SourcedGroup:
-    """A matcher group paired with the source that contributed it."""
-
-    source: HooksSource
-    group: MatcherGroup
+SourcedGroup = tuple[HooksSource, MatcherGroup]
 
 
 UNSOURCED: Final = HooksSource(location="")
@@ -189,9 +167,7 @@ def load_hooks_config(
 
     def _merge(document: HooksConfig, source: HooksSource) -> None:
         for event, groups in document.hooks.items():
-            merged.setdefault(event, []).extend(
-                SourcedGroup(source=source, group=group) for group in groups
-            )
+            merged.setdefault(event, []).extend((source, group) for group in groups)
 
     def _ingest(path: Path, *, as_project: bool) -> None:
         nonlocal project_source_loaded
@@ -234,7 +210,7 @@ def load_hooks_config(
     )
     config = HooksConfig(
         hooks={
-            event: [sourced.group for sourced in sourced_groups]
+            event: [group for _source, group in sourced_groups]
             for event, sourced_groups in groups.items()
         }
     )
@@ -288,12 +264,9 @@ def canonical_hooks_bytes(
     payload = {
         "hooks": {
             event.value: [
-                _canonical_group(item.group, source=item.source)
-                for item in known.get(event)
-                or [
-                    SourcedGroup(source=UNSOURCED, group=group)
-                    for group in config.hooks[event]
-                ]
+                _canonical_group(group, source=source)
+                for source, group in known.get(event)
+                or [(UNSOURCED, group) for group in config.hooks[event]]
             ]
             for event in HookEvent
             if event in config.hooks
@@ -307,9 +280,7 @@ def canonical_hooks_bytes(
     ).encode("utf-8")
 
 
-def _canonical_group(
-    group: MatcherGroup, *, source: HooksSource | None = None
-) -> dict[str, object]:
+def _canonical_group(group: MatcherGroup, *, source: HooksSource) -> dict[str, object]:
     raw = group.model_dump(
         mode="json", by_alias=True, exclude_none=True, exclude_defaults=True
     )
@@ -325,7 +296,7 @@ def _canonical_group(
     matcher = raw.get("matcher")
     if matcher is not None:
         result["matcher"] = matcher
-    if source is not None and source.plugin_id is not None:
+    if source.plugin_id is not None:
         result["origin"] = source.plugin_id
         if source.env:
             result["env"] = dict(sorted(source.env.items()))

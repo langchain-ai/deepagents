@@ -13535,9 +13535,6 @@ class DeepAgentsApp(App):
                     for label in login_labels:
                         report += f"\nSign in to {label} via `/mcp`."
                 if plugin_result.warnings:
-                    logger.warning(
-                        "Plugin discovery warnings: %s", plugin_result.warnings
-                    )
                     report += (
                         f"\n{len(plugin_result.warnings)} plugin warning(s) "
                         "during load."

@@ -432,7 +432,7 @@ try:
     # directory, empty-file, and binary branches, so real failures and the
     # empty-file reminder are still reported first.
     if limit <= 0:
-        print(json.dumps({{'encoding': 'utf-8', 'content': ''}}))
+        print(json.dumps({{'encoding': 'utf-8', 'content': '', 'no_lines_requested': True}}))
         sys.exit(0)
 
     line_count = 0
@@ -556,8 +556,9 @@ unbounded. On success
 (binary): `{{"encoding": "base64", "content": ...}}` without pagination keys.
 An empty file short-circuits to `{{"encoding": "utf-8", "content": <empty-file
 reminder>}}`, and a non-positive `limit` to `{{"encoding": "utf-8", "content":
-""}}`, both also without pagination keys. The empty-file check runs first, so an
-empty file yields the reminder even when `limit` is non-positive. On failure:
+"", "no_lines_requested": true}}`, both also without pagination keys. The
+empty-file check runs first, so an empty file yields the reminder even when
+`limit` is non-positive. On failure:
 `{{"error": ...}}`.
 """
 
@@ -650,6 +651,7 @@ def _parse_read_output(output: str, file_path: str) -> ReadResult:
             start_line=data.get("start_line"),
             end_line=data.get("end_line"),
             next_offset=data.get("next_offset"),
+            no_lines_requested=bool(data.get("no_lines_requested")),
         )
     except (KeyError, TypeError, ValueError) as exc:
         return ReadResult(error=f"File '{file_path}': unexpected server response: {exc}")

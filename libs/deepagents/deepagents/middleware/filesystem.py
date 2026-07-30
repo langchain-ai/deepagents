@@ -624,6 +624,10 @@ Distinct from `EMPTY_CONTENT_WARNING` on purpose: the `read_file` description
 teaches the model that the empty-contents reminder means the file itself is
 empty, so reusing it for a zero-line window would state something false about
 the filesystem that a following `write_file` could act on destructively.
+
+Backends declare the zero-line window with `ReadResult.no_lines_requested`,
+so an inspected-but-empty file (which otherwise arrives identically: empty
+content, no pagination metadata) keeps the empty-file reminder instead.
 """
 GLOB_TIMEOUT = 10.0  # seconds
 GREP_TRUNCATION_NOTE = (
@@ -1630,10 +1634,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 # zero-line window, where the file was never inspected, and a
                 # genuinely empty file. Reporting the former as the latter
                 # states something false about a file that may have contents.
-                # `not content` is required alongside the `limit` check because
-                # binary and video reads ignore `limit` and return a non-empty
-                # payload, so neither cause applies to them.
-                if not content and limit <= 0:
+                # The backend declares which one happened: both arrive as
+                # empty content with no pagination metadata, but only the
+                # never-inspected window sets `no_lines_requested` — a file
+                # that was inspected and is empty (whitespace-only text from
+                # `slice_read_response`'s blank branch, or empty base64 from
+                # a binary read that ignored `limit`) keeps the empty-file
+                # reminder.
+                if not content and read_result.no_lines_requested:
                     empty_msg = NO_LINES_REQUESTED_WARNING.format(limit=limit)
                 return ToolMessage(
                     content=empty_msg,

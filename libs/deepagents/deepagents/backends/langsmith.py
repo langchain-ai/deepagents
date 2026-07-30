@@ -248,9 +248,11 @@ class LangSmithSandbox(BaseSandbox):
 
         # Nothing was requested: no line range to describe, and nothing for the
         # byte cap below to shorten. Guarded at `<= 0` so this holds even if the
-        # clamp above is ever bypassed or removed.
+        # clamp above is ever bypassed or removed. `no_lines_requested` flags
+        # the window as never inspected so the middleware can tell it apart
+        # from a genuinely empty file.
         if limit <= 0:
-            return ReadResult(file_data=FileData(content="", encoding="utf-8"))
+            return ReadResult(file_data=FileData(content="", encoding="utf-8"), no_lines_requested=True)
 
         total_lines = len(lines)
         if not lines or offset >= total_lines:

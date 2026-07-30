@@ -1625,6 +1625,54 @@ class TestFilesystemMiddleware:
         assert result.content != EMPTY_CONTENT_WARNING
         assert "empty contents" not in result.content
 
+    @pytest.mark.parametrize("limit", [0, -3])
+    def test_read_file_non_positive_limit_empty_binary_keeps_empty_file_reminder(self, limit):
+        """An inspected-but-empty file must not borrow the zero-line-window warning.
+
+        Binary reads ignore `limit`, so a zero-byte binary is fully inspected
+        and comes back as empty base64; claiming it "was not inspected and may
+        have contents" would be false on both counts.
+        """
+        files = {
+            "/image.png": FileData(
+                content="",
+                encoding="base64",
+            )
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/image.png", "offset": 0, "limit": limit})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.content == EMPTY_CONTENT_WARNING
+
+    @pytest.mark.parametrize("limit", [0, -3])
+    def test_read_file_non_positive_limit_empty_text_keeps_empty_file_reminder(self, limit):
+        """A genuinely empty text file reports emptiness regardless of `limit`.
+
+        The blank-content branch in `slice_read_response` runs before the
+        zero-`limit` check, so an empty file arrives as whitespace-only text,
+        not as a backend-declared zero-line window.
+        """
+        files = {
+            "/notes.txt": FileData(
+                content="",
+                encoding="utf-8",
+            )
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": limit})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.content == EMPTY_CONTENT_WARNING
+
     def test_read_file_negative_offset_clamps_and_discloses(self):
         """A clamped offset still reads, and says so.
 

@@ -1482,13 +1482,17 @@ def test_read_script_final_window_has_null_next_offset(tmp_path: Path) -> None:
 
 
 def test_read_script_zero_limit_returns_empty_content(tmp_path: Path) -> None:
-    """A degenerate `limit` reads nothing, with no pagination keys to validate."""
+    """A degenerate `limit` reads nothing, with no pagination keys to validate.
+
+    `no_lines_requested` flags the window as never inspected so the middleware
+    can tell it apart from an inspected-but-empty file.
+    """
     target = tmp_path / "notes.txt"
     target.write_text("one\ntwo\nthree")
 
     result = _run_read_script(target, offset=0, limit=0)
 
-    assert result == {"encoding": "utf-8", "content": ""}
+    assert result == {"encoding": "utf-8", "content": "", "no_lines_requested": True}
 
 
 def test_build_read_cmd_clamps_negative_offset_to_first_line(tmp_path: Path) -> None:
@@ -1516,7 +1520,7 @@ def test_build_read_cmd_clamps_negative_limit_to_empty_read(tmp_path: Path) -> N
 
     result = _run_read_cmd(_build_read_cmd(str(target), -3, -1))
 
-    assert result == {"encoding": "utf-8", "content": ""}
+    assert result == {"encoding": "utf-8", "content": "", "no_lines_requested": True}
 
 
 def test_read_script_zero_limit_on_empty_file_reports_empty_file(tmp_path: Path) -> None:

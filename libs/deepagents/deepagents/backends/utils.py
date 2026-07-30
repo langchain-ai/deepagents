@@ -403,7 +403,8 @@ def normalize_read_bounds(offset: int, limit: int) -> tuple[int, int]:
     at `0` produces a zero-length window, which still has no valid
     `start_line`/`end_line` pair. Callers must additionally treat a returned
     `limit` of `0` as an empty read — see `slice_read_response` below, or the
-    equivalent short-circuits in the sandbox and LangSmith backends.
+    equivalent short-circuits in the sandbox and LangSmith backends, which
+    flag the result with `ReadResult.no_lines_requested`.
 
     The `int()` coercion is deliberate and load-bearing, not redundant with the
     annotations: `offset` and `limit` originate from model-supplied tool
@@ -453,8 +454,11 @@ def slice_read_response(
         `ReadResult` with the sliced raw content and pagination metadata
             (`total_lines`, `start_line`, `end_line`, `next_offset`). The
             pagination fields are left unset for empty or whitespace-only
-            content, and when the clamped `limit` is `0`. `error` is set instead
-            when the offset exceeds the file length.
+            content, and when the clamped `limit` is `0`; the zero-`limit`
+            result additionally sets `no_lines_requested` so the middleware
+            can tell the never-inspected window apart from a genuinely empty
+            file. `error` is set instead when the offset exceeds the file
+            length.
     """
     content = file_data_to_string(file_data)
     offset, limit = normalize_read_bounds(offset, limit)
@@ -465,11 +469,12 @@ def slice_read_response(
     if not content or content.strip() == "":
         return ReadResult(file_data=_copy_file_data_with_content(file_data, content))
 
-    # Nothing was requested, so there is no line range to report — same
-    # pagination shape as the blank-content branch above. The middleware
-    # distinguishes this from a genuinely empty file by re-checking `limit`.
+    # Nothing was requested: flag the window as never inspected so the
+    # middleware can tell it apart from a genuinely empty file, which arrives
+    # via the blank-content branch above (its `ReadResult` is otherwise
+    # identical: empty content, no pagination metadata).
     if limit == 0:
-        return ReadResult(file_data=_copy_file_data_with_content(file_data, ""))
+        return ReadResult(file_data=_copy_file_data_with_content(file_data, ""), no_lines_requested=True)
 
     # `splitlines(keepends=True)` retains each line's terminator, including
     # the absence of one on the final line. Joining with `""` therefore

@@ -525,10 +525,16 @@ class TestSliceReadResponse:
 
     @pytest.mark.parametrize("limit", [0, -3])
     def test_non_positive_limit_returns_empty_read(self, limit: int) -> None:
-        """A degenerate `limit` reads nothing instead of raising on the line range."""
+        """A degenerate `limit` reads nothing instead of raising on the line range.
+
+        `no_lines_requested` flags the window as never inspected so the
+        middleware can tell it apart from an inspected-but-empty file, whose
+        `ReadResult` is otherwise identical.
+        """
         result = slice_read_response(self._file("a\nb\nc"), offset=0, limit=limit)
         assert result.error is None
         assert self._content(result) == ""
+        assert result.no_lines_requested is True
         assert result.total_lines is None
         assert result.start_line is None
         assert result.end_line is None

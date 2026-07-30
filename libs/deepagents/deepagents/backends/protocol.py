@@ -213,6 +213,15 @@ class ReadResult:
     next_offset: int | None = None
     """0-indexed offset for the next unread source line."""
 
+    no_lines_requested: bool = False
+    """The read asked for zero lines and the file was never inspected.
+
+    Set by backends when a non-positive `limit` short-circuits the read, so
+    the middleware can tell a never-inspected window apart from a file that
+    was inspected and is genuinely empty — both otherwise arrive as empty
+    content with no pagination metadata.
+    """
+
     def __post_init__(self) -> None:
         """Reject malformed pagination-field combinations at construction.
 
@@ -229,6 +238,11 @@ class ReadResult:
         """
         if (self.start_line is None) != (self.end_line is None):
             msg = "ReadResult.start_line and end_line must be set together or both left unset"
+            raise ValueError(msg)
+        if self.no_lines_requested and (
+            self.error is not None or self.start_line is not None or self.next_offset is not None or self.total_lines is not None
+        ):
+            msg = "ReadResult.no_lines_requested describes an uninspected window; it cannot be combined with error or pagination fields"
             raise ValueError(msg)
         if self.next_offset is not None and self.start_line is None:
             msg = "ReadResult.next_offset requires start_line and end_line to be set"

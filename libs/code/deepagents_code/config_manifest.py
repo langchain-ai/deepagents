@@ -1595,10 +1595,10 @@ def options_with_key_prefix(prefix: str) -> tuple[ConfigOption, ...]:
     `credentials.openai` but `credential` matches nothing, so `config get` can
     accept a section name without also accepting truncated guesses.
 
-    Matching is case-insensitive, like `options_in_group`. Both matchers must
-    agree on case: `config get` tries this one first and falls back to group
-    titles, so a case-sensitive prefix would let `Models` skip the prefix tier
-    and silently resolve to the narrower `Models` heading instead.
+    Matching is case-insensitive, and key prefixes are the only section
+    namespace: display group titles (`Credentials`, `Tools`) are not accepted,
+    since several headings (`Models`, `Tools`) name a different set of options
+    than the same word as a prefix — one namespace keeps a section unambiguous.
 
     Args:
         prefix: Dotted key prefix (e.g. `credentials`). A trailing dot is not
@@ -1615,26 +1615,6 @@ def options_with_key_prefix(prefix: str) -> tuple[ConfigOption, ...]:
     return tuple(
         opt for opt in get_config_options() if opt.key.casefold().startswith(section)
     )
-
-
-def options_in_group(title: str) -> tuple[ConfigOption, ...]:
-    """Return every option in the display group named `title`, case-insensitively.
-
-    Group titles are the human-readable headings `config` prints (`Credentials`,
-    `Display`, ...), so a user who read the table can pass one back verbatim.
-    Titles are currently single words; one containing a space would need shell
-    quoting to survive as a single argument.
-
-    Args:
-        title: Group heading to match, in any case.
-
-    Returns:
-        Matching options in manifest order; empty when no group uses `title`.
-    """
-    if not title:
-        return ()
-    wanted = title.casefold()
-    return tuple(opt for opt in get_config_options() if opt.group.casefold() == wanted)
 
 
 @lru_cache(maxsize=1)

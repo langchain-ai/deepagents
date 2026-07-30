@@ -31,7 +31,6 @@ from deepagents_code.config_manifest import (
     get_option,
     is_provider_package_installed,
     option_keys,
-    options_in_group,
     options_with_key_prefix,
     provider_install_extra,
     resolve_interpreter_kwargs,
@@ -1726,27 +1725,12 @@ def test_options_with_key_prefix_matches_whole_segments_only() -> None:
     assert all(opt.key.startswith("credentials.") for opt in matched)
     assert options_with_key_prefix("credential") == ()
     assert options_with_key_prefix("") == ()
-
-
-def test_options_in_group_is_case_insensitive() -> None:
-    """Group titles resolve regardless of the case the user typed."""
-    matched = options_in_group("Credentials")
-    # Non-emptiness first: without it, a regression to always-return-() would
-    # satisfy every assertion below.
-    assert len(matched) > 1
-    assert options_in_group("cReDeNtIaLs") == matched
-    assert all(opt.group == "Credentials" for opt in options_in_group("credentials"))
-    assert options_in_group("nope") == ()
+    # No `tools.*` key exists, so the `Tools` heading has no prefix section.
+    assert options_with_key_prefix("tools") == ()
 
 
 def test_options_with_key_prefix_is_case_insensitive() -> None:
-    """Prefix matching casefolds, so it cannot be skipped by capitalizing.
-
-    Both section matchers must agree on case. When only the group matcher
-    casefolded, `Models` fell through to the narrower `Models` heading while
-    `models` matched every `models.*` key — the same argument selecting
-    different options based on capitalization alone.
-    """
+    """Prefix matching casefolds, so capitalization cannot change the result."""
     lower = options_with_key_prefix("models")
     assert len(lower) > 1
     assert options_with_key_prefix("Models") == lower
@@ -1788,9 +1772,9 @@ def test_run_get_credentials_section_lists_every_credential(
     assert "configured" in rendered
 
 
-@pytest.mark.parametrize("key", ["credentials", "credentials.", "Credentials"])
-def test_run_get_credentials_section_accepts_prefix_dot_and_title(key, capsys) -> None:
-    """Prefix, trailing dot, and group title all select the same options."""
+@pytest.mark.parametrize("key", ["credentials", "credentials.", "CREDENTIALS"])
+def test_run_get_credentials_section_accepts_prefix_dot_and_case(key, capsys) -> None:
+    """Prefix, trailing dot, and any casing all select the same options."""
     rows = _get_json_rows(key, capsys)
     assert [row["key"] for row in rows] == [
         opt.key for opt in options_with_key_prefix("credentials")
@@ -1834,29 +1818,27 @@ def test_run_get_section_verbose_text_shows_descriptions(capsys) -> None:
     assert "set via" in rendered
 
 
-def test_run_get_section_prefers_key_prefix_over_group_title(capsys) -> None:
+def test_run_get_section_selects_every_prefixed_key_across_headings(capsys) -> None:
     """`models` resolves to every `models.*` key, even across group headings."""
     rows = _get_json_rows("models", capsys)
     keys = [row["key"] for row in rows]
     assert keys == [opt.key for opt in options_with_key_prefix("models")]
-    # The `Models` heading is narrower than the dotted prefix; keys win.
-    assert len(keys) > len(options_in_group("Models"))
+    # The `Models` heading covers only some of the `models.*` keys; the
+    # section is the full prefix set, regardless of display grouping.
+    assert len(keys) > sum(opt.group == "Models" for opt in get_config_options())
 
 
-def test_run_get_group_title_without_matching_prefix_resolves(capsys) -> None:
-    """A heading whose options share no key prefix still resolves by title.
+@pytest.mark.parametrize("title", ["Credentials", "Tools", "Updates"])
+def test_run_get_group_title_is_not_a_section(title, capsys) -> None:
+    """Display group titles are rejected; only key prefixes name a section.
 
-    The subject group is derived rather than hardcoded so adding keys under a
-    formerly prefix-less heading retargets the test instead of breaking it.
+    `Tools` has no matching key prefix at all, and `Credentials`/`Updates`
+    differ from their `credentials`/`update` prefixes only by case and an
+    English plural — treating titles as sections would let one argument name
+    two different option sets depending on which namespace matched first.
     """
-    title = next(
-        group
-        for group in {opt.group for opt in get_config_options()}
-        if not options_with_key_prefix(group) and len(options_in_group(group)) > 1
-    )
-    rows = _get_json_rows(title, capsys)
-    assert [row["key"] for row in rows] == [opt.key for opt in options_in_group(title)]
-    assert len(rows) > 1
+    assert run_config_command(_get_args(title)) == 1
+    assert "Unknown config option or section" in capsys.readouterr().err
 
 
 def test_run_get_single_option_section_still_renders_as_a_list(capsys) -> None:
@@ -1883,16 +1865,16 @@ def test_run_get_single_option_section_still_renders_as_a_list(capsys) -> None:
 def test_run_get_section_is_case_insensitive_end_to_end(capsys) -> None:
     """A capitalized section selects the same options as the lowercase form.
 
-    Guards the user-visible half of the case fix: `dcode config` prints
-    `Models` as a heading, so typing that heading back must not silently return
-    fewer options than the dotted `models` prefix does.
+    `dcode config` prints `Models` as a heading; typing that word back must
+    resolve to the same `models.*` prefix section, not to the narrower heading
+    or to an error.
     """
     lower = _get_json_rows("models", capsys)
     upper = _get_json_rows("Models", capsys)
     assert [row["key"] for row in upper] == [row["key"] for row in lower]
-    # The `Models` heading is narrower than the prefix, so this only holds
-    # because the prefix tier matched in both casings.
-    assert len(lower) > len(options_in_group("Models"))
+    # The `Models` heading covers only some of the `models.*` keys, so this
+    # equality holds only when both casings resolve via the prefix.
+    assert len(lower) > sum(opt.group == "Models" for opt in get_config_options())
 
 
 def test_run_get_exact_key_verbose_json_folds_in_catalog(capsys) -> None:
@@ -1995,8 +1977,8 @@ def test_run_get_rejects_partial_matches(key, capsys) -> None:
     assert run_config_command(_get_args(key)) == 1
     err = capsys.readouterr().err
     assert "Unknown config option" in err
-    assert "config --verbose" in err
-    assert "config get credentials" in err
+    assert "`dcode config` to list keys" in err
+    assert "config get <section>" in err
 
 
 def test_run_get_unknown_key_json_names_sections_too(capsys) -> None:
@@ -2011,20 +1993,6 @@ def test_run_get_unknown_key_json_names_sections_too(capsys) -> None:
     assert run_config_command(_get_args("nope", "json")) == 1
     payload = json.loads(capsys.readouterr().out)["data"]
     assert payload == {"key": "nope", "error": "unknown option or section"}
-
-
-def test_unknown_key_hint_names_a_real_section() -> None:
-    """The hint's example section must actually resolve.
-
-    Mirrors `test_missing_key_example_is_a_real_option` for the section hint, so
-    the error never points at something `config get` would itself reject.
-    """
-    from deepagents_code.client.commands.config import _select_options
-
-    selection = _select_options("credentials")
-    assert selection is not None
-    assert selection.is_exact is False
-    assert len(selection.options) > 1
 
 
 def test_run_path_text_returns_zero() -> None:

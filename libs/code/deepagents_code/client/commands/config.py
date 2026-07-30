@@ -3,9 +3,9 @@
 Bare `config` resolves each option against the app credential store (for
 credentials), the live environment, and `config.toml`, reporting the effective
 value and which source provided it. `config get <key>` reports the same for a
-single option, and `config get <section>` — a key prefix such as `credentials`,
-or a display group title such as `Credentials`, either one case-insensitively —
-renders every option in that section using the same grouped view as bare
+single option, and `config get <section>` — a dotted key prefix such as
+`credentials`, matched case-insensitively — renders every option under that
+prefix using the same grouped view as bare
 `config`. Adding `--verbose`/`--all` to any of the three folds in each option's
 description and where it can be set (the static catalog). `config path` prints
 the on-disk config locations.
@@ -104,7 +104,7 @@ def setup_config_parser(
         nargs="?",
         default=None,
         help=(
-            "Option key (e.g. interpreter.memory_limit_mb) or section "
+            "Option key (e.g. interpreter.memory_limit_mb) or key prefix "
             "(e.g. credentials)"
         ),
     )
@@ -611,11 +611,11 @@ def _select_options(key: str) -> _Selection | None:
     """Resolve a `config get` argument to the options it names.
 
     Priority is exact key, then dotted key prefix (`credentials`, with an
-    optional trailing dot), then display group title (`Credentials`). Both
-    section tiers match case-insensitively. Prefix wins over group title so the
-    selection always agrees with the dotted keys the user typed — `models`
-    resolves to every `models.*` key rather than to the smaller `Models`
-    heading, whichever case it is typed in.
+    optional trailing dot, case-insensitively). Display group titles are
+    deliberately not accepted: `Models` and `Tools` name a different set of
+    options than the same word as a prefix, so titles would make one argument
+    resolve to two different sections depending on which tier matched. Key
+    prefixes are the single section namespace.
 
     Args:
         key: The raw argument passed to `config get`.
@@ -624,18 +624,13 @@ def _select_options(key: str) -> _Selection | None:
         The matched options and whether the match was an exact key, or `None`
         when nothing matches.
     """
-    from deepagents_code.config_manifest import (
-        get_option,
-        options_in_group,
-        options_with_key_prefix,
-    )
+    from deepagents_code.config_manifest import get_option, options_with_key_prefix
 
     exact = get_option(key)
     if exact is not None:
         return _Selection((exact,), is_exact=True)
 
-    section = key.removesuffix(".")
-    matched = options_with_key_prefix(section) or options_in_group(section)
+    matched = options_with_key_prefix(key.removesuffix("."))
     return _Selection(matched, is_exact=False) if matched else None
 
 
@@ -650,8 +645,8 @@ def _report_unknown_get_key(key: str, output_format: OutputFormat) -> int:
     else:
         print(  # noqa: T201
             f"Unknown config option or section: {key!r}. Run "
-            "`dcode config --verbose` to see available keys, or "
-            "`dcode config get credentials` to read a whole section.",
+            "`dcode config` to list keys, then "
+            "`dcode config get <key>` or `dcode config get <section>`.",
             file=sys.stderr,
         )
     return 1

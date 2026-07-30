@@ -814,19 +814,15 @@ def show_config_help() -> None:
     )
     console.print()
     console.print(
-        "  A section is a key prefix (credentials, display) or a group title",
+        "  A section is a dotted key prefix (credentials, display), matched",
         style=theme.MUTED,
     )
     console.print(
-        "  from `dcode config`, either matched case-insensitively. Sections",
+        "  case-insensitively. Sections render the grouped view, and emit a",
         style=theme.MUTED,
     )
     console.print(
-        "  render the grouped view, and emit a JSON list instead of a single",
-        style=theme.MUTED,
-    )
-    console.print(
-        "  object.",
+        "  JSON list instead of a single object.",
         style=theme.MUTED,
     )
     console.print()

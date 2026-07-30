@@ -6,7 +6,7 @@ import logging
 import re
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from deepagents_code.hooks.capabilities import HookOwner, get_event_spec
 from deepagents_code.hooks.loading import HooksSource, compute_snapshot_id
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 # Claude-compatible exact-match character set (letters, digits, _, -, spaces, ,, |).
 _EXACT_MATCHER = re.compile(r"^[\w\s,\-|]+$")
-_DEFAULT_SOURCE = HooksSource(location="")
+_DEFAULT_SOURCE: Final = HooksSource(location="")
 """Provenance for handlers compiled without it, which adds no env overlay."""
 
 

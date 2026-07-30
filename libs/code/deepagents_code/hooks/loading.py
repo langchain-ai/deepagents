@@ -21,9 +21,8 @@ import hashlib
 import json
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from types import MappingProxyType
 
 from pydantic import ValidationError
 
@@ -41,7 +40,6 @@ from deepagents_code.model_config import DEFAULT_CONFIG_DIR
 
 logger = logging.getLogger(__name__)
 _LEGACY_HOOKS_REMOVAL_DATE = "September 1, 2026"
-_EMPTY_ENV: Mapping[str, str] = MappingProxyType({})
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +59,7 @@ class HooksSource:
 
     location: str
     origin: str | None = None
-    env: Mapping[str, str] = _EMPTY_ENV
+    env: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,9 +70,6 @@ class SourcedGroup:
     group: MatcherGroup
 
 
-_EMPTY_GROUPS: Mapping[HookEvent, tuple[SourcedGroup, ...]] = MappingProxyType({})
-
-
 @dataclass(frozen=True, slots=True)
 class LoadedHooksConfig:
     """Validated configuration plus load diagnostics and source paths."""
@@ -83,7 +78,7 @@ class LoadedHooksConfig:
     diagnostics: tuple[HookDiagnostic, ...]
     sources: tuple[Path, ...]
     snapshot_id: str
-    groups: Mapping[HookEvent, tuple[SourcedGroup, ...]] = _EMPTY_GROUPS
+    groups: Mapping[HookEvent, tuple[SourcedGroup, ...]] = field(default_factory=dict)
     """Merged matcher groups with provenance, in the same order as `config`."""
 
     project_source_loaded: bool = False
@@ -191,9 +186,7 @@ def load_hooks_config(
         if document is not None:
             _merge(document, source)
 
-    groups = MappingProxyType(
-        {event: tuple(sourced) for event, sourced in merged.items()}
-    )
+    groups = {event: tuple(sourced) for event, sourced in merged.items()}
     config = HooksConfig(
         hooks={
             event: [sourced.group for sourced in sourced_groups]
@@ -419,20 +412,22 @@ def _validate_hooks_document(
 def _validate_matcher_group(
     data: object,
     path: Path,
-    field: str,
+    config_field: str,
 ) -> tuple[MatcherGroup | None, tuple[HookDiagnostic, ...]]:
     if not isinstance(data, Mapping):
-        return None, (_invalid_config(path, field, "expected an object"),)
+        return None, (_invalid_config(path, config_field, "expected an object"),)
     raw_handlers = data.get("hooks")
     if not isinstance(raw_handlers, list):
         return None, (
-            _invalid_config(path, f"{field}.hooks", "expected a list of handlers"),
+            _invalid_config(
+                path, f"{config_field}.hooks", "expected a list of handlers"
+            ),
         )
 
     handlers: list[CommandHandlerSpec] = []
     diagnostics: list[HookDiagnostic] = []
     for handler_index, raw_handler in enumerate(raw_handlers):
-        handler_field = f"{field}.hooks[{handler_index}]"
+        handler_field = f"{config_field}.hooks[{handler_index}]"
         try:
             handlers.append(CommandHandlerSpec.model_validate(raw_handler))
         except ValidationError as exc:
@@ -446,24 +441,24 @@ def _validate_matcher_group(
     try:
         return MatcherGroup.model_validate(group_data), tuple(diagnostics)
     except ValidationError as exc:
-        diagnostics.append(_validation_error(path, field, exc))
+        diagnostics.append(_validation_error(path, config_field, exc))
         return None, tuple(diagnostics)
 
 
 def _validation_error(
     path: Path,
-    field: str,
+    config_field: str,
     error: ValidationError,
 ) -> HookDiagnostic:
     details = "; ".join(
         str(item["msg"])
         for item in error.errors(include_url=False, include_input=False)
     )
-    return _invalid_config(path, field, details)
+    return _invalid_config(path, config_field, details)
 
 
-def _invalid_config(path: Path, field: str, detail: str) -> HookDiagnostic:
-    location = f"{path}:{field}" if field else str(path)
+def _invalid_config(path: Path, config_field: str, detail: str) -> HookDiagnostic:
+    location = f"{path}:{config_field}" if config_field else str(path)
     message = f"Invalid hooks config at {location}: {detail}"
     logger.warning(message)
     return HookDiagnostic(

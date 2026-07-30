@@ -205,6 +205,36 @@ class TestVersionDetection:
         assert brn._parse_prerelease("1.1.0-alpha.1") == ("1.1.0", 1, 1)
         assert brn._parse_prerelease("1.1.0-beta.2") == ("1.1.0", 2, 2)
         assert brn._parse_prerelease("1.1.0-preview.1") == ("1.1.0", 3, 1)
+        # `pre` shares rc's rank; PreRelease's docstring promises the tie.
+        assert brn._parse_prerelease("1.1.0-pre.1") == ("1.1.0", 3, 1)
+
+    def test_rank_aliases_tie(self) -> None:
+        """Aliases must be indistinguishable, or ordering depends on spelling."""
+        for a, b in (
+            ("1.1.0a1", "1.1.0-alpha.1"),
+            ("1.1.0b1", "1.1.0-beta.1"),
+            ("1.1.0rc1", "1.1.0-pre.1"),
+            ("1.1.0rc1", "1.1.0-preview.1"),
+        ):
+            left, right = brn._parse_prerelease(a), brn._parse_prerelease(b)
+            assert left is not None and right is not None
+            assert left.precedence == right.precedence, (a, b)
+
+    def test_precedence_orders_within_a_base(self) -> None:
+        """Phase dominates, serial breaks ties.
+
+        Structural tuple order would compare `base` as a string first and rank
+        1.0.10 below 1.0.9, so callers must use this instead.
+        """
+        def pre(v: str):
+            parsed = brn._parse_prerelease(v)
+            assert parsed is not None
+            return parsed.precedence
+
+        assert pre("1.1.0.dev9") < pre("1.1.0a1")
+        assert pre("1.1.0a9") < pre("1.1.0b1")
+        assert pre("1.1.0b9") < pre("1.1.0rc1")
+        assert pre("1.1.0rc1") < pre("1.1.0rc2")
 
     def test_parse_prerelease_fields_are_named(self) -> None:
         """Rank and serial are distinct fields, not positional ints."""
@@ -536,6 +566,23 @@ class TestGitLogGeneration:
         )
         assert "truncated to the newest" in details
         assert details.count("https://github.com/") < 10
+
+    def test_first_entry_over_budget_does_not_claim_no_commits(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """There are commits, just none renderable — "No commits found." lies.
+
+        A package with real history would otherwise publish notes stating it
+        had none.
+        """
+        monkeypatch.setattr(brn, "MAX_GIT_LOG_BYTES", 1)
+        commits = _create_history(tmp_path)
+        details = brn.generate_git_log(
+            tmp_path, str(PACKAGE_PATH), "example==1.0.0", commits["hotfix"],
+            REPOSITORY, warnings=[],
+        )
+        assert "No commits found." not in details
+        assert "exceeds the size budget" in details
 
 
 # ── Predecessor tag resolution ───────────────────────────────────────────────
@@ -1040,6 +1087,85 @@ class TestUnreachablePredecessorWarnings:
         assert prev == ""
         assert any("--is-ancestor exited 128" in w for w in warnings)
 
+    def test_merge_base_error_skips_candidate_and_warns(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exit 1 is the expected disjoint-history skip; anything else is a bug.
+
+        Dropping a candidate silently widens the log range and misattributes
+        contributors, so the error case must be distinguishable.
+        """
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.1.0a1")
+        tip = _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): a2"
+        )
+
+        real_git_run = brn._git_run
+
+        def fake(repo, *args):
+            if args[:1] == ("merge-base",) and "--is-ancestor" not in args:
+                return subprocess.CompletedProcess(args=list(args), returncode=128)
+            return real_git_run(repo, *args)
+
+        monkeypatch.setattr(brn, "_git_run", fake)
+        warnings: list[str] = []
+        prev = brn._latest_earlier_prerelease_tag(
+            tmp_path, "example", "1.1.0a2", tip, warnings
+        )
+        assert prev == ""
+        assert any("merge-base exited 128" in w for w in warnings), warnings
+
+    def test_tag_list_failure_is_not_read_as_initial_release(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed enumeration leaves the question unanswered, not answered "no".
+
+        Falling through to the empty-list path would suppress the very warning
+        that flags a full-history log mislabelled as an initial release.
+        """
+        _init_repo(tmp_path)
+        head = _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base"
+        )
+        real_git_run = brn._git_run
+
+        def fake(repo, *args):
+            if args[:2] == ("tag", "--list"):
+                return subprocess.CompletedProcess(
+                    args=list(args), returncode=128, stdout="", stderr="fatal: boom"
+                )
+            return real_git_run(repo, *args)
+
+        monkeypatch.setattr(brn, "_git_run", fake)
+        warnings: list[str] = []
+        brn.resolve_previous_tag(
+            tmp_path, "example", "2.0.0", head, is_prerelease=False, warnings=warnings
+        )
+        assert any("git tag --list failed" in w for w in warnings), warnings
+
+    def test_prerelease_only_history_does_not_warn_on_first_stable(
+        self, tmp_path: Path
+    ) -> None:
+        """Pre-release tags are not "prior stable tags".
+
+        Without the stable-only filter, a package's first stable release would
+        be told its log wrongly spans full history when it legitimately does.
+        """
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.0.0a1")
+        head = _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): ship"
+        )
+        warnings: list[str] = []
+        prev = brn.resolve_previous_tag(
+            tmp_path, "example", "1.0.0", head, is_prerelease=False, warnings=warnings
+        )
+        assert prev == ""
+        assert not any("No prior stable tag reachable" in w for w in warnings), warnings
+
 
 # ── Release commit resolution ───────────────────────────────────────────────
 
@@ -1106,6 +1232,36 @@ class TestReleaseCommit:
         assert commit == head
         assert any("falling back to the release SHA" in w for w in warnings)
 
+    def test_git_failure_is_distinguished_from_no_changelog_touch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Both fall back to the release SHA, but only one is a real failure.
+
+        Attribution is bounded by this commit, so a silent wrong value credits
+        the wrong contributors and merger.
+        """
+        _init_repo(tmp_path)
+        head = _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "BASE = 1\n", "feat(example): base"
+        )
+        real_git_run = brn._git_run
+
+        def fake(repo, *args):
+            if args[:1] == ("log",):
+                return subprocess.CompletedProcess(
+                    args=list(args), returncode=128, stdout="", stderr="fatal: boom"
+                )
+            return real_git_run(repo, *args)
+
+        monkeypatch.setattr(brn, "_git_run", fake)
+        warnings: list[str] = []
+        commit = brn.resolve_release_commit(
+            tmp_path, str(PACKAGE_PATH), head, is_prerelease=False, warnings=warnings
+        )
+        assert commit == head
+        assert any("commit lookup failed" in w for w in warnings), warnings
+        assert any("fatal: boom" in w for w in warnings), warnings
+
 
 # ── gh helpers ──────────────────────────────────────────────────────────────
 
@@ -1134,6 +1290,82 @@ def _pr_handler(pr_number: str, payload: str):
         return _ok(pr_number) if args[0] == "api" else _ok(payload)
 
     return handler
+
+
+class TestGhRequestContract:
+    """Pin the *requests*, not just the responses.
+
+    Every other contributor test stubs `_run_gh` and answers regardless of what
+    was asked, so the request side is unguarded. Dropping `labels` from the
+    `--json` list would make every real PR return no labels and route every
+    internal maintainer into the public community shoutouts — the response
+    stubs would keep passing.
+    """
+
+    def _repo(self, tmp_path: Path) -> str:
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.0.0")
+        return _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): one"
+        )
+
+    def _capture(self, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+        calls: list[list[str]] = []
+
+        def handler(args: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(list(args))
+            if args[0] == "api":
+                return _ok("7")
+            return _ok(json.dumps({"author": {"login": "alice"}, "labels": []}))
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        return calls
+
+    def test_commit_to_pr_endpoint_and_jq(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        head = self._repo(tmp_path)
+        calls = self._capture(monkeypatch)
+        brn.collect_contributors(
+            tmp_path, str(PACKAGE_PATH), head, "example==1.0.0", REPOSITORY,
+            warnings=[],
+        )
+        api = next(c for c in calls if c[0] == "api")
+        assert f"/repos/{REPOSITORY}/commits/" in api[1]
+        assert api[1].endswith("/pulls")
+        assert ".[0].number // empty" in api
+
+    def test_pr_view_requests_author_body_and_labels(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        head = self._repo(tmp_path)
+        calls = self._capture(monkeypatch)
+        brn.collect_contributors(
+            tmp_path, str(PACKAGE_PATH), head, "example==1.0.0", REPOSITORY,
+            warnings=[],
+        )
+        view = next(c for c in calls if c[0] == "pr")
+        fields = view[view.index("--json") + 1].split(",")
+        # `labels` drives the internal/community split; `body` the socials.
+        assert set(fields) == {"author", "body", "labels"}
+        assert "--repo" in view and REPOSITORY in view
+
+    def test_merged_by_requests_the_merger_login(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def handler(args: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(list(args))
+            return _ok("merger")
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        assert brn._merged_by(REPOSITORY, "7", []) == "merger"
+        view = calls[0]
+        assert view[:3] == ["pr", "view", "7"]
+        assert "mergedBy" in view[view.index("--json") + 1]
+        assert ".mergedBy.login // empty" in view
 
 
 class TestCollectContributors:
@@ -1721,6 +1953,130 @@ class TestResolveReleaser:
         assert any("gh executable not found" in w for w in warnings)
 
 
+class TestMissingGhVersusOffline:
+    """The distinction is documented twice; pin it where it is observable.
+
+    A maintainer without `gh` installed is the most likely local-recovery
+    environment, and the two modes differ only in whether `Released by:`
+    survives. Asserting it on `resolve_releaser` alone leaves the contract the
+    module docstring and RELEASING.md both state untested end to end.
+    """
+
+    def _repo(self, tmp_path: Path) -> str:
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.0.0")
+        return _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): one"
+        )
+
+    def _build(self, tmp_path: Path, head: str, *, offline: bool):
+        return brn.build_release_notes(
+            tmp_path,
+            package="example",
+            version="1.0.1",
+            release_sha=head,
+            repository=REPOSITORY,
+            offline=offline,
+            actor="mdrxy",
+            working_dir=str(PACKAGE_PATH),
+        )
+
+    def test_missing_gh_keeps_the_releaser_line(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        head = self._repo(tmp_path)
+        monkeypatch.setattr(brn, "_run_gh", lambda _a: None)
+        body, warnings = self._build(tmp_path, head, offline=False)
+        assert "Released by: @mdrxy" in body
+        assert "community contributors" not in body
+        assert any("gh executable not found" in w for w in warnings), warnings
+
+    def test_offline_drops_the_releaser_line(self, tmp_path: Path) -> None:
+        """`--offline` short-circuits before the actor fallback is reached."""
+        head = self._repo(tmp_path)
+        body, _ = self._build(tmp_path, head, offline=True)
+        assert "Released by:" not in body
+        assert "community contributors" not in body
+
+
+class TestGitFailureIsFatalAndNamed:
+    """`_git(check=True)` re-attaches git's stderr; verify it survives to exit.
+
+    RELEASING.md promises an `::error::` line naming the failure. Without this,
+    the deliberate re-attachment in `_git` was collected and then discarded by
+    `main`, leaving an operator with an argv dump and an exit code.
+    """
+
+    def test_git_error_carries_stderr(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _init_repo(tmp_path)
+        real_run = subprocess.run
+
+        def fake(cmd, *a, **kw):
+            if isinstance(cmd, list) and "rev-list" in cmd:
+                return subprocess.CompletedProcess(
+                    args=cmd, returncode=128, stdout="", stderr="fatal: bad revision"
+                )
+            return real_run(cmd, *a, **kw)
+
+        monkeypatch.setattr(brn.subprocess, "run", fake)
+        with pytest.raises(subprocess.CalledProcessError) as excinfo:
+            brn._git(tmp_path, "rev-list", "HEAD")
+        assert excinfo.value.stderr == "fatal: bad revision"
+
+    def test_cli_reports_an_unresolvable_sha_with_git_words(
+        self, tmp_path: Path
+    ) -> None:
+        commits = _create_history(tmp_path)
+        assert commits
+        result = _run_cli(
+            tmp_path,
+            "--package", "example",
+            "--version", "1.0.1",
+            "--sha", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            "--repo", REPOSITORY,
+            "--working-dir", str(PACKAGE_PATH),
+            "--offline",
+            "--repo-root", str(tmp_path),
+        )
+        assert result.returncode == 1
+        assert "::error::" in result.stderr
+
+    def test_main_surfaces_git_stderr_not_just_the_exit_status(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`_git` re-attaches git's diagnosis; `main` must not discard it.
+
+        `str(CalledProcessError)` reports only argv and exit status, so without
+        an explicit append the operator gets a raw git command dump instead of
+        "fatal: bad object" — on the very recovery path this script exists for.
+        """
+        def boom(*_a: object, **_k: object) -> tuple[str, list[str]]:
+            raise subprocess.CalledProcessError(
+                128, ["git", "rev-list"], output="", stderr="fatal: bad object"
+            )
+
+        monkeypatch.setattr(brn, "build_release_notes", boom)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["build_release_notes.py", "--package", "example",
+             "--version", "1.0.1", "--sha", "abc123"],
+        )
+        emitted: list[str] = []
+        monkeypatch.setattr(
+            brn, "print",
+            lambda *a, **k: emitted.append(str(a[0]) if a else ""),
+            raising=False,
+        )
+        with pytest.raises(SystemExit):
+            brn.main()
+        errors = [line for line in emitted if line.startswith("::error::")]
+        assert errors, emitted
+        assert "fatal: bad object" in errors[0], errors
+
+
 class TestRunGh:
     """Exercise the real `_run_gh`, which every other gh test stubs out."""
 
@@ -2297,6 +2653,168 @@ class TestChangelogIsReadAtTheReleaseSha:
         assert "edited after the fact" not in body
 
 
+class TestReadChangelogAt:
+    """The working-tree fallback publishes unreleased content if it misfires.
+
+    It is the one path that can put text into a release body that was never
+    part of the release, so each branch needs its own guard.
+    """
+
+    def _repo_with_release(self, tmp_path: Path) -> str:
+        _init_repo(tmp_path)
+        return _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base"
+        )
+
+    def test_reads_the_blob_at_the_release_sha(self, tmp_path: Path) -> None:
+        _init_repo(tmp_path)
+        release = _commit(
+            tmp_path,
+            PACKAGE_PATH / "CHANGELOG.md",
+            "## 1.0.1\n\n* released\n",
+            "release(example): 1.0.1",
+        )
+        warnings: list[str] = []
+        text, reason = brn.read_changelog_at(
+            tmp_path, str(PACKAGE_PATH), release, warnings
+        )
+        assert reason is None
+        assert "* released" in text
+        assert warnings == []
+
+    def test_falls_back_to_the_working_tree_and_warns(self, tmp_path: Path) -> None:
+        """Absent at the SHA but present on disk: usable, but flag the mismatch."""
+        release = self._repo_with_release(tmp_path)
+        # Written but never committed, so it does not exist at `release`.
+        (tmp_path / PACKAGE_PATH / "CHANGELOG.md").write_text(
+            "## 1.0.1\n\n* from the working tree\n"
+        )
+        warnings: list[str] = []
+        text, reason = brn.read_changelog_at(
+            tmp_path, str(PACKAGE_PATH), release, warnings
+        )
+        assert reason is None
+        assert "* from the working tree" in text
+        assert any("working tree" in w for w in warnings), warnings
+
+    def test_missing_from_both_sources_reports_a_reason(self, tmp_path: Path) -> None:
+        release = self._repo_with_release(tmp_path)
+        warnings: list[str] = []
+        text, reason = brn.read_changelog_at(
+            tmp_path, str(PACKAGE_PATH), release, warnings
+        )
+        assert text == ""
+        assert reason is not None
+        assert "no CHANGELOG.md in the working tree" in reason
+
+    def test_carries_git_stderr_rather_than_asserting_a_cause(
+        self, tmp_path: Path
+    ) -> None:
+        """A non-zero `git show` is not proof the path was merely absent."""
+        release = self._repo_with_release(tmp_path)
+        warnings: list[str] = []
+        _, reason = brn.read_changelog_at(
+            tmp_path, str(PACKAGE_PATH), release, warnings
+        )
+        assert reason is not None
+        # git's own words, not a cause the code invented. Stating "does not
+        # exist at <sha>" as fact would also mislabel a corrupt object or an
+        # ambiguous ref, which land on this same non-zero exit.
+        assert "fatal:" in reason, reason
+
+    def test_no_working_tree_warning_when_the_read_itself_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Warning must follow the read, not precede it.
+
+        Appending first leaves a warning claiming the working tree was "read
+        from" when nothing was read.
+        """
+        release = self._repo_with_release(tmp_path)
+        changelog = tmp_path / PACKAGE_PATH / "CHANGELOG.md"
+        changelog.write_text("## 1.0.1\n")
+
+        def boom(*_a: object, **_k: object) -> str:
+            msg = "denied"
+            raise PermissionError(msg)
+
+        monkeypatch.setattr(Path, "read_text", boom)
+        warnings: list[str] = []
+        text, reason = brn.read_changelog_at(
+            tmp_path, str(PACKAGE_PATH), release, warnings
+        )
+        assert text == ""
+        assert reason is not None and "Could not read" in reason
+        assert not any("read from the working tree" in w for w in warnings), warnings
+
+
+class TestChangelogFailuresAreNeverSilent:
+    """A read failure must warn even on a pre-release, and say what it cost.
+
+    Pre-releases legitimately have no CHANGELOG *section*, but the file is
+    checked in regardless — so an unreadable file is never expected, and it
+    also blinds the missing-tags heuristic that shares the same text.
+    """
+
+    def _prerelease_repo(self, tmp_path: Path) -> str:
+        _init_repo(tmp_path)
+        return _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base"
+        )
+
+    def test_prerelease_missing_section_stays_quiet(self, tmp_path: Path) -> None:
+        """The genuinely expected case must not add noise."""
+        _init_repo(tmp_path)
+        release = _commit(
+            tmp_path,
+            PACKAGE_PATH / "CHANGELOG.md",
+            "## 1.0.0\n\n* shipped\n",
+            "release(example): 1.0.0",
+        )
+        _, warnings = brn.build_release_notes(
+            tmp_path,
+            package="example",
+            version="1.0.1rc1",
+            release_sha=release,
+            repository=REPOSITORY,
+            offline=True,
+            working_dir=str(PACKAGE_PATH),
+        )
+        assert not any("Could not read" in w for w in warnings), warnings
+
+    def test_prerelease_unreadable_changelog_still_warns(
+        self, tmp_path: Path
+    ) -> None:
+        """The file is absent entirely — not the same as "no section for me"."""
+        release = self._prerelease_repo(tmp_path)
+        _, warnings = brn.build_release_notes(
+            tmp_path,
+            package="example",
+            version="1.0.1rc1",
+            release_sha=release,
+            repository=REPOSITORY,
+            offline=True,
+            working_dir=str(PACKAGE_PATH),
+        )
+        assert any("Could not read" in w for w in warnings), warnings
+
+    def test_unreadable_changelog_reports_the_disabled_backstop(
+        self, tmp_path: Path
+    ) -> None:
+        """An absent warning must not read as "checked, nothing wrong"."""
+        release = self._prerelease_repo(tmp_path)
+        _, warnings = brn.build_release_notes(
+            tmp_path,
+            package="example",
+            version="1.0.1rc1",
+            release_sha=release,
+            repository=REPOSITORY,
+            offline=True,
+            working_dir=str(PACKAGE_PATH),
+        )
+        assert any("missing-tags check could not run" in w for w in warnings), warnings
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
@@ -2505,13 +3023,46 @@ class TestCli:
         written = summary.read_text()
         assert "Release notes built with warnings" in written
         assert "gh release edit" in written
+        # The snippet is only ever pasted into an operator's shell, so it must
+        # not depend on CI-only variables or reference a file nothing created.
+        assert "$GITHUB_REPOSITORY" not in written
+        assert "build_release_notes.py" in written
+        assert "--out /tmp/release-body.md" in written
+
+    def test_incomplete_warnings_are_emitted_first(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ordering is functional, not cosmetic.
+
+        GitHub renders only the first 10 warning annotations per step, so the
+        aggregate "this output is untrustworthy" lines must outrank the
+        per-item ones they summarize or they fall off the run page entirely.
+        """
+        def fake_build(*_a: object, **_k: object) -> tuple[str, list[str]]:
+            return "body", ["per-item detail", "contributor list is INCOMPLETE"]
+
+        monkeypatch.setattr(brn, "build_release_notes", fake_build)
+        monkeypatch.setattr(
+            sys, "argv",
+            ["build_release_notes.py", "--package", "example",
+             "--version", "1.0.1", "--sha", "abc123"],
+        )
+        emitted: list[str] = []
+        monkeypatch.setattr(
+            brn, "print",
+            lambda *a, **k: emitted.append(str(a[0]) if a else ""),
+            raising=False,
+        )
+        brn.main()
+        annotations = [line for line in emitted if line.startswith("::warning::")]
+        assert "INCOMPLETE" in annotations[0], annotations
 
     def test_step_summary_is_skipped_when_there_are_no_warnings(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         summary = tmp_path / "summary.md"
         monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-        brn._write_step_summary("example", "1.0.1", [])
+        brn._write_step_summary("example", "1.0.1", "acme/example", "abc123", [])
         assert not summary.exists()
 
 
@@ -2529,8 +3080,10 @@ class TestWorkflowWiring:
             "release-body: ${{ steps.finalize-release-body.outputs.release-body }}"
             in text
         )
-        # The key the script writes into $GITHUB_OUTPUT.
-        assert 'handle.write(f"release-body<<' in SCRIPT_PATH.read_text()
+        # The key the script writes is covered behaviorally by
+        # TestCli.test_writes_github_output_heredoc; asserting on the module's
+        # source text here would break on any refactor that hoists the format
+        # string to a constant without changing behavior.
 
     def test_workflow_invokes_the_script_with_the_authoritative_flags(self) -> None:
         text = _release_yml_text()
@@ -2552,6 +3105,29 @@ class TestWorkflowWiring:
             if not line.lstrip().startswith("#")
         ]
         assert "needs.release-notes.result" not in "\n".join(live_lines)
+
+    def test_every_variable_the_step_interpolates_is_defined(self) -> None:
+        """The deleted Bash tests executed the step; this replaces that guard.
+
+        `$WORKING_DIR` in particular resolves from the *job* env, not the step
+        env — correct today, but a job refactor would break it silently. An
+        undefined variable expands to empty, and `--sha ""` exits 1 inside a
+        job deliberately built never to block a release.
+        """
+        import yaml
+
+        workflow = yaml.safe_load(_release_yml_text())
+        job = workflow["jobs"]["release-notes"]
+        step = next(
+            s for s in job["steps"] if s.get("id") == "finalize-release-body"
+        )
+        defined = set(step.get("env") or {}) | set(job.get("env") or {})
+        # Provided by the runner rather than declared in the workflow.
+        defined |= {"GITHUB_WORKSPACE", "GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY"}
+
+        referenced = set(re.findall(r"\$\{?([A-Z_][A-Z0-9_]*)\}?", step["run"]))
+        missing = referenced - defined
+        assert not missing, f"undefined in the finalize-release-body step: {missing}"
 
 
 # ── Package map ──────────────────────────────────────────────────────────────

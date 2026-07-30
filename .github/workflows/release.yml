@@ -491,6 +491,17 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # The release target checkout (above) uses the release SHA, which may
+      # predate the notes script. Check out the workflow's own revision into
+      # a separate path so the helper is always available.
+      - name: Check out release-notes script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: _workflow
+          sparse-checkout: |
+            .github/scripts/release/build_release_notes.py
+
       # Build the release body with the shared script. This replaces the
       # previous inline bash steps so the same logic can be reused locally
       # for post-publish recovery (see RELEASING.md > Release Notes Failed).
@@ -506,7 +517,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           REPOSITORY: ${{ github.repository }}
         run: |
-          python .github/scripts/release/build_release_notes.py \
+          python _workflow/.github/scripts/release/build_release_notes.py \
             --package "$PKG_NAME" \
             --version "$VERSION" \
             --sha "$RELEASE_SHA" \

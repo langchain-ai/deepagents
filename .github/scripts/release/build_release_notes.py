@@ -5,7 +5,9 @@ job publishes, so a maintainer can rebuild and apply it manually when the CI
 job fails or produces an empty body after a successful publish.
 
 The script is intentionally self-contained (no external dependencies) so it
-runs in any environment with Python 3.11+ and ``git`` available.
+runs in any environment with Python 3.11+ and ``git`` available. The ``gh``
+CLI is optional; when it is missing the script degrades gracefully by
+skipping contributor and releaser lookups (same as ``--offline``).
 
 Usage:
     python .github/scripts/release/build_release_notes.py \
@@ -441,28 +443,38 @@ def generate_git_log(
 # ── Contributor collection ───────────────────────────────────────────────────
 
 
+def _run_gh(args: list[str]) -> subprocess.CompletedProcess[str] | None:
+    """Run a ``gh`` command, returning None when the executable is missing."""
+    try:
+        return subprocess.run(
+            ["gh", *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+
+
 def _gh_api(endpoint: str, *, repo: str = "", jq: str = "") -> str:
     """Run ``gh api`` and return stdout, or empty string on failure."""
-    cmd = ["gh", "api", endpoint]
+    cmd = ["api", endpoint]
     if jq:
         cmd.extend(["--jq", jq])
-    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    result = _run_gh(cmd)
+    if result is None:
+        return ""
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def _gh_pr_view(pr_num: str, repo: str, fields: str) -> dict | None:
     """Run ``gh pr view`` and return parsed JSON, or None on failure."""
-    result = subprocess.run(
-        [
-            "gh", "pr", "view", pr_num,
-            "--repo", repo,
-            "--json", fields,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
+    result = _run_gh([
+        "pr", "view", pr_num,
+        "--repo", repo,
+        "--json", fields,
+    ])
+    if result is None or result.returncode != 0:
         return None
     try:
         return json.loads(result.stdout)
@@ -598,18 +610,13 @@ def resolve_releaser(
             jq=". [0].number // empty",
         )
         if pr_num:
-            result = subprocess.run(
-                [
-                    "gh", "pr", "view", pr_num,
-                    "--repo", repository,
-                    "--json", "mergedBy",
-                    "--jq", ".mergedBy.login // empty",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if result.returncode == 0:
+            result = _run_gh([
+                "pr", "view", pr_num,
+                "--repo", repository,
+                "--json", "mergedBy",
+                "--jq", ".mergedBy.login // empty",
+            ])
+            if result is not None and result.returncode == 0:
                 releaser = result.stdout.strip()
 
     if not releaser:

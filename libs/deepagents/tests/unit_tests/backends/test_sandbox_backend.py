@@ -1068,6 +1068,28 @@ def test_sandbox_edit_upload_partial_upload_failure() -> None:
 # -- remaining template tests --------------------------------------------------
 
 
+def test_shell_templates_have_no_command_substitution() -> None:
+    """Shell templates must not contain backticks or `$(...)` substitutions.
+
+    The templates run through POSIX `sh` inside double-quoted strings, where
+    backticks and `$()` trigger command substitution. A comment with a harmless
+    backticked identifier (like `limit`) gets executed as a shell command, and
+    the resulting "command not found" stderr noise corrupts the JSON stdout
+    consumers parse.
+    """
+    templates = [
+        _READ_COMMAND_TEMPLATE,
+        _EDIT_COMMAND_TEMPLATE,
+        _EDIT_TMPFILE_TEMPLATE,
+        _GLOB_COMMAND_TEMPLATE,
+        _GREP_PATH_GLOB_TEMPLATE,
+        _WRITE_CHECK_TEMPLATE,
+    ]
+    for template in templates:
+        assert "`" not in template
+        assert "$(" not in template
+
+
 def test_read_command_template_format() -> None:
     """Test that _READ_COMMAND_TEMPLATE can be formatted without KeyError."""
     path_b64 = base64.b64encode(b"/test/file.txt").decode("ascii")
@@ -1433,6 +1455,10 @@ def test_build_read_cmd_shell_outputs_single_json_document(tmp_path: Path) -> No
     result = json.loads(proc.stdout.strip())
     assert result["content"] == "one\ntwo\nthree"
     assert result["total_lines"] == 3
+    # Real consumers merge stderr into stdout (the template ends with `2>&1`),
+    # so any stderr noise — e.g. a stray command substitution in the template —
+    # would corrupt the JSON those consumers parse.
+    assert proc.stderr == ""
 
 
 def test_read_script_mid_buffer_invalid_utf8_returns_base64(tmp_path: Path) -> None:

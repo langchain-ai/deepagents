@@ -3465,14 +3465,27 @@ class DeepAgentsApp(App):
         on interrupt (`Ctrl+C`) or exit."""
 
         self._agent_turn_started = False
-        """True once the active worker's `_run_agent_task` coroutine has begun.
+        """True once the current `_run_agent_task` invocation has begun.
+
+        This is the canonical explanation of the wedge the interrupt-recovery
+        machinery exists to prevent; other sites describe only their local
+        mechanism and point here.
 
         A worker cancelled before its first event-loop step never runs its
         coroutine, so `_run_agent_task`'s `finally` — and with it
-        `_cleanup_agent_task` — never fires and nothing would release
-        `_agent_running`. The interrupt paths read this to recover instead of
-        leaving the session permanently busy, queueing every later message
-        behind a turn that will never report back."""
+        `_cleanup_agent_task` — never fires and nothing releases
+        `_agent_running`. The session then looks busy for the rest of its life:
+        new messages queue instead of sending, `Esc` only pops them back into
+        the chat input, and `/force-clear` does not recover. The interrupt paths
+        read this flag to tell that case apart from a worker that really ran,
+        and release the turn themselves.
+
+        Lifetime: set by `_run_agent_task` (which is also awaited directly,
+        without a worker, from `_run_goal_criteria_request`); cleared by
+        `_send_to_agent` before it spawns a worker and by `_cleanup_agent_task`
+        at turn end. Any new path that starts an agent worker must leave this
+        `False`, or `_recover_unstarted_agent_worker` will skip that worker and
+        the wedge returns."""
 
         self._agent_running = False
         """True while the agent worker is streaming a response."""
@@ -13552,7 +13565,10 @@ class DeepAgentsApp(App):
                 if self._server_proc is not None and self._server_kwargs is not None:
                     if self._agent_running and self._agent_worker:
                         self._cancel_worker(self._agent_worker)
-                        self._agent_running = False
+                        # Via `_set_agent_running` so the quiescence event is
+                        # released with the flag; a bare assignment leaves
+                        # `_agent_quiescent` cleared.
+                        self._set_agent_running(False)
                     else:
                         self._discard_queue()
                     restarted = await self._restart_server_manual()
@@ -14592,10 +14608,10 @@ class DeepAgentsApp(App):
             self._active_turn_visible_output_started = False
             self._agent_turn_started = False
             # The awaited setup below runs while the session already reports
-            # busy but before a worker exists to cancel, so any early exit or
-            # failure in that window must hand the running flag back. Otherwise
-            # the session stays busy forever and every later message is queued
-            # behind a turn that was never started.
+            # busy but before a worker exists to cancel, so nothing here can be
+            # released by an interrupt or by a worker `finally`. This window
+            # owns the release itself; see `_agent_turn_started` for what a
+            # missed release costs.
             worker_started = False
             try:
                 # Flush any buffered non-incognito `!` shell output into thread
@@ -14606,7 +14622,6 @@ class DeepAgentsApp(App):
                 # acting on a blocked goal, so reset it before the turn starts.
                 reset = await self._reset_blocked_goal_for_user_turn()
                 if not reset.ready:
-                    self._active_user_message = None
                     await self._mount_message(
                         ErrorMessage(
                             "The blocked goal could not be resumed, so this message "
@@ -14658,18 +14673,39 @@ class DeepAgentsApp(App):
         the worker's `finally`. When no worker was started there is nothing to
         cancel and no `finally` to run, so this releases the state instead and
         drains anything queued behind the abandoned turn.
+
+        Deliberately not a full `_cleanup_agent_task`: no turn ran, so there is
+        no spinner, stats, tool group, or goal state to reconcile.
+
+        Runs from a `finally`, so every step is best-effort — raising here would
+        replace the exception that abandoned the turn with a teardown error.
         """
         self._set_agent_running(False)
+        self._active_user_message = None
+        self._active_turn_visible_output_started = False
         if self._chat_input:
-            self._chat_input.set_cursor_active(active=True)
+            # Widget calls can fail against a torn-down DOM; the running flag is
+            # the part that wedges the session, and it is already handed back.
+            with suppress(Exception):
+                self._chat_input.set_cursor_active(active=True)
         if not self._pending_messages:
             return
-        # Best-effort: a failed drain must not mask the error that abandoned
-        # the turn, and the session is already idle again by this point.
         try:
             await self._process_next_from_queue()
         except Exception:
+            # `_process_next_from_queue` handles its own failures, so reaching
+            # here means its error reporting failed too — the queued message has
+            # already been popped and the user would otherwise see nothing at
+            # all about its disappearance.
             logger.exception("Failed to drain queue after abandoned turn")
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage(
+                        "A queued message could not be sent after the previous "
+                        "turn was abandoned. Resend it, or run `/force-clear` "
+                        "if the session looks stuck."
+                    )
+                )
 
     async def _mount_deferred_start_notice(self) -> None:
         """Tell first-launch users how to configure model credentials."""
@@ -15019,10 +15055,9 @@ class DeepAgentsApp(App):
             graph_input: Prepared non-conversation input for a server operation.
             goal_notice_current: Whether the caller just persisted the current notice.
         """
-        # Recorded before anything can fail so the interrupt paths can tell a
-        # turn that started from a worker that was cancelled before its first
-        # event-loop step (whose coroutine — and so the `finally` below — never
-        # runs at all).
+        # Set before anything can fail, so a cancel arriving later cannot leave
+        # this `False` and be mistaken for a worker that never ran. See
+        # `_agent_turn_started`.
         self._agent_turn_started = True
 
         from deepagents_code.config import settings
@@ -15032,14 +15067,23 @@ class DeepAgentsApp(App):
             execute_task_textual,
         )
 
+        # Read before the guard clauses below so an early return still clears
+        # the submitted request during cleanup instead of stranding it.
         criteria_request_id: str | None = None
-        # Create the stats object up-front so exit() can merge it synchronously
-        # if the worker is cancelled before this method can return (e.g. Ctrl+D
-        # during HITL).
+        if graph_input is not None:
+            criteria_request = graph_input.get("goal_criteria_request")
+            if isinstance(criteria_request, dict):
+                raw_request_id = criteria_request.get("request_id")
+                if isinstance(raw_request_id, str):
+                    criteria_request_id = raw_request_id
+
         turn_stats = SessionStats()
         latest_goal_grade: RubricEvaluationEnd | None = None
         turn_completed = False
         task_succeeded = False
+        # Distinguishes a local setup fault from a real agent failure in the
+        # handler below; they get very different messages.
+        streaming_started = False
 
         def _record_goal_grading_run(event: RubricEvaluationEnd) -> None:
             nonlocal latest_goal_grade
@@ -15056,14 +15100,25 @@ class DeepAgentsApp(App):
                     event.result,
                 )
 
-        # Turn setup runs inside this `try` as well as the stream itself:
-        # `_cleanup_agent_task` in the `finally` is the only thing that releases
-        # `_agent_running`, so an early return or an interrupt landing during
-        # setup must not slip past it. Otherwise the session stays busy forever
-        # and every later message is queued behind a turn that already ended.
+        # Turn setup runs inside this `try` as well as the stream itself: for a
+        # turn that reached this coroutine, `_cleanup_agent_task` in the
+        # `finally` below is the only release path, so an early return or an
+        # interrupt landing during setup must not slip past it. See
+        # `_agent_turn_started` for what a missed release costs.
         try:
-            # Caller ensures _ui_adapter is set (checked in _handle_user_message)
+            # Both entry points (`_send_to_agent`, `_run_goal_criteria_request`)
+            # gate on `_ui_adapter`, but a `/restart` or server teardown can
+            # clear it between that check and this worker's first step.
             if self._ui_adapter is None:
+                logger.error(
+                    "Agent turn started with no UI adapter; message was not sent"
+                )
+                await self._mount_message(
+                    ErrorMessage(
+                        "The session is not ready, so this message was not sent. "
+                        "Retry, or run `/restart` if the problem persists."
+                    )
+                )
                 return
             if self._approval_mode_blocked:
                 await self._mount_message(
@@ -15074,13 +15129,9 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            if graph_input is not None:
-                criteria_request = graph_input.get("goal_criteria_request")
-                if isinstance(criteria_request, dict):
-                    raw_request_id = criteria_request.get("request_id")
-                    if isinstance(raw_request_id, str):
-                        criteria_request_id = raw_request_id
-
+            # Published on the app so exit() can merge the stats synchronously
+            # if the worker is cancelled before this method can return (e.g.
+            # Ctrl+D during HITL).
             self._inflight_turn_stats = turn_stats
             self._inflight_turn_start = time.monotonic()
 
@@ -15150,6 +15201,7 @@ class DeepAgentsApp(App):
                     )
                 )
                 return
+            streaming_started = True
             await execute_task_textual(
                 user_input=message,
                 agent=self._agent,
@@ -15187,6 +15239,21 @@ class DeepAgentsApp(App):
                 logger.exception("Failed to close/regroup tool group at turn end")
             task_succeeded = True
         except Exception as e:  # Resilient tool rendering
+            if not streaming_started:
+                # Nothing was ever sent to the agent, so this is a local TUI or
+                # state fault. Routing it through the agent-error path below
+                # would blame the model or the backend for a bug in this file —
+                # and run credential-mismatch detection that cannot apply.
+                logger.exception("Agent turn setup failed before streaming began")
+                with suppress(Exception):
+                    await self._mount_message(
+                        ErrorMessage(
+                            "Internal error preparing this turn, so the message "
+                            f"was not sent: {e!r}. Retry, or run `/restart` if "
+                            "it persists."
+                        )
+                    )
+                return
             logger.exception("Agent execution failed")
             try:
                 from deepagents_code.client.remote_client import format_agent_exception
@@ -15364,6 +15431,9 @@ class DeepAgentsApp(App):
         self._agent_reconciling = True
         self._set_agent_running(False)
         self._agent_worker = None
+        # Tie the flag's lifetime to the worker's: left `True` across turns it
+        # would disable `_recover_unstarted_agent_worker` for every later turn.
+        self._agent_turn_started = False
         self._active_user_message = None
         self._active_turn_visible_output_started = False
         queued_result: _GoalApplicationResult | None = None
@@ -16833,22 +16903,27 @@ class DeepAgentsApp(App):
 
         A worker cancelled before its first event-loop step never runs its
         coroutine, so `_run_agent_task` — and the `_cleanup_agent_task` call in
-        its `finally` — never happens and Textual leaves the worker's state as
-        `RUNNING`. Nothing else would ever clear `_agent_running`, so the
-        session would look busy for the rest of its life: new messages would
-        queue instead of sending, `Esc` would only pop them back into the chat
-        input, and not even `/force-clear` would recover.
+        its `finally` — never happens. Textual also leaves such a worker's state
+        as `RUNNING` (`Worker._start` sets it before creating the task, and only
+        `Worker._run` moves it to `CANCELLED`), which is why this keys off
+        `_agent_turn_started` rather than the worker's own state. See
+        `_agent_turn_started` for what goes wrong when nothing releases the turn.
 
         Args:
-            worker: The worker that was just cancelled.
+            worker: The worker that was just cancelled. Callers may pass any
+                worker — `_cancel_worker` also handles the shell worker —
+                so anything that is not the current `_agent_worker` is ignored.
         """
         if worker is not self._agent_worker or self._agent_turn_started:
             return
 
         async def _release() -> None:
             # Re-check on the callback: the worker may have taken its first step
-            # between the cancel and this callback, in which case its own
-            # `finally` owns cleanup.
+            # between the cancel and this callback, or a new turn may have
+            # started, in which case cleanup is not ours to run. A caller that
+            # already cleared `_agent_running` (the plugin-reload path) has also
+            # taken ownership — running a full cleanup there would drive goal
+            # sync against a server that is mid-restart.
             if (
                 worker is not self._agent_worker
                 or self._agent_turn_started
@@ -16858,9 +16933,29 @@ class DeepAgentsApp(App):
             logger.warning(
                 "Agent worker was cancelled before it started; releasing the turn"
             )
-            await self._cleanup_agent_task()
+            try:
+                await self._cleanup_agent_task()
+            except Exception:
+                # This is the recovery path for an already-wedged session, so a
+                # teardown failure must not escalate into a crash: an exception
+                # from a refresh callback reaches Textual's handler and exits
+                # the app. The state that wedges the session is cleared before
+                # `_cleanup_agent_task`'s own `try`, so the session is usable
+                # even when the reconciliation after it fails.
+                logger.exception("Cleanup failed while releasing an unstarted turn")
+                with suppress(Exception):
+                    await self._mount_message(
+                        ErrorMessage(
+                            "Cleanup after the interrupt did not finish. The "
+                            "session is usable; run `/force-clear` if anything "
+                            "looks stale."
+                        )
+                    )
 
-        self.call_after_refresh(_release)
+        if not self.call_after_refresh(_release):
+            logger.warning(
+                "Could not schedule unstarted-turn recovery; message pump is closing"
+            )
 
     def action_quit_or_interrupt(self) -> None:
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.

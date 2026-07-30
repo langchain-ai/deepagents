@@ -3914,7 +3914,9 @@ class DiffMessage(Static):
             )
         elif additions or deletions:
             # Render the diff with per-line Statics (CSS-driven backgrounds)
-            yield from compose_diff_lines(self._diff_content, max_lines=100)
+            yield from compose_diff_lines(
+                self._diff_content, max_lines=100, path=self._file_path
+            )
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""

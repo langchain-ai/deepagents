@@ -7,10 +7,9 @@ from difflib import SequenceMatcher
 from itertools import accumulate, groupby, pairwise
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from textual.color import Color
 from textual.containers import Vertical
 from textual.content import Content
-from textual.style import Style as TStyle
+from textual.highlight import highlight
 from textual.widgets import Static
 
 from deepagents_code import theme
@@ -25,16 +24,26 @@ _HUNK_RE = re.compile(r"@@ -(\d+)(?:,\d+)? \+(\d+)")
 _TOKEN_RE = re.compile(r"\w+|\s+|.")
 """Splits a line into words, whitespace runs, and single other characters."""
 
-_EMPHASIS_ALPHA = 0.22
-"""Tint strength for changed words, composited over the row's own tint."""
-
 _SIMILARITY_FLOOR = 0.4
 """Below this token similarity a `-`/`+` pair is treated as an unrelated rewrite."""
 
 _MAX_EMPHASIS_LEN = 400
 """Longer lines skip word-level emphasis so the token matcher stays cheap."""
 
-_ContentPart = str | tuple[str, str | TStyle] | Content
+_GUTTERS = {
+    "added": "$text-success 80% on $success 20%",
+    "removed": "$text-error 80% on $error 20%",
+    "context": "$foreground 30% on $foreground 3%",
+}
+"""Line-number gutter styles, tinted a shade stronger than the row itself."""
+
+_MARKERS = {"added": ("+", "$text-success"), "removed": ("-", "$text-error")}
+"""Marker glyph and color for changed rows."""
+
+_EMPHASIS = {"added": "on $success 30%", "removed": "on $error 30%"}
+"""Tint for changed words, composited over the row's own tint."""
+
+_ContentPart = str | tuple[str, str] | Content
 _Range = tuple[int, int]
 
 
@@ -89,18 +98,21 @@ def diff_stats_content(additions: int, deletions: int) -> Content:
 def compose_diff_lines(
     diff: str,
     max_lines: int | None = 100,
+    *,
+    path: str = "",
 ) -> ComposeResult:
     """Yield per-line Static widgets for a unified diff.
 
-    Rows render as a dim line number, a colored `-`/`+` marker, and the line
-    content. Added/removed lines get a CSS class (`.diff-line-added`,
-    `.diff-line-removed`) so background colors are driven by CSS variables
-    and update automatically on theme change. Within a related `-`/`+` pair,
-    only the words that actually changed carry a stronger tint.
+    Rows render as a tinted line number, a colored `-`/`+` marker, and the
+    syntax-highlighted line content. Added/removed lines get a CSS class
+    (`.diff-line-added`, `.diff-line-removed`) so background colors are driven
+    by CSS variables and update automatically on theme change. Within a related
+    `-`/`+` pair, only the words that actually changed carry a stronger tint.
 
     Args:
         diff: Unified diff string.
         max_lines: Maximum number of diff lines to show (None for unlimited).
+        path: Path of the diffed file, used to pick a syntax highlighter.
 
     Yields:
         Static widgets — one per diff line — with appropriate CSS classes.
@@ -108,52 +120,84 @@ def compose_diff_lines(
     if not diff:
         yield Static(Content.styled("No changes detected", "dim"))
     else:
-        yield from _compose_diff_content(diff, max_lines)
+        yield from _compose_diff_content(diff, max_lines, path)
 
 
 def _compose_diff_content(
     diff: str,
     max_lines: int | None,
+    path: str,
 ) -> ComposeResult:
     """Yield styled diff line widgets for non-empty diff content.
 
     Args:
         diff: Non-empty unified diff string.
         max_lines: Maximum number of diff lines to show (None for unlimited).
+        path: Path of the diffed file, used to pick a syntax highlighter.
 
     Yields:
         Static widgets for individual diff lines.
     """
-    colors = theme.get_theme_colors()
     glyphs = get_glyphs()
     rows = _parse_rows(diff.splitlines())
+    hidden = 0 if max_lines is None else max(0, len(rows) - max_lines)
+    rows = rows[: len(rows) - hidden]
     emphasis = _emphasis_by_row(rows)
+    highlighted = _highlighted_rows(rows, path)
     width = max(2, len(str(max((row.number for row in rows), default=0))))
-    markers = {"added": ("+", colors.success), "removed": ("-", colors.error)}
-    tints = {
-        kind: TStyle(background=Color.parse(color).with_alpha(_EMPHASIS_ALPHA))
-        for kind, (_, color) in markers.items()
-    }
 
     for index, row in enumerate(rows):
-        if max_lines is not None and index >= max_lines:
-            yield Static(
-                Content.styled(f"\n... ({len(rows) - index} more lines)", "dim")
-            )
-            break
-        number = (f"{row.number:>{width}}", "dim")
         if row.kind == "separator":
-            yield Static(Content.styled(f"{'':>{width}} {glyphs.ellipsis}", "dim"))
-        elif row.kind == "note":
-            yield Static(Content.from_markup("[dim]$text[/dim]", text=row.text))
-        elif marker := markers.get(row.kind):
-            body = _emphasized(row.text, emphasis.get(index, []), tints[row.kind])
             yield Static(
-                Content.assemble(number, " ", marker, " ", *body),
-                classes=f"diff-line-{row.kind}",
+                Content.styled(glyphs.hunk_break, "bold $text-primary"),
+                classes="diff-hunk-break",
             )
-        else:
-            yield Static(Content.assemble(number, f"   {row.text}"))
+            continue
+        if row.kind == "note":
+            yield Static(Content.from_markup("[dim]$text[/dim]", text=row.text))
+            continue
+        number = (f"{row.number:>{width}}", _GUTTERS[row.kind])
+        body = highlighted.get(index) or Content(row.text)
+        marker, marker_style = _MARKERS.get(row.kind, (" ", ""))
+        for start, end in emphasis.get(index, []):
+            body = body.stylize(_EMPHASIS[row.kind], start, end)
+        yield Static(
+            Content.assemble(number, " ", (marker, marker_style), " ", body),
+            classes=f"diff-line-{row.kind}" if row.kind != "context" else "",
+        )
+    if hidden:
+        yield Static(Content.styled(f"\n... ({hidden} more lines)", "dim"))
+
+
+def _highlighted_rows(rows: list[_Row], path: str) -> dict[int, Content]:
+    """Syntax-highlight the diff body, keyed by row index.
+
+    Each side of the diff is reassembled and highlighted as one document so the
+    lexer sees real context instead of isolated lines. Highlighting is skipped
+    when the language is unknown, or when a side's line count survives the round
+    trip unevenly — the emphasis ranges are character offsets into the original
+    row text, so a rewritten line would misplace them.
+
+    Args:
+        rows: Parsed diff rows.
+        path: Path of the diffed file, used to pick a syntax highlighter.
+
+    Returns:
+        Highlighted content per row index; empty when highlighting is skipped.
+    """
+    if not path:
+        return {}
+    highlighted: dict[int, Content] = {}
+    for kind in ("removed", "added"):
+        indexes = [i for i, row in enumerate(rows) if row.kind in {kind, "context"}]
+        if not indexes:
+            continue
+        code = "\n".join(rows[i].text for i in indexes)
+        # `tab_size=0` leaves tabs alone; expanding them would shift the offsets.
+        lines = highlight(code, path=path, tab_size=0).split("\n")
+        if len(lines) == len(indexes):
+            highlighted.update(zip(indexes, lines, strict=True))
+    return highlighted
 
 
 def _parse_rows(lines: list[str]) -> list[_Row]:
@@ -194,33 +238,6 @@ def _parse_rows(lines: list[str]) -> list[_Row]:
         else:
             rows.append(_Row("note", line, 0))
     return rows
-
-
-def _emphasized(
-    text: str, ranges: list[_Range], emphasis: TStyle
-) -> list[_ContentPart]:
-    """Split `text` so the given ranges render with the emphasis tint.
-
-    Args:
-        text: Row content.
-        ranges: Ordered, non-overlapping character ranges to emphasize.
-        emphasis: Style applied to the emphasized ranges.
-
-    Returns:
-        Parts ready to pass to `Content.assemble`.
-    """
-    if not ranges:
-        return [text]
-    parts: list[_ContentPart] = []
-    cursor = 0
-    for start, end in ranges:
-        if start > cursor:
-            parts.append(text[cursor:start])
-        parts.append((text[start:end], emphasis))
-        cursor = end
-    if cursor < len(text):
-        parts.append(text[cursor:])
-    return parts
 
 
 def _emphasis_by_row(rows: list[_Row]) -> dict[int, list[_Range]]:

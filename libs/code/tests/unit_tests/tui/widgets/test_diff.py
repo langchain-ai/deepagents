@@ -136,10 +136,20 @@ class TestComposeDiffLines:
         diff = "@@ -1 +1 @@\n-value = compute(old_arg)\n+value = compute(new_arg)"
         added = next(w for w in _rendered(diff) if "new_arg" in _plain(w))
         content = cast("Content", added.render())
-        # Emphasis spans carry a `Style` object; the row's other spans are named.
         emphasized = [
             content.plain[s.start : s.end]
             for s in content.spans
-            if not isinstance(s.style, str)
+            if s.style == "on $success 30%"
         ]
         assert emphasized == ["new_arg"]
+
+    def test_known_path_syntax_highlights_without_shifting_text(self) -> None:
+        """A recognized path adds syntax spans but leaves the row text intact."""
+        diff = "@@ -1 +1 @@\n+\tdef f(): pass"
+        (row,) = [
+            w for w in compose_diff_lines(diff, path="m.py") if isinstance(w, Static)
+        ]
+        content = cast("Content", row.render())
+        # Tabs must survive unexpanded, or the emphasis offsets would misalign.
+        assert content.plain.endswith("\tdef f(): pass")
+        assert any(s.style == "$text-accent" for s in content.spans)

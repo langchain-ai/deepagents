@@ -58,6 +58,10 @@ from deepagents_code._ask_user_types import (
 )
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+from deepagents_code._expensive_request import (
+    ExpensiveRequestWarning,
+    parse_expensive_request_warning,
+)
 from deepagents_code._session_stats import (
     ModelStats as ModelStats,
     ModelStatsKey as ModelStatsKey,
@@ -632,6 +636,7 @@ class TextualUIAdapter:
         on_auto_mode_event: (
             Callable[[dict[str, Any]], Awaitable[None] | None] | None
         ) = None,
+        on_expensive_request: Callable[[ExpensiveRequestWarning], None] | None = None,
         on_approval_mode_fallback: Callable[[str], None] | None = None,
     ) -> None:
         """Initialize the adapter."""
@@ -688,6 +693,9 @@ class TextualUIAdapter:
 
         self._on_auto_mode_event = on_auto_mode_event
         """Callback for compact sanitized Auto denial and fallback events."""
+
+        self._on_expensive_request = on_expensive_request
+        """Callback for validated expensive uncached model-request warnings."""
 
         self._on_approval_mode_fallback = on_approval_mode_fallback
         """Callback that synchronizes a fail-closed startup fallback to Manual."""
@@ -1376,6 +1384,17 @@ async def execute_task_textual(
                 # nested custom events never reach the panel; forwarding must
                 # never raise into the stream loop.
                 if current_stream_mode == "custom":
+                    expensive_warning = parse_expensive_request_warning(data)
+                    if expensive_warning is not None:
+                        if adapter._on_expensive_request is not None:
+                            try:
+                                adapter._on_expensive_request(expensive_warning)
+                            except Exception:
+                                logger.warning(
+                                    "Expensive-request warning callback failed",
+                                    exc_info=True,
+                                )
+                        continue
                     rubric_message = data if isinstance(data, dict) else None
                     formatted_rubric_event = (
                         _format_rubric_event(rubric_message) if rubric_message else None

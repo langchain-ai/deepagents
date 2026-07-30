@@ -80,6 +80,7 @@ if TYPE_CHECKING:
 
     from langchain_core.runnables import RunnableConfig
 
+    from deepagents_code._expensive_request import ExpensiveRequestWarning
     from deepagents_code.app import TextualSessionState
 
 
@@ -8991,6 +8992,79 @@ class TestReadMentionedFile:
 
         assert "too large to embed" in snippet
         assert "```" not in snippet
+
+
+# ---------------------------------------------------------------------------
+# Expensive-request custom-stream events
+# ---------------------------------------------------------------------------
+
+
+class TestExecuteTaskTextualExpensiveRequestEvents:
+    """Expensive request events reach the notification callback."""
+
+    async def test_subagent_warning_reaches_callback(self) -> None:
+        warnings: list[ExpensiveRequestWarning] = []
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_expensive_request=warnings.append,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(
+                [
+                    (
+                        ("subagent",),
+                        "custom",
+                        {
+                            "type": "expensive_model_request",
+                            "provider": "anthropic",
+                            "input_tokens": 500_001,
+                        },
+                    )
+                ]
+            ),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert len(warnings) == 1
+        assert warnings[0].provider == "anthropic"
+        assert warnings[0].input_tokens == 500_001
+
+    async def test_malformed_warning_is_ignored(self) -> None:
+        callback = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_expensive_request=callback,
+        )
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=_FakeAgent(
+                [
+                    (
+                        (),
+                        "custom",
+                        {
+                            "type": "expensive_model_request",
+                            "provider": "openai",
+                            "input_tokens": "600000",
+                        },
+                    )
+                ]
+            ),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+        )
+
+        callback.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

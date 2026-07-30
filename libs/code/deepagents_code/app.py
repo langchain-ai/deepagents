@@ -596,6 +596,7 @@ if TYPE_CHECKING:
     from textual.worker import Worker
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_code._expensive_request import ExpensiveRequestWarning
     from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
@@ -4335,6 +4336,7 @@ class DeepAgentsApp(App):
             on_tool_complete=self._schedule_git_branch_refresh,
             on_subagent_event=self._on_subagent_event,
             on_auto_mode_event=self._on_auto_mode_event,
+            on_expensive_request=self._on_expensive_request,
             on_approval_mode_fallback=self._on_approval_mode_fallback,
         )
         # Wire token display callbacks
@@ -17321,6 +17323,17 @@ class DeepAgentsApp(App):
         panel = self._get_subagent_panel()
         if panel is not None:
             panel.on_subagent_event(event)
+
+    def _on_expensive_request(self, warning: ExpensiveRequestWarning) -> None:
+        """Show a warning before an uncached, very large model request."""
+        from deepagents_code._expensive_request import format_expensive_request_warning
+
+        self.notify(
+            format_expensive_request_warning(warning),
+            severity="warning",
+            timeout=10,
+            markup=False,
+        )
 
     async def _on_auto_mode_event(self, event: dict[str, Any]) -> None:
         """Render one compact sanitized Auto event in the transcript.

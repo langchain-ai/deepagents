@@ -17,6 +17,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
+from deepagents_code._expensive_request import EXPENSIVE_REQUEST_EVENT_TYPE
 from deepagents_code.agent import build_model_identity_section
 from deepagents_code.configurable_model import (
     ConfigurableModelMiddleware,
@@ -42,15 +43,18 @@ def _make_request(
     context: object = None,
     model_settings: dict[str, Any] | None = None,
     system_prompt: str | None = None,
+    state: dict[str, Any] | None = None,
+    stream_writer: Callable[[dict[str, Any]], None] | None = None,
 ) -> ModelRequest:
     """Create a ModelRequest with a runtime that carries CLIContext."""
-    runtime = SimpleNamespace(context=context)
+    runtime = SimpleNamespace(context=context, stream_writer=stream_writer)
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": [HumanMessage(content="hi")],
         "tools": [],
         "runtime": cast("Any", runtime),
         "model_settings": model_settings,
+        "state": state,
     }
     if system_prompt is not None:
         kwargs["system_prompt"] = system_prompt
@@ -97,6 +101,157 @@ _PATCH_CREATE = "deepagents_code.config.create_model"
 # developer's env/config.toml. Tests that exercise flag *resolution* construct
 # their own instances after patching the config lookup.
 _mw = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
+
+
+class TestExpensiveRequestWarning:
+    """Tests for large requests outside provider prompt-cache TTLs."""
+
+    def test_uncached_anthropic_request_emits_warning_and_tracks_timestamp(
+        self,
+    ) -> None:
+        model = _make_model("claude-opus-4-6")
+        model._get_ls_params.return_value = {"ls_provider": "anthropic"}
+        events: list[dict[str, Any]] = []
+        request = _make_request(
+            model,
+            context=CLIContext(thread_id="thread-123"),
+            system_prompt="system instructions",
+            stream_writer=events.append,
+        )
+        captured_messages: list[object] = []
+
+        def count(messages: object, **kwargs: Any) -> int:
+            captured_messages.extend(list(cast("Any", messages)))
+            assert kwargs == {"tools": [], "use_usage_metadata_scaling": True}
+            return 500_001
+
+        with (
+            patch(
+                "deepagents_code.configurable_model.count_tokens_approximately",
+                side_effect=count,
+            ),
+            patch("deepagents_code.configurable_model.time.time", return_value=1_000.0),
+        ):
+            result = _mw.wrap_model_call(request, lambda _request: _make_response())
+
+        assert events == [
+            {
+                "type": EXPENSIVE_REQUEST_EVENT_TYPE,
+                "provider": "anthropic",
+                "input_tokens": 500_001,
+            }
+        ]
+        assert getattr(captured_messages[0], "text", None) == "system instructions"
+        assert getattr(captured_messages[1], "text", None) == "hi"
+        assert _checkpoint_update(result)["_prompt_cache_request_times"] == {
+            "anthropic:claude-opus-4-6": 1_000.0
+        }
+
+    @pytest.mark.parametrize(
+        ("provider", "age", "warns"),
+        [
+            ("anthropic", 299.0, False),
+            ("anthropic", 300.0, True),
+            ("openai", 86_399.0, False),
+            ("openai", 86_400.0, True),
+        ],
+    )
+    def test_provider_cache_ttl_boundary(
+        self, provider: str, age: float, warns: bool
+    ) -> None:
+        model = _make_model("model-1")
+        model._get_ls_params.return_value = {"ls_provider": provider}
+        events: list[dict[str, Any]] = []
+        request = _make_request(
+            model,
+            context=CLIContext(thread_id="thread-123"),
+            state={"_prompt_cache_request_times": {f"{provider}:model-1": 100_000.0}},
+            stream_writer=events.append,
+        )
+        with (
+            patch(
+                "deepagents_code.configurable_model.count_tokens_approximately",
+                return_value=500_001,
+            ) as count_tokens,
+            patch(
+                "deepagents_code.configurable_model.time.time",
+                return_value=100_000.0 + age,
+            ),
+        ):
+            _mw.wrap_model_call(request, lambda _request: _make_response())
+
+        assert bool(events) is warns
+        assert count_tokens.called is warns
+
+    def test_threshold_is_strictly_greater_than_500k(self) -> None:
+        events: list[dict[str, Any]] = []
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+            stream_writer=events.append,
+        )
+        with (
+            patch(
+                "deepagents_code.configurable_model.count_tokens_approximately",
+                return_value=500_000,
+            ),
+            patch("deepagents_code.configurable_model.time.time", return_value=2_000.0),
+        ):
+            result = _mw.wrap_model_call(request, lambda _request: _make_response())
+
+        assert events == []
+        assert _checkpoint_update(result)["_prompt_cache_request_times"] == {
+            "openai:gpt-5.6": 2_000.0
+        }
+
+    def test_cache_freshness_is_model_specific(self) -> None:
+        events: list[dict[str, Any]] = []
+        request = _make_request(
+            _make_model("gpt-5.6"),
+            context=CLIContext(thread_id="thread-123"),
+            state={"_prompt_cache_request_times": {"openai:gpt-5.5": 9_999.0}},
+            stream_writer=events.append,
+        )
+        with (
+            patch(
+                "deepagents_code.configurable_model.count_tokens_approximately",
+                return_value=600_000,
+            ),
+            patch(
+                "deepagents_code.configurable_model.time.time", return_value=10_000.0
+            ),
+        ):
+            _mw.wrap_model_call(request, lambda _request: _make_response())
+
+        assert events[0]["provider"] == "openai"
+
+    async def test_async_request_emits_warning(self) -> None:
+        model = _make_model("claude-opus-4-6")
+        model._get_ls_params.return_value = {"ls_provider": "anthropic"}
+        events: list[dict[str, Any]] = []
+        request = _make_request(
+            model,
+            context=CLIContext(thread_id="thread-123"),
+            stream_writer=events.append,
+        )
+
+        async def handler(_request: ModelRequest) -> ModelResponse[Any]:
+            await asyncio.sleep(0)
+            return _make_response()
+
+        with (
+            patch(
+                "deepagents_code.configurable_model.count_tokens_approximately",
+                return_value=700_000,
+            ),
+            patch("deepagents_code.configurable_model.time.time", return_value=3_000.0),
+        ):
+            result = await _mw.awrap_model_call(request, handler)
+
+        assert events[0]["input_tokens"] == 700_000
+        assert _checkpoint_update(result)["_prompt_cache_request_times"] == {
+            "anthropic:claude-opus-4-6": 3_000.0
+        }
 
 
 class TestCheckpointPersistence:

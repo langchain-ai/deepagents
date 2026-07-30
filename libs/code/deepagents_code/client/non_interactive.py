@@ -40,6 +40,10 @@ from rich.style import Style
 from rich.text import Text
 
 from deepagents_code._cli_context import CLIContext
+from deepagents_code._expensive_request import (
+    format_expensive_request_warning,
+    parse_expensive_request_warning,
+)
 from deepagents_code._session_stats import SessionStats, print_usage_table
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
@@ -802,6 +806,30 @@ def _process_message_chunk(
             state.spinner.start()
 
 
+def _process_expensive_request_event(
+    data: object,
+    state: StreamState,
+    console: Console,
+) -> bool:
+    """Render a validated expensive-request custom event when present.
+
+    Returns:
+        `True` when the event was rendered, otherwise `False`.
+    """
+    warning = parse_expensive_request_warning(data)
+    if warning is None:
+        return False
+    if state.spinner:
+        state.spinner.stop()
+    console.print(
+        Text(f"Warning: {format_expensive_request_warning(warning)}", style="yellow"),
+        highlight=False,
+    )
+    if state.spinner:
+        state.spinner.start()
+    return True
+
+
 def _process_rubric_event(
     data: dict[str, Any],
     state: StreamState,
@@ -923,6 +951,11 @@ def _process_stream_chunk(
 
     namespace, stream_mode, data = chunk
     is_main_agent = not namespace
+
+    if stream_mode == "custom" and _process_expensive_request_event(
+        data, state, console
+    ):
+        return
 
     if (
         stream_mode == "messages"

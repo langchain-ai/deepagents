@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from operator import itemgetter
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired
 
 from deepagents._models import (  # noqa: PLC2701
     get_model_identifier,
@@ -19,13 +22,21 @@ from deepagents._models import (  # noqa: PLC2701
 )
 from langchain.agents.middleware.types import (
     AgentMiddleware,
+    AgentState,
     ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
+    PrivateStateAttr,
 )
+from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code._expensive_request import (
+    EXPENSIVE_REQUEST_EVENT_TYPE,
+    EXPENSIVE_REQUEST_TOKEN_THRESHOLD,
+    PROMPT_CACHE_TTL_SECONDS,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -36,6 +47,17 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+_PROMPT_CACHE_REQUEST_TIMES_KEY = "_prompt_cache_request_times"
+_MAX_PROMPT_CACHE_MODELS = 16
+
+
+class PromptCacheState(AgentState):
+    """Private state used to track provider prompt-cache freshness."""
+
+    _prompt_cache_request_times: Annotated[
+        NotRequired[dict[str, float]], PrivateStateAttr
+    ]
 
 
 @dataclass(frozen=True)
@@ -562,17 +584,108 @@ async def _apply_overrides_async(
     )
 
 
-def _checkpoint_command(resolved: _ResolvedModelRequest) -> Command[Any] | None:
-    """Build the private resume-state update for a completed model call.
+def _prompt_cache_request_times(state: Mapping[str, Any]) -> dict[str, float]:
+    """Read a bounded set of valid prompt-cache timestamps from graph state.
 
     Returns:
-        Command with private checkpoint updates, or `None` when nothing is known.
+        Up to `_MAX_PROMPT_CACHE_MODELS` valid model timestamps.
+    """
+    raw = state.get(_PROMPT_CACHE_REQUEST_TIMES_KEY)
+    if not isinstance(raw, Mapping):
+        return {}
+    valid: dict[str, float] = {}
+    for key, value in raw.items():
+        if len(valid) >= _MAX_PROMPT_CACHE_MODELS:
+            break
+        if (
+            isinstance(key, str)
+            and isinstance(value, int | float)
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value >= 0
+        ):
+            valid[key] = float(value)
+    return valid
+
+
+def _prepare_prompt_cache_update(request: ModelRequest) -> dict[str, float] | None:
+    """Emit an expensive-request warning and stage cache freshness state.
+
+    Returns:
+        Updated model timestamps, or `None` for untracked requests.
+    """
+    context = _get_context(request)
+    if context is None or not context.thread_id:
+        return None
+    provider = _get_ls_provider(request.model)
+    ttl = PROMPT_CACHE_TTL_SECONDS.get(provider or "")
+    if provider is None or ttl is None:
+        return None
+
+    model_name = get_model_identifier(request.model)
+    model_key = f"{provider}:{model_name}" if model_name else provider
+    now = time.time()
+    if not math.isfinite(now) or now < 0:
+        logger.warning("Cannot track prompt-cache freshness with invalid wall clock")
+        return None
+
+    request_times = _prompt_cache_request_times(request.state)
+    last_request_at = request_times.get(model_key)
+    cache_is_fresh = last_request_at is not None and 0 <= now - last_request_at < ttl
+    if not cache_is_fresh:
+        messages = [request.system_message, *request.messages]
+        try:
+            input_tokens = count_tokens_approximately(
+                (message for message in messages if message is not None),
+                tools=request.tools,
+                use_usage_metadata_scaling=True,
+            )
+        except Exception:
+            logger.debug("Could not estimate model request tokens", exc_info=True)
+        else:
+            if input_tokens > EXPENSIVE_REQUEST_TOKEN_THRESHOLD:
+                writer = getattr(request.runtime, "stream_writer", None)
+                if callable(writer):
+                    try:
+                        writer(
+                            {
+                                "type": EXPENSIVE_REQUEST_EVENT_TYPE,
+                                "provider": provider,
+                                "input_tokens": input_tokens,
+                            }
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Could not emit expensive model request warning",
+                            exc_info=True,
+                        )
+
+    request_times[model_key] = now
+    if len(request_times) > _MAX_PROMPT_CACHE_MODELS:
+        newest = sorted(request_times.items(), key=itemgetter(1), reverse=True)
+        request_times = dict(newest[:_MAX_PROMPT_CACHE_MODELS])
+    return request_times
+
+
+def _checkpoint_command(
+    resolved: _ResolvedModelRequest,
+    prompt_cache_times: dict[str, float] | None,
+    *,
+    persist_model_state: bool,
+) -> Command[Any] | None:
+    """Build the private state update for a completed model call.
+
+    Returns:
+        Checkpoint command, or `None` when no private state is available.
     """
     update: dict[str, Any] = {}
-    if resolved.model_spec:
-        update["_model_spec"] = resolved.model_spec
-    if resolved.model_params_known:
-        update["_model_params"] = resolved.model_params
+    if persist_model_state:
+        if resolved.model_spec:
+            update["_model_spec"] = resolved.model_spec
+        if resolved.model_params_known:
+            update["_model_params"] = resolved.model_params
+    if prompt_cache_times is not None:
+        update[_PROMPT_CACHE_REQUEST_TIMES_KEY] = prompt_cache_times
     if not update:
         return None
     return Command(update=update)
@@ -594,6 +707,8 @@ class ConfigurableModelMiddleware(AgentMiddleware):
     model call before provider-specific middleware (like
     `AnthropicPromptCachingMiddleware`) runs.
     """
+
+    state_schema = PromptCacheState
 
     def __init__(
         self,
@@ -640,8 +755,13 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         resolved = _apply_overrides(
             request, openai_prompt_cache_key=self._openai_prompt_cache_key
         )
+        prompt_cache_times = _prepare_prompt_cache_update(resolved.request)
         response = handler(resolved.request)
-        command = _checkpoint_command(resolved) if self._persist_model_state else None
+        command = _checkpoint_command(
+            resolved,
+            prompt_cache_times,
+            persist_model_state=self._persist_model_state,
+        )
         if command is None:
             return response
         return ExtendedModelResponse(model_response=response, command=command)
@@ -660,8 +780,13 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         resolved = await _apply_overrides_async(
             request, openai_prompt_cache_key=self._openai_prompt_cache_key
         )
+        prompt_cache_times = _prepare_prompt_cache_update(resolved.request)
         response = await handler(resolved.request)
-        command = _checkpoint_command(resolved) if self._persist_model_state else None
+        command = _checkpoint_command(
+            resolved,
+            prompt_cache_times,
+            persist_model_state=self._persist_model_state,
+        )
         if command is None:
             return response
         return ExtendedModelResponse(model_response=response, command=command)

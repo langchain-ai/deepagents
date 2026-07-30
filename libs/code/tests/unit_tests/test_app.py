@@ -27592,6 +27592,23 @@ class TestLiveApprovalModeWrites:
         )
         mount.assert_awaited_once()
 
+    def test_expensive_request_uses_warning_notification_without_markup(self) -> None:
+        from deepagents_code._expensive_request import ExpensiveRequestWarning
+
+        app = DeepAgentsApp()
+        with patch.object(app, "notify") as notify:
+            app._on_expensive_request(
+                ExpensiveRequestWarning(provider="anthropic", input_tokens=750_000)
+            )
+
+        notify.assert_called_once_with(
+            "Expensive request: about to send approximately 750,000 input tokens "
+            "to Anthropic outside its 5-minute prompt cache TTL.",
+            severity="warning",
+            timeout=10,
+            markup=False,
+        )
+
 
 class TestExternalBypassFieldHonored:
     """`event.bypass` overrides queue when set on a prompt event."""

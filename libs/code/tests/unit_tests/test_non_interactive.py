@@ -41,6 +41,7 @@ from deepagents_code.client.non_interactive import (
     _process_ai_message,
     _process_hitl_interrupts,
     _process_message_chunk,
+    _process_stream_chunk,
     _run_agent_loop,
     _run_startup_command,
     _start_langsmith_thread_url_lookup,
@@ -79,6 +80,31 @@ def test_subagent_summarization_does_not_signal_compaction() -> None:
     )
 
     assert _summarization_stream_status(chunk) is None
+
+
+def test_expensive_request_warning_renders_for_subagent() -> None:
+    output = io.StringIO()
+    warning_console = Console(file=output, color_system=None)
+
+    _process_stream_chunk(
+        (
+            ("subagent",),
+            "custom",
+            {
+                "type": "expensive_model_request",
+                "provider": "openai",
+                "input_tokens": 600_000,
+            },
+        ),
+        StreamState(),
+        warning_console,
+        MagicMock(),
+    )
+
+    rendered = output.getvalue()
+    assert "Expensive request" in rendered
+    assert "600,000 input tokens" in rendered
+    assert "24-hour prompt cache TTL" in rendered
 
 
 def test_compaction_result_id_requires_compact_tool_name() -> None:

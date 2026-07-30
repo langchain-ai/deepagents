@@ -171,7 +171,7 @@ jobs:
                 '>',
                 '> A prerelease pin is valid only when it is not older than the workspace SDK, but it still needs an explicit merge acknowledgement.',
                 '>',
-                `> 🚨 **Required:** add the \`${releaseDepsBypassLabel}\` label before merging to acknowledge this pin. That label records the review decision and skips the release dependency / freshness checks that commonly fail when the pinned SDK is not on PyPI yet (for example during an intentional cross-package release sequence).`,
+                `> 🚨 **Required:** add the \`${releaseDepsBypassLabel}\` label before merging to acknowledge this pin. That label records the review decision and stops the release dependency check from blocking on a pin that is not on PyPI yet (for example during an intentional cross-package release sequence). It does not silence those checks: the release dependency check still resolves and reports any follow-up releases the public install graph needs, and the freshness advisory stays on the PR. Treat their output as outstanding work, not noise.`,
               ].join('\n');
               warning = `${pkgLabel} pins prerelease SDK deepagents==${pkgPin}; add ${releaseDepsBypassLabel} to acknowledge before merging.`;
               fail = true;

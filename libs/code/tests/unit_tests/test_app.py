@@ -5301,6 +5301,111 @@ class TestMessageQueue:
             assert any(w._content == "hello agent" for w in user_msgs)
 
 
+class TestTurnStateRelease:
+    """Tests that every abandoned turn hands `_agent_running` back.
+
+    A turn that ends without releasing that flag wedges the session: the app
+    still believes the agent is streaming, so later messages are queued instead
+    of sent, `Esc` only pops them back into the chat input, and even
+    `/force-clear` cannot recover.
+    """
+
+    @staticmethod
+    def _configured_app() -> DeepAgentsApp:
+        """Build an app with the collaborators `_send_to_agent` requires."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._ui_adapter = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.hooks = HooksManager.inert()
+        return app
+
+    async def test_interrupt_before_worker_starts_releases_turn(self) -> None:
+        """An interrupt landing before the worker's first step ends the turn.
+
+        Textual never runs the coroutine of a worker cancelled before its first
+        event-loop step (and leaves its state as `RUNNING`), so
+        `_run_agent_task`'s `finally` — the only caller of
+        `_cleanup_agent_task` — never fires on its own.
+        """
+        app = self._configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._send_to_agent("hello")
+            # No await between worker creation and the interrupt, so the worker
+            # task cannot have started yet.
+            app.action_interrupt()
+            for _ in range(3):
+                await pilot.pause()
+
+            assert app._agent_running is False
+
+            app.post_message(ChatInput.Submitted("next message", "normal"))
+            await pilot.pause()
+            assert not app._pending_messages
+
+    async def test_early_return_in_run_agent_task_releases_turn(self) -> None:
+        """A turn rejected before streaming still releases the running flag."""
+        app = self._configured_app()
+        app._approval_mode_blocked = True
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._send_to_agent("hello")
+            for _ in range(3):
+                await pilot.pause()
+
+            assert app._agent_running is False
+
+            app.post_message(ChatInput.Submitted("next message", "normal"))
+            await pilot.pause()
+            assert not app._pending_messages
+
+    async def test_failed_turn_setup_releases_turn(self) -> None:
+        """A failure before the worker exists releases the running flag.
+
+        `_send_to_agent` reports busy before its awaited setup, and there is no
+        worker to cancel yet, so the setup path owns the release itself.
+        """
+        app = self._configured_app()
+        msg = "shell flush failed"
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch.object(
+                    app,
+                    "_flush_pending_shell_messages",
+                    AsyncMock(side_effect=RuntimeError(msg)),
+                ),
+                pytest.raises(RuntimeError, match=msg),
+            ):
+                await app._send_to_agent("hello")
+
+            assert app._agent_running is False
+            assert app._agent_worker is None
+
+    async def test_queued_message_drains_after_abandoned_turn(self) -> None:
+        """Messages queued behind an abandoned turn are not stranded."""
+        app = self._configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_messages.append(QueuedMessage(text="queued", mode="normal"))
+
+            with patch.object(
+                app,
+                "_flush_pending_shell_messages",
+                AsyncMock(side_effect=RuntimeError("boom")),
+            ):
+                with pytest.raises(RuntimeError):
+                    await app._send_to_agent("hello")
+                await pilot.pause()
+
+            assert not app._pending_messages
+
+
 class TestAskUserLifecycle:
     """Tests for ask_user widget cleanup flows."""
 
@@ -30035,6 +30140,7 @@ class TestRestartCommand:
             worker = MagicMock()
             app._agent_worker = worker
             app._set_agent_running(True)
+            app._agent_turn_started = True
             app._pending_messages.append(QueuedMessage(text="hi", mode="normal"))
 
             from deepagents_code.config import settings

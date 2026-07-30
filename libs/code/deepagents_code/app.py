@@ -3464,6 +3464,16 @@ class DeepAgentsApp(App):
         """Active `_run_agent_task` worker, tracked so it can be cancelled
         on interrupt (`Ctrl+C`) or exit."""
 
+        self._agent_turn_started = False
+        """True once the active worker's `_run_agent_task` coroutine has begun.
+
+        A worker cancelled before its first event-loop step never runs its
+        coroutine, so `_run_agent_task`'s `finally` — and with it
+        `_cleanup_agent_task` — never fires and nothing would release
+        `_agent_running`. The interrupt paths read this to recover instead of
+        leaving the session permanently busy, queueing every later message
+        behind a turn that will never report back."""
+
         self._agent_running = False
         """True while the agent worker is streaming a response."""
 
@@ -14580,48 +14590,56 @@ class DeepAgentsApp(App):
             # Fresh turn: no model text or tool call is visible yet, so an Esc
             # interrupt may still return this prompt to the input.
             self._active_turn_visible_output_started = False
+            self._agent_turn_started = False
+            # The awaited setup below runs while the session already reports
+            # busy but before a worker exists to cancel, so any early exit or
+            # failure in that window must hand the running flag back. Otherwise
+            # the session stays busy forever and every later message is queued
+            # behind a turn that was never started.
+            worker_started = False
+            try:
+                # Flush any buffered non-incognito `!` shell output into thread
+                # state so this turn's model sees commands run since the last turn.
+                await self._flush_pending_shell_messages()
 
-            # Flush any buffered non-incognito `!` shell output into thread
-            # state so this turn's model sees commands run since the last turn.
-            await self._flush_pending_shell_messages()
-
-            # Any send (typed reply or skill invocation) counts as the user
-            # acting on a blocked goal, so reset it before the turn starts.
-            reset = await self._reset_blocked_goal_for_user_turn()
-            if not reset.ready:
-                self._set_agent_running(False)
-                self._active_user_message = None
-                await self._mount_message(
-                    ErrorMessage(
-                        "The blocked goal could not be resumed, so this message was "
-                        "not sent. Retry after the thread state is available."
+                # Any send (typed reply or skill invocation) counts as the user
+                # acting on a blocked goal, so reset it before the turn starts.
+                reset = await self._reset_blocked_goal_for_user_turn()
+                if not reset.ready:
+                    self._active_user_message = None
+                    await self._mount_message(
+                        ErrorMessage(
+                            "The blocked goal could not be resumed, so this message "
+                            "was not sent. Retry after the thread state is available."
+                        )
                     )
+                    return
+                resuming_blocked = reset.did_reset
+
+                if resuming_blocked and self._active_goal:
+                    await self._mount_message(
+                        AppMessage(
+                            f"Resuming previously blocked goal: {self._active_goal}"
+                        )
+                    )
+
+                if self._chat_input:
+                    self._chat_input.set_cursor_active(active=False)
+
+                # Use run_worker to avoid blocking the main event loop
+                # This allows the UI to remain responsive during agent execution
+                self._agent_worker = self.run_worker(
+                    self._run_agent_task(
+                        message,
+                        message_kwargs=message_kwargs,
+                        goal_notice_current=resuming_blocked,
+                    ),
+                    exclusive=False,
                 )
-                # Drain any messages queued behind this turn so they are not
-                # stranded; mirrors the queue handling in `_agent_finished`.
-                if self._pending_messages and not self._agent_running:
-                    await self._process_next_from_queue()
-                return
-            resuming_blocked = reset.did_reset
-
-            if resuming_blocked and self._active_goal:
-                await self._mount_message(
-                    AppMessage(f"Resuming previously blocked goal: {self._active_goal}")
-                )
-
-            if self._chat_input:
-                self._chat_input.set_cursor_active(active=False)
-
-            # Use run_worker to avoid blocking the main event loop
-            # This allows the UI to remain responsive during agent execution
-            self._agent_worker = self.run_worker(
-                self._run_agent_task(
-                    message,
-                    message_kwargs=message_kwargs,
-                    goal_notice_current=resuming_blocked,
-                ),
-                exclusive=False,
-            )
+                worker_started = True
+            finally:
+                if not worker_started:
+                    await self._release_unstarted_turn()
         elif self._server_startup_deferred:
             await self._mount_message(AppMessage(_DEFERRED_START_NOTICE))
         elif not self._server_startup_error:
@@ -14631,6 +14649,27 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 AppMessage("Agent not configured for this session."),
             )
+
+    async def _release_unstarted_turn(self) -> None:
+        """Hand back the running flag for a turn whose worker never started.
+
+        `_send_to_agent` reports busy before its awaited setup so the UI reacts
+        immediately, and `_cleanup_agent_task` normally releases that state from
+        the worker's `finally`. When no worker was started there is nothing to
+        cancel and no `finally` to run, so this releases the state instead and
+        drains anything queued behind the abandoned turn.
+        """
+        self._set_agent_running(False)
+        if self._chat_input:
+            self._chat_input.set_cursor_active(active=True)
+        if not self._pending_messages:
+            return
+        # Best-effort: a failed drain must not mask the error that abandoned
+        # the turn, and the session is already idle again by this point.
+        try:
+            await self._process_next_from_queue()
+        except Exception:
+            logger.exception("Failed to drain queue after abandoned turn")
 
     async def _mount_deferred_start_notice(self) -> None:
         """Tell first-launch users how to configure model credentials."""
@@ -14980,17 +15019,12 @@ class DeepAgentsApp(App):
             graph_input: Prepared non-conversation input for a server operation.
             goal_notice_current: Whether the caller just persisted the current notice.
         """
-        # Caller ensures _ui_adapter is set (checked in _handle_user_message)
-        if self._ui_adapter is None:
-            return
-        if self._approval_mode_blocked:
-            await self._mount_message(
-                ErrorMessage(
-                    "Manual approval mode has not been persisted. Press Ctrl+T "
-                    "to retry before starting another run."
-                )
-            )
-            return
+        # Recorded before anything can fail so the interrupt paths can tell a
+        # turn that started from a worker that was cancelled before its first
+        # event-loop step (whose coroutine — and so the `finally` below — never
+        # runs at all).
+        self._agent_turn_started = True
+
         from deepagents_code.config import settings
         from deepagents_code.resume_state import RUBRIC_RESULT_VALUES
         from deepagents_code.tui.textual_adapter import (
@@ -14999,76 +15033,13 @@ class DeepAgentsApp(App):
         )
 
         criteria_request_id: str | None = None
-        if graph_input is not None:
-            criteria_request = graph_input.get("goal_criteria_request")
-            if isinstance(criteria_request, dict):
-                raw_request_id = criteria_request.get("request_id")
-                if isinstance(raw_request_id, str):
-                    criteria_request_id = raw_request_id
-
-        # Create the stats object up-front and store on the app so
-        # exit() can merge it synchronously if the worker is cancelled
-        # before this method can return (e.g. Ctrl+D during HITL).
+        # Create the stats object up-front so exit() can merge it synchronously
+        # if the worker is cancelled before this method can return (e.g. Ctrl+D
+        # during HITL).
         turn_stats = SessionStats()
-        self._inflight_turn_stats = turn_stats
-        self._inflight_turn_start = time.monotonic()
-
-        # Arm the subagent fan-out panel for this turn, seeding the session
-        # model that labels each row. The panel persists across turns and only
-        # clears when this turn's first subagent actually starts, so a turn that
-        # spawns none leaves the previous workflow's results on screen.
-        panel = self._get_subagent_panel()
-        if panel is not None:
-            spec = self._effective_model_spec()
-            panel.prepare_turn(model_label=_display_model_label(spec))
-
-        # A paused or completed goal withholds its rubric so the grader does not
-        # run this turn (mirrors the persisted-state suppression in
-        # `_goal_state_update`). A one-shot `_next_rubric` still applies, but is
-        # deliberately not treated as a goal-backed grade even when its text matches.
-        rubric = None
-        goal_backed_grading = False
-        goal_notice_ready = True
-        goal_notice_written = goal_notice_current
-        if graph_input is None:
-            if self._last_consumed_next_rubric is not None:
-                state_update = self._goal_state_update()
-                goal_notice_ready = await self._persist_goal_rubric_state(
-                    notice=build_goal_state_notice(state_update),
-                    state_update=state_update,
-                )
-                goal_notice_written = goal_notice_ready
-                if goal_notice_ready:
-                    self._last_consumed_next_rubric = None
-                    self._last_consumed_next_previous_rubric = None
-            rubric = self._next_rubric
-            if rubric is None and not (
-                self._active_goal and self._goal_status in {"paused", "complete"}
-            ):
-                rubric = self._active_rubric
-                goal_backed_grading = bool(
-                    rubric and self._active_goal and self._goal_status == "active"
-                )
-            if self._next_rubric is not None:
-                previous_state = self._goal_state_update()
-                state_update = dict(previous_state)
-                state_update["rubric"] = self._next_rubric
-                notice = _goal_state_change_notice(previous_state, state_update)
-                goal_notice_ready = await self._persist_goal_rubric_state(
-                    notice=notice,
-                    state_update=state_update,
-                )
-                goal_notice_written = goal_notice_ready and notice is not None
-                if goal_notice_ready:
-                    self._last_consumed_next_rubric = self._next_rubric
-                    self._last_consumed_next_previous_rubric = self._active_rubric
-                    self._next_rubric = None
-                    self._sync_status_rubric()
-        if graph_input is None and goal_notice_ready and not goal_notice_written:
-            goal_notice_ready = await self._ensure_goal_state_notice()
-
         latest_goal_grade: RubricEvaluationEnd | None = None
         turn_completed = False
+        task_succeeded = False
 
         def _record_goal_grading_run(event: RubricEvaluationEnd) -> None:
             nonlocal latest_goal_grade
@@ -15085,8 +15056,89 @@ class DeepAgentsApp(App):
                     event.result,
                 )
 
-        task_succeeded = False
+        # Turn setup runs inside this `try` as well as the stream itself:
+        # `_cleanup_agent_task` in the `finally` is the only thing that releases
+        # `_agent_running`, so an early return or an interrupt landing during
+        # setup must not slip past it. Otherwise the session stays busy forever
+        # and every later message is queued behind a turn that already ended.
         try:
+            # Caller ensures _ui_adapter is set (checked in _handle_user_message)
+            if self._ui_adapter is None:
+                return
+            if self._approval_mode_blocked:
+                await self._mount_message(
+                    ErrorMessage(
+                        "Manual approval mode has not been persisted. Press Ctrl+T "
+                        "to retry before starting another run."
+                    )
+                )
+                return
+
+            if graph_input is not None:
+                criteria_request = graph_input.get("goal_criteria_request")
+                if isinstance(criteria_request, dict):
+                    raw_request_id = criteria_request.get("request_id")
+                    if isinstance(raw_request_id, str):
+                        criteria_request_id = raw_request_id
+
+            self._inflight_turn_stats = turn_stats
+            self._inflight_turn_start = time.monotonic()
+
+            # Arm the subagent fan-out panel for this turn, seeding the session
+            # model that labels each row. The panel persists across turns and only
+            # clears when this turn's first subagent actually starts, so a turn that
+            # spawns none leaves the previous workflow's results on screen.
+            panel = self._get_subagent_panel()
+            if panel is not None:
+                spec = self._effective_model_spec()
+                panel.prepare_turn(model_label=_display_model_label(spec))
+
+            # A paused or completed goal withholds its rubric so the grader does not
+            # run this turn (mirrors the persisted-state suppression in
+            # `_goal_state_update`). A one-shot `_next_rubric` still applies, but is
+            # deliberately not treated as a goal-backed grade even when its text
+            # matches.
+            rubric = None
+            goal_backed_grading = False
+            goal_notice_ready = True
+            goal_notice_written = goal_notice_current
+            if graph_input is None:
+                if self._last_consumed_next_rubric is not None:
+                    state_update = self._goal_state_update()
+                    goal_notice_ready = await self._persist_goal_rubric_state(
+                        notice=build_goal_state_notice(state_update),
+                        state_update=state_update,
+                    )
+                    goal_notice_written = goal_notice_ready
+                    if goal_notice_ready:
+                        self._last_consumed_next_rubric = None
+                        self._last_consumed_next_previous_rubric = None
+                rubric = self._next_rubric
+                if rubric is None and not (
+                    self._active_goal and self._goal_status in {"paused", "complete"}
+                ):
+                    rubric = self._active_rubric
+                    goal_backed_grading = bool(
+                        rubric and self._active_goal and self._goal_status == "active"
+                    )
+                if self._next_rubric is not None:
+                    previous_state = self._goal_state_update()
+                    state_update = dict(previous_state)
+                    state_update["rubric"] = self._next_rubric
+                    notice = _goal_state_change_notice(previous_state, state_update)
+                    goal_notice_ready = await self._persist_goal_rubric_state(
+                        notice=notice,
+                        state_update=state_update,
+                    )
+                    goal_notice_written = goal_notice_ready and notice is not None
+                    if goal_notice_ready:
+                        self._last_consumed_next_rubric = self._next_rubric
+                        self._last_consumed_next_previous_rubric = self._active_rubric
+                        self._next_rubric = None
+                        self._sync_status_rubric()
+            if graph_input is None and goal_notice_ready and not goal_notice_written:
+                goal_notice_ready = await self._ensure_goal_state_notice()
+
             if not goal_notice_ready:
                 # A goal/rubric state write failed (not a deferral — deferrals
                 # now let the turn run so recovery middleware can repair it), so
@@ -16684,7 +16736,9 @@ class DeepAgentsApp(App):
         if self._shell_running and self._shell_worker:
             self._shell_worker.cancel()
         if self._agent_running and self._agent_worker:
-            self._agent_worker.cancel()
+            agent_worker = self._agent_worker
+            agent_worker.cancel()
+            self._recover_unstarted_agent_worker(agent_worker)
         self._warn_dropped_mcp_reconnect()
         self._discard_queue()
 
@@ -16772,6 +16826,41 @@ class DeepAgentsApp(App):
         self._discard_queue()
         if worker is not None:
             worker.cancel()
+            self._recover_unstarted_agent_worker(worker)
+
+    def _recover_unstarted_agent_worker(self, worker: Worker[None]) -> None:
+        """Release the turn when a cancelled agent worker never started.
+
+        A worker cancelled before its first event-loop step never runs its
+        coroutine, so `_run_agent_task` — and the `_cleanup_agent_task` call in
+        its `finally` — never happens and Textual leaves the worker's state as
+        `RUNNING`. Nothing else would ever clear `_agent_running`, so the
+        session would look busy for the rest of its life: new messages would
+        queue instead of sending, `Esc` would only pop them back into the chat
+        input, and not even `/force-clear` would recover.
+
+        Args:
+            worker: The worker that was just cancelled.
+        """
+        if worker is not self._agent_worker or self._agent_turn_started:
+            return
+
+        async def _release() -> None:
+            # Re-check on the callback: the worker may have taken its first step
+            # between the cancel and this callback, in which case its own
+            # `finally` owns cleanup.
+            if (
+                worker is not self._agent_worker
+                or self._agent_turn_started
+                or not self._agent_running
+            ):
+                return
+            logger.warning(
+                "Agent worker was cancelled before it started; releasing the turn"
+            )
+            await self._cleanup_agent_task()
+
+        self.call_after_refresh(_release)
 
     def action_quit_or_interrupt(self) -> None:
         """Handle Ctrl+C - interrupt agent, reject approval, or quit on double press.

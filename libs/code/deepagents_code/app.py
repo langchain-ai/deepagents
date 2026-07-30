@@ -5880,8 +5880,6 @@ class DeepAgentsApp(App):
                         AppMessage("Dependencies are already up to date."),
                     )
                     return
-                # The confirmation runs off the message pump so the modal stays
-                # responsive to Enter/Esc (see `_schedule_off_message_pump`).
                 self._schedule_off_message_pump(
                     self._confirm_then_refresh_dependencies(
                         planned_changes=format_dependency_changes(dep_changes),
@@ -5896,8 +5894,6 @@ class DeepAgentsApp(App):
                     dependency_refresh_supported,
                 )
                 if refresh_supported:
-                    # Detached for the same reason as the refresh confirmation
-                    # above: the modal cannot resolve while the pump is blocked.
                     self._schedule_off_message_pump(
                         self._confirm_update_then_upgrade_or_refresh(
                             current=cli_version,
@@ -5918,7 +5914,7 @@ class DeepAgentsApp(App):
                 pin_upgrade_version=pin_upgrade_version,
             )
         except Exception as exc:
-            logger.warning("/update command failed", exc_info=True)
+            logger.warning("/update command failed (dispatch)", exc_info=True)
             await self._mount_update_failure(exc)
 
     async def _mount_update_failure(self, exc: Exception) -> None:
@@ -5942,8 +5938,9 @@ class DeepAgentsApp(App):
     ) -> None:
         """Confirm and run a dependency refresh for an already-current dcode.
 
-        Runs detached from the App message pump so the confirmation modal can
-        receive keys; see `_schedule_off_message_pump`.
+        Must be scheduled via `_schedule_off_message_pump`, never awaited from a
+        command handler. It therefore catches its own exceptions, because the
+        handler's `try/except` no longer wraps it.
 
         Args:
             planned_changes: Dry-run summary shown in the confirmation modal.
@@ -5960,7 +5957,10 @@ class DeepAgentsApp(App):
             else:
                 await self._mount_message(AppMessage("Dependency refresh skipped."))
         except Exception as exc:
-            logger.warning("/update command failed", exc_info=True)
+            logger.warning(
+                "/update command failed (dependency-refresh confirmation)",
+                exc_info=True,
+            )
             await self._mount_update_failure(exc)
 
     async def _confirm_update_then_upgrade_or_refresh(
@@ -5974,16 +5974,19 @@ class DeepAgentsApp(App):
     ) -> None:
         """Ask whether `/update --deps` upgrades dcode or refreshes its deps.
 
-        Runs detached from the App message pump so the confirmation modal can
-        receive keys; see `_schedule_off_message_pump`.
+        Must be scheduled via `_schedule_off_message_pump`, never awaited from a
+        command handler. It therefore catches its own exceptions, because the
+        handler's `try/except` no longer wraps it.
 
         Args:
             current: Currently running `deepagents-code` version.
             latest: Latest available `deepagents-code` version.
-            include_prereleases: Whether to include alpha/beta/rc releases;
-                `None` follows the installed version's channel.
-            upgrade_include_prereleases: Pre-release policy for the app upgrade,
-                which is forced on when the target release needs it.
+            include_prereleases: Whether the app upgrade and dependency refresh
+                resolve alpha/beta/rc releases; `None` follows the installed
+                version's channel.
+            upgrade_include_prereleases: Forwarded to `_perform_app_upgrade`,
+                where it gates pre-release support and the manual-upgrade hint
+                rather than the install itself.
             pin_upgrade_version: Version to pin in the manual-upgrade hint shown
                 when the upgrade fails.
         """
@@ -6005,7 +6008,10 @@ class DeepAgentsApp(App):
                     app_update_version=latest,
                 )
         except Exception as exc:
-            logger.warning("/update command failed", exc_info=True)
+            logger.warning(
+                "/update command failed (app-update confirmation)",
+                exc_info=True,
+            )
             await self._mount_update_failure(exc)
 
     async def _perform_app_upgrade(
@@ -6041,10 +6047,13 @@ class DeepAgentsApp(App):
         Args:
             current: Currently running `deepagents-code` version.
             latest: Target `deepagents-code` version.
-            include_prereleases: Whether to include alpha/beta/rc releases;
-                `None` follows the installed version's channel.
-            upgrade_include_prereleases: Pre-release policy for this upgrade,
-                which is forced on when the target release needs it.
+            include_prereleases: Passed to `perform_upgrade`, so this is what
+                decides whether the install itself resolves alpha/beta/rc
+                releases; `None` follows the installed version's channel.
+            upgrade_include_prereleases: Used only for the
+                `prerelease_upgrade_supported` gate and the manual-upgrade hint
+                printed on failure — *not* for the install. Forced on when the
+                target release needs it.
             pin_upgrade_version: Version to pin in the manual-upgrade hint shown
                 when the upgrade fails.
         """
@@ -6680,24 +6689,47 @@ class DeepAgentsApp(App):
             context=f"install-package:{package}",
         )
 
+    async def _mount_install_failure(self, exc: Exception) -> None:
+        """Surface a failure from any `/install <pkg> --package` stage.
+
+        Args:
+            exc: The exception that ended the install flow.
+        """
+        await self._mount_message(
+            ErrorMessage(f"Install failed: {type(exc).__name__}: {exc}"),
+        )
+
     async def _confirm_then_install_package(self, package: str) -> None:
         """Confirm an arbitrary-package install, then run it.
 
-        Runs detached from the App message pump so the confirmation modal can
-        receive keys; see `_schedule_off_message_pump`. The package name is
-        already validated and the install method already vetted by
-        `_handle_install_package`, so nothing here can widen what gets installed.
+        Must be scheduled via `_schedule_off_message_pump`, never awaited from a
+        command handler. The package name is already validated and the
+        editable-install guard already ran in `_handle_install_package`, so
+        nothing here can widen what gets installed.
+
+        Catches its own exceptions because the detached task is outside
+        `_handle_install_package`'s call chain: an escape would reach only
+        `_log_task_exception`, leaving the mounted "Installing package..." line
+        as the last thing the user ever sees.
 
         Args:
             package: The validated package name to confirm and install.
         """
-        # `_confirm_install_package` mounts its own outcome message (cancel,
-        # timeout, or mount failure), so this just aborts on a falsy result
-        # rather than mounting a generic — and possibly inaccurate —
-        # "Cancelled" line.
-        if not await self._confirm_install_package(package):
-            return
-        await self._perform_package_install(package)
+        try:
+            # `_confirm_install_package` mounts its own outcome message (cancel,
+            # timeout, or mount failure), so this just aborts on a falsy result
+            # rather than mounting a generic — and possibly inaccurate —
+            # "Cancelled" line.
+            if not await self._confirm_install_package(package):
+                return
+            await self._perform_package_install(package)
+        except Exception as exc:
+            logger.warning(
+                "/install --package continuation failed for %r",
+                package,
+                exc_info=True,
+            )
+            await self._mount_install_failure(exc)
 
     async def _perform_package_install(self, package: str) -> None:
         """Serialize a package install against every environment mutation."""
@@ -6710,10 +6742,20 @@ class DeepAgentsApp(App):
         Args:
             package: The validated, user-approved package name to install.
         """
-        from deepagents_code.update_check import (
-            create_update_log_path,
-            perform_install_package,
-        )
+        try:
+            from deepagents_code.update_check import (
+                create_update_log_path,
+                perform_install_package,
+            )
+        except ImportError as exc:
+            # A previous `/install --package` in this session rewrote our own
+            # package tree, so a lazy import here can fail on a half-written
+            # module. Report it instead of letting it escape: on the `--force`
+            # path it would reach `_fatal_error` and kill the app, and on the
+            # detached path only `_log_task_exception` would see it.
+            logger.warning("/install --package import failed", exc_info=True)
+            await self._mount_install_failure(exc)
+            return
 
         log_path = create_update_log_path()
         # Load the restart modal before the upgrade rewrites our own package
@@ -17204,7 +17246,7 @@ class DeepAgentsApp(App):
             )
         restore_iterm_cursor_guide()
         self._exiting = True
-        self._cancel_modal_command_tasks()
+        modal_command_tasks = self._cancel_modal_command_tasks()
 
         # Defer super().exit() so teardown can overlap independent slow phases
         # instead of serializing them, while keeping the Textual event loop
@@ -17230,6 +17272,10 @@ class DeepAgentsApp(App):
         if restart_task is not None and not restart_task.done():
             restart_tasks.add(restart_task)
         should_wait_for_restart = bool(restart_tasks)
+        # Already cancelled above; awaited in the bounded teardown phase below so
+        # a continuation's cancellation handler (which may be killing a `uv`
+        # process group) runs before the loop stops.
+        should_wait_for_modal_commands = bool(modal_command_tasks)
         for task in restart_tasks:
             task.cancel()
         # Capture the current server so a concurrent respawn can't swap it out
@@ -17246,6 +17292,7 @@ class DeepAgentsApp(App):
         if (
             should_wait_for_agent
             or should_wait_for_restart
+            or should_wait_for_modal_commands
             or should_drain_hooks
             or server_proc is not None
             or session_end_payload is not None
@@ -17415,6 +17462,52 @@ class DeepAgentsApp(App):
                             time.monotonic() - phase_start,
                         )
 
+                async def _finish_modal_commands() -> None:
+                    if not modal_command_tasks:
+                        return
+                    phase_start = time.monotonic()
+                    try:
+                        # The tasks were cancelled in `exit()`; give their
+                        # cancellation handlers a bounded window to run, since a
+                        # continuation interrupted mid-install has to kill and
+                        # reap its `uv` child (`_terminate_install_process`,
+                        # itself bounded). Without this the loop could stop with
+                        # the task still pending and the child orphaned.
+                        results = await asyncio.wait_for(
+                            asyncio.gather(
+                                *modal_command_tasks,
+                                return_exceptions=True,
+                            ),
+                            timeout=_GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
+                        for modal_result in results:
+                            if isinstance(modal_result, asyncio.CancelledError):
+                                continue
+                            if isinstance(modal_result, BaseException):
+                                logger.warning(
+                                    "Detached command continuation raised while "
+                                    "unwinding before app exit",
+                                    exc_info=(
+                                        type(modal_result),
+                                        modal_result,
+                                        modal_result.__traceback__,
+                                    ),
+                                )
+                    except TimeoutError:
+                        logger.warning(
+                            "Detached command continuations did not finish "
+                            "unwinding within %ss before app exit; an install or "
+                            "refresh may have been left partially applied",
+                            _GRACEFUL_EXIT_WAIT_SECONDS,
+                        )
+                    finally:
+                        logger.debug(
+                            "Teardown phase 'modal command cleanup' (%d tasks) "
+                            "took %.3fs",
+                            len(modal_command_tasks),
+                            time.monotonic() - phase_start,
+                        )
+
                 try:
                     if refreshed is not None:
                         await refreshed.wait()
@@ -17465,8 +17558,14 @@ class DeepAgentsApp(App):
                     # so a future edit that lets an exception escape a child
                     # coroutine is surfaced rather than silently swallowed.
                     await _finish_restart()
+                    # The modal-command unwind touches only the tool env, so it
+                    # overlaps server shutdown and the hook drain rather than
+                    # serializing behind them.
                     results = await asyncio.gather(
-                        _stop_server(), _drain_hooks(), return_exceptions=True
+                        _stop_server(),
+                        _drain_hooks(),
+                        _finish_modal_commands(),
+                        return_exceptions=True,
                     )
                     for phase_result in results:
                         if isinstance(phase_result, asyncio.CancelledError):
@@ -21630,10 +21729,16 @@ class DeepAgentsApp(App):
         and update commands cannot show overlapping modals or mutate the tool
         environment concurrently.
 
+        The continuation runs outside the command handler's `try/except` and is
+        cancelled at app exit, possibly mid-install, so each one must catch its
+        own exceptions, mount its own failure message, and tolerate being
+        cancelled part-way through.
+
         Args:
             coro: The continuation to run off the message pump.
-            context: Identifies the continuation for deduplication, task naming,
-                and failure logs.
+            context: Identifies the continuation in the task name and in the
+                failure and exit-cancellation logs. Admission is global, so this
+                is a label rather than a dedup key.
 
         Returns:
             The scheduled task, or `None` when another continuation is already
@@ -21641,8 +21746,13 @@ class DeepAgentsApp(App):
         """
         if self._modal_command_running():
             coro.close()
+            # Covers the whole continuation, not just its modal: after the
+            # prompt is answered the install or refresh can still be running for
+            # minutes, and pointing the user at a prompt that has already closed
+            # would read as a bug.
             self.notify(
-                "Another install or update prompt is already open — answer it first.",
+                "Another install or update is in progress — answer its prompt if "
+                "one is open.",
                 severity="warning",
                 timeout=5,
             )
@@ -21654,12 +21764,32 @@ class DeepAgentsApp(App):
         def _forget(done: asyncio.Task[None]) -> None:
             if self._modal_command_tasks.get(context) is done:
                 del self._modal_command_tasks[context]
-            _log_task_exception(done)
-            if self._pending_messages and not self._modal_command_running():
-                self._modal_queue_drain_task = asyncio.create_task(
+            if not done.cancelled() and done.exception() is not None:
+                # `_log_task_exception` logs a context-free "Background task
+                # failed unexpectedly", which cannot tell you which slash command
+                # broke. Name the continuation before falling back to it.
+                logger.warning(
+                    "Detached command continuation %r failed",
+                    context,
+                    exc_info=done.exception(),
+                )
+            else:
+                _log_task_exception(done)
+            existing_drain = self._modal_queue_drain_task
+            if (
+                self._pending_messages
+                and not self._modal_command_running()
+                and not self._exiting
+                and (existing_drain is None or existing_drain.done())
+            ):
+                drain = asyncio.create_task(
                     self._process_next_from_queue(),
                     name="drain-after-modal-command",
                 )
+                self._modal_queue_drain_task = drain
+                # Without this a raise in the drain is invisible: nothing awaits
+                # this task, so the queue would silently stop advancing.
+                drain.add_done_callback(_log_task_exception)
 
         task.add_done_callback(_forget)
         return task
@@ -21668,20 +21798,43 @@ class DeepAgentsApp(App):
         """Return whether a detached mutation continuation is still active."""
         return any(not task.done() for task in self._modal_command_tasks.values())
 
-    def _cancel_modal_command_tasks(self) -> None:
-        """Cancel detached command continuations still waiting on a modal.
+    def _cancel_modal_command_tasks(self) -> set[asyncio.Task[None]]:
+        """Request cancellation of detached command continuations at exit.
 
-        Called from `exit()` so a continuation parked on a confirmation modal
-        cannot outlive the app and leave its task pending at loop teardown.
+        Called from `exit()`. The continuation is cancelled in whatever state it
+        is in — not only parked on an unanswered modal, but also mid-install,
+        mid-upgrade, or mid-dependency-refresh once a confirmation has been
+        given. Cancelling there kills the `uv` process group
+        (`_terminate_install_process`), which can leave the tool environment
+        partially updated, so the loss is logged rather than passed over in
+        silence.
+
+        Cancellation is only *requested* here; `exit()` awaits the returned
+        tasks in its bounded teardown phase so a continuation cannot still be
+        pending when the loop stops.
+
+        Returns:
+            The tasks that were still running and have now been cancelled.
         """
-        for task in list(self._modal_command_tasks.values()):
-            if not task.done():
-                task.cancel()
+        cancelled: set[asyncio.Task[None]] = set()
+        for context, task in list(self._modal_command_tasks.items()):
+            if task.done():
+                continue
+            logger.warning(
+                "Cancelling detached command continuation %r at app exit; if it "
+                "was past its confirmation the install/refresh it started is "
+                "aborted mid-flight and may leave the tool environment "
+                "partially updated",
+                context,
+            )
+            task.cancel()
+            cancelled.add(task)
         if (
             self._modal_queue_drain_task is not None
             and not self._modal_queue_drain_task.done()
         ):
             self._modal_queue_drain_task.cancel()
+        return cancelled
 
     async def _offer_restart_after_install(self, label: str) -> None:
         """Offer a one-keypress restart after a restart-capable install.

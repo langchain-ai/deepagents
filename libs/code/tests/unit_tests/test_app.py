@@ -30467,7 +30467,14 @@ class TestScheduleOffMessagePump:
         with patch.object(app, "notify") as notify:
             assert app._schedule_off_message_pump(_second(), context="install") is None
 
-        notify.assert_called_once()
+        # Pin the wording and severity: these tests never call `run_test()`, so
+        # the real `notify` never renders and a broken message would go unnoticed.
+        notify.assert_called_once_with(
+            "Another install or update is in progress — answer its prompt if "
+            "one is open.",
+            severity="warning",
+            timeout=5,
+        )
         release.set()
         await asyncio.wait_for(first, timeout=2.0)
         assert second_ran is False
@@ -30558,8 +30565,10 @@ class TestScheduleOffMessagePump:
 
         assert second_started.is_set()
 
-    async def test_exit_cancels_a_continuation_waiting_on_its_modal(self) -> None:
-        """App teardown cancels a continuation parked on a confirmation modal."""
+    async def test_cancel_modal_command_tasks_cancels_a_pending_continuation(
+        self,
+    ) -> None:
+        """The helper cancels a continuation and reports which ones it hit."""
         app = DeepAgentsApp()
         started = asyncio.Event()
 
@@ -30571,10 +30580,38 @@ class TestScheduleOffMessagePump:
         assert task is not None
         await asyncio.wait_for(started.wait(), timeout=2.0)
 
-        app._cancel_modal_command_tasks()
+        assert app._cancel_modal_command_tasks() == {task}
 
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(task, timeout=2.0)
+
+    async def test_exit_cancels_a_continuation_waiting_on_its_modal(self) -> None:
+        """`exit()` itself cancels a continuation parked on a modal.
+
+        Covers the wiring, not just the helper: a refactor of `exit()` that drops
+        the `_cancel_modal_command_tasks()` call would otherwise leave a
+        continuation running past teardown with a green suite.
+        """
+        app = DeepAgentsApp()
+        started = asyncio.Event()
+
+        async def _blocked() -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            task = app._schedule_off_message_pump(_blocked(), context="demo")
+            assert task is not None
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+
+            app.exit()
+            for _ in range(40):
+                if task.done():
+                    break
+                await asyncio.sleep(0.05)
+
+        assert task.cancelled()
 
 
 def _banner_query_raiser(app: DeepAgentsApp, exc: Exception) -> Callable[..., Widget]:

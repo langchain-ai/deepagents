@@ -846,6 +846,45 @@ On the normal mainline publish path, a failed label swap fails `mark-release`
 after the tag and GitHub release already exist. Treat the package release as
 done and fix only the stuck label so later release-please maintenance can run.
 
+### Release Notes Job Failed or GitHub Release Body Is Empty
+
+The `release-notes` job builds the published GitHub release body from the package `CHANGELOG.md`, contributor shoutouts, and a collapsible package-scoped git log. It is intentionally fail-open: if the job fails or produces an empty body, the publish to PyPI and the GitHub tag still succeed. The release is real — do **not** re-dispatch the full publish workflow for the same version.
+
+To rebuild and apply the release body manually:
+
+1. **Check out the release commit locally.** Use the same SHA that was used for the release (visible in the workflow run's "Resolved release target" summary, or via `gh pr view <pr-number> --json mergeCommit --jq .mergeCommit.oid`).
+
+2. **Rebuild the body** with the shared script:
+
+   ```bash
+   python .github/scripts/release/build_release_notes.py \
+     --package <PACKAGE> \
+     --version <VERSION> \
+     --sha <RELEASE_SHA> \
+     --repo langchain-ai/deepagents \
+     --out /tmp/release-body.md
+   ```
+
+   Add `--offline` to skip GitHub API calls (contributor and releaser lookups). The body will still include the changelog section and git log scaffolding. Review the generated file before applying it.
+
+3. **Apply the body** to the existing GitHub release:
+
+   ```bash
+   gh release edit "<PACKAGE>==<VERSION>" --notes-file /tmp/release-body.md
+   ```
+
+   Pass **only** `--notes-file`. Flags such as `--tag`, `--target`, `--prerelease`, or `--latest` can change release metadata and are not part of note recovery. See [Enrich the published pre-release notes](#enrich-the-published-pre-release-notes) for the same `gh release edit` pattern used in pre-release workflows.
+
+4. **Verify** the result:
+
+   ```bash
+   gh release view "<PACKAGE>==<VERSION>" \
+     --repo langchain-ai/deepagents \
+     --json url,isPrerelease,targetCommitish,body
+   ```
+
+The source of truth for release notes is the merged package `CHANGELOG.md`. For `deepagents-code`, the curated release-notes workflow should already have applied the notes to `CHANGELOG.md` before the release PR merged; recovery here is about reconstructing the published GitHub body scaffolding (contributors, git log, size limits) when the CI notes job failed.
+
 ### Release Failed: Pre-release Checks
 
 The `pre-release-checks` job runs after the package is built but before anything is published. If it fails, nothing reached PyPI or GitHub Releases, but the release PR is already merged. release-please will not retry on its own. This is **Case A** in the [Hotfix Protocol](#case-a--release-failed-before-pypi-publish).

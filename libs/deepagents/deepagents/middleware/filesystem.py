@@ -218,9 +218,17 @@ def _multimodal_block_supported(
     block_type = block.get("type")
     if not isinstance(block_type, str):
         return True
+    if block_type == "file" and "base64" not in block:
+        # URL-/file-ID-backed file references (e.g. `{"file_id": ...}`,
+        # `{"url": ...}`) aren't `read_file`'s inline base64 attachments and
+        # commonly need no `mime_type` at all; providers handle these through
+        # their own upload/hosting path, so leave them untouched rather than
+        # guessing support from a missing field.
+        return True
     if block_type == "file" and block.get("mime_type") != _PDF_MIME_TYPE:
-        # Non-PDF `file` blocks (`.docx`, `.pptx`, ...) aren't described by any
-        # `ModelProfile` field yet; only the hard-coded tolerant providers pass.
+        # Non-PDF base64 `file` blocks (`.docx`, `.pptx`, ...) aren't described
+        # by any `ModelProfile` field yet; only the hard-coded tolerant
+        # providers pass.
         return provider in _MULTIMODAL_FILE_TOLERANT_PROVIDERS
 
     field = _PROFILE_FIELD_BY_BLOCK_TYPE.get(block_type)
@@ -279,12 +287,18 @@ def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "Ba
     otherwise end the thread. Swapping the unsupported block for a text
     placeholder here before the request reaches the model.
 
-    A `model` with no `profile` (or no `model` at all, e.g. `None` in tests) is
-    left untouched: without profile data there is nothing to gate on.
+    A `model` with no `profile` (including `None` `model`, e.g. in tests) is
+    treated as an empty profile rather than skipped: `ModelProfile` is often
+    absent for models `langchain_anthropic` doesn't have a static entry for
+    (e.g. `ChatAnthropic(model="claude-3-5-sonnet-latest")`), and the
+    provider-based non-PDF `file` gate doesn't depend on profile data at all —
+    skipping the whole scrub in that case would silently leave the exact
+    `.docx`-on-Anthropic bug this fixes unfixed for those models. An empty
+    profile still defaults every per-field check to "supported."
     """
     profile = getattr(model, "profile", None)
     if not isinstance(profile, dict):
-        return messages
+        profile = {}
     provider = _infer_model_provider(model)
     return [_scrub_message_multimodal_content(message, profile=profile, provider=provider) for message in messages]
 

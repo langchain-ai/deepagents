@@ -60,6 +60,14 @@ def _image_block() -> dict[str, str]:
     return {"type": "image", "base64": "ZmFrZQ==", "mime_type": "image/png"}
 
 
+def _file_id_block() -> dict[str, str]:
+    return {"type": "file", "file_id": "file_abc123"}
+
+
+def _url_pdf_block() -> dict[str, str]:
+    return {"type": "file", "url": "https://example.com/report.pdf"}
+
+
 class TestInferModelProvider:
     def test_prefers_ls_provider_over_class_name(self) -> None:
         model = FakeChatModel(profile={}, ls_provider="google-genai")
@@ -113,16 +121,57 @@ class TestMultimodalBlockSupported:
         assert _multimodal_block_supported(_docx_block(), profile={}, provider="openai", in_tool_message=True)
         assert _multimodal_block_supported(_docx_block(), profile={}, provider="google_genai", in_tool_message=True)
 
+    def test_file_id_reference_untouched_regardless_of_provider(self) -> None:
+        """A `file_id` reference isn't `read_file`'s base64 attachment; don't gate it by mime type."""
+        assert _multimodal_block_supported(_file_id_block(), profile={}, provider=None, in_tool_message=True)
+        assert _multimodal_block_supported(_file_id_block(), profile={}, provider="anthropic", in_tool_message=True)
+
+    def test_url_file_reference_untouched_regardless_of_provider(self) -> None:
+        """A URL-backed file reference has no `mime_type`; don't misclassify it as an unsupported non-PDF upload."""
+        assert _multimodal_block_supported(_url_pdf_block(), profile={}, provider=None, in_tool_message=True)
+        assert _multimodal_block_supported(_url_pdf_block(), profile={}, provider="anthropic", in_tool_message=True)
+
 
 class TestScrubUnsupportedMultimodalContent:
-    def test_noop_when_model_is_none(self) -> None:
+    def test_pdf_passes_through_when_model_is_none(self) -> None:
+        """A PDF block defaults to supported even with no model/profile data at all."""
         messages = [ToolMessage(content_blocks=[_pdf_block()], name="read_file", tool_call_id="call_1")]
         assert _scrub_unsupported_multimodal_content(messages, None) == messages
 
-    def test_noop_when_model_has_no_profile(self) -> None:
+    def test_pdf_passes_through_when_model_has_no_profile(self) -> None:
         messages = [ToolMessage(content_blocks=[_pdf_block()], name="read_file", tool_call_id="call_1")]
         model = FakeChatModel(profile=None)
         assert _scrub_unsupported_multimodal_content(messages, model) == messages
+
+    def test_docx_stripped_for_anthropic_with_no_profile_entry(self) -> None:
+        """Regression: `ChatAnthropic` often has `profile is None` for unlisted models.
+
+        `ChatAnthropic` frequently has `profile is None` for models not in its static
+        registry (e.g. `claude-3-5-sonnet-latest`). The provider-based non-PDF gate must
+        still apply in that case, or the exact bug this fix targets goes unfixed for those models.
+        """
+        message = ToolMessage(
+            content_blocks=[_docx_block()],
+            name="read_file",
+            tool_call_id="call_1",
+            additional_kwargs={"read_file_path": "/report.docx"},
+        )
+        model = ChatAnthropic(profile=None)
+
+        scrubbed = _scrub_unsupported_multimodal_content([message], model)
+
+        blocks = scrubbed[0].content_blocks
+        assert blocks[0]["type"] == "text"
+        assert "/report.docx" in blocks[0]["text"]
+
+    def test_file_id_reference_passes_through_with_no_profile(self) -> None:
+        original_block = _file_id_block()
+        message = ToolMessage(content_blocks=[original_block], name="read_file", tool_call_id="call_1")
+        model = ChatAnthropic(profile=None)
+
+        scrubbed = _scrub_unsupported_multimodal_content([message], model)
+
+        assert scrubbed[0].content_blocks[0] == original_block
 
     def test_strips_pdf_block_when_profile_disallows(self) -> None:
         message = ToolMessage(

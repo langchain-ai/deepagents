@@ -1561,6 +1561,9 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS,
         # Plugin cache root override; read directly by plugins.store
         _env_vars.PLUGIN_CACHE_DIR,
+        # Set by the self-update restart to carry the launched command name into
+        # the re-exec'd process; never user-configured.
+        _env_vars.INVOKED_AS,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""

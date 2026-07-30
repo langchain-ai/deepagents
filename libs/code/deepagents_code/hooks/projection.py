@@ -5,8 +5,6 @@ from __future__ import annotations
 from functools import singledispatch
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
-from langchain_core.messages import ToolMessage
-
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.models.adapters import HOOK_WIRE_INPUT_ADAPTER
 from deepagents_code.hooks.models.domain import (
@@ -43,13 +41,10 @@ from deepagents_code.hooks.models.wire import (
     WirePermissionMode,
 )
 from deepagents_code.hooks.tools import to_wire_call
-from deepagents_code.json_types import JSON_VALUE_ADAPTER, JsonValue
 
 if TYPE_CHECKING:
     from pathlib import Path
     from uuid import UUID
-
-    from langgraph.types import Command
 
     from deepagents_code.hooks.models.domain import (
         AgentIdentity,
@@ -218,7 +213,7 @@ def _project_post_tool_use(
         hook_event_name=HookEvent.POST_TOOL_USE,
         tool_name=tool_name,
         tool_input=tool_input,
-        tool_response=_tool_result(event.result),
+        tool_response=event.result,
         tool_use_id=event.call.id,
         duration_ms=event.duration_ms,
     )
@@ -386,11 +381,3 @@ def to_wire_notification_type(value: str) -> WireNotificationType:
     except KeyError as exc:
         msg = f"Unsupported notification type: {value}"
         raise ValueError(msg) from exc
-
-
-def _tool_result(result: ToolMessage | Command[str]) -> JsonValue:
-    if isinstance(result, ToolMessage):
-        value: object = result.model_dump(mode="json")
-    else:
-        value = JSON_VALUE_ADAPTER.dump_python(result, mode="json", warnings=False)
-    return JSON_VALUE_ADAPTER.validate_python(value)

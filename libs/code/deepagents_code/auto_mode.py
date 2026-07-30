@@ -2733,12 +2733,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         )
         if ai_message is None or not ai_message.tool_calls:
             return {"_auto_decision_plan": None}
-        from deepagents_code.hooks.server_middleware import pre_tool_behavior
+        from deepagents_code.hooks.server_middleware import hook_decided_permission
 
         hook_bypass_ids = {
             _tool_call_id(call)
             for call in ai_message.tool_calls
-            if pre_tool_behavior(state, _tool_call_id(call)) in {"allow", "deny"}
+            if hook_decided_permission(state, _tool_call_id(call))
         }
         thread_key = _thread_key(runtime)
         # Derive the emission scope once for the whole node run. Deriving it

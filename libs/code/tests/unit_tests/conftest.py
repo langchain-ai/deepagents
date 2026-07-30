@@ -2,15 +2,44 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Generator
+    from collections.abc import Callable, Coroutine, Generator
     from pathlib import Path
+
+    from textual.pilot import Pilot
+    from textual.screen import Screen
+
+    from deepagents_code.app import DeepAgentsApp
+
+
+class DrainModalCommands(Protocol):
+    """Await the detached slash-command continuations on an app."""
+
+    def __call__(self, app: DeepAgentsApp) -> Coroutine[Any, Any, None]:
+        """Await every in-flight continuation, re-raising the first failure."""
+        ...
+
+
+class WaitForModal(Protocol):
+    """Pump an app until a modal screen appears or goes away."""
+
+    def __call__(
+        self,
+        pilot: Pilot[None],
+        screen_type: type[Screen[Any]],
+        *,
+        present: bool,
+        wait_seconds: float = ...,
+    ) -> Coroutine[Any, Any, None]:
+        """Wait for `screen_type` to match `present`, asserting on timeout."""
+        ...
 
 
 _UPDATE_CHECK_SELF_MANAGED_MARK = "self_managed_update_check"
@@ -218,6 +247,31 @@ def _clear_provider_base_url_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def _clear_onboarding_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent local debug onboarding env vars from affecting tests."""
     monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_ONBOARDING", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _pin_invoked_name(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    """Pin the launch command name echoed by resume hints.
+
+    `invoked_name()` derives from `sys.argv[0]`, which under test is the runner
+    (`pytest`, `__main__.py`, a tox shim, ...) and therefore varies with how the
+    suite was started. Pin it to the default console script so hint assertions
+    are deterministic, and drop the process-lifetime cache around every test so
+    a test that varies the launch name cannot leak it into another.
+    """
+    from deepagents_code._env_vars import INVOKED_AS
+    from deepagents_code._invocation import (
+        DEFAULT_INVOKED_NAME,
+        invoked_name,
+        log_nonstandard_invoked_name,
+    )
+
+    monkeypatch.setenv(INVOKED_AS, DEFAULT_INVOKED_NAME)
+    invoked_name.cache_clear()
+    log_nonstandard_invoked_name.cache_clear()
+    yield
+    invoked_name.cache_clear()
+    log_nonstandard_invoked_name.cache_clear()
 
 
 @pytest.fixture(autouse=True)
@@ -446,3 +500,71 @@ def _clear_kitty_kbd_probe_cache() -> None:
     from deepagents_code.terminal_capabilities import supports_kitty_keyboard_protocol
 
     supports_kitty_keyboard_protocol.cache_clear()
+
+
+@pytest.fixture
+def drain_modal_commands() -> DrainModalCommands:
+    """Await the confirmation continuations that slash commands detach.
+
+    `/update` and `/install <pkg> --package` hand their confirmation modals to
+    `DeepAgentsApp._schedule_off_message_pump`, so the command handler returns
+    before the confirmed work runs. Tests await the detached tasks instead of
+    relying on pump scheduling order.
+
+    Unlike a bare `gather(..., return_exceptions=True)`, this re-raises the first
+    real failure: a continuation that crashes must fail its test loudly rather
+    than leave a downstream `assert_awaited_once` to report the symptom without
+    the traceback.
+
+    Returns:
+        An async callable taking the app whose continuations should be awaited.
+    """
+
+    async def _drain(app: DeepAgentsApp) -> None:
+        while pending := [
+            task for task in app._modal_command_tasks.values() if not task.done()
+        ]:
+            for result in await asyncio.gather(*pending, return_exceptions=True):
+                if isinstance(result, asyncio.CancelledError):
+                    continue
+                if isinstance(result, BaseException):
+                    raise result
+
+    return _drain
+
+
+@pytest.fixture
+def wait_for_modal() -> WaitForModal:
+    """Pump the app until a modal is (or is no longer) the active screen.
+
+    Raises `AssertionError` on timeout rather than returning silently, so a
+    modal that never resolves fails here with a readable message instead of
+    wedging the next `await` and surfacing as a bare pytest-timeout.
+
+    Returns:
+        An async callable taking the pilot, the modal class, and whether to wait
+            for the modal to appear (`present=True`) or go away.
+    """
+
+    async def _wait(
+        pilot: Pilot[None],
+        screen_type: type[Screen[Any]],
+        *,
+        present: bool,
+        wait_seconds: float = 3.0,
+    ) -> None:
+        deadline = wait_seconds
+        step = 0.05
+        while deadline > 0:
+            await pilot.pause(step)
+            if isinstance(pilot.app.screen, screen_type) is present:
+                return
+            deadline -= step
+        state = "appear" if present else "go away"
+        msg = (
+            f"{screen_type.__name__} did not {state} within {wait_seconds}s; "
+            f"active screen is {type(pilot.app.screen).__name__}"
+        )
+        raise AssertionError(msg)
+
+    return _wait

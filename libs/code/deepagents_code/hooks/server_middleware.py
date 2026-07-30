@@ -16,6 +16,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     Any,
     Literal,
     NotRequired,
@@ -35,6 +36,7 @@ from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ContextT,
+    PrivateStateAttr,
     ResponseT,
     hook_config,
 )
@@ -93,19 +95,60 @@ _COMPACT_TOOL_NAME = "compact_conversation"
 _INVOCATION_NAMESPACE = UUID("f2896d18-cf2a-4e7d-b11a-d5b10fc0e335")
 
 PreToolBehavior: TypeAlias = Literal["allow", "deny", "none"]
+_DEFAULT_DENY_REASON = "Blocked by PreToolUse hook"
 
 
-class _PreToolState(TypedDict):
-    behavior: PreToolBehavior
-    reason: str | None
+class _PreToolDenied(TypedDict):
+    """Outcome for a call a hook refused. A denial always carries a reason."""
+
+    behavior: Literal["deny"]
+    reason: str
     context: list[str]
 
 
-class ServerHooksState(AgentState[Any]):
-    """Agent state extensions for server-owned hook middleware."""
+class _PreToolPassed(TypedDict):
+    """Outcome for a call a hook allowed or had no opinion on."""
 
-    _hooks_stop_continuation_count: NotRequired[int]
-    _hooks_pre_tool_outcomes: NotRequired[dict[str, _PreToolState]]
+    behavior: Literal["allow", "none"]
+    context: list[str]
+
+
+_PreToolState: TypeAlias = _PreToolDenied | _PreToolPassed
+
+
+class ServerHooksState(AgentState[Any]):
+    """Agent state extensions for server-owned hook middleware.
+
+    Both fields are per-turn bookkeeping owned by `ServerHooksMiddleware` and
+    marked `PrivateStateAttr`: they are omitted from the public graph I/O schema,
+    and `SubAgentMiddleware` strips them from subagent result merges so parallel
+    `task` calls cannot produce two concurrent writes to these `LastValue`
+    channels.
+
+    `PrivateStateAttr` only omits the fields from the input and output schemas;
+    the channels stay ordinary checkpointed `LastValue` channels visible to every
+    node, so values still flow from `after_model` to `wrap_tool_call` and survive
+    interrupt/resume.
+
+    Note:
+        If either field ever needs a reducer, the reducer must be placed *after*
+        `PrivateStateAttr` in the `Annotated` metadata. LangGraph only inspects
+        the last metadata entry when detecting reducers, so a reducer added
+        before the marker is silently ignored.
+    """
+
+    _hooks_stop_continuation_count: NotRequired[Annotated[int, PrivateStateAttr]]
+    """Stop-hook continuations in the current turn; reset to 0 when the loop ends."""
+
+    _hooks_pre_tool_outcomes: NotRequired[
+        Annotated[dict[str, _PreToolState], PrivateStateAttr]
+    ]
+    """Pre-execution hook verdicts keyed by tool-call id.
+
+    A full snapshot of the *current* turn's calls, not an accumulator: every
+    `_after_model` replaces the whole dict (including with `{}`) so stale ids
+    cannot survive into a later turn.
+    """
 
 
 class _SessionHookGate(TypedDict):
@@ -392,7 +435,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
                     reason = (
                         permission.reason
                         or decision.stop_reason
-                        or "Blocked by PreToolUse hook"
+                        or _DEFAULT_DENY_REASON
                     )
                 elif permission.behavior == "ask":
                     blocked = _ask_permission_via_hitl(call, permission)
@@ -408,11 +451,19 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
                         )
                 elif permission.behavior == "allow":
                     behavior = "allow"
-            outcomes[call.id] = {
-                "behavior": behavior,
-                "reason": reason,
-                "context": hook_context,
-            }
+            if behavior == "deny":
+                outcomes[call.id] = {
+                    "behavior": "deny",
+                    # Every deny path above resolves a reason; the guard keeps the
+                    # "a denial always explains itself" invariant checkable here.
+                    "reason": reason if reason is not None else _DEFAULT_DENY_REASON,
+                    "context": hook_context,
+                }
+            else:
+                outcomes[call.id] = {
+                    "behavior": behavior,
+                    "context": hook_context,
+                }
         return {_PRE_TOOL_STATE_KEY: outcomes}
 
     def _maybe_post_tool_use(
@@ -430,10 +481,9 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             return result
         decision = _invoke_hook(
             context,
-            PostToolUseEvent(
-                event=HookEvent.POST_TOOL_USE,
+            PostToolUseEvent.from_tool_result(
+                result,
                 call=call,
-                result=result,
                 duration_ms=duration_ms,
             ),
             gate=gate,
@@ -541,19 +591,23 @@ def _event_enabled(gate: _SessionHookGate | None, event: HookEvent) -> bool:
     return gate is not None and event.value in gate["events"]
 
 
-def pre_tool_behavior(state: object, tool_call_id: str) -> PreToolBehavior | None:
-    """Return the replayed pre-execution hook behavior for one call."""
+def hook_decided_permission(state: object, tool_call_id: str) -> bool:
+    """Report whether a pre-execution hook already settled permission for a call.
+
+    Args:
+        state: Agent state carrying the current turn's hook outcomes.
+        tool_call_id: Tool call to look up.
+
+    Returns:
+        `True` when a hook explicitly allowed or denied the call, so stock
+        approval flows must not prompt again. `False` when no hook ran, the hook
+        expressed no opinion, or no outcome was recorded -- in every one of those
+        cases normal approval still applies.
+    """
     outcome = _pre_tool_state(state, tool_call_id)
     if outcome is None:
-        return None
-    behavior = outcome.get("behavior")
-    if behavior == "allow":
-        return "allow"
-    if behavior == "deny":
-        return "deny"
-    if behavior == "none":
-        return "none"
-    return None
+        return False
+    return outcome.get("behavior") in {"allow", "deny"}
 
 
 def _pre_tool_state(state: object, tool_call_id: str) -> Mapping[str, object] | None:
@@ -612,7 +666,6 @@ def _invoke_hook(
         raise RuntimeError(msg)
     run_id = _run_id(config, context.thread_id)
     invocation_id = _invocation_id(
-        run_id=run_id,
         snapshot_id=gate["snapshot_id"],
         context=context,
         event=event,
@@ -699,7 +752,6 @@ def _run_id(config: Mapping[str, Any] | None, thread_id: str) -> str:
 
 def _invocation_id(
     *,
-    run_id: str,
     snapshot_id: str,
     context: HookContext,
     event: (
@@ -713,12 +765,11 @@ def _invocation_id(
     logical_event_id: str | None = None,
 ) -> UUID:
     identity = {
-        "run_id": run_id,
         "thread_id": context.thread_id,
         "snapshot_id": snapshot_id,
+        "prompt_id": str(context.prompt_id) if context.prompt_id is not None else "",
         "event": event.event.value,
         "logical_event": _logical_event_identity(
-            context,
             event,
             logical_event_id=logical_event_id,
         ),
@@ -730,7 +781,6 @@ def _invocation_id(
 
 
 def _logical_event_identity(
-    context: HookContext,
     event: (
         PreToolUseEvent
         | PostToolUseEvent
@@ -751,11 +801,10 @@ def _logical_event_identity(
         raise ValueError(msg)
     if isinstance(event, SubagentStartEvent):
         return event.agent.id
-    prompt_id = str(context.prompt_id) if context.prompt_id is not None else ""
     if isinstance(event, SubagentStopEvent):
-        return f"{event.agent.id}:{event.continuation_count}:{prompt_id}"
+        return f"{event.agent.id}:{event.continuation_count}"
     message_hash = hashlib.sha256(event.last_assistant_message.encode()).hexdigest()
-    return f"{event.continuation_count}:{prompt_id}:{message_hash}"
+    return f"{event.continuation_count}:{message_hash}"
 
 
 def _config_thread_id(config: Mapping[str, Any] | None) -> str | None:

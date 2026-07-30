@@ -71,7 +71,7 @@ from deepagents_code.hooks.models.domain import (
     ToolCallData,
 )
 from deepagents_code.hooks.models.transport import HookInvocationRequest
-from deepagents_code.hooks.tools import to_wire_tool_name, to_wire_tool_result
+from deepagents_code.hooks.tools import to_wire_tool_name
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -430,10 +430,9 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             return result
         decision = _invoke_hook(
             context,
-            PostToolUseEvent(
-                event=HookEvent.POST_TOOL_USE,
+            PostToolUseEvent.from_tool_result(
+                result,
                 call=call,
-                result=to_wire_tool_result(result),
                 duration_ms=duration_ms,
             ),
             gate=gate,

@@ -57,7 +57,7 @@ from deepagents_code.hooks.projection import project_hook_input, serialize_hook_
 from deepagents_code.hooks.reducer import reduce_hook_results
 from deepagents_code.hooks.runner import HandlerResult, run_command_handler
 from deepagents_code.hooks.snapshot import HookHandler, HooksSnapshot
-from deepagents_code.hooks.tools import to_wire_call, to_wire_tool_result
+from deepagents_code.hooks.tools import to_wire_call
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -446,12 +446,9 @@ def test_snapshot_rejects_matcher_for_unmatchable_event() -> None:
             {"hook_event_name": "PreToolUse", "tool_use_id": "call-1"},
         ),
         (
-            PostToolUseEvent(
-                event=HookEvent.POST_TOOL_USE,
+            PostToolUseEvent.from_tool_result(
+                ToolMessage(content="done", tool_call_id="call-2"),
                 call=ToolCallData(id="call-2", name="Bash", args={}),
-                result=to_wire_tool_result(
-                    ToolMessage(content="done", tool_call_id="call-2")
-                ),
             ),
             {"hook_event_name": "PostToolUse", "tool_use_id": "call-2"},
         ),
@@ -570,10 +567,9 @@ def test_projects_native_tool_names_to_wire(tmp_path: Path) -> None:
 
     invocation = _invocation(
         tmp_path,
-        PostToolUseEvent(
-            event=HookEvent.POST_TOOL_USE,
+        PostToolUseEvent.from_tool_result(
+            Command(update={"result": "done"}),
             call=ToolCallData(id="call-1", name="Bash", args={}),
-            result=to_wire_tool_result(Command(update={"result": "done"})),
         ),
     )
 
@@ -736,15 +732,12 @@ def test_adapts_native_tool_calls_to_wire(
 def test_serializes_native_tool_message_as_json(tmp_path: Path) -> None:
     invocation = _invocation(
         tmp_path,
-        PostToolUseEvent(
-            event=HookEvent.POST_TOOL_USE,
-            call=ToolCallData(id="call-1", name="Bash", args={}),
-            result=to_wire_tool_result(
-                ToolMessage(
-                    content=[{"type": "text", "text": "done"}],
-                    tool_call_id="call-1",
-                )
+        PostToolUseEvent.from_tool_result(
+            ToolMessage(
+                content=[{"type": "text", "text": "done"}],
+                tool_call_id="call-1",
             ),
+            call=ToolCallData(id="call-1", name="Bash", args={}),
         ),
     )
 
@@ -1198,12 +1191,9 @@ def test_reducer_covers_event_decision_shapes_and_loop_guards(tmp_path: Path) ->
             },
         ),
         (
-            PostToolUseEvent(
-                event=HookEvent.POST_TOOL_USE,
+            PostToolUseEvent.from_tool_result(
+                ToolMessage(content="done", tool_call_id="call"),
                 call=ToolCallData(id="call", name="Bash", args={}),
-                result=to_wire_tool_result(
-                    ToolMessage(content="done", tool_call_id="call")
-                ),
             ),
             {
                 "decision": "block",

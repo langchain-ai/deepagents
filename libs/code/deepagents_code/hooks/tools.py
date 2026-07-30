@@ -3,19 +3,13 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any
-
-from langchain_core.messages import ToolMessage
-
-from deepagents_code.json_types import JSON_VALUE_ADAPTER
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from langgraph.types import Command
-
     from deepagents_code.hooks.models.domain import ToolCallData
-    from deepagents_code.json_types import JsonObject, JsonValue
+    from deepagents_code.json_types import JsonObject
 
 
 def _select(args: JsonObject, *fields: str) -> JsonObject:
@@ -151,25 +145,3 @@ def to_wire_call(
     if call.mcp_server is not None or _MCP_WIRE_RE.fullmatch(call.name) is not None:
         return name, dict(call.args)
     return name, to_wire_tool_input(call.name, call.args)
-
-
-def to_wire_tool_result(result: ToolMessage | Command[Any]) -> JsonValue:
-    """Project a native tool result into JSON for hook transport and wire input.
-
-    `PostToolUse` crosses a LangGraph interrupt boundary, so the domain event must
-    carry JSON — not a live `Command` / `ToolMessage`. Re-validating a dumped
-    `Command` as `ToolMessage` raises `KeyError: 'tool_call_id'` in LangChain's
-    message coercion.
-
-    Args:
-        result: Native tool return value from the tool wrapper.
-
-    Returns:
-        JSON-compatible tool response for `PostToolUseEvent.result` / wire
-        `tool_response`.
-    """
-    if isinstance(result, ToolMessage):
-        value: object = result.model_dump(mode="json")
-    else:
-        value = JSON_VALUE_ADAPTER.dump_python(result, mode="json", warnings=False)
-    return JSON_VALUE_ADAPTER.validate_python(value)

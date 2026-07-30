@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from deepagents_code.hooks.loading import HooksSource, read_hooks_json
-from deepagents_code.hooks.models.domain import HookDiagnostic
+from deepagents_code.hooks.models.domain import HookDiagnostic, HookEvent
+from deepagents_code.plugins.manifest import find_manifest_path
 from deepagents_code.plugins.substitution import plugin_environment, substitute_json
 
 if TYPE_CHECKING:
@@ -26,7 +27,7 @@ document produces a diagnostic instead of disappearing.
 """
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class PluginHookSources:
     """Plugin hook documents plus the diagnostics collecting them produced."""
 
@@ -34,8 +35,10 @@ class PluginHookSources:
     diagnostics: tuple[HookDiagnostic, ...] = ()
 
 
-def _diagnostic(message: str, *, field: str) -> HookDiagnostic:
-    logger.warning(message)
+def _diagnostic(
+    message: str, *, field: str | None = None, exc_info: bool = False
+) -> HookDiagnostic:
+    logger.warning(message, exc_info=exc_info)
     return HookDiagnostic(
         code="plugin_hooks_failed",
         severity="warning",
@@ -68,7 +71,7 @@ def _plugin_documents(
             documents.append((path, document))
     manifest = plugin.manifest
     if manifest and manifest.inline_hooks:
-        manifest_path = plugin.root / ".claude-plugin" / "plugin.json"
+        manifest_path = find_manifest_path(plugin.root) or plugin.root
         documents.append((manifest_path, manifest.inline_hooks))
     return documents, diagnostics
 
@@ -152,24 +155,22 @@ def plugin_hook_sources(
     for plugin in plugins:
         try:
             result = _sources_for_plugin(plugin, project_dir=project_dir)
-        except Exception as exc:
-            logger.warning(
-                "Could not load hooks for plugin %s", plugin.plugin_id, exc_info=True
-            )
+        # `_diagnostic` logs the traceback. The catch is deliberately broader
+        # than the sibling MCP and skills adapters because the isolation
+        # guarantee above only holds if an unforeseen failure in one plugin
+        # cannot withhold every other plugin's hooks.
+        except Exception as exc:  # noqa: BLE001
             diagnostics.append(
-                HookDiagnostic(
-                    code="plugin_hooks_failed",
-                    severity="warning",
-                    message=(
-                        f"Could not load hooks for plugin {plugin.plugin_id}: {exc}"
-                    ),
+                _diagnostic(
+                    f"Could not load hooks for plugin {plugin.plugin_id}: {exc}",
                     field=str(plugin.root),
+                    exc_info=True,
                 )
             )
             continue
         documents.extend(result.documents)
         diagnostics.extend(result.diagnostics)
-    return PluginHookSources(tuple(documents), tuple(diagnostics))
+    return PluginHookSources(documents=tuple(documents), diagnostics=tuple(diagnostics))
 
 
 def discover_plugin_hook_sources(
@@ -187,15 +188,13 @@ def discover_plugin_hook_sources(
         from deepagents_code.plugins import discover_plugins
 
         result = discover_plugins()
-    except Exception as exc:
-        logger.warning("Could not discover plugin hooks", exc_info=True)
+    # `_diagnostic` logs the traceback. Discovery failing must degrade to "no
+    # plugin hooks" rather than propagate and take the user and project hooks
+    # down with it.
+    except Exception as exc:  # noqa: BLE001
         return PluginHookSources(
             diagnostics=(
-                HookDiagnostic(
-                    code="plugin_hooks_failed",
-                    severity="warning",
-                    message=f"Could not discover plugin hooks: {exc}",
-                ),
+                _diagnostic(f"Could not discover plugin hooks: {exc}", exc_info=True),
             )
         )
     if result.warnings:
@@ -207,6 +206,9 @@ def discover_plugin_hook_sources(
 
 def plugin_hook_event_names(plugin: PluginInstance) -> tuple[str, ...]:
     """List the hook events a plugin declares, for display before it loads.
+
+    Only events Hooks v2 recognizes are returned, so the plugin manager never
+    advertises a hook that the loader will later reject.
 
     Args:
         plugin: Plugin whose declarations should be inspected.
@@ -222,5 +224,15 @@ def plugin_hook_event_names(plugin: PluginInstance) -> tuple[str, ...]:
         hooks = document.get("hooks")
         if not isinstance(hooks, dict):
             continue
-        events.extend(name for name in hooks if isinstance(name, str))
+        events.extend(
+            name for name in hooks if isinstance(name, str) and _is_known_event(name)
+        )
     return tuple(dict.fromkeys(events))
+
+
+def _is_known_event(name: str) -> bool:
+    try:
+        HookEvent(name)
+    except ValueError:
+        return False
+    return True

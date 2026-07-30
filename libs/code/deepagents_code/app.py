@@ -4490,9 +4490,6 @@ class DeepAgentsApp(App):
             return
         # Loading stays on the event loop deliberately: `to_thread` races
         # server-ready startup tests that only yield a few event-loop turns.
-        # It is no longer only a config read — it also discovers plugins and
-        # reads their hook documents — so it is a candidate for moving off-loop
-        # once it can reuse an already-discovered plugin snapshot.
         session_state.hooks = HooksManager.create(
             cwd=Path(self._cwd),
             identity=session_state.hook_identity,

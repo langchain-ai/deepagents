@@ -47,6 +47,11 @@ class _PluginRow:
         return "disabled"
 
     @property
+    def has_supported_components(self) -> bool:
+        """Whether the plugin declares any component this client loads."""
+        return bool(self.skill_names or self.mcp_server_names or self.hook_events)
+
+    @property
     def label(self) -> str:
         """Human-readable plugin name for UI copy."""
         if self.display_name:

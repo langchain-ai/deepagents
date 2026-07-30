@@ -137,7 +137,7 @@ def load_hooks_config(
     workspace_trusted: bool,
     config_dir: Path | None = None,
     paths: Sequence[Path] | None = None,
-    documents: Sequence[tuple[HooksSource, object]] = (),
+    documents: Sequence[tuple[HooksSource, JsonValue]] = (),
     document_diagnostics: Sequence[HookDiagnostic] = (),
 ) -> LoadedHooksConfig:
     """Load, validate, merge, and hash Hooks v2 configuration.
@@ -201,10 +201,10 @@ def load_hooks_config(
         _ingest(user_hooks_path(config_dir), as_project=False)
 
     for source, raw_document in documents:
-        document, document_diagnostics = _validate_hooks_document(
+        document, validation_diagnostics = _validate_hooks_document(
             raw_document, Path(source.location)
         )
-        diagnostics.extend(document_diagnostics)
+        diagnostics.extend(validation_diagnostics)
         if document is not None:
             _merge(document, source)
 

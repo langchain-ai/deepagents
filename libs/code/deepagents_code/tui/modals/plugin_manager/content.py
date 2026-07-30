@@ -122,7 +122,7 @@ def _unsupported_summary(components: tuple[str, ...]) -> str:
 
 def _will_install_lines(row: _PluginRow) -> list[str]:
     lines = _component_summary_lines(row)
-    if row.skill_names or row.mcp_server_names or row.hook_events or row.skill_count:
+    if row.has_supported_components or row.skill_count:
         return lines
     if row.unsupported_components:
         return [
@@ -145,8 +145,7 @@ def _will_install_lines(row: _PluginRow) -> list[str]:
 def _installed_component_lines(row: _PluginRow) -> list[str]:
     lines = _component_summary_lines(row)
     if lines:
-        has_supported = bool(row.skill_names or row.mcp_server_names or row.hook_events)
-        if not has_supported and row.unsupported_components:
+        if not row.has_supported_components and row.unsupported_components:
             return [
                 _NO_SUPPORTED_COMPONENTS,
                 _unsupported_summary(row.unsupported_components),

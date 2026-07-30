@@ -154,7 +154,7 @@ async def _run_handler(
         )
 
 
-def _handler_env(handler: HookHandler) -> dict[str, str] | None:
+def _handler_env(handler: HookHandler) -> dict[str, str]:
     """Overlay a handler's source environment onto the sanitized process one.
 
     Plugin handlers need their plugin root and data directory on the environment
@@ -166,12 +166,9 @@ def _handler_env(handler: HookHandler) -> dict[str, str] | None:
         handler: Handler about to run.
 
     Returns:
-        The launch environment, or `None` to let the runner build the default.
+        The launch environment for the handler.
     """
-    overlay = handler.source.env
-    if not overlay:
-        return None
-    return {**sanitize_hook_environ(), **overlay}
+    return {**sanitize_hook_environ(), **handler.source.env}
 
 
 def _report_progress(

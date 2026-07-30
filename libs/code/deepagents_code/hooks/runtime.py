@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
     from deepagents_code.hooks.loading import HooksSource
     from deepagents_code.hooks.models.domain import HookDiagnostic
+    from deepagents_code.json_types import JsonValue
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +79,7 @@ class HooksRuntime:
         config_dir: Path | None = None,
         transcript_root: Path | None = None,
         presenter: HookPresenter | None = None,
-        plugin_sources: Sequence[tuple[HooksSource, object]] = (),
+        plugin_sources: Sequence[tuple[HooksSource, JsonValue]] = (),
         plugin_diagnostics: Sequence[HookDiagnostic] = (),
     ) -> HooksRuntime:
         """Load configuration once and freeze a session runtime.

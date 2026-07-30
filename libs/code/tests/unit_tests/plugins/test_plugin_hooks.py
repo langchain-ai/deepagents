@@ -48,9 +48,6 @@ def _isolate_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """
     user_dir = tmp_path / "config"
     user_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
-    )
     monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_DIR", user_dir)
     monkeypatch.setattr("deepagents_code.hooks.loading.DEFAULT_CONFIG_DIR", user_dir)
     monkeypatch.setattr(

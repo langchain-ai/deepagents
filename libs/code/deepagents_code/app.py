@@ -13464,6 +13464,7 @@ class DeepAgentsApp(App):
 
             # Rediscover plugins and restart the owned server so plugin MCP config
             # is picked up without a separate slash command.
+            from deepagents_code.plugins.adapters.hooks import plugin_hook_event_names
             from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
 
             try:
@@ -13478,27 +13479,30 @@ class DeepAgentsApp(App):
             else:
                 # Server-owned events are fixed when the server starts, so refresh
                 # hooks from this same plugin snapshot before any restart.
-                await self._reload_hooks(plugins=plugin_result.plugins)
+                plugins = plugin_result.plugins
+                await self._reload_hooks(plugins=plugins)
                 old_plugin_fingerprints = self._plugin_fingerprints
                 self._plugin_fingerprints = new_plugin_fingerprints
                 discovered_plugin_ids = frozenset(
-                    plugin.plugin_id for plugin in plugin_result.plugins
+                    plugin.plugin_id for plugin in plugins
                 )
-                plugin_count = len(plugin_result.plugins)
-                mcp_configs = plugin_mcp_configs(plugin_result.plugins)
+                plugin_count = len(plugins)
+                mcp_configs = plugin_mcp_configs(plugins)
                 mcp_count = sum(
                     len(servers)
                     for config in mcp_configs
                     if isinstance((servers := config.get("mcpServers")), dict)
                 )
                 plugin_skill_count = sum(1 for name in new_skill_names if ":" in name)
+                hook_count = sum(map(len, map(plugin_hook_event_names, plugins)))
                 report += (
                     f"\nPlugins: {plugin_count} plugin"
                     f"{'s' if plugin_count != 1 else ''} · "
                     f"{plugin_skill_count} skill"
                     f"{'s' if plugin_skill_count != 1 else ''} · "
                     f"{mcp_count} plugin MCP server"
-                    f"{'s' if mcp_count != 1 else ''}"
+                    f"{'s' if mcp_count != 1 else ''} · "
+                    f"{hook_count} hook{'s' if hook_count != 1 else ''}"
                 )
                 if old_plugin_fingerprints is not None:
                     old_ids = set(old_plugin_fingerprints)
@@ -13529,7 +13533,7 @@ class DeepAgentsApp(App):
                     # off the UI thread like the discovery scan above.
                     login_labels = await asyncio.to_thread(
                         self._plugin_login_labels,
-                        plugin_result.plugins,
+                        plugins,
                         new_ids - old_ids,
                     )
                     for label in login_labels:

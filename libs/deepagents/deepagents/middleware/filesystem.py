@@ -189,11 +189,10 @@ _TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message", "file
 
 
 def _infer_model_provider(model: "BaseChatModel | None") -> str | None:
-    """Best-effort normalized provider name for `model` (e.g. `"openai"`).
+    """Best-effort provider name for `model` (e.g. `"openai"`).
 
-    Prefers the `ls_provider` value chat model providers already populate via
-    `_get_ls_params` for LangSmith tracing, falling back to a lookup by class
-    name. Returns `None` when no provider can be identified.
+    Prefers the `ls_provider` from `_get_ls_params`, falling back to the model
+    class name. Returns `None` if the provider can't be determined.
     """
     get_ls_params = getattr(model, "_get_ls_params", None)
     if callable(get_ls_params):
@@ -213,10 +212,8 @@ def _multimodal_block_supported(
 ) -> bool:
     """Check whether `profile` (plus hard-coded provider exceptions) accepts `block`.
 
-    A field absent from `profile` defaults to supported: `ModelProfile` coverage
-    is incomplete for many models, and treating an absent field as unsupported
-    would strip content that would have gone through fine. Only an explicit
-    `False` blocks a block type.
+    Missing `ModelProfile` fields default to supported, since profile coverage is
+    incomplete. Only an explicit `False` rejects a block type.
     """
     block_type = block.get("type")
     if not isinstance(block_type, str):
@@ -280,8 +277,7 @@ def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "Ba
     don't support (e.g. a `file` block whose `mime_type` isn't
     `application/pdf`, produced when `read_file` reads a `.docx`), which would
     otherwise end the thread. Swapping the unsupported block for a text
-    placeholder here — before the request reaches the model — lets the agent
-    recover instead.
+    placeholder here before the request reaches the model.
 
     A `model` with no `profile` (or no `model` at all, e.g. `None` in tests) is
     left untouched: without profile data there is nothing to gate on.
@@ -2889,11 +2885,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             eviction threshold, its content is written to the backend and the
             message is tagged in state via `ExtendedModelResponse`.
 
-        It also scrubs multimodal content blocks (image/audio/video/file) that
-        `request.model.profile` marks unsupported, replacing each with a text
-        placeholder so an unsupported `read_file` attachment (e.g. a `.docx` on
-        a model that only supports PDF `file` blocks) can't end the thread with
-        a non-retryable provider error. See `_scrub_unsupported_multimodal_content`.
+        It also scrubs unsupported multimodal blocks, replacing them with text
+        placeholders to avoid non-retryable provider errors.
 
         Args:
             request: The model request being processed.

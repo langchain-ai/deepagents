@@ -52,6 +52,7 @@ from deepagents_code.approval_mode import (
     approval_mode_key,
 )
 from deepagents_code.auto_mode import (
+    _MAX_CLASSIFIER_MODEL_CACHE,
     _MAX_EMITTED_EVENT_SCOPES,
     _MAX_PENDING_EVENT_SCOPES,
     AUTO_MODE_COUNTERS_NAMESPACE,
@@ -281,6 +282,7 @@ def _tool(name: str, *, metadata: dict[str, object] | None = None) -> Structured
 def _middleware(
     tmp_path: Path,
     *,
+    classifier_model: str | BaseChatModel | None = None,
     trusted_ask_user_tool: BaseTool | None = None,
     trusted_compaction_tool: BaseTool | None = None,
 ) -> AutoModeHITLMiddleware:
@@ -298,6 +300,7 @@ def _middleware(
         },
         worktree_root=tmp_path,
         classifier_timeout_seconds=1,
+        classifier_model=classifier_model,
         trusted_ask_user_tool=trusted_ask_user_tool,
         trusted_compaction_tool=trusted_compaction_tool,
     )
@@ -359,6 +362,7 @@ def _request(
     store: _Store | None = None,
     raw_user_text: str = "perform the requested task",
     expanded_text: str = "expanded file content must not authorize anything",
+    classifier_model: str | None = None,
 ) -> tuple[ModelRequest[Any], _Store, str]:
     _ = args
     thread_id = "thread-1"
@@ -371,6 +375,7 @@ def _request(
             "turn_id": "turn-1",
             "approval_mode_key": key,
             "approval_mode": "auto",
+            "classifier_model": classifier_model,
         },
         execution_info=SimpleNamespace(thread_id=thread_id),
         store=active_store,
@@ -3017,6 +3022,263 @@ async def test_classifier_unavailable_logs_underlying_error(
     assert "error=RuntimeError: provider overloaded" in records[0].getMessage()
     assert records[0].exc_info is not None
     assert records[0].exc_info[0] is RuntimeError
+
+
+class _RecordingModelFactory:
+    """Stand-in for `config.create_model` that hands back canned classifiers."""
+
+    def __init__(self, *models: _StructuredModel, error: Exception | None = None):
+        self.models = list(models)
+        self.error = error
+        self.specs: list[str] = []
+
+    def __call__(self, spec: str) -> SimpleNamespace:
+        self.specs.append(spec)
+        if self.error is not None:
+            raise self.error
+        model = self.models[min(len(self.specs), len(self.models)) - 1]
+        return SimpleNamespace(model=model)
+
+
+def _install_model_factory(
+    monkeypatch: pytest.MonkeyPatch, factory: _RecordingModelFactory
+) -> None:
+    import deepagents_code.config as config_module
+
+    monkeypatch.setattr(config_module, "create_model", factory)
+
+
+async def test_configured_classifier_model_replaces_primary(tmp_path: Path) -> None:
+    """A configured classifier reviews the batch; the primary model is untouched."""
+    classifier = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path, classifier_model=cast("Any", classifier))
+    request, _store, _key = _request(
+        tmp_path,
+        # `_FailIfClassifiedModel` raises if the primary model is asked to review.
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+    assert classifier.schema is AutoDecisionBatch
+    assert len(classifier.calls) == 1
+
+
+async def test_classifier_model_spec_is_resolved_once_and_cached(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A spec is built through `create_model` once and reused across batches."""
+    classifier = _StructuredModel(_allow_result())
+    factory = _RecordingModelFactory(classifier)
+    _install_model_factory(monkeypatch, factory)
+    middleware = _middleware(tmp_path, classifier_model="openai:gpt-5.5-mini")
+
+    for call_id in ("call-1", "call-1"):
+        request, _store, _key = _request(
+            tmp_path,
+            model=_FailIfClassifiedModel(),
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+        classifier.result = _allow_result(call_id=call_id)
+        plan = await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+            call_id=call_id,
+        )
+        assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+    assert factory.specs == ["openai:gpt-5.5-mini"]
+    assert len(classifier.calls) == 2
+
+
+async def test_context_classifier_model_overrides_construction_value(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`/auto model` (per-run context) wins over the startup-resolved value."""
+    construction_classifier = _StructuredModel(_allow_result())
+    run_classifier = _StructuredModel(_allow_result())
+    factory = _RecordingModelFactory(run_classifier)
+    _install_model_factory(monkeypatch, factory)
+    middleware = _middleware(
+        tmp_path, classifier_model=cast("Any", construction_classifier)
+    )
+    request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        classifier_model="anthropic:claude-haiku-4-5",
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+    assert factory.specs == ["anthropic:claude-haiku-4-5"]
+    assert len(run_classifier.calls) == 1
+    assert construction_classifier.calls == []
+
+
+async def test_classifier_model_cache_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Switching specs repeatedly evicts the oldest resolved classifier."""
+    classifier = _StructuredModel(_allow_result())
+    factory = _RecordingModelFactory(classifier)
+    _install_model_factory(monkeypatch, factory)
+    middleware = _middleware(tmp_path)
+
+    for index in range(_MAX_CLASSIFIER_MODEL_CACHE + 2):
+        request, _store, _key = _request(
+            tmp_path,
+            model=_FailIfClassifiedModel(),
+            tool_name="delete",
+            args={"file_path": "old.py"},
+            classifier_model=f"openai:model-{index}",
+        )
+        await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    assert len(middleware._classifier_model_cache) == _MAX_CLASSIFIER_MODEL_CACHE
+    assert "openai:model-0" not in middleware._classifier_model_cache
+
+
+async def test_inherited_classifier_forwards_primary_model_settings(
+    tmp_path: Path,
+) -> None:
+    """Inheriting the primary model keeps its per-call settings."""
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    request.model_settings["cache_control"] = {"type": "ephemeral"}
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert model.call_kwargs[0]["cache_control"] == {"type": "ephemeral"}
+    metadata = cast("dict[str, Any]", model.call_kwargs[0]["config"])["metadata"]
+    assert metadata["lc_source"] == "auto_mode_classifier"
+    assert metadata["classifier_model"] == "inherited"
+
+
+async def test_distinct_classifier_drops_primary_model_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Primary settings are provider-specific, so a distinct classifier skips them."""
+    classifier = _StructuredModel(_allow_result())
+    _install_model_factory(monkeypatch, _RecordingModelFactory(classifier))
+    middleware = _middleware(tmp_path, classifier_model="openai:gpt-5.5-mini")
+    request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    request.model_settings["cache_control"] = {"type": "ephemeral"}
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert "cache_control" not in classifier.call_kwargs[0]
+    metadata = cast("dict[str, Any]", classifier.call_kwargs[0]["config"])["metadata"]
+    assert metadata["lc_source"] == "auto_mode_classifier"
+    assert metadata["classifier_model"] == "openai:gpt-5.5-mini"
+
+
+async def test_unresolvable_classifier_model_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A classifier model that cannot be built blocks the action, never inherits."""
+    primary = _FailIfClassifiedModel()
+    factory = _RecordingModelFactory(error=RuntimeError("no credentials"))
+    _install_model_factory(monkeypatch, factory)
+    middleware = _middleware(tmp_path, classifier_model="openai:missing-model")
+    request, store, key = _request(
+        tmp_path,
+        model=primary,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    assert plan["decisions"][0]["reason"] == (
+        "configured classifier model openai:missing-model is unavailable"
+    )
+    counters = cast("dict[str, Any]", store.items[AUTO_MODE_COUNTERS_NAMESPACE, key])
+    assert counters["consecutive_unavailable"] == 1
+
+
+async def test_classifier_model_logged_alongside_primary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Decision logs name the reviewing model, not just the primary one."""
+    classifier = _StructuredModel(_allow_result())
+    _install_model_factory(monkeypatch, _RecordingModelFactory(classifier))
+    middleware = _middleware(tmp_path, classifier_model="openai:gpt-5.5-mini")
+    request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    with caplog.at_level("INFO", logger="deepagents_code.auto_mode"):
+        await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "deepagents_code.auto_mode"
+        and "decision=valid" in record.getMessage()
+    ]
+    assert len(messages) == 1
+    assert "classifier_model=openai:gpt-5.5-mini" in messages[0]
 
 
 async def test_classifier_failure_with_counter_store_failure_routes_human(

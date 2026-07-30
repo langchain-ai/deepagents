@@ -35,6 +35,7 @@ _TIPS: dict[str, int] = {
     "Use /timestamps to show or hide message timestamp footers": 1,
     "Click a collapsed message or press Ctrl+O to expand it": 1,
     "Use /agents to browse and switch between your available agents": 2,
+    "Use /auto model to review Auto actions with a faster, cheaper model": 1,
     _TIP_SHIFT_TAB_WITH_YOLO: 2,
     "Use !! for incognito shell commands that stay out of model context": 1,
     "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501

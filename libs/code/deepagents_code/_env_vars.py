@@ -30,6 +30,18 @@ import os
 # Keep alphabetically sorted by constant name.
 # ---------------------------------------------------------------------------
 
+AUTO_CLASSIFIER_MODEL = "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL"
+"""Model spec (`provider:model`) used by the Auto approval-mode classifier.
+
+Unset (the default) reuses the main agent model, preserving the historical
+behavior. A `provider:model` value points the authorization classifier at a
+separate — typically faster and cheaper — model without changing the model that
+writes code. The classifier is a security control: a model that cannot be
+resolved (bad spec, missing credentials, uninstalled provider package) never
+falls back to the main model, it fails closed to human approval. Also settable
+via `[models].auto_classifier` in config.toml and `--auto-classifier-model`.
+"""
+
 AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
 """Toggle automatic app updates. Enabled by default; set to a falsy value
 ('0', 'false', 'no', 'off', or empty) to opt out."""

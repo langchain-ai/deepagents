@@ -3316,6 +3316,31 @@ def is_openai_prompt_cache_key_enabled() -> bool:
     return bool(value)
 
 
+def resolve_auto_classifier_model() -> str | None:
+    """Resolve the model spec the Auto approval classifier should use.
+
+    Reads the `models.auto_classifier` option from env/`config.toml`. `None`
+    means the classifier inherits the main agent model, which is the historical
+    behavior and the default.
+
+    Returns:
+        A `provider:model` spec, or `None` when the classifier should inherit.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("models.auto_classifier")
+    if option is None:
+        return None
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
 def resolve_goal_auto_accept_criteria() -> tuple[bool, str]:
     """Resolve whether Auto mode applies generated goal criteria without review.
 

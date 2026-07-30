@@ -12731,6 +12731,131 @@ class TestRubricCommand:
             assert app._status_bar.rubric_label == ""
 
 
+class TestAutoClassifierModelCommand:
+    """Tests for `/auto model`, which picks the Auto classifier model."""
+
+    async def test_auto_model_bare_opens_classifier_model_selector(self) -> None:
+        """Bare `/auto model` should open the classifier-model picker."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app,
+                "_show_auto_classifier_model_selector",
+                new_callable=AsyncMock,
+            ) as show_selector:
+                await app._handle_command("/auto model")
+                await pilot.pause()
+
+            show_selector.assert_awaited_once()
+            assert any("/auto model" in str(w._content) for w in app.query(UserMessage))
+
+    async def test_bare_auto_still_switches_approval_mode(self) -> None:
+        """`/auto` without arguments keeps switching approval mode."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(
+                app,
+                "_handle_approval_mode_command",
+                new_callable=AsyncMock,
+            ) as switch:
+                await app._handle_command("/auto")
+
+            switch.assert_awaited_once_with(ApprovalMode.AUTO)
+
+    async def test_set_auto_classifier_model_stores_validated_spec(self) -> None:
+        """A resolvable spec is stored and applied without a server restart."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            app._server_proc = MagicMock()
+
+            with (
+                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=None,
+                ),
+            ):
+                await app._handle_command("/auto model openai:gpt-5.5-mini")
+            await pilot.pause()
+
+            assert app._auto_classifier_model == "openai:gpt-5.5-mini"
+            assert app._server_kwargs["auto_classifier_model"] == "openai:gpt-5.5-mini"
+            app._server_proc.update_env.assert_not_called()
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Auto classifier model set to openai:gpt-5.5-mini" in rendered
+
+    async def test_set_auto_classifier_model_clear_restores_main_model(self) -> None:
+        """`/auto model clear` returns reviews to the main agent model."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._auto_classifier_model = "openai:gpt-5.5-mini"
+            app._server_kwargs = {"auto_classifier_model": "openai:gpt-5.5-mini"}
+
+            await app._handle_command("/auto model clear")
+            await pilot.pause()
+
+            assert app._auto_classifier_model is None
+            assert app._server_kwargs["auto_classifier_model"] is None
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Auto classifier model cleared" in rendered
+
+    async def test_set_auto_classifier_model_rejects_unresolvable_spec(self) -> None:
+        """An unusable spec is refused outright, keeping the previous value."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+
+            with (
+                patch(
+                    "deepagents_code.app._create_model_with_deepagents_import_lock",
+                    side_effect=RuntimeError("no provider package"),
+                ),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=None,
+                ),
+            ):
+                await app._handle_command("/auto model openai:missing-model")
+            await pilot.pause()
+
+            assert app._auto_classifier_model is None
+            assert "auto_classifier_model" not in app._server_kwargs
+            assert app.query(ErrorMessage)
+
+    async def test_set_auto_classifier_model_auth_block_keeps_previous(self) -> None:
+        """A provider missing credentials must not become the classifier."""
+        app = DeepAgentsApp(agent=MagicMock())
+
+        class _BlockingAuth:
+            blocks_start = True
+            provider = "anthropic"
+
+            def missing_detail(self) -> str:
+                return "ANTHROPIC_API_KEY"
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            with patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=_BlockingAuth(),
+            ):
+                await app._set_auto_classifier_model("anthropic:claude-haiku-4-5")
+            await pilot.pause()
+
+            assert app._auto_classifier_model is None
+            rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "Missing credentials" in rendered
+
+
 class TestBuildAgentErrorBody:
     """Cover the docs-link augmentation for agent-stream errors."""
 

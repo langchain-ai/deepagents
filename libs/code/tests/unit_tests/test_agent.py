@@ -4844,6 +4844,51 @@ class TestCreateCliAgentInterpreterWiring:
             compaction_middleware
         )
 
+    def test_auto_classifier_model_argument_reaches_middleware(
+        self, tmp_path: Path
+    ) -> None:
+        """An explicit classifier model is handed to the Auto middleware."""
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        middleware = self._capture_middleware(
+            tmp_path,
+            auto_mode_enabled=True,
+            auto_classifier_model="openai:gpt-5.5-mini",
+        )
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert auto_middleware._configured_classifier_model == "openai:gpt-5.5-mini"
+
+    def test_auto_classifier_model_falls_back_to_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without an argument, env / `config.toml` decide the classifier."""
+        from deepagents_code._env_vars import AUTO_CLASSIFIER_MODEL
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        monkeypatch.setenv(AUTO_CLASSIFIER_MODEL, "anthropic:claude-haiku-4-5")
+        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert (
+            auto_middleware._configured_classifier_model == "anthropic:claude-haiku-4-5"
+        )
+
+    def test_auto_classifier_model_defaults_to_inheriting(self, tmp_path: Path) -> None:
+        """Nothing configured leaves the classifier on the main agent model."""
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert auto_middleware._configured_classifier_model is None
+
     @pytest.mark.parametrize("auto_mode_enabled", [True, False])
     def test_single_hitl_slot_precedes_server_hooks(
         self,

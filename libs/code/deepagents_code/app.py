@@ -3362,6 +3362,14 @@ class DeepAgentsApp(App):
         )
         """Optional grader iterations per rubric attempt."""
 
+        self._auto_classifier_model: str | None = (server_kwargs or {}).get(
+            "auto_classifier_model"
+        )
+        """Optional model spec the Auto approval classifier reviews with.
+
+        `None` leaves the classifier on whatever the server resolved at startup
+        (`[models].auto_classifier`, then the main agent model)."""
+
         self._active_goal: str | None = None
         """Goal objective accepted by the user and backed by the active rubric."""
 
@@ -13137,7 +13145,9 @@ class DeepAgentsApp(App):
             await self._handle_version_command()
         elif cmd == "/agents":
             await self._show_agent_selector()
-        elif cmd in {"/manual", "/auto", "/yolo"}:
+        elif cmd == "/auto" or cmd.startswith("/auto "):
+            await self._handle_auto_command(command)
+        elif cmd in {"/manual", "/yolo"}:
             from deepagents_code.approval_mode import ApprovalMode
 
             await self._handle_approval_mode_command(ApprovalMode(cmd.lstrip("/")))
@@ -14331,6 +14341,7 @@ class DeepAgentsApp(App):
             model_params=self._model_params_override or {},
             profile_overrides=self._profile_override or {},
             model_context_limit=settings.model_context_limit,
+            classifier_model=self._auto_classifier_model,
             thread_id=self._lc_thread_id,
             offload_tool_call_id=tool_call_id,
         )
@@ -15205,6 +15216,7 @@ class DeepAgentsApp(App):
                     model_params=self._model_params_override or {},
                     profile_overrides=self._profile_override or {},
                     model_context_limit=settings.model_context_limit,
+                    classifier_model=self._auto_classifier_model,
                 ),
                 turn_stats=turn_stats,
             )
@@ -17945,6 +17957,14 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(target.value)
         if target is ApprovalMode.AUTO:
             self._notify_auto_mode_enabled_once()
+            if self._auto_classifier_model:
+                # A session reviewing with a non-default (often cheaper) model
+                # should never be invisible at the moment Auto turns on.
+                self.notify(
+                    f"Auto reviews actions with {self._auto_classifier_model}.",
+                    severity="information",
+                    markup=False,
+                )
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
         elif target is ApprovalMode.YOLO:
@@ -17958,6 +17978,197 @@ class DeepAgentsApp(App):
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
         return True
+
+    def _auto_classifier_model_label(self) -> str:
+        """Return how the Auto classifier model should be described to the user."""
+        if self._auto_classifier_model:
+            return self._auto_classifier_model
+        return "the main agent model"
+
+    def _auto_usage_text(self) -> str:
+        """Return usage text for `/auto` and its `model` subcommand."""
+        return (
+            "Usage:\n"
+            "  /auto                      Switch to Auto approval mode\n"
+            "  /auto model                Pick the Auto classifier model\n"
+            "  /auto model <provider:model>\n"
+            "  /auto model clear          Reuse the main agent model\n\n"
+            "Auto reviews gated actions with a classifier model. It currently "
+            f"uses {self._auto_classifier_model_label()}. A weaker model makes "
+            "that review weaker; unreviewable actions always fall back to your "
+            "approval."
+        )
+
+    async def _handle_auto_command(self, command: str) -> None:
+        """Handle `/auto`, including the `model` subcommand.
+
+        Bare `/auto` keeps switching approval mode (quiet, toast-only, like the
+        Shift+Tab switcher); `model` manages the classifier the Auto policy
+        reviews gated actions with.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        remainder = command.strip()[len("/auto") :].strip()
+        if not remainder:
+            await self._handle_approval_mode_command(ApprovalMode.AUTO)
+            return
+
+        subcommand, _, arg = remainder.partition(" ")
+        await self._mount_message(UserMessage(command))
+        if subcommand.lower() != "model":
+            await self._mount_message(AppMessage(self._auto_usage_text()))
+            return
+
+        arg = arg.strip()
+        if not arg:
+            await self._show_auto_classifier_model_selector()
+        elif arg.lower() == "clear":
+            await self._set_auto_classifier_model(None)
+        else:
+            await self._set_auto_classifier_model(arg)
+
+    async def _show_auto_classifier_model_selector(self) -> None:
+        """Open the model selector for choosing the Auto classifier model."""
+        from deepagents_code.config import settings
+        from deepagents_code.model_config import ModelSpec
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+        current_provider = settings.model_provider
+        current_model = settings.model_name
+        if self._auto_classifier_model:
+            parsed = ModelSpec.try_parse(self._auto_classifier_model)
+            if parsed:
+                current_provider = parsed.provider
+                current_model = parsed.model
+
+        def handle_result(result: tuple[str, str] | None) -> None:
+            if result is None:
+                self.run_worker(
+                    self._mount_message(AppMessage("Model not changed.")),
+                    exclusive=False,
+                    group="auto-classifier-model",
+                )
+                if self._chat_input:
+                    self._chat_input.focus_input()
+                return
+            model_spec, _ = result
+            extra = screen.pending_install_extra
+
+            async def apply_selection() -> None:
+                if extra and not await self._install_extra(extra, auto_restart=True):
+                    return
+                await self._set_auto_classifier_model(model_spec)
+
+            self.run_worker(
+                apply_selection(), exclusive=False, group="auto-classifier-model"
+            )
+            if self._chat_input:
+                self._chat_input.focus_input()
+
+        screen = ModelSelectorScreen(
+            current_model=current_model,
+            current_provider=current_provider,
+            cli_profile_override=self._profile_override,
+            title="Choose the Auto classifier model",
+            description=(
+                "Pick the model that reviews gated actions in Auto mode. A "
+                "faster, cheaper model costs less per action but reviews them "
+                "less carefully. Clear it with `/auto model clear` to reuse the "
+                "main agent model."
+            ),
+        )
+        self.push_screen(screen, handle_result)
+
+    async def _set_auto_classifier_model(self, model_spec: str | None) -> None:
+        """Set the model the Auto approval classifier reviews actions with.
+
+        The value rides on the per-run graph context, so it applies from the
+        next turn without restarting the agent server. A spec that cannot be
+        resolved here is rejected outright rather than staged, because a
+        classifier the server cannot build fails closed to manual approval on
+        every gated action.
+
+        Args:
+            model_spec: `provider:model` spec, or `None` to reuse the main model.
+        """
+        from deepagents_code.config import detect_provider
+        from deepagents_code.model_config import ModelSpec, get_provider_auth_status
+
+        display: str | None = None
+        if model_spec is not None:
+            model_spec = model_spec.removeprefix(":")
+            parsed = ModelSpec.try_parse(model_spec)
+            provider = parsed.provider if parsed else detect_provider(model_spec)
+            model_name = parsed.model if parsed else model_spec
+            display = (
+                model_spec if parsed or not provider else f"{provider}:{model_name}"
+            )
+            if display == self._auto_classifier_model:
+                await self._mount_message(
+                    AppMessage(f"Auto classifier model already set to {display}.")
+                )
+                return
+            auth_status = get_provider_auth_status(provider) if provider else None
+            if auth_status is not None and auth_status.blocks_start:
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Missing credentials: {auth_status.missing_detail()}\n\n"
+                        f"Run `/auth` for the '{auth_status.provider}' provider, "
+                        "then set the Auto classifier model again.",
+                    ),
+                )
+                return
+            try:
+                # No profile overrides: `--profile-override` describes the main
+                # model, and the server resolves the classifier without them, so
+                # validating with them would test a different model than the one
+                # Auto will actually build.
+                result = await asyncio.to_thread(
+                    _create_model_with_deepagents_import_lock,
+                    display,
+                )
+            except Exception as exc:
+                logger.exception("Failed to resolve Auto classifier model %s", display)
+                await self._mount_message(
+                    ErrorMessage(_build_model_switch_error_body(exc))
+                )
+                return
+            # Profiles are incomplete, and the classifier already fails closed
+            # at runtime, so an unsupported-looking model warns instead of being
+            # blocked.
+            profile = getattr(result.model, "profile", None)
+            if isinstance(profile, dict) and profile.get("structured_output") is False:
+                await self._mount_message(
+                    AppMessage(
+                        f"{display} does not advertise structured output. Auto "
+                        "asks the classifier for a structured verdict, so "
+                        "reviews may fail and fall back to your approval."
+                    )
+                )
+        elif self._auto_classifier_model is None:
+            await self._mount_message(
+                AppMessage("Auto classifier model already uses the main agent model.")
+            )
+            return
+
+        self._auto_classifier_model = display
+        if self._server_kwargs is not None:
+            self._server_kwargs["auto_classifier_model"] = display
+
+        if display:
+            await self._mount_message(
+                AppMessage(
+                    f"Auto classifier model set to {display}; it reviews gated "
+                    "actions from the next turn."
+                )
+            )
+        else:
+            await self._mount_message(
+                AppMessage(
+                    "Auto classifier model cleared; reviews use the main agent "
+                    "model again."
+                )
+            )
 
     async def _handle_approval_mode_command(self, target: ApprovalMode) -> None:
         """Switch approval mode from a slash command (`/manual`, `/auto`, `/yolo`).

@@ -66,6 +66,7 @@ from deepagents_code.approval_mode import (
 from deepagents_code.goal_state_notice import project_goal_state
 
 if TYPE_CHECKING:
+    from langchain_core.language_models import BaseChatModel
     from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,9 @@ _MIN_SECRET_LENGTH = 8
 # the cap forces it out.
 _MAX_EMITTED_EVENT_SCOPES = 8
 _MAX_PENDING_EVENT_SCOPES = 32
+# One resolved classifier model per live spec, plus a little room for the churn
+# a session creates by switching specs with `/auto model`.
+_MAX_CLASSIFIER_MODEL_CACHE = 4
 _MAX_ARGUMENT_DEPTH = 4
 _MIN_COMMAND_PARTS = 2
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
@@ -119,6 +123,22 @@ class _ClassifierDeadlineExceededError(TimeoutError):
         super().__init__(
             f"local classifier deadline exceeded after {timeout_seconds:g}s"
         )
+
+
+class _ClassifierModelUnavailableError(RuntimeError):
+    """Raised when a configured classifier model cannot be constructed.
+
+    Distinct from provider/runtime failures so the agent and UI can say the
+    *configured* classifier model is the problem (bad spec, missing
+    credentials, uninstalled provider package) instead of implying a transient
+    outage. Auto never silently falls back to the main agent model here: the
+    classifier is an authorization control, so an unusable one fails closed to
+    human approval.
+    """
+
+    def __init__(self, spec: str) -> None:
+        self.spec = spec
+        super().__init__(f"could not create classifier model {spec!r}")
 
 
 class AutoDecisionCategory(StrEnum):
@@ -518,7 +538,8 @@ def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float)
     (`_ClassifierDeadlineExceededError`) says the classifier did not respond
     within the configured wait budget; a bare provider `TimeoutError` stays
     type-only so we do not claim dcode's deadline fired when the model failed
-    first.
+    first. A configured classifier model that cannot be built is named as such
+    so the user fixes the setting instead of waiting out a nonexistent outage.
 
     Args:
         exc: Failure raised while invoking or validating the classifier.
@@ -529,6 +550,10 @@ def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float)
     """
     if isinstance(exc, _ClassifierDeadlineExceededError):
         return f"classifier did not respond within {timeout_seconds:g}s"
+    if isinstance(exc, _ClassifierModelUnavailableError):
+        # The spec is user-supplied config, not provider text, so naming it is
+        # safe and is the fastest route to a fix.
+        return f"configured classifier model {exc.spec} is unavailable"
     return f"failed ({type(exc).__name__})"
 
 
@@ -1672,6 +1697,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         worktree_root: str | Path,
         shell_allow_list: Sequence[str] = (),
         classifier_timeout_seconds: float = _CLASSIFIER_TIMEOUT_SECONDS,
+        classifier_model: str | BaseChatModel | None = None,
         trusted_ask_user_tool: BaseTool | None = None,
         trusted_compaction_tool: BaseTool | None = None,
     ) -> None:
@@ -1682,6 +1708,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             worktree_root: Trusted repository boundary for deterministic writes.
             shell_allow_list: Restrictive configured shell entries.
             classifier_timeout_seconds: Timeout for one structured decision batch.
+            classifier_model: Model the authorization classifier reviews with.
+
+                A `provider:model` spec is resolved lazily (and cached) on the
+                first review; a chat model instance is used as-is. `None`
+                inherits the main agent model, which is the default. A per-run
+                `classifier_model` on the runtime context wins over this value.
             trusted_ask_user_tool: Built-in tool allowed to create consent receipts.
             trusted_compaction_tool: Built-in tool that performs conversation
                 compaction.
@@ -1721,6 +1753,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         }
         self._shell_allow_list = tuple(shell_allow_list)
         self._classifier_timeout_seconds = classifier_timeout_seconds
+        self._configured_classifier_model = classifier_model
+        self._classifier_model_cache: OrderedDict[str, BaseChatModel] = OrderedDict()
+        self._classifier_model_lock = asyncio.Lock()
         self._known_secrets = _known_credential_values()
         self._trusted_ask_user_tool = trusted_ask_user_tool
         self._trusted_compaction_tool = trusted_compaction_tool
@@ -1997,6 +2032,77 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             counters["consecutive_denials"] = 0
         await _write_counters(request.runtime.store, thread_key, counters)
 
+    def _classifier_spec(self, request: ModelRequest) -> str | BaseChatModel | None:
+        """Return the classifier model selected for this request.
+
+        The per-run runtime context wins over the construction-time value so
+        `/auto model` takes effect without restarting the agent server.
+
+        Returns:
+            A `provider:model` spec, a chat model instance, or `None` to inherit
+                the main agent model.
+        """
+        context_spec = _context_value(
+            _runtime_context(request.runtime), "classifier_model"
+        )
+        if isinstance(context_spec, str) and context_spec.strip():
+            return context_spec.strip()
+        return self._configured_classifier_model
+
+    def _classifier_model_label(self, request: ModelRequest) -> str:
+        """Return the log label for the classifier model of this request."""
+        selected = self._classifier_spec(request)
+        if selected is None:
+            return "inherited"
+        if isinstance(selected, str):
+            return selected
+        return _extract_model_name(selected)
+
+    async def _classifier_model(
+        self, request: ModelRequest
+    ) -> tuple[BaseChatModel, str | None]:
+        """Resolve the model that reviews this batch.
+
+        Args:
+            request: Resolved primary-model request for the current batch.
+
+        Returns:
+            The chat model to classify with, and its spec when it is a model
+                distinct from the primary one (`None` when inheriting).
+
+        Raises:
+            asyncio.CancelledError: If model construction is cancelled.
+            _ClassifierModelUnavailableError: If a configured spec cannot be
+                built. Auto fails closed to human approval rather than quietly
+                reviewing with the main agent model.
+        """
+        selected = self._classifier_spec(request)
+        if selected is None:
+            return request.model, None
+        if not isinstance(selected, str):
+            return selected, _extract_model_name(selected)
+
+        async with self._classifier_model_lock:
+            cached = self._classifier_model_cache.get(selected)
+            if cached is not None:
+                self._classifier_model_cache.move_to_end(selected)
+                return cached, selected
+            from deepagents_code.config import create_model
+
+            try:
+                result = await asyncio.to_thread(create_model, selected)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Could not create Auto classifier model %s", selected, exc_info=True
+                )
+                raise _ClassifierModelUnavailableError(selected) from exc
+            self._classifier_model_cache[selected] = result.model
+            while len(self._classifier_model_cache) > _MAX_CLASSIFIER_MODEL_CACHE:
+                self._classifier_model_cache.popitem(last=False)
+            return result.model, selected
+
     async def _classify(
         self,
         request: ModelRequest,
@@ -2005,7 +2111,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         dispositions: Mapping[str, str],
         tools: Mapping[str, BaseTool],
     ) -> AutoDecisionBatch:
-        structured = request.model.with_structured_output(AutoDecisionBatch)
+        model, spec = await self._classifier_model(request)
+        structured = model.with_structured_output(AutoDecisionBatch)
         messages = [
             SystemMessage(content=_CLASSIFIER_POLICY),
             HumanMessage(
@@ -2020,14 +2127,22 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 )
             ),
         ]
+        # Primary-model settings are provider- and model-specific (Anthropic
+        # `cache_control`, OpenAI `prompt_cache_key`, reasoning budgets,
+        # `--model-params`), so they only travel with the primary model. A
+        # distinct classifier runs on its own defaults.
+        settings = request.model_settings if spec is None else {}
         invoke = structured.ainvoke(
             messages,
             config={
                 "run_name": "dcode_auto_classifier",
                 "tags": ["dcode:auto"],
-                "metadata": {"lc_source": "auto_mode_classifier"},
+                "metadata": {
+                    "lc_source": "auto_mode_classifier",
+                    "classifier_model": spec or "inherited",
+                },
             },
-            **request.model_settings,
+            **settings,
         )
         # `asyncio.timeout(...).expired()` distinguishes our wait budget from a
         # provider that raises `TimeoutError` itself. `wait_for` cannot;
@@ -2293,9 +2408,10 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 )
             plan["counters_applied"] = True
             logger.info(
-                "Auto decision mode=auto model=%s tools=%d path=classifier "
-                "decision=unavailable latency_ms=%d error=%s",
+                "Auto decision mode=auto model=%s classifier_model=%s tools=%d "
+                "path=classifier decision=unavailable latency_ms=%d error=%s",
                 _extract_model_name(request.model),
+                self._classifier_model_label(request),
                 len(review_calls),
                 latency_ms,
                 error_detail,
@@ -2352,9 +2468,10 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             plan["fallback_reason"] = "control_state_unavailable"
         plan["counters_applied"] = True
         logger.info(
-            "Auto decision mode=auto model=%s tools=%d path=classifier "
-            "decision=valid latency_ms=%d",
+            "Auto decision mode=auto model=%s classifier_model=%s tools=%d "
+            "path=classifier decision=valid latency_ms=%d",
             _extract_model_name(request.model),
+            self._classifier_model_label(request),
             len(review_calls),
             latency_ms,
         )

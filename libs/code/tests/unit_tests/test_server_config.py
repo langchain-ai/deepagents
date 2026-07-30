@@ -393,6 +393,29 @@ class TestServerConfigEdgeCases:
 
         assert restored.enable_interpreter is False
 
+    def test_auto_classifier_model_round_trips(self) -> None:
+        """The Auto classifier spec must reach the server subprocess."""
+        original = ServerConfig(auto_classifier_model="openai:gpt-5.5-mini")
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.auto_classifier_model == "openai:gpt-5.5-mini"
+
+    def test_empty_auto_classifier_model_env_clears_override(self) -> None:
+        """An empty value means "inherit the main model", not an empty spec."""
+        with patch.dict(
+            os.environ,
+            {f"{SERVER_ENV_PREFIX}AUTO_CLASSIFIER_MODEL": ""},
+            clear=True,
+        ):
+            restored = ServerConfig.from_env()
+
+        assert restored.auto_classifier_model is None
+
     def test_malformed_rubric_max_iterations_env_uses_sdk_default(self) -> None:
         """Bad optional rubric iteration config must fall back to SDK default."""
         with patch.dict(

@@ -39,6 +39,8 @@ class CLIContextSchema:
 
     model_context_limit: int | None = None
 
+    classifier_model: str | None = None
+
     approval_mode: str = "manual"
 
     auto_approve: bool = False
@@ -80,6 +82,14 @@ class CLIContext(TypedDict, total=False):
 
     model_context_limit: int | None
     """Effective context-window limit for profile-aware middleware."""
+
+    classifier_model: str | None
+    """Model spec the Auto approval classifier should use for this run.
+
+    `None` (or absent) leaves the classifier on whatever the graph was built
+    with, which is normally the main agent model. Set by `/auto model` so the
+    switch takes effect without restarting the agent server.
+    """
 
     approval_mode: str
     """`manual`, classifier-backed `auto`, or unrestricted `yolo`."""

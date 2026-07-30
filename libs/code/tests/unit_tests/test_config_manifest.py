@@ -202,6 +202,47 @@ def test_is_openai_prompt_cache_key_enabled_unrecognized_env_falls_through(
     assert is_openai_prompt_cache_key_enabled() is False
 
 
+def test_resolve_auto_classifier_model_defaults_to_inheriting(monkeypatch) -> None:
+    """No preference leaves the Auto classifier on the main agent model."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+    assert resolve_auto_classifier_model() is None
+
+
+def test_resolve_auto_classifier_model_reads_toml(monkeypatch) -> None:
+    """`[models].auto_classifier` selects the classifier when env is unset."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "openai:gpt-5.5-mini"}},
+    )
+    assert resolve_auto_classifier_model() == "openai:gpt-5.5-mini"
+
+
+def test_resolve_auto_classifier_model_env_overrides_toml(monkeypatch) -> None:
+    """The env var wins over config.toml; a blank value means inherit."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "openai:gpt-5.5-mini"}},
+    )
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "anthropic:claude-haiku-4-5")
+    assert resolve_auto_classifier_model() == "anthropic:claude-haiku-4-5"
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "   ")
+    assert resolve_auto_classifier_model() is None
+
+
 def test_goal_auto_accept_criteria_defaults_to_review(monkeypatch) -> None:
     """Auto mode reviews generated goal criteria when no preference is set."""
     option = get_option("goals.auto_accept_criteria")

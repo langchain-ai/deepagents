@@ -145,6 +145,11 @@ def show_help() -> None:
     )
     console.print("  -y, --auto-approve         Enable classifier-backed Auto mode")
     console.print(
+        "  --auto-classifier-model MODEL"
+        "  Model the Auto classifier reviews actions with"
+    )
+    console.print("                             Defaults to the main agent model")
+    console.print(
         "  --yolo                     Run gated actions without review after "
         "acknowledgement"
     )

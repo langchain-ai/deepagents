@@ -4,16 +4,14 @@
 
 ## [0.7.1](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.0...deepagents==0.7.1) (2026-07-30)
 
-
 ### Features
 
-* **sdk:** mark editable installs in `lc_versions.deepagents` ([#5158](https://github.com/langchain-ai/deepagents/issues/5158)) ([ee7ac3d](https://github.com/langchain-ai/deepagents/commit/ee7ac3d47980e4037403bfea1a13b7b51e06fb4a))
-
+- Mark editable installs in `lc_versions.deepagents` ([#5158](https://github.com/langchain-ai/deepagents/issues/5158))
 
 ### Bug Fixes
 
-* **sdk:** empty read for degenerate `read_file` windows ([#5184](https://github.com/langchain-ai/deepagents/issues/5184)) ([6bf3b68](https://github.com/langchain-ai/deepagents/commit/6bf3b68441e04e9e25883a4f91e6b8d0d6c15703))
-* **sdk:** warn instead of silently skipping unresolved state schemas ([#5166](https://github.com/langchain-ai/deepagents/issues/5166)) ([2054c07](https://github.com/langchain-ai/deepagents/commit/2054c078071b4248707c2b28c7e5254e36703e66))
+- Return an empty read for degenerate `read_file` windows ([#5184](https://github.com/langchain-ai/deepagents/issues/5184))
+- Warn instead of silently skipping unresolved state schemas ([#5166](https://github.com/langchain-ai/deepagents/issues/5166))
 
 ## [0.7.0](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.12...deepagents==0.7.0) (2026-07-29)
 

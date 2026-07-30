@@ -32,6 +32,7 @@ from deepagents_code.cost_tracking import (
     CostTrackingMiddleware,
     _ModelCallRecord,
     _SessionCostRecorder,
+    cache_token_counts,
     estimate_cost,
     resolve_message_model,
 )
@@ -171,6 +172,30 @@ def _collect(
         ),
         run_id=run_id,
     )
+
+
+class TestCacheTokenCounts:
+    """Tests for cache metadata normalization shared by pricing and the UI."""
+
+    def test_reads_and_writes_are_returned(self) -> None:
+        assert cache_token_counts(_usage(cache_read=600, cache_write=300)) == (600, 300)
+
+    def test_counts_are_clamped_to_inclusive_input(self) -> None:
+        assert cache_token_counts(_usage(cache_read=900, cache_write=900)) == (900, 100)
+
+    def test_malformed_details_are_ignored(self) -> None:
+        usage = _usage()
+        usage["input_token_details"] = {"cache_read": True, "cache_creation": -1}
+        assert cache_token_counts(usage) == (0, 0)
+
+    def test_detailed_anthropic_writes_are_summed(self) -> None:
+        usage = _usage()
+        usage["input_token_details"] = {
+            "cache_creation": 0,
+            "ephemeral_5m_input_tokens": 200,
+            "ephemeral_1h_input_tokens": 100,
+        }
+        assert cache_token_counts(usage) == (0, 300)
 
 
 class TestEstimateCost:

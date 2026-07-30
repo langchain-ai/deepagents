@@ -95,6 +95,8 @@ class TestSessionStats:
         assert stats.request_count == 0
         assert stats.input_tokens == 0
         assert stats.output_tokens == 0
+        assert stats.cache_read_tokens == 0
+        assert stats.cache_write_tokens == 0
         assert stats.total_cost_usd == pytest.approx(0.0)
         assert stats.priced_request_count == 0
         assert stats.wall_time_seconds == pytest.approx(0.0)
@@ -114,6 +116,25 @@ class TestSessionStats:
         assert stats.request_count == 2
         assert stats.input_tokens == 300
         assert stats.output_tokens == 125
+
+    def test_record_request_accumulates_cache_tokens(self) -> None:
+        stats = SessionStats()
+        stats.record_request(
+            "gpt-5.5",
+            100,
+            50,
+            cache_read_tokens=80,
+            cache_write_tokens=20,
+        )
+        stats.record_request(
+            "gpt-5.5",
+            200,
+            75,
+            cache_read_tokens=150,
+            cache_write_tokens=25,
+        )
+        assert stats.cache_read_tokens == 230
+        assert stats.cache_write_tokens == 45
 
     def test_record_request_populates_per_model(self) -> None:
         stats = SessionStats()
@@ -184,18 +205,24 @@ class TestSessionStats:
             request_count=1,
             input_tokens=100,
             output_tokens=50,
+            cache_read_tokens=80,
+            cache_write_tokens=20,
             wall_time_seconds=1.5,
         )
         b = SessionStats(
             request_count=2,
             input_tokens=200,
             output_tokens=75,
+            cache_read_tokens=150,
+            cache_write_tokens=25,
             wall_time_seconds=2.0,
         )
         a.merge(b)
         assert a.request_count == 3
         assert a.input_tokens == 300
         assert a.output_tokens == 125
+        assert a.cache_read_tokens == 230
+        assert a.cache_write_tokens == 45
         assert a.wall_time_seconds == pytest.approx(3.5)
 
     def test_merge_combines_cost(self) -> None:

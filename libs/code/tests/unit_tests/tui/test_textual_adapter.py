@@ -2068,17 +2068,25 @@ def _usage_chunk(
     input_tokens: int,
     output_tokens: int,
     metadata: dict[str, Any] | None = None,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
 ) -> tuple[Any, ...]:
     """Build a `messages`-stream chunk carrying only `usage_metadata`."""
     from langchain_core.messages import AIMessageChunk
 
+    usage: dict[str, Any] = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+    }
+    if cache_read_tokens or cache_write_tokens:
+        usage["input_token_details"] = {
+            "cache_read": cache_read_tokens,
+            "cache_creation": cache_write_tokens,
+        }
     message = AIMessageChunk(
         content="",
-        usage_metadata={
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-        },
+        usage_metadata=usage,
     )
     return ((), "messages", (message, metadata or {}))
 
@@ -2092,16 +2100,22 @@ class TestExecuteTaskTextualUsageStats:
     """
 
     async def test_records_provider_from_settings(self) -> None:
-        """A usage chunk records the configured provider on `turn_stats`."""
+        """A usage chunk records provider and cache totals on `turn_stats`."""
 
         async def mount_message(_: object) -> None:
             await asyncio.sleep(0)
 
         turn_stats = SessionStats()
         cost_updates: list[float] = []
+        cache_updates: list[tuple[int, int]] = []
 
         def record_cost(cost_usd: float) -> None:
             cost_updates.append(cost_usd)
+
+        def record_usage_update() -> None:
+            cache_updates.append(
+                (turn_stats.cache_read_tokens, turn_stats.cache_write_tokens)
+            )
 
         adapter = TextualUIAdapter(
             mount_message=mount_message,
@@ -2109,6 +2123,7 @@ class TestExecuteTaskTextualUsageStats:
             request_approval=_mock_approval,
         )
         adapter._on_provisional_cost = record_cost
+        adapter._on_usage_update = record_usage_update
 
         with (
             patch("deepagents_code.config.settings") as mock_settings,
@@ -2118,7 +2133,16 @@ class TestExecuteTaskTextualUsageStats:
             mock_settings.model_provider = "openai"
             await execute_task_textual(
                 user_input="hello",
-                agent=_FakeAgent([_usage_chunk(input_tokens=100, output_tokens=50)]),
+                agent=_FakeAgent(
+                    [
+                        _usage_chunk(
+                            input_tokens=100,
+                            output_tokens=50,
+                            cache_read_tokens=80,
+                            cache_write_tokens=20,
+                        )
+                    ]
+                ),
                 assistant_id="assistant",
                 session_state=SimpleNamespace(thread_id="thread-1", auto_approve=False),
                 adapter=adapter,
@@ -2130,7 +2154,10 @@ class TestExecuteTaskTextualUsageStats:
         assert model_stats.output_tokens == 50
         assert model_stats.cost_usd == pytest.approx(0.42)
         assert turn_stats.total_cost_usd == pytest.approx(0.42)
+        assert turn_stats.cache_read_tokens == 80
+        assert turn_stats.cache_write_tokens == 20
         assert cost_updates == [0.42]
+        assert cache_updates == [(80, 20)]
 
     async def test_records_hidden_subagent_and_summarization_usage(self) -> None:
         """Subagent and summarization spend still accumulate even when hidden."""

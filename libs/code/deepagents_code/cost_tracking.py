@@ -116,6 +116,30 @@ def _cache_write_tokens(details: Mapping[str, Any]) -> int:
     return _token_count(details.get("cache_creation") or details.get("cache_write"))
 
 
+def cache_token_counts(
+    usage_metadata: Mapping[str, Any] | None,
+) -> tuple[int, int]:
+    """Return validated cache read and write tokens from usage metadata.
+
+    Args:
+        usage_metadata: A request's LangChain `usage_metadata` mapping.
+
+    Returns:
+        Cache read and write counts, clamped to the inclusive input total.
+    """
+    if not usage_metadata:
+        return 0, 0
+    input_tokens = _token_count(usage_metadata.get("input_tokens"))
+    details = usage_metadata.get("input_token_details")
+    if not isinstance(details, Mapping):
+        return 0, 0
+    cache_read_tokens = min(_token_count(details.get("cache_read")), input_tokens)
+    cache_write_tokens = min(
+        _cache_write_tokens(details), input_tokens - cache_read_tokens
+    )
+    return cache_read_tokens, cache_write_tokens
+
+
 def estimate_cost(
     usage_metadata: Mapping[str, Any] | None,
     model_name: str,
@@ -156,19 +180,7 @@ def estimate_cost(
         # rates. Without the split there is no defensible estimate.
         return None
 
-    details = usage_metadata.get("input_token_details")
-    if isinstance(details, Mapping):
-        cache_read_tokens = _token_count(details.get("cache_read"))
-        cache_write_tokens = _cache_write_tokens(details)
-    else:
-        cache_read_tokens = 0
-        cache_write_tokens = 0
-
-    # Provider metadata can occasionally report cache parts that exceed the
-    # inclusive input total. Clamp the parts so pricing still produces a safe
-    # estimate instead of failing the model turn with negative uncached input.
-    cache_read_tokens = min(cache_read_tokens, input_tokens)
-    cache_write_tokens = min(cache_write_tokens, input_tokens - cache_read_tokens)
+    cache_read_tokens, cache_write_tokens = cache_token_counts(usage_metadata)
 
     provider_id = _PROVIDER_ALIASES.get(provider_key, provider_key) or None
     try:

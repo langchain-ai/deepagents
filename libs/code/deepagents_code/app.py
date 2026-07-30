@@ -4272,6 +4272,7 @@ class DeepAgentsApp(App):
         self._ui_adapter._on_tokens_show = self._show_tokens
         self._ui_adapter._on_session_cost = self._set_session_cost
         self._ui_adapter._on_provisional_cost = self._add_provisional_cost
+        self._ui_adapter._on_usage_update = self._refresh_cache_display
 
         if self._server_startup_deferred:
             await self._mount_deferred_start_notice()
@@ -6802,6 +6803,18 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.show_pending_tokens()
 
+    def _refresh_cache_display(self) -> None:
+        """Show active-thread cache totals, including the in-flight turn."""
+        if self._status_bar is None:
+            return
+        reads = self._thread_stats.cache_read_tokens
+        writes = self._thread_stats.cache_write_tokens
+        inflight = self._inflight_turn_stats
+        if inflight is not None and self._inflight_thread_id == self._lc_thread_id:
+            reads += inflight.cache_read_tokens
+            writes += inflight.cache_write_tokens
+        self._status_bar.set_cache_tokens(reads, writes)
+
     def _set_session_cost(self, cost_usd: float) -> None:
         """Set the active thread's cumulative cost from a server-owned value.
 
@@ -6833,6 +6846,7 @@ class DeepAgentsApp(App):
             cost_usd: Cumulative cost restored from that thread's checkpoint.
         """
         self._thread_stats = SessionStats()
+        self._refresh_cache_display()
         self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._set_session_cost(self._thread_restored_cost_usd)
 
@@ -14343,6 +14357,7 @@ class DeepAgentsApp(App):
             logger.debug("Screen stack empty during model sync", exc_info=True)
         if self._status_bar is None:
             return
+        self._status_bar.set_context_limit(settings.model_context_limit)
         if not provider or not model:
             logger.warning(
                 "Settings missing model identity at status sync "

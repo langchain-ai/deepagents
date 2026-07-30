@@ -147,6 +147,12 @@ class SessionStats:
     output_tokens: int = 0
     """Cumulative output tokens across all LLM requests."""
 
+    cache_read_tokens: int = 0
+    """Cumulative prompt tokens served from provider caches."""
+
+    cache_write_tokens: int = 0
+    """Cumulative prompt tokens written to provider caches."""
+
     total_cost_usd: float = 0.0
     """Cumulative estimated USD cost across priceable LLM requests."""
 
@@ -176,6 +182,8 @@ class SessionStats:
         cost_usd: float | None = None,
         *,
         kind: UsageKind = "assistant",
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> None:
         """Accumulate usage for one completed LLM request.
 
@@ -193,10 +201,14 @@ class SessionStats:
             cost_usd: Estimated request cost, or `None` when no estimate exists.
                 Missing estimates leave monetary totals unchanged.
             kind: Request class used for `/cost` type breakdowns.
+            cache_read_tokens: Input tokens served from the provider cache.
+            cache_write_tokens: Input tokens written to the provider cache.
         """
         self.request_count += 1
         self.input_tokens += input_toks
         self.output_tokens += output_toks
+        self.cache_read_tokens += max(cache_read_tokens, 0)
+        self.cache_write_tokens += max(cache_write_tokens, 0)
         if cost_usd is not None:
             self.total_cost_usd += cost_usd
             self.priced_request_count += 1
@@ -231,6 +243,8 @@ class SessionStats:
         self.request_count += other.request_count
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
+        self.cache_read_tokens += other.cache_read_tokens
+        self.cache_write_tokens += other.cache_write_tokens
         self.total_cost_usd += other.total_cost_usd
         self.priced_request_count += other.priced_request_count
         self.wall_time_seconds += other.wall_time_seconds

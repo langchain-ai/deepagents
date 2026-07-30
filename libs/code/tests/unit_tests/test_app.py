@@ -6471,6 +6471,12 @@ class TestClearCommand:
                 10,
                 provider="openai",
                 cost_usd=1.25,
+                cache_read_tokens=80,
+                cache_write_tokens=20,
+            )
+            app._refresh_cache_display()
+            assert "Cache: 80 read / 20 write" in str(
+                app.query_one("#cache-display").render()
             )
 
             with (
@@ -6488,6 +6494,9 @@ class TestClearCommand:
             # thread, where nothing would ever supersede it.
             assert app._displayed_cost_usd == pytest.approx(0.0)
             assert app._thread_stats.request_count == 0
+            assert "Cache: 0 read / 0 write" in str(
+                app.query_one("#cache-display").render()
+            )
 
             app_msgs = list(app.query(AppMessage))
             assert any(

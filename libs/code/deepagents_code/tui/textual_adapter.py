@@ -60,6 +60,11 @@ if TYPE_CHECKING:
 
         def __call__(self, cost_usd: float) -> None: ...
 
+    class _UsageUpdateCallback(Protocol):
+        """Callback signature for `_on_usage_update`."""
+
+        def __call__(self) -> None: ...
+
 
 from deepagents_code._ask_user_types import AskUserRequest
 from deepagents_code._cli_context import CLIContext
@@ -494,6 +499,9 @@ class TextualUIAdapter:
         checkpointed yet — a long subagent run, say — without making the client
         a second authority: every server total replaces what this accumulated.
         """
+
+        self._on_usage_update: _UsageUpdateCallback | None = None
+        """Called after a request is added to the shared in-flight turn stats."""
 
     def _sync_tool_widget(self, tool_msg: ToolCallMessage) -> None:
         """Sync a tool widget when the app provided a store callback.
@@ -1379,6 +1387,7 @@ async def execute_task_textual(
                             )
                             from deepagents_code.config import settings
                             from deepagents_code.cost_tracking import (
+                                cache_token_counts,
                                 estimate_cost,
                                 resolve_message_model,
                             )
@@ -1388,6 +1397,7 @@ async def execute_task_textual(
                                 fallback_model=settings.model_name or "",
                                 fallback_provider=settings.model_provider or "",
                             )
+                            cache_reads, cache_writes = cache_token_counts(usage)
                             cost_usd = estimate_cost(
                                 usage, active_model, active_provider
                             )
@@ -1407,6 +1417,8 @@ async def execute_task_textual(
                                     active_provider,
                                     cost_usd=cost_usd,
                                     kind=usage_kind,
+                                    cache_read_tokens=cache_reads,
+                                    cache_write_tokens=cache_writes,
                                 )
                                 captured_input_tokens = max(
                                     captured_input_tokens, input_toks + output_toks
@@ -1421,11 +1433,15 @@ async def execute_task_textual(
                                     active_provider,
                                     cost_usd=cost_usd,
                                     kind=usage_kind,
+                                    cache_read_tokens=cache_reads,
+                                    cache_write_tokens=cache_writes,
                                 )
                                 captured_input_tokens = max(
                                     captured_input_tokens, total_toks
                                 )
                                 recorded = True
+                            if recorded and adapter._on_usage_update:
+                                adapter._on_usage_update()
                             if (
                                 recorded
                                 and cost_usd is not None

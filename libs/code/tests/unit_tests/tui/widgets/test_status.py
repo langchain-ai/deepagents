@@ -33,6 +33,24 @@ class StatusBarApp(App):
         yield StatusBar(id="status-bar")
 
 
+class TestTwoLineLayout:
+    """Tests for the status bar's fixed two-row layout."""
+
+    async def test_workspace_and_metrics_use_separate_rows(self) -> None:
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            top = pilot.app.query_one(".status-top")
+            metrics = pilot.app.query_one(".status-metrics")
+
+            assert bar.size.height == 2
+            assert top.region.y == bar.region.y
+            assert metrics.region.y == bar.region.y + 1
+            for selector in ("#cwd-display", "#branch-display", "#model-display"):
+                assert pilot.app.query_one(selector).region.y == top.region.y
+            for selector in ("#cache-display", "#tokens-display"):
+                assert pilot.app.query_one(selector).region.y == metrics.region.y
+
+
 class TestApprovalModeDisplay:
     """Tests for the three-state approval indicator."""
 
@@ -397,15 +415,19 @@ class TestTokenDisplay:
             bar.show_pending_tokens()
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == "... tokens"
+            rendered = str(display.render())
+            assert "Context: ..." in rendered
+            assert "$0.00" in rendered
 
-    async def test_show_pending_tokens_before_count_leaves_display_empty(self) -> None:
+    async def test_show_pending_tokens_before_count_keeps_zero_display(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.show_pending_tokens()
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == ""
+            rendered = str(display.render())
+            assert "Context: 0 tokens" in rendered
+            assert "$0.00" in rendered
 
     async def test_set_tokens_after_pending_restores_display(self) -> None:
         """Regression: set_tokens must refresh even when value is unchanged.
@@ -440,7 +462,9 @@ class TestTokenDisplay:
             bar.show_pending_tokens()
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == "... tokens"
+            rendered = str(display.render())
+            assert "Context: ..." in rendered
+            assert "$0.00" in rendered
 
     def test_show_pending_tokens_without_mount_is_noop(self) -> None:
         bar = StatusBar()
@@ -483,23 +507,87 @@ class TestTokenDisplay:
             assert "8.0K" in rendered
             assert "+" not in rendered
 
-    async def test_empty_tokens_hidden_on_mount(self) -> None:
-        """An empty token slot is hidden so its padding adds no gap."""
+    async def test_empty_context_shows_zero_on_mount(self) -> None:
+        """The metrics row shows zero context before the first request."""
         async with StatusBarApp().run_test() as pilot:
             display = pilot.app.query_one("#tokens-display")
-            assert display.display is False
+            assert "Context: 0 tokens" in str(display.render())
+            assert display.display is True
 
-    async def test_set_tokens_shows_then_zero_hides(self) -> None:
-        """A positive count reveals the token slot; zeroing hides it again."""
+    async def test_zeroing_tokens_keeps_zero_context_visible(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_tokens(5000)
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert display.display is True
             bar.set_tokens(0)
             await pilot.pause()
-            assert display.display is False
+            assert "Context: 0 tokens" in str(display.render())
+            assert display.display is True
+
+
+class TestContextDisplay:
+    """Tests for percentage and token totals on the metrics row."""
+
+    async def test_context_shows_percentage_and_current_total(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_context_limit(200_000)
+            bar.set_tokens(12_500)
+            await pilot.pause()
+
+            rendered = str(pilot.app.query_one("#tokens-display").render())
+            assert "Context: 6% / 12.5K tokens" in rendered
+
+    async def test_context_limit_change_recalculates_percentage(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(10_000)
+            bar.set_context_limit(100_000)
+            await pilot.pause()
+            assert "Context: 10% / 10.0K tokens" in str(
+                pilot.app.query_one("#tokens-display").render()
+            )
+
+            bar.set_context_limit(200_000)
+            await pilot.pause()
+            assert "Context: 5% / 10.0K tokens" in str(
+                pilot.app.query_one("#tokens-display").render()
+            )
+
+    async def test_invalid_context_limit_falls_back_to_token_total(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_context_limit(0)
+            bar.set_tokens(5000)
+            await pilot.pause()
+            assert "Context: 5.0K tokens" in str(
+                pilot.app.query_one("#tokens-display").render()
+            )
+
+
+class TestCacheDisplay:
+    """Tests for active-thread cache read and write metrics."""
+
+    async def test_cache_counts_render_on_left_metric(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_cache_tokens(12_500, 750)
+            await pilot.pause()
+
+            cache = pilot.app.query_one("#cache-display")
+            assert str(cache.render()) == "Cache: 12.5K read / 750 write"
+            assert cache.region.x < pilot.app.query_one("#tokens-display").region.x
+
+    async def test_cache_counts_start_at_zero_and_clamp_negative_values(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            cache = pilot.app.query_one("#cache-display")
+            assert str(cache.render()) == "Cache: 0 read / 0 write"
+
+            bar.set_cache_tokens(-1, -2)
+            await pilot.pause()
+            assert str(cache.render()) == "Cache: 0 read / 0 write"
 
 
 class TestCostDisplay:
@@ -521,25 +609,29 @@ class TestCostDisplay:
             bar.set_cost(1.25)
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == "$1.25"
+            rendered = str(display.render())
+            assert "Context: 0 tokens" in rendered
+            assert "$1.25" in rendered
             assert display.display is True
 
-    async def test_zero_cost_is_hidden(self) -> None:
+    async def test_zero_cost_is_shown_in_usd(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_tokens(5000)
             bar.set_cost(0.0)
             await pilot.pause()
             rendered = str(pilot.app.query_one("#tokens-display").render())
-            assert rendered == "5.0K tokens"
-            assert "$" not in rendered
+            assert "Context: 5.0K tokens" in rendered
+            assert "$0.00" in rendered
 
     async def test_sub_cent_cost_uses_display_floor(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_cost(0.0045)
             await pilot.pause()
-            assert str(pilot.app.query_one("#tokens-display").render()) == "<$0.01"
+            rendered = str(pilot.app.query_one("#tokens-display").render())
+            assert "Context: 0 tokens" in rendered
+            assert "<$0.01" in rendered
 
     async def test_approximate_token_marker_survives_cost_update(self) -> None:
         async with StatusBarApp().run_test() as pilot:
@@ -560,7 +652,7 @@ class TestCostDisplay:
             bar.show_pending_tokens()
             await pilot.pause()
             rendered = str(pilot.app.query_one("#tokens-display").render())
-            assert "... tokens" in rendered
+            assert "Context: ..." in rendered
             assert "$0.42" in rendered
 
 

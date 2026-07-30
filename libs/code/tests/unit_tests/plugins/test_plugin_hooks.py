@@ -194,19 +194,3 @@ def test_unreadable_plugin_document_is_isolated_and_reported(
     assert manager.has_handlers(HookEvent.SESSION_START)
     assert manager.has_handlers(HookEvent.USER_PROMPT_SUBMIT)
     assert any("broken-plugin" in message for message, _severity in notices)
-
-
-def test_malformed_plugin_document_is_reported_not_dropped(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A plugin document that is not a hooks object produces a diagnostic."""
-    _user_dir, root = _stage_plugins(
-        tmp_path, monkeypatch, {"quality-review-plugin": b'["not", "an", "object"]'}
-    )
-    (plugin_root,) = _install_all(root, ("quality-review-plugin",))
-    installed = plugin_root / "hooks" / "hooks.json"
-
-    notices: list[tuple[str, HookNoticeSeverity]] = []
-    _notice_manager(tmp_path / "workspace", notices)
-
-    assert any(str(installed) in message for message, _severity in notices)

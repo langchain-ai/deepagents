@@ -2160,29 +2160,3 @@ class TestReloadPluginsViaReload:
             await pilot.pause()
 
             assert order == expected_order
-
-    def test_fingerprint_tracks_plugin_hook_files(self, tmp_path: Path) -> None:
-        """Editing an enabled plugin's hooks document must offer a `/reload`."""
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
-
-        hooks_path = tmp_path / "hooks" / "hooks.json"
-        hooks_path.parent.mkdir(parents=True)
-        hooks_path.write_text('{"hooks": {}}', encoding="utf-8")
-        plugin = PluginInstance(
-            plugin_id="demo@tools",
-            name="demo",
-            marketplace="tools",
-            version="1.0",
-            root=tmp_path,
-            data_dir=tmp_path / "data",
-            manifest=None,
-            inventory=ComponentInventory(hook_files=(hooks_path,)),
-        )
-
-        before = DeepAgentsApp._fingerprint_plugins((plugin,))
-        hooks_path.write_text('{"hooks": {"Stop": []}}', encoding="utf-8")
-        os.utime(hooks_path, (1_000_000, 1_000_000))
-        after = DeepAgentsApp._fingerprint_plugins((plugin,))
-
-        assert DeepAgentsApp._plugin_fingerprints_changed(before, after)

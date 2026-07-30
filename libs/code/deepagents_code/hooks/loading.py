@@ -447,22 +447,20 @@ def _validate_hooks_document(
 def _validate_matcher_group(
     data: object,
     path: Path,
-    config_field: str,
+    field: str,
 ) -> tuple[MatcherGroup | None, tuple[HookDiagnostic, ...]]:
     if not isinstance(data, Mapping):
-        return None, (_invalid_config(path, config_field, "expected an object"),)
+        return None, (_invalid_config(path, field, "expected an object"),)
     raw_handlers = data.get("hooks")
     if not isinstance(raw_handlers, list):
         return None, (
-            _invalid_config(
-                path, f"{config_field}.hooks", "expected a list of handlers"
-            ),
+            _invalid_config(path, f"{field}.hooks", "expected a list of handlers"),
         )
 
     handlers: list[CommandHandlerSpec] = []
     diagnostics: list[HookDiagnostic] = []
     for handler_index, raw_handler in enumerate(raw_handlers):
-        handler_field = f"{config_field}.hooks[{handler_index}]"
+        handler_field = f"{field}.hooks[{handler_index}]"
         try:
             handlers.append(CommandHandlerSpec.model_validate(raw_handler))
         except ValidationError as exc:
@@ -476,24 +474,24 @@ def _validate_matcher_group(
     try:
         return MatcherGroup.model_validate(group_data), tuple(diagnostics)
     except ValidationError as exc:
-        diagnostics.append(_validation_error(path, config_field, exc))
+        diagnostics.append(_validation_error(path, field, exc))
         return None, tuple(diagnostics)
 
 
 def _validation_error(
     path: Path,
-    config_field: str,
+    field: str,
     error: ValidationError,
 ) -> HookDiagnostic:
     details = "; ".join(
         str(item["msg"])
         for item in error.errors(include_url=False, include_input=False)
     )
-    return _invalid_config(path, config_field, details)
+    return _invalid_config(path, field, details)
 
 
-def _invalid_config(path: Path, config_field: str, detail: str) -> HookDiagnostic:
-    location = f"{path}:{config_field}" if config_field else str(path)
+def _invalid_config(path: Path, field: str, detail: str) -> HookDiagnostic:
+    location = f"{path}:{field}" if field else str(path)
     message = f"Invalid hooks config at {location}: {detail}"
     logger.warning(message)
     return HookDiagnostic(

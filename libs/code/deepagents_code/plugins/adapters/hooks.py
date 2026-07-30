@@ -125,10 +125,10 @@ def _sources_for_plugin(
     return PluginHookSources(documents=sources, diagnostics=tuple(diagnostics))
 
 
-def plugin_hook_sources(
-    plugins: tuple[PluginInstance, ...], *, project_dir: Path | None = None
+def discover_plugin_hook_sources(
+    *, project_dir: Path | None = None
 ) -> PluginHookSources:
-    """Build Hooks v2 configuration sources for enabled plugins.
+    """Discover enabled plugins and build their hook configuration sources.
 
     Plugin path variables are substituted here rather than at execution time, so
     `${CLAUDE_PLUGIN_ROOT}` resolves identically for shell and `argv` handlers and
@@ -141,46 +141,11 @@ def plugin_hook_sources(
     isolation and reports its own diagnostics.
 
     Args:
-        plugins: Enabled plugin instances.
         project_dir: Project directory for `${CLAUDE_PROJECT_DIR}` substitution.
 
     Returns:
-        Sourced hook documents in plugin declaration order, with the
-        diagnostics collecting them produced.
-    """
-    documents: list[PluginHooksDocument] = []
-    diagnostics: list[HookDiagnostic] = []
-    for plugin in plugins:
-        try:
-            result = _sources_for_plugin(plugin, project_dir=project_dir)
-        # `_diagnostic` logs the traceback. The catch is deliberately broader
-        # than the sibling MCP and skills adapters because the isolation
-        # guarantee above only holds if an unforeseen failure in one plugin
-        # cannot withhold every other plugin's hooks.
-        except Exception as exc:  # noqa: BLE001
-            diagnostics.append(
-                _diagnostic(
-                    f"Could not load hooks for plugin {plugin.plugin_id}: {exc}",
-                    field=str(plugin.root),
-                    exc_info=True,
-                )
-            )
-            continue
-        documents.extend(result.documents)
-        diagnostics.extend(result.diagnostics)
-    return PluginHookSources(documents=tuple(documents), diagnostics=tuple(diagnostics))
-
-
-def discover_plugin_hook_sources(
-    *, project_dir: Path | None = None
-) -> PluginHookSources:
-    """Discover enabled plugins and build their hook configuration sources.
-
-    Args:
-        project_dir: Project directory for variable substitution.
-
-    Returns:
-        Sourced hook documents, or only a diagnostic when discovery fails.
+        Sourced hook documents in plugin declaration order, with the diagnostics
+        collecting them produced, or only a diagnostic when discovery fails.
     """
     try:
         from deepagents_code.plugins import discover_plugins
@@ -198,7 +163,27 @@ def discover_plugin_hook_sources(
         logger.warning(
             "Plugin discovery warnings while loading hooks: %s", result.warnings
         )
-    return plugin_hook_sources(result.plugins, project_dir=project_dir)
+    documents: list[PluginHooksDocument] = []
+    diagnostics: list[HookDiagnostic] = []
+    for plugin in result.plugins:
+        try:
+            sources = _sources_for_plugin(plugin, project_dir=project_dir)
+        # `_diagnostic` logs the traceback. The catch is deliberately broader
+        # than the sibling MCP and skills adapters because the isolation
+        # guarantee above only holds if an unforeseen failure in one plugin
+        # cannot withhold every other plugin's hooks.
+        except Exception as exc:  # noqa: BLE001
+            diagnostics.append(
+                _diagnostic(
+                    f"Could not load hooks for plugin {plugin.plugin_id}: {exc}",
+                    field=str(plugin.root),
+                    exc_info=True,
+                )
+            )
+            continue
+        documents.extend(sources.documents)
+        diagnostics.extend(sources.diagnostics)
+    return PluginHookSources(documents=tuple(documents), diagnostics=tuple(diagnostics))
 
 
 def plugin_hook_event_names(plugin: PluginInstance) -> tuple[str, ...]:

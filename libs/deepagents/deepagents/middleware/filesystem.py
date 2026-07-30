@@ -57,6 +57,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import BaseSandbox
 from deepagents.backends.utils import (
+    _EXTENSION_TO_FILE_TYPE,
     _GLOB_WILDCARD_CHARS,
     _VIDEO_EXTRA_EXTENSIONS,
     MAX_VIDEO_INPUT_BYTES,
@@ -115,13 +116,18 @@ _READ_FILE_MEDIA_RESULT: Final = "read_file_media_result"
 _VIDEO_SAMPLING_RATE: Final = 0.5
 """Seconds between sampled frames when extracting stills from a video."""
 
-_MULTIMODAL_BLOCK_TYPES: Final = frozenset({"image", "audio", "video", "file"})
-"""Content block types `read_file` may emit that require multimodal model support."""
+_MULTIMODAL_BLOCK_TYPES: Final = frozenset(_EXTENSION_TO_FILE_TYPE.values())
+"""Content block types `read_file` may emit that require multimodal model support.
+
+Derived from `_EXTENSION_TO_FILE_TYPE`'s values (`"text"` never appears there,
+since it's `_get_file_type`'s default for unmapped extensions).
+"""
 
 _PDF_MIME_TYPE: Final = "application/pdf"
 
-_MULTIMODAL_FILE_TOLERANT_PROVIDERS: Final = frozenset({"openai", "google_genai"})
-"""Providers known to accept non-PDF `file` blocks (e.g. `.docx`, `.pptx`) today.
+_NON_PDF_FILE_TOLERANT_LLM_TYPE_MARKERS: Final = ("openai", "google-generative-ai")
+"""Substrings of `_llm_type` identifying providers known to accept non-PDF `file`
+blocks (e.g. `.docx`, `.pptx`) today.
 
 [`ModelProfile`][langchain_core.language_models.model_profile.ModelProfile] only
 encodes PDF support (`pdf_inputs`/`pdf_tool_message`); it has no field yet for
@@ -171,53 +177,37 @@ def _move_media_results_after_tool_results(messages: list[AnyMessage]) -> list[A
     return reordered
 
 
-_PROVIDER_BY_CLASS_NAME: Final = {
-    "ChatOpenAI": "openai",
-    "AzureChatOpenAI": "openai",
-    "ChatAnthropic": "anthropic",
-    "ChatGoogleGenerativeAI": "google_genai",
-    "ChatVertexAI": "google_genai",
-}
-"""Fallback provider lookup for models whose `_get_ls_params` isn't usable (e.g. in tests)."""
-
 _PROFILE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_inputs", "audio": "audio_inputs", "video": "video_inputs", "file": "pdf_inputs"}
 """`ModelProfile` field gating each block type. `file` only applies to PDF `mime_type`; other
-file types have no field yet and are handled separately via `_MULTIMODAL_FILE_TOLERANT_PROVIDERS`."""
+file types have no field yet and are handled separately via `_NON_PDF_FILE_TOLERANT_LLM_TYPE_MARKERS`."""
 
 _TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message", "file": "pdf_tool_message"}
 """Extra `ModelProfile` field that can gate a block type specifically within a `ToolMessage`."""
 
 
-def _infer_model_provider(model: "BaseChatModel | None") -> str | None:
-    """Best-effort provider name for `model` (e.g. `"openai"`).
+def _model_tolerates_non_pdf_files(model: "BaseChatModel | None") -> bool:
+    """Whether `model` is known to accept non-PDF `file` blocks.
 
-    Prefers the `ls_provider` from `_get_ls_params`, falling back to the model
-    class name. Returns `None` if the provider can't be determined.
+    Checks `_llm_type` rather than maintaining a class-name mapping. Reads it
+    defensively since `model` may be a lightweight test double.
     """
-    get_ls_params = getattr(model, "_get_ls_params", None)
-    if callable(get_ls_params):
-        with contextlib.suppress(Exception):
-            ls_params = get_ls_params()
-            if isinstance(ls_params, dict) and isinstance(ls_params.get("ls_provider"), str):
-                return ls_params["ls_provider"].replace("-", "_").lower()
-    return _PROVIDER_BY_CLASS_NAME.get(type(model).__name__)
+    llm_type = getattr(model, "_llm_type", None)
+    return isinstance(llm_type, str) and any(marker in llm_type for marker in _NON_PDF_FILE_TOLERANT_LLM_TYPE_MARKERS)
 
 
 def _multimodal_block_supported(
-    block: Mapping[str, Any],
+    block: ContentBlock,
     *,
     profile: Mapping[str, Any],
-    provider: str | None,
+    tolerates_non_pdf_files: bool,
     in_tool_message: bool,
 ) -> bool:
-    """Check whether `profile` (plus hard-coded provider exceptions) accepts `block`.
+    """Check whether `profile` (plus the hard-coded provider exception) accepts `block`.
 
     Missing `ModelProfile` fields default to supported, since profile coverage is
     incomplete. Only an explicit `False` rejects a block type.
     """
-    block_type = block.get("type")
-    if not isinstance(block_type, str):
-        return True
+    block_type = block["type"]
     if block_type == "file" and "base64" not in block:
         # URL-/file-ID-backed file references are provider-managed and often don't
         # include a `mime_type`, so leave them untouched.
@@ -226,7 +216,7 @@ def _multimodal_block_supported(
         # Non-PDF base64 `file` blocks (`.docx`, `.pptx`, ...) aren't described
         # by any `ModelProfile` field yet; only the hard-coded tolerant
         # providers pass.
-        return provider in _MULTIMODAL_FILE_TOLERANT_PROVIDERS
+        return tolerates_non_pdf_files
 
     field = _PROFILE_FIELD_BY_BLOCK_TYPE.get(block_type)
     if field is None:
@@ -238,25 +228,20 @@ def _multimodal_block_supported(
     return profile.get(field) is not False
 
 
-def _unsupported_multimodal_placeholder(block: Mapping[str, Any], message: AnyMessage) -> ContentBlock:
+def _unsupported_multimodal_placeholder(block: ContentBlock, message: AnyMessage) -> ContentBlock:
     """Build the text block replacing a multimodal block the model can't accept."""
-    block_type = block.get("type", "file")
     mime_type = block.get("mime_type", "unknown")
     path = message.additional_kwargs.get("read_file_path", "the requested file")
     return cast(
         "ContentBlock",
         {
             "type": "text",
-            "text": (
-                f"[read_file: {path} was not attached because this model does not support "
-                f"{block_type} content ({mime_type}). Ask the user to share the contents "
-                "directly, or use a model that supports this file type.]"
-            ),
+            "text": f"[read_file: {path} was not attached because this model does not support {block['type']} content ({mime_type}).]",
         },
     )
 
 
-def _scrub_message_multimodal_content(message: AnyMessage, *, profile: Mapping[str, Any], provider: str | None) -> AnyMessage:
+def _scrub_message_multimodal_content(message: AnyMessage, *, profile: Mapping[str, Any], tolerates_non_pdf_files: bool) -> AnyMessage:
     """Return `message` unchanged, or a copy with unsupported blocks replaced by placeholders."""
     if not isinstance(message, (ToolMessage, HumanMessage)):
         return message
@@ -265,8 +250,8 @@ def _scrub_message_multimodal_content(message: AnyMessage, *, profile: Mapping[s
     blocks = message.content_blocks
     new_blocks = [
         block
-        if not (isinstance(block, dict) and block.get("type") in _MULTIMODAL_BLOCK_TYPES)
-        or _multimodal_block_supported(block, profile=profile, provider=provider, in_tool_message=in_tool_message)
+        if block["type"] not in _MULTIMODAL_BLOCK_TYPES
+        or _multimodal_block_supported(block, profile=profile, tolerates_non_pdf_files=tolerates_non_pdf_files, in_tool_message=in_tool_message)
         else _unsupported_multimodal_placeholder(block, message)
         for block in blocks
     ]
@@ -296,8 +281,8 @@ def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "Ba
     profile = getattr(model, "profile", None)
     if not isinstance(profile, dict):
         profile = {}
-    provider = _infer_model_provider(model)
-    return [_scrub_message_multimodal_content(message, profile=profile, provider=provider) for message in messages]
+    tolerates_non_pdf_files = _model_tolerates_non_pdf_files(model)
+    return [_scrub_message_multimodal_content(message, profile=profile, tolerates_non_pdf_files=tolerates_non_pdf_files) for message in messages]
 
 
 def _handle_video_read(

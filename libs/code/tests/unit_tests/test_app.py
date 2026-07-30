@@ -33,6 +33,12 @@ if TYPE_CHECKING:
     from deepagents_code.sessions import ThreadInfo
     from deepagents_code.tui.widgets.messages import ToolCallMessage
 
+    # `conftest`'s fixture protocols cannot be imported here: `tool.ty`
+    # `extra-paths` puts `libs/deepagents` on the path too, so
+    # `tests.unit_tests.conftest` is ambiguous across packages.
+    DrainModalCommands = Callable[..., Awaitable[None]]
+    WaitForModal = Callable[..., Awaitable[None]]
+
 import pytest
 from textual import events
 from textual.app import App, ComposeResult, ScreenStackError
@@ -995,6 +1001,7 @@ class TestStartupSequence:
     async def test_goal_create_prompts_for_auto_accept_preference(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        drain_modal_commands: DrainModalCommands,
     ) -> None:
         """First Auto-mode create/amend should ask before drafting criteria."""
         from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
@@ -1018,7 +1025,7 @@ class TestStartupSequence:
             await pilot.pause()
             self._force_auto_mode(app)
             # The command returns once the prompt is detached from the message
-            # pump, so the rest of the flow is awaited via its task.
+            # pump, so the rest of the flow is awaited via the continuation.
             await app._handle_goal_command("/goal ship passkeys")
             await pilot.pause()
 
@@ -1028,8 +1035,7 @@ class TestStartupSequence:
             assert options.highlighted == 0
 
             await pilot.press("escape")
-            assert app._goal_preference_task is not None
-            await asyncio.wait_for(app._goal_preference_task, timeout=2)
+            await drain_modal_commands(app)
             await pilot.pause()
 
         assert "auto_accept_criteria = false" in DEFAULT_CONFIG_PATH.read_text(
@@ -1042,6 +1048,8 @@ class TestStartupSequence:
     async def test_goal_preference_prompt_responsive_through_message_pump(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        drain_modal_commands: DrainModalCommands,
+        wait_for_modal: WaitForModal,
     ) -> None:
         """The criteria prompt must accept keys via the real submission path.
 
@@ -1050,8 +1058,9 @@ class TestStartupSequence:
         message pump. Awaiting the preference modal anywhere in that chain blocks
         the pump, so the modal never receives the Enter/Esc key events it needs
         to resolve and the whole app looks frozen until the watchdog fires. The
-        flow now runs off the pump, so submitting through the real
-        `ChatInput.Submitted` path and pressing Escape must resolve the modal.
+        flow now runs off the pump (`_schedule_off_message_pump`), so submitting
+        through the real `ChatInput.Submitted` path and pressing Escape must
+        resolve the modal.
         """
         from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
         from deepagents_code.tui.widgets.chat_input import ChatInput
@@ -1074,27 +1083,23 @@ class TestStartupSequence:
             app._chat_input.post_message(
                 ChatInput.Submitted("/goal ship passkeys", "command"),
             )
-            for _ in range(60):
-                await pilot.pause(0.05)
-                if isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen):
-                    break
-            assert isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+            await wait_for_modal(
+                pilot, LaunchGoalCriteriaPreferenceScreen, present=True
+            )
 
             # With the pump free, Escape must reach the modal and resolve it.
             await pilot.press("escape")
-            for _ in range(60):
-                await pilot.pause(0.05)
-                if not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen):
-                    break
-            assert not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
-            assert app._goal_preference_task is not None
-            await asyncio.wait_for(app._goal_preference_task, timeout=2)
+            await wait_for_modal(
+                pilot, LaunchGoalCriteriaPreferenceScreen, present=False
+            )
+            await drain_modal_commands(app)
 
         assert app._goal_proposal_worker is not None
 
     async def test_second_goal_refused_while_criteria_prompt_is_open(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        drain_modal_commands: DrainModalCommands,
     ) -> None:
         """An unanswered criteria prompt is not stacked under a second `/goal`."""
         from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
@@ -1109,22 +1114,98 @@ class TestStartupSequence:
             self._force_auto_mode(app)
             await app._handle_goal_command("/goal ship passkeys")
             await pilot.pause()
-            first_task = app._goal_preference_task
-            assert first_task is not None
+            first_tasks = dict(app._modal_command_tasks)
+            assert list(first_tasks) == ["goal:criteria-preference"]
 
             await app._handle_goal_command("/goal ship magic links")
             await pilot.pause()
 
-            assert app._goal_preference_task is first_task
+            assert dict(app._modal_command_tasks) == first_tasks
             assert isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
             assert len(app.screen_stack) == 2
 
             await pilot.press("escape")
-            await asyncio.wait_for(first_task, timeout=2)
+            await drain_modal_commands(app)
+
+    async def test_pending_criteria_prompt_holds_queue_until_answered(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        drain_modal_commands: DrainModalCommands,
+        wait_for_modal: WaitForModal,
+    ) -> None:
+        """A dequeued `/goal` does not release the queue while its prompt is up.
+
+        Regression test: when `/goal` is dequeued with a normal message behind
+        it, detaching the criteria prompt returns the handler before any busy
+        flag is set. The continuation is registered in `_modal_command_tasks`
+        synchronously, so the drain's busy check holds the queue instead of
+        starting an agent turn that would overlap the goal drafting the prompt
+        is about to start. Answering the prompt resumes the queue only after the
+        proposal worker is running.
+        """
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        app = DeepAgentsApp(agent=MagicMock())
+        app.run_worker = MagicMock()  # ty: ignore
+        processed: list[str] = []
+
+        async def _process(text: str, mode: str) -> None:
+            if mode == "command" and text.startswith("/goal"):
+                await app._handle_goal_command(text)
+            else:
+                processed.append(text)
+
+        app._process_message = _process  # ty: ignore
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            self._clear_goal_auto_accept_prompt_marker()
+            self._force_auto_mode(app)
+            # Idle session, so the drain processes instead of deferring.
+            app._agent_running = False
+            app._connecting = False
+            app._startup_sequence_running = False
+            app._server_startup_error = None
+            # Seed the queue inside the running app: startup drains any messages
+            # queued before `run_test()`.
+            app._pending_messages.extend(
+                [
+                    QueuedMessage(text="/goal ship passkeys", mode="command"),
+                    QueuedMessage(text="now do the thing", mode="normal"),
+                ]
+            )
+
+            await app._process_next_from_queue()
+            await wait_for_modal(
+                pilot, LaunchGoalCriteriaPreferenceScreen, present=True
+            )
+            # The normal message is still queued: the modal continuation counts
+            # as busy, so the drain did not start the agent turn behind the
+            # unanswered prompt.
+            assert [m.text for m in app._pending_messages] == ["now do the thing"]
+            assert processed == []
+
+            await pilot.press("escape")
+            await wait_for_modal(
+                pilot, LaunchGoalCriteriaPreferenceScreen, present=False
+            )
+            await drain_modal_commands(app)
+            # Let the drain-after-modal-command task advance the queue.
+            for _ in range(20):
+                if processed:
+                    break
+                await pilot.pause(0.05)
+
+        assert app._goal_proposal_worker is not None
+        assert processed == ["now do the thing"]
+        assert not app._pending_messages
 
     async def test_goal_amend_prompt_responsive_through_message_pump(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        drain_modal_commands: DrainModalCommands,
+        wait_for_modal: WaitForModal,
     ) -> None:
         """`/goal amend` shares the create path's off-pump preference prompt."""
         from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
@@ -1149,20 +1230,15 @@ class TestStartupSequence:
             app._chat_input.post_message(
                 ChatInput.Submitted("/goal amend also cover recovery", "command"),
             )
-            for _ in range(60):
-                await pilot.pause(0.05)
-                if isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen):
-                    break
-            assert isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+            await wait_for_modal(
+                pilot, LaunchGoalCriteriaPreferenceScreen, present=True
+            )
 
             await pilot.press("escape")
-            for _ in range(60):
-                await pilot.pause(0.05)
-                if not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen):
-                    break
-            assert not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
-            assert app._goal_preference_task is not None
-            await asyncio.wait_for(app._goal_preference_task, timeout=2)
+            await wait_for_modal(
+                pilot, LaunchGoalCriteriaPreferenceScreen, present=False
+            )
+            await drain_modal_commands(app)
 
         assert app._goal_proposal_worker is not None
 
@@ -30647,12 +30723,11 @@ class TestScheduleOffMessagePump:
         assert "demo" not in app._modal_command_tasks
 
     async def test_different_context_is_refused(self) -> None:
-        """A second mutation continuation is refused while one is active.
+        """A second continuation is refused while one is active.
 
         The command handler returns as soon as the continuation is detached, so
-        another install or update can arrive while its prompt is still up. The
-        global guard prevents differently keyed environment mutations from
-        racing each other.
+        another command can arrive while its prompt is still up. The global
+        guard prevents differently keyed continuations from racing each other.
         """
         app = DeepAgentsApp()
         started = asyncio.Event()
@@ -30677,8 +30752,7 @@ class TestScheduleOffMessagePump:
         # Pin the wording and severity: these tests never call `run_test()`, so
         # the real `notify` never renders and a broken message would go unnoticed.
         notify.assert_called_once_with(
-            "Another install or update is in progress — answer its prompt if "
-            "one is open.",
+            "Another command is waiting on a prompt — answer it first.",
             severity="warning",
             timeout=5,
         )
@@ -30819,6 +30893,51 @@ class TestScheduleOffMessagePump:
                 await asyncio.sleep(0.05)
 
         assert task.cancelled()
+
+    async def test_goal_is_refused_while_another_continuation_is_active(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The global guard covers `/goal` across domains, not just installs.
+
+        Admission is global, so a `/goal` that owes the criteria preference
+        prompt cannot stack its modal over an install or update continuation
+        that is still in flight.
+        """
+        from deepagents_code._env_vars import GOAL_AUTO_ACCEPT_CRITERIA
+
+        monkeypatch.delenv(GOAL_AUTO_ACCEPT_CRITERIA, raising=False)
+        app = DeepAgentsApp(agent=MagicMock())
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _install() -> None:
+            started.set()
+            await release.wait()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            TestStartupSequence._force_auto_mode(app)
+            TestStartupSequence._clear_goal_auto_accept_prompt_marker()
+            install = app._schedule_off_message_pump(
+                _install(), context="install:package"
+            )
+            assert install is not None
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+
+            with patch.object(app, "notify") as notify:
+                await app._handle_goal_command("/goal ship passkeys")
+
+            notify.assert_called_once_with(
+                "Another command is waiting on a prompt — answer it first.",
+                severity="warning",
+                timeout=5,
+            )
+            assert app._goal_proposal_worker is None
+            assert not isinstance(app.screen, LaunchGoalCriteriaPreferenceScreen)
+
+            release.set()
+            await asyncio.wait_for(install, timeout=2.0)
 
 
 def _banner_query_raiser(app: DeepAgentsApp, exc: Exception) -> Callable[..., Widget]:

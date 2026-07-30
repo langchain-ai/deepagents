@@ -3453,14 +3453,6 @@ class DeepAgentsApp(App):
         self._goal_proposal_worker: Worker[None] | None = None
         """Active worker drafting or mounting a goal criteria proposal."""
 
-        self._goal_preference_task: asyncio.Task[None] | None = None
-        """`/goal` flow detached from the App message pump.
-
-        Set when the one-time Auto criteria preference modal is still owed, so
-        the flow cannot be awaited on the pump (see `_start_goal_proposal`).
-        Holding the reference keeps the task from being GC'd mid-flight and lets
-        tests await the continuation deterministically."""
-
         self._goal_review_task: asyncio.Task[None] | None = None
         """Active task awaiting a mounted goal criteria review decision."""
 
@@ -11655,10 +11647,10 @@ class DeepAgentsApp(App):
         message pump. Awaiting the modal there blocks the pump, so it never
         receives the Enter/Esc key events it needs to resolve and the whole app
         looks frozen until the modal watchdog fires. When the prompt is still
-        owed, the flow therefore runs as a detached task so the handler returns
-        and the pump stays free to route keys to the modal. This mirrors the
-        install-then-switch flow, which runs its credential modal off the pump
-        for the same reason.
+        owed, the flow therefore hands off to `_schedule_off_message_pump` so
+        the handler returns and the pump stays free to route keys to the modal.
+        This mirrors the `/update` and `/install --package` confirmations, which
+        detach for the same reason.
 
         Without a pending prompt (the overwhelmingly common case) nothing opens a
         modal, so the flow stays inline and `/goal` keeps drafting within the
@@ -11671,26 +11663,13 @@ class DeepAgentsApp(App):
             cleanup_context: Label for the pending-review cancellation log.
         """
         if self._goal_auto_accept_prompt_pending():
-            # Returning while the prompt is open means another `/goal` can arrive
-            # (an external caller, or a queue drain), so refuse a second flow
-            # rather than stacking modals over an unanswered one.
-            pending = self._goal_preference_task
-            if pending is not None and not pending.done():
-                self.notify(
-                    "Answer the goal criteria prompt first.",
-                    severity="warning",
-                    timeout=5,
-                )
-                return
-            task = asyncio.create_task(
+            self._schedule_off_message_pump(
                 self._prompt_then_start_goal_proposal(
                     proposal,
                     cleanup_context=cleanup_context,
                 ),
-                name="goal-criteria-preference",
+                context="goal:criteria-preference",
             )
-            self._goal_preference_task = task
-            task.add_done_callback(_log_task_exception)
             return
         await self._start_goal_proposal_now(proposal, cleanup_context=cleanup_context)
 
@@ -11702,8 +11681,10 @@ class DeepAgentsApp(App):
     ) -> None:
         """Answer the Auto criteria prompt, then start the goal proposal.
 
-        Runs off the App message pump (see `_start_goal_proposal`) so the
-        preference modal can receive keys.
+        Must be scheduled via `_schedule_off_message_pump`, never awaited from a
+        command handler, so the preference modal can receive keys. It therefore
+        catches its own exceptions, because the handler's `try/except` no longer
+        wraps it.
 
         Args:
             proposal: Builds the drafting coroutine for the proposal worker.
@@ -17329,11 +17310,6 @@ class DeepAgentsApp(App):
             self._agent_worker.cancel()
         if self._git_branch_refresh_task is not None:
             self._git_branch_refresh_task.cancel()
-        # A `/goal` flow parked on the criteria preference modal is detached from
-        # the message pump, so nothing else would cancel it before the loop is
-        # torn down.
-        if self._goal_preference_task is not None:
-            self._goal_preference_task.cancel()
         if self._external_event_source_task is not None:
             self._external_event_source_task.cancel()
         # Cancellation alone is not enough: the task's `finally` block runs
@@ -21858,9 +21834,9 @@ class DeepAgentsApp(App):
 
         Because the command handler now returns while the modal is still open,
         the continuation participates in the app's busy state until it ends.
-        Only one continuation is allowed globally, so differently keyed install
-        and update commands cannot show overlapping modals or mutate the tool
-        environment concurrently.
+        Only one continuation is allowed globally, so differently keyed install,
+        update, and goal commands cannot show overlapping modals or mutate
+        shared state concurrently.
 
         The continuation runs outside the command handler's `try/except` and is
         cancelled at app exit, possibly mid-install, so each one must catch its
@@ -21880,12 +21856,11 @@ class DeepAgentsApp(App):
         if self._modal_command_running():
             coro.close()
             # Covers the whole continuation, not just its modal: after the
-            # prompt is answered the install or refresh can still be running for
-            # minutes, and pointing the user at a prompt that has already closed
-            # would read as a bug.
+            # prompt is answered the install, refresh, or goal proposal can
+            # still be running for minutes, and pointing the user at a prompt
+            # that has already closed would read as a bug.
             self.notify(
-                "Another install or update is in progress — answer its prompt if "
-                "one is open.",
+                "Another command is waiting on a prompt — answer it first.",
                 severity="warning",
                 timeout=5,
             )

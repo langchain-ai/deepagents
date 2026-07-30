@@ -507,8 +507,10 @@ def _pricing_target(
 
     Returns:
         The resolved pair, falling back to the checkpointed spec and then to the
-        configured CLI model. Either value may still be `""`, which
-        `estimate_cost` treats as unpriceable.
+            configured CLI model.
+
+            Either value may still be `""`, which `estimate_cost` treats
+            as unpriceable.
     """
     resolved_model = model_name or fallback[0]
     resolved_provider = provider or fallback[1]

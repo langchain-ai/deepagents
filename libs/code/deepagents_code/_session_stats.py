@@ -195,15 +195,19 @@ class SessionStats:
         Updates session totals plus the per-model and per-type breakdowns.
 
         Args:
-            model_name: The model that served this request. Combined with
-                `provider` to form the per-model key. Pass an empty string to
-                skip the per-model breakdown for this request.
+            model_name: The model that served this request.
+
+                Combined with `provider` to form the per-model key. Pass
+                an empty string to skip the per-model breakdown for this request.
             input_toks: Input tokens for this request.
             output_toks: Output tokens for this request.
-            provider: Provider that served the model (e.g. `openai`). Combined
-                with `model_name` to form the per-model key, so the same model
-                served by different providers is tracked separately.
+            provider: Provider that served the model (e.g. `openai`).
+
+                Combined with `model_name` to form the per-model key, so
+                the same model served by different providers is
+                tracked separately.
             cost_usd: Estimated request cost, or `None` when no estimate exists.
+
                 Missing estimates leave monetary totals unchanged.
             kind: Request class used for `/cost` type breakdowns.
         """

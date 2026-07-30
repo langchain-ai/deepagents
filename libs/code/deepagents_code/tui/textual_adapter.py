@@ -851,38 +851,38 @@ def _interrupt_owned_tool_rows(
 
     Used by `_interrupt_tool_rows` for a nested (non-main-agent) checkpoint,
     whose pause/resume must touch only the specific tool calls it carries so
-    unrelated outer ``task`` rows keep running. Because a `HITLRequest`'s
+    unrelated outer `task` rows keep running. Because a `HITLRequest`'s
     `ActionRequest` carries no tool-call id, ownership is matched by tool name
-    plus argument value-equality (order-independent ``dict`` comparison). Each
+    plus argument value-equality (order-independent `dict` comparison). Each
     candidate row is claimed at most once, so two identical calls map to two
     distinct rows.
 
     Two caveats follow from matching on args value rather than an id:
 
     - It relies on the human-in-the-loop middleware surfacing the tool call's
-      ``args`` unchanged in the action request (true as of the pinned
-      ``langchain`` middleware). If that ever diverges — normalization, a JSON
-      round-trip, redaction — the match degrades silently to returning fewer
-      rows; ``test_matches_row_by_name_and_args`` guards the current contract.
+        `args` unchanged in the action request (true as of the pinned
+        `langchain` middleware). If that ever diverges — normalization, a JSON
+        round-trip, redaction — the match degrades silently to returning fewer
+        rows; `test_matches_row_by_name_and_args` guards the current contract.
     - A nested action request that happens to share a name and args with a
-      concurrently tracked row (e.g. an identical ``execute`` call at another
-      nesting level) can misattribute that row. This is strictly rarer than
-      pausing every row and self-corrects, since the same helper drives both
-      pause and resume.
+        concurrently tracked row (e.g. an identical `execute` call at another
+        nesting level) can misattribute that row. This is strictly rarer than
+        pausing every row and self-corrects, since the same helper drives both
+        pause and resume.
 
     A nested subagent's own child tool call is not tracked in
-    ``current_tool_messages`` — message-stream tool rows are gated to the main
-    agent (see the ``is_main_agent`` check) — so a purely nested interrupt
+    `current_tool_messages` — message-stream tool rows are gated to the main
+    agent (see the `is_main_agent` check) — so a purely nested interrupt
     normally matches nothing and leaves every outer row untouched, keeping the
-    still-running ``task`` timers monotonic across the checkpoint.
+    still-running `task` timers monotonic across the checkpoint.
 
     Args:
-        action_requests: The interrupt's action requests (``name`` + ``args``).
+        action_requests: The interrupt's action requests (`name` + `args`).
         current_tool_messages: Live map of tool-call id to tracked tool row.
 
     Returns:
-        The subset of tracked rows owned by these action requests, in request
-        order.
+        The subset of tracked rows owned by these action requests, in
+            request order.
     """
     candidates = list(current_tool_messages.values())
     claimed_ids: set[int] = set()
@@ -919,7 +919,7 @@ def _interrupt_tool_rows(
 
     Returns:
         Every tracked row for a main-agent interrupt, otherwise only rows owned
-        by the nested interrupt's action requests.
+            by the nested interrupt's action requests.
     """
     if not namespace:
         return list(current_tool_messages.values())
@@ -946,7 +946,7 @@ def _read_mentioned_file(file_path: Path, max_embed_bytes: int) -> str:
             "use read_file tool to view)"
         )
     content = file_path.read_text(encoding="utf-8")
-    return f"\n### {file_path.name}\nPath: `{file_path}`\n```text\n{content}\n```"
+    return f"\n### {file_path.name}\nPath: `{file_path}`\n`text\n{content}\n`"
 
 
 def _is_renderable_subagent_event(data: Any, *, is_main_agent: bool) -> bool:  # noqa: ANN401  # custom-stream payload is dynamic
@@ -977,7 +977,7 @@ def _session_cost_total(data: Any, *, is_main_agent: bool) -> float | None:  # n
 
     Returns:
         The finite non-negative total in US dollars, or `None` when the payload
-        is not a well-formed session-cost event from the main agent.
+            is not a well-formed session-cost event from the main agent.
     """
     from deepagents_code.cost_tracking import SESSION_COST_EVENT_TYPE
 

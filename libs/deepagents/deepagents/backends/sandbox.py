@@ -426,8 +426,8 @@ try:
     limit = {limit}
 
     # No lines requested: no line range to report. Reached whenever a caller
-    # asks for zero lines, including a negative `limit` that `_build_read_cmd`
-    # floored to `0`; without this the empty window would fall through to the
+    # asks for zero lines, including a negative limit that _build_read_cmd
+    # floored to 0; without this the empty window would fall through to the
     # offset-exceeds-length error below. Checked here, after the not-found,
     # directory, empty-file, and binary branches, so real failures and the
     # empty-file reminder are still reported first.

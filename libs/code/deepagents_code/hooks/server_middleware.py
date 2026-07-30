@@ -481,10 +481,9 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             return result
         decision = _invoke_hook(
             context,
-            PostToolUseEvent(
-                event=HookEvent.POST_TOOL_USE,
+            PostToolUseEvent.from_tool_result(
+                result,
                 call=call,
-                result=result,
                 duration_ms=duration_ms,
             ),
             gate=gate,
@@ -667,7 +666,6 @@ def _invoke_hook(
         raise RuntimeError(msg)
     run_id = _run_id(config, context.thread_id)
     invocation_id = _invocation_id(
-        run_id=run_id,
         snapshot_id=gate["snapshot_id"],
         context=context,
         event=event,
@@ -754,7 +752,6 @@ def _run_id(config: Mapping[str, Any] | None, thread_id: str) -> str:
 
 def _invocation_id(
     *,
-    run_id: str,
     snapshot_id: str,
     context: HookContext,
     event: (
@@ -768,12 +765,11 @@ def _invocation_id(
     logical_event_id: str | None = None,
 ) -> UUID:
     identity = {
-        "run_id": run_id,
         "thread_id": context.thread_id,
         "snapshot_id": snapshot_id,
+        "prompt_id": str(context.prompt_id) if context.prompt_id is not None else "",
         "event": event.event.value,
         "logical_event": _logical_event_identity(
-            context,
             event,
             logical_event_id=logical_event_id,
         ),
@@ -785,7 +781,6 @@ def _invocation_id(
 
 
 def _logical_event_identity(
-    context: HookContext,
     event: (
         PreToolUseEvent
         | PostToolUseEvent
@@ -806,11 +801,10 @@ def _logical_event_identity(
         raise ValueError(msg)
     if isinstance(event, SubagentStartEvent):
         return event.agent.id
-    prompt_id = str(context.prompt_id) if context.prompt_id is not None else ""
     if isinstance(event, SubagentStopEvent):
-        return f"{event.agent.id}:{event.continuation_count}:{prompt_id}"
+        return f"{event.agent.id}:{event.continuation_count}"
     message_hash = hashlib.sha256(event.last_assistant_message.encode()).hexdigest()
-    return f"{event.continuation_count}:{prompt_id}:{message_hash}"
+    return f"{event.continuation_count}:{message_hash}"
 
 
 def _config_thread_id(config: Mapping[str, Any] | None) -> str | None:

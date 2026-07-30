@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NotRequired
 from unittest.mock import MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from deepagents import create_deep_agent
@@ -71,6 +71,7 @@ from deepagents_code.hooks.server_middleware import (
     _apply_subagent_stop,
     _ask_permission_via_hitl,
     _denied_tool_message,
+    _invocation_id,
     _invoke_hook,
     _merge_tool_message_content,
     _session_gate,
@@ -470,6 +471,7 @@ def test_real_checkpointer_resume_replays_stable_hook_identity() -> None:
         thread_id="thread-1",
         cwd=Path("/tmp"),
         approval_mode=ApprovalMode.MANUAL,
+        prompt_id=uuid4(),
     )
     event = PreToolUseEvent(
         event=HookEvent.PRE_TOOL_USE,
@@ -518,6 +520,37 @@ def test_real_checkpointer_resume_replays_stable_hook_identity() -> None:
     resumed = graph.invoke(Command(resume=build_hook_resume_value(response)), config)
 
     assert resumed["completed"] is True
+
+
+def test_invocation_id_separates_turns_that_reuse_a_tool_call_id() -> None:
+    """A tool-call id reused by a later turn must not inherit its decision.
+
+    The fulfillment ledger caches completed responses by
+    `(snapshot_id, invocation_id)`, so colliding ids would replay the earlier
+    allow/block without running the hook.
+    """
+    event = PreToolUseEvent(
+        event=HookEvent.PRE_TOOL_USE,
+        call=ToolCallData(id="call-1", name="execute", args={"command": "ls"}),
+    )
+
+    def context_for_turn(prompt_id: UUID | None) -> HookContext:
+        return HookContext(
+            thread_id="thread-1",
+            cwd=Path("/tmp"),
+            approval_mode=ApprovalMode.MANUAL,
+            prompt_id=prompt_id,
+        )
+
+    first_turn = context_for_turn(uuid4())
+    second_turn = context_for_turn(uuid4())
+
+    first = _invocation_id(snapshot_id="snapshot-1", context=first_turn, event=event)
+    replayed = _invocation_id(snapshot_id="snapshot-1", context=first_turn, event=event)
+    second = _invocation_id(snapshot_id="snapshot-1", context=second_turn, event=event)
+
+    assert replayed == first
+    assert second != first
 
 
 def test_apply_hooks_context_sets_server_events(tmp_path: Path) -> None:

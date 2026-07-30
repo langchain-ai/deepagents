@@ -168,6 +168,10 @@ class TestAuthPromptScreen:
         )
         assert PROVIDER_API_KEY_URLS["meta"] == "https://dev.meta.ai/api-keys/"
         assert (
+            PROVIDER_API_KEY_URLS["minimax"]
+            == "https://platform.minimax.io/user-center/basic-information/interface-key"
+        )
+        assert (
             PROVIDER_API_KEY_URLS["openrouter"]
             == "https://openrouter.ai/workspaces/default/keys"
         )
@@ -205,6 +209,7 @@ class TestAuthPromptScreen:
         `PROVIDER_DISPLAY_NAMES`.
         """
         assert set(model_config.PROVIDER_API_KEY_ENV) <= set(PROVIDER_DISPLAY_NAMES)
+        assert PROVIDER_DISPLAY_NAMES["minimax"] == "MiniMax"
 
     def test_providers_without_key_url_are_intentionally_omitted(self) -> None:
         """Only providers with no self-serve key page may skip `PROVIDER_API_KEY_URLS`.

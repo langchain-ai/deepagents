@@ -326,6 +326,8 @@ def test_provider_install_extra_known_provider() -> None:
     assert provider_install_extra("baseten") == "baseten"
     # Provider name uses underscores; the extra uses hyphens.
     assert provider_install_extra("google_genai") == "google-genai"
+    # MiniMax is OpenAI-compatible and rides the existing openai extra.
+    assert provider_install_extra("minimax") == "openai"
 
 
 def test_provider_install_extra_extra_only_provider() -> None:

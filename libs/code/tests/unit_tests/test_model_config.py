@@ -1662,6 +1662,7 @@ class TestProviderApiKeyEnv:
         assert PROVIDER_API_KEY_ENV["huggingface"] == "HUGGINGFACEHUB_API_TOKEN"
         assert PROVIDER_API_KEY_ENV["ibm"] == "WATSONX_APIKEY"
         assert PROVIDER_API_KEY_ENV["meta"] == "MODEL_API_KEY"
+        assert PROVIDER_API_KEY_ENV["minimax"] == "MINIMAX_API_KEY"
         assert PROVIDER_API_KEY_ENV["mistralai"] == "MISTRAL_API_KEY"
         assert PROVIDER_API_KEY_ENV["nvidia"] == "NVIDIA_API_KEY"
         assert PROVIDER_API_KEY_ENV["openai"] == "OPENAI_API_KEY"
@@ -1684,6 +1685,17 @@ class TestProviderBaseUrlEnv:
     def test_meta_matches_langchain_meta(self) -> None:
         """Meta reads its dedicated model API base URL variable."""
         assert PROVIDER_BASE_URL_ENV["meta"] == ("MODEL_API_BASE",)
+
+    def test_minimax_uses_dedicated_openai_compatible_base(self) -> None:
+        """MiniMax resolves its own base URL rather than the shared OpenAI one.
+
+        MiniMax is OpenAI-compatible but has no dedicated LangChain integration,
+        so the app resolves its endpoint from a provider-specific variable and
+        never the shared ``OPENAI_BASE_URL`` (which would clobber a real OpenAI
+        endpoint).
+        """
+        assert PROVIDER_BASE_URL_ENV["minimax"] == ("MINIMAX_API_BASE",)
+        assert "OPENAI_BASE_URL" not in PROVIDER_BASE_URL_ENV["minimax"]
 
 
 class TestModelConfigLoad:

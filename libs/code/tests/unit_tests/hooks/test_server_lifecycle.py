@@ -7,18 +7,26 @@ import json
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NotRequired
 from unittest.mock import MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
+from deepagents import create_deep_agent
+from deepagents.middleware import CompiledSubAgent, SubAgent
+from deepagents.middleware._state import private_state_field_names
+from langchain.agents import create_agent
+from langchain.agents.middleware.types import AgentMiddleware, AgentState
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.runnables import RunnableLambda
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import START, StateGraph
 from langgraph.types import Command
 from pydantic import BaseModel
 
+from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.agent import _should_interrupt_tool_call, create_cli_agent
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.client import fulfill_hook_invocation
@@ -63,6 +71,7 @@ from deepagents_code.hooks.server_middleware import (
     _apply_subagent_stop,
     _ask_permission_via_hitl,
     _denied_tool_message,
+    _invocation_id,
     _invoke_hook,
     _merge_tool_message_content,
     _session_gate,
@@ -73,13 +82,328 @@ from deepagents_code.hooks.snapshot import HooksSnapshot
 from deepagents_code.hooks.transcript import SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
 
 if TYPE_CHECKING:
-    from langchain_core.runnables import RunnableConfig
+    from collections.abc import Callable, Sequence
+
+    from langchain_core.language_models import LanguageModelInput
+    from langchain_core.runnables import Runnable, RunnableConfig
+    from langchain_core.tools import BaseTool
 
     from deepagents_code._cli_context import CLIContext
 
 
 class _ReplayState(BaseModel):
     completed: bool
+
+
+class _ToolCallingFakeChatModel(GenericFakeChatModel):
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable[..., Any] | BaseTool],
+        *,
+        tool_choice: str | None = None,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        _ = tools, tool_choice, kwargs
+        return self
+
+
+class _PublicHookState(AgentState[Any]):
+    """Mirror of `ServerHooksState`'s keys *without* the privacy marker.
+
+    Used only by the `CompiledSubAgent` fixtures below, which need to write the
+    hook keys from outside the middleware. `_hook_state_keys` checks this mirror
+    against `ServerHooksState` so it cannot silently drift.
+    """
+
+    _hooks_stop_continuation_count: NotRequired[int]
+    _hooks_pre_tool_outcomes: NotRequired[dict[str, Any]]
+
+
+def _hook_state_keys() -> frozenset[str]:
+    """Return the private hook keys, asserting the local mirror matches."""
+    private_fields = private_state_field_names(ServerHooksState)
+    hook_keys = frozenset(name for name in private_fields if name.startswith("_hooks_"))
+    mirrored = frozenset(_PublicHookState.__annotations__) & hook_keys
+    assert mirrored == hook_keys, (
+        f"_PublicHookState is missing hook keys {sorted(hook_keys - mirrored)}; "
+        "update the fixture when ServerHooksState gains a private field."
+    )
+    return hook_keys
+
+
+def _hook_state_subagent(*, name: str, content: str) -> CompiledSubAgent:
+    """Subagent that writes both hook keys directly, as a bare compiled runnable.
+
+    `CompiledSubAgent` is the weaker of the two outbound layers: a raw `SubAgent`
+    also gets filtered by its own graph's output schema, so only this shape
+    exercises `SubAgentMiddleware`'s explicit `private_state_keys` strip.
+    """
+
+    def finish(_state: _PublicHookState) -> dict[str, Any]:
+        return {
+            "_hooks_stop_continuation_count": 1,
+            "_hooks_pre_tool_outcomes": {name: {"behavior": "none", "context": []}},
+            "messages": [AIMessage(content=content)],
+        }
+
+    return CompiledSubAgent(
+        name=name,
+        description=f"Return {content}.",
+        runnable=RunnableLambda(finish),
+    )
+
+
+def _real_hook_subagent(*, name: str, content: str, cwd: Path) -> SubAgent:
+    """Subagent built the way production builds them, with its own hook middleware.
+
+    This is the shape that actually triggered the reported crash: every real
+    subagent carries `ServerHooksMiddleware`, whose `_after_model` writes
+    `_hooks_pre_tool_outcomes` unconditionally -- even with no hooks configured --
+    so two parallel `task` calls both write that channel in one step.
+    """
+    middleware: list[AgentMiddleware[Any, Any]] = [
+        ServerHooksMiddleware(cwd=cwd, emit_stop=False)
+    ]
+    return SubAgent(
+        name=name,
+        description=f"Return {content}.",
+        system_prompt=f"Say {content}.",
+        model=_ToolCallingFakeChatModel(
+            messages=iter([AIMessage(content=content)]),
+        ),
+        middleware=middleware,
+    )
+
+
+def test_server_hook_state_fields_are_private() -> None:
+    private_fields = private_state_field_names(ServerHooksState)
+
+    assert "_hooks_pre_tool_outcomes" in private_fields
+    assert "_hooks_stop_continuation_count" in private_fields
+    # `private_state_field_names` skips schemas whose annotations cannot be
+    # resolved, which would silently return an empty set and revert the fix.
+    assert _hook_state_keys() == {
+        "_hooks_pre_tool_outcomes",
+        "_hooks_stop_continuation_count",
+    }
+
+
+def test_task_omits_private_server_hook_state_from_subagent_update(
+    tmp_path: Path,
+) -> None:
+    """A single `task` must not clobber the parent's hook state.
+
+    One subagent cannot trip `InvalidUpdateError`, so this covers the silent half
+    of the bug. Built through `create_deep_agent` so the private-key derivation in
+    `deepagents.graph` is exercised rather than reimplemented.
+    """
+    model = _ToolCallingFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {
+                                "description": "Run the child",
+                                "subagent_type": "child",
+                            },
+                            "id": "call-child",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="parent complete"),
+            ]
+        )
+    )
+    agent = create_deep_agent(
+        model=model,
+        middleware=[ServerHooksMiddleware(cwd=tmp_path)],
+        subagents=[_hook_state_subagent(name="child", content="child complete")],
+    )
+
+    result = agent.invoke({"messages": [HumanMessage(content="delegate")]})
+
+    assert "_hooks_pre_tool_outcomes" not in result
+    assert "_hooks_stop_continuation_count" not in result
+    tool_messages = [
+        message for message in result["messages"] if isinstance(message, ToolMessage)
+    ]
+    assert len(tool_messages) == 1
+    assert tool_messages[0].content == "child complete"
+
+
+@pytest.mark.parametrize("subagent_kind", ["compiled", "real"])
+def test_parallel_tasks_do_not_merge_subagent_server_hook_state(
+    tmp_path: Path,
+    subagent_kind: str,
+) -> None:
+    """Two `task` calls completing in one step must not both write hook channels.
+
+    Covers both subagent shapes: `compiled` writes the keys by hand and exercises
+    `SubAgentMiddleware`'s strip, while `real` carries its own
+    `ServerHooksMiddleware` and reproduces the production trigger
+    (`_hooks_pre_tool_outcomes`, written unconditionally by `_after_model`).
+    """
+    model = _ToolCallingFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {
+                                "description": "Run the first child",
+                                "subagent_type": "first",
+                            },
+                            "id": "call-first",
+                            "type": "tool_call",
+                        },
+                        {
+                            "name": "task",
+                            "args": {
+                                "description": "Run the second child",
+                                "subagent_type": "second",
+                            },
+                            "id": "call-second",
+                            "type": "tool_call",
+                        },
+                    ],
+                ),
+                AIMessage(content="parent complete"),
+            ]
+        )
+    )
+    subagents: list[Any] = (
+        [
+            _hook_state_subagent(name="first", content="first complete"),
+            _hook_state_subagent(name="second", content="second complete"),
+        ]
+        if subagent_kind == "compiled"
+        else [
+            _real_hook_subagent(name="first", content="first complete", cwd=tmp_path),
+            _real_hook_subagent(name="second", content="second complete", cwd=tmp_path),
+        ]
+    )
+    checkpointer = InMemorySaver()
+    agent = create_deep_agent(
+        model=model,
+        middleware=[ServerHooksMiddleware(cwd=tmp_path)],
+        subagents=subagents,
+        checkpointer=checkpointer,
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": str(uuid4())}}
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="run both children")]},
+        config=config,
+    )
+
+    tool_messages = {
+        message.tool_call_id: message.content
+        for message in result["messages"]
+        if isinstance(message, ToolMessage)
+    }
+    assert tool_messages == {
+        "call-first": "first complete",
+        "call-second": "second complete",
+    }
+    state = agent.get_state(config).values
+    assert "first" not in state.get("_hooks_pre_tool_outcomes", {})
+    assert "second" not in state.get("_hooks_pre_tool_outcomes", {})
+    assert "_hooks_stop_continuation_count" not in state
+
+
+@pytest.mark.parametrize("resume_round_trip", [False, True])
+def test_pretool_deny_blocks_tool_through_real_graph(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    resume_round_trip: bool,
+) -> None:
+    """A `deny` must survive the real node-to-node channel and block the tool.
+
+    The other deny tests call `_after_model`/`wrap_tool_call` directly and copy the
+    update between them by hand, so none of them would notice if the outcome stopped
+    reaching the tools node. This drives a compiled graph instead, which is what
+    marking the state private could plausibly have broken.
+    """
+    executed: list[str] = []
+
+    @tool
+    def danger(target: str) -> str:
+        """Do something that hooks should be able to block."""
+        executed.append(target)
+        return f"ran on {target}"
+
+    model = _ToolCallingFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "danger",
+                            "args": {"target": "prod"},
+                            "id": "call-danger",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="stopped"),
+            ]
+        )
+    )
+
+    def _deny(*_args: object, **_kwargs: object) -> PreToolUseDecision:
+        return PreToolUseDecision(
+            event=HookEvent.PRE_TOOL_USE,
+            permission=PermissionEffect(behavior="deny", reason="blocked by policy"),
+        )
+
+    monkeypatch.setattr(
+        "deepagents_code.hooks.server_middleware._invoke_hook",
+        _deny,
+    )
+    agent = create_agent(
+        model=model,
+        tools=[danger],
+        middleware=[ServerHooksMiddleware(cwd=tmp_path)],
+        context_schema=CLIContextSchema,
+        checkpointer=InMemorySaver(),
+    )
+    context = CLIContextSchema(
+        hooks_snapshot_id="snap",
+        hooks_server_events=[HookEvent.PRE_TOOL_USE.value],
+        thread_id="t1",
+        approval_mode=ApprovalMode.MANUAL.value,
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": str(uuid4())}}
+
+    if resume_round_trip:
+        # Prove the outcome survives a checkpoint round trip, not just one step.
+        agent.invoke(
+            {"messages": [HumanMessage(content="go")]},
+            config=config,
+            context=context,
+        )
+        result = agent.invoke(None, config=config, context=context)
+    else:
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="go")]},
+            config=config,
+            context=context,
+        )
+
+    assert executed == []
+    denied = [
+        message for message in result["messages"] if isinstance(message, ToolMessage)
+    ]
+    assert len(denied) == 1
+    assert denied[0].status == "error"
+    assert "blocked by policy" in str(denied[0].content)
 
 
 def _request(event: PreToolUseEvent | None = None) -> HookInvocationRequest:
@@ -147,6 +471,7 @@ def test_real_checkpointer_resume_replays_stable_hook_identity() -> None:
         thread_id="thread-1",
         cwd=Path("/tmp"),
         approval_mode=ApprovalMode.MANUAL,
+        prompt_id=uuid4(),
     )
     event = PreToolUseEvent(
         event=HookEvent.PRE_TOOL_USE,
@@ -195,6 +520,37 @@ def test_real_checkpointer_resume_replays_stable_hook_identity() -> None:
     resumed = graph.invoke(Command(resume=build_hook_resume_value(response)), config)
 
     assert resumed["completed"] is True
+
+
+def test_invocation_id_separates_turns_that_reuse_a_tool_call_id() -> None:
+    """A tool-call id reused by a later turn must not inherit its decision.
+
+    The fulfillment ledger caches completed responses by
+    `(snapshot_id, invocation_id)`, so colliding ids would replay the earlier
+    allow/block without running the hook.
+    """
+    event = PreToolUseEvent(
+        event=HookEvent.PRE_TOOL_USE,
+        call=ToolCallData(id="call-1", name="execute", args={"command": "ls"}),
+    )
+
+    def context_for_turn(prompt_id: UUID | None) -> HookContext:
+        return HookContext(
+            thread_id="thread-1",
+            cwd=Path("/tmp"),
+            approval_mode=ApprovalMode.MANUAL,
+            prompt_id=prompt_id,
+        )
+
+    first_turn = context_for_turn(uuid4())
+    second_turn = context_for_turn(uuid4())
+
+    first = _invocation_id(snapshot_id="snapshot-1", context=first_turn, event=event)
+    replayed = _invocation_id(snapshot_id="snapshot-1", context=first_turn, event=event)
+    second = _invocation_id(snapshot_id="snapshot-1", context=second_turn, event=event)
+
+    assert replayed == first
+    assert second != first
 
 
 def test_apply_hooks_context_sets_server_events(tmp_path: Path) -> None:

@@ -15,18 +15,26 @@ from deepagents_code.hooks.models.domain import HookEvent, SessionStartCause
 from deepagents_code.plugins import add_local_marketplace, install_plugin
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
     from pathlib import Path
 
     from deepagents_code.hooks.presenter import HookNoticeSeverity
 
 PLUGIN_ID = "quality-review-plugin@company-tools"
-OTHER_PLUGIN_ID = "broken-plugin@company-tools"
 
 _HOOK_SCRIPT = """#!/bin/sh
 printf '%s\\n%s\\n%s\\n' \\
   "$CLAUDE_PLUGIN_ROOT" "$CLAUDE_PLUGIN_DATA" "$CLAUDE_PROJECT_DIR" \\
   > "$CLAUDE_PLUGIN_DATA/observed.txt"
 """
+
+
+def _hooks_document(command: str) -> dict[str, object]:
+    return {
+        "hooks": {
+            "SessionStart": [{"hooks": [{"type": "command", "command": command}]}]
+        }
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -40,11 +48,24 @@ def _write_json(path: Path, data: dict[str, object]) -> None:
     path.write_text(json.dumps(data), encoding="utf-8")
 
 
-def _isolate_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point plugin storage and hook configuration at `tmp_path`.
+def _stage_plugins(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    documents: Mapping[str, dict[str, object] | bytes],
+) -> tuple[Path, Path]:
+    """Stage a local marketplace whose plugins carry the given hooks documents.
+
+    Nothing is installed yet, so a test may add further files to a plugin source
+    before it is copied into the plugin cache.
+
+    Args:
+        tmp_path: Per-test temporary directory.
+        monkeypatch: Fixture used to isolate plugin and hook storage.
+        documents: Hooks document per plugin name, either as JSON-serializable
+            data or as raw bytes for the malformed cases.
 
     Returns:
-        The isolated user configuration directory.
+        The isolated user configuration directory and the marketplace root.
     """
     user_dir = tmp_path / "config"
     user_dir.mkdir(parents=True, exist_ok=True)
@@ -53,15 +74,7 @@ def _isolate_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(
         "deepagents_code.hooks.runtime.DEFAULT_CONFIG_DIR", tmp_path / "transcripts"
     )
-    return user_dir
 
-
-def _marketplace(tmp_path: Path, plugin_names: tuple[str, ...]) -> Path:
-    """Write a local marketplace manifest listing `plugin_names`.
-
-    Returns:
-        The marketplace root directory.
-    """
     root = tmp_path / "marketplace"
     _write_json(
         root / ".claude-plugin" / "marketplace.json",
@@ -69,54 +82,44 @@ def _marketplace(tmp_path: Path, plugin_names: tuple[str, ...]) -> Path:
             "name": "company-tools",
             "owner": {"name": "Team"},
             "plugins": [
-                {
-                    "name": name,
-                    "source": f"./plugins/{name}",
-                    "description": "Plugin",
-                }
-                for name in plugin_names
+                {"name": name, "source": f"./plugins/{name}", "description": "Plugin"}
+                for name in documents
             ],
         },
     )
-    return root
+    for name, document in documents.items():
+        plugin = root / "plugins" / name
+        _write_json(
+            plugin / ".claude-plugin" / "plugin.json",
+            {"name": name, "version": "1.0.0"},
+        )
+        hooks_path = plugin / "hooks" / "hooks.json"
+        hooks_path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(document, bytes):
+            hooks_path.write_bytes(document)
+        else:
+            _write_json(hooks_path, document)
+    return user_dir, root
 
 
-def _install_hooks_plugin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Install an enabled plugin whose `hooks/hooks.json` runs a bundled script.
+def _install_all(root: Path, names: Iterable[str]) -> tuple[Path, ...]:
+    """Register the staged marketplace and install every named plugin.
 
     Returns:
-        The installed plugin's cached root directory.
+        The installed plugins' cached root directories, in `names` order.
     """
-    _isolate_config(tmp_path, monkeypatch)
-    root = _marketplace(tmp_path, ("quality-review-plugin",))
-    plugin = root / "plugins" / "quality-review-plugin"
-    _write_json(
-        plugin / ".claude-plugin" / "plugin.json",
-        {"name": "quality-review-plugin", "version": "1.0.0"},
-    )
-    script = plugin / "scripts" / "check.sh"
-    script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text(_HOOK_SCRIPT, encoding="utf-8")
-    script.chmod(0o755)
-    _write_json(
-        plugin / "hooks" / "hooks.json",
-        {
-            "hooks": {
-                "SessionStart": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": '"${CLAUDE_PLUGIN_ROOT}/scripts/check.sh"',
-                            }
-                        ]
-                    }
-                ]
-            }
-        },
-    )
     add_local_marketplace(root)
-    return install_plugin(PLUGIN_ID).root
+    return tuple(install_plugin(f"{name}@company-tools").root for name in names)
+
+
+def _notice_manager(
+    cwd: Path, notices: list[tuple[str, HookNoticeSeverity]]
+) -> HooksManager:
+    return HooksManager.create(
+        cwd=cwd,
+        identity=lambda: HookSessionIdentity("thread", ApprovalMode.MANUAL),
+        notice=lambda message, severity: notices.append((message, severity)),
+    )
 
 
 @pytest.mark.skipif(
@@ -128,7 +131,20 @@ async def test_plugin_hook_runs_with_its_exported_variables(
     """A bundled plugin hook runs through the manager and sees its own paths."""
     from deepagents_code.plugins.store import plugin_data_dir
 
-    plugin_root = _install_hooks_plugin(tmp_path, monkeypatch)
+    _user_dir, root = _stage_plugins(
+        tmp_path,
+        monkeypatch,
+        {
+            "quality-review-plugin": _hooks_document(
+                '"${CLAUDE_PLUGIN_ROOT}/scripts/check.sh"'
+            )
+        },
+    )
+    script = root / "plugins" / "quality-review-plugin" / "scripts" / "check.sh"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(_HOOK_SCRIPT, encoding="utf-8")
+    script.chmod(0o755)
+    (plugin_root,) = _install_all(root, ("quality-review-plugin",))
     workspace = tmp_path / "workspace"
     (workspace / ".git").mkdir(parents=True)
     monkeypatch.chdir(workspace)
@@ -152,26 +168,15 @@ def test_unreadable_plugin_document_is_isolated_and_reported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """One plugin's undecodable hooks document must not disable other hooks."""
-    user_dir = _isolate_config(tmp_path, monkeypatch)
-    root = _marketplace(tmp_path, ("quality-review-plugin", "broken-plugin"))
-    for name in ("quality-review-plugin", "broken-plugin"):
-        _write_json(
-            root / "plugins" / name / ".claude-plugin" / "plugin.json",
-            {"name": name, "version": "1.0.0"},
-        )
-    _write_json(
-        root / "plugins" / "quality-review-plugin" / "hooks" / "hooks.json",
+    user_dir, root = _stage_plugins(
+        tmp_path,
+        monkeypatch,
         {
-            "hooks": {
-                "SessionStart": [
-                    {"hooks": [{"type": "command", "command": "plugin-hook"}]}
-                ]
-            }
+            "quality-review-plugin": _hooks_document("plugin-hook"),
+            "broken-plugin": b'{"hooks": {"Stop": "\xff\xfe"}}',
         },
     )
-    broken = root / "plugins" / "broken-plugin" / "hooks" / "hooks.json"
-    broken.parent.mkdir(parents=True, exist_ok=True)
-    broken.write_bytes(b'{"hooks": {"Stop": "\xff\xfe"}}')
+    _install_all(root, ("quality-review-plugin", "broken-plugin"))
     _write_json(
         user_dir / "hooks.json",
         {
@@ -182,16 +187,9 @@ def test_unreadable_plugin_document_is_isolated_and_reported(
             }
         },
     )
-    add_local_marketplace(root)
-    install_plugin(PLUGIN_ID)
-    install_plugin(OTHER_PLUGIN_ID)
 
     notices: list[tuple[str, HookNoticeSeverity]] = []
-    manager = HooksManager.create(
-        cwd=tmp_path / "workspace",
-        identity=lambda: HookSessionIdentity("thread", ApprovalMode.MANUAL),
-        notice=lambda message, severity: notices.append((message, severity)),
-    )
+    manager = _notice_manager(tmp_path / "workspace", notices)
 
     assert manager.has_handlers(HookEvent.SESSION_START)
     assert manager.has_handlers(HookEvent.USER_PROMPT_SUBMIT)
@@ -202,24 +200,13 @@ def test_malformed_plugin_document_is_reported_not_dropped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A plugin document that is not a hooks object produces a diagnostic."""
-    _isolate_config(tmp_path, monkeypatch)
-    root = _marketplace(tmp_path, ("quality-review-plugin",))
-    plugin = root / "plugins" / "quality-review-plugin"
-    _write_json(
-        plugin / ".claude-plugin" / "plugin.json",
-        {"name": "quality-review-plugin", "version": "1.0.0"},
+    _user_dir, root = _stage_plugins(
+        tmp_path, monkeypatch, {"quality-review-plugin": b'["not", "an", "object"]'}
     )
-    hooks_path = plugin / "hooks" / "hooks.json"
-    hooks_path.parent.mkdir(parents=True, exist_ok=True)
-    hooks_path.write_text('["not", "an", "object"]', encoding="utf-8")
-    add_local_marketplace(root)
-    installed = install_plugin(PLUGIN_ID).root / "hooks" / "hooks.json"
+    (plugin_root,) = _install_all(root, ("quality-review-plugin",))
+    installed = plugin_root / "hooks" / "hooks.json"
 
     notices: list[tuple[str, HookNoticeSeverity]] = []
-    HooksManager.create(
-        cwd=tmp_path / "workspace",
-        identity=lambda: HookSessionIdentity("thread", ApprovalMode.MANUAL),
-        notice=lambda message, severity: notices.append((message, severity)),
-    )
+    _notice_manager(tmp_path / "workspace", notices)
 
     assert any(str(installed) in message for message, _severity in notices)

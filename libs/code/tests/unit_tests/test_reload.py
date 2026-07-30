@@ -2102,13 +2102,24 @@ class TestReloadPluginsViaReload:
 
             assert app._session_plugin_ids == expected_ids
 
+    @pytest.mark.parametrize(
+        ("discovery_fails", "expected_order"),
+        [(False, ["hooks", "restart"]), (True, ["hooks"])],
+        ids=["before-restart", "discovery-failure"],
+    )
     async def test_reload_rebuilds_hooks_before_restarting_the_server(
-        self, monkeypatch: pytest.MonkeyPatch
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        discovery_fails: bool,
+        expected_order: list[str],
     ) -> None:
         """Newly enabled plugin hooks only register if the snapshot leads the restart.
 
         The server is told which server-owned events to emit when it starts, so a
-        restart that runs against a stale hook snapshot silently drops them.
+        restart that runs against a stale hook snapshot silently drops them. Hooks
+        are rebuilt even when plugin discovery is broken, so user and project hook
+        edits still land.
         """
         from deepagents_code.app import DeepAgentsApp
         from deepagents_code.plugins.models import PluginDiscoveryResult
@@ -2136,7 +2147,9 @@ class TestReloadPluginsViaReload:
             monkeypatch.setattr(app, "_discard_queue", lambda: None)
             monkeypatch.setattr(
                 "deepagents_code.plugins.discover_plugins",
-                lambda: PluginDiscoveryResult(plugins=()),
+                MagicMock(side_effect=PermissionError("unreadable plugin dir"))
+                if discovery_fails
+                else lambda: PluginDiscoveryResult(plugins=()),
             )
             monkeypatch.setattr(
                 "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
@@ -2146,36 +2159,7 @@ class TestReloadPluginsViaReload:
             await app._handle_command("/reload")
             await pilot.pause()
 
-            assert order == ["hooks", "restart"]
-
-    async def test_reload_rebuilds_hooks_when_plugin_discovery_fails(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """User and project hook edits still land when plugin discovery is broken."""
-        from deepagents_code.app import DeepAgentsApp
-
-        reloaded: list[str] = []
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-
-            async def _fake_discover() -> bool:  # noqa: RUF029
-                return True
-
-            async def _fake_reload_hooks() -> None:  # noqa: RUF029
-                reloaded.append("hooks")
-
-            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
-            monkeypatch.setattr(app, "_reload_hooks", _fake_reload_hooks)
-            monkeypatch.setattr(
-                "deepagents_code.plugins.discover_plugins",
-                MagicMock(side_effect=PermissionError("unreadable plugin dir")),
-            )
-
-            await app._handle_command("/reload")
-            await pilot.pause()
-
-            assert reloaded == ["hooks"]
+            assert order == expected_order
 
     def test_fingerprint_tracks_plugin_hook_files(self, tmp_path: Path) -> None:
         """Editing an enabled plugin's hooks document must offer a `/reload`."""

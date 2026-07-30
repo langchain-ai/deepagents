@@ -98,11 +98,9 @@ class HooksRuntime:
                 when omitted, so output is logged rather than surfaced.
             plugin_sources: Hook documents contributed by enabled plugins, which
                 the caller discovers so the runtime stays independent of plugin
-                state. Merged last, holding the least authority, and validated
-                here like any other hooks document.
+                state. Merged last, holding the least authority.
             plugin_diagnostics: Diagnostics the caller collected while
-                discovering `plugin_sources`, so a plugin that could not be read
-                is reported alongside configuration diagnostics.
+                discovering `plugin_sources`.
 
         Returns:
             A runtime ready to execute invocations for this session.

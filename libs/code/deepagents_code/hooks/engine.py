@@ -139,7 +139,10 @@ async def _run_handler(
             cwd=cwd,
             default_timeout=default_timeout,
             max_output_bytes=max_output_bytes,
-            env=_handler_env(handler),
+            # A plugin source's variables are layered over the sanitized
+            # environment, so a plugin keeps its own paths without escaping
+            # secret stripping.
+            env={**sanitize_hook_environ(), **handler.source.env},
         )
     finally:
         _report_progress(
@@ -152,23 +155,6 @@ async def _run_handler(
                 active=False,
             ),
         )
-
-
-def _handler_env(handler: HookHandler) -> dict[str, str]:
-    """Overlay a handler's source environment onto the sanitized process one.
-
-    Plugin handlers need their plugin root and data directory on the environment
-    to resolve bundled scripts. The overlay is applied last so a plugin cannot be
-    starved of its own variables, but it is layered over the sanitized
-    environment so secret stripping still applies.
-
-    Args:
-        handler: Handler about to run.
-
-    Returns:
-        The launch environment for the handler.
-    """
-    return {**sanitize_hook_environ(), **handler.source.env}
 
 
 def _report_progress(

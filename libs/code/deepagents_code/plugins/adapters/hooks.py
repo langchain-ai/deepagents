@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from deepagents_code.hooks.loading import HooksSource, read_hooks_json
 from deepagents_code.hooks.models.domain import HookDiagnostic, HookEvent
@@ -18,12 +18,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_KNOWN_EVENTS: Final = frozenset(event.value for event in HookEvent)
+
 PluginHooksDocument = tuple[HooksSource, "JsonValue"]
 """One plugin hooks document with the provenance Hooks v2 loading needs.
 
-The document is handed over undecided: Hooks v2 validates it like any other
-hooks document, so a plugin shipping a non-object or otherwise malformed
-document produces a diagnostic instead of disappearing.
+The document is handed over undecided so that Hooks v2 validates it like any
+other hooks document, and a malformed one produces a diagnostic instead of
+disappearing.
 """
 
 
@@ -110,11 +112,7 @@ def _sources_for_plugin(
     )
     sources = tuple(
         (
-            HooksSource(
-                location=str(path),
-                plugin_id=plugin.plugin_id,
-                env=env,
-            ),
+            HooksSource(location=str(path), plugin_id=plugin.plugin_id, env=env),
             substitute_json(
                 document,
                 plugin_root=plugin.root,
@@ -189,8 +187,7 @@ def discover_plugin_hook_sources(
 
         result = discover_plugins()
     # `_diagnostic` logs the traceback. Discovery failing must degrade to "no
-    # plugin hooks" rather than propagate and take the user and project hooks
-    # down with it.
+    # plugin hooks" rather than take the user and project hooks down with it.
     except Exception as exc:  # noqa: BLE001
         return PluginHookSources(
             diagnostics=(
@@ -224,15 +221,5 @@ def plugin_hook_event_names(plugin: PluginInstance) -> tuple[str, ...]:
         hooks = document.get("hooks")
         if not isinstance(hooks, dict):
             continue
-        events.extend(
-            name for name in hooks if isinstance(name, str) and _is_known_event(name)
-        )
+        events.extend(name for name in hooks if name in _KNOWN_EVENTS)
     return tuple(dict.fromkeys(events))
-
-
-def _is_known_event(name: str) -> bool:
-    try:
-        HookEvent(name)
-    except ValueError:
-        return False
-    return True

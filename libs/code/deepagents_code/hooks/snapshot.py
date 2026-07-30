@@ -6,10 +6,10 @@ import logging
 import re
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from deepagents_code.hooks.capabilities import HookOwner, get_event_spec
-from deepagents_code.hooks.loading import HooksSource, compute_snapshot_id
+from deepagents_code.hooks.loading import UNSOURCED, SourcedGroup, compute_snapshot_id
 from deepagents_code.hooks.models.domain import (
     HookDiagnostic,
     HookEvent,
@@ -30,16 +30,14 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from re import Pattern
 
-    from deepagents_code.hooks.loading import LoadedHooksConfig
-    from deepagents_code.hooks.models.config import HooksConfig, MatcherGroup
+    from deepagents_code.hooks.loading import HooksSource, LoadedHooksConfig
+    from deepagents_code.hooks.models.config import HooksConfig
     from deepagents_code.hooks.models.domain import HookInvocation
 
 logger = logging.getLogger(__name__)
 
 # Claude-compatible exact-match character set (letters, digits, _, -, spaces, ,, |).
 _EXACT_MATCHER = re.compile(r"^[\w\s,\-|]+$")
-_DEFAULT_SOURCE: Final = HooksSource(location="")
-"""Provenance for handlers compiled without it, which adds no env overlay."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,7 +52,7 @@ class HookHandler:
     matcher: Pattern[str] | frozenset[str] | None
     matcher_text: str | None
     argv: tuple[str, ...] | None = None
-    source: HooksSource = _DEFAULT_SOURCE
+    source: HooksSource = UNSOURCED
     """Where the handler came from, which fixes its environment overlay."""
 
 
@@ -105,7 +103,9 @@ class HooksSnapshot:
             raise ValueError(msg)
         return cls._compile(
             {
-                event: tuple((_DEFAULT_SOURCE, group) for group in groups)
+                event: tuple(
+                    SourcedGroup(source=UNSOURCED, group=group) for group in groups
+                )
                 for event, groups in config.hooks.items()
             },
             snapshot_id=canonical_id,
@@ -117,17 +117,13 @@ class HooksSnapshot:
         """Build a snapshot from a load result, preserving per-group provenance.
 
         Args:
-            loaded: Result of `load_hooks_config`, whose `groups` already pair
-                every matcher group with the source that contributed it.
+            loaded: Result of `load_hooks_config`.
 
         Returns:
             A snapshot whose handlers know the environment their source requires.
         """
         return cls._compile(
-            {
-                event: tuple((item.source, item.group) for item in groups)
-                for event, groups in loaded.groups.items()
-            },
+            loaded.groups,
             snapshot_id=loaded.snapshot_id,
             diagnostics=loaded.diagnostics,
         )
@@ -135,7 +131,7 @@ class HooksSnapshot:
     @classmethod
     def _compile(
         cls,
-        sourced: Mapping[HookEvent, Sequence[tuple[HooksSource, MatcherGroup]]],
+        sourced: Mapping[HookEvent, Sequence[SourcedGroup]],
         *,
         snapshot_id: str,
         diagnostics: tuple[HookDiagnostic, ...],
@@ -159,7 +155,8 @@ class HooksSnapshot:
         for event, event_groups in sourced.items():
             matcher_field = get_event_spec(event).matcher_field
             handlers: list[HookHandler] = []
-            for group_index, (source, group) in enumerate(event_groups):
+            for group_index, sourced_group in enumerate(event_groups):
+                source, group = sourced_group.source, sourced_group.group
                 if matcher_field is None and group.matcher not in {None, "", "*"}:
                     message = (
                         f"Rejected hook group {event.value}:{group_index}: "

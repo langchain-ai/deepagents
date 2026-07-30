@@ -9,8 +9,7 @@
 #   Ollama Cloud inference; it is not read from secrets.
 #
 # Required secrets (vary by sandbox + model provider):
-#   LANGSMITH_API_KEY          — experiment tracking (always required)
-#   LANGSMITH_SANDBOX_API_KEY  — needed for LangSmith sandbox
+#   LANGSMITH_API_KEY          — experiment tracking + LangSmith sandbox (always required)
 #   ANTHROPIC_API_KEY          — needed for Anthropic models
 #   OPENAI_API_KEY             — needed for OpenAI models and tau3 verifier/user simulator
 #   GOOGLE_API_KEY             — needed for Google models
@@ -62,24 +61,18 @@ on:
           - "anthropic:claude-opus-4-5-20251101"
           - "anthropic:claude-opus-4-6"
           - "anthropic:claude-opus-4-7"
-          - "baseten:zai-org/GLM-5"
           - "baseten:MiniMaxAI/MiniMax-M2.5"
-          - "baseten:moonshotai/Kimi-K2.5"
           - "baseten:moonshotai/Kimi-K2.6"
           - "baseten:nvidia/Nemotron-120B-A12B"
           - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
           - "fireworks:accounts/fireworks/models/deepseek-v3p2"
           - "fireworks:accounts/fireworks/models/deepseek-v3-0324"
           - "fireworks:accounts/fireworks/models/deepseek-v4-pro"
-          - "fireworks:accounts/fireworks/models/kimi-k2p5"
           - "fireworks:accounts/fireworks/models/kimi-k2p6"
-          - "fireworks:accounts/fireworks/models/glm-5"
-          - "fireworks:accounts/fireworks/models/glm-5p1"
           - "fireworks:accounts/fireworks/models/glm-5p2"
           - "fireworks:accounts/fireworks/models/minimax-m2p5"
           - "fireworks:accounts/fireworks/models/minimax-m2p7"
           - "fireworks:accounts/fireworks/models/minimax-m3"
-          - "fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a12b-fp8"
           - "fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking"
           - "google_genai:gemini-2.5-flash"
           - "google_genai:gemini-2.5-pro"
@@ -88,13 +81,9 @@ on:
           - "groq:openai/gpt-oss-120b"
           - "groq:qwen/qwen3-32b"
           - "groq:moonshotai/kimi-k2-instruct"
-          - "nvidia:nvidia/nemotron-3-super-120b-a12b"
-          - "ollama:glm-5:cloud"
-          - "ollama:glm-5.1:cloud"
           - "ollama:minimax-m2.5:cloud"
           - "ollama:minimax-m2.7:cloud"
           - "ollama:qwen3.5:cloud"
-          - "ollama:nemotron-3-super:cloud"
           - "openai:gpt-4.1"
           - "openai:gpt-5.1-codex"
           - "openai:gpt-5.2-codex"
@@ -104,11 +93,8 @@ on:
           - "openai:gpt-5.5"
           - "openai:gpt-5.5-pro"
           - "openrouter:minimax/minimax-m2.7"
-          - "openrouter:moonshotai/kimi-k2.5"
           - "openrouter:moonshotai/kimi-k2.6"
-          - "openrouter:z-ai/glm-5.1"
           - "openrouter:z-ai/glm-5.2"
-          - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "openrouter:deepseek/deepseek-v4-pro"
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
@@ -164,6 +150,16 @@ on:
         required: false
         default: "1.0"
         type: string
+      env_build_timeout_multiplier:
+        description: "Multiplier for each task's environment build timeout (harbor's client-side wait). Note: does not extend the LangSmith build service's own limit."
+        required: false
+        default: "1.0"
+        type: string
+      override_storage_mb:
+        description: "Override the sandbox snapshot filesystem size (MB), raising harbor's 32 GiB floor. Use for heavy harbor-index images that fail the LangSmith snapshot build by exhausting storage (e.g. 65536 = 64 GiB). 0 = don't override."
+        required: false
+        default: "0"
+        type: string
       disable_verification:
         description: "Skip the task verifier (tests). For setup/concurrency stress tests where task pass/fail is not the goal."
         required: false
@@ -175,14 +171,19 @@ on:
         default: false
         type: boolean
       n_shards:
-        description: "Split the dataset's tasks across N parallel shard jobs per model (each on its own runner at the per-job concurrency). Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). Capped at 10 (with concurrency capped at 4 and a single model, at most 40 concurrent sandboxes)."
+        description: "Split the dataset's tasks across N shard jobs per model (each on its own runner at the per-job concurrency). Composes with include_tasks/n_tasks: those select the task set first, then it's partitioned across shards (total tasks run is unchanged). May be set as high as the task count (one task per shard) for dynamic dispatch — shards drain through a derived pool (shard_parallel), not all at once. Capped at 200 (shard_matrix.MAX_SHARDS); the pool is bounded so shard_parallel * concurrency <= 40 concurrent sandboxes."
         required: false
         default: "10"
         type: string
       harbor_package_override:
-        description: "Optional: install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. Use a trusted package source. Prefer an immutable commit SHA, and never embed credentials in the package spec. Leave empty to use the pinned Harbor."
+        description: "Optional: install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. One spec per line — e.g. `harbor @ git+…@<sha>` on the first line and `harbor-langsmith @ git+…@<sha>#subdirectory=packages/harbor-langsmith` on the second. Use a trusted package source. Prefer an immutable commit SHA, and never embed credentials in the package spec. Leave empty to use the pinned Harbor."
         required: false
         default: ""
+        type: string
+      judge_models:
+        description: "Grader model for LLM-judge verifiers (e.g. harbor-index), used with an OpenAI judge. Prefer an independent grader, not the model under test."
+        required: false
+        default: "gpt-5.6-luna"
         type: string
 permissions:
   contents: read
@@ -206,6 +207,9 @@ jobs:
       # Eval category derived from the dataset inputs, consumed by the leaf
       # workflow's unified reporting (autonomous | conversation | context).
       category: ${{ steps.category.outputs.category }}
+      # Derived shard pool (dynamic dispatch) from the "🔒 Validate single
+      # model + resource limits" step, for the run job's shard_parallel input.
+      shard_parallel: ${{ steps.limits.outputs.shard_parallel }}
     env:
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
     steps:
@@ -249,26 +253,31 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🐍 Compute Harbor matrix"
         id: set-matrix
-        run: python .github/scripts/models.py harbor
+        run: python .github/scripts/evals/models.py harbor
         env:
           HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'fireworks:accounts/fireworks/models/glm-5p2' }}
 
       - name: "🔒 Validate single model + resource limits"
         # This workflow evaluates exactly ONE model. Fail fast (before the matrix
         # fans out) if the resolved model set is not a single model, or if the
-        # per-run limits are exceeded (n_shards <= 10, concurrency <= 4; with one
-        # model their product bounds concurrent sandboxes to 40). Inputs are read
+        # per-run limits are exceeded (n_shards <= shard_matrix.MAX_SHARDS=200,
+        # concurrency <= 4). n_shards may be set high for dynamic dispatch (one
+        # task per shard); shards drain through a derived shard_parallel pool
+        # instead of all running at once, bounded so shard_parallel *
+        # concurrency <= 40 concurrent sandboxes. Inputs are read
         # via env (no shell interpolation) and int-parsed in the script.
         # See validate_harbor_limits.py (unit-tested in test_validate_harbor_limits.py).
+        id: limits
         env:
           N_SHARDS: ${{ inputs.n_shards || '10' }}
           CONCURRENCY: ${{ inputs.concurrency || '4' }}
+          ROLLOUTS: ${{ inputs.rollouts_per_task }}
           MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}
-        run: python .github/scripts/validate_harbor_limits.py
+        run: python .github/scripts/evals/validate_harbor_limits.py
 
       - name: "🎯 Extract single model"
         id: extract-model
@@ -315,14 +324,18 @@ jobs:
       langsmith_dataset: ""
       rollouts: ${{ inputs.rollouts_per_task }}
       n_shards: ${{ inputs.n_shards }}
-      # Run every shard in parallel (cap = n_shards).
-      shard_parallel: ${{ inputs.n_shards }}
+      # Derived pool the shards drain through (dynamic dispatch), not n_shards
+      # itself — see the prep job's "🔒 Validate single model + resource limits" step.
+      shard_parallel: ${{ needs.prep.outputs.shard_parallel }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
       n_retries: ${{ inputs.n_retries }}
       n_tasks: ${{ inputs.n_tasks }}
       include_tasks: ${{ inputs.include_tasks }}
       agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}
+      env_build_timeout_multiplier: ${{ inputs.env_build_timeout_multiplier }}
+      override_storage_mb: ${{ inputs.override_storage_mb }}
       disable_verification: ${{ inputs.disable_verification }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
+      judge_models: ${{ inputs.judge_models }}

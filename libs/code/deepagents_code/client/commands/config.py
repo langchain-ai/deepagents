@@ -1,22 +1,23 @@
-"""CLI commands for the `config` group: inspect the configuration surface.
+"""CLI commands for inspecting the configuration surface.
 
-`config show` (aliased as `config list`/`ls`) resolves each option against the
-app credential store (for credentials), the live environment, and `config.toml`,
-reporting the effective value and which source provided it, matching what
-`git config --list` / `aws configure list` users expect. Adding `--verbose`/`--all`
-folds in each option's description and where it can be set (the static catalog).
-`config get <key>` does the same for a single option. `config path` prints the
-on-disk config locations.
+Bare `config` resolves each option against the app credential store (for
+credentials), the live environment, and `config.toml`, reporting the effective
+value and which source provided it. `config get <key>` reports the same for a
+single option, and `config get <section>` — a dotted key prefix such as
+`credentials`, matched case-insensitively — renders every option under that
+prefix using the same grouped view as bare
+`config`. Adding `--verbose`/`--all` to any of the three folds in each option's
+description and where it can be set (the static catalog). `config path` prints
+the on-disk config locations.
 
 Secret-flagged options (API keys and other credentials) are never printed by
-value — `config show`/`config get` report only whether they are set and from
-which source, so the output is safe to paste into a bug report.
+value — `config`/`config get` report only whether they are set and from which
+source, so the output is safe to paste into a bug report.
 
-Help rendering for a bare `config` invocation is served by `ui.show_config_help`,
-which does not import this module. The heavy manifest/runtime imports here are
-function-local to the subcommands, so a bare `config`/`config -h` invocation
-never pulls them onto the startup path (`parse_args` does import this module to
-register the subparsers, but only its light top-level imports run then).
+Help rendering for `config -h` is served by `ui.show_config_help`. The heavy
+manifest/runtime imports here are function-local, so help never pulls them onto
+the startup path (`parse_args` imports this module to register the parsers, but
+only its light top-level imports run then).
 """
 
 from __future__ import annotations
@@ -67,6 +68,8 @@ def setup_config_parser(
             help screens from `deepagents_code.ui`.
         add_output_args: Helper that adds the shared `--json` flag.
     """
+    from argparse import SUPPRESS
+
     config_parser = subparsers.add_parser(
         "config",
         help="Inspect configuration options and their sources",
@@ -78,42 +81,49 @@ def setup_config_parser(
         action=make_help_action(_lazy_ui_help("show_config_help")),
     )
     add_output_args(config_parser)
+    config_parser.add_argument(
+        "-v",
+        "--verbose",
+        "--all",
+        dest="verbose",
+        action="store_true",
+        help="Also show each option's description and where to set it",
+    )
     config_sub = config_parser.add_subparsers(dest="config_command")
-
-    def _add_verbose_arg(parser: argparse.ArgumentParser) -> None:
-        parser.add_argument(
-            "-v",
-            "--verbose",
-            "--all",
-            dest="verbose",
-            action="store_true",
-            help="Also show each option's description and where to set it",
-        )
-
-    show_parser = config_sub.add_parser(
-        "show",
-        aliases=["list", "ls"],
-        help="Show effective config values and their source",
-        add_help=False,
-    )
-    show_parser.add_argument(
-        "-h",
-        "--help",
-        action=make_help_action(_lazy_ui_help("show_config_help")),
-    )
-    _add_verbose_arg(show_parser)
-    add_output_args(show_parser)
 
     get_parser = config_sub.add_parser(
         "get",
-        help="Show the effective value and source for one option",
+        help="Show the effective value and source for one option or section",
         add_help=False,
     )
-    get_parser.add_argument("key", help="Option key (e.g. interpreter.memory_limit_mb)")
+    # Optional so a bare `config get` reaches our handler with a useful hint
+    # (available keys + examples) instead of argparse's terse "the following
+    # arguments are required: key".
+    get_parser.add_argument(
+        "key",
+        nargs="?",
+        default=None,
+        help=(
+            "Option key (e.g. interpreter.memory_limit_mb) or key prefix "
+            "(e.g. credentials)"
+        ),
+    )
     get_parser.add_argument(
         "-h",
         "--help",
         action=make_help_action(_lazy_ui_help("show_config_help")),
+    )
+    # `SUPPRESS` so `config --verbose get <key>` keeps the parent value: argparse
+    # copies every key of the subparser namespace over the parent's, so a
+    # `store_true` default here would reset it to `False`.
+    get_parser.add_argument(
+        "-v",
+        "--verbose",
+        "--all",
+        dest="verbose",
+        action="store_true",
+        default=SUPPRESS,
+        help="Also show each option's description and how to set it",
     )
     add_output_args(get_parser)
 
@@ -137,7 +147,7 @@ def setup_config_parser(
 class _StoredCredentialView:
     """Snapshot of the `/auth` credential store for one command invocation.
 
-    Built once per `config show`/`get` so the store is read and parsed a single
+    Built once per `config`/`config get` so the store is read and parsed a single
     time rather than once per credential option.
     """
 
@@ -167,7 +177,7 @@ def _load_stored_credentials() -> _StoredCredentialView:
     """Read every `/auth`-stored API key once, degrading a corrupt store to empty.
 
     Reading the store a single time (rather than once per credential option)
-    keeps `config show` to one `auth.json` parse and one warning. A corrupt
+    keeps `config` to one `auth.json` parse and one warning. A corrupt
     store is logged once and reported via the returned `error`, so resolution
     degrades to env/`config.toml` instead of failing the command — and the
     corruption stays visible in the output rather than masquerading as an empty
@@ -350,7 +360,26 @@ class ResolvedOption(NamedTuple):
 # --- Commands ---------------------------------------------------------------
 
 
-def _show_json_row(
+def _catalog_fields(option: ConfigOption) -> dict[str, Any]:
+    """Return the static catalog fields `--verbose` folds into a JSON payload.
+
+    Shared by the bare-`config`/section rows and the single-key payload so the
+    two shapes cannot drift apart.
+
+    Returns:
+        The option's description and where it can be set.
+    """
+    return {
+        "summary": option.summary,
+        "type": option.type,
+        "default": option.default,
+        "env_var": option.env_var,
+        "toml_path": option.toml_path,
+        "cli_flag": option.cli_flag,
+    }
+
+
+def _config_json_row(
     option: ConfigOption,
     *,
     is_set: bool,
@@ -359,16 +388,15 @@ def _show_json_row(
     store_error: str | None,
     include_catalog: bool,
 ) -> dict[str, Any]:
-    """Build one show/list --json row, redacting secrets and flagging store errors.
+    """Build one `config --json` row, redacting secrets and flagging errors.
 
     Returns:
         A JSON-serializable row. Redacted options report presence only (`value`
             is `None`); a `store_error` key is added to credential rows when
             the `/auth` store was unreadable, so a corrupt store is
             distinguishable from an empty one in the bug-report artifact. When
-            `include_catalog` is set the static catalog fields (summary, type,
-            default, ...) are folded in so `config list --json` consumers stay
-            unbroken.
+            `include_catalog` is set (i.e. `--verbose`) the static catalog
+            fields (summary, type, default, ...) are folded in.
     """
     row: dict[str, Any] = {
         "key": option.key,
@@ -380,35 +408,22 @@ def _show_json_row(
         "value": None if option.redacted else value,
     }
     if include_catalog:
-        row.update(
-            {
-                "summary": option.summary,
-                "type": option.type,
-                "default": option.default,
-                "env_var": option.env_var,
-                "toml_path": option.toml_path,
-                "cli_flag": option.cli_flag,
-            }
-        )
+        row.update(_catalog_fields(option))
     if store_error and option.group == "Credentials":
         row["store_error"] = store_error
     return row
 
 
-def _run_show(output_format: OutputFormat, *, verbose: bool, list_mode: bool) -> int:
+def _run_config(output_format: OutputFormat, *, verbose: bool) -> int:
     """Resolve every option and print its effective value and source.
 
     With `verbose`, each option also lists its description and where it can be
-    set (the catalog detail formerly served by `config list`).
+    set (the static catalog detail).
 
     Args:
         output_format: `text` for the rendered view, `json` for a machine-
             readable payload.
         verbose: Fold each option's description and how-to-set into the output.
-        list_mode: `True` when invoked as `config list`/`ls` rather than
-            `config show`. It selects the `config list` JSON envelope label and,
-            for backward compatibility, includes the static catalog fields in
-            `config list --json` even without `verbose`.
 
     Returns:
         Process exit code (`0` on success).
@@ -430,15 +445,13 @@ def _run_show(output_format: OutputFormat, *, verbose: bool, list_mode: bool) ->
     ]
 
     if output_format == "json":
-        label = "config list" if list_mode else "config show"
-        # `config list --json` was the catalog endpoint; keep its catalog fields
-        # so existing consumers stay unbroken (now additive alongside effective
-        # values). `config show --json` stays effective-only unless `--verbose`.
-        include_catalog = verbose or list_mode
+        # `config --json` stays effective-only unless `--verbose` folds in
+        # the static catalog fields.
+        include_catalog = verbose
         write_json(
-            label,
+            "config",
             [
-                _show_json_row(
+                _config_json_row(
                     row.option,
                     is_set=row.is_set,
                     source=row.source,
@@ -452,9 +465,9 @@ def _run_show(output_format: OutputFormat, *, verbose: bool, list_mode: bool) ->
         return 0
 
     if verbose:
-        _print_show_verbose(resolved, store_error=stored.error)
+        _print_config_verbose(resolved, store_error=stored.error)
     else:
-        _print_show_table(resolved, store_error=stored.error)
+        _print_config_table(resolved, store_error=stored.error)
     return 0
 
 
@@ -470,7 +483,7 @@ def _print_store_warning(store_error: str | None) -> None:
     console.print()
 
 
-def _print_show_table(
+def _print_config_table(
     resolved: Sequence[ResolvedOption],
     *,
     store_error: str | None = None,
@@ -484,7 +497,12 @@ def _print_show_table(
 
     console.print()
     _print_store_warning(store_error)
-    for group in iter_groups(row.option for row in resolved):
+    groups = list(iter_groups(row.option for row in resolved))
+    for index, group in enumerate(groups):
+        if index:
+            # Blank line separates groups but never trails the last one, so the
+            # output ends on content rather than an empty line.
+            console.print()
         console.print(f"[bold]{group}[/bold]")
         table = Table.grid(padding=(0, 2))
         table.add_column()
@@ -502,10 +520,9 @@ def _print_show_table(
                 Text(_source_label(row.source, option=row.option)),
             )
         console.print(table, highlight=False)
-        console.print()
 
 
-def _print_show_verbose(
+def _print_config_verbose(
     resolved: Sequence[ResolvedOption],
     *,
     store_error: str | None = None,
@@ -518,7 +535,10 @@ def _print_show_verbose(
 
     console.print()
     _print_store_warning(store_error)
-    for group in iter_groups(row.option for row in resolved):
+    groups = list(iter_groups(row.option for row in resolved))
+    for index, group in enumerate(groups):
+        if index:
+            console.print()
         console.print(f"[bold]{group}[/bold]")
         for row in resolved:
             if row.option.group != group:
@@ -534,28 +554,192 @@ def _print_show_verbose(
             console.print(
                 f"    {_sources_line(row.option)}", highlight=False, style="dim"
             )
-        console.print()
 
 
-def _run_get(key: str, output_format: OutputFormat) -> int:
-    """Resolve and print a single option by key.
+_GET_KEY_EXAMPLE = "interpreter.memory_limit_mb"
+"""Illustrative key shown in the missing-key hint.
+
+A unit test asserts this stays a real manifest key so the hint never points at a
+key that `config get` would reject.
+"""
+
+
+def _report_missing_get_key(output_format: OutputFormat) -> int:
+    """Explain that `config get` needs a key, and point at how to find one.
+
+    Reached when the user runs a bare `config get` (the `key` positional is
+    optional so this handler can render a useful hint instead of argparse's
+    terse usage error).
 
     Returns:
-        Process exit code (`0` on success, `1` for an unknown key).
+        Exit code `2`, matching argparse's convention for a usage error so
+        existing scripts see the same code they did before.
     """
-    from deepagents_code.config_manifest import get_option
+    from deepagents_code.config_manifest import option_keys
 
-    option = get_option(key)
-    if option is None:
-        if output_format == "json":
-            write_json("config get", {"key": key, "error": "unknown option"})
-        else:
-            print(  # noqa: T201
-                f"Unknown config option: {key!r}. Run `dcode config list` to "
-                "see available keys.",
-                file=sys.stderr,
-            )
-        return 1
+    if output_format == "json":
+        write_json(
+            "config get",
+            {"error": "missing key", "keys": list(option_keys())},
+        )
+        return 2
+
+    print(  # noqa: T201
+        f"`dcode config get` needs an option key, e.g. `dcode config get "
+        f"{_GET_KEY_EXAMPLE}`. Run `dcode config` to list options and their "
+        "effective values, or `dcode config --verbose` to see every key.",
+        file=sys.stderr,
+    )
+    return 2
+
+
+class _Selection(NamedTuple):
+    """What a `config get` argument resolved to.
+
+    Attributes:
+        options: The named options, in manifest order.
+        is_exact: Whether the argument was a full option key. A section can hold
+            exactly one option, so the caller cannot infer this from `options`
+            alone — hence carrying it rather than re-deriving it.
+    """
+
+    options: tuple[ConfigOption, ...]
+    is_exact: bool
+
+
+def _select_options(key: str) -> _Selection | None:
+    """Resolve a `config get` argument to the options it names.
+
+    Priority is exact key, then dotted key prefix (`credentials`, with an
+    optional trailing dot, case-insensitively). Display group titles are
+    deliberately not accepted: `Models` and `Tools` name a different set of
+    options than the same word as a prefix, so titles would make one argument
+    resolve to two different sections depending on which tier matched. Key
+    prefixes are the single section namespace.
+
+    Args:
+        key: The raw argument passed to `config get`.
+
+    Returns:
+        The matched options and whether the match was an exact key, or `None`
+        when nothing matches.
+    """
+    from deepagents_code.config_manifest import get_option, options_with_key_prefix
+
+    exact = get_option(key)
+    if exact is not None:
+        return _Selection((exact,), is_exact=True)
+
+    matched = options_with_key_prefix(key.removesuffix("."))
+    return _Selection(matched, is_exact=False) if matched else None
+
+
+def _report_unknown_get_key(key: str, output_format: OutputFormat) -> int:
+    """Report that `key` names neither an option nor a section.
+
+    Returns:
+        Exit code `1`.
+    """
+    if output_format == "json":
+        write_json("config get", {"key": key, "error": "unknown option or section"})
+    else:
+        print(  # noqa: T201
+            f"Unknown config option or section: {key!r}. Run "
+            "`dcode config` to list keys, then "
+            "`dcode config get <key>` or `dcode config get <section>`.",
+            file=sys.stderr,
+        )
+    return 1
+
+
+def _run_get_section(
+    options: Sequence[ConfigOption], output_format: OutputFormat, *, verbose: bool
+) -> int:
+    """Resolve and print every option in a matched section.
+
+    Redaction and source resolution reuse `_config_json_row`/`_resolve` and the
+    grouped table/verbose printers rather than reimplementing them, so a section
+    renders exactly as the same rows do under bare `config`. JSON is always a
+    list here — even for a one-option section — so consumers can tell a section
+    response from the single-key object.
+
+    Args:
+        options: The section's options, in manifest order.
+        output_format: `text` for the rendered view, `json` for a machine-
+            readable payload.
+        verbose: Fold each option's description and how-to-set into the output.
+
+    Returns:
+        Process exit code (`0` on success).
+    """
+    from deepagents_code.config import _ensure_bootstrap
+    from deepagents_code.config_manifest import load_config_toml
+
+    _ensure_bootstrap()
+    toml_data = load_config_toml()
+    # Only credential options consult the store, so skip the read (and its
+    # warning) when the section holds none.
+    stored = (
+        _load_stored_credentials()
+        if any(opt.group == "Credentials" for opt in options)
+        else None
+    )
+    resolved = [
+        ResolvedOption(opt, *_resolve(opt, toml_data, stored=stored)) for opt in options
+    ]
+    store_error = stored.error if stored is not None else None
+
+    if output_format == "json":
+        write_json(
+            "config get",
+            [
+                _config_json_row(
+                    row.option,
+                    is_set=row.is_set,
+                    source=row.source,
+                    value=row.value,
+                    store_error=store_error,
+                    include_catalog=verbose,
+                )
+                for row in resolved
+            ],
+        )
+        return 0
+
+    if verbose:
+        _print_config_verbose(resolved, store_error=store_error)
+    else:
+        _print_config_table(resolved, store_error=store_error)
+    return 0
+
+
+def _run_get(
+    key: str | None, output_format: OutputFormat, *, verbose: bool = False
+) -> int:
+    """Resolve and print one option, or every option in a section.
+
+    Args:
+        key: Option key, dotted key prefix, or display group title.
+        output_format: `text` for the rendered view, `json` for a machine-
+            readable payload.
+        verbose: Fold the option's description and how-to-set into the output,
+            matching `config --verbose`. For an exact key this adds lines/fields
+            to the existing payload; the single-key JSON stays an object.
+
+    Returns:
+        Process exit code (`0` on success, `1` for an unknown key or section,
+        `2` when no key was given).
+    """
+    if key is None:
+        return _report_missing_get_key(output_format)
+
+    selection = _select_options(key)
+    if selection is None:
+        return _report_unknown_get_key(key, output_format)
+    if not selection.is_exact:
+        return _run_get_section(selection.options, output_format, verbose=verbose)
+
+    option = selection.options[0]
 
     from deepagents_code.config import _ensure_bootstrap
     from deepagents_code.config_manifest import load_config_toml
@@ -576,6 +760,10 @@ def _run_get(key: str, output_format: OutputFormat) -> int:
             "redacted": option.redacted,
             "value": None if option.redacted else value,
         }
+        # No `group` key even under `--verbose`: an object without one is how
+        # consumers tell a single-key response from a section list.
+        if verbose:
+            payload.update(_catalog_fields(option))
         if store_error:
             payload["store_error"] = store_error
         write_json("config get", payload)
@@ -591,6 +779,11 @@ def _run_get(key: str, output_format: OutputFormat) -> int:
         f"{option.key} = {escape(display)}  [dim]({escape(source_label)})[/dim]",
         highlight=False,
     )
+    if verbose:
+        # Static manifest text, so no markup escaping needed — same as the
+        # detail lines `_print_config_verbose` emits.
+        console.print(f"  {option.summary}", highlight=False, style="dim")
+        console.print(f"  {_sources_line(option)}", highlight=False, style="dim")
     if store_error:
         console.print(
             f"[yellow]Warning:[/yellow] {escape(store_error)}", highlight=False
@@ -628,21 +821,19 @@ def _run_path(output_format: OutputFormat) -> int:
 
 
 def run_config_command(args: argparse.Namespace) -> int:
-    """Dispatch a parsed `config` subcommand.
+    """Dispatch a parsed `config` invocation.
 
     Returns:
-        Process exit code from the dispatched subcommand.
+        Process exit code from the selected config action.
     """
     output_format: OutputFormat = getattr(args, "output_format", "text")
     command = getattr(args, "config_command", None)
     verbose: bool = getattr(args, "verbose", False)
 
-    if command in {"show", "list", "ls"}:
-        return _run_show(
-            output_format, verbose=verbose, list_mode=command in {"list", "ls"}
-        )
+    if command is None:
+        return _run_config(output_format, verbose=verbose)
     if command == "get":
-        return _run_get(args.key, output_format)
+        return _run_get(args.key, output_format, verbose=verbose)
     if command == "path":
         return _run_path(output_format)
 
@@ -682,20 +873,26 @@ def _config_paths() -> list[tuple[str, Any, bool]]:
     from pathlib import Path
 
     from deepagents_code.config import _GLOBAL_DOTENV_PATH, _find_dotenv_from_start_path
+    from deepagents_code.hooks.loading import project_hooks_path
     from deepagents_code.model_config import (
         DEFAULT_CONFIG_PATH,
         DEFAULT_STATE_DIR,
         RECENT_MODELS_FILENAME,
     )
+    from deepagents_code.project_utils import ProjectContext
 
     base = DEFAULT_CONFIG_PATH.parent
     project_dotenv = _find_dotenv_from_start_path(Path.cwd())
+    project_context = ProjectContext.from_user_cwd(Path.cwd())
+    project_root = project_context.project_root or project_context.user_cwd
 
     candidates: list[tuple[str, Path | None]] = [
         ("config.toml", DEFAULT_CONFIG_PATH),
         ("project .env", project_dotenv),
         ("global .env", _GLOBAL_DOTENV_PATH),
-        ("hooks.json", base / "hooks.json"),
+        ("project hooks.json", project_hooks_path(project_root)),
+        ("user hooks.json", base / "hooks.json"),
+        ("hooks trust", DEFAULT_STATE_DIR / "hooks_trust.json"),
         ("auth.json", DEFAULT_STATE_DIR / "auth.json"),
         ("recent models", DEFAULT_STATE_DIR / RECENT_MODELS_FILENAME),
     ]

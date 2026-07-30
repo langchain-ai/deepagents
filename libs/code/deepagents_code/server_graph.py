@@ -69,7 +69,7 @@ def _get_mcp_session_manager() -> Any:  # noqa: ANN401
 async def _build_tools(
     config: ServerConfig,
     project_context: ProjectContext | None,
-) -> tuple[list[Any], list[Any] | None]:
+) -> tuple[list[Any], list[Any] | None, list[Any]]:
     """Assemble the tool list based on server config.
 
     Loads built-in tools (conditionally including web search when Tavily is
@@ -89,7 +89,7 @@ async def _build_tools(
         project_context: Resolved project context for MCP discovery.
 
     Returns:
-        Tuple of `(tools, mcp_server_info)`.
+        Tuple of `(tools, mcp_server_info, mcp_tools)`.
 
     Raises:
         FileNotFoundError: If the MCP config file is not found.
@@ -103,15 +103,29 @@ async def _build_tools(
         tools.append(web_search)
 
     mcp_server_info: list[Any] | None = None
+    mcp_tools: list[Any] = []
     if not config.no_mcp:
         from deepagents_code.mcp_tools import resolve_and_load_mcp_tools
+        from deepagents_code.plugins.adapters.mcp import discover_plugin_mcp_configs
 
+        project_dir = (
+            project_context.project_root or project_context.user_cwd
+            if project_context is not None
+            else None
+        )
+        # Offload plugin discovery: it does blocking disk IO (`os.mkdir` for
+        # per-plugin data dirs, plus state/manifest reads) that `blockbuster`
+        # rejects on the server event loop.
+        plugin_mcp_configs = await asyncio.to_thread(
+            discover_plugin_mcp_configs, project_dir=project_dir
+        )
         try:
             mcp_tools, _, mcp_server_info = await resolve_and_load_mcp_tools(
                 explicit_config_path=config.mcp_config_path,
                 no_mcp=config.no_mcp,
                 trust_project_mcp=config.trust_project_mcp,
                 project_context=project_context,
+                additional_configs=plugin_mcp_configs,
                 stateless=True,
                 session_manager=_get_mcp_session_manager(),
             )
@@ -128,7 +142,47 @@ async def _build_tools(
         if mcp_tools:
             logger.info("Loaded %d MCP tool(s)", len(mcp_tools))
 
-    return tools, mcp_server_info
+    return tools, mcp_server_info, mcp_tools
+
+
+def _criteria_context_tools(
+    tools: list[Any],
+    mcp_tools: list[Any],
+) -> list[Any]:
+    """Select read-only external tools for criteria drafting and rubric grading.
+
+    Args:
+        tools: Main agent tools in execution order.
+        mcp_tools: Exact tool objects returned by MCP discovery.
+
+    Returns:
+        External context tools available to criteria generation and grading.
+        MCP tools are included only when their protocol annotations explicitly
+        declare them read-only.
+    """
+    from deepagents_code.tools import fetch_url, web_search
+
+    allowed_ids = {id(fetch_url), id(web_search)}
+    allowed_ids.update(
+        id(tool) for tool in mcp_tools if _mcp_tool_is_explicitly_read_only(tool)
+    )
+    return [tool for tool in tools if id(tool) in allowed_ids]
+
+
+def _mcp_tool_is_explicitly_read_only(tool: Any) -> bool:  # noqa: ANN401
+    """Return whether a wrapped MCP tool is unambiguously read-only.
+
+    MCP `ToolAnnotations.readOnlyHint` is serialized by the installed adapter
+    into the LangChain tool's metadata as the camel-case `readOnlyHint` key.
+    Require the literal boolean `True` and reject a contradictory destructive
+    hint so absent, malformed, or ambiguous annotations fail closed.
+
+    Returns:
+        `True` only for an explicitly and consistently read-only MCP tool.
+    """
+    from deepagents_code.auto_mode import mcp_tool_is_coherently_read_only
+
+    return mcp_tool_is_coherently_read_only(tool)
 
 
 async def _make_graph() -> Any:  # noqa: ANN401
@@ -142,18 +196,59 @@ async def _make_graph() -> Any:  # noqa: ANN401
         Compiled LangGraph agent graph.
     """
     config = ServerConfig.from_env()
-    project_context = get_server_project_context()
 
-    from deepagents_code.agent import create_cli_agent, load_async_subagents
-    from deepagents_code.config import (
-        configure_langsmith_secret_redaction,
+    # Offload cwd/path resolution and the lazy settings bootstrap off the event
+    # loop. On Windows, `Path.resolve()` / `Path.cwd()` call `os.getcwd()`, which
+    # `blockbuster` rejects when invoked directly from the server loop (see
+    # issue #5043). Importing `deepagents_code.agent` / first `settings` access
+    # can also trigger `find_project_root()` -> `Path.cwd()`.
+    #
+    # Keep LangSmith redaction configuration on the server task: its fail-closed
+    # path calls `langsmith.configure(enabled=False)`, which sets both a global
+    # fallback and the current `_TRACING_ENABLED` ContextVar. `asyncio.to_thread`
+    # only updates a copied worker context, so a ContextVar disable there would
+    # not reach a parent tracing context that already has `enabled=True` (ContextVar
+    # wins over the global flag).
+    def _resolve_project_context_and_settings() -> tuple[
+        ProjectContext | None,
+        Any,
+        Any,
+        Any,
+        Any,
+        Any,
+        Any,
+    ]:
+        project_context = get_server_project_context()
+
+        from deepagents_code.agent import create_cli_agent, load_async_subagents
+        from deepagents_code.config import (
+            configure_langsmith_secret_redaction,
+            create_model,
+            is_memory_auto_save_enabled,
+            settings,
+        )
+
+        if project_context is not None:
+            settings.reload_from_environment(start_path=project_context.user_cwd)
+        return (
+            project_context,
+            create_cli_agent,
+            load_async_subagents,
+            create_model,
+            is_memory_auto_save_enabled,
+            settings,
+            configure_langsmith_secret_redaction,
+        )
+
+    (
+        project_context,
+        create_cli_agent,
+        load_async_subagents,
         create_model,
         is_memory_auto_save_enabled,
         settings,
-    )
-
-    if project_context is not None:
-        settings.reload_from_environment(start_path=project_context.user_cwd)
+        configure_langsmith_secret_redaction,
+    ) = await asyncio.to_thread(_resolve_project_context_and_settings)
     configure_langsmith_secret_redaction()
 
     # Offload to a worker thread: `create_model` does blocking disk IO for some
@@ -161,11 +256,15 @@ async def _make_graph() -> Any:  # noqa: ANN401
     # lock via `langchain-openai` that calls `os.mkdir`), which `blockbuster`
     # rejects on the server event loop.
     result = await asyncio.to_thread(
-        create_model, config.model, extra_kwargs=config.model_params
+        create_model,
+        config.model,
+        extra_kwargs=config.model_params,
+        profile_overrides=config.profile_overrides,
     )
     result.apply_to_settings()
 
-    tools, mcp_server_info = await _build_tools(config, project_context)
+    tools, mcp_server_info, mcp_tools = await _build_tools(config, project_context)
+    read_only_context_tools = _criteria_context_tools(tools, mcp_tools)
 
     # Create sandbox backend if a sandbox provider is configured.
     # The context manager is created here in the factory, but its reference is
@@ -222,6 +321,7 @@ async def _make_graph() -> Any:  # noqa: ANN401
 
     def _create_cli_agent_sync() -> Any:  # noqa: ANN401
         async_subagents = load_async_subagents() or None
+        auto_mode_enabled = config.interactive and sandbox_backend is None
 
         # These process-global settings writes are safe here because `make_graph`
         # is lock-serialized and caches one graph for the server process lifetime.
@@ -232,17 +332,20 @@ async def _make_graph() -> Any:  # noqa: ANN401
         if config.enable_interpreter:
             settings.enable_interpreter = True
 
-        agent, _ = create_cli_agent(
+        agent, _composite_backend = create_cli_agent(
             model=result.model,
             assistant_id=config.assistant_id,
             tools=tools,
+            mcp_tools=mcp_tools,
             sandbox=sandbox_backend,
             sandbox_type=config.sandbox_type,
             system_prompt=config.system_prompt,
             interactive=config.interactive,
             auto_approve=config.auto_approve,
+            auto_mode_enabled=auto_mode_enabled,
             interrupt_shell_only=config.interrupt_shell_only,
             shell_allow_list=config.shell_allow_list,
+            fs_tools=config.allow_fs_tools,
             enable_ask_user=config.enable_ask_user,
             enable_memory=config.enable_memory,
             memory_auto_save=is_memory_auto_save_enabled(),
@@ -251,23 +354,31 @@ async def _make_graph() -> Any:  # noqa: ANN401
             enable_interpreter=config.enable_interpreter,
             rubric_model=config.rubric_model,
             rubric_max_iterations=config.rubric_max_iterations,
+            recursion_limit=config.recursion_limit,
             mcp_server_info=mcp_server_info,
             cwd=project_context.user_cwd if project_context is not None else config.cwd,
             project_context=project_context,
             async_subagents=async_subagents,
+            goal_criteria_tools=read_only_context_tools,
+            rubric_grader_tools=read_only_context_tools,
         )
         return agent
 
     return await asyncio.to_thread(_create_cli_agent_sync)
 
 
-def _build_graph_factory() -> Callable[[], Awaitable[Any]]:
+def _build_graph_factory(
+    builder: Callable[[], Awaitable[Any]] | None = None,
+) -> Callable[[], Awaitable[Any]]:
     """Build the cached async graph factory exposed to `langgraph dev`.
 
     The returned coroutine function is what `langgraph.json` references. It keeps
     its cache and lock in this closure rather than in module-level globals, so
     importing the module (e.g. for import-only checks) introduces no shared
     mutable state.
+
+    Args:
+        builder: Optional alternate graph builder.
 
     Returns:
         A zero-arg async factory that builds the graph once and returns the
@@ -298,7 +409,7 @@ def _build_graph_factory() -> Callable[[], Awaitable[Any]]:
         async with lock:
             if graph is missing:
                 try:
-                    graph = await _make_graph()
+                    graph = await (builder or _make_graph)()
                 except Exception as exc:  # noqa: BLE001  # top-level barrier: any construction failure must surface to the parent as a marker
                     emit_startup_failure(exc)
                     sys.exit(1)

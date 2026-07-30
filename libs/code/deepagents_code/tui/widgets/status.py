@@ -42,6 +42,9 @@ CONNECTION_STATES = frozenset(get_args(ConnectionState))
 
 Derived from the `Literal` so the two can never drift."""
 
+StatusMessageSource = Literal["agent", "hooks"]
+"""Owners that may write the shared status-message slot."""
+
 
 class ModelLabel(Widget):
     """A label that displays a model name, right-aligned with smart truncation.
@@ -222,12 +225,18 @@ class StatusBar(Horizontal):
         padding: 0 1;
     }
 
-    StatusBar .status-auto-approve.on {
+    StatusBar .status-auto-approve.yolo {
+        background: $error;
+        color: white;
+        text-style: bold;
+    }
+
+    StatusBar .status-auto-approve.auto {
         background: $success;
         color: $background;
     }
 
-    StatusBar .status-auto-approve.off {
+    StatusBar .status-auto-approve.manual {
         background: $warning;
         color: $background;
     }
@@ -319,7 +328,7 @@ class StatusBar(Horizontal):
     status_message: reactive[str] = reactive("", init=False)
     connection_state: reactive[ConnectionState] = reactive("", init=False)
     queued_count: reactive[int] = reactive(0, init=False)
-    auto_approve: reactive[bool] = reactive(default=False, init=False)
+    approval_mode: reactive[str] = reactive(default="manual", init=False)
     cwd: reactive[str] = reactive("", init=False)
     branch: reactive[str] = reactive("", init=False)
     tokens: reactive[int] = reactive(0, init=False)
@@ -340,6 +349,10 @@ class StatusBar(Horizontal):
         self._spinner = Spinner()
         self._spinner_timer: Timer | None = None
         self._busy_message = ""
+        self._status_by_source: dict[StatusMessageSource, str] = {
+            "agent": "",
+            "hooks": "",
+        }
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301 — Textual widget method
         """Compose the status bar layout.
@@ -351,7 +364,7 @@ class StatusBar(Horizontal):
         yield Static("", classes="status-mode normal", id="mode-indicator")
         yield Static(
             "manual",
-            classes="status-auto-approve off",
+            classes="status-auto-approve manual",
             id="auto-approve-indicator",
         )
         with Horizontal(classes="status-left-collapsible"):
@@ -457,20 +470,16 @@ class StatusBar(Horizontal):
             indicator.update("")
             indicator.add_class("normal")
 
-    def watch_auto_approve(self, new_value: bool) -> None:
-        """Update auto-approve indicator when state changes."""
+    def watch_approval_mode(self, new_value: str) -> None:
+        """Update the three-state approval indicator."""
         try:
             indicator = self.query_one("#auto-approve-indicator", Static)
         except NoMatches:
             return
-        indicator.remove_class("on", "off")
-
-        if new_value:
-            indicator.update("YOLO")
-            indicator.add_class("on")
-        else:
-            indicator.update("manual")
-            indicator.add_class("off")
+        indicator.remove_class("manual", "auto", "yolo")
+        mode = new_value if new_value in {"manual", "auto", "yolo"} else "manual"
+        indicator.update("YOLO" if mode == "yolo" else mode)
+        indicator.add_class(mode)
 
     def watch_cwd(self, new_value: str) -> None:
         """Update cwd display when it changes."""
@@ -504,7 +513,8 @@ class StatusBar(Horizontal):
         # in the footer (mirrors the connection indicator).
         msg_widget.display = bool(new_value)
         if new_value:
-            msg_widget.update(new_value)
+            # Plain Content: hook-configured statusMessage may contain brackets.
+            msg_widget.update(Content(new_value))
             if "thinking" in new_value.lower() or "executing" in new_value.lower():
                 msg_widget.add_class("thinking")
         else:
@@ -664,21 +674,52 @@ class StatusBar(Horizontal):
         """
         self.mode = mode
 
+    @property
+    def auto_approve(self) -> bool:
+        """Whether unrestricted compatibility mode is active."""
+        return self.approval_mode == "yolo"
+
+    @auto_approve.setter
+    def auto_approve(self, enabled: bool) -> None:
+        self.set_approval_mode("yolo" if enabled else "manual")
+
+    def set_approval_mode(self, mode: str) -> None:
+        """Set the approval mode.
+
+        Args:
+            mode: `manual`, `auto`, or `yolo`.
+        """
+        self.approval_mode = mode if mode in {"manual", "auto", "yolo"} else "manual"
+
     def set_auto_approve(self, *, enabled: bool) -> None:
-        """Set the auto-approve state.
+        """Set the compatibility unrestricted state.
 
         Args:
-            enabled: Whether auto-approve is enabled
+            enabled: Whether unrestricted mode is enabled.
         """
-        self.auto_approve = enabled
+        self.set_approval_mode("yolo" if enabled else "manual")
 
-    def set_status_message(self, message: str) -> None:
-        """Set the status message.
+    def set_status_message(
+        self,
+        message: str,
+        *,
+        source: StatusMessageSource = "agent",
+    ) -> None:
+        """Set the status message with explicit source ownership.
+
+        Each source stores its own message. Hooks take display priority while
+        they have a non-empty message; clearing hooks restores any stored agent
+        message instead of blanking the slot. Agent writes never erase an active
+        hook status, and hook completion never erases a stored agent status.
 
         Args:
-            message: Status message to display (empty string to clear)
+            message: Status message to display (empty string to clear).
+            source: Subsystem that owns this write (`agent` or `hooks`).
         """
-        self.status_message = message
+        self._status_by_source[source] = message
+        self.status_message = (
+            self._status_by_source["hooks"] or self._status_by_source["agent"]
+        )
 
     _approximate: bool = False
     """Append "+" to the token count to signal that the displayed value is stale.

@@ -10,6 +10,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from textual import events
 from textual._time import get_time
 from textual._xterm_parser import XTermParser
 from textual.app import App, ComposeResult
@@ -75,6 +76,53 @@ class TestPatchedWordSelection:
             await pilot.triple_click("#second", offset=(1, 0))
 
             assert pilot.app.screen.get_selected_text() == "second message"
+
+
+class TestDetachedHitGuard:
+    """Coverage of the Textualize/textual#6643 crash guard."""
+
+    async def test_mouse_down_on_detached_widget_does_not_crash(self) -> None:
+        """A press on a widget pruned since the last repaint must be ignored.
+
+        `Markdown.update` — which `MarkdownStream` runs on every streaming
+        assistant message — detaches its old blocks while the compositor still
+        reports them as visible. `_detach` is exactly what Textual calls during
+        that prune, so calling it directly pins the race window deterministically
+        instead of spinning the event loop until it happens to be observed.
+        Without the guard, `Screen._forward_event` raises `AttributeError` on the
+        detached widget's `None` parent and takes the whole app down.
+        """
+        async with SelectableMarkdownApp().run_test() as pilot:
+            screen = pilot.app.screen
+            document = pilot.app.query_one("#msg", Markdown)
+            paragraph = document.query("*").first()
+            x = paragraph.region.x + 1
+            y = paragraph.region.y
+            assert screen._compositor.get_widget_and_offset_at(x, y)[0] is paragraph
+
+            paragraph._detach()
+            try:
+                assert screen.get_widget_and_offset_at(x, y) == (None, None)
+                screen._forward_event(
+                    events.MouseDown(None, x, y, 0, 0, 1, False, False, False)
+                )
+
+                assert screen._select_state is None
+            finally:
+                # Textual's own teardown asserts every widget still has a
+                # parent, so hand the simulated prune victim back to the DOM.
+                paragraph._attach(document)
+
+    async def test_attached_widget_hit_is_still_reported(self) -> None:
+        """The guard must only drop detached hits, not live ones."""
+        async with SelectableTextApp().run_test() as pilot:
+            widget = pilot.app.query_one("#msg", Static)
+            offset = widget.content_region.offset + Offset(2, 0)
+
+            hit, hit_offset = pilot.app.screen.get_widget_and_offset_at(*offset)
+
+            assert hit is widget
+            assert hit_offset == Offset(2, 0)
 
 
 class TestPatchedSequenceToKeyEvents:
@@ -160,6 +208,13 @@ class TestPatchedSequenceToKeyEvents:
         against the sub-field strip swallowing real characters.
         """
         assert _keys_for("\x1b[97:65;1;65u", alt=False) == [("A", "A")]
+
+    def test_kitty_subfield_strip_preserves_all_associated_text(self) -> None:
+        r"""Textual 8.2.8 receives every colon-separated associated character."""
+        assert _keys_for("\x1b[58;2;126:47u", alt=False) == [
+            ("tilde", "~"),
+            ("slash", "/"),
+        ]
 
     @pytest.mark.parametrize(
         ("sequence", "key"),

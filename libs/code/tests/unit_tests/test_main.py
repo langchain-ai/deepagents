@@ -5,16 +5,21 @@ import inspect
 import os
 import signal
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from rich.console import Console
 
+if TYPE_CHECKING:
+    from prompt_toolkit.layout import Layout
+
+from deepagents_code._env_vars import INVOKED_AS
+from deepagents_code._invocation import invoked_name
 from deepagents_code.app import AppResult, DeepAgentsApp, run_textual_app
 from deepagents_code.config import build_langsmith_thread_url, reset_langsmith_url_cache
 from deepagents_code.main import (
@@ -34,6 +39,7 @@ from deepagents_code.main import (
     format_tool_warning_cli,
     run_textual_cli_async,
 )
+from deepagents_code.mcp_tools import ProjectServerSummary
 
 # Most unit tests set `DEEPAGENTS_CODE_NO_UPDATE_CHECK=1` and patch
 # `is_update_check_enabled()` to avoid accidental PyPI/DNS work. This module
@@ -306,6 +312,22 @@ class TestStartupAutoUpdate:
             "/tool/bin/python",
             ["/tool/bin/python", "-m", "deepagents_code", "--model", "openai:gpt-5.5"],
         )
+
+    def test_restart_carries_launch_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The `-m` re-exec drops argv[0], so the launch name goes via the env."""
+        invoked_name.cache_clear()
+        # Empty is treated as absent, and registering the key with monkeypatch
+        # means the value the restart writes is cleaned up after the test.
+        monkeypatch.setenv(INVOKED_AS, "")
+        monkeypatch.setattr(sys, "executable", "/tool/bin/python")
+        monkeypatch.setattr(sys, "argv", ["/home/user/.local/bin/abc"])
+        with (
+            patch("os.execv", side_effect=SystemExit(0)),
+            pytest.raises(SystemExit),
+        ):
+            _restart_current_process()
+
+        assert os.environ[INVOKED_AS] == "abc"
 
     def test_failed_update_does_not_restart_and_continues(self) -> None:
         """A failed upgrade must not restart; it surfaces the error and returns."""
@@ -970,6 +992,91 @@ class TestStartupAutoUpdate:
         assert "if not should_defer_startup_auto_update_for_resume():" in source
         assert source.count("_run_startup_auto_update(console)") == 2
 
+    def test_project_mcp_prompt_interrupt_aborts_before_tui(self) -> None:
+        """Ctrl+C at the project MCP prompt exits before launching Textual."""
+        from deepagents_code.main import _TrustPromptOutcome
+
+        launch = AsyncMock(return_value=AppResult(return_code=0, thread_id="thread"))
+        with (
+            patch("sys.argv", ["dcode"]),
+            patch("sys.stdin", SimpleNamespace(isatty=lambda: True)),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled", return_value=False
+            ),
+            patch(
+                "deepagents_code.main._check_mcp_project_trust",
+                return_value=_TrustPromptOutcome.INTERRUPTED,
+            ),
+            patch("deepagents_code.main.run_textual_cli_async", launch),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 130
+        launch.assert_not_called()
+
+    def test_yolo_acknowledgement_interrupt_aborts_before_tui(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An interrupted YOLO acknowledgement never launches Textual."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        launch = AsyncMock(return_value=AppResult(return_code=0, thread_id="thread"))
+        with (
+            patch("sys.argv", ["dcode", "--yolo"]),
+            patch("sys.stdin", SimpleNamespace(isatty=lambda: True)),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled", return_value=False
+            ),
+            patch("deepagents_code.main._check_mcp_project_trust", return_value=None),
+            patch(
+                "deepagents_code.main._resolve_approval_mode",
+                return_value=ApprovalMode.YOLO,
+            ),
+            patch(
+                "deepagents_code.main._ensure_yolo_acknowledged",
+                side_effect=KeyboardInterrupt,
+            ),
+            patch("deepagents_code.main.run_textual_cli_async", launch),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 130
+        launch.assert_not_called()
+        captured = capsys.readouterr()
+        assert "Interrupted" in captured.out + captured.err
+
+    def test_project_mcp_server_selection_cancel_aborts_before_tui(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Esc in the server selector cancels launch before Textual starts."""
+        from deepagents_code.main import _TrustPromptOutcome
+
+        launch = AsyncMock(return_value=AppResult(return_code=0, thread_id="thread"))
+        with (
+            patch("sys.argv", ["dcode"]),
+            patch("sys.stdin", SimpleNamespace(isatty=lambda: True)),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled", return_value=False
+            ),
+            patch(
+                "deepagents_code.main._check_mcp_project_trust",
+                return_value=_TrustPromptOutcome.CANCELLED,
+            ),
+            patch("deepagents_code.main.run_textual_cli_async", launch),
+        ):
+            cli_main()
+
+        launch.assert_not_called()
+        assert "Aborted; no project MCP servers loaded" in capsys.readouterr().err
+
 
 class TestAutoUpdateDefaultMigration:
     """First-run consent/migration notice for the auto-update opt-out default."""
@@ -1306,16 +1413,20 @@ class TestRenderTeardownThreadHints:
         thread_exists_mock: AsyncMock,
         thread_url: str | None,
         return_code: int = 0,
+        launch_name: str = "dcode",
     ) -> str:
         """Render the hints with patched dependencies, returning the output."""
         buffer = StringIO()
         console = Console(file=buffer, width=200)
+        # `launch_name` is resolved (and cached) inside the renderer.
+        invoked_name.cache_clear()
         with (
             patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
             patch(
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=thread_url,
             ),
+            patch.dict(os.environ, {INVOKED_AS: launch_name}),
         ):
             _render_teardown_thread_hints(console, "test123", return_code=return_code)
         return buffer.getvalue()
@@ -1334,6 +1445,19 @@ class TestRenderTeardownThreadHints:
         thread_exists_mock.assert_awaited_once()
         assert "Resume this thread with:" in output
         assert "dcode -r test123" in output
+
+    def test_resume_hint_echoes_launch_command(self) -> None:
+        """The hint names the shim the user launched, not a hardcoded `dcode`."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            launch_name="abc",
+        )
+
+        assert "abc -r test123" in output
+        assert "dcode" not in output
 
     def test_prints_langsmith_link_when_available(self) -> None:
         """A configured LangSmith URL is shown alongside the resume hint."""
@@ -1564,20 +1688,32 @@ class TestRunTextualCliAsyncMcp:
 
 
 class TestServerCleanupLifecycle:
-    """Verify server_proc.stop() is guaranteed after the TUI exits."""
+    """Verify server_proc.stop() is guaranteed after the TUI exits.
+
+    The `Server log preserved at:` notice is drained by the process-global
+    `emit_preserved_log_notices()` (patched here), called unconditionally once
+    the terminal is restored — even when startup failed and no `_server_proc`
+    was ever tracked (PR #4999 review).
+    """
 
     async def test_server_proc_stopped_after_app_exits(self) -> None:
         """run_textual_app must call server_proc.stop() in the finally block."""
         server_proc = SimpleNamespace(stop=MagicMock())
 
-        with patch.object(
-            DeepAgentsApp,
-            "run_async",
-            new_callable=AsyncMock,
+        with (
+            patch.object(
+                DeepAgentsApp,
+                "run_async",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.emit_preserved_log_notices",
+            ) as emit,
         ):
             await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 
         server_proc.stop.assert_called_once_with()
+        emit.assert_called_once_with()
 
     async def test_server_proc_stopped_even_on_crash(self) -> None:
         """server_proc.stop() must fire even when run_async raises."""
@@ -1590,11 +1726,15 @@ class TestServerCleanupLifecycle:
                 new_callable=AsyncMock,
                 side_effect=RuntimeError("boom"),
             ),
+            patch(
+                "deepagents_code.client.launch.server.emit_preserved_log_notices",
+            ) as emit,
             pytest.raises(RuntimeError, match="boom"),
         ):
             await run_textual_app(server_proc=server_proc, thread_id="t-1")  # ty: ignore
 
         server_proc.stop.assert_called_once_with()
+        emit.assert_called_once_with()
 
     async def test_deferred_server_proc_stopped_after_app_exits(self) -> None:
         """server_proc set by the background worker must still be cleaned up."""
@@ -1604,10 +1744,15 @@ class TestServerCleanupLifecycle:
             # Simulate the background worker having set _server_proc
             self._server_proc = server_proc
 
-        with patch.object(
-            DeepAgentsApp,
-            "run_async",
-            new=_fake_run_async,
+        with (
+            patch.object(
+                DeepAgentsApp,
+                "run_async",
+                new=_fake_run_async,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.emit_preserved_log_notices",
+            ) as emit,
         ):
             await run_textual_app(
                 server_kwargs={"assistant_id": "a"},
@@ -1615,6 +1760,36 @@ class TestServerCleanupLifecycle:
             )
 
         server_proc.stop.assert_called_once_with()
+        emit.assert_called_once_with()
+
+    async def test_notice_drained_when_startup_left_no_server_proc(self) -> None:
+        """A failed startup queues a path but never tracks a `_server_proc`.
+
+        The teardown must still drain the process-global queue so that
+        debug-preserved log path is announced (PR #4999 review); the drain is
+        not gated on `_server_proc` being set.
+        """
+
+        async def _fake_run_async(self: DeepAgentsApp) -> None:  # noqa: RUF029
+            # Startup failed: the background worker never assigns _server_proc.
+            self._server_proc = None
+
+        with (
+            patch.object(
+                DeepAgentsApp,
+                "run_async",
+                new=_fake_run_async,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.emit_preserved_log_notices",
+            ) as emit,
+        ):
+            await run_textual_app(
+                server_kwargs={"assistant_id": "a"},
+                thread_id="t-1",
+            )
+
+        emit.assert_called_once_with()
 
 
 class TestCheckOptionalTools:
@@ -2409,6 +2584,28 @@ class TestThreadsListCwdArgparse:
 class TestCheckMcpProjectTrustPrompt:
     """The project MCP approval prompt should surface a docs link."""
 
+    @staticmethod
+    def _create_git_repository(root: Path) -> Path:
+        root.mkdir()
+        common_dir = root / ".git"
+        (common_dir / "objects").mkdir(parents=True)
+        (common_dir / "refs").mkdir()
+        (common_dir / "worktrees").mkdir()
+        (common_dir / "HEAD").write_text("ref: refs/heads/main\n")
+        (common_dir / "config").write_text("[core]\n\tbare = false\n")
+        return common_dir
+
+    @staticmethod
+    def _create_git_worktree(common_dir: Path, root: Path, name: str) -> None:
+        root.mkdir()
+        git_entry = root / ".git"
+        git_dir = common_dir / "worktrees" / name
+        git_dir.mkdir()
+        git_entry.write_text(f"gitdir: {git_dir}\n")
+        (git_dir / "commondir").write_text("../..\n")
+        (git_dir / "gitdir").write_text(f"{git_entry}\n")
+        (git_dir / "HEAD").write_text(f"ref: refs/heads/{name}\n")
+
     def test_debug_env_helper_uses_truthy_parsing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2450,25 +2647,104 @@ class TestCheckMcpProjectTrustPrompt:
                 "deepagents_code.mcp_tools.classify_discovered_configs",
                 return_value=([], []),
             ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=True,
-            ),
-            patch("deepagents_code.mcp_trust.trust_project_mcp") as trust_project_mcp,
             patch("builtins.input", return_value="y"),
         ):
             decision = _check_mcp_project_trust(trust_flag=False)
 
         assert decision is True
-        trust_project_mcp.assert_not_called()
         captured = capsys.readouterr()
         assert "debug-project-mcp" in captured.err
-        assert "Learn more:" in captured.err
 
-    def test_prompt_includes_docs_link(
+    def test_escape_aborts_without_denying(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Esc aborts the launch without recording a denial decision."""
+        from deepagents_code import model_config
+        from deepagents_code._env_vars import DEBUG_MCP_PROJECT_TRUST
+        from deepagents_code.main import (
+            _check_mcp_project_trust,
+            _TrustPromptOutcome,
+        )
+
+        project_context = SimpleNamespace(project_root=tmp_path, user_cwd=tmp_path)
+        monkeypatch.setenv(DEBUG_MCP_PROJECT_TRUST, "1")
+        user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], []),
+            ),
+            patch(
+                "deepagents_code.main._select_trust_action",
+                return_value=_TrustPromptOutcome.CANCELLED,
+            ),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is _TrustPromptOutcome.CANCELLED
+        assert "denied" not in capsys.readouterr().err.lower()
+        assert not user_config.exists()
+
+    def test_explicit_deny_action_reports_denial(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The menu Deny action reports a denial and continues (distinct from Esc).
+
+        Positive companion to the abort tests: their `"denied" not in ...` guards
+        only mean something if the explicit-Deny path actually emits the wording.
+        """
+        from deepagents_code._env_vars import DEBUG_MCP_PROJECT_TRUST
+        from deepagents_code.main import (
+            _check_mcp_project_trust,
+            _TrustAction,
+        )
+
+        project_context = SimpleNamespace(project_root=tmp_path, user_cwd=tmp_path)
+        monkeypatch.setenv(DEBUG_MCP_PROJECT_TRUST, "1")
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], []),
+            ),
+            patch(
+                "deepagents_code.main._select_trust_action",
+                return_value=_TrustAction.DENY,
+            ),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
+        assert "denied" in capsys.readouterr().err.lower()
+
+    def test_prompt_is_concise(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path
     ) -> None:
-        """When the prompt fires, it should print the project-level-trust docs URL."""
+        """The prompt keeps required server details without extra explanation."""
         from deepagents_code.main import _check_mcp_project_trust
 
         project_root = tmp_path / "proj"
@@ -2479,7 +2755,6 @@ class TestCheckMcpProjectTrustPrompt:
         project_context = SimpleNamespace(
             project_root=project_root, user_cwd=project_root
         )
-
         with (
             patch(
                 "deepagents_code.project_utils.ProjectContext.from_user_cwd",
@@ -2494,7 +2769,7 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
                 return_value={
                     "mcpServers": {"fs": {"command": "node", "args": ["server.js"]}}
                 },
@@ -2502,10 +2777,6 @@ class TestCheckMcpProjectTrustPrompt:
             patch(
                 "deepagents_code.mcp_tools.extract_project_server_summaries",
                 return_value=[("fs", "stdio", "node server.js")],
-            ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
             ),
             patch("builtins.input", return_value="n"),
         ):
@@ -2513,17 +2784,15 @@ class TestCheckMcpProjectTrustPrompt:
 
         assert decision is False
         captured = capsys.readouterr()
-        flattened = captured.err.replace("\n", "")
-        assert (
-            "https://docs.langchain.com/oss/python/deepagents/code/"
-            "mcp-tools#project-level-trust" in flattened
-        )
-        assert "Learn more:" in captured.err
+        assert "Approve project MCP servers:" in captured.err
+        assert '"fs" (stdio):  node server.js' in captured.err
+        assert "Learn more:" not in captured.err
+        assert "Remembered approvals apply" not in captured.err
 
-    def test_warns_when_trust_cannot_be_saved(
+    def test_yes_allows_for_session_only(
         self, capsys: pytest.CaptureFixture[str], tmp_path: Path
     ) -> None:
-        """A failed persist still allows this session but warns it wasn't saved."""
+        """Answering "y" allows for the session without persisting anything."""
         from deepagents_code.main import _check_mcp_project_trust
 
         project_root = tmp_path / "proj"
@@ -2534,7 +2803,6 @@ class TestCheckMcpProjectTrustPrompt:
         project_context = SimpleNamespace(
             project_root=project_root, user_cwd=project_root
         )
-
         with (
             patch(
                 "deepagents_code.project_utils.ProjectContext.from_user_cwd",
@@ -2549,7 +2817,7 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
                 return_value={
                     "mcpServers": {"fs": {"command": "node", "args": ["server.js"]}}
                 },
@@ -2558,28 +2826,120 @@ class TestCheckMcpProjectTrustPrompt:
                 "deepagents_code.mcp_tools.extract_project_server_summaries",
                 return_value=[("fs", "stdio", "node server.js")],
             ),
+            patch("builtins.input", return_value="y"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is True
+        err = capsys.readouterr().err.replace("\n", "")
+        assert "could not be saved" not in err
+        assert "Allowing 1 project MCP server for this session; remembering 0." in err
+
+    def test_prompt_includes_valid_sibling_of_disabled_malformed_server(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Session trust never activates a valid server omitted from the prompt."""
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_dir = project_root / ".deepagents"
+        project_dir.mkdir(parents=True)
+        lower_cfg = project_dir / ".mcp.json"
+        lower_cfg.write_text(
+            '{"mcpServers":{"hidden":{"command":"echo"},"broken":{"args":[]}}}'
+        )
+        higher_cfg = project_root / ".mcp.json"
+        higher_cfg.write_text('{"mcpServers":{"visible":{"command":"echo"}}}')
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\ndisabled_project_servers = ["broken"]\n')
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+
+        with (
             patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
             ),
             patch(
-                "deepagents_code.mcp_trust.trust_project_mcp",
-                return_value=False,
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[lower_cfg, higher_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [lower_cfg, higher_cfg]),
             ),
             patch("builtins.input", return_value="y"),
         ):
             decision = _check_mcp_project_trust(trust_flag=False)
 
         assert decision is True
-        assert "could not be saved" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert '"hidden"' in err
+        assert '"visible"' in err
+        assert '"broken"' not in err
 
-    def test_all_servers_list_resolved_shows_context_without_prompt(
+    def test_prompt_uses_merged_project_config_before_validation(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """List-resolved server rows escape project-controlled Rich markup."""
+        """The prompt includes every server that merged runtime trust can load."""
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_dir = project_root / ".deepagents"
+        project_dir.mkdir(parents=True)
+        lower = project_dir / ".mcp.json"
+        lower.write_text(
+            '{"mcpServers":{"hidden":{"command":"echo","args":["lower"]},'
+            '"repaired":{"args":[]}}}'
+        )
+        higher = project_root / ".mcp.json"
+        higher.write_text(
+            '{"mcpServers":{"repaired":{"command":"echo","args":["higher"]}}}'
+        )
+        user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[lower, higher],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [lower, higher]),
+            ),
+            patch("builtins.input", return_value="n"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
+        err = capsys.readouterr().err
+        assert '"hidden"' in err
+        assert "echo lower" in err
+        assert '"repaired"' in err
+        assert "echo higher" in err
+
+    def test_always_allow_persists_names_to_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Answering "a" persists prompted names to config.toml and allows."""
         from deepagents_code import model_config
         from deepagents_code.main import _check_mcp_project_trust
 
@@ -2589,12 +2949,535 @@ class TestCheckMcpProjectTrustPrompt:
         project_cfg.write_text("{}")
 
         user_config = tmp_path / "config.toml"
-        user_config.write_text(
-            "[mcp]\n"
-            'enabled_project_servers = ["docs[/green]"]\n'
-            'disabled_project_servers = ["blocked[/red]"]\n'
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+        server_configs = {
+            "docs": {"command": "echo"},
+            "reference": {"command": "echo"},
+        }
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
+                return_value={"mcpServers": server_configs},
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[
+                    ("docs", "stdio", "echo docs"),
+                    ("reference", "stdio", "echo reference"),
+                ],
+            ),
+            patch("builtins.input", return_value="a"),
+            patch(
+                "deepagents_code.main._run_project_mcp_server_checkbox_picker",
+                return_value=["docs", "reference"],
+            ),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is True
+        lists = model_config.load_mcp_server_trust_lists(user_config)
+        assert lists.enabled == frozenset()
+        assert lists.is_enabled(
+            "docs", project_root=project_root, server=server_configs["docs"]
+        )
+        assert lists.is_enabled(
+            "reference",
+            project_root=project_root,
+            server=server_configs["reference"],
+        )
+
+    def test_always_allow_warns_when_save_fails(
+        self, capsys: pytest.CaptureFixture[str], tmp_path: Path
+    ) -> None:
+        """A failed remember write still allows the session but warns."""
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
+                return_value={"mcpServers": {"fs": {"command": "node"}}},
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[("fs", "stdio", "node")],
+            ),
+            patch(
+                "deepagents_code.model_config.add_enabled_project_mcp_servers",
+                return_value=False,
+            ),
+            patch("builtins.input", return_value="always"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is True
+        assert "could not be remembered" in capsys.readouterr().err
+
+    def test_always_allow_checkbox_persists_only_selected(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Checkbox selection persists only the chosen server, not the full list."""
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+        server_configs = {
+            "docs": {"command": "echo"},
+            "reference": {"command": "echo"},
+        }
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
+                return_value={"mcpServers": server_configs},
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[
+                    ("docs", "stdio", "echo docs"),
+                    ("reference", "stdio", "echo reference"),
+                ],
+            ),
+            # Allow -> always; checkbox-select only the 2nd server.
+            patch("builtins.input", return_value="a"),
+            patch(
+                "deepagents_code.main._run_project_mcp_server_checkbox_picker",
+                return_value=["reference"],
+            ),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is True
+        lists = model_config.load_mcp_server_trust_lists(user_config)
+        assert lists.enabled == frozenset()
+        assert not lists.is_enabled(
+            "docs", project_root=project_root, server=server_configs["docs"]
+        )
+        assert lists.is_enabled(
+            "reference",
+            project_root=project_root,
+            server=server_configs["reference"],
+        )
+        summary = capsys.readouterr().err.replace("\n", "")
+        assert (
+            "Allowing 2 project MCP servers for this session; remembering 1 for "
+            "this project." in summary
+        )
+
+    def test_always_allow_empty_checkbox_selection_denies(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Selecting no servers denies rather than implicitly allowing the session."""
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+        server_configs = {
+            "docs": {"command": "echo"},
+            "reference": {"command": "echo"},
+        }
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
+                return_value={"mcpServers": server_configs},
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[
+                    ("docs", "stdio", "echo docs"),
+                    ("reference", "stdio", "echo reference"),
+                ],
+            ),
+            patch("builtins.input", return_value="a"),
+            patch(
+                "deepagents_code.main._run_project_mcp_server_checkbox_picker",
+                return_value=[],
+            ),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
+        assert not user_config.exists()
+        assert (
+            "No servers selected; denied 2 project MCP servers"
+            in capsys.readouterr().err
+        )
+
+    def test_always_allow_picker_cancel_aborts_launch(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Backing out of the server picker returns a launch cancellation.
+
+        Regression guard: a cancelled picker must not be read as "remember none,
+        allow this session" or as a denial that continues into the TUI.
+        """
+        from deepagents_code import model_config
+        from deepagents_code.main import (
+            _check_mcp_project_trust,
+            _TrustPromptOutcome,
+        )
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+        server_configs = {
+            "docs": {"command": "echo"},
+            "reference": {"command": "echo"},
+        }
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
+                return_value={"mcpServers": server_configs},
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[
+                    ("docs", "stdio", "echo docs"),
+                    ("reference", "stdio", "echo reference"),
+                ],
+            ),
+            patch("builtins.input", return_value="a"),
+            patch(
+                "deepagents_code.main._run_project_mcp_server_checkbox_picker",
+                return_value=_TrustPromptOutcome.CANCELLED,
+            ),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is _TrustPromptOutcome.CANCELLED
+        assert not user_config.exists()
+        assert "denied" not in capsys.readouterr().err.lower()
+
+    def test_always_allow_all_excludes_disabled_server(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A disabled server is never offered for — or persisted to — the allowlist."""
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        # The user's home config already denies "reference".
+        user_config = tmp_path / "config.toml"
+        user_config.write_text('[mcp]\ndisabled_project_servers = ["reference"]\n')
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+        server_configs = {
+            "docs": {"command": "echo"},
+            "reference": {"command": "echo"},
+        }
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
+                return_value={"mcpServers": server_configs},
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[
+                    ("docs", "stdio", "echo docs"),
+                    ("reference", "stdio", "echo reference"),
+                ],
+            ),
+            # "reference" is denied, so only "docs" is promptable — the subset
+            # menu is skipped and answering "a" persists just that one name.
+            patch("builtins.input", return_value="a"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is True
+        lists = model_config.load_mcp_server_trust_lists(user_config)
+        # The denied server is neither offered nor written to the allowlist, and
+        # its deny entry survives (reject precedence still holds).
+        assert lists.enabled == frozenset()
+        assert lists.is_enabled(
+            "docs", project_root=project_root, server=server_configs["docs"]
+        )
+        assert lists.disabled == frozenset({"reference"})
+
+    def test_existing_remote_sibling_worktree_approval_skips_prompt(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        main = tmp_path / "main"
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        common_dir = self._create_git_repository(main)
+        self._create_git_worktree(common_dir, first, "first")
+        self._create_git_worktree(common_dir, second, "second")
+        project_cfg = second / ".mcp.json"
+        project_cfg.write_text("{}")
+        server_configs = {"docs": {"type": "http", "url": "https://example.test/mcp"}}
+        user_config = tmp_path / "config.toml"
+        assert model_config.add_enabled_project_mcp_servers(
+            ["docs"],
+            user_config,
+            project_root=first,
+            server_configs=server_configs,
         )
         monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        project_context = SimpleNamespace(project_root=second, user_cwd=second)
+
+        def _no_input(_prompt: str = "") -> str:
+            msg = "prompt must be skipped for an approved sibling worktree"
+            raise AssertionError(msg)
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
+                return_value={"mcpServers": server_configs},
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[("docs", "http", "https://example.test/mcp")],
+            ),
+            patch("builtins.input", _no_input),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is None
+        assert capsys.readouterr().err == ""
+
+    def test_existing_local_sibling_worktree_approval_prompts(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        main = tmp_path / "main"
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        common_dir = self._create_git_repository(main)
+        self._create_git_worktree(common_dir, first, "first")
+        self._create_git_worktree(common_dir, second, "second")
+        project_cfg = second / ".mcp.json"
+        project_cfg.write_text("{}")
+        server_configs = {"docs": {"command": "python", "args": ["server.py"]}}
+        user_config = tmp_path / "config.toml"
+        assert model_config.add_enabled_project_mcp_servers(
+            ["docs"],
+            user_config,
+            project_root=first,
+            server_configs=server_configs,
+        )
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        project_context = SimpleNamespace(project_root=second, user_cwd=second)
+
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
+                return_value={"mcpServers": server_configs},
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[("docs", "stdio", "python server.py")],
+            ),
+            patch("builtins.input", return_value="n"),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
+        output = capsys.readouterr().err
+        assert "Approve project MCP servers" in output
+        assert '"docs"' in output
+
+    def test_all_servers_list_resolved_skip_prompt_without_noise(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Remembered approvals still skip the prompt with an env allowlist set."""
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        monkeypatch.setenv(
+            model_config._env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+            "unrelated-server",
+        )
+        server_configs = {
+            "docs[/green]": {"command": "echo"},
+            "blocked[/red]": {"command": "echo"},
+        }
+        fingerprint = model_config.fingerprint_mcp_server_config(
+            server_configs["docs[/green]"]
+        )
+        user_config.write_text(
+            "[mcp]\n"
+            "enabled_project_server_approvals = ["
+            f'{{ project_root = "{project_root}", name = "docs[/green]", '
+            f'fingerprint = "{fingerprint}" }}]\n'
+            'disabled_project_servers = ["blocked[/red]"]\n'
+        )
 
         project_context = SimpleNamespace(
             project_root=project_root, user_cwd=project_root
@@ -2618,13 +3501,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
-                return_value={
-                    "mcpServers": {
-                        "docs[/green]": {"command": "echo"},
-                        "blocked[/red]": {"command": "echo"},
-                    }
-                },
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
+                return_value={"mcpServers": server_configs},
             ),
             patch(
                 "deepagents_code.mcp_tools.extract_project_server_summaries",
@@ -2633,36 +3511,21 @@ class TestCheckMcpProjectTrustPrompt:
                     ("blocked[/red]", "http[/red]", "https://x.test/[/red]"),
                 ],
             ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
-            ),
             patch("builtins.input", _no_input),
         ):
             decision = _check_mcp_project_trust(trust_flag=False)
 
         assert decision is None
         err = capsys.readouterr().err
-        flattened = err.replace("\n", "")
-        # No approval question, but the config's decisions are surfaced.
-        assert "require approval" not in err
-        assert "Resolved by your config" in err
-        assert (
-            '"docs[/green]" (stdio[/green]): pre-approved '
-            "(enabled_project_servers):  echo [/green]" in flattened
-        )
-        assert (
-            '"blocked[/red]" (http[/red]): blocked '
-            "(disabled_project_servers):  https://x.test/[/red]" in flattened
-        )
+        assert err == ""
 
-    def test_prompt_asks_only_about_unlisted_but_shows_preapproved(
+    def test_prompt_asks_only_about_unlisted_and_hides_preapproved(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """The prompt asks only about unlisted servers; pre-approved ones show."""
+        """Pre-approved servers stay hidden when unlisted servers are prompted."""
         from deepagents_code import model_config
         from deepagents_code.main import _check_mcp_project_trust
 
@@ -2672,8 +3535,16 @@ class TestCheckMcpProjectTrustPrompt:
         project_cfg.write_text("{}")
 
         user_config = tmp_path / "config.toml"
-        user_config.write_text('[mcp]\nenabled_project_servers = ["docs"]\n')
         monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        server_configs = {
+            "docs": {"command": "echo"},
+            "other": {"command": "echo"},
+        }
+        assert model_config.add_enabled_project_mcp_servers(
+            ["docs"],
+            project_root=project_root,
+            server_configs=server_configs,
+        )
 
         project_context = SimpleNamespace(
             project_root=project_root, user_cwd=project_root
@@ -2693,13 +3564,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
-                return_value={
-                    "mcpServers": {
-                        "docs": {"command": "echo"},
-                        "other": {"command": "echo"},
-                    }
-                },
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
+                return_value={"mcpServers": server_configs},
             ),
             patch(
                 "deepagents_code.mcp_tools.extract_project_server_summaries",
@@ -2707,10 +3573,6 @@ class TestCheckMcpProjectTrustPrompt:
                     ("docs", "stdio", "echo docs"),
                     ("other", "stdio", "echo other"),
                 ],
-            ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
             ),
             patch("builtins.input", return_value="n"),
         ):
@@ -2720,11 +3582,95 @@ class TestCheckMcpProjectTrustPrompt:
         err = capsys.readouterr().err
         # The unlisted server is the one actually being asked about.
         assert '  "other" (stdio):  echo other' in err
-        # The pre-approved server is shown as resolved, not asked about.
-        assert (
-            '  "docs" (stdio): pre-approved (enabled_project_servers):  echo docs'
-            in err
+        # The pre-approved server is not repeated in the prompt.
+        assert '  "docs" (stdio)' not in err
+        assert "Resolved by your config" not in err
+
+    def test_ctrl_c_returns_interrupted_outcome(self, tmp_path: Path) -> None:
+        """Ctrl+C at the approval prompt cancels launch instead of denying MCP."""
+        from deepagents_code.main import (
+            _check_mcp_project_trust,
+            _TrustPromptOutcome,
         )
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
+                return_value={"mcpServers": {"docs": {"command": "echo"}}},
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[("docs", "stdio", "echo docs")],
+            ),
+            patch("builtins.input", side_effect=KeyboardInterrupt),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is _TrustPromptOutcome.INTERRUPTED
+
+    def test_eof_at_prompt_denies(self, tmp_path: Path) -> None:
+        """EOF (closed stdin) at the approval prompt fails safe to deny.
+
+        A non-interactive/piped stdin must not accidentally allow project MCP
+        servers: EOF coerces the answer to empty, which is neither yes nor
+        always, so the prompt returns False.
+        """
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project_root = tmp_path / "proj"
+        project_root.mkdir()
+        project_cfg = project_root / ".mcp.json"
+        project_cfg.write_text("{}")
+
+        project_context = SimpleNamespace(
+            project_root=project_root, user_cwd=project_root
+        )
+        with (
+            patch(
+                "deepagents_code.project_utils.ProjectContext.from_user_cwd",
+                return_value=project_context,
+            ),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_configs",
+                return_value=[project_cfg],
+            ),
+            patch(
+                "deepagents_code.mcp_tools.classify_discovered_configs",
+                return_value=([], [project_cfg]),
+            ),
+            patch(
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
+                return_value={"mcpServers": {"docs": {"command": "echo"}}},
+            ),
+            patch(
+                "deepagents_code.mcp_tools.extract_project_server_summaries",
+                return_value=[("docs", "stdio", "echo docs")],
+            ),
+            patch("builtins.input", side_effect=EOFError),
+        ):
+            decision = _check_mcp_project_trust(trust_flag=False)
+
+        assert decision is False
 
     def test_unreadable_policy_fails_closed_without_prompting(
         self,
@@ -2772,16 +3718,12 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], [project_cfg]),
             ),
             patch(
-                "deepagents_code.mcp_tools.load_mcp_config_lenient",
+                "deepagents_code.mcp_tools.load_merged_mcp_configs_lenient",
                 return_value={"mcpServers": {"docs": {"command": "echo"}}},
             ),
             patch(
                 "deepagents_code.mcp_tools.extract_project_server_summaries",
                 return_value=[("docs", "stdio", "echo docs")],
-            ),
-            patch(
-                "deepagents_code.mcp_trust.is_project_mcp_trusted",
-                return_value=False,
             ),
             patch("builtins.input", _no_input),
         ):
@@ -2793,6 +3735,1055 @@ class TestCheckMcpProjectTrustPrompt:
         flattened = err.replace("\n", "")
         assert "treating project MCP servers as untrusted" in flattened
         assert "require approval" not in err
+
+
+def _assert_all_controls_hide_cursor(layout: "Layout") -> None:
+    """Assert every text control in `layout` suppresses the terminal cursor.
+
+    Walks the layout instead of indexing into a fixed container/window shape so
+    the check stays valid if the selector's nesting changes.
+    """
+    from prompt_toolkit.layout.controls import FormattedTextControl
+
+    controls = [
+        control
+        for control in layout.find_all_controls()
+        if isinstance(control, FormattedTextControl)
+    ]
+    assert controls
+    assert all(control.show_cursor is False for control in controls)
+
+
+class TestPromptYoloAcknowledgement:
+    """Tests for the inline YOLO acknowledgement selector."""
+
+    def test_yolo_selector_hides_terminal_cursor(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The selector suppresses the stray first-character terminal cursor."""
+        from deepagents_code.main import _prompt_yolo_acknowledgement
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> bool:
+                return False
+
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stdin", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stderr", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "prompt_toolkit.output.defaults.create_output",
+            lambda **_kwargs: SimpleNamespace(),
+        )
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        _prompt_yolo_acknowledgement(Console(file=StringIO()))
+
+        _assert_all_controls_hide_cursor(captured["layout"])
+
+    @pytest.mark.parametrize("key", ["c-c", "c-d"])
+    def test_yolo_selector_interrupt_keys_raise_keyboard_interrupt(
+        self,
+        key: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ctrl+C and Ctrl+D propagate an interrupt out of the selector."""
+        from deepagents_code.main import _prompt_yolo_acknowledgement
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> bool:
+                bindings = captured["key_bindings"].bindings
+                interrupt = next(
+                    binding.handler
+                    for binding in bindings
+                    if any(
+                        getattr(bound_key, "value", bound_key) == key
+                        for bound_key in binding.keys
+                    )
+                )
+                outcome: dict[str, object] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(exit=lambda **kwargs: outcome.update(kwargs))
+                )
+                interrupt(event)
+                exception = outcome.get("exception")
+                assert isinstance(exception, KeyboardInterrupt)
+                raise exception
+
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stdin", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stderr", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "prompt_toolkit.output.defaults.create_output",
+            lambda **_kwargs: SimpleNamespace(),
+        )
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        with pytest.raises(KeyboardInterrupt):
+            _prompt_yolo_acknowledgement(Console(file=StringIO()))
+
+        rendered = "".join(
+            text for _style, text in captured["layout"].container.content.text()
+        )
+        assert "Ctrl+C quit" in rendered
+
+
+class TestSelectProjectServersToPersist:
+    """Tests for the "always allow" subset selection helpers."""
+
+    @pytest.fixture
+    def _interactive_picker_terminal(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Allow picker tests to run independently of pytest's captured streams."""
+        monkeypatch.setattr(
+            "deepagents_code.main._trust_picker_has_terminal",
+            lambda: True,
+        )
+
+    @pytest.mark.parametrize(
+        ("raw", "count", "expected"),
+        [
+            ("1,3", 3, [1, 3]),
+            ("1 3", 3, [1, 3]),
+            ("2, 2, 1", 3, [2, 1]),  # dedupe, preserve order
+            ("0,4,x", 3, []),  # out-of-range and non-numeric ignored
+            ("", 3, []),
+        ],
+    )
+    def test_parse_server_number_selection(
+        self, raw: str, count: int, expected: list[int]
+    ) -> None:
+        """The fallback index parser drops invalid tokens and keeps order."""
+        from deepagents_code.main import _parse_server_number_selection
+
+        assert _parse_server_number_selection(raw, count) == expected
+
+    def test_checkbox_rows_include_every_server(self) -> None:
+        """The inline picker renders each prompted server exactly once."""
+        from deepagents_code.config import ASCII_GLYPHS
+        from deepagents_code.main import _format_project_mcp_checkbox_rows
+
+        servers = [
+            ProjectServerSummary(
+                "docs-langchain", "http", "https://docs.langchain.com/mcp"
+            ),
+            ProjectServerSummary(
+                "reference-langchain", "http", "https://reference.langchain.com/mcp"
+            ),
+        ]
+
+        rows = _format_project_mcp_checkbox_rows(
+            servers, {"docs-langchain", "reference-langchain"}, 0, ASCII_GLYPHS
+        )
+
+        assert len(rows) == 2
+        rendered = "".join(text for _style, text in rows)
+        assert "docs-langchain" in rendered
+        assert "reference-langchain" in rendered
+
+    def test_single_server_skips_picker(self) -> None:
+        """A lone prompted server is returned without asking anything."""
+        from rich.console import Console
+
+        from deepagents_code.main import _select_project_servers_to_persist
+
+        def _unexpected_picker(*_args: Any, **_kwargs: Any) -> list[str] | None:
+            msg = "no picker expected for a single server"
+            raise AssertionError(msg)
+
+        with patch(
+            "deepagents_code.main._run_project_mcp_server_checkbox_picker",
+            _unexpected_picker,
+        ):
+            names = _select_project_servers_to_persist(
+                [ProjectServerSummary("fs", "stdio", "node")],
+                Console(stderr=True),
+            )
+
+        assert names == ["fs"]
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_action_picker_is_inline_and_defaults_to_deny(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The unified selector is inline and requires navigation to grant trust."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _run_trust_action_picker,
+            _TrustAction,
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> _TrustAction:
+                bindings = captured["key_bindings"].bindings
+                holder: dict[str, _TrustAction] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(
+                        exit=lambda *, result: holder.update(value=result)
+                    )
+                )
+                confirm = next(
+                    binding.handler
+                    for binding in bindings
+                    if binding.handler.__name__ == "_confirm"
+                )
+                confirm(event)
+                return holder["value"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+        result = _run_trust_action_picker(Console(stderr=True))
+
+        assert result is _TrustAction.DENY
+        assert captured["full_screen"] is False
+        rendered = "".join(
+            text for _style, text in captured["layout"].container.content.text()
+        )
+        assert "Allow once" in rendered
+        assert "Allow for this project — until changed" in rendered
+        assert "Deny" in rendered
+        assert "Choose how to continue" not in rendered
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_action_picker_hides_terminal_cursor(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The inline picker suppresses the stray first-character terminal cursor."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _run_trust_action_picker,
+            _TrustAction,
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> _TrustAction:
+                return _TrustAction.DENY
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+        _run_trust_action_picker(Console(stderr=True))
+
+        _assert_all_controls_hide_cursor(captured["layout"])
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    @pytest.mark.parametrize("key", ["escape", "c-d"])
+    def test_action_picker_abort_keys_cancel(
+        self,
+        key: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Esc and Ctrl+D abort instead of selecting the deny action."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _run_trust_action_picker,
+            _TrustPromptOutcome,
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> _TrustPromptOutcome:
+                bindings = captured["key_bindings"].bindings
+                holder: dict[str, _TrustPromptOutcome] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(
+                        exit=lambda *, result: holder.update(value=result)
+                    )
+                )
+                abort = next(
+                    binding.handler
+                    for binding in bindings
+                    if any(
+                        getattr(bound_key, "value", bound_key) == key
+                        for bound_key in binding.keys
+                    )
+                )
+                abort(event)
+                return holder["value"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+        result = _run_trust_action_picker(Console(stderr=True))
+
+        assert result is _TrustPromptOutcome.CANCELLED
+        rendered = "".join(
+            text for _style, text in captured["layout"].container.content.text()
+        )
+        assert "Esc/Ctrl+D abort" in rendered
+        assert "Esc deny" not in rendered
+
+    def test_select_action_forwards_picker_cancelled(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A CANCELLED outcome from the inline picker passes straight through."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _select_trust_action,
+            _TrustPromptOutcome,
+        )
+
+        monkeypatch.setattr(
+            "deepagents_code.main._run_trust_action_picker",
+            lambda _console, **_kwargs: _TrustPromptOutcome.CANCELLED,
+        )
+
+        result = _select_trust_action(Console(stderr=True))
+
+        assert result is _TrustPromptOutcome.CANCELLED
+
+    def test_action_picker_falls_back_when_stderr_is_redirected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hidden selector is not launched when stderr is not a terminal."""
+        from rich.console import Console
+
+        from deepagents_code.main import _run_trust_action_picker
+
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stdin", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stderr", SimpleNamespace(isatty=lambda: False)
+        )
+
+        result = _run_trust_action_picker(Console(stderr=True))
+
+        assert result is None
+
+    def test_checkbox_picker_falls_back_when_stderr_is_redirected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The follow-up selector also avoids hidden rendering to stderr."""
+        from rich.console import Console
+
+        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
+
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stdin", SimpleNamespace(isatty=lambda: True)
+        )
+        monkeypatch.setattr(
+            "deepagents_code.main.sys.stderr", SimpleNamespace(isatty=lambda: False)
+        )
+
+        result = _run_project_mcp_server_checkbox_picker(
+            [ProjectServerSummary("docs", "stdio", "echo docs")],
+            Console(stderr=True),
+        )
+
+        assert result is None
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_inline_checkbox_picker_does_not_use_full_screen(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The checkbox picker stays inline rather than taking over the terminal."""
+        from rich.console import Console
+
+        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> list[str]:
+                return ["reference"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        names = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+        assert names == ["reference"]
+        assert captured["full_screen"] is False
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_checkbox_picker_hides_terminal_cursor(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Both checkbox windows suppress the stray first-character cursor."""
+        from rich.console import Console
+
+        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> list[str]:
+                return []
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+        _assert_all_controls_hide_cursor(captured["layout"])
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_checkbox_picker_navigation_wraps(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Up at the first row and down at the last row wrap around."""
+        from rich.console import Console
+
+        from deepagents_code.config import get_glyphs
+        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
+
+        cursor = get_glyphs().cursor
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> list[str]:
+                bindings = captured["key_bindings"].bindings
+                event = SimpleNamespace(
+                    app=SimpleNamespace(exit=lambda **_kwargs: None)
+                )
+
+                def _handler_for(key_value: str) -> Callable[[Any], None]:
+                    return next(
+                        binding.handler
+                        for binding in bindings
+                        if any(
+                            getattr(key, "value", key) == key_value
+                            for key in binding.keys
+                        )
+                    )
+
+                up = _handler_for("s-tab")
+                down = _handler_for("c-i")
+                rows_control = captured["layout"].container.children[1].content
+
+                up(event)
+                rendered = "".join(text for _style, text in rows_control.text())
+                assert f"{cursor} [ ] reference" in rendered
+
+                down(event)
+                rendered = "".join(text for _style, text in rows_control.text())
+                assert f"{cursor} [ ] docs" in rendered
+                return ["docs", "reference"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        names = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+        assert names == ["docs", "reference"]
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_checkbox_picker_space_toggle_derives_selection(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Space checks the cursor row and Enter confirms the explicit selection.
+
+        The picker starts with nothing selected, so confirming after one toggle
+        must return only that server rather than presuming the full list.
+        """
+        from rich.console import Console
+
+        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> list[str]:
+                bindings = captured["key_bindings"].bindings
+                holder: dict[str, list[str]] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(
+                        exit=lambda *, result: holder.update(value=result)
+                    )
+                )
+
+                def _named(name: str) -> Callable[[Any], None]:
+                    return next(
+                        binding.handler
+                        for binding in bindings
+                        if binding.handler.__name__ == name
+                    )
+
+                # Cursor starts on row 0 ("docs"); Space explicitly selects it.
+                _named("_toggle")(event)
+                _named("_confirm")(event)
+                return holder["value"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        names = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+        assert names == ["docs"]
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_checkbox_picker_select_all_is_explicit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The dedicated select-all key checks every server from an empty default."""
+        from rich.console import Console
+
+        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> list[str]:
+                bindings = captured["key_bindings"].bindings
+                holder: dict[str, list[str]] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(
+                        exit=lambda *, result: holder.update(value=result)
+                    )
+                )
+
+                def _named(name: str) -> Callable[[Any], None]:
+                    return next(
+                        binding.handler
+                        for binding in bindings
+                        if binding.handler.__name__ == name
+                    )
+
+                _named("_select_all")(event)
+                _named("_confirm")(event)
+                return holder["value"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        names = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+        assert names == ["docs", "reference"]
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_checkbox_picker_scrolls_a_bounded_viewport(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Long server lists stay bounded while navigation keeps the cursor visible."""
+        from rich.console import Console
+
+        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> list[str]:
+                bindings = captured["key_bindings"].bindings
+                event = SimpleNamespace(
+                    app=SimpleNamespace(exit=lambda **_kwargs: None)
+                )
+                down = next(
+                    binding.handler
+                    for binding in bindings
+                    if binding.handler.__name__ == "_down"
+                )
+                for _ in range(8):
+                    down(event)
+                rows_control = captured["layout"].container.children[1].content
+                rendered = "".join(text for _style, text in rows_control.text())
+                assert "item08 (" in rendered
+                assert "item00 (" not in rendered
+                assert len(rendered.splitlines()) == 8
+                return []
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [
+            ProjectServerSummary(f"item{index:02}", "stdio", "echo")
+            for index in range(12)
+        ]
+        _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_checkbox_picker_escape_cancels(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Esc aborts the launch, distinct from confirming an empty selection.
+
+        Confirming an empty selection denies and continues; Esc aborts the launch
+        entirely, while Ctrl+C remains a separate launch interruption.
+        """
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _run_project_mcp_server_checkbox_picker,
+            _TrustPromptOutcome,
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> list[str]:
+                from prompt_toolkit.keys import Keys
+
+                bindings = captured["key_bindings"].bindings
+                holder: dict[str, list[str]] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(
+                        exit=lambda *, result: holder.update(value=result)
+                    )
+                )
+                cancel = next(
+                    binding.handler
+                    for binding in bindings
+                    if Keys.Escape in binding.keys
+                )
+                cancel(event)
+                return holder["value"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        result = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+        assert result is _TrustPromptOutcome.CANCELLED
+        help_control = captured["layout"].container.children[0].content
+        rendered = "".join(text for _style, text in help_control.text())
+        assert "Esc abort" in rendered
+        assert "Esc cancel" not in rendered
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_checkbox_picker_ctrl_c_returns_interrupted(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ctrl+C in the checkbox picker aborts the launch flow."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _run_project_mcp_server_checkbox_picker,
+            _TrustPromptOutcome,
+        )
+
+        captured: dict[str, Any] = {}
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **kwargs: Any) -> None:
+                captured.update(kwargs)
+
+            def run(self) -> _TrustPromptOutcome:
+                bindings = captured["key_bindings"].bindings
+                holder: dict[str, _TrustPromptOutcome] = {}
+                event = SimpleNamespace(
+                    app=SimpleNamespace(
+                        exit=lambda *, result: holder.update(value=result)
+                    )
+                )
+                interrupt = next(
+                    binding.handler
+                    for binding in bindings
+                    if any(getattr(key, "value", key) == "c-c" for key in binding.keys)
+                )
+                interrupt(event)
+                return holder["value"]
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        result = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+        assert result is _TrustPromptOutcome.INTERRUPTED
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_checkbox_picker_eof_cancels(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Ctrl+D (EOF) in the checkbox picker cancels rather than confirming."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _run_project_mcp_server_checkbox_picker,
+            _TrustPromptOutcome,
+        )
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **_kwargs: Any) -> None:
+                pass
+
+            def run(self) -> list[str]:
+                raise EOFError
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        result = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+        assert result is _TrustPromptOutcome.CANCELLED
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_checkbox_picker_falls_back_when_app_run_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A runtime failure launching the checkbox UI falls back to text input."""
+        from rich.console import Console
+
+        from deepagents_code.main import _run_project_mcp_server_checkbox_picker
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **_kwargs: Any) -> None:
+                pass
+
+            def run(self) -> list[str]:
+                msg = "no tty"
+                raise RuntimeError(msg)
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        result = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
+
+        # None signals the caller to use the number-based text fallback rather
+        # than treating the failure as a trust decision.
+        assert result is None
+
+    @pytest.mark.usefixtures("_interactive_picker_terminal")
+    def test_action_picker_falls_back_when_app_run_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A runtime failure launching the action picker falls back to text input."""
+        from rich.console import Console
+
+        from deepagents_code.main import _run_trust_action_picker
+
+        class _FakeApplication:
+            def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
+                return cls
+
+            def __init__(self, **_kwargs: Any) -> None:
+                pass
+
+            def run(self) -> object:
+                raise OSError
+
+        monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
+
+        result = _run_trust_action_picker(Console(stderr=True))
+
+        assert result is None
+
+    def test_checkbox_selection_returns_selected_names(self) -> None:
+        """The checkbox picker decides which prompted servers are remembered."""
+        from rich.console import Console
+
+        from deepagents_code.main import _select_project_servers_to_persist
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        with patch(
+            "deepagents_code.main._run_project_mcp_server_checkbox_picker",
+            return_value=["reference"],
+        ):
+            names = _select_project_servers_to_persist(servers, Console(stderr=True))
+
+        assert names == ["reference"]
+
+    def test_checkbox_empty_selection_returns_empty(self) -> None:
+        """Accepting no checked servers persists nothing."""
+        from rich.console import Console
+
+        from deepagents_code.main import _select_project_servers_to_persist
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        with patch(
+            "deepagents_code.main._run_project_mcp_server_checkbox_picker",
+            return_value=[],
+        ):
+            names = _select_project_servers_to_persist(servers, Console(stderr=True))
+
+        assert names == []
+
+    def test_fallback_numbers_select_subset(self) -> None:
+        """If the checkbox picker cannot run, numbers still select a subset."""
+        from rich.console import Console
+
+        from deepagents_code.main import _select_project_servers_to_persist
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        with (
+            patch(
+                "deepagents_code.main._run_project_mcp_server_checkbox_picker",
+                return_value=None,
+            ),
+            patch("builtins.input", return_value="2"),
+        ):
+            names = _select_project_servers_to_persist(servers, Console(stderr=True))
+
+        assert names == ["reference"]
+
+    def test_fallback_all_returns_every_name(self) -> None:
+        """The text fallback can still remember every prompted server."""
+        from rich.console import Console
+
+        from deepagents_code.main import _select_project_servers_to_persist
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        with (
+            patch(
+                "deepagents_code.main._run_project_mcp_server_checkbox_picker",
+                return_value=None,
+            ),
+            patch("builtins.input", return_value="all"),
+        ):
+            names = _select_project_servers_to_persist(servers, Console(stderr=True))
+
+        assert names == ["docs", "reference"]
+
+    def test_fallback_interrupt_aborts(self) -> None:
+        """A KeyboardInterrupt at the fallback prompt aborts the launch flow."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _select_project_servers_to_persist,
+            _TrustPromptOutcome,
+        )
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        with (
+            patch(
+                "deepagents_code.main._run_project_mcp_server_checkbox_picker",
+                return_value=None,
+            ),
+            patch("builtins.input", side_effect=KeyboardInterrupt),
+        ):
+            names = _select_project_servers_to_persist(servers, Console(stderr=True))
+
+        assert names is _TrustPromptOutcome.INTERRUPTED
+
+    def test_fallback_blank_cancels(self) -> None:
+        """Blank fallback input cancels (deny) rather than confirming nothing."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _select_project_servers_to_persist,
+            _TrustPromptOutcome,
+        )
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        with (
+            patch(
+                "deepagents_code.main._run_project_mcp_server_checkbox_picker",
+                return_value=None,
+            ),
+            patch("builtins.input", return_value="   "),
+        ):
+            names = _select_project_servers_to_persist(servers, Console(stderr=True))
+
+        assert names is _TrustPromptOutcome.CANCELLED
+
+    def test_fallback_eof_cancels(self) -> None:
+        """EOF (Ctrl+D) at the fallback prompt cancels, not an empty confirm."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _select_project_servers_to_persist,
+            _TrustPromptOutcome,
+        )
+
+        servers = [
+            ProjectServerSummary("docs", "stdio", "a"),
+            ProjectServerSummary("reference", "stdio", "b"),
+        ]
+        with (
+            patch(
+                "deepagents_code.main._run_project_mcp_server_checkbox_picker",
+                return_value=None,
+            ),
+            patch("builtins.input", side_effect=EOFError),
+        ):
+            names = _select_project_servers_to_persist(servers, Console(stderr=True))
+
+        assert names is _TrustPromptOutcome.CANCELLED
+
+
+class TestSelectProjectMcpTrustAction:
+    """Text-fallback token mapping for the trust action selector.
+
+    The inline arrow picker is covered separately; this pins the letter tokens
+    the text fallback accepts — notably that the advertised `r`/`remember` and
+    the `a`/`always` alias both map to REMEMBER.
+    """
+
+    @pytest.mark.parametrize(
+        ("token", "expected_name"),
+        [
+            ("y", "ALLOW_ONCE"),
+            ("yes", "ALLOW_ONCE"),
+            ("r", "REMEMBER"),
+            ("remember", "REMEMBER"),
+            ("a", "REMEMBER"),
+            ("always", "REMEMBER"),
+            ("n", "DENY"),
+            ("", "DENY"),
+        ],
+    )
+    def test_text_fallback_tokens(
+        self, token: str, expected_name: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Each accepted token maps to the documented action."""
+        from rich.console import Console
+
+        from deepagents_code.main import (
+            _select_trust_action,
+            _TrustAction,
+        )
+
+        # Force the inline picker to defer to the text prompt.
+        monkeypatch.setattr(
+            "deepagents_code.main._run_trust_action_picker",
+            lambda *_args, **_kwargs: None,
+        )
+        monkeypatch.setattr("builtins.input", lambda _prompt="": token)
+
+        result = _select_trust_action(Console(stderr=True))
+
+        assert result is _TrustAction[expected_name]
 
 
 class TestCheckMcpProjectTrustDedupe:
@@ -2813,10 +4804,6 @@ class TestCheckMcpProjectTrustDedupe:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(
-            "deepagents_code.mcp_trust.is_project_mcp_trusted",
-            lambda *_a, **_k: False,
-        )
         monkeypatch.setattr("builtins.input", lambda _prompt="": "n")
 
     def _captured_prompt(self, capsys: pytest.CaptureFixture[str]) -> str:

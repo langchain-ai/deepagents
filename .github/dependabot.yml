@@ -38,6 +38,52 @@ updates:
       - "/examples/text-to-sql-agent"
     schedule:
       interval: "monthly"
+    versioning-strategy: increase
+    ignore:
+      - dependency-name: "deepagents"
+      - dependency-name: "deepagents-cli"
+      - dependency-name: "deepagents-code"
+      - dependency-name: "deepagents-evals"
+      - dependency-name: "deepagents-acp"
+      - dependency-name: "deepagents-talon"
+      - dependency-name: "langchain-daytona"
+      - dependency-name: "langchain-modal"
+      - dependency-name: "langchain-quickjs"
+      - dependency-name: "langchain-runloop"
+      - dependency-name: "langchain-vercel-sandbox"
+    groups:
+      minor-and-patch:
+        patterns: ["*"]
+        update-types:
+          - "minor"
+          - "patch"
+      major:
+        patterns: ["*"]
+        update-types:
+          - "major"
+
+  # The WhatsApp bridge is a maintained npm package embedded in libs/talon.
+  - package-ecosystem: "npm"
+    directory: "/libs/talon/deepagents_talon/channels/whatsapp_bridge"
+    schedule:
+      interval: "monthly"
+    groups:
+      minor-and-patch:
+        patterns: ["*"]
+        update-types:
+          - "minor"
+          - "patch"
+      major:
+        patterns: ["*"]
+        update-types:
+          - "major"
+
+  # The Talon example Dockerfile is a maintained runnable topology. Dataset
+  # fixture Dockerfiles under libs/evals/datasets are intentionally unmanaged.
+  - package-ecosystem: "docker"
+    directory: "/examples/talon"
+    schedule:
+      interval: "monthly"
     groups:
       minor-and-patch:
         patterns: ["*"]

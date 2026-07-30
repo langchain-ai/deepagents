@@ -27,10 +27,11 @@ logger = logging.getLogger(__name__)
 class AgentSelectorScreen(ModalScreen[str | None]):
     """Modal dialog for switching between available agents.
 
-    Displays agents found in `~/.deepagents/` in an `OptionList`. Returns the
-    selected agent name on Enter, or `None` on Esc (no change).
-    `Ctrl+S` toggles the highlighted agent as the persisted default
-    (`[agents].default`), mirroring the model selector's affordance.
+    Displays agent profiles from `~/.deepagents/` (directories that contain an
+    `AGENTS.md` marker) in an `OptionList`. Returns the selected agent name on
+    Enter, or `None` on Esc (no change). `Ctrl+S` toggles the highlighted
+    agent as the persisted default (`[agents].default`), mirroring the model
+    selector's affordance.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -51,7 +52,6 @@ class AgentSelectorScreen(ModalScreen[str | None]):
     CSS = """
     AgentSelectorScreen {
         align: center middle;
-        background: transparent;
     }
 
     AgentSelectorScreen > Vertical {

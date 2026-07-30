@@ -1,14 +1,18 @@
-# Advisory check: posts a comment on Code release PRs when the deepagents
-# SDK pin is older than the actual SDK version. Does not block merge — the
-# release workflow enforces the pin at publish time. Removes the comment
-# once resolved.
+# SDK pin check for Code release PRs.
+#
+# - Stale pin: posts an advisory comment/warning only. The release workflow
+#   enforces the pin at publish time.
+# - Prerelease pin: posts a warning and fails until the PR carries the
+#   `release-deps: acknowledged` label (re-runs on labeled/unlabeled).
+# Removes the comment once the pin no longer needs attention.
 # See also: release.yml "Verify package pins SDK at or ahead of workspace
-# version" step (hard gate).
+# version" step (hard gate for stale pins at publish).
 
 name: "🔗 Check SDK Pin"
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     paths:
       - "libs/deepagents/pyproject.toml"
       - "libs/code/pyproject.toml"
@@ -27,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Resolve target package from release-please branch
         id: pkg
@@ -57,7 +61,7 @@ jobs:
           from pathlib import Path
 
           root = Path.cwd()
-          script = root / ".github" / "scripts" / "check_sdk_pin.py"
+          script = root / ".github" / "scripts" / "release" / "check_sdk_pin.py"
           spec = importlib.util.spec_from_file_location("check_sdk_pin", script)
           if spec is None or spec.loader is None:
               print(f"::error::Could not load {script}", file=sys.stderr)
@@ -72,7 +76,7 @@ jobs:
               prerelease = module.is_prerelease(pkg_pin)
           except ValueError as e:
               print(
-                  "::error file=.github/scripts/check_sdk_pin.py::"
+                  "::error file=.github/scripts/release/check_sdk_pin.py::"
                   f"Could not determine SDK pin status: {e}",
                   file=sys.stderr,
               )
@@ -88,6 +92,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           SDK_PIN_BYPASS_LABEL: "release: skip sdk pin check"
+          RELEASE_DEPS_BYPASS_LABEL: "release-deps: acknowledged"
           SDK_VERSION: ${{ steps.check.outputs.sdk_version }}
           PKG_PIN: ${{ steps.check.outputs.pkg_pin }}
           PIN_STALE: ${{ steps.check.outputs.stale }}
@@ -106,6 +111,7 @@ jobs:
             const pkgPyproject = process.env.PKG_PYPROJECT;
             const pkgLockdir = process.env.PKG_LOCKDIR;
             const sdkPinBypassLabel = process.env.SDK_PIN_BYPASS_LABEL;
+            const releaseDepsBypassLabel = process.env.RELEASE_DEPS_BYPASS_LABEL;
             const marker = `<!-- sdk-pin-check:${pkgName} -->`;
             const { owner, repo } = context.repo;
             const prNumber = context.payload.pull_request.number;
@@ -131,8 +137,14 @@ jobs:
               return;
             }
 
+            const labels = (context.payload.pull_request.labels ?? [])
+              .map(label => (typeof label === 'string' ? label : label.name))
+              .filter(Boolean);
+            const prereleaseAcknowledged = labels.includes(releaseDepsBypassLabel);
+
             let body = null;
             let warning = null;
+            let fail = false;
             if (stale) {
               body = [
                 marker,
@@ -151,15 +163,23 @@ jobs:
                 '> See [`.github/RELEASING.md`](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#release-failed-code-sdk-pin-is-older-than-sdk) for the full recovery procedure.',
               ].join('\n');
               warning = `${pkgLabel} has a stale SDK pin: deepagents==${pkgPin} but SDK is ${sdkVersion}`;
-            } else if (prerelease) {
+            } else if (prerelease && !prereleaseAcknowledged) {
               body = [
                 marker,
                 '> [!WARNING]',
                 `> **Prerelease SDK pin** — ${pkgLabel} currently pins ${pkgPinLink}, which is a prerelease.`,
                 '>',
-                '> This is allowed and does not block the release workflow as long as the pin is not older than the workspace SDK. Please verify this prerelease pin is intentional before merging.',
+                '> A prerelease pin is valid only when it is not older than the workspace SDK, but it still needs an explicit merge acknowledgement.',
+                '>',
+                `> 🚨 **Required:** add the \`${releaseDepsBypassLabel}\` label before merging to acknowledge this pin. That label records the review decision and stops the release dependency check from blocking on a pin that is not on PyPI yet (for example during an intentional cross-package release sequence). It does not silence those checks: the release dependency check still resolves and reports any follow-up releases the public install graph needs, and the freshness advisory stays on the PR. Treat their output as outstanding work, not noise.`,
               ].join('\n');
-              warning = `${pkgLabel} pins prerelease SDK deepagents==${pkgPin}; verify this is intentional.`;
+              warning = `${pkgLabel} pins prerelease SDK deepagents==${pkgPin}; add ${releaseDepsBypassLabel} to acknowledge before merging.`;
+              fail = true;
+            } else if (prerelease) {
+              core.info(
+                `${pkgLabel} pins prerelease SDK deepagents==${pkgPin}; ` +
+                `\`${releaseDepsBypassLabel}\` is present so the pin is acknowledged.`
+              );
             }
 
             if (body === null && existing) {
@@ -181,7 +201,9 @@ jobs:
                 }
               }
             } else if (body === null) {
-              core.info(`${pkgLabel} SDK pin is stable and at or ahead of workspace SDK (${pkgPin} >= ${sdkVersion}). No action needed.`);
+              if (!prerelease) {
+                core.info(`${pkgLabel} SDK pin is stable and at or ahead of workspace SDK (${pkgPin} >= ${sdkVersion}). No action needed.`);
+              }
             } else {
               try {
                 // Update silently (no workflow annotation) to avoid repeated warnings on re-pushes.
@@ -205,6 +227,10 @@ jobs:
                   warning
                 );
               }
-              // Always emit annotation regardless of comment success.
-              core.warning(warning);
+              // Fail unacknowledged prerelease pins; stale pins stay advisory.
+              if (fail) {
+                core.setFailed(warning);
+              } else {
+                core.warning(warning);
+              }
             }

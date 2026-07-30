@@ -106,7 +106,10 @@ def show_help() -> None:
         "  dcode threads <list|delete>               Manage conversation threads"
     )
     console.print("  dcode mcp <login>                         Manage MCP servers")
-    console.print("  dcode config <show|list|get|path>         Inspect configuration")
+    console.print(
+        "  dcode config [get <key>|path]             Inspect configuration",
+        markup=False,
+    )
     console.print(
         "  dcode auth <list|set|remove|status|path>  Manage provider credentials"
     )
@@ -117,8 +120,9 @@ def show_help() -> None:
         "  dcode doctor                              Print install diagnostics"
     )
     console.print(
-        "  dcode tools <install>                     Manage managed tools (ripgrep)"
+        "  dcode tools <install|list>                Manage managed tools (ripgrep)"
     )
+    console.print("  dcode install NAME                        Install optional extras")
     console.print()
 
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
@@ -139,8 +143,10 @@ def show_help() -> None:
     console.print(
         "  --startup-cmd CMD          Shell command to run at startup, before first prompt"  # noqa: E501
     )
+    console.print("  -y, --auto-approve         Enable classifier-backed Auto mode")
     console.print(
-        "  -y, --auto-approve         Auto-approve all tool calls in interactive mode (toggle: Shift+Tab)"  # noqa: E501
+        "  --yolo                     Run gated actions without review after "
+        "acknowledgement"
     )
     console.print("  --sandbox TYPE             Remote sandbox for execution")
     console.print(
@@ -167,6 +173,9 @@ def show_help() -> None:
         "  --trust-project-mcp        Trust project MCP configs (skip approval prompt)"
     )
     console.print(
+        "  --trust-project-hooks      Trust project hooks.json command handlers"
+    )
+    console.print(
         "  --interpreter, --no-interpreter"
         "  Enable or disable JS interpreter (`js_eval`) middleware"
     )
@@ -176,6 +185,10 @@ def show_help() -> None:
     console.print(
         "  --interpreter-tools VALUE  PTC allowlist: 'safe', 'all', or comma-separated "
         "tool names (may include 'safe')"
+    )
+    console.print(
+        "  --allow-fs-tools LIST      Filesystem tool allowlist: 'all' or "
+        "comma-separated tool names (must include 'read_file')"
     )
     console.print("  -n, --non-interactive MSG  Run a single task and exit")
     console.print("  -q, --quiet                Clean output for piping (needs -n)")
@@ -201,6 +214,10 @@ def show_help() -> None:
         "  --rubric-max-iterations N  Override grader iterations per rubric attempt"
     )
     console.print(
+        "  --recursion-limit N        Override the agent's graph recursion_limit"
+        " (default 2000)"
+    )
+    console.print(
         "  --timeout SECONDS          Hard wall-clock limit; exits 124 on expiry"
         " (needs -n/stdin)"
     )
@@ -222,14 +239,12 @@ def show_help() -> None:
     console.print(
         "  --auto-update              Toggle automatic updates on or off, then exit"
     )
+    console.print("  --install NAME             Alias for `install NAME`")
     console.print(
-        "  --install NAME             Install an optional extra (e.g. daytona)"
+        "  --package                  With install/--install, treat NAME as a "
+        "package (uv --with), not an extra"
     )
-    console.print(
-        "  --package                  With --install, treat NAME as a package "
-        "(uv --with), not an extra"
-    )
-    console.print("  --yes                      Skip --install confirmation prompts")
+    console.print("  --yes                      Skip install confirmation prompts")
     console.print("  --acp                      Run as an ACP server over stdio")
     console.print("  -v, --version              Show dcode and SDK versions")
     console.print("  -h, --help                 Show this help message and exit")
@@ -382,6 +397,30 @@ def show_skills_help() -> None:
     console.print()
 
 
+def show_plugins_help() -> None:
+    """Show help information for the `plugin` / `plugins` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode plugin <command> [options]")
+    console.print()
+    console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
+    console.print("  list|ls                      List available plugins")
+    console.print("  install <id>                 Install a marketplace plugin")
+    console.print("  uninstall <id>               Uninstall a plugin")
+    console.print("  enable <id>                  Enable an installed plugin")
+    console.print("  disable <id>                 Disable a plugin")
+    console.print("  marketplace list|ls          List configured marketplaces")
+    console.print("  marketplace add <source>     Add a marketplace source")
+    console.print("  marketplace remove <name>    Remove a marketplace and its plugins")
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode plugin list")
+    console.print("  dcode plugin marketplace add ./marketplace")
+    console.print("  dcode plugin install quality-review-plugin@company-tools")
+    console.print("  dcode plugin enable quality-review-plugin@company-tools")
+    console.print()
+
+
 def show_skills_list_help() -> None:
     """Show help information for the `skills list` subcommand."""
     console.print()
@@ -524,7 +563,7 @@ def show_doctor_help() -> None:
     console.print("  dcode doctor --json")
     console.print()
     console.print(
-        "Tip: Run `dcode config show` or `dcode config get <key>` "
+        "Tip: Run `dcode config` or `dcode config get <key>` "
         "to drill into config details.",
         style=theme.MUTED,
         highlight=False,
@@ -607,6 +646,53 @@ def show_tools_install_help() -> None:
     )
     console.print(
         "DEEPAGENTS_CODE_RIPGREP_INSTALLER=system to use your package manager.",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print()
+
+
+def show_install_help() -> None:
+    """Show help information for the `install` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode install NAME [options]")
+    console.print()
+    console.print(
+        "Install an optional deepagents-code extra into the current dcode",
+    )
+    console.print(
+        "environment (for example a sandbox provider or model provider).",
+    )
+    console.print(
+        "Distinct from `dcode tools install`, which provisions managed host",
+    )
+    console.print(
+        "binaries such as ripgrep.",
+    )
+    console.print()
+    # Do not use `_print_option_section` here: it appends the shared `--json`
+    # line, and `dcode install` does not accept that flag.
+    console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
+    console.print(
+        "  --package               Treat NAME as a package added via `uv --with`"
+    )
+    console.print("  --yes                   Skip interactive confirmation prompts")
+    console.print(_HELP_OPTION_LINE)
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode install daytona")
+    console.print("  dcode install fireworks")
+    console.print("  dcode install not-listed-yet --yes")
+    console.print("  dcode install langchain-custom --package --yes")
+    console.print()
+    console.print(
+        "In-session equivalent: `/install NAME`. Legacy CLI alias:",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print(
+        "`dcode --install NAME`.",
         style=theme.MUTED,
         highlight=False,
     )
@@ -706,23 +792,38 @@ def show_mcp_config_help() -> None:
 
 
 def show_config_help() -> None:
-    """Show help information for the `config` subcommand.
+    """Show help information for the `config` command.
 
-    Invoked via the `-h` argparse action, the startup fast-path, or
-    `run_config_command` when no config subcommand is given. Kept import-light
-    so it stays on the startup fast path.
+    Invoked via the `-h` argparse action. Kept import-light so help remains on
+    the startup fast path.
     """
     console.print()
     console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
-    console.print("  dcode config <command> [options]")
+    console.print("  dcode config [options]", markup=False)
+    console.print("  dcode config get <key|section> [--json] [--verbose]", markup=False)
+    console.print("  dcode config path [--json]", markup=False)
+    console.print()
+    console.print("Show effective configuration values and their source.")
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
-    console.print("  show|list|ls      Show effective values and their source")
-    console.print("  get <key>         Show one option's value and source")
+    console.print("  get <key|section> Show one option, or a whole section")
     console.print("  path              Show config file locations")
     console.print()
     _print_option_section(
         "  -v, --verbose, --all  Also show each option's description and how to set it",
+    )
+    console.print()
+    console.print(
+        "  A section is a dotted key prefix (credentials, display), matched",
+        style=theme.MUTED,
+    )
+    console.print(
+        "  case-insensitively. Sections render the grouped view, and emit a",
+        style=theme.MUTED,
+    )
+    console.print(
+        "  JSON list instead of a single object.",
+        style=theme.MUTED,
     )
     console.print()
     console.print(
@@ -731,9 +832,11 @@ def show_config_help() -> None:
     )
     console.print()
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
-    console.print("  dcode config show")
-    console.print("  dcode config show --verbose")
+    console.print("  dcode config")
+    console.print("  dcode config --verbose")
     console.print("  dcode config get interpreter.memory_limit_mb")
+    console.print("  dcode config get credentials")
+    console.print("  dcode config get display --json")
     console.print("  dcode config path")
     console.print()
 

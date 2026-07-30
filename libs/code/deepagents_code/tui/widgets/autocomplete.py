@@ -130,6 +130,11 @@ class SlashCommandController:
         self._commands = commands
         self._view = view
         self._suggestions: list[tuple[str, str]] = []
+        # Machine names aligned by index with `_suggestions`. The popup shows
+        # each suggestion's label, but completion inserts the machine name so a
+        # plugin skill shown as `/skill:review` still inserts its full
+        # `/skill:my-plugin:review`.
+        self._suggestion_names: list[str] = []
         self._selected_index = 0
 
     def update_commands(self, commands: list[CommandEntry]) -> None:
@@ -157,6 +162,7 @@ class SlashCommandController:
         """Clear suggestions."""
         if self._suggestions:
             self._suggestions.clear()
+            self._suggestion_names.clear()
             self._selected_index = 0
             self._view.clear_completion_suggestions()
 
@@ -237,14 +243,14 @@ class SlashCommandController:
             return
 
         if not search:
-            # No search text — show all commands (display only cmd + desc)
-            suggestions = [(entry.name, entry.description) for entry in self._commands][
-                :MAX_SUGGESTIONS
-            ]
+            # No search text — show all commands. Display the label, but keep
+            # the machine name aligned for insertion.
+            selected = list(self._commands)[:MAX_SUGGESTIONS]
         else:
-            # Score and filter commands using fuzzy matching
+            # Score and filter commands using fuzzy matching. Matching runs on
+            # the machine name so the full namespaced name is always reachable.
             scored = [
-                (score, entry.name, entry.description)
+                (score, entry)
                 for entry in self._commands
                 if (
                     score := self._score_command(
@@ -254,10 +260,13 @@ class SlashCommandController:
                 > 0
             ]
             scored.sort(key=lambda x: -x[0])
-            suggestions = [(cmd, desc) for _, cmd, desc in scored[:MAX_SUGGESTIONS]]
+            selected = [entry for _, entry in scored[:MAX_SUGGESTIONS]]
 
-        if suggestions:
-            self._suggestions = suggestions
+        if selected:
+            self._suggestions = [
+                (entry.label(), entry.description) for entry in selected
+            ]
+            self._suggestion_names = [entry.name for entry in selected]
             self._selected_index = 0
             self._view.render_completion_suggestions(
                 self._suggestions, self._selected_index
@@ -316,7 +325,8 @@ class SlashCommandController:
         if not self._suggestions:
             return False
 
-        command, _ = self._suggestions[self._selected_index]
+        # Insert the machine name (aligned by index), not the displayed label.
+        command = self._suggestion_names[self._selected_index]
         # Replace from start to cursor with the command
         self._view.replace_completion_range(0, cursor_index, command)
         self.reset()

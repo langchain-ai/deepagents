@@ -15,12 +15,15 @@ import deepagents_code
 from deepagents_code.tool_display import format_tool_display
 from deepagents_code.tui.widgets.ask_user import (
     _TRAILING_ANNOTATION_RE,
+    MISSING_ANSWER_TOAST,
     AskUserMenu,
     AskUserTextArea,
     _QuestionWidget,
 )
 
 if TYPE_CHECKING:
+    import pytest
+
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
 
 
@@ -231,6 +234,40 @@ class TestAskUserMenu:
             assert future.done()
             assert future.result() == {"type": "answered", "answers": ["Alice"]}
 
+    async def test_text_answer_expands_collapsed_paste(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A collapsed paste in a text answer expands in the submitted value."""
+        from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
+
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _AskUserTestApp([{"question": "Paste config?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            text_input = menu.query_one(".ask-user-text-input", AskUserTextArea)
+            text_input.focus()
+            big = "key=value\n" * 5
+            # Post through the App so Textual's MRO dispatch reaches the
+            # base handlers that perform the insert.
+            pilot.app.post_message(events.Paste(big))
+            await pilot.pause()
+            assert text_input.text == "[Pasted text #1 +5 lines]"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {"type": "answered", "answers": [big]}
+
     async def test_text_input_soft_wraps_long_answers(self) -> None:
         """Soft-wrap is enabled so long answers wrap visually without newlines."""
         app = _AskUserTestApp([{"question": "Describe?", "type": "text"}])
@@ -368,6 +405,53 @@ class TestAskUserMenu:
 
             assert future.done()
             assert future.result() == {"type": "answered", "answers": ["green"]}
+
+    async def test_multiple_choice_other_expands_collapsed_paste(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A collapsed paste in the "other" free-text answer expands on submit."""
+        from deepagents_code.tui.widgets import _paste_textarea as paste_textarea_module
+
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick one",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            other_input = menu.query_one(".ask-user-other-input", AskUserTextArea)
+            other_input.focus()
+            big = "detail\n" * 5
+            # Post through the App so Textual's MRO dispatch reaches the
+            # base handlers that perform the insert.
+            pilot.app.post_message(events.Paste(big))
+            await pilot.pause()
+            assert other_input.text == "[Pasted text #1 +5 lines]"
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert future.done()
+            assert future.result() == {"type": "answered", "answers": [big]}
 
     async def test_enter_advances_sequentially_through_mc_questions(self) -> None:
         """Enter on a MC question should advance to the next, not skip."""
@@ -832,6 +916,236 @@ class TestAskUserMenu:
             help_text = menu.query_one(".ask-user-help").render()
             assert "Tab" not in str(help_text)
 
+    async def test_help_text_advertises_newline_shortcut(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Footer advertises the terminal-aware newline shortcut."""
+        from deepagents_code import config as config_module
+
+        # `newline_hint` resolves `newline_shortcut` via a call-time import from
+        # config, so patch the name on the config module it looks up.
+        monkeypatch.setattr(config_module, "newline_shortcut", lambda: "Ctrl+J")
+        app = _AskUserTestApp([{"question": "Q1?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+J newline" in str(help_text)
+
+    async def test_help_text_shows_editor_hint_for_text_question(self) -> None:
+        """Footer advertises Ctrl+X while the free-text field holds focus."""
+        app = _AskUserTestApp([{"question": "Q1?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            assert isinstance(app.focused, AskUserTextArea)
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+X external editor" in str(help_text)
+
+    async def test_help_text_shows_editor_hint_for_choiceless_multiple_choice(
+        self,
+    ) -> None:
+        """A multiple_choice question with no choices renders a text field."""
+        app = _AskUserTestApp(
+            [{"question": "Pick one", "type": "multiple_choice", "choices": []}]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+X external editor" in str(help_text)
+
+    async def test_help_text_omits_editor_hint_for_multiple_choice(self) -> None:
+        """Footer omits Ctrl+X when only choices (no free-text field) are shown."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick one",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+X" not in str(help_text)
+
+    async def test_help_text_shows_editor_hint_when_other_selected(self) -> None:
+        """Landing on Other reveals and focuses its field, enabling Ctrl+X."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick one",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+
+            # Navigate down to the "Other" option, revealing its text field.
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.pause()
+
+            other_input = menu._question_widgets[0]._other_input
+            assert other_input is not None
+            assert other_input.display is True
+            assert app.focused is other_input
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+X external editor" in str(help_text)
+
+    async def test_help_text_hides_editor_hint_when_leaving_other(self) -> None:
+        """Moving off Other hides its field and retracts the Ctrl+X hint."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick one",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.pause()
+            assert "Ctrl+X" in str(menu.query_one(".ask-user-help").render())
+
+            # Back up to the last real choice: no free-text field is focused.
+            await pilot.press("up")
+            await pilot.pause()
+
+            other_input = menu._question_widgets[0]._other_input
+            assert other_input is not None
+            assert other_input.display is False
+            assert "Ctrl+X" not in str(menu.query_one(".ask-user-help").render())
+
+    async def test_help_text_omits_editor_hint_when_other_field_unfocused(self) -> None:
+        """A visible but unfocused Other field must not advertise Ctrl+X.
+
+        `App.action_open_editor` routes to an ask-user text area only while one
+        is focused, and otherwise opens the chat draft, so the hint has to
+        track focus rather than field visibility.
+        """
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick one",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                }
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+
+            await pilot.press("down")
+            await pilot.press("down")
+            await pilot.pause()
+            assert "Ctrl+X" in str(menu.query_one(".ask-user-help").render())
+
+            # Mirrors a click landing on the question container: the Other
+            # field stays visible, but focus moves off it.
+            menu.focus()
+            await pilot.pause()
+
+            other_input = menu._question_widgets[0]._other_input
+            assert other_input is not None
+            assert other_input.display is True
+            assert app.focused is not other_input
+            assert "Ctrl+X" not in str(menu.query_one(".ask-user-help").render())
+
+    async def test_help_text_hides_editor_hint_when_focus_leaves_menu(self) -> None:
+        """Focus moving off the menu entirely retracts the Ctrl+X hint."""
+        app = _AskUserTestApp([{"question": "Q1?", "type": "text"}])
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            assert "Ctrl+X" in str(menu.query_one(".ask-user-help").render())
+
+            app.set_focus(None)
+            await pilot.pause()
+
+            assert "Ctrl+X" not in str(menu.query_one(".ask-user-help").render())
+
+    async def test_help_text_editor_hint_follows_clicked_question(self) -> None:
+        """Clicking into another question's text field turns the hint on."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick one",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                },
+                {"question": "Why?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            assert "Ctrl+X" not in str(menu.query_one(".ask-user-help").render())
+
+            text_input = menu._question_widgets[1]._text_input
+            assert text_input is not None
+            await pilot.click(text_input)
+            await pilot.pause()
+
+            assert app.focused is text_input
+            assert "Ctrl+X external editor" in str(
+                menu.query_one(".ask-user-help").render()
+            )
+
+    async def test_help_text_editor_hint_follows_active_question(self) -> None:
+        """Mixed prompts only advertise Ctrl+X for the active free-text field."""
+        app = _AskUserTestApp(
+            [
+                {
+                    "question": "Pick one",
+                    "type": "multiple_choice",
+                    "choices": [{"value": "red"}, {"value": "blue"}],
+                },
+                {"question": "Why?", "type": "text"},
+            ]
+        )
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+
+            # Initial focus is the multiple-choice question: no free-text field.
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+X" not in str(help_text)
+
+            # Move to the text question: the focused field can use Ctrl+X.
+            menu.action_next_question()
+            await pilot.pause()
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+X" in str(help_text)
+
+            # Move back: stop advertising the shortcut for the choice list.
+            menu.action_previous_question()
+            await pilot.pause()
+            help_text = menu.query_one(".ask-user-help").render()
+            assert "Ctrl+X" not in str(help_text)
+
     async def test_required_label_shown_for_required_question(self) -> None:
         """Required questions display a (required) indicator."""
         app = _AskUserTestApp([{"question": "Name?", "type": "text", "required": True}])
@@ -906,6 +1220,25 @@ class TestAskUserMenu:
             await pilot.pause()
 
             assert not future.done()
+
+    async def test_required_empty_submit_shows_toast(self) -> None:
+        """Blocked empty submit surfaces a warning toast to the user."""
+        app = _AskUserTestApp([{"question": "Name?", "type": "text", "required": True}])
+
+        async with app.run_test() as pilot:
+            menu = app.query_one("#ask-user-menu", AskUserMenu)
+            future: asyncio.Future[AskUserWidgetResult] = (
+                asyncio.get_running_loop().create_future()
+            )
+            menu.set_future(future)
+
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert not future.done()
+            messages = [n.message for n in app._notifications]
+            assert MISSING_ANSWER_TOAST in messages
 
     async def test_up_from_other_input_selects_last_choice_directly(self) -> None:
         """Pressing up while Other input is focused jumps to last real choice."""
@@ -1010,7 +1343,7 @@ class TestAskUserMenu:
             assert other_input.has_focus
 
     async def test_cancel_after_submit_does_not_override_answer(self) -> None:
-        """Cancel after submit should be ignored by the `_submitted` guard."""
+        """Cancel after submit is ignored by the resolve-once completion guard."""
         app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
 
         async with app.run_test() as pilot:
@@ -1034,7 +1367,7 @@ class TestAskUserMenu:
             assert future.result() == {"type": "answered", "answers": ["Alice"]}
 
     async def test_submit_after_cancel_does_not_override_cancel(self) -> None:
-        """Submit after cancel should be ignored by the `_submitted` guard."""
+        """Submit after cancel is ignored by the resolve-once completion guard."""
         app = _AskUserTestApp([{"question": "Name?", "type": "text"}])
 
         async with app.run_test() as pilot:

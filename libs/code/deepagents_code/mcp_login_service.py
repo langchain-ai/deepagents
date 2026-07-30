@@ -59,13 +59,43 @@ class ConfigResolutionError:
     """Plain-text description suitable for direct display to the user."""
 
     untrusted_project_paths: tuple[Path, ...] = ()
-    """Project-level configs skipped because the trust store had no match.
+    """Project-level configs with server entries skipped by the trust gate.
 
-    Populated only when at least one discovered project config was
-    skipped during auto-discovery, regardless of `kind`. Callers can
-    surface a "skipping untrusted project config" hint alongside the
-    primary error.
+    Populated when at least one discovered project config had server entries
+    skipped during auto-discovery (unapproved, disabled, or because the user's
+    trust policy could not be read), regardless of `kind`. Callers can surface a
+    "skipping untrusted project servers" hint alongside the primary error.
     """
+
+    legacy_ignored: tuple[str, ...] = ()
+    """Names found in a legacy `[mcp].enabled_project_servers` list, sorted.
+
+    Mirrors `resolve_and_load_mcp_tools`: non-empty means the user relied on the
+    removed flat allowlist, so those servers silently stopped loading. Callers
+    should surface the migration hint so this non-interactive path explains the
+    change instead of the servers just vanishing.
+    """
+
+    policy_error: str | None = None
+    """Set when the user's trust policy (`config.toml`) could not be read.
+
+    When non-`None`, project servers were dropped because the policy failed to
+    load — not because they were unapproved — so callers should surface this
+    reason instead of the misleading `untrusted_project_paths` notice. On this
+    error type `message` already embeds it; callers use the field only to
+    suppress the misleading untrusted notice.
+    """
+
+    legacy_env_ignored: bool = False
+    """`True` when the removed `DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS` env
+    var is set. Twin of `legacy_ignored` for the env surface; see
+    `format_legacy_env_ignored_notice`."""
+
+    malformed_approvals: int = 0
+    """Count of persisted `[mcp].enabled_project_server_approvals` rows dropped as
+    malformed. Non-zero means a saved approval could not be read, so its server
+    silently stopped pre-approving; surfaced for parity with `legacy_ignored`.
+    See `format_malformed_approvals_notice`."""
 
 
 @dataclass(frozen=True)
@@ -79,7 +109,44 @@ class ConfigResolution:
     """Paths whose contents were merged into `config`, in precedence order."""
 
     untrusted_project_paths: tuple[Path, ...] = ()
-    """Project-level configs that were skipped during this resolution."""
+    """Project-level configs with server entries skipped by the trust gate."""
+
+    legacy_ignored: tuple[str, ...] = ()
+    """Names from a legacy `[mcp].enabled_project_servers` list, now ignored.
+
+    See `ConfigResolutionError.legacy_ignored`; surfaced even on success because
+    the requested server may load while other legacy-listed servers do not.
+    """
+
+    policy_error: str | None = None
+    """Set when the user's trust policy could not be read (fail-closed).
+
+    Non-`None` even on a successful resolution — user-level configs and any
+    `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` env names still load, but scoped
+    project approvals were discarded. Surfaced so the read failure is never
+    silently swallowed just because some other config remained usable. See
+    `ConfigResolutionError.policy_error`.
+    """
+
+    legacy_env_ignored: bool = False
+    """`True` when the removed `DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS` env
+    var is set. See `ConfigResolutionError.legacy_env_ignored`."""
+
+    malformed_approvals: int = 0
+    """Count of persisted approval rows dropped as malformed. Surfaced even on
+    success because the requested server may load while a corrupt sibling
+    approval does not. See `ConfigResolutionError.malformed_approvals`."""
+
+    load_errors: tuple[tuple[Path, str], ...] = ()
+    """Discovered config files that failed to parse or validate, `(path, error)`.
+
+    Surfaced even on success: a broken project `.mcp.json` (or an approved
+    server that fails per-server validation) can be dropped while another
+    discovered config still loads. Reporting it here matches
+    `resolve_and_load_mcp_tools`, which emits the same failures as
+    `status="error"` rows rather than swallowing them. On `ConfigResolutionError`
+    the reason is already embedded in `message`, so the field lives only here.
+    See `format_load_errors_notice`."""
 
     def __post_init__(self) -> None:
         """Enforce the non-empty `used_paths` invariant.
@@ -123,22 +190,32 @@ class ServerSelection:
 
 def resolve_mcp_config(
     config_path: str | None,
+    *,
+    trust_project_mcp: bool | None = None,
 ) -> ConfigResolution | ConfigResolutionError:
     """Resolve an MCP config dict for login without printing anything.
 
     Args:
         config_path: Explicit `--mcp-config` path, or `None` for auto-discovery.
+        trust_project_mcp: Whether project configs have whole-config trust for
+            the current session. Persisted approvals and denials still apply.
 
     Returns:
         A `ConfigResolution` on success, or a `ConfigResolutionError`
             describing why no usable config could be assembled.
     """
     from deepagents_code.mcp_tools import (
+        _drop_invalid_mcp_config_servers,
+        _load_mcp_config_top_level_with_error,
+        _merge_mcp_configs_with_sources,
+        _resolve_project_config_base,
         classify_discovered_configs,
         discover_mcp_configs,
+        filter_trusted_project_servers,
         load_mcp_config,
-        load_mcp_config_lenient,
+        load_mcp_config_with_error,
         merge_mcp_configs,
+        project_root_for_mcp_config_path,
     )
 
     if config_path is not None:
@@ -169,43 +246,116 @@ def resolve_mcp_config(
     configs: list[dict[str, Any]] = []
     used_paths: list[Path] = []
     untrusted: tuple[Path, ...] = ()
+    # Parse failures of discovered files, surfaced when nothing usable remains
+    # so the user is told *why* (mirrors resolve_and_load_mcp_tools) instead of
+    # a bare "no usable config" that hides a JSON syntax error.
+    load_errors: list[tuple[Path, str]] = []
+    policy_error: str | None = None
+    legacy_ignored: tuple[str, ...] = ()
+    legacy_env_ignored = False
+    malformed_approvals = 0
 
     for path in user_paths:
-        loaded = load_mcp_config_lenient(path)
+        loaded, error = load_mcp_config_with_error(path)
         if loaded is not None:
             configs.append(loaded)
             used_paths.append(path)
+        elif error is not None:
+            load_errors.append((path, error))
 
     if project_paths:
-        from deepagents_code.mcp_trust import (
-            compute_config_fingerprint,
-            is_project_mcp_trusted,
-        )
-        from deepagents_code.project_utils import find_project_root
+        from deepagents_code.model_config import load_mcp_server_trust_lists
 
-        project_root = str((find_project_root() or Path.cwd()).resolve())
-        fingerprint = compute_config_fingerprint(project_paths)
-        if is_project_mcp_trusted(project_root, fingerprint):
-            for path in project_paths:
-                loaded = load_mcp_config_lenient(path)
-                if loaded is not None:
-                    configs.append(loaded)
-                    used_paths.append(path)
-        else:
-            untrusted = tuple(project_paths)
+        trust_lists = load_mcp_server_trust_lists()
+        legacy_ignored = tuple(sorted(trust_lists.legacy_ignored))
+        legacy_env_ignored = trust_lists.legacy_env_ignored
+        malformed_approvals = trust_lists.malformed_approvals
+        project_base = _resolve_project_config_base(None)
+        untrusted_paths: list[Path] = []
+        if trust_lists.load_failed:
+            # Whole-config trust and scoped TOML approvals fail closed. The
+            # trust-list loader has already discarded scoped approvals while
+            # retaining names explicitly enabled through the readable env var.
+            policy_error = trust_lists.read_error
+        config_trusted = trust_project_mcp is True and not trust_lists.load_failed
+        loaded_projects: list[tuple[Path, dict[str, Any]]] = []
+        for path in project_paths:
+            loaded, error = _load_mcp_config_top_level_with_error(path)
+            if loaded is not None:
+                loaded_projects.append((path, loaded))
+            elif error is not None:
+                load_errors.append((path, error))
+
+        if loaded_projects:
+            project_config, server_sources = _merge_mcp_configs_with_sources(
+                loaded_projects
+            )
+            servers = project_config["mcpServers"]
+            kept: dict[str, Any] = {}
+            for name, server in servers.items():
+                source = server_sources[name]
+                project_root = project_root_for_mcp_config_path(
+                    source, fallback=project_base
+                )
+                kept.update(
+                    filter_trusted_project_servers(
+                        {name: server},
+                        trust_lists,
+                        project_root=project_root,
+                        config_trusted=config_trusted,
+                    )
+                )
+
+            if kept:
+                filtered = {**project_config, "mcpServers": kept}
+                valid, errors = _drop_invalid_mcp_config_servers(filtered)
+                for name, error in errors.items():
+                    load_errors.append((server_sources[name], error))
+                if valid["mcpServers"]:
+                    configs.append(valid)
+                    kept_sources = {
+                        server_sources[name] for name in valid["mcpServers"]
+                    }
+                    used_paths.extend(
+                        path for path in project_paths if path in kept_sources
+                    )
+
+            dropped_sources = {
+                server_sources[name] for name in servers if name not in kept
+            }
+            untrusted_paths.extend(
+                path for path in project_paths if path in dropped_sources
+            )
+        untrusted = tuple(untrusted_paths)
 
     if not configs:
-        found_paths = ", ".join(str(path) for path in found)
+        if policy_error is not None:
+            message = _policy_error_message(policy_error)
+        elif load_errors:
+            detail = "; ".join(f"{path}: {error}" for path, error in load_errors)
+            message = f"No usable MCP config found (load errors: {detail})"
+        else:
+            found_paths = ", ".join(str(path) for path in found)
+            message = f"No usable MCP config found in: {found_paths}"
         return ConfigResolutionError(
             kind=ConfigErrorKind.NO_USABLE_CONFIG,
-            message=f"No usable MCP config found in: {found_paths}",
+            message=message,
             untrusted_project_paths=untrusted,
+            legacy_ignored=legacy_ignored,
+            policy_error=policy_error,
+            legacy_env_ignored=legacy_env_ignored,
+            malformed_approvals=malformed_approvals,
         )
 
     return ConfigResolution(
         config=merge_mcp_configs(configs),
         used_paths=tuple(used_paths),
         untrusted_project_paths=untrusted,
+        legacy_ignored=legacy_ignored,
+        policy_error=policy_error,
+        legacy_env_ignored=legacy_env_ignored,
+        malformed_approvals=malformed_approvals,
+        load_errors=tuple(load_errors),
     )
 
 
@@ -250,11 +400,39 @@ def select_server(
     )
 
 
-def format_untrusted_project_notice(paths: tuple[Path, ...]) -> str:
-    """Build the CLI-style hint string for skipped untrusted project configs.
+def _policy_error_message(policy_error: str) -> str:
+    """Return the user-facing message for an unreadable trust policy."""
+    return (
+        f"Refusing to trust project MCP servers: {policy_error}. Fix "
+        "~/.deepagents/config.toml, or pass --mcp-config <path> to load "
+        "a file explicitly."
+    )
+
+
+def format_policy_error_notice(policy_error: str | None) -> str:
+    """Build the CLI-style hint for an unreadable user trust policy.
+
+    Surfaced by `dcode mcp login` so a `config.toml` read failure is never
+    swallowed just because a user-level config or an env-enabled server still
+    loaded — and so the reason is not misattributed to an "untrusted project"
+    when the real fix is repairing `config.toml`.
 
     Args:
-        paths: Project configs that were skipped during resolution.
+        policy_error: The read-failure reason, or `None` when the policy loaded.
+
+    Returns:
+        A single-line user-facing string. Empty when `policy_error` is `None`.
+    """
+    if policy_error is None:
+        return ""
+    return _policy_error_message(policy_error)
+
+
+def format_untrusted_project_notice(paths: tuple[Path, ...]) -> str:
+    """Build the CLI-style hint string for skipped project server entries.
+
+    Args:
+        paths: Project configs with entries skipped during resolution.
 
     Returns:
         A single-line user-facing string. Empty when `paths` is empty.
@@ -263,10 +441,101 @@ def format_untrusted_project_notice(paths: tuple[Path, ...]) -> str:
         return ""
     skipped = ", ".join(str(path) for path in paths)
     return (
-        "Skipping untrusted project MCP config "
-        f"(not yet approved or config changed): {skipped}. "
-        "Approve it by running `dcode` in this project, or "
-        "pass --mcp-config <path> to use it explicitly."
+        "Skipping untrusted project MCP server entries "
+        f"(not yet approved or disabled): {skipped}. "
+        "Approve them by running `dcode` in this project, or "
+        "pass --mcp-config <path> to use the file explicitly."
+    )
+
+
+def format_legacy_ignored_notice(names: tuple[str, ...]) -> str:
+    """Build the CLI-style hint for servers dropped by the legacy-key removal.
+
+    Mirrors the `resolve_and_load_mcp_tools` migration message so
+    non-interactive `dcode mcp login` explains why a previously allowlisted
+    server stopped loading instead of leaving it to vanish silently.
+
+    Args:
+        names: Server names found in a legacy `[mcp].enabled_project_servers`
+            list, now ignored.
+
+    Returns:
+        A single-line user-facing string. Empty when `names` is empty.
+    """
+    if not names:
+        return ""
+    ignored = ", ".join(names)
+    return (
+        "[mcp].enabled_project_servers is no longer used; re-approve by "
+        f"running `dcode` in this project to keep loading: {ignored}"
+    )
+
+
+def format_legacy_env_ignored_notice(legacy_env_ignored: bool) -> str:
+    """Build the CLI-style hint for the renamed, now-ignored env var.
+
+    Mirrors `format_legacy_ignored_notice` for the env surface so a user who
+    still exports `DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS` learns it was
+    renamed instead of its servers silently ceasing to pre-approve.
+
+    Args:
+        legacy_env_ignored: Whether the removed env var is set.
+
+    Returns:
+        A single-line user-facing string. Empty when the flag is `False`.
+    """
+    if not legacy_env_ignored:
+        return ""
+    return (
+        "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS is no longer used; it was "
+        "renamed to DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS"
+    )
+
+
+def format_malformed_approvals_notice(count: int) -> str:
+    """Build the CLI-style hint for dropped malformed saved approvals.
+
+    Mirrors `format_legacy_ignored_notice` so non-interactive `dcode mcp login`
+    explains why a previously-approved server stopped loading (a corrupt saved
+    approval) instead of leaving it to vanish silently.
+
+    Args:
+        count: Number of `[mcp].enabled_project_server_approvals` rows dropped as
+            malformed.
+
+    Returns:
+        A single-line user-facing string. Empty when `count` is zero.
+    """
+    if count <= 0:
+        return ""
+    entry_word = "entry" if count == 1 else "entries"
+    return (
+        f"{count} [mcp].enabled_project_server_approvals {entry_word} could not "
+        "be read and were ignored; re-approve by running `dcode` in this project "
+        "to keep loading affected servers"
+    )
+
+
+def format_load_errors_notice(load_errors: tuple[tuple[Path, str], ...]) -> str:
+    """Build the CLI-style hint for discovered configs that failed to load.
+
+    Surfaced by `dcode mcp login` on a partially successful resolution so a
+    broken `.mcp.json` is reported instead of silently dropped while another
+    config still loads — matching the runtime loader
+    (`resolve_and_load_mcp_tools`), which emits the same failures as error rows.
+
+    Args:
+        load_errors: `(path, error)` pairs for configs that failed to parse or
+            validate.
+
+    Returns:
+        A user-facing string, one line per failure. Empty when `load_errors` is
+            empty.
+    """
+    if not load_errors:
+        return ""
+    return "\n".join(
+        f"Ignoring MCP config {path}: {error}" for path, error in load_errors
     )
 
 
@@ -275,6 +544,11 @@ __all__ = [
     "ConfigResolution",
     "ConfigResolutionError",
     "ServerSelection",
+    "format_legacy_env_ignored_notice",
+    "format_legacy_ignored_notice",
+    "format_load_errors_notice",
+    "format_malformed_approvals_notice",
+    "format_policy_error_notice",
     "format_untrusted_project_notice",
     "resolve_mcp_config",
     "select_server",

@@ -46,6 +46,7 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "tool_reject_reason",
         "skill_expanded",
         "rubric_expanded",
+        "user_expanded",
         "is_streaming",
     }
 )
@@ -195,6 +196,19 @@ class MessageData:
     rubric_expanded: bool = False
     """Whether the grader details are expanded in the UI."""
 
+    # USER message fields - only populated for USER messages
+    user_expanded: bool = False
+    """Whether a collapsed long user message is expanded in the UI."""
+
+    user_detect_mode: bool = True
+    """Whether the message renders a leading `/`/`!` trigger as a mode glyph.
+
+    Submitted prompts are constructed with mode detection off (a leading slash
+    is literal text there), so this has to survive virtualization or a rehydrated
+    message would strip a prefix it should render — changing both its glyph and
+    its collapse threshold.
+    """
+
     is_streaming: bool = False
     """Whether the message is still being streamed.
 
@@ -260,7 +274,13 @@ class MessageData:
 
         match self.type:
             case MessageType.USER:
-                return UserMessage(self.content, id=self.id)
+                widget = UserMessage(
+                    self.content,
+                    id=self.id,
+                    detect_mode=self.user_detect_mode,
+                )
+                widget._deferred_expanded = self.user_expanded
+                return widget
 
             case MessageType.ASSISTANT:
                 return AssistantMessage(self.content, id=self.id)
@@ -370,6 +390,8 @@ class MessageData:
                 type=MessageType.USER,
                 content=widget._content,
                 id=widget_id,
+                user_expanded=widget._expanded,
+                user_detect_mode=widget._detect_mode,
             )
 
         if isinstance(widget, AssistantMessage):
@@ -893,6 +915,8 @@ class MessageStore:
         scroll_position: float,
         viewport_height: int,
         bottom_spacer_top: int,
+        *,
+        max_scroll: float | None = None,
     ) -> bool:
         """Check if we should hydrate messages below the current view.
 
@@ -900,12 +924,22 @@ class MessageStore:
             scroll_position: Current scroll Y position.
             viewport_height: Height of the viewport.
             bottom_spacer_top: Estimated row where the bottom spacer begins.
+            max_scroll: Maximum scroll offset of the viewport, when known. When
+                the view is scrolled to this edge but history is still archived
+                below, hydration must run regardless of the spacer-distance
+                heuristic: the user cannot scroll any further, and estimated
+                spacer heights can drift from the real DOM layout enough to
+                leave the distance check just short of its threshold, stranding
+                the tail. Mirrors how scrolling to the top (offset 0) always
+                hydrates above.
 
         Returns:
-            True if the viewport is near the bottom spacer.
+            True if the viewport is near (or at) the bottom spacer.
         """
         if not self.has_messages_below:
             return False
+        if max_scroll is not None and scroll_position >= max_scroll:
+            return True
         viewport_bottom = scroll_position + viewport_height
         distance_from_bottom_spacer = bottom_spacer_top - viewport_bottom
         threshold = viewport_height * 2

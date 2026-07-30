@@ -20,6 +20,7 @@ from pydantic import Field
 
 from deepagents_code.agent import create_cli_agent
 from deepagents_code.config import Settings
+from deepagents_code.offload import _ArtifactsStorage
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Generator, Sequence
@@ -132,13 +133,20 @@ def _mock_settings(tmp_path: Path) -> Generator[None, None, None]:
         mock_s.user_langchain_project = None
         mock_s.shell_allow_list = None
 
-        # Patch tempfile.mkdtemp inside agent.py so the conversation-history
-        # and large-results temp directories are deterministic across runs
-        # (the real mkdtemp appends a random suffix that breaks snapshots).
-        def _fake_mkdtemp(prefix: str = "", **_kw: Any) -> str:
-            return str(tmp_path / prefix.rstrip("_"))
-
-        with patch("deepagents_code.agent.tempfile.mkdtemp", _fake_mkdtemp):
+        # Patch generated backend roots so host-path mappings are deterministic
+        # across machines and runs.
+        with (
+            patch(
+                "deepagents_code.agent._artifacts_root",
+                return_value=_ArtifactsStorage(
+                    root=(tmp_path / "dcode-artifacts").as_posix()
+                ),
+            ),
+            patch(
+                "deepagents_code.agent._offload_fallback_root",
+                return_value=tmp_path / ".deepagents",
+            ),
+        ):
             yield
 
 

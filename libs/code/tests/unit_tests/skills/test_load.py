@@ -678,6 +678,29 @@ class TestListSkillsBuiltIn:
         assert "deepagents-code-version" in remember["metadata"]
         assert remember["metadata"]["deepagents-code-version"] == _cli_version
 
+    def test_real_thread_inspector_skill_ships(self) -> None:
+        """Verify the built-in thread inspector and its script load from the package."""
+        built_in_dir = Settings.get_built_in_skills_dir()
+        skill_dir = built_in_dir / "deepagents-thread-inspector"
+        skill_md = skill_dir / "SKILL.md"
+        script = skill_dir / "scripts" / "inspect_sessions.py"
+        assert skill_md.exists(), f"Expected {skill_md} to exist"
+        assert script.exists(), f"Expected {script} to exist"
+
+        skills = list_skills(
+            built_in_skills_dir=built_in_dir,
+            user_skills_dir=None,
+            project_skills_dir=None,
+        )
+        inspector = next(
+            skill for skill in skills if skill["name"] == "deepagents-thread-inspector"
+        )
+        assert inspector["source"] == "built-in"
+        assert len(inspector["description"]) > 0
+        assert inspector["license"] == "MIT"
+        assert inspector["compatibility"] == "designed for deepagents-code"
+        assert inspector["metadata"]["deepagents-code-version"] == _cli_version
+
     def test_oserror_in_one_source_does_not_break_others(self, tmp_path: Path) -> None:
         """An OSError in one source should not prevent other sources from loading.
 
@@ -854,3 +877,49 @@ class TestListSkillsClaudeDirectories:
         assert len(skills) == 2
         names = {s["name"] for s in skills}
         assert names == {"user-skill", "claude-skill"}
+
+
+class TestListSkillsPluginNamespacing:
+    """Plugin sources namespace names, including nested subfolders."""
+
+    def test_plugin_skills_namespaced_with_nesting(self, tmp_path: Path) -> None:
+        """The TUI loader namespaces plugin skills like the middleware does."""
+        plugin_skills = tmp_path / "plugin" / "skills"
+        _create_skill(plugin_skills / "review", "review", "Top-level skill")
+        _create_skill(plugin_skills / "foo" / "lookup", "lookup", "Nested skill")
+
+        skills = list_skills(
+            plugin_skill_sources=[(plugin_skills, "my-plugin")],
+        )
+
+        namespaced = {s["name"] for s in skills}
+        assert namespaced == {"my-plugin:review", "my-plugin:foo:lookup"}
+        assert all(s["source"] == "plugin" for s in skills)
+
+    def test_root_plugin_skill_is_discoverable(self, tmp_path: Path) -> None:
+        plugin_root = tmp_path / "root-plugin"
+        _create_skill(plugin_root, "root-plugin", "Root skill")
+
+        skills = list_skills(
+            plugin_skill_sources=[(plugin_root, "root-plugin@tools")],
+        )
+
+        assert [skill["name"] for skill in skills] == ["root-plugin@tools:root-plugin"]
+
+    def test_plugin_namespace_and_subfolders_are_normalized(
+        self, tmp_path: Path
+    ) -> None:
+        plugin_skills = tmp_path / "plugin" / "skills"
+        _create_skill(
+            plugin_skills / "Policies" / "review",
+            "review",
+            "Policy review",
+        )
+
+        skills = list_skills(
+            plugin_skill_sources=[(plugin_skills, "Quality@Company")],
+        )
+
+        assert [skill["name"] for skill in skills] == [
+            "quality@company:policies:review"
+        ]

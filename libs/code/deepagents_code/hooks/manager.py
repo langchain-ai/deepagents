@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     )
     from deepagents_code.hooks.runtime import HooksRuntime
     from deepagents_code.hooks.transcript import TranscriptRecorder
+    from deepagents_code.plugins.models import PluginInstance
 
 
 logger = logging.getLogger(__name__)
@@ -236,8 +237,10 @@ class HooksManager:
         service = self._service
         return service is not None and service.has_handlers(event)
 
-    async def reload(self, *, cwd: Path) -> None:
-        """Rebuild the runtime after the session working directory changes.
+    async def reload(
+        self, *, cwd: Path, plugins: tuple[PluginInstance, ...] | None = None
+    ) -> None:
+        """Rebuild the runtime after configuration or working-directory changes.
 
         Workspace trust is re-resolved for `cwd`, so moving from a trusted
         project into an untrusted one drops project hooks instead of carrying
@@ -249,6 +252,7 @@ class HooksManager:
 
         Args:
             cwd: New session working directory.
+            plugins: Already-discovered plugins, or `None` to discover them.
         """
         import asyncio
 
@@ -257,6 +261,7 @@ class HooksManager:
             cwd,
             trust=self.trust,
             presenter=self.presenter,
+            plugins=plugins,
         )
         self._service = self._build_service()
         _present_load_diagnostics(self._runtime)
@@ -595,6 +600,7 @@ def _load_runtime(
     *,
     trust: WorkspaceTrust,
     presenter: HookPresenter,
+    plugins: tuple[PluginInstance, ...] | None = None,
 ) -> HooksRuntime | None:
     """Resolve workspace trust for `cwd` and load a runtime under it.
 
@@ -605,6 +611,7 @@ def _load_runtime(
         cwd: Session working directory.
         trust: Policy deciding whether project hooks may load.
         presenter: The manager's presenter, shared with the new runtime.
+        plugins: Already-discovered plugins, or `None` to discover them.
 
     Returns:
         The loaded runtime, `None` when configuration could not be loaded, and
@@ -620,7 +627,8 @@ def _load_runtime(
     try:
         project_context = ProjectContext.from_user_cwd(cwd)
         plugin_hooks = discover_plugin_hook_sources(
-            project_dir=project_context.project_root or project_context.user_cwd
+            project_dir=project_context.project_root or project_context.user_cwd,
+            plugins=plugins,
         )
         return HooksRuntime.create(
             cwd=cwd,

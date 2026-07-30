@@ -2134,7 +2134,7 @@ class TestReloadPluginsViaReload:
             async def _fake_discover() -> bool:  # noqa: RUF029
                 return True
 
-            async def _fake_reload_hooks() -> None:  # noqa: RUF029
+            async def _fake_reload_hooks(**_kwargs: object) -> None:  # noqa: RUF029
                 order.append("hooks")
 
             async def _fake_restart() -> bool:  # noqa: RUF029

@@ -30,7 +30,7 @@ A plugin contributes hooks from `hooks/hooks.json` in its root, from a `hooks` p
 
 Installing and enabling the plugin is the consent gate — workspace trust governs project hooks only, so it neither grants nor withholds a plugin's hooks. Review a plugin before enabling it; the plugin manager lists the events each one hooks. Because the set of server-owned events is fixed when a session starts, newly enabled plugin hooks take effect after `/reload`.
 
-Plugin handlers run with their plugin's variables both substituted into `command` / `argv` and exported to their environment. Substitution is literal, so quote the variable in a shell-form `command` — an installation path may contain spaces:
+Plugin handlers receive their plugin's path variables in the environment. Shell-form `command` handlers expand those variables normally; direct-exec `argv` handlers resolve them before launch. Quote variables in shell commands because installation paths may contain spaces:
 
 | Variable | Value |
 | --- | --- |
@@ -56,7 +56,7 @@ Plugin handlers run with their plugin's variables both substituted into `command
 }
 ```
 
-Setting `argv` instead avoids the question entirely: those handlers are executed directly, so no shell ever re-reads the substituted path.
+Setting `argv` instead avoids shell quoting entirely because those handlers execute directly.
 
 ## Events and matchers
 

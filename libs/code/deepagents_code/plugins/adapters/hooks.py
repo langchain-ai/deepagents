@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Final
 from deepagents_code.hooks.loading import HooksSource, read_hooks_json
 from deepagents_code.hooks.models.domain import HookDiagnostic, HookEvent
 from deepagents_code.plugins.manifest import find_manifest_path
-from deepagents_code.plugins.substitution import plugin_environment, substitute_json
+from deepagents_code.plugins.substitution import plugin_environment
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -54,8 +54,7 @@ def _plugin_documents(
 ) -> tuple[list[tuple[Path, JsonValue]], list[HookDiagnostic]]:
     """Collect a plugin's hook documents with the path each was declared at.
 
-    Inline manifest hooks are loaded after file documents, matching how MCP
-    servers let the manifest win over `.mcp.json`.
+    Inline manifest hooks follow file documents in declaration order.
 
     Args:
         plugin: Plugin whose declarations should be read.
@@ -67,9 +66,9 @@ def _plugin_documents(
     documents: list[tuple[Path, JsonValue]] = []
     diagnostics: list[HookDiagnostic] = []
     for path in plugin.inventory.hook_files:
-        document, read_diagnostics = read_hooks_json(path)
+        decoded, document, read_diagnostics = read_hooks_json(path)
         diagnostics.extend(read_diagnostics)
-        if document is not None:
+        if decoded:
             documents.append((path, document))
     manifest = plugin.manifest
     if manifest and manifest.inline_hooks:
@@ -111,61 +110,52 @@ def _sources_for_plugin(
         project_dir=project_dir,
     )
     sources = tuple(
-        (
-            HooksSource(location=str(path), plugin_id=plugin.plugin_id, env=env),
-            substitute_json(
-                document,
-                plugin_root=plugin.root,
-                plugin_data=plugin.data_dir,
-                project_dir=project_dir,
-            ),
-        )
+        (HooksSource(location=str(path), plugin_id=plugin.plugin_id, env=env), document)
         for path, document in documents
     )
     return PluginHookSources(documents=sources, diagnostics=tuple(diagnostics))
 
 
 def discover_plugin_hook_sources(
-    *, project_dir: Path | None = None
+    *,
+    project_dir: Path | None = None,
+    plugins: tuple[PluginInstance, ...] | None = None,
 ) -> PluginHookSources:
-    """Discover enabled plugins and build their hook configuration sources.
+    """Build hook sources from enabled or already-discovered plugins.
 
-    Plugin path variables are substituted here rather than at execution time, so
-    `${CLAUDE_PLUGIN_ROOT}` resolves identically for shell and `argv` handlers and
-    the result participates in the configuration snapshot hash. The same variables
-    are also exported to each handler's environment. A shell-form `command`
-    receives the path literally, so a plugin whose install path may contain
-    spaces has to quote the variable.
-
-    One failing plugin never withholds another's hooks: each is read in
-    isolation and reports its own diagnostics.
+    Shell-form commands resolve path variables from their environment; direct-exec
+    `argv` values are resolved when the immutable hook snapshot is compiled.
 
     Args:
-        project_dir: Project directory for `${CLAUDE_PROJECT_DIR}` substitution.
+        project_dir: Project directory exposed as `${CLAUDE_PROJECT_DIR}`.
+        plugins: Already-discovered plugins, or `None` to discover them here.
 
     Returns:
-        Sourced hook documents in plugin declaration order, with the diagnostics
-        collecting them produced, or only a diagnostic when discovery fails.
+        Sourced hook documents and collection diagnostics.
     """
-    try:
-        from deepagents_code.plugins import discover_plugins
+    diagnostics: list[HookDiagnostic] = []
+    if plugins is None:
+        try:
+            from deepagents_code.plugins import discover_plugins
 
-        result = discover_plugins()
-    # `_diagnostic` logs the traceback. Discovery failing must degrade to "no
-    # plugin hooks" rather than take the user and project hooks down with it.
-    except Exception as exc:  # noqa: BLE001
-        return PluginHookSources(
-            diagnostics=(
-                _diagnostic(f"Could not discover plugin hooks: {exc}", exc_info=True),
+            result = discover_plugins()
+        # `_diagnostic` logs the traceback. Discovery failure must not take user
+        # and project hooks down with plugin hooks.
+        except Exception as exc:  # noqa: BLE001
+            return PluginHookSources(
+                diagnostics=(
+                    _diagnostic(
+                        f"Could not discover plugin hooks: {exc}", exc_info=True
+                    ),
+                )
             )
-        )
-    if result.warnings:
-        logger.warning(
-            "Plugin discovery warnings while loading hooks: %s", result.warnings
+        plugins = result.plugins
+        diagnostics.extend(
+            _diagnostic(f"Plugin discovery warning: {warning}")
+            for warning in result.warnings
         )
     documents: list[PluginHooksDocument] = []
-    diagnostics: list[HookDiagnostic] = []
-    for plugin in result.plugins:
+    for plugin in plugins:
         try:
             sources = _sources_for_plugin(plugin, project_dir=project_dir)
         # `_diagnostic` logs the traceback. The catch is deliberately broader

@@ -3717,6 +3717,7 @@ class DeepAgentsApp(App):
         the session-init worker, or inline if the start sequence gets there
         first.
         """
+        self._session_state_init_lock = asyncio.Lock()
 
         self._detached_hooks: HooksManager | None = None
         """Inert hooks coordinator used before session state exists.
@@ -4462,46 +4463,48 @@ class DeepAgentsApp(App):
     async def _init_session_state(self) -> None:
         """Create session state and load its Hooks v2 manager.
 
-        Idempotent: the startup worker and the inline fallback in
-        `_run_session_start_sequence` both call this, and the first one wins.
-        Everything between the guard below and the `_session_state` assignment
-        must stay free of `await` so the two callers cannot interleave and
-        build two states.
+        Idempotent: the startup worker and inline fallback share one lock so
+        plugin discovery can run off the event loop without building two states.
         """
         if self._session_state is not None:
             return
 
-        from pathlib import Path
+        async with self._session_state_init_lock:
+            if self._session_state is not None:
+                return
 
-        from deepagents_code.hooks.manager import HooksManager
+            from pathlib import Path
 
-        try:
-            session_state = TextualSessionState(
-                approval_mode=self._approval_mode,
-                thread_id=self._lc_thread_id,
+            from deepagents_code.hooks.manager import HooksManager
+
+            try:
+                session_state = TextualSessionState(
+                    approval_mode=self._approval_mode,
+                    thread_id=self._lc_thread_id,
+                )
+            except Exception:
+                logger.exception("Failed to create session state")
+                self.notify(
+                    "Session initialization failed. Some features may be unavailable.",
+                    severity="error",
+                    timeout=10,
+                )
+                return
+            session_state.hooks = await asyncio.to_thread(
+                HooksManager.create,
+                cwd=Path(self._cwd),
+                identity=session_state.hook_identity,
+                trust=self._hook_trust,
             )
-        except Exception:
-            logger.exception("Failed to create session state")
-            self.notify(
-                "Session initialization failed. Some features may be unavailable.",
-                severity="error",
-                timeout=10,
+            session_state.hooks.attach_output(
+                notice=self._notify_hook_feedback,
+                status=self._update_hook_status,
             )
-            return
-        # Loading stays on the event loop deliberately: `to_thread` races
-        # server-ready startup tests that only yield a few event-loop turns.
-        session_state.hooks = HooksManager.create(
-            cwd=Path(self._cwd),
-            identity=session_state.hook_identity,
-            notice=self._notify_hook_feedback,
-            status=self._update_hook_status,
-            trust=self._hook_trust,
-        )
-        # Re-read the app-owned selection last so a mode change during
-        # construction cannot be overwritten by the freshly built state.
-        session_state.approval_mode = self._approval_mode
-        self._session_state = session_state
-        await self._auto_accept_pending_goal_rubric()
+            # Re-read the app-owned selection last so a mode change during
+            # construction cannot be overwritten by the freshly built state.
+            session_state.approval_mode = self._approval_mode
+            self._session_state = session_state
+            await self._auto_accept_pending_goal_rubric()
 
     @property
     def _hooks(self) -> HooksManager:
@@ -4528,15 +4531,13 @@ class DeepAgentsApp(App):
             approval_mode=self._approval_mode,
         )
 
-    async def _reload_hooks(self) -> None:
-        """Reload hook configuration after the session working directory moves.
-
-        Trust is re-resolved by the coordinator for the new directory, so hooks
-        from an untrusted project are never picked up on the old grant.
-        """
+    async def _reload_hooks(
+        self, *, plugins: tuple[PluginInstance, ...] | None = None
+    ) -> None:
+        """Reload hooks, reusing plugin discovery when supplied."""
         from pathlib import Path
 
-        await self._hooks.reload(cwd=Path(self._cwd))
+        await self._hooks.reload(cwd=Path(self._cwd), plugins=plugins)
 
     async def _run_session_start_hook(self, cause: SessionStartCause) -> bool:
         """Run `SessionStart`, surfacing a stop as a chat message.
@@ -13461,12 +13462,6 @@ class DeepAgentsApp(App):
                     skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
                 report += "\nSkills updated:\n" + "\n".join(skill_lines)
 
-            # Rebuild the hook snapshot before anything restarts the server: the
-            # set of server-owned events is sent when a server starts, so a
-            # newly enabled plugin's server hooks are only registered if the
-            # snapshot is already refreshed.
-            await self._reload_hooks()
-
             # Rediscover plugins and restart the owned server so plugin MCP config
             # is picked up without a separate slash command.
             from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
@@ -13476,12 +13471,14 @@ class DeepAgentsApp(App):
                     self._discover_plugins_with_fingerprints
                 )
             except Exception:
-                # Discovery reads marketplace/plugin config from disk; if it
-                # fails, keep the rest of the reload intact and point the
-                # user at a manual retry rather than aborting the report.
+                # User and project hooks still reload when plugin discovery fails.
+                await self._reload_hooks(plugins=())
                 logger.exception("Failed to discover plugins during /reload")
                 report += "\nCouldn't read plugin state; run /reload to be safe."
             else:
+                # Server-owned events are fixed when the server starts, so refresh
+                # hooks from this same plugin snapshot before any restart.
+                await self._reload_hooks(plugins=plugin_result.plugins)
                 old_plugin_fingerprints = self._plugin_fingerprints
                 self._plugin_fingerprints = new_plugin_fingerprints
                 discovered_plugin_ids = frozenset(
@@ -13538,6 +13535,9 @@ class DeepAgentsApp(App):
                     for label in login_labels:
                         report += f"\nSign in to {label} via `/mcp`."
                 if plugin_result.warnings:
+                    logger.warning(
+                        "Plugin discovery warnings: %s", plugin_result.warnings
+                    )
                     report += (
                         f"\n{len(plugin_result.warnings)} plugin warning(s) "
                         "during load."

@@ -136,7 +136,7 @@ async def test_plugin_hook_runs_with_its_exported_variables(
         monkeypatch,
         {
             "quality-review-plugin": _hooks_document(
-                '"${CLAUDE_PLUGIN_ROOT}/scripts/check.sh"'
+                '"${CLAUDE_PLUGIN_ROOT}/scripts/check.sh" "${CLAUDE_PROJECT_DIR}"'
             )
         },
     )
@@ -145,7 +145,7 @@ async def test_plugin_hook_runs_with_its_exported_variables(
     script.write_text(_HOOK_SCRIPT, encoding="utf-8")
     script.chmod(0o755)
     (plugin_root,) = _install_all(root, ("quality-review-plugin",))
-    workspace = tmp_path / "workspace"
+    workspace = tmp_path / "$(touch${IFS}PWNED)"
     (workspace / ".git").mkdir(parents=True)
     monkeypatch.chdir(workspace)
 
@@ -162,21 +162,23 @@ async def test_plugin_hook_runs_with_its_exported_variables(
         str(plugin_data_dir(PLUGIN_ID)),
         str(workspace),
     ]
+    assert not (workspace / "PWNED").exists()
 
 
-def test_unreadable_plugin_document_is_isolated_and_reported(
+def test_malformed_plugin_documents_are_isolated_and_reported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One plugin's undecodable hooks document must not disable other hooks."""
+    """Malformed plugin documents must not disable valid hooks."""
     user_dir, root = _stage_plugins(
         tmp_path,
         monkeypatch,
         {
             "quality-review-plugin": _hooks_document("plugin-hook"),
             "broken-plugin": b'{"hooks": {"Stop": "\xff\xfe"}}',
+            "null-plugin": b"null",
         },
     )
-    _install_all(root, ("quality-review-plugin", "broken-plugin"))
+    _install_all(root, ("quality-review-plugin", "broken-plugin", "null-plugin"))
     _write_json(
         user_dir / "hooks.json",
         {
@@ -194,3 +196,4 @@ def test_unreadable_plugin_document_is_isolated_and_reported(
     assert manager.has_handlers(HookEvent.SESSION_START)
     assert manager.has_handlers(HookEvent.USER_PROMPT_SUBMIT)
     assert any("broken-plugin" in message for message, _severity in notices)
+    assert any("null-plugin" in message for message, _severity in notices)

@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -75,6 +76,27 @@ class HooksSource:
             raise ValueError(msg)
         object.__setattr__(self, "env", MappingProxyType(dict(self.env)))
 
+    def resolve_path_variables(self, value: str) -> str:
+        """Resolve this source's path placeholders for direct-exec arguments.
+
+        Returns:
+            The argument with this source's path variables resolved.
+        """
+        for key, replacement in self.env.items():
+            value = value.replace(f"${{{key}}}", replacement)
+        return value
+
+    def resolve_shell_variables(self, value: str) -> str:
+        """Use the host shell's environment syntax in a command.
+
+        Returns:
+            The command with host-compatible variable references.
+        """
+        if os.name == "nt":
+            for key in self.env:
+                value = value.replace(f"${{{key}}}", f"%{key}%")
+        return value
+
 
 @dataclass(frozen=True, slots=True)
 class SourcedGroup:
@@ -96,7 +118,7 @@ class LoadedHooksConfig:
     diagnostics: tuple[HookDiagnostic, ...]
     sources: tuple[Path, ...]
     snapshot_id: str
-    groups: Mapping[HookEvent, tuple[SourcedGroup, ...]] = field(default_factory=dict)
+    groups: Mapping[HookEvent, tuple[SourcedGroup, ...]]
     """Merged matcher groups with provenance, in the same order as `config`."""
 
     project_source_loaded: bool = False
@@ -207,7 +229,9 @@ def load_hooks_config(
         if document is not None:
             _merge(document, source)
 
-    groups = {event: tuple(sourced) for event, sourced in merged.items()}
+    groups = MappingProxyType(
+        {event: tuple(sourced) for event, sourced in merged.items()}
+    )
     config = HooksConfig(
         hooks={
             event: [sourced.group for sourced in sourced_groups]
@@ -308,7 +332,9 @@ def _canonical_group(
     return result
 
 
-def read_hooks_json(path: Path) -> tuple[JsonValue, tuple[HookDiagnostic, ...]]:
+def read_hooks_json(
+    path: Path,
+) -> tuple[bool, JsonValue, tuple[HookDiagnostic, ...]]:
     """Decode one hooks JSON document, reporting read failures as diagnostics.
 
     Shared by the project/user file loader and by callers that must transform a
@@ -320,34 +346,36 @@ def read_hooks_json(path: Path) -> tuple[JsonValue, tuple[HookDiagnostic, ...]]:
         path: Document path.
 
     Returns:
-        The decoded JSON value and any read diagnostics. The value is `None`
-        when the file is absent or could not be decoded, and a document that is
-        literally `null` is treated the same way. An absent file is not a
-        diagnostic.
+        Whether decoding succeeded, the decoded JSON value, and any diagnostics.
+        An absent file is not a diagnostic.
     """
     if not path.is_file():
-        return None, ()
+        return False, None, ()
     try:
         decoded: JsonValue = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         message = f"Failed to read hooks config at {path}: {exc}"
         logger.warning(message)
-        return None, (
-            HookDiagnostic(
-                code="config_read_failed",
-                severity="warning",
-                message=message,
-                field=str(path),
+        return (
+            False,
+            None,
+            (
+                HookDiagnostic(
+                    code="config_read_failed",
+                    severity="warning",
+                    message=message,
+                    field=str(path),
+                ),
             ),
         )
-    return decoded, ()
+    return True, decoded, ()
 
 
 def _read_hooks_document(
     path: Path,
 ) -> tuple[HooksConfig | None, tuple[HookDiagnostic, ...]]:
-    data, read_diagnostics = read_hooks_json(path)
-    if data is None:
+    decoded, data, read_diagnostics = read_hooks_json(path)
+    if not decoded:
         return None, read_diagnostics
 
     if is_legacy_hooks_document(data):

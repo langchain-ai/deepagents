@@ -192,12 +192,19 @@ class HooksSnapshot:
                         HookHandler(
                             id=f"{event.value}:{group_index}:{handler_index}",
                             event=event,
-                            command=spec.command,
+                            command=source.resolve_shell_variables(spec.command),
                             timeout=spec.timeout,
                             status_message=spec.status_message,
                             matcher=matcher,
                             matcher_text=group.matcher,
-                            argv=tuple(spec.argv) if spec.argv is not None else None,
+                            argv=(
+                                tuple(
+                                    source.resolve_path_variables(part)
+                                    for part in spec.argv
+                                )
+                                if spec.argv is not None
+                                else None
+                            ),
                             source=source,
                         )
                     )

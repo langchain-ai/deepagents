@@ -41,6 +41,7 @@ from deepagents_code._debug_buffer import (
     retention_bucket_for_level,
 )
 from deepagents_code.clipboard import copy_text_to_clipboard
+from deepagents_code.tui.widgets._copy_spans import copy_span_style, copy_span_target
 from deepagents_code.tui.widgets._links import open_style_link
 from deepagents_code.unicode_security import sanitize_control_chars
 
@@ -72,13 +73,6 @@ class SnapshotField(NamedTuple):
     thread_id: str | None = None
     """A LangSmith thread id whose ``(open in langsmith)`` trace link is appended
     to the row once the URL resolves. `None` disables the link."""
-
-
-_SNAPSHOT_COPY_META = "snapshot_copy"
-"""Meta key marking a snapshot span whose text is copied on click."""
-
-_SNAPSHOT_COPY_LABEL_META = "snapshot_copy_label"
-"""Meta key carrying the snapshot field label used in the copy toast."""
 
 
 _REFRESH_INTERVAL = 0.5
@@ -583,27 +577,6 @@ class _DebugLogView(ScrollView, can_focus=True):
             self._on_copy_record(record)
 
 
-def _snapshot_copy_target(style: object) -> tuple[str, str] | None:
-    """Return the copy text and field label from a snapshot span style, if any.
-
-    Args:
-        style: The Textual event style under the pointer/click.
-
-    Returns:
-        `(text, label)` when the span carries a copy marker, else `None`.
-    """
-    meta = getattr(style, "meta", None)
-    if not isinstance(meta, dict):
-        return None
-    text = meta.get(_SNAPSHOT_COPY_META)
-    if not isinstance(text, str) or not text:
-        return None
-    label = meta.get(_SNAPSHOT_COPY_LABEL_META)
-    if not isinstance(label, str) or not label:
-        return None
-    return text, label
-
-
 def _snapshot_copy_success_message(label: str) -> str:
     """Build the toast shown after copying a snapshot field value.
 
@@ -652,7 +625,7 @@ class _SnapshotView(Static):
         if getattr(event.style, "link", None):
             open_style_link(event)
             return
-        target = _snapshot_copy_target(event.style)
+        target = copy_span_target(event.style)
         if target is not None:
             event.stop()
             text, label = target
@@ -661,7 +634,7 @@ class _SnapshotView(Static):
     def on_mouse_move(self, event: events.MouseMove) -> None:
         """Show a hand pointer over clickable spans and reset it elsewhere."""
         clickable = bool(getattr(event.style, "link", None)) or (
-            _snapshot_copy_target(event.style) is not None
+            copy_span_target(event.style) is not None
         )
         self.styles.pointer = "pointer" if clickable else "default"
 
@@ -1098,17 +1071,7 @@ class DebugConsoleScreen(ModalScreen[None]):
             (f"{field.label:>{width}}  ", "bold")
         ]
         if field.copyable and field.value:
-            parts.append(
-                (
-                    field.value,
-                    TStyle.from_meta(
-                        {
-                            _SNAPSHOT_COPY_META: field.value,
-                            _SNAPSHOT_COPY_LABEL_META: field.label,
-                        }
-                    ),
-                )
-            )
+            parts.append((field.value, copy_span_style(field.value, field.label)))
         else:
             parts.append(field.value)
         url = self._langsmith_urls.get(field.thread_id) if field.thread_id else None

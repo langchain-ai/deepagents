@@ -820,6 +820,34 @@ class TestStartupSequence:
         drain_mock.assert_awaited_once()
         queue_mock.assert_awaited_once()
 
+    async def test_cleanup_agent_task_refreshes_thread_cache(self) -> None:
+        """Agent cleanup should refresh cached `/threads` rows after a turn."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        refresh_mock = MagicMock()
+        app._process_next_from_queue = AsyncMock()  # ty: ignore
+        app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+        app._set_spinner = AsyncMock()  # ty: ignore
+        app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+        app._schedule_thread_cache_refresh = refresh_mock  # ty: ignore
+
+        await app._cleanup_agent_task()
+
+        refresh_mock.assert_called_once_with()
+
+    async def test_schedule_thread_cache_refresh_noops_during_exit(self) -> None:
+        """Shutdown should prevent new background thread-cache refreshes."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._exit = True
+            run_worker_mock = MagicMock()
+            app.run_worker = run_worker_mock  # ty: ignore
+
+            app._schedule_thread_cache_refresh()
+
+            run_worker_mock.assert_not_called()
+
     async def test_schedule_git_branch_refresh_noops_during_exit(self) -> None:
         """Shutdown should prevent new background git refresh tasks."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
@@ -2330,6 +2358,19 @@ class TestThreadCachePrewarm:
             await app._prewarm_threads_cache()
 
         mock_prewarm.assert_awaited_once_with(limit=7)
+
+    async def test_schedule_refresh_runs_prewarm_in_worker(self) -> None:
+        """Scheduling a refresh should re-run the prewarm off the event loop."""
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            prewarm_mock = AsyncMock()
+            app._prewarm_threads_cache = prewarm_mock  # ty: ignore
+            app._schedule_thread_cache_refresh()
+            await pilot.pause()
+
+            prewarm_mock.assert_awaited_once_with()
 
     async def test_show_thread_selector_uses_cached_rows(self) -> None:
         """Thread selector should receive prefetched rows when available."""
@@ -22416,6 +22457,44 @@ class TestRestartServerForAgentSwap:
         plain = [str(getattr(m, "_content", m)) for m in mounted]
         assert any("Switched to researcher" in s for s in plain)
         assert not any("to resume" in s for s in plain)
+
+    async def test_resume_hint_echoes_launch_command(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The hint names the command the user launched, not a hardcoded `dcode`.
+
+        Users commonly expose a per-checkout shim (a renamed symlink to the
+        package's `dcode` console script), so a hardcoded name would tell them
+        to run something that does not exist on their PATH.
+        """
+        from deepagents_code._env_vars import INVOKED_AS
+        from deepagents_code._invocation import invoked_name
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        monkeypatch.setenv(INVOKED_AS, "abc")
+        invoked_name.cache_clear()
+
+        app, _server_proc = self._make_app()
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="hi there")
+        )
+
+        mounted: list[object] = []
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.model_config.save_recent_agent",
+                    return_value=True,
+                ),
+                patch.object(app, "_mount_message", side_effect=mounted.append),
+                patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+        plain = [str(getattr(m, "_content", m)) for m in mounted]
+        assert any("abc -r old-thread" in s and "to resume" in s for s in plain)
+        assert not any("dcode" in s for s in plain)
 
     async def test_no_resume_hint_when_only_local_user_messages(self) -> None:
         """Local-only slash commands don't count as agent-side activity.

@@ -199,6 +199,20 @@ def test_read_offset_exceeds_length() -> None:
     assert "exceeds file length" in result.error
 
 
+def test_read_offset_at_eof_returns_info() -> None:
+    """An offset exactly at EOF yields a non-error notice rather than a failure."""
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"info": "eof", "total_lines": 3, "offset": 3})
+
+    result = sandbox.read("/test/file.txt", offset=3)
+
+    assert result.error is None
+    assert result.file_data is None
+    assert result.info is not None
+    assert "3 lines" in result.info
+    assert "offset 2" in result.info
+
+
 def test_read_empty_file() -> None:
     """Test that read() returns a sentinel message for empty files."""
     sandbox = MockSandbox()

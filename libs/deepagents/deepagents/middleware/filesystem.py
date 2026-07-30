@@ -1562,13 +1562,24 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             return content
 
-        def _handle_read_result(  # one branch per distinct read-result disposition
+        def _handle_read_result(  # noqa: PLR0911  # one branch per distinct read-result disposition
             read_result: ReadResult,
             validated_path: str,
             tool_call_id: str | None,
             offset: int,
             limit: int,
         ) -> ToolMessage | Command:
+            if read_result.info is not None:
+                # A benign boundary (e.g. an offset sitting exactly at EOF) is a
+                # successful, non-error result so the model self-corrects rather
+                # than treating it as a failure.
+                return ToolMessage(
+                    content=read_result.info,
+                    name="read_file",
+                    tool_call_id=tool_call_id,
+                    status="success",
+                )
+
             if read_result.error:
                 return ToolMessage(
                     content=f"Error: {read_result.error}",

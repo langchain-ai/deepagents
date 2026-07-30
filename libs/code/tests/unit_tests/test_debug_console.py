@@ -15,6 +15,7 @@ from textual.widgets._select import SelectOverlay
 import deepagents_code.tui.widgets.debug_console as debug_console_mod
 from deepagents_code._debug_buffer import InMemoryLogRecord, get_log_buffer
 from deepagents_code.app import DeepAgentsApp
+from deepagents_code.tui.widgets._copy_spans import COPY_LABEL_META, COPY_TEXT_META
 from deepagents_code.tui.widgets.debug_console import (
     DebugConsoleScreen,
     SnapshotField,
@@ -1310,10 +1311,8 @@ class TestDebugConsoleScreen:
                 span
                 for span in content.spans
                 if isinstance(span.style, debug_console_mod.TStyle)
-                and span.style.meta.get(debug_console_mod._SNAPSHOT_COPY_META)
-                == "thread-abc"
-                and span.style.meta.get(debug_console_mod._SNAPSHOT_COPY_LABEL_META)
-                == "Thread"
+                and span.style.meta.get(COPY_TEXT_META) == "thread-abc"
+                and span.style.meta.get(COPY_LABEL_META) == "Thread"
             ]
             assert any(
                 content.plain[span.start : span.end] == "thread-abc"

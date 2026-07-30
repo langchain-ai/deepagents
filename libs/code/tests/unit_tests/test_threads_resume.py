@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from deepagents_code.app import DeepAgentsApp, TextualSessionState
+from deepagents_code.app import (
+    DeepAgentsApp,
+    TextualSessionState,
+    _ThreadHistoryPayload,
+)
 
 
 class TestSessionStatePreviousThread:
@@ -36,6 +40,178 @@ def _make_app() -> DeepAgentsApp:
     app._show_thread_selector = AsyncMock()  # ty: ignore
     app._resume_thread = AsyncMock()  # ty: ignore
     return app
+
+
+class TestResumeCompactionChoice:
+    """Large saved contexts should gate both resume paths."""
+
+    async def test_below_threshold_continues_without_modal(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-1")
+        push_wait = AsyncMock(return_value="compact")
+        app._push_screen_wait = push_wait
+
+        with patch(
+            "deepagents_code.model_config.load_resume_compaction_threshold",
+            return_value=300_000,
+        ):
+            choice = await app._offer_resume_compaction(300_000)
+
+        assert choice == "continue"
+        push_wait.assert_not_awaited()
+
+    async def test_above_threshold_uses_modal_choice(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-1")
+        push_wait = AsyncMock(return_value="compact")
+        app._push_screen_wait = push_wait
+
+        with patch(
+            "deepagents_code.model_config.load_resume_compaction_threshold",
+            return_value=300_000,
+        ):
+            choice = await app._offer_resume_compaction(300_001)
+
+        assert choice == "compact"
+        assert push_wait.await_args is not None
+        screen = push_wait.await_args.args[0]
+        assert screen._context_tokens == 300_001
+        assert screen._threshold == 300_000
+
+    async def test_modal_dismissal_cancels_resume(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-1")
+        app._push_screen_wait = AsyncMock(return_value=None)
+
+        with patch(
+            "deepagents_code.model_config.load_resume_compaction_threshold",
+            return_value=300_000,
+        ):
+            choice = await app._offer_resume_compaction(300_001)
+
+        assert choice == "cancel"
+
+    async def test_initial_resume_compacts_before_startup_finishes(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-1")
+        app._session_state = TextualSessionState(thread_id="thread-1")
+        app._initial_resume_requested = True
+        payload = _ThreadHistoryPayload(
+            messages=[],
+            context_tokens=350_000,
+            model_spec="",
+        )
+        app._fetch_thread_history_data = AsyncMock(return_value=payload)
+        app._offer_resume_compaction = AsyncMock(return_value="compact")
+        load_history = AsyncMock()
+        app._load_thread_history = load_history
+        app._run_session_start_hook = AsyncMock(return_value=True)
+        compact = AsyncMock()
+        app._handle_offload = compact
+        app._remount_pending_goal_rubric_review = AsyncMock()
+        app._drain_startup_backlog = AsyncMock()
+
+        await app._run_session_start_sequence()
+
+        load_history.assert_awaited_once_with(
+            preloaded_payload=payload,
+            resolve_pending_goal=False,
+        )
+        compact.assert_awaited_once_with()
+        assert app._initial_session_started is True
+
+    async def test_initial_resume_cancel_starts_fresh_thread(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-1")
+        app._session_state = TextualSessionState(thread_id="thread-1")
+        app._initial_resume_requested = True
+        payload = _ThreadHistoryPayload(
+            messages=[],
+            context_tokens=350_000,
+            model_spec="",
+        )
+        app._fetch_thread_history_data = AsyncMock(return_value=payload)
+        app._offer_resume_compaction = AsyncMock(return_value="cancel")
+        load_history = AsyncMock()
+        app._load_thread_history = load_history
+        app._run_session_start_hook = AsyncMock(return_value=True)
+        app._drain_startup_backlog = AsyncMock()
+        app.notify = MagicMock()
+        app._update_welcome_banner = MagicMock()
+
+        with patch(
+            "deepagents_code.sessions.generate_thread_id",
+            return_value="fresh-thread",
+        ):
+            await app._run_session_start_sequence()
+
+        assert app._lc_thread_id == "fresh-thread"
+        assert app._session_state.thread_id == "fresh-thread"
+        assert app._initial_resume_requested is False
+        load_history.assert_awaited_once_with(
+            preloaded_payload=None,
+            resolve_pending_goal=False,
+        )
+
+    async def test_thread_switch_cancel_keeps_current_thread(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-1")
+        app._session_state = TextualSessionState(thread_id="thread-1")
+        app._lc_thread_id = "thread-1"
+        payload = _ThreadHistoryPayload(
+            messages=[],
+            context_tokens=350_000,
+            model_spec="",
+        )
+        app._offer_thread_cwd_switch = AsyncMock(return_value="continue")
+        app._fetch_thread_history_data = AsyncMock(return_value=payload)
+        app._offer_resume_compaction = AsyncMock(return_value="cancel")
+        restore = AsyncMock()
+        app._restore_cwd_after_failed_thread_switch = restore
+        clear = AsyncMock()
+        app._clear_messages = clear
+        app._set_spinner = AsyncMock()
+        app._update_status = MagicMock()
+
+        await app._resume_thread("thread-2")
+
+        assert app._session_state.thread_id == "thread-1"
+        assert app._lc_thread_id == "thread-1"
+        restore.assert_awaited_once()
+        clear.assert_not_awaited()
+
+    async def test_thread_switch_compacts_after_resume(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-1")
+        app._session_state = TextualSessionState(thread_id="thread-1")
+        app._lc_thread_id = "thread-1"
+        payload = _ThreadHistoryPayload(
+            messages=[],
+            context_tokens=350_000,
+            model_spec="",
+        )
+        app._offer_thread_cwd_switch = AsyncMock(return_value="continue")
+        app._fetch_thread_history_data = AsyncMock(return_value=payload)
+        app._offer_resume_compaction = AsyncMock(return_value="compact")
+        app._clear_messages = AsyncMock()
+        app._set_spinner = AsyncMock()
+        load_history = AsyncMock()
+        app._load_thread_history = load_history
+        app._reload_hooks = AsyncMock()
+        app._run_session_start_hook = AsyncMock(return_value=True)
+        compact = AsyncMock()
+        app._handle_offload = compact
+        app._sync_status_queued = MagicMock()
+        app._update_tokens = MagicMock()
+        app._update_status = MagicMock()
+        app._update_welcome_banner = MagicMock()
+
+        with patch(
+            "deepagents_code.hooks.manager.HooksManager.on_session_end",
+            AsyncMock(),
+        ):
+            await app._resume_thread("thread-2")
+
+        assert app._session_state.thread_id == "thread-2"
+        assert app._lc_thread_id == "thread-2"
+        load_history.assert_awaited_once_with(
+            thread_id="thread-2",
+            preloaded_payload=payload,
+        )
+        compact.assert_awaited_once_with()
 
 
 class TestHandleThreadsCommand:

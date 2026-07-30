@@ -4424,6 +4424,75 @@ def add_enabled_project_mcp_servers(
     return True
 
 
+DEFAULT_RESUME_COMPACTION_THRESHOLD = 300_000
+"""Context size that triggers the resume compaction prompt by default."""
+
+
+def _validate_resume_compaction_threshold(value: object) -> int:
+    """Validate a configured resume-compaction token threshold.
+
+    Args:
+        value: Parsed TOML value.
+
+    Returns:
+        The validated non-negative integer.
+
+    Raises:
+        ValueError: If the value is not a non-negative integer.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        msg = "[threads].resume_compaction_threshold must be a non-negative integer"
+        raise ValueError(msg)
+    return value
+
+
+def load_resume_compaction_threshold(config_path: Path | None = None) -> int:
+    """Load the context size that prompts for compaction on thread resume.
+
+    Args:
+        config_path: Path to config file.
+
+    Returns:
+        A non-negative token threshold from
+        `[threads].resume_compaction_threshold`, or the default when unset or
+        invalid.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    try:
+        if not config_path.exists():
+            return DEFAULT_RESUME_COMPACTION_THRESHOLD
+        with config_path.open("rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.warning(
+            "Could not read resume compaction threshold; using %d",
+            DEFAULT_RESUME_COMPACTION_THRESHOLD,
+            exc_info=True,
+        )
+        return DEFAULT_RESUME_COMPACTION_THRESHOLD
+
+    threads = data.get("threads")
+    value = (
+        threads.get("resume_compaction_threshold")
+        if isinstance(threads, dict)
+        else None
+    )
+    if value is None:
+        return DEFAULT_RESUME_COMPACTION_THRESHOLD
+    try:
+        threshold = _validate_resume_compaction_threshold(value)
+    except ValueError:
+        logger.warning(
+            "Ignoring invalid [threads].resume_compaction_threshold; using %d",
+            DEFAULT_RESUME_COMPACTION_THRESHOLD,
+            exc_info=True,
+        )
+        return DEFAULT_RESUME_COMPACTION_THRESHOLD
+    else:
+        return threshold
+
+
 THREAD_COLUMN_DEFAULTS: dict[str, bool] = {
     "thread_id": False,
     "messages": True,

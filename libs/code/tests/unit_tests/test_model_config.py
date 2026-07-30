@@ -1287,6 +1287,51 @@ class TestThreadScopePersistence:
         assert data["threads"]["scope"] == "all"
 
 
+class TestResumeCompactionThreshold:
+    """Tests for the configurable large-context resume threshold."""
+
+    def test_defaults_to_300k(self, tmp_path: Path) -> None:
+        from deepagents_code.model_config import load_resume_compaction_threshold
+
+        assert load_resume_compaction_threshold(tmp_path / "missing.toml") == 300_000
+
+    def test_reads_threads_override(self, tmp_path: Path) -> None:
+        from deepagents_code.model_config import load_resume_compaction_threshold
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[threads]\nresume_compaction_threshold = 125000\n",
+            encoding="utf-8",
+        )
+
+        assert load_resume_compaction_threshold(config_path) == 125_000
+
+    @pytest.mark.parametrize("value", ["-1", '"300000"', "true"])
+    def test_invalid_override_uses_default(self, tmp_path: Path, value: str) -> None:
+        from deepagents_code.model_config import load_resume_compaction_threshold
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            f"[threads]\nresume_compaction_threshold = {value}\n",
+            encoding="utf-8",
+        )
+
+        assert load_resume_compaction_threshold(config_path) == 300_000
+
+    def test_zero_allows_prompting_for_any_nonempty_context(
+        self, tmp_path: Path
+    ) -> None:
+        from deepagents_code.model_config import load_resume_compaction_threshold
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[threads]\nresume_compaction_threshold = 0\n",
+            encoding="utf-8",
+        )
+
+        assert load_resume_compaction_threshold(config_path) == 0
+
+
 class TestThreadConfigCoalesced:
     """Tests for the coalesced `load_thread_config()` helper."""
 

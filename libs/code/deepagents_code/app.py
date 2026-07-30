@@ -8374,6 +8374,27 @@ class DeepAgentsApp(App):
         try:
             from deepagents_code.hooks.models.domain import SessionStartCause
 
+            resume_payload: _ThreadHistoryPayload | None = None
+            resume_choice: Literal["compact", "continue", "cancel"] = "continue"
+            if self._initial_resume_requested and self._lc_thread_id and self._agent:
+                try:
+                    resume_payload = await self._fetch_thread_history_data(
+                        self._lc_thread_id
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not prefetch resumed thread %s for context-size check",
+                        self._lc_thread_id,
+                        exc_info=True,
+                    )
+                if resume_payload is not None:
+                    resume_choice = await self._offer_resume_compaction(
+                        resume_payload.context_tokens
+                    )
+                    if resume_choice == "cancel":
+                        self._cancel_initial_thread_resume()
+                        resume_payload = None
+
             start_cause = (
                 SessionStartCause.RESUME
                 if self._initial_resume_requested
@@ -8384,11 +8405,24 @@ class DeepAgentsApp(App):
                 or not self._has_initial_submission()
             )
             if should_load_history:
-                await self._load_thread_history(resolve_pending_goal=False)
+                await self._load_thread_history(
+                    preloaded_payload=resume_payload,
+                    resolve_pending_goal=False,
+                )
             elif self._has_initial_submission():
                 try:
                     await self._adopt_resumed_model_if_needed(
-                        thread_id=self._lc_thread_id
+                        model_spec=(
+                            resume_payload.model_spec
+                            if resume_payload is not None
+                            else None
+                        ),
+                        model_params=(
+                            resume_payload.model_params
+                            if resume_payload is not None
+                            else None
+                        ),
+                        thread_id=self._lc_thread_id,
                     )
                 except Exception:
                     logger.exception(
@@ -8408,6 +8442,9 @@ class DeepAgentsApp(App):
                 self._initial_session_start_stopped = True
                 return
             self._initial_session_started = True
+
+            if resume_choice == "compact":
+                await self._handle_offload()
 
             if self._startup_cmd:
                 cmd = self._startup_cmd
@@ -15289,6 +15326,50 @@ class DeepAgentsApp(App):
         if state and state.values:
             return dict(state.values)
         return {}
+
+    async def _offer_resume_compaction(
+        self, context_tokens: int
+    ) -> Literal["compact", "continue", "cancel"]:
+        """Prompt for compaction when a resumed thread exceeds its threshold.
+
+        Returns:
+            The selected resume behavior, defaulting to cancellation when the
+            modal is dismissed without a result.
+        """
+        from deepagents_code.model_config import load_resume_compaction_threshold
+        from deepagents_code.tui.widgets.resume_compaction import (
+            ResumeCompactionPromptScreen,
+        )
+
+        threshold = await asyncio.to_thread(load_resume_compaction_threshold)
+        if context_tokens <= threshold:
+            return "continue"
+        choice = await self._push_screen_wait(
+            ResumeCompactionPromptScreen(
+                context_tokens=context_tokens,
+                threshold=threshold,
+            )
+        )
+        return choice or "cancel"
+
+    def _cancel_initial_thread_resume(self) -> None:
+        """Replace a cancelled launch-time resume with a fresh thread."""
+        from deepagents_code.sessions import generate_thread_id
+
+        thread_id = generate_thread_id()
+        self._lc_thread_id = thread_id
+        if self._session_state is not None:
+            self._session_state.thread_id = thread_id
+        self._initial_resume_requested = False
+        self._should_adopt_resumed_model = False
+        self._resuming = False
+        self._sync_status_connection()
+        self._update_welcome_banner(
+            thread_id,
+            missing_message="Welcome banner not found after cancelling resume to %s",
+            warn_if_missing=False,
+        )
+        self.notify("Resume cancelled. Starting a new session.", markup=False)
 
     async def _fetch_thread_history_data(self, thread_id: str) -> _ThreadHistoryPayload:
         """Fetch and convert stored messages for a thread.
@@ -22760,11 +22841,21 @@ class DeepAgentsApp(App):
             self._chat_input.set_cursor_active(active=False)
 
         prefetched_payload: _ThreadHistoryPayload | None = None
+        compact_after_switch = False
         outgoing_ended = False
         try:
             self._update_status(f"Loading thread: {thread_id}")
             await self._set_spinner("Loading thread")
             prefetched_payload = await self._fetch_thread_history_data(thread_id)
+            await self._set_spinner(None)
+            resume_choice = await self._offer_resume_compaction(
+                prefetched_payload.context_tokens
+            )
+            if resume_choice == "cancel":
+                await self._restore_cwd_after_failed_thread_switch(prev_cwd)
+                return
+            compact_after_switch = resume_choice == "compact"
+            await self._set_spinner("Loading thread")
             from deepagents_code.hooks.models.domain import (
                 SessionEndCause,
                 SessionStartCause,
@@ -22824,6 +22915,8 @@ class DeepAgentsApp(App):
             self._last_thread_unchanged = None
             if not await self._run_session_start_hook(SessionStartCause.RESUME):
                 return
+            if compact_after_switch:
+                await self._handle_offload()
         except Exception as exc:
             if prefetched_payload is None:
                 logger.exception("Failed to prefetch history for thread %s", thread_id)

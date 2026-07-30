@@ -19,6 +19,7 @@ _TIP_SHIFT_TAB_WITHOUT_YOLO = "Press Shift+Tab to toggle Manual and Auto modes"
 _TIPS: dict[str, int] = {
     "Use @ to reference files and / for commands": 3,
     "Try /threads to resume a previous conversation": 2,
+    "Choose compaction when resuming a large conversation": 1,
     "Use /offload when your conversation gets long": 2,
     "Use /copy to copy the latest message": 3,
     "Use /tools to list the tools available to the agent": 1,

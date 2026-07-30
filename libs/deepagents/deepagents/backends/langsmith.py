@@ -179,7 +179,10 @@ class LangSmithSandbox(BaseSandbox):
         fetches bytes directly via the SDK and reproduces the base-class
         pagination semantics locally:
 
-        - Empty and whitespace-only files surface the "empty contents" reminder.
+        - Zero-byte files return the "empty contents" reminder as their
+            content. Whitespace-only files instead return empty content with
+            no pagination metadata, which the middleware renders as that same
+            reminder — the two shapes differ, the rendered result does not.
         - Files routed as binary by extension (or that fail UTF-8 decode) are
             returned base64-encoded, capped at `MAX_BINARY_BYTES`.
         - Text content is normalized for universal newlines (`\r\n` and bare
@@ -189,6 +192,10 @@ class LangSmithSandbox(BaseSandbox):
         - A negative `offset` is clamped to the start of the file, and a
             non-positive `limit` returns empty content with no pagination
             metadata.
+        - Both blank-file checks precede the `limit` and offset-range handling,
+            so a blank file yields its blank result even when `limit` is
+            non-positive or `offset` exceeds the line count — matching
+            `slice_read_response`'s ordering.
 
         Args:
             file_path: Absolute path to the file to read.

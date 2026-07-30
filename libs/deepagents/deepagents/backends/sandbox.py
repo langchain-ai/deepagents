@@ -422,9 +422,13 @@ try:
         print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))
         sys.exit(0)
 
-    # Match the in-memory backends' definition of an empty text file. This
-    # usually stops in the first chunk; scanning to EOF is only necessary for
-    # files that may actually contain nothing but whitespace.
+    # Match check_empty_content's definition of empty (whitespace-only counts)
+    # and report it with no pagination keys, so the middleware can tell a wholly
+    # blank file from a blank window inside a file that has content (#4955).
+    # This scan must stay chunked for files of every size: falling through for
+    # an oversized blank file could make readline() allocate an entire giant
+    # line. It usually stops at the first non-whitespace chunk and only reaches
+    # EOF for a genuinely blank file.
     whitespace_only = True
     decoder = codecs.getincrementaldecoder('utf-8')()
     with open(path, 'rb') as f:
@@ -432,12 +436,15 @@ try:
             try:
                 decoded = decoder.decode(chunk, final=False)
             except UnicodeDecodeError:
+                # Invalid UTF-8 past the 8192-byte sniff above. Not a blank
+                # file; the text path below reports it as invalid_utf8.
                 whitespace_only = False
                 break
             if decoded.strip():
                 whitespace_only = False
                 break
     if whitespace_only:
+        # A file ending mid-character is not whitespace-only either.
         try:
             whitespace_only = not decoder.decode(b'', final=True).strip()
         except UnicodeDecodeError:
@@ -560,6 +567,12 @@ except FileNotFoundError:
     print(json.dumps({{'error': 'file_not_found'}}))
 except PermissionError:
     print(json.dumps({{'error': 'permission_denied'}}))
+except UnicodeDecodeError:
+    # The 8192-byte sniff above only proves the *prefix* decodes; a text-routed
+    # file can still hold invalid UTF-8 past it, which the strict text handle
+    # below raises on. Report it through the error contract instead of letting a
+    # raw traceback become the response body.
+    print(json.dumps({{'error': 'invalid_utf8'}}))
 " 2>&1"""
 """Read file content with server-side pagination.
 
@@ -578,13 +591,19 @@ next unread line (`null` once the file is fully read). `total_lines` is `null`
 when the file is large enough that a full re-scan to count its lines would be
 unbounded. On success
 (binary): `{{"encoding": "base64", "content": ...}}` without pagination keys.
-An empty file short-circuits to `{{"encoding": "utf-8", "content": <empty-file
-reminder>}}`, a whitespace-only file to `{{"encoding": "utf-8", "content":
-""}}`, and a non-positive `limit` to `{{"encoding": "utf-8", "content": "",
-"no_lines_requested": true}}`, all without pagination keys. The empty-file
-checks run first, so an empty file yields the reminder even when `limit` is
-non-positive. On failure:
-`{{"error": ...}}`.
+A zero-byte file short-circuits to `{{"encoding": "utf-8", "content":
+<empty-file reminder>}}`, a whitespace-only text file to `{{"encoding":
+"utf-8", "content": ""}}`, and a non-positive `limit` to `{{"encoding":
+"utf-8", "content": "", "no_lines_requested": true}}`, all without pagination
+keys. The two blank-file checks sit on opposite sides of binary routing: the
+zero-byte check runs before it and so applies to every `file_type`, while the
+whitespace-only check runs after it and so applies only to text-routed files.
+Both precede the `limit` and offset-range checks, so a blank file yields its
+blank result even when `limit` is non-positive or `offset` exceeds the line
+count — matching
+`slice_read_response`'s ordering. On failure: `{{"error": ...}}`, including
+`invalid_utf8` for a text-routed file whose bytes past the 8192-byte sniff do
+not decode.
 """
 
 

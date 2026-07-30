@@ -66,7 +66,7 @@ def test_image_read_file_result_is_replaced_by_a_path_pointer() -> None:
 
 
 def test_small_results_are_left_untouched() -> None:
-    """Clipping stops once the batch fits, so small siblings keep their content (#4954).
+    """Results already smaller than the slice size are skipped, not rewritten (#4954).
 
     The sibling is a non-`read_file` result, which is always offloaded when
     selected -- so surviving intact proves it was never selected.

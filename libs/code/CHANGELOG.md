@@ -2,6 +2,40 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.50](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.49...deepagents-code==0.1.50) (2026-07-30)
+
+
+### Features
+
+* **code:** add project hooks workspace trust ([#5105](https://github.com/langchain-ai/deepagents/issues/5105)) ([9b2185b](https://github.com/langchain-ai/deepagents/commit/9b2185b65d4cbbaad9dd1b632162810a0aefd7eb))
+* **code:** allow muting the "YOLO is active" toast ([#5103](https://github.com/langchain-ai/deepagents/issues/5103)) ([4d2d6ae](https://github.com/langchain-ai/deepagents/commit/4d2d6aed808575e2e03539bc7fa84562c93b7eb5))
+* **code:** click the splash `thread` ID to copy it ([#5173](https://github.com/langchain-ai/deepagents/issues/5173)) ([be2e505](https://github.com/langchain-ai/deepagents/commit/be2e5054b9dffdf9ba9032a198c0ae5f8a0cccd1))
+* **code:** integrate Hooks v2 client lifecycle events ([#5104](https://github.com/langchain-ai/deepagents/issues/5104)) ([e8702df](https://github.com/langchain-ai/deepagents/commit/e8702df601e137b65fe276270c3d3d589340bddf))
+* **code:** integrate Hooks v2 server lifecycle events ([#4997](https://github.com/langchain-ai/deepagents/issues/4997)) ([2487c4b](https://github.com/langchain-ai/deepagents/commit/2487c4b87dff264ae1e8d34c7ce9249dd4b29760))
+* **code:** show `ask_user` answers on the answered tool row ([#5100](https://github.com/langchain-ai/deepagents/issues/5100)) ([78ebe2d](https://github.com/langchain-ai/deepagents/commit/78ebe2d27c0ec5b5bf1368f1f1b1f442f9212717))
+* **code:** show thread message count in the Debug Console ([#5117](https://github.com/langchain-ai/deepagents/issues/5117)) ([04cf25d](https://github.com/langchain-ai/deepagents/commit/04cf25d27068070979552a5c914fc7dad715ce70))
+* **code:** surface Hooks v2 runtime feedback ([#5045](https://github.com/langchain-ai/deepagents/issues/5045)) ([66d526f](https://github.com/langchain-ai/deepagents/commit/66d526f0e43c4c1c5d3ab9cc3d423fefe1606e6f))
+
+
+### Bug Fixes
+
+* **code:** anchor toasts above the chat input ([#5101](https://github.com/langchain-ai/deepagents/issues/5101)) ([f1727c7](https://github.com/langchain-ai/deepagents/commit/f1727c785c44809e7b1b7ed8c5d0b31c560ae3ad))
+* **code:** consistent styling and links for thread status messages ([#5118](https://github.com/langchain-ai/deepagents/issues/5118)) ([9ad8dde](https://github.com/langchain-ai/deepagents/commit/9ad8dded08533a7915dc35e05f4c92c3b1ecb736))
+* **code:** gate Hooks v2 behind `DEEPAGENTS_CODE_EXPERIMENTAL` ([#5146](https://github.com/langchain-ai/deepagents/issues/5146)) ([7d4acb6](https://github.com/langchain-ai/deepagents/commit/7d4acb6804cd17eb4c2337b9af11aee9f3601d01))
+* **code:** ignore mouse hits on detached widgets ([#5114](https://github.com/langchain-ai/deepagents/issues/5114)) ([d4d2b60](https://github.com/langchain-ai/deepagents/commit/d4d2b60e37ae034e69f60ab5f34267b542c00dd5))
+* **code:** keep `/update` and `/install --package` prompts responsive ([#5127](https://github.com/langchain-ai/deepagents/issues/5127)) ([5726872](https://github.com/langchain-ai/deepagents/commit/5726872cd5efec9367ae2ce678aa7183af74335d))
+* **code:** keep server hook state out of task results ([#5164](https://github.com/langchain-ai/deepagents/issues/5164)) ([88ea7da](https://github.com/langchain-ai/deepagents/commit/88ea7da18e8be84e65df0edb8ffc4b904182f843))
+* **code:** resume hints echo the launched command name ([#5119](https://github.com/langchain-ai/deepagents/issues/5119)) ([991b7e7](https://github.com/langchain-ai/deepagents/commit/991b7e769d8afa98edc8dac1c68994ca4dc765d2))
+* **code:** scope selection copy to the clicked screen ([#5140](https://github.com/langchain-ai/deepagents/issues/5140)) ([4de6037](https://github.com/langchain-ai/deepagents/commit/4de6037cbe31de005a493eaa719f5269f29be764))
+* **code:** stabilize hook resumes across identity and Command tool results ([#5176](https://github.com/langchain-ai/deepagents/issues/5176)) ([08e6e8b](https://github.com/langchain-ai/deepagents/commit/08e6e8ba8d8ea629d78976542a061a2acab1fa9c))
+* **code:** stop duplicating Auto transcript events on interrupt replay ([#5157](https://github.com/langchain-ai/deepagents/issues/5157)) ([5bbcf42](https://github.com/langchain-ai/deepagents/commit/5bbcf428a8131f0fca149abba34096fbcd2dfde8))
+* **code:** toast when media is dropped into a free-text question ([#5099](https://github.com/langchain-ai/deepagents/issues/5099)) ([da8d4c3](https://github.com/langchain-ai/deepagents/commit/da8d4c3ccc237e57294088d2437b13031a73c52d))
+
+
+### Performance Improvements
+
+* **code:** refresh `/threads` cache after each turn ([#5174](https://github.com/langchain-ai/deepagents/issues/5174)) ([872f9d5](https://github.com/langchain-ai/deepagents/commit/872f9d5647759a84e7abfa79d43fc128c54e29a4))
+
 ## [0.1.49](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.48...deepagents-code==0.1.49) (2026-07-27)
 
 ### Features

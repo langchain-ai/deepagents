@@ -1828,14 +1828,14 @@ def test_run_get_section_selects_every_prefixed_key_across_headings(capsys) -> N
     assert len(keys) > sum(opt.group == "Models" for opt in get_config_options())
 
 
-@pytest.mark.parametrize("title", ["Credentials", "Tools", "Updates"])
+@pytest.mark.parametrize("title", ["Tools", "Updates"])
 def test_run_get_group_title_is_not_a_section(title, capsys) -> None:
     """Display group titles are rejected; only key prefixes name a section.
 
-    `Tools` has no matching key prefix at all, and `Credentials`/`Updates`
-    differ from their `credentials`/`update` prefixes only by case and an
-    English plural — treating titles as sections would let one argument name
-    two different option sets depending on which namespace matched first.
+    `Tools` has no matching key prefix at all, and `Updates` differs from the
+    `update` prefix by an English plural — matching is case-insensitive on the
+    prefix but never pluralized or fuzzy, so a heading word that isn't a
+    prefix stays an error.
     """
     assert run_config_command(_get_args(title)) == 1
     assert "Unknown config option or section" in capsys.readouterr().err

@@ -18,6 +18,7 @@ from textual.widgets import Checkbox, Input, Select, Static
 from textual.widgets._select import SelectCurrent
 
 from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
+from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.sessions import ThreadInfo
 from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
 from deepagents_code.tui.widgets.thread_selector import (
@@ -3073,6 +3074,24 @@ def _app_test_double(app: DeepAgentsApp) -> Any:  # noqa: ANN401
     return app
 
 
+def _mock_session_state(thread_id: str) -> MagicMock:
+    """Return mocked session state carrying a real, inert hooks coordinator.
+
+    Thread switching runs `SessionEnd` through the coordinator, so a bare
+    `MagicMock` would hand back an unawaitable attribute.
+
+    Args:
+        thread_id: Thread the mocked session starts on.
+
+    Returns:
+        A `MagicMock` session state with `thread_id` and `hooks` populated.
+    """
+    state = MagicMock()
+    state.thread_id = thread_id
+    state.hooks = HooksManager.inert()
+    return state
+
+
 def _get_widget_text(widget: Static) -> str:
     """Extract text content from a message widget.
 
@@ -3125,8 +3144,7 @@ class TestResumeThread:
             side_effect=lambda w: mounted.append(w)
         )
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "thread-123"
+        app._session_state = _mock_session_state("thread-123")
         app._thread_switching = True
 
         await app._resume_thread("thread-999")
@@ -3135,7 +3153,7 @@ class TestResumeThread:
         assert "already in progress" in _get_widget_text(mounted[0])
 
     async def test_already_on_thread_shows_message(self) -> None:
-        """_resume_thread when already on the thread should show info message."""
+        """_resume_thread when already on the thread should toast, not mount."""
         app = DeepAgentsApp()
         mounted: list[Static] = []
         _app_test_double(app)._mount_message = AsyncMock(
@@ -3143,9 +3161,10 @@ class TestResumeThread:
         )
         offer_cwd_switch = AsyncMock(return_value="continue")
         _app_test_double(app)._offer_thread_cwd_switch = offer_cwd_switch
+        notify_mock = MagicMock()
+        _app_test_double(app).notify = notify_mock
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "thread-123"
+        app._session_state = _mock_session_state("thread-123")
 
         await app._resume_thread("thread-123")
 
@@ -3154,8 +3173,54 @@ class TestResumeThread:
             restart_server=True,
             abort="thread_switch",
         )
-        assert len(mounted) == 1
-        assert "Already on thread" in _get_widget_text(mounted[0])
+        assert mounted == []
+        notify_mock.assert_called_once_with(
+            "Already on thread: thread-123", markup=False
+        )
+
+    async def test_duplicate_already_on_thread_toast_is_suppressed(self) -> None:
+        """Repeated no-op resumes within the toast lifetime toast only once."""
+        app = DeepAgentsApp()
+        _app_test_double(app)._mount_message = AsyncMock()
+        _app_test_double(app)._offer_thread_cwd_switch = AsyncMock(
+            return_value="continue"
+        )
+        notify_mock = MagicMock()
+        _app_test_double(app).notify = notify_mock
+        app._agent = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.thread_id = "thread-123"
+
+        clock = {"now": 100.0}
+        with patch("deepagents_code.app._monotonic", side_effect=lambda: clock["now"]):
+            await app._resume_thread("thread-123")
+            clock["now"] = 100.0 + app.NOTIFICATION_TIMEOUT / 2
+            await app._resume_thread("thread-123")
+
+        notify_mock.assert_called_once_with(
+            "Already on thread: thread-123", markup=False
+        )
+
+    async def test_expired_already_on_thread_toast_can_reemit(self) -> None:
+        """Once the toast has expired, a later no-op resume toasts again."""
+        app = DeepAgentsApp()
+        _app_test_double(app)._mount_message = AsyncMock()
+        _app_test_double(app)._offer_thread_cwd_switch = AsyncMock(
+            return_value="continue"
+        )
+        notify_mock = MagicMock()
+        _app_test_double(app).notify = notify_mock
+        app._agent = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.thread_id = "thread-123"
+
+        clock = {"now": 100.0}
+        with patch("deepagents_code.app._monotonic", side_effect=lambda: clock["now"]):
+            await app._resume_thread("thread-123")
+            clock["now"] = 100.0 + app.NOTIFICATION_TIMEOUT
+            await app._resume_thread("thread-123")
+
+        assert notify_mock.call_count == 2
 
     async def test_already_on_thread_reports_cwd_switch(
         self,
@@ -3185,15 +3250,16 @@ class TestResumeThread:
             return "continue"
 
         _app_test_double(app)._offer_thread_cwd_switch = offer_cwd_switch
+        notify_mock = MagicMock()
+        _app_test_double(app).notify = notify_mock
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "thread-123"
+        app._session_state = _mock_session_state("thread-123")
 
         await app._resume_thread("thread-123")
 
         assert len(mounted) == 1
         assert "Switched to thread directory" in _get_widget_text(mounted[0])
-        assert "Already on thread" not in _get_widget_text(mounted[0])
+        notify_mock.assert_not_called()
 
     async def test_successful_switch_updates_ids(self) -> None:
         """Successful _resume_thread should update thread IDs and load history."""
@@ -3201,8 +3267,7 @@ class TestResumeThread:
 
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "old-thread"
+        app._session_state = _mock_session_state("old-thread")
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
         _app_test_double(app)._clear_messages = AsyncMock()
@@ -3232,8 +3297,10 @@ class TestResumeThread:
         app._queued_widgets.clear.assert_called_once()
         _app_test_double(app)._clear_messages.assert_awaited_once()
         assert app._context_tokens == 0
-        app._fetch_thread_history_data.assert_awaited_once_with("new-thread")
-        app._load_thread_history.assert_awaited_once_with(
+        _app_test_double(app)._fetch_thread_history_data.assert_awaited_once_with(
+            "new-thread"
+        )
+        _app_test_double(app)._load_thread_history.assert_awaited_once_with(
             thread_id="new-thread",
             preloaded_payload=mock_payload,
         )
@@ -3244,8 +3311,7 @@ class TestResumeThread:
 
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "old-thread"
+        app._session_state = _mock_session_state("old-thread")
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
         _app_test_double(app)._clear_messages = AsyncMock()
@@ -3297,14 +3363,76 @@ class TestResumeThread:
         assert session_state is not None
         assert session_state.previous_thread_id == "old-thread"
 
+    async def test_successful_switch_rearms_already_on_thread_toast(self) -> None:
+        """A real switch clears suppression so the next no-op toasts again.
+
+        Without the reset, re-selecting A after an A -> B -> A round trip would
+        be swallowed by the stale suppression entry left by the first no-op.
+        Mirrors the same-model counterpart in `test_model_switch.py`.
+        """
+        app = self._switch_app()
+        notify_mock = MagicMock()
+        _app_test_double(app).notify = notify_mock
+        _app_test_double(app)._offer_thread_cwd_switch = AsyncMock(
+            return_value="continue"
+        )
+
+        # Hold the clock still so a second toast is attributable to the reset
+        # rather than to the toast lifetime quietly expiring.
+        with patch("deepagents_code.app._monotonic", return_value=100.0):
+            # No-op records the suppression entry.
+            await app._resume_thread("old-thread")
+            # Real switches away and back must clear it.
+            await app._resume_thread("new-thread")
+            await app._resume_thread("old-thread")
+            # Identical message, same instant on the clock: only the reset can
+            # let this through.
+            await app._resume_thread("old-thread")
+
+        unchanged_toasts = [
+            call.args[0]
+            for call in notify_mock.call_args_list
+            if call.args[0].startswith("Already on thread")
+        ]
+        assert unchanged_toasts == [
+            "Already on thread: old-thread",
+            "Already on thread: old-thread",
+        ]
+
+    async def test_failure_after_switch_restores_previous_thread_pointer(self) -> None:
+        """A raise after the back-pointer is set must not leave previous == current.
+
+        `previous_thread_id` is recorded once the switch is materially complete,
+        but `_run_session_start_hook` runs after that and can raise. Without an
+        explicit restore, rollback would put the session back on the outgoing
+        thread while the back-pointer still named it, making a later bare
+        `/threads -r` a no-op with nowhere to step back to.
+        """
+        app = self._switch_app()
+        session_state = app._session_state
+        assert session_state is not None
+        session_state.previous_thread_id = "grandparent-thread"
+        _app_test_double(app)._offer_thread_cwd_switch = AsyncMock(
+            return_value="continue"
+        )
+        # Raise on the post-switch call; succeed on the rollback call so the
+        # rollback path itself completes.
+        _app_test_double(app)._run_session_start_hook = AsyncMock(
+            side_effect=[RuntimeError("hook exploded"), True]
+        )
+
+        await app._resume_thread("new-thread")
+
+        assert session_state.thread_id == "old-thread"
+        assert session_state.previous_thread_id == "grandparent-thread"
+
     async def test_failure_restores_previous_thread_ids(self) -> None:
         """If _clear_messages raises, thread IDs should be restored."""
         from textual.css.query import NoMatches as _NoMatches
 
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "old-thread"
+        app._session_state = _mock_session_state("old-thread")
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
         from deepagents_code.app import _ThreadHistoryPayload
@@ -3338,8 +3466,7 @@ class TestResumeThread:
 
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "old-thread"
+        app._session_state = _mock_session_state("old-thread")
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
         mock_payload = MagicMock()
@@ -3369,8 +3496,7 @@ class TestResumeThread:
         """Failed prefetch should not clear current conversation state."""
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "old-thread"
+        app._session_state = _mock_session_state("old-thread")
         fetch_history_mock = AsyncMock(
             side_effect=RuntimeError("checkpoint read failed")
         )
@@ -3394,8 +3520,7 @@ class TestResumeThread:
         """Prefetch failures should release switch lock and restore input state."""
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "old-thread"
+        app._session_state = _mock_session_state("old-thread")
         app._chat_input = MagicMock()
         _app_test_double(app)._mount_message = AsyncMock()
 
@@ -3417,8 +3542,7 @@ class TestResumeThread:
 
         app = DeepAgentsApp(thread_id="old-thread")
         app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "old-thread"
+        app._session_state = _mock_session_state("old-thread")
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
         _app_test_double(app)._fetch_thread_history_data = AsyncMock(return_value=[])
@@ -4120,6 +4244,46 @@ class TestBuildThreadMessage:
         assert isinstance(style, TStyle)
         assert style.link == url
 
+    async def test_linked_content_matches_plain_app_message_styling(self) -> None:
+        """Linked notes carry the same styling `AppMessage` gives plain strings.
+
+        The expected style is read off a real `AppMessage` rather than hardcoded,
+        so that if `AppMessage` stops styling plain strings `dim italic` this
+        fails instead of silently locking in the divergence it exists to catch.
+        `AppMessage` records the style as an unresolved spec string, so compare
+        parsed styles rather than span representations.
+        """
+        from textual.content import Content
+        from textual.style import Style as TStyle
+
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        plain_spans = AppMessage("Previous thread: tid-123").render()._spans
+        assert len(plain_spans) == 1
+        plain_style = plain_spans[0].style
+        expected = (
+            TStyle.parse(plain_style) if isinstance(plain_style, str) else plain_style
+        )
+
+        app = DeepAgentsApp()
+        url = "https://smith.langchain.com/o/org/projects/p/proj/t/tid-123"
+        target = "deepagents_code.config.build_langsmith_thread_url"
+        with patch(target, return_value=url):
+            result = await app._build_thread_message(
+                "Previous thread", "tid-123", suffix=" (Resume with /threads -r)"
+            )
+
+        assert isinstance(result, Content)
+        # Sum the spans to prove every character is styled, not just that the
+        # spans present are correct: an unstyled gap is the original regression.
+        covered = 0
+        for span in result._spans:
+            assert isinstance(span.style, TStyle)
+            assert span.style.dim == expected.dim
+            assert span.style.italic == expected.italic
+            covered += span.end - span.start
+        assert covered == len(result.plain)
+
     async def test_fallback_on_timeout(self) -> None:
         """Returns plain string when URL resolution times out."""
         app = DeepAgentsApp()
@@ -4294,6 +4458,42 @@ class TestConvertMessagesToData:
         assert result[0].tool_name == "read_file"
         assert result[0].tool_status == ToolStatus.SUCCESS
         assert result[0].tool_output == "file contents"
+
+    def test_reloaded_ask_user_row_keeps_its_questions(self) -> None:
+        """A reloaded `ask_user` row needs its questions to render answers.
+
+        `_format_ask_user_output` takes its answer count from the structured
+        questions in `tool_args` — recovered from the preceding
+        `AIMessage.tool_calls[].args`, never from the `ToolMessage`. Without them
+        the row degrades to generic formatting, so this pins the args plumbing the
+        whole feature rests on.
+        """
+        from deepagents_code._ask_user_types import ASK_USER_FAILED_SUMMARY
+        from deepagents_code.tui.widgets.message_store import ToolStatus
+        from deepagents_code.tui.widgets.messages import ToolCallMessage
+
+        args = {"questions": [{"question": "Deploy?"}]}
+        msgs = [
+            self._make_ai(
+                tool_calls=[{"id": "tc-1", "name": "ask_user", "args": args}]
+            ),
+            self._make_tool(
+                "Q: Deploy?\nA: (error: ask_user interaction failed)",
+                tool_call_id="tc-1",
+                status="error",
+            ),
+        ]
+        result = DeepAgentsApp._convert_messages_to_data(msgs)
+
+        assert len(result) == 1
+        assert result[0].tool_args == args
+        assert result[0].tool_status == ToolStatus.ERROR
+
+        widget = result[0].to_widget()
+        assert isinstance(widget, ToolCallMessage)
+        widget._restore_deferred_state()
+        formatted = widget._format_ask_user_output(str(widget._output), is_preview=True)
+        assert formatted.content.plain == ASK_USER_FAILED_SUMMARY
 
     def test_tool_call_error_status(self) -> None:
         """ToolMessage with error status should set ERROR on the tool data."""

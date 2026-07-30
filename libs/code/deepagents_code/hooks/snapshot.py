@@ -23,6 +23,7 @@ from deepagents_code.hooks.models.domain import (
     SubagentStartEvent,
     SubagentStopEvent,
 )
+from deepagents_code.hooks.projection import to_wire_notification_type
 from deepagents_code.hooks.tools import to_wire_tool_name
 
 if TYPE_CHECKING:
@@ -241,7 +242,7 @@ def _match_target(
     ):
         return to_wire_tool_name(event.call.name, mcp_server=event.call.mcp_server)
     if matcher_field == "notification_type" and isinstance(event, NotificationEvent):
-        return event.notification.type
+        return to_wire_notification_type(event.notification.type).value
     if matcher_field == "cause" and isinstance(
         event, SessionStartEvent | SessionEndEvent
     ):

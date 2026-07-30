@@ -325,6 +325,26 @@ def _disable_app_startup_update_checks(
 
 
 @pytest.fixture(autouse=True)
+def _skip_managed_tool_downloads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep app startup from downloading the managed `rg` binary.
+
+    `_ensure_managed_ripgrep` runs on app mount and fetches a ripgrep release
+    from GitHub whenever no current binary is on `PATH` -- the norm on CI and
+    in containers. The download happens in a worker thread and its failure is
+    swallowed, but pytest-socket still warns for every blocked `getaddrinfo`
+    (hundreds per run), and the "auto-install failed" toast it posts perturbs
+    tests that assert on toast layout or the notification registry.
+
+    Set the production opt-out env var so the install short-circuits before
+    touching the network, and so subprocess tests inherit the same no-network
+    behavior. Tests that cover the installer clear it themselves.
+    """
+    from deepagents_code._env_vars import OFFLINE
+
+    monkeypatch.setenv(OFFLINE, "1")
+
+
+@pytest.fixture(autouse=True)
 def _clear_behavior_override_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent developer behavior overrides from changing default-path tests."""
     for key in (

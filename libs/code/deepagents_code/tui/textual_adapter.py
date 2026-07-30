@@ -79,8 +79,10 @@ from deepagents_code._session_stats import (
     ModelStatsKey as ModelStatsKey,
     SessionStats as SessionStats,
     SpinnerStatus as SpinnerStatus,
+    classify_usage_kind as classify_usage_kind,
     format_token_count as format_token_count,
     print_usage_table as print_usage_table,
+    record_message_usage as record_message_usage,
 )
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
@@ -1168,6 +1170,7 @@ async def execute_task_textual(
 
     captured_input_tokens = 0
     captured_output_tokens = 0
+    seen_usage_message_ids: set[str] = set()
     if turn_stats is None:
         turn_stats = SessionStats()
     start_time = time.monotonic()
@@ -1681,73 +1684,36 @@ async def execute_task_textual(
                     # Account cost/tokens before render filters. Subagent
                     # namespaces and summarization/auto-classifier calls still
                     # spend money even though their text stays out of the chat.
-                    if hasattr(message, "usage_metadata"):
-                        usage = message.usage_metadata
-                        if usage:
-                            input_toks = usage.get("input_tokens", 0)
-                            output_toks = usage.get("output_tokens", 0)
-                            total_toks = usage.get("total_tokens", 0)
-                            from deepagents_code._session_stats import (
-                                classify_usage_kind,
-                            )
-                            from deepagents_code.config import settings
-                            from deepagents_code.cost_tracking import (
-                                estimate_cost,
-                                resolve_message_model,
-                            )
+                    recorded_usage = None
+                    if getattr(message, "usage_metadata", None):
+                        from deepagents_code.config import settings
 
-                            active_model, active_provider = resolve_message_model(
-                                message,
-                                fallback_model=settings.model_name or "",
-                                fallback_provider=settings.model_provider or "",
-                            )
-                            cost_usd = estimate_cost(
-                                usage, active_model, active_provider
-                            )
-                            usage_kind = classify_usage_kind(
+                        recorded_usage = record_message_usage(
+                            turn_stats,
+                            message,
+                            fallback_model=settings.model_name or "",
+                            fallback_provider=settings.model_provider or "",
+                            kind=classify_usage_kind(
                                 is_main_agent=is_main_agent,
                                 metadata=(
                                     metadata if isinstance(metadata, dict) else None
                                 ),
-                            )
-                            recorded = False
-                            if input_toks or output_toks:
-                                # Model gives split counts — preferred path
-                                turn_stats.record_request(
-                                    active_model,
-                                    input_toks,
-                                    output_toks,
-                                    active_provider,
-                                    cost_usd=cost_usd,
-                                    kind=usage_kind,
-                                )
-                                captured_input_tokens = max(
-                                    captured_input_tokens, input_toks + output_toks
-                                )
-                                recorded = True
-                            elif total_toks:
-                                # Fallback: model gives only total (no split)
-                                turn_stats.record_request(
-                                    active_model,
-                                    total_toks,
-                                    0,
-                                    active_provider,
-                                    cost_usd=cost_usd,
-                                    kind=usage_kind,
-                                )
-                                captured_input_tokens = max(
-                                    captured_input_tokens, total_toks
-                                )
-                                recorded = True
-                            if (
-                                recorded
-                                and cost_usd is not None
-                                and adapter._on_provisional_cost
-                            ):
-                                # Display-only: the graph checkpoints the same
-                                # spend and streams the authoritative total,
-                                # which supersedes this estimate.
-                                adapter._on_provisional_cost(cost_usd)
+                            ),
+                            seen_message_ids=seen_usage_message_ids,
+                        )
+                    if recorded_usage is not None:
+                        captured_input_tokens = max(
+                            captured_input_tokens,
+                            recorded_usage.input_tokens + recorded_usage.output_tokens,
+                        )
+                        if (
+                            recorded_usage.cost_usd is not None
+                            and adapter._on_provisional_cost
+                        ):
+                            # Display-only: the graph checkpoints the same spend
+                            # and streams the authoritative total, which
+                            # supersedes this estimate.
+                            adapter._on_provisional_cost(recorded_usage.cost_usd)
 
                     # Skip subagent outputs - only render main agent content in chat
                     if not is_main_agent:

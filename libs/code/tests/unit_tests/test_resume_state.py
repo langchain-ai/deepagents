@@ -426,6 +426,44 @@ class TestCostDisplayCallbacks:
         assert "Offload: $0.10" in summary
         assert "openai:gpt-5.5: $0.42" in summary
         assert "claude-sonnet-4-6" not in summary
+        assert "detailed usage metadata was unavailable" not in summary
+
+    def test_cost_summary_warns_when_current_details_are_incomplete(self) -> None:
+        """Checkpoint spend missing from streamed stats is called out."""
+        stats = SessionStats()
+        stats.record_request(
+            "gpt-5.5",
+            1_000,
+            100,
+            provider="openai",
+            cost_usd=0.32,
+        )
+        app = DeepAgentsApp()
+        app._reset_thread_usage(1.0)
+        app._thread_stats = stats
+        # The graph charged another $0.10 that the client message stream did
+        # not expose, in addition to the represented $0.32.
+        app._set_session_cost(1.42)
+
+        summary = app._format_cost_summary()
+
+        assert "Estimated thread cost: $1.42" in summary
+        assert "openai:gpt-5.5: $0.32" in summary
+        assert (
+            "Some current-session usage is included only in the total because "
+            "detailed usage metadata was unavailable."
+        ) in summary
+
+    def test_missing_current_details_are_not_labeled_as_restored(self) -> None:
+        """Fresh-thread usage without details gets only the current warning."""
+        app = DeepAgentsApp()
+        app._set_session_cost(0.20)
+
+        summary = app._format_cost_summary()
+
+        assert "Estimated thread cost: $0.20" in summary
+        assert "restored usage" not in summary.lower()
+        assert "detailed usage metadata was unavailable" in summary
 
     def test_cost_summary_marks_restored_usage_outside_breakdown(self) -> None:
         stats = SessionStats()

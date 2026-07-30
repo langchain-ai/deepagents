@@ -73,6 +73,7 @@ from deepagents_code._session_stats import (
     SpinnerStatus,
     format_cost,
     format_token_count,
+    record_message_usage,
 )
 
 # All config imports — settings, create_model, detect_provider, is_ascii_mode,
@@ -7395,13 +7396,30 @@ class DeepAgentsApp(App):
                     else model.model_name
                 )
                 lines.append(f"- {label}: {format_cost(model.cost_usd)}")
-        elif displayed_cost_usd > 0 and not priced_kinds:
+        elif (
+            displayed_cost_usd > 0
+            and not priced_kinds
+            and self._thread_restored_cost_usd > 0
+        ):
             lines.append(
                 "Per-type and per-model details are unavailable for restored usage."
             )
 
         if (priced_kinds or priced_models) and self._thread_restored_cost_usd > 0:
             lines.append("Restored usage is included only in the total above.")
+        authoritative_current_cost_usd = max(
+            self._session_cost_usd - self._thread_restored_cost_usd,
+            0.0,
+        )
+        detail_gap_usd = (
+            authoritative_current_cost_usd - self._thread_stats.total_cost_usd
+        )
+        comparison_tolerance = max(authoritative_current_cost_usd * 1e-6, 1e-9)
+        if detail_gap_usd > comparison_tolerance:
+            lines.append(
+                "Some current-session usage is included only in the total because "
+                "detailed usage metadata was unavailable."
+            )
         if self._thread_stats.priced_request_count < self._thread_stats.request_count:
             lines.append("Requests without known pricing are excluded.")
         return "\n".join(lines)
@@ -14339,6 +14357,10 @@ class DeepAgentsApp(App):
                     raise
             else:
                 if tool_error is not None:
+                    # Tool failure can follow completed summary/model requests.
+                    # Settle the display from the graph before returning the
+                    # failure; local detailed stats never write this total.
+                    await self._sync_session_cost_from_checkpoint()
                     await self._mount_message(ErrorMessage(tool_error))
                     return
 
@@ -14525,6 +14547,15 @@ class DeepAgentsApp(App):
         if agent is None:
             return None
 
+        offload_stats = SessionStats()
+        offload_thread_id = self._lc_thread_id
+        seen_usage_message_ids: set[str] = set()
+        model_spec = self._effective_model_spec() or ""
+        fallback_provider, separator, fallback_model = model_spec.partition(":")
+        if not separator:
+            fallback_model = fallback_provider
+            fallback_provider = ""
+
         tool_call_id = seed_tool_call_id or str(uuid.uuid4())
         # Stable message id so a failed run can address the seed for removal.
         seed = AIMessage(
@@ -14663,6 +14694,22 @@ class DeepAgentsApp(App):
                             pending.append((iid, {"decisions": decisions}))
                 elif mode == "messages" and isinstance(data, tuple):
                     msg = data[0]
+                    recorded_usage = record_message_usage(
+                        offload_stats,
+                        msg,
+                        fallback_model=fallback_model,
+                        fallback_provider=fallback_provider,
+                        kind="offload",
+                        seen_message_ids=seen_usage_message_ids,
+                    )
+                    if (
+                        recorded_usage is not None
+                        and recorded_usage.cost_usd is not None
+                    ):
+                        # Display-only until the graph's next absolute total
+                        # arrives. Request-ID deduplication above ensures a
+                        # replayed resume round cannot add this estimate twice.
+                        self._add_provisional_cost(recorded_usage.cost_usd)
                     if _is_tool_message(msg):
                         text = _message_text(msg)
                         if text.startswith(COMPACTION_FAILURE_PREFIX) or (
@@ -14686,38 +14733,46 @@ class DeepAgentsApp(App):
         # Bound the resume loop: after compaction the model runs again, and a
         # rejected gated call could prompt another. The middleware blocks
         # execution even when HITL is disabled; this bound handles HITL retries.
-        max_resume_rounds = 10
-        pending = await _drain(None)
-        rounds = 0
-        while pending:
-            rounds += 1
-            if rounds > max_resume_rounds:
-                logger.warning(
-                    "Offload exceeded %d resume rounds; leaving %d interrupt(s) "
-                    "unresolved",
-                    max_resume_rounds,
-                    len(pending),
-                )
-                # Compaction itself already committed in round 1, so the caller
-                # still reports the offload. Surface the abandoned drain so the
-                # user knows the thread was left paused mid-run and may need a
-                # fresh message to reset. Skip this when a tool failure is
-                # already pending, so the caller shows that error instead of
-                # the user seeing two conflicting messages.
-                if tool_error is None:
-                    await self._mount_message(
-                        ErrorMessage(
-                            "Offload completed, but the agent kept requesting "
-                            "tools afterward and the run could not be fully "
-                            "drained. Send a new message to continue; the "
-                            "thread may need to reset."
-                        )
+        try:
+            max_resume_rounds = 10
+            pending = await _drain(None)
+            rounds = 0
+            while pending:
+                rounds += 1
+                if rounds > max_resume_rounds:
+                    logger.warning(
+                        "Offload exceeded %d resume rounds; leaving %d interrupt(s) "
+                        "unresolved",
+                        max_resume_rounds,
+                        len(pending),
                     )
-                break
-            resume_payload = dict(pending)
-            pending = await _drain(Command(resume=resume_payload))
+                    # Compaction itself already committed in round 1, so the caller
+                    # still reports the offload. Surface the abandoned drain so the
+                    # user knows the thread was left paused mid-run and may need a
+                    # fresh message to reset. Skip this when a tool failure is
+                    # already pending, so the caller shows that error instead of
+                    # the user seeing two conflicting messages.
+                    if tool_error is None:
+                        await self._mount_message(
+                            ErrorMessage(
+                                "Offload completed, but the agent kept requesting "
+                                "tools afterward and the run could not be fully "
+                                "drained. Send a new message to continue; the "
+                                "thread may need to reset."
+                            )
+                        )
+                    break
+                resume_payload = dict(pending)
+                pending = await _drain(Command(resume=resume_payload))
 
-        return tool_error
+            return tool_error
+        finally:
+            # Usage can be incurred even when compaction fails, does nothing, or
+            # raises after a completed model request. Keep the graph-owned cost
+            # total untouched; these merges supply only the local breakdown.
+            self._session_stats.merge(offload_stats)
+            if offload_thread_id == self._lc_thread_id:
+                self._thread_stats.merge(offload_stats)
 
     async def _remove_offload_artifacts(
         self,

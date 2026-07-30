@@ -10,14 +10,13 @@ config, no widget imports) so that `app.py` can import `SessionStats` and
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 from deepagents_code.formatting import format_duration
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
-
     from rich.console import Console
 
 SpinnerStatus = (
@@ -119,6 +118,20 @@ class KindStats:
 
     priced_request_count: int = 0
     """Requests with a cost estimate, including estimates of literal zero."""
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedUsage:
+    """Usage captured from one completed streamed model request."""
+
+    input_tokens: int
+    """Input tokens reported for the request."""
+
+    output_tokens: int
+    """Output tokens reported for the request."""
+
+    cost_usd: float | None
+    """Estimated request cost, or `None` when pricing was unavailable."""
 
 
 ModelStatsKey = tuple[str, str]
@@ -251,6 +264,97 @@ class SessionStats:
             entry.output_tokens += kind_stats.output_tokens
             entry.cost_usd += kind_stats.cost_usd
             entry.priced_request_count += kind_stats.priced_request_count
+
+
+def record_message_usage(
+    stats: SessionStats,
+    message: object,
+    *,
+    fallback_model: str = "",
+    fallback_provider: str = "",
+    kind: UsageKind = "assistant",
+    seen_message_ids: set[str] | None = None,
+) -> RecordedUsage | None:
+    """Record usage attached to one streamed model message.
+
+    Request IDs are marked only after usable token metadata is recorded. A
+    resumed graph stream can replay a completed message, so callers may retain
+    `seen_message_ids` across stream rounds to keep that request out of the
+    breakdown a second time.
+
+    Args:
+        stats: Accumulator that receives the request.
+        message: Streamed model message or chunk.
+        fallback_model: Model to use when response metadata does not name one.
+        fallback_provider: Provider to use when response metadata omits it.
+        kind: Request class used by the type breakdown.
+        seen_message_ids: Request IDs already recorded by this stream consumer.
+
+    Returns:
+        Captured token and cost data, or `None` when the message has no usable
+            usage metadata or was already recorded.
+    """
+    usage = getattr(message, "usage_metadata", None)
+    if not isinstance(usage, Mapping) or not usage:
+        return None
+
+    message_id = getattr(message, "id", None)
+    request_id = message_id if isinstance(message_id, str) and message_id else None
+    if (
+        request_id is not None
+        and seen_message_ids is not None
+        and request_id in seen_message_ids
+    ):
+        return None
+
+    input_tokens = usage.get("input_tokens", 0)
+    output_tokens = usage.get("output_tokens", 0)
+    total_tokens = usage.get("total_tokens", 0)
+    input_count = (
+        input_tokens
+        if isinstance(input_tokens, int)
+        and not isinstance(input_tokens, bool)
+        and input_tokens > 0
+        else 0
+    )
+    output_count = (
+        output_tokens
+        if isinstance(output_tokens, int)
+        and not isinstance(output_tokens, bool)
+        and output_tokens > 0
+        else 0
+    )
+    total_count = (
+        total_tokens
+        if isinstance(total_tokens, int)
+        and not isinstance(total_tokens, bool)
+        and total_tokens > 0
+        else 0
+    )
+    if not input_count and not output_count:
+        if not total_count:
+            return None
+        input_count = total_count
+
+    from deepagents_code.cost_tracking import estimate_cost, resolve_message_model
+
+    model_name, provider = resolve_message_model(
+        message,
+        fallback_model=fallback_model,
+        fallback_provider=fallback_provider,
+    )
+    cost_usd = estimate_cost(usage, model_name, provider)
+    stats.record_request(
+        model_name,
+        input_count,
+        output_count,
+        provider,
+        cost_usd=cost_usd,
+        kind=kind,
+    )
+    if request_id is not None and seen_message_ids is not None:
+        seen_message_ids.add(request_id)
+    return RecordedUsage(input_count, output_count, cost_usd)
 
 
 def format_token_count(count: int) -> str:

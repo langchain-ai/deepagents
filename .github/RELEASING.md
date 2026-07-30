@@ -854,7 +854,7 @@ To rebuild and apply the release body manually:
 
 1. **Check out the release commit locally.** Use the same SHA that was used for the release (visible in the workflow run's "Resolved release target" summary, or via `gh pr view <pr-number> --json mergeCommit --jq .mergeCommit.oid`).
 
-   The clone must have **full history and all tags** — the script resolves the predecessor tag that bounds the git log, and CI does this with `fetch-depth: 0` and `fetch-tags: true`. On a shallow or tag-less clone, run `git fetch --tags --unshallow` first.
+   The clone must have **full history and all tags** — the script resolves the predecessor tag that bounds the git log, and CI does this with `fetch-depth: 0` and `fetch-tags: true`. On a tag-less clone, run `git fetch --tags` first; if the clone is also shallow (`git rev-parse --is-shallow-repository` reports `true`), additionally run `git fetch --unshallow`.
 
 2. **Rebuild the body** with the shared script. Run it **from the repository root** (or pass `--repo-root`):
 

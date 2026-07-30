@@ -52,6 +52,7 @@ from deepagents_code._session_stats import SessionStats
 from deepagents_code._version import CHANGELOG_URL, __version__
 from deepagents_code.app import (
     _DEEPAGENTS_IMPORT_LOCK,
+    _MIN_TOAST_ROWS,
     _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
     DeferredAction,
@@ -73,6 +74,7 @@ from deepagents_code.goal_state_notice import (
     GOAL_CONTROL_MESSAGE_SOURCE,
     goal_state_notice_info,
 )
+from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.media_utils import ImageData, VideoData
 from deepagents_code.tui.textual_adapter import RubricEvaluationEnd
 from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
@@ -555,6 +557,24 @@ class TestStartupSequence:
         assert call_count == 1
         assert app._initial_session_started is True
 
+    async def test_stopped_session_start_blocks_initial_submission(self) -> None:
+        """A hook stop at startup prevents the initial prompt from running."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            initial_prompt="hello",
+        )
+        hook = AsyncMock(return_value=False)
+        submit = AsyncMock()
+        app._run_session_start_hook = hook  # ty: ignore[invalid-assignment]
+        app._submit_initial_submission = submit  # ty: ignore[invalid-assignment]
+
+        await app._run_session_start_sequence()
+        await app._run_session_start_sequence()
+
+        submit.assert_not_awaited()
+        hook.assert_awaited_once()
+
     async def test_reconnect_drains_queue_without_reloading_history(self) -> None:
         """Later `ServerReady` events should drain queued input once connected."""
         app = DeepAgentsApp(
@@ -604,16 +624,21 @@ class TestStartupSequence:
             assert command == "echo hi"
             order.append("startup")
 
+        async def capture_hook(_cause: object) -> bool:  # noqa: RUF029
+            order.append("hook")
+            return True
+
         async def capture_goal_review() -> None:  # noqa: RUF029
             order.append("goal")
 
         app._load_thread_history = capture_history  # ty: ignore
+        app._run_session_start_hook = capture_hook  # ty: ignore[invalid-assignment]
         app._run_startup_command = capture_startup  # ty: ignore
         app._remount_pending_goal_rubric_review = capture_goal_review  # ty: ignore
 
         await app._run_session_start_sequence()
 
-        assert order == ["history", "startup", "goal"]
+        assert order == ["history", "hook", "startup", "goal"]
         assert app._startup_sequence_running is False
 
     @pytest.mark.parametrize(
@@ -794,6 +819,34 @@ class TestStartupSequence:
         refresh_mock.assert_called_once_with()
         drain_mock.assert_awaited_once()
         queue_mock.assert_awaited_once()
+
+    async def test_cleanup_agent_task_refreshes_thread_cache(self) -> None:
+        """Agent cleanup should refresh cached `/threads` rows after a turn."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        refresh_mock = MagicMock()
+        app._process_next_from_queue = AsyncMock()  # ty: ignore
+        app._maybe_drain_deferred = AsyncMock()  # ty: ignore
+        app._set_spinner = AsyncMock()  # ty: ignore
+        app._schedule_git_branch_refresh = MagicMock()  # ty: ignore
+        app._schedule_thread_cache_refresh = refresh_mock  # ty: ignore
+
+        await app._cleanup_agent_task()
+
+        refresh_mock.assert_called_once_with()
+
+    async def test_schedule_thread_cache_refresh_noops_during_exit(self) -> None:
+        """Shutdown should prevent new background thread-cache refreshes."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._exit = True
+            run_worker_mock = MagicMock()
+            app.run_worker = run_worker_mock  # ty: ignore
+
+            app._schedule_thread_cache_refresh()
+
+            run_worker_mock.assert_not_called()
 
     async def test_schedule_git_branch_refresh_noops_during_exit(self) -> None:
         """Shutdown should prevent new background git refresh tasks."""
@@ -2305,6 +2358,19 @@ class TestThreadCachePrewarm:
             await app._prewarm_threads_cache()
 
         mock_prewarm.assert_awaited_once_with(limit=7)
+
+    async def test_schedule_refresh_runs_prewarm_in_worker(self) -> None:
+        """Scheduling a refresh should re-run the prewarm off the event loop."""
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            prewarm_mock = AsyncMock()
+            app._prewarm_threads_cache = prewarm_mock  # ty: ignore
+            app._schedule_thread_cache_refresh()
+            await pilot.pause()
+
+            prewarm_mock.assert_awaited_once_with()
 
     async def test_show_thread_selector_uses_cached_rows(self) -> None:
         """Thread selector should receive prefetched rows when available."""
@@ -5028,6 +5094,7 @@ class TestMessageQueue:
         app._agent.aupdate_state = AsyncMock()
         app._ui_adapter = MagicMock()
         app._session_state = MagicMock()
+        app._session_state.hooks = HooksManager.inert()
         async with app.run_test() as pilot:
             await pilot.pause()
             # A prior turn produced output.
@@ -5262,6 +5329,133 @@ class TestAskUserLifecycle:
             app._scroll_inline_prompt_into_view(menu)
 
         menu.scroll_visible.assert_called_once_with()
+
+    def test_ctrl_o_toggles_most_recent_expandable_user_message(self) -> None:
+        """Ctrl+O expands a most-recent long UserMessage when nothing else owns it."""
+        from deepagents_code.tui.widgets.messages import UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        user = MagicMock(spec=UserMessage)
+        user.has_expandable_body = True
+        container = MagicMock()
+        container.children = [user]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        user.toggle_expanded.assert_called_once_with()
+
+    def test_ctrl_o_prefers_a_later_tool_row_over_a_long_user_message(self) -> None:
+        """A tool row after the prompt claims Ctrl+O; the prompt needs a click."""
+        from deepagents_code.tui.widgets.messages import ToolCallMessage, UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        user = MagicMock(spec=UserMessage)
+        user.has_expandable_body = True
+        tool = MagicMock(spec=ToolCallMessage)
+        tool.has_class.return_value = False
+        tool.has_output = True
+        tool.has_expandable_output = True
+        tool.has_expandable_task_desc = False
+        tool.has_expandable_args = False
+        container = MagicMock()
+        container.children = [user, tool]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        tool.toggle_output.assert_called_once_with()
+        user.toggle_expanded.assert_not_called()
+
+    def test_ctrl_o_skips_unexpandable_user_messages(self) -> None:
+        """A short prompt is transparent, so Ctrl+O reaches the older long one."""
+        from deepagents_code.tui.widgets.messages import UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._pending_ask_user_widget = None
+        long_user = MagicMock(spec=UserMessage)
+        long_user.has_expandable_body = True
+        short_user = MagicMock(spec=UserMessage)
+        short_user.has_expandable_body = False
+        container = MagicMock()
+        container.children = [long_user, short_user]
+
+        with patch.object(app, "query_one", return_value=container):
+            app.action_toggle_tool_output()
+
+        long_user.toggle_expanded.assert_called_once_with()
+        short_user.toggle_expanded.assert_not_called()
+
+    def test_user_message_expansion_is_persisted_and_remeasured(self) -> None:
+        """Expanding a prompt updates the store and re-measures the row height."""
+        from deepagents_code.tui.widgets.messages import UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._message_store = MagicMock()
+        widget = MagicMock(spec=UserMessage)
+        widget.id = "msg-1"
+
+        with patch.object(app, "_schedule_message_height_measurement") as measure:
+            app.on_user_message_expansion_changed(
+                UserMessage.ExpansionChanged(widget, expanded=True)
+            )
+
+        app._message_store.update_message.assert_called_once_with(
+            "msg-1", user_expanded=True
+        )
+        measure.assert_called_once_with("msg-1")
+
+    async def test_long_user_message_submit_toasts(self) -> None:
+        """Submitting a >threshold message posts an information toast."""
+        from deepagents_code.tui.widgets.messages import UserMessage
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._image_tracker = MagicMock()
+        app._image_tracker.snapshot.return_value = None
+        app.notify = MagicMock()
+        app._mount_message = AsyncMock()
+        app._send_to_agent = AsyncMock()
+
+        long_msg = "L" * 12_000
+        await app._handle_user_message(long_msg)
+        app.notify.assert_called_once()
+        kwargs = app.notify.call_args.kwargs
+        assert kwargs.get("severity") == "information"
+        assert kwargs.get("markup") is False
+        message = app.notify.call_args.args[0]
+        assert "shortened" in message.lower()
+        # Points at the affordance's literal label so the user can find it.
+        assert "show full message" in message
+
+        # The toast must describe the widget that was actually mounted, not a
+        # separately re-derived guess about the raw string.
+        mounted = app._mount_message.call_args.args[0]
+        assert isinstance(mounted, UserMessage)
+        assert mounted.has_expandable_body is True
+
+        app.notify.reset_mock()
+        await app._handle_user_message("short")
+        app.notify.assert_not_called()
+
+    async def test_literal_slash_message_toasts_at_its_own_length(self) -> None:
+        """A `-m` path-like prompt is measured as literal text, prefix included.
+
+        `_handle_user_message` builds the widget with mode detection off, so a
+        leading slash is body text. The toast must agree with what renders.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        app._image_tracker = MagicMock()
+        app._image_tracker.snapshot.return_value = None
+        app.notify = MagicMock()
+        app._mount_message = AsyncMock()
+        app._send_to_agent = AsyncMock()
+
+        await app._handle_user_message("/" + "x" * 10_000)
+
+        app.notify.assert_called_once()
+        assert app._mount_message.call_args.args[0].has_expandable_body is True
 
     def test_ctrl_o_targets_pending_ask_user_tool_row(self) -> None:
         """App-level Ctrl+O should toggle the active ask_user tool row."""
@@ -6637,6 +6831,14 @@ class TestRunAgentTaskMediaTracker:
             assert app._ui_adapter is not None
 
             pending_tool = MagicMock()
+            # Match the real widget's default. An unset MagicMock attribute is
+            # truthy, and each of these is read by a different consumer, so both
+            # must be set: `deferred_success_output` by
+            # `_dispatch_terminal_tool_result_hooks` (which would report a success
+            # with no tool.error) and `is_awaiting_deferred_result` by
+            # `set_error`/`set_rejected` (which would redirect to a settle).
+            pending_tool.deferred_success_output = None
+            pending_tool.is_awaiting_deferred_result = False
             app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}
 
             with patch(
@@ -6671,6 +6873,14 @@ class TestRunAgentTaskMediaTracker:
             assert app._ui_adapter is not None
 
             pending_tool = MagicMock()
+            # Match the real widget's default. An unset MagicMock attribute is
+            # truthy, and each of these is read by a different consumer, so both
+            # must be set: `deferred_success_output` by
+            # `_dispatch_terminal_tool_result_hooks` (which would report a success
+            # with no tool.error) and `is_awaiting_deferred_result` by
+            # `set_error`/`set_rejected` (which would redirect to a settle).
+            pending_tool.deferred_success_output = None
+            pending_tool.is_awaiting_deferred_result = False
             app._ui_adapter._current_tool_messages = {"tool-1": pending_tool}
 
             exc = RemoteException(
@@ -12926,6 +13136,35 @@ class TestMessageTimestampFooters:
             with pytest.raises(NoMatches):
                 app.query_one("#hist-app-timestamp-footer", Static)
 
+    async def test_resumed_history_populates_hook_transcript(self) -> None:
+        from langchain_core.messages import HumanMessage
+
+        from deepagents_code.app import _ThreadHistoryPayload
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            runtime: Any = MagicMock()
+            app._session_state.hooks = HooksManager.adopting(
+                runtime,
+                identity=app._session_state.hook_identity,
+            )
+            payload = _ThreadHistoryPayload(
+                [],
+                0,
+                "",
+                transcript_messages=(HumanMessage(id="history-1", content="restored"),),
+            )
+            await app._load_thread_history(
+                thread_id="t-restored",
+                preloaded_payload=payload,
+            )
+
+        runtime.append_messages.assert_called_once_with(
+            "t-restored", payload.transcript_messages, agent_id=None
+        )
+
     async def test_load_thread_history_skips_duplicate_ids(self) -> None:
         """History reusing an already-mounted widget ID is skipped, not fatal.
 
@@ -14836,6 +15075,7 @@ class TestShellCommandInterrupt:
         app._lc_thread_id = "thread-123"
         app._ui_adapter = MagicMock()
         app._session_state = MagicMock()
+        app._session_state.hooks = HooksManager.inert()
         app._pending_shell_messages = [self._shell_context_message("echo hi", "hi")]
 
         async with app.run_test() as pilot:
@@ -15081,6 +15321,7 @@ class TestShellCommandInterrupt:
         app._lc_thread_id = "thread-123"
         app._ui_adapter = MagicMock()
         app._session_state = MagicMock()
+        app._session_state.hooks = HooksManager.inert()
         app._pending_shell_messages = [self._shell_context_message("echo hi", "hi")]
 
         async with app.run_test() as pilot:
@@ -16029,7 +16270,11 @@ class TestActionOpenEditor:
             _, text_area, future = await self._open_goal_editor(app, pilot)
             text_area.text = ""
             big = "- criterion\n" * 5
-            await text_area._on_paste(events.Paste(big))
+            text_area.focus()
+            await pilot.pause()
+            # Post through the App so Textual's MRO dispatch reaches the base
+            # handlers; calling `_on_paste` directly skips the insert entirely.
+            app.post_message(events.Paste(big))
             await pilot.pause()
             assert text_area.text == "[Pasted text #1 +5 lines]"
             assert text_area._pasted_contents
@@ -16069,7 +16314,11 @@ class TestActionOpenEditor:
             _, text_area, future = await self._open_goal_editor(app, pilot)
             text_area.text = ""
             big = "- criterion\n" * 5
-            await text_area._on_paste(events.Paste(big))
+            text_area.focus()
+            await pilot.pause()
+            # Post through the App so Textual's MRO dispatch reaches the base
+            # handlers; calling `_on_paste` directly skips the insert entirely.
+            app.post_message(events.Paste(big))
             await pilot.pause()
             visible = text_area.text
             pasted = dict(text_area._pasted_contents)
@@ -16239,7 +16488,11 @@ class TestActionOpenEditor:
             await pilot.pause()
             _, other_input, future = await self._open_ask_user_other_editor(app, pilot)
             big = "answer line\n" * 5
-            await other_input._on_paste(events.Paste(big))
+            other_input.focus()
+            await pilot.pause()
+            # Post through the App so Textual's MRO dispatch reaches the base
+            # handlers; calling `_on_paste` directly skips the insert entirely.
+            app.post_message(events.Paste(big))
             await pilot.pause()
             assert other_input.text == "[Pasted text #1 +5 lines]"
             assert other_input._pasted_contents
@@ -16451,7 +16704,11 @@ class TestActionOpenEditor:
             await pilot.pause()
             _, other_input, future = await self._open_ask_user_other_editor(app, pilot)
             big = "answer line\n" * 5
-            await other_input._on_paste(events.Paste(big))
+            other_input.focus()
+            await pilot.pause()
+            # Post through the App so Textual's MRO dispatch reaches the base
+            # handlers; calling `_on_paste` directly skips the insert entirely.
+            app.post_message(events.Paste(big))
             await pilot.pause()
             visible = other_input.text
             pasted = dict(other_input._pasted_contents)
@@ -16487,8 +16744,315 @@ class TestEditorSlashCommand:
         mock.assert_awaited_once()
 
 
+class TestApprovalModeSlashCommands:
+    """Tests for the `/manual`, `/auto`, and `/yolo` slash commands."""
+
+    async def test_auto_command_sets_auto_when_eligible(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.MANUAL
+        with patch.object(
+            app, "_set_approval_mode", new_callable=AsyncMock
+        ) as set_mode:
+            await app._handle_command("/auto")
+        set_mode.assert_awaited_once_with(ApprovalMode.AUTO)
+
+    async def test_manual_command_sets_manual(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.AUTO
+        with patch.object(
+            app, "_set_approval_mode", new_callable=AsyncMock
+        ) as set_mode:
+            await app._handle_command("/manual")
+        set_mode.assert_awaited_once_with(ApprovalMode.MANUAL)
+
+    async def test_auto_command_warns_when_ineligible(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = False
+        app._approval_mode = ApprovalMode.MANUAL
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch.object(app, "_warn_live_approval_mode_unavailable") as warn,
+        ):
+            await app._handle_command("/auto")
+        set_mode.assert_not_awaited()
+        warn.assert_called_once()
+        assert "Auto is unavailable" in str(warn.call_args.args[0])
+
+    async def test_already_in_mode_notifies_and_skips(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.MANUAL
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch.object(app, "notify") as notify,
+        ):
+            await app._handle_command("/manual")
+        set_mode.assert_not_awaited()
+        notify.assert_called_once()
+        assert "Already in Manual mode" in str(notify.call_args.args[0])
+
+    async def test_yolo_command_sets_yolo_when_acknowledged(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.AUTO
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch(
+                "deepagents_code.config.is_yolo_switcher_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                return_value=True,
+            ),
+        ):
+            await app._handle_command("/yolo")
+        set_mode.assert_awaited_once_with(ApprovalMode.YOLO)
+
+    async def test_yolo_command_prompts_when_not_acknowledged(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.AUTO
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch.object(app, "_prompt_yolo_switcher_acknowledgement") as prompt,
+            patch(
+                "deepagents_code.config.is_yolo_switcher_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                return_value=False,
+            ),
+        ):
+            await app._handle_command("/yolo")
+        set_mode.assert_not_awaited()
+        prompt.assert_called_once_with()
+
+    async def test_yolo_command_warns_when_switcher_disabled(self) -> None:
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.AUTO
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch.object(app, "_warn_live_approval_mode_unavailable") as warn,
+            patch(
+                "deepagents_code.config.is_yolo_switcher_enabled",
+                return_value=False,
+            ),
+        ):
+            await app._handle_command("/yolo")
+        set_mode.assert_not_awaited()
+        warn.assert_called_once()
+        assert "YOLO is disabled" in str(warn.call_args.args[0])
+
+
+class TestYoloActiveWarning:
+    """The recurring "YOLO is active" toast honors `[warnings].suppress`."""
+
+    @staticmethod
+    async def _enter_yolo(app: DeepAgentsApp) -> list[str]:
+        """Switch `app` into YOLO and return the toast messages it posted."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        with (
+            patch.object(
+                app,
+                "_write_live_approval_mode",
+                new=AsyncMock(return_value=True),
+            ),
+            patch.object(app, "_auto_accept_pending_goal_rubric", new=AsyncMock()),
+            patch.object(app, "notify") as notify,
+        ):
+            assert await app._set_approval_mode(ApprovalMode.YOLO) is True
+        return [str(call_args.args[0]) for call_args in notify.call_args_list]
+
+    def test_suppression_key_is_the_documented_literal(self) -> None:
+        """Pin the config contract: users type `yolo`, not the symbol name.
+
+        Every other test refers to the constant on both the write and the read
+        side, so a renamed value would stay green while silently breaking
+        `[warnings].suppress = ["yolo"]` in existing configs.
+        """
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY
+
+        assert YOLO_WARNING_KEY == "yolo"
+
+    async def test_warns_by_default(self) -> None:
+        """An unsuppressed install still gets the no-review warning."""
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY
+        from deepagents_code.model_config import is_warning_suppressed
+
+        # Guards on the `_isolate_state_dir` autouse fixture: without it this
+        # reads the developer's real config and flakes only on machines where
+        # the toast has been muted.
+        assert is_warning_suppressed(YOLO_WARNING_KEY) is False
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = await self._enter_yolo(app)
+
+        assert any("YOLO is active" in message for message in messages)
+
+    async def test_warns_when_the_suppression_check_fails(self) -> None:
+        """An unreadable suppression list fails open, it does not mute."""
+        from deepagents_code import app as app_module
+        from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+        # `warnings` as a list rather than a table: a plausible hand-edit that
+        # used to raise `AttributeError` straight out of the mode switch.
+        DEFAULT_CONFIG_PATH.write_text('warnings = ["yolo"]\n')
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = await self._enter_yolo(app)
+
+        assert any("YOLO is active" in message for message in messages)
+
+        # And an outright broken reader must not take the mode switch down.
+        with patch.object(
+            app_module,
+            "logger",
+            new=MagicMock(),
+        ):
+            app2 = DeepAgentsApp(agent=MagicMock())
+            async with app2.run_test() as pilot:
+                await pilot.pause()
+                with patch(
+                    "deepagents_code.model_config.is_warning_suppressed",
+                    side_effect=RuntimeError("boom"),
+                ):
+                    messages = await self._enter_yolo(app2)
+
+        assert any("YOLO is active" in message for message in messages)
+
+    async def test_warns_at_startup_when_launched_in_yolo(self) -> None:
+        """The `on_mount` toast is the recurring one this feature mutes."""
+        app = DeepAgentsApp(agent=MagicMock(), approval_mode="yolo")
+        with patch.object(app, "notify") as notify:
+            async with app.run_test() as pilot:
+                await pilot.pause()
+
+        messages = [str(call.args[0]) for call in notify.call_args_list]
+        assert any("YOLO is active" in message for message in messages)
+
+    async def test_startup_warning_is_muted_when_suppressed(self) -> None:
+        """Muting reaches the startup path, not just the mode switch."""
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY
+        from deepagents_code.model_config import suppress_warning
+
+        assert suppress_warning(YOLO_WARNING_KEY) is True
+
+        app = DeepAgentsApp(agent=MagicMock(), approval_mode="yolo")
+        with patch.object(app, "notify") as notify:
+            async with app.run_test() as pilot:
+                await pilot.pause()
+
+        messages = [str(call.args[0]) for call in notify.call_args_list]
+        assert not any("YOLO is active" in message for message in messages)
+
+    async def test_suppression_does_not_bypass_the_acknowledgement(self) -> None:
+        """Muting the toast must not skip the first-enable gate.
+
+        `_enter_yolo` drives `_set_approval_mode`, which sits *below* the
+        acknowledgement check. This covers the gate itself, so hoisting the
+        suppression check up into the command handler cannot silently turn
+        muting into a way past the modal.
+        """
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY, ApprovalMode
+        from deepagents_code.model_config import suppress_warning
+
+        assert suppress_warning(YOLO_WARNING_KEY) is True
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                    return_value=False,
+                ),
+                patch.object(app, "_prompt_yolo_switcher_acknowledgement") as prompt,
+                patch.object(app, "_set_approval_mode", new=AsyncMock()) as switch,
+            ):
+                await app._handle_approval_mode_command(ApprovalMode.YOLO)
+
+            prompt.assert_called_once()
+            switch.assert_not_called()
+            assert app._approval_mode is not ApprovalMode.YOLO
+
+    async def test_suppressed_key_mutes_the_toast(self) -> None:
+        """The `yolo` suppression key silences the toast."""
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY
+        from deepagents_code.model_config import suppress_warning
+
+        assert suppress_warning(YOLO_WARNING_KEY) is True
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            messages = await self._enter_yolo(app)
+
+        assert not any("YOLO is active" in message for message in messages)
+
+    async def test_suppression_does_not_weaken_the_mode_switch(self) -> None:
+        """Muting the toast is cosmetic: YOLO still applies and stays visible."""
+        from deepagents_code.approval_mode import YOLO_WARNING_KEY, ApprovalMode
+        from deepagents_code.model_config import suppress_warning
+
+        assert suppress_warning(YOLO_WARNING_KEY) is True
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await self._enter_yolo(app)
+            await pilot.pause()
+
+            assert app._approval_mode is ApprovalMode.YOLO
+            assert app._auto_approve is True
+            indicator = app.query_one("#auto-approve-indicator", Static)
+            assert str(indicator.render()) == "YOLO"
+
+
 class TestToolsSlashCommand:
     """Tests for the `/tools` slash command."""
+
+    @staticmethod
+    def _display(source: str, *, width: int = 100) -> str:
+        """Return the text a markdown `AppMessage` shows for `source`.
+
+        The catalog is emitted as markdown source, so assertions about what the
+        user actually sees (names and descriptions with their escapes resolved,
+        table cells laid out) must go through the same renderer the widget uses.
+
+        Args:
+            source: Markdown source as returned by `_render_tool_catalog`.
+            width: Render width in terminal cells.
+
+        Returns:
+            The rendered display text, laid out at a fixed width.
+        """
+        from deepagents_code.tui.widgets.messages import _markdown_to_content
+
+        return _markdown_to_content(source, width).plain
 
     async def test_mounts_user_echo_then_catalog(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
@@ -16526,10 +17090,40 @@ class TestToolsSlashCommand:
         first, second = (c.args[0] for c in mount.await_args_list)
         assert isinstance(first, UserMessage)
         assert isinstance(second, AppMessage)
-        rendered = second._content.plain
+        assert second._is_markdown
+        rendered = self._display(str(second._content))
         assert "read_file" in rendered
         assert "search_docs" in rendered
         assert "docs" in rendered
+
+    async def test_mounted_catalog_renders_markdown_table(self) -> None:
+        """The mounted message renders through the widget's own markdown path."""
+        tool_node = SimpleNamespace(
+            tools_by_name={"read_file": SimpleNamespace(description="Read a file")}
+        )
+        agent = MagicMock()
+        agent.nodes = {"tools": SimpleNamespace(bound=tool_node)}
+        app = DeepAgentsApp(agent=agent)
+        app._server_kwargs = None
+
+        async with app.run_test(size=(100, 40)) as pilot:
+            await pilot.pause()
+            await app._handle_command("/tools")
+            await pilot.pause()
+
+            catalog = [m for m in app.query(AppMessage) if m._is_markdown]
+            assert catalog
+            rendered = catalog[-1].render().plain
+
+        assert "1 tool available" in rendered
+        # The column headings and rule prove the source became a real table
+        # rather than degenerating into paragraphs or a list.
+        assert "Tool" in rendered
+        assert "Description" in rendered
+        assert "─" in rendered
+        # Present unescaped, so the markdown source's `read\_file` resolved.
+        assert "read_file" in rendered
+        assert "Read a file" in rendered
 
     async def test_built_in_failure_still_shows_mcp(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
@@ -16558,7 +17152,7 @@ class TestToolsSlashCommand:
         assert mount.await_count == 3
         catalog_msg = mount.await_args_list[-1].args[0]
         assert isinstance(catalog_msg, AppMessage)
-        assert "search_docs" in catalog_msg._content.plain
+        assert "search_docs" in self._display(str(catalog_msg._content))
 
     async def test_custom_local_agent_uses_its_bound_tools(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
@@ -16592,7 +17186,7 @@ class TestToolsSlashCommand:
 
         compile_.assert_not_called()
         assert mount.await_count == 2
-        rendered = mount.await_args_list[-1].args[0]._content.plain
+        rendered = self._display(str(mount.await_args_list[-1].args[0]._content))
         assert rendered.count("custom_search") == 1
         assert "Search custom data" in rendered
         assert rendered.count("search_docs") == 1
@@ -16610,7 +17204,7 @@ class TestToolsSlashCommand:
             await app._handle_command("/tools")
 
         assert mount.await_count == 2
-        rendered = mount.await_args_list[-1].args[0]._content.plain
+        rendered = self._display(str(mount.await_args_list[-1].args[0]._content))
         assert "0 tools available" in rendered
         assert "cannot be enumerated" not in rendered
         assert "still has its built-in tools" not in rendered
@@ -16637,7 +17231,9 @@ class TestToolsSlashCommand:
         assert mount.await_count == 3
         notice = mount.await_args_list[1].args[0]
         assert "cannot be enumerated" in str(notice._content)
-        assert "search_docs" in mount.await_args_list[-1].args[0]._content.plain
+        assert "search_docs" in self._display(
+            str(mount.await_args_list[-1].args[0]._content)
+        )
 
     async def test_remote_agent_reports_unavailable_mcp_server(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo
@@ -16662,7 +17258,7 @@ class TestToolsSlashCommand:
         notice = str(mount.await_args_list[1].args[0]._content)
         assert "cannot be enumerated" in notice
         assert "showing MCP information only" in notice
-        rendered = mount.await_args_list[-1].args[0]._content.plain
+        rendered = self._display(str(mount.await_args_list[-1].args[0]._content))
         assert "Unavailable MCP servers" in rendered
         assert "notion" in rendered
         assert "Login required" in rendered
@@ -16689,7 +17285,7 @@ class TestToolsSlashCommand:
         ):
             await app._handle_command("/tools")
 
-        rendered = mount.await_args_list[-1].args[0]._content.plain
+        rendered = self._display(str(mount.await_args_list[-1].args[0]._content))
         assert "search_docs" in rendered
         assert "Unavailable MCP servers" not in rendered
 
@@ -16719,7 +17315,7 @@ class TestToolsSlashCommand:
         ):
             await app._handle_command("/tools")
 
-        rendered = mount.await_args_list[-1].args[0]._content.plain
+        rendered = self._display(str(mount.await_args_list[-1].args[0]._content))
         assert "notion" in rendered
         assert "Re-enabled — press Ctrl+R to load." in rendered
         assert "disabled by user" not in rendered
@@ -16745,7 +17341,7 @@ class TestToolsSlashCommand:
         catalog = build_catalog_from_server_info(
             [ToolEntry(name="read_file", description="Read a file")], servers
         )
-        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
+        rendered = self._display(DeepAgentsApp._render_tool_catalog(catalog))
         assert "1 tool available" in rendered
         assert "Unavailable MCP servers" in rendered
         assert "broken" in rendered
@@ -16775,7 +17371,9 @@ class TestToolsSlashCommand:
             assistant_id="agent", enable_interpreter=True, fs_tools=None
         )
         assert mount.await_count == 2
-        assert "js_eval" in mount.await_args_list[-1].args[0]._content.plain
+        assert "js_eval" in self._display(
+            str(mount.await_args_list[-1].args[0]._content)
+        )
 
     async def test_built_in_failure_without_mcp_is_honest(self) -> None:
         app = DeepAgentsApp(agent=MagicMock())
@@ -16830,23 +17428,137 @@ class TestToolsSlashCommand:
                 )
             ],
         )
-        # Rich markup in external names/descriptions must survive verbatim and
-        # never be parsed (an unclosed "[" would raise if it were).
-        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
+        # Rich markup in external names/descriptions must survive verbatim. It
+        # is not markdown syntax, so the markdown path passes it through
+        # untouched; pinned because the pre-markdown renderer built `Content`,
+        # where an unclosed "[" raised `MarkupError`. This asserts the property
+        # survived the switch, now by a different mechanism.
+        rendered = self._display(DeepAgentsApp._render_tool_catalog(catalog))
         assert "[bold]evil[/bold]" in rendered
         assert "[red]x[/red]" in rendered
         assert "[i]srv" in rendered
 
+    def test_render_escapes_markdown_syntax(self) -> None:
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        catalog = build_catalog_from_server_info(
+            [
+                ToolEntry(
+                    name="read_file",
+                    description="Reads *any* file | prints `__init__`",
+                )
+            ],
+            [],
+        )
+        source = DeepAgentsApp._render_tool_catalog(catalog)
+        # A `|` in a description must not forge an extra table cell: the row is
+        # exactly the two escaped cells the table declares.
+        assert (
+            "| read\\_file | Reads \\*any\\* file \\| prints \\`\\_\\_init\\_\\_\\` |"
+            in source
+        )
+        # And the escapes resolve back to the literal text the tool reported.
+        rendered = self._display(source)
+        assert "read_file" in rendered
+        assert "Reads *any* file | prints `__init__`" in rendered
+
+    def test_render_escapes_every_markdown_metacharacter(self) -> None:
+        r"""Each character in `_MARKDOWN_ESCAPES` must round-trip verbatim.
+
+        Guards the escape table itself: dropping any single character from it
+        silently changes what the user sees — unescaped `<b>` is swallowed as
+        HTML, `[d](u)` collapses to its link text, `~~x~~` to struck text, and a
+        `\` before punctuation disappears — so each needs a live assertion.
+        """
+        from deepagents_code.app import _MARKDOWN_ESCAPES
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        # One specimen per escaped character. `C:\*t` pins the backslash: a bare
+        # `\` before a letter is already literal in CommonMark, so only a `\`
+        # before punctuation detects a missing escape.
+        description = "*a* _b_ `c` <b>d</b> [e](http://f) ~~g~~ h|i C:\\*t &copy;"
+        # `str.maketrans` keys on codepoints, so compare ordinals. This fails if
+        # a character is added to the table without a specimen added here.
+        specimens = "\\&`*_[]<>|~"
+        assert {ord(char) for char in specimens} == set(_MARKDOWN_ESCAPES)
+        assert all(char in description for char in specimens)
+
+        catalog = build_catalog_from_server_info(
+            [ToolEntry(name="t_n", description=description)], []
+        )
+        # Wide enough that the cell does not wrap, so the substring survives.
+        rendered = self._display(DeepAgentsApp._render_tool_catalog(catalog), width=200)
+        assert description in rendered
+
+    def test_markdown_table_escapes_headers_and_rejects_ragged_rows(self) -> None:
+        """Headers are escaped, and a row that misfits the headers raises."""
+        from deepagents_code.app import _markdown_table
+
+        # Headers are escaped too, so a `|` cannot forge an extra column.
+        assert _markdown_table(("a|b", "c"), []).splitlines()[0] == "| a\\|b | c |"
+
+        # A ragged row must raise rather than emit a table markdown would
+        # silently pad or truncate.
+        for row in (("only",), ("a", "b", "c")):
+            with pytest.raises(ValueError, match="expected 2"):
+                _markdown_table(("A", "B"), [row])
+
+    def test_render_preserves_entities_and_normalizes_line_breaks(self) -> None:
+        from deepagents_code.tool_catalog import ToolCatalog, ToolEntry, ToolGroup
+
+        catalog = ToolCatalog(
+            groups=(
+                ToolGroup(
+                    label="Built-in",
+                    source="built-in",
+                    tools=(
+                        ToolEntry(name="entity_tool", description="literal &copy;"),
+                    ),
+                ),
+            ),
+            mcp_error="failed\n# not a heading\r\n- not a list",
+        )
+        source = DeepAgentsApp._render_tool_catalog(catalog)
+
+        assert "| entity\\_tool | literal \\&copy; |" in source
+        assert "failed # not a heading - not a list" in source
+        rendered = self._display(source)
+        assert "literal &copy;" in rendered
+        assert "failed # not a heading - not a list" in rendered
+        assert "©" not in rendered
+
+    def test_render_folds_long_tool_names_without_ellipsis(self) -> None:
+        from deepagents_code.tool_catalog import (
+            ToolEntry,
+            build_catalog_from_server_info,
+        )
+
+        name = "a_very_long_tool_name"
+        catalog = build_catalog_from_server_info(
+            [ToolEntry(name=name, description="desc")], []
+        )
+        rendered = self._display(DeepAgentsApp._render_tool_catalog(catalog), width=30)
+
+        assert "…" not in rendered
+        assert name in "".join(rendered.replace("desc", "").split())
+
     def test_render_empty_catalog_reports_zero_without_error(self) -> None:
         from deepagents_code.tool_catalog import build_catalog_from_server_info
 
-        rendered = DeepAgentsApp._render_tool_catalog(
-            build_catalog_from_server_info([], [])
-        ).plain
+        rendered = self._display(
+            DeepAgentsApp._render_tool_catalog(build_catalog_from_server_info([], []))
+        )
         assert "0 tools available" in rendered
 
-    def test_render_plural_noun_and_column_alignment(self) -> None:
+    def test_render_plural_noun_and_built_in_table(self) -> None:
         from deepagents_code.tool_catalog import (
+            BUILT_IN_GROUP,
             ToolEntry,
             build_catalog_from_server_info,
         )
@@ -16858,13 +17570,38 @@ class TestToolsSlashCommand:
             ],
             [],
         )
-        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
-        assert "2 tools available" in rendered
-        # Shorter name padded to the widest name in the group so columns align.
-        assert f"  {'ls'.ljust(len('read_file'))}  list" in rendered
-        assert "  read_file  read" in rendered
+        source = DeepAgentsApp._render_tool_catalog(catalog)
+        assert "**2 tools available**" in source
+        # Built-in tools render as a markdown table so long descriptions wrap in
+        # their cell instead of being clipped by a fixed-width name column.
+        assert f"### {BUILT_IN_GROUP}" in source
+        assert "| Tool | Description |" in source
+        assert "| --- | --- |" in source
+        assert "| ls | list |" in source
+        assert "| read\\_file | read |" in source
         # No MCP groups → the `/mcp` descriptions pointer must not appear.
-        assert "MCP tool descriptions are available in /mcp." not in rendered
+        assert "MCP tool descriptions are available in /mcp." not in source
+
+    def test_render_mcp_tools_are_names_only(self) -> None:
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+        from deepagents_code.tool_catalog import build_catalog_from_server_info
+
+        catalog = build_catalog_from_server_info(
+            [],
+            [
+                MCPServerInfo(
+                    name="docs",
+                    transport="http",
+                    tools=(MCPToolInfo(name="search_docs", description="Search docs"),),
+                    status="ok",
+                )
+            ],
+        )
+        source = DeepAgentsApp._render_tool_catalog(catalog)
+        assert "### docs" in source
+        assert "- search\\_docs" in source
+        assert "Search docs" not in source
+        assert "MCP tool descriptions are available in /mcp." in source
 
     def test_render_unavailable_without_detail_omits_colon(self) -> None:
         from deepagents_code.mcp_tools import MCPServerInfo
@@ -16888,8 +17625,13 @@ class TestToolsSlashCommand:
                 )
             ],
         )
-        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
-        assert "  off  awaiting_reconnect" in rendered
+        source = DeepAgentsApp._render_tool_catalog(catalog)
+        assert "| Server | Status |" in source
+        assert "| off | awaiting\\_reconnect |" in source
+        # The status must still reach the user, with no trailing colon where the
+        # empty detail was omitted.
+        rendered = self._display(source)
+        assert "awaiting_reconnect" in rendered
         assert "awaiting_reconnect:" not in rendered
 
     def test_render_includes_mcp_error(self) -> None:
@@ -16903,8 +17645,13 @@ class TestToolsSlashCommand:
             groups=(ToolGroup(label=BUILT_IN_GROUP, source="built-in", tools=()),),
             mcp_error="MCP discovery failed; showing built-in tools only.",
         )
-        rendered = DeepAgentsApp._render_tool_catalog(catalog).plain
-        assert "MCP discovery failed" in rendered
+        source = DeepAgentsApp._render_tool_catalog(catalog)
+        assert "MCP discovery failed" in self._display(source)
+        # An empty group contributes no heading and no table. Asserted on the
+        # source's heading syntax rather than the bare label, which would also
+        # match the "built-in" inside the error text above.
+        assert f"### {BUILT_IN_GROUP}" not in source
+        assert "| Tool | Description |" not in source
 
 
 class TestFetchThreadHistoryData:
@@ -20254,7 +21001,9 @@ class TestDeferredActions:
                 )
                 await pilot.pause()
 
-            mock_extra_for_package.assert_called_once_with("langchain-google-vertexai")
+            mock_extra_for_package.assert_called_once_with(
+                "langchain-google-vertexai", "deepagents-code"
+            )
             widget = app._startup_failure_widget
             assert isinstance(widget, ErrorMessage)
             rendered = str(widget._content)
@@ -21708,6 +22457,44 @@ class TestRestartServerForAgentSwap:
         plain = [str(getattr(m, "_content", m)) for m in mounted]
         assert any("Switched to researcher" in s for s in plain)
         assert not any("to resume" in s for s in plain)
+
+    async def test_resume_hint_echoes_launch_command(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The hint names the command the user launched, not a hardcoded `dcode`.
+
+        Users commonly expose a per-checkout shim (a renamed symlink to the
+        package's `dcode` console script), so a hardcoded name would tell them
+        to run something that does not exist on their PATH.
+        """
+        from deepagents_code._env_vars import INVOKED_AS
+        from deepagents_code._invocation import invoked_name
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        monkeypatch.setenv(INVOKED_AS, "abc")
+        invoked_name.cache_clear()
+
+        app, _server_proc = self._make_app()
+        app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="hi there")
+        )
+
+        mounted: list[object] = []
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.model_config.save_recent_agent",
+                    return_value=True,
+                ),
+                patch.object(app, "_mount_message", side_effect=mounted.append),
+                patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+        plain = [str(getattr(m, "_content", m)) for m in mounted]
+        assert any("abc -r old-thread" in s and "to resume" in s for s in plain)
+        assert not any("dcode" in s for s in plain)
 
     async def test_no_resume_hint_when_only_local_user_messages(self) -> None:
         """Local-only slash commands don't count as agent-side activity.
@@ -24508,6 +25295,82 @@ class TestNotificationCenterIntegration:
             assert isinstance(app.screen, NotificationCenterScreen)
 
 
+class TestToastAnchoring:
+    """Toasts float above the chat input instead of covering it."""
+
+    @staticmethod
+    def _rack(app: DeepAgentsApp) -> Widget:
+        """Return the toast rack composed into the app's main screen."""
+        return app.screen.get_child_by_id("textual-toastrack")
+
+    @staticmethod
+    def _chrome(app: DeepAgentsApp) -> Widget:
+        """Return the bottom chrome (panels + chat input) container."""
+        return app.query_one("#bottom-app-container", Widget)
+
+    async def test_rack_margin_clears_the_bottom_chrome(self) -> None:
+        """The rack's bottom margin reaches the top of the bottom chrome."""
+        app = DeepAgentsApp()
+        async with app.run_test(notifications=True) as pilot:
+            await pilot.pause()
+            expected = app.screen.size.height - self._chrome(app).region.y
+            assert expected > 1
+            assert self._rack(app).styles.margin.bottom == expected
+
+    async def test_toasts_do_not_cover_the_chat_input(self) -> None:
+        """Displayed toasts stack directly above the bottom chrome."""
+        from textual.widgets._toast import Toast as _Toast
+
+        app = DeepAgentsApp()
+        async with app.run_test(notifications=True) as pilot:
+            await pilot.pause()
+            app.notify("first", timeout=60)
+            app.notify("second", timeout=60)
+            await pilot.pause()
+
+            toasts = list(app.screen.query(_Toast))
+            assert toasts
+            chrome_top = self._chrome(app).region.y
+            assert max(toast.region.bottom for toast in toasts) == chrome_top
+
+    async def test_growing_chat_input_lifts_the_rack(self) -> None:
+        """A taller chat input pushes toasts further up the screen."""
+        app = DeepAgentsApp()
+        async with app.run_test(notifications=True) as pilot:
+            await pilot.pause()
+            before = self._rack(app).styles.margin.bottom
+
+            app.query_one("#input-area", ChatInput).styles.height = 12
+            await pilot.pause()
+
+            after = self._rack(app).styles.margin.bottom
+            assert after > before
+            assert after == app.screen.size.height - self._chrome(app).region.y
+
+    async def test_short_terminal_keeps_toasts_onscreen(self) -> None:
+        """A chrome taller than the terminal must not dock toasts off the top.
+
+        The anchor stops at `_MIN_TOAST_ROWS`, and the rack is capped to the
+        space that leaves, so even a heavily wrapped toast stays on screen
+        instead of losing its opening lines above row zero.
+        """
+        from textual.widgets._toast import Toast as _Toast
+
+        app = DeepAgentsApp()
+        async with app.run_test(notifications=True, size=(80, 12)) as pilot:
+            await pilot.pause()
+            app.query_one("#input-area", ChatInput).styles.height = 20
+            await pilot.pause()
+            app.notify("word " * 60, timeout=60)
+            await pilot.pause()
+
+            margin_bottom = self._rack(app).styles.margin.bottom
+            assert 0 <= margin_bottom <= 12 - _MIN_TOAST_ROWS
+            toasts = list(app.screen.query(_Toast))
+            assert toasts
+            assert all(toast.region.y >= 0 for toast in toasts)
+
+
 class TestFatalErrorRedaction:
     """`_fatal_error` must not leak local variables (which carry secrets).
 
@@ -25673,24 +26536,60 @@ class TestLiveApprovalModeWrites:
         assert app._session_state.approval_mode is ApprovalMode.MANUAL
         assert app._approval_mode_blocked is False
 
-    async def test_session_init_keeps_mode_changed_during_construction(self) -> None:
+    async def test_session_init_keeps_mode_changed_during_construction(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.approval_mode import ApprovalMode
 
-        app = DeepAgentsApp()
+        # `HooksRuntime.create` is the construction seam probed below, and it
+        # only runs in experimental mode.
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        app = DeepAgentsApp(approval_mode=ApprovalMode.MANUAL)
 
-        async def create_stale_session_state(*_args: object) -> TextualSessionState:
-            await asyncio.sleep(0)
+        def change_mode_during_construction(**_kwargs: object) -> None:
             app._approval_mode = ApprovalMode.AUTO
-            return TextualSessionState(approval_mode=ApprovalMode.MANUAL)
 
         with patch(
-            "deepagents_code.app.asyncio.to_thread",
-            new=create_stale_session_state,
+            "deepagents_code.hooks.runtime.HooksRuntime.create",
+            side_effect=change_mode_during_construction,
         ):
             await app._init_session_state()
 
         assert app._session_state is not None
         assert app._session_state.approval_mode is ApprovalMode.AUTO
+
+    async def test_session_init_builds_one_state_for_concurrent_callers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The startup worker and the inline startup fallback must not race.
+
+        Idempotency rests on construction staying free of `await`; reintroducing
+        one would let both callers pass the guard and build two states.
+        """
+        from deepagents_code._env_vars import EXPERIMENTAL
+
+        # `HooksRuntime.create` is the construction seam counted below, and it
+        # only runs in experimental mode.
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        app = DeepAgentsApp()
+        creations = 0
+
+        def count_creation(**_kwargs: object) -> None:
+            nonlocal creations
+            creations += 1
+
+        with patch(
+            "deepagents_code.hooks.runtime.HooksRuntime.create",
+            side_effect=count_creation,
+        ):
+            await asyncio.gather(
+                app._init_session_state(),
+                app._init_session_state(),
+            )
+
+        assert creations == 1
+        assert app._session_state is not None
 
     async def test_toggle_off_failed_write_cancels_running_agent(self) -> None:
         app = DeepAgentsApp(auto_approve=True)
@@ -26128,6 +27027,102 @@ class TestLiveApprovalModeWrites:
                     "Stayed in the current approval mode" in str(call.args[0])
                     for call in notify.call_args_list
                 )
+
+    async def test_toggle_into_yolo_m_switches_to_manual(self) -> None:
+        """`m` on the switcher YOLO notice switches to Manual without ack."""
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.yolo_mode_notice import YoloModeNoticeScreen
+
+        app = DeepAgentsApp()
+        app._auto_mode_eligible = True
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = object()
+            app._approval_mode = ApprovalMode.AUTO
+            if app._session_state is not None:
+                app._session_state.approval_mode = ApprovalMode.AUTO
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=True),
+                ) as write_mode,
+                patch(
+                    "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.approval_mode.save_yolo_acknowledgement"
+                ) as save_ack,
+                patch(
+                    "deepagents_code.config.is_yolo_switcher_enabled",
+                    return_value=True,
+                ),
+                patch.object(app, "notify"),
+            ):
+                await app.action_toggle_auto_approve()
+                await pilot.pause()
+                assert isinstance(app.screen, YoloModeNoticeScreen)
+                await pilot.press("m")
+                await pilot.pause()
+                # Manual chosen: never persist the YOLO ack, land in Manual.
+                save_ack.assert_not_called()
+                assert app._approval_mode is ApprovalMode.MANUAL
+                assert app._auto_approve is False
+                write_mode.assert_awaited_with(ApprovalMode.MANUAL)
+
+    async def test_yolo_notice_m_skips_write_when_already_manual(self) -> None:
+        """`m` from Manual (via `/yolo`) does not rewrite Manual on the live store.
+
+        A failed redundant Manual write would set `_approval_mode_blocked` and
+        could cancel active work even though the user only declined YOLO.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.tui.widgets.yolo_mode_notice import YoloModeNoticeScreen
+
+        app = DeepAgentsApp()
+        app._auto_mode_eligible = True
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = object()
+            app._approval_mode = ApprovalMode.MANUAL
+            app._approval_mode_blocked = False
+            if app._session_state is not None:
+                app._session_state.approval_mode = ApprovalMode.MANUAL
+            with (
+                patch.object(
+                    app,
+                    "_write_live_approval_mode",
+                    new=AsyncMock(return_value=False),
+                ) as write_mode,
+                patch.object(
+                    app, "_set_approval_mode", wraps=app._set_approval_mode
+                ) as set_mode,
+                patch(
+                    "deepagents_code.approval_mode.has_yolo_acknowledgement",
+                    return_value=False,
+                ),
+                patch(
+                    "deepagents_code.approval_mode.save_yolo_acknowledgement"
+                ) as save_ack,
+                patch(
+                    "deepagents_code.config.is_yolo_switcher_enabled",
+                    return_value=True,
+                ),
+                patch.object(app, "_warn_live_approval_mode_unavailable") as warn,
+                patch.object(app, "notify"),
+            ):
+                await app._handle_approval_mode_command(ApprovalMode.YOLO)
+                await pilot.pause()
+                assert isinstance(app.screen, YoloModeNoticeScreen)
+                await pilot.press("m")
+                await pilot.pause()
+                save_ack.assert_not_called()
+                set_mode.assert_not_awaited()
+                write_mode.assert_not_awaited()
+                warn.assert_not_called()
+                assert app._approval_mode is ApprovalMode.MANUAL
+                assert app._approval_mode_blocked is False
 
     async def test_toggle_skips_yolo_when_switcher_disabled(self) -> None:
         """Disabling the switcher restores Manual ↔ Auto only."""
@@ -29502,6 +30497,200 @@ class TestCanBypassQueue:
         assert processed == []
         assert len(app._pending_messages) == 1
         assert app._pending_messages[0].text == "/clear"
+
+
+class TestScheduleOffMessagePump:
+    """Coverage for detached slash-command continuations."""
+
+    async def test_continuation_runs_and_is_forgotten(self) -> None:
+        """A scheduled continuation runs and clears its tracking entry."""
+        app = DeepAgentsApp()
+        ran = asyncio.Event()
+
+        async def _work() -> None:  # noqa: RUF029  # scheduled as a coroutine
+            ran.set()
+
+        task = app._schedule_off_message_pump(_work(), context="demo")
+
+        assert task is not None
+        await asyncio.wait_for(task, timeout=2.0)
+        assert ran.is_set()
+        await asyncio.sleep(0)  # let the done-callback fire
+        assert "demo" not in app._modal_command_tasks
+
+    async def test_different_context_is_refused(self) -> None:
+        """A second mutation continuation is refused while one is active.
+
+        The command handler returns as soon as the continuation is detached, so
+        another install or update can arrive while its prompt is still up. The
+        global guard prevents differently keyed environment mutations from
+        racing each other.
+        """
+        app = DeepAgentsApp()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        second_ran = False
+
+        async def _first() -> None:
+            started.set()
+            await release.wait()
+
+        async def _second() -> None:  # noqa: RUF029  # scheduled as a coroutine
+            nonlocal second_ran
+            second_ran = True
+
+        first = app._schedule_off_message_pump(_first(), context="update")
+        assert first is not None
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        with patch.object(app, "notify") as notify:
+            assert app._schedule_off_message_pump(_second(), context="install") is None
+
+        # Pin the wording and severity: these tests never call `run_test()`, so
+        # the real `notify` never renders and a broken message would go unnoticed.
+        notify.assert_called_once_with(
+            "Another install or update is in progress — answer its prompt if "
+            "one is open.",
+            severity="warning",
+            timeout=5,
+        )
+        release.set()
+        await asyncio.wait_for(first, timeout=2.0)
+        assert second_ran is False
+
+    async def test_continuation_blocks_and_then_resumes_queue(self) -> None:
+        """Queued work waits for the detached continuation's full lifetime."""
+        app = DeepAgentsApp()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        processed: list[str] = []
+        continuation: asyncio.Task[None] | None = None
+
+        async def _mutation() -> None:
+            started.set()
+            await release.wait()
+
+        async def _process(value: str, _mode: str) -> None:  # noqa: RUF029  # replaces an awaited coroutine method
+            nonlocal continuation
+            processed.append(value)
+            if value == "update":
+                continuation = app._schedule_off_message_pump(
+                    _mutation(), context="update"
+                )
+
+        app._process_message = _process  # ty: ignore
+        app._pending_messages.extend(
+            [
+                QueuedMessage(text="update", mode="command"),
+                QueuedMessage(text="next agent turn", mode="normal"),
+            ]
+        )
+
+        await app._process_next_from_queue()
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        assert processed == ["update"]
+        assert [message.text for message in app._pending_messages] == [
+            "next agent turn"
+        ]
+
+        assert continuation is not None
+        release.set()
+        await asyncio.wait_for(continuation, timeout=2.0)
+        for _ in range(10):
+            if processed == ["update", "next agent turn"]:
+                break
+            await asyncio.sleep(0)
+
+        assert processed == ["update", "next agent turn"]
+        assert not app._pending_messages
+
+    async def test_environment_mutations_share_one_lock(self) -> None:
+        """Command and worker installs cannot rewrite the environment together."""
+        app = DeepAgentsApp()
+        first_started = asyncio.Event()
+        second_started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _install_extra(
+            _extra: str, *, force: bool, auto_restart: bool
+        ) -> bool:
+            assert force is False
+            assert auto_restart is False
+            first_started.set()
+            await release.wait()
+            return True
+
+        async def _install_package(_package: str) -> None:  # noqa: RUF029  # patched async mutation implementation
+            second_started.set()
+
+        with (
+            patch.object(app, "_install_extra_unlocked", side_effect=_install_extra),
+            patch.object(
+                app,
+                "_perform_package_install_unlocked",
+                side_effect=_install_package,
+            ),
+        ):
+            extra_task = asyncio.create_task(app._install_extra("provider"))
+            await asyncio.wait_for(first_started.wait(), timeout=2.0)
+            package_task = asyncio.create_task(app._perform_package_install("package"))
+            await asyncio.sleep(0)
+
+            assert not second_started.is_set()
+
+            release.set()
+            await asyncio.gather(extra_task, package_task)
+
+        assert second_started.is_set()
+
+    async def test_cancel_modal_command_tasks_cancels_a_pending_continuation(
+        self,
+    ) -> None:
+        """The helper cancels a continuation and reports which ones it hit."""
+        app = DeepAgentsApp()
+        started = asyncio.Event()
+
+        async def _blocked() -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        task = app._schedule_off_message_pump(_blocked(), context="demo")
+        assert task is not None
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        assert app._cancel_modal_command_tasks() == {task}
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2.0)
+
+    async def test_exit_cancels_a_continuation_waiting_on_its_modal(self) -> None:
+        """`exit()` itself cancels a continuation parked on a modal.
+
+        Covers the wiring, not just the helper: a refactor of `exit()` that drops
+        the `_cancel_modal_command_tasks()` call would otherwise leave a
+        continuation running past teardown with a green suite.
+        """
+        app = DeepAgentsApp()
+        started = asyncio.Event()
+
+        async def _blocked() -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            task = app._schedule_off_message_pump(_blocked(), context="demo")
+            assert task is not None
+            await asyncio.wait_for(started.wait(), timeout=2.0)
+
+            app.exit()
+            for _ in range(40):
+                if task.done():
+                    break
+                await asyncio.sleep(0.05)
+
+        assert task.cancelled()
 
 
 def _banner_query_raiser(app: DeepAgentsApp, exc: Exception) -> Callable[..., Widget]:

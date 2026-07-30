@@ -540,6 +540,16 @@ Sized to fit comfortably above the provider-grouped list in `/model` without
 pushing the rest of the catalog off-screen on a typical terminal.
 """
 
+LANGSMITH_GATEWAY_PROVIDERS: frozenset[str] = frozenset(
+    {"anthropic", "baseten", "fireworks", "google_genai", "openai"}
+)
+"""Providers whose LangChain integrations support LangSmith LLM Gateway env vars."""
+
+LANGSMITH_GATEWAY_ENV = "LANGSMITH_GATEWAY"
+LANGSMITH_GATEWAY_API_KEY_ENV = "LANGSMITH_GATEWAY_API_KEY"
+_LANGSMITH_GATEWAY_FALSE_VALUES = frozenset({"false", "0", "no"})
+
+
 PROVIDER_API_KEY_ENV: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "azure_openai": "AZURE_OPENAI_API_KEY",
@@ -1871,6 +1881,63 @@ def resolve_provider_credential(provider: str) -> str | None:
     return None
 
 
+def _resolve_gateway_configured(provider: str) -> ProviderAuthStatus | None:
+    """Return `CONFIGURED` when LangSmith Gateway can authenticate a provider.
+
+    Credential preflight normally requires each provider's native API key
+    (for example `OPENAI_API_KEY`). Users who route traffic through the
+    LangSmith LLM Gateway often set only `LANGSMITH_GATEWAY` and
+    `LANGSMITH_GATEWAY_API_KEY`. Without this fallback, model selection and
+    startup treat those models as missing credentials even though the
+    gateway-aware chat integration will authenticate the request.
+
+    Example:
+        A user enables the gateway with:
+
+            LANGSMITH_GATEWAY=true
+            LANGSMITH_GATEWAY_API_KEY=lsv2_...
+
+        and has no `OPENAI_API_KEY`. Selecting `openai:gpt-5.5` should still
+        pass preflight because OpenAI is a gateway-supported provider and
+        both gateway env vars are present.
+
+    The gateway counts only when all of the following hold:
+
+    - `provider` is in `LANGSMITH_GATEWAY_PROVIDERS` (built-in chats that
+      actually read the gateway env vars)
+    - `LANGSMITH_GATEWAY` is set and is not a disable value
+      (`false` / `0` / `no`)
+    - `LANGSMITH_GATEWAY_API_KEY` is non-empty
+
+    Callers must still skip this path for `class_path` provider overrides:
+    those construct an arbitrary class that need not consume the gateway
+    variables, so their own `api_key_env` preflight has to stand alone.
+
+    Args:
+        provider: Provider name (e.g., `"openai"`, `"anthropic"`).
+
+    Returns:
+        A `CONFIGURED` status pointing at `LANGSMITH_GATEWAY_API_KEY`, or
+        `None` when the gateway cannot authenticate this provider.
+    """
+    gateway = os.getenv(LANGSMITH_GATEWAY_ENV)
+    gateway_key = os.getenv(LANGSMITH_GATEWAY_API_KEY_ENV)
+    if (
+        provider not in LANGSMITH_GATEWAY_PROVIDERS
+        or not gateway
+        or gateway.lower() in _LANGSMITH_GATEWAY_FALSE_VALUES
+        or not gateway_key
+    ):
+        return None
+    return ProviderAuthStatus(
+        state=ProviderAuthState.CONFIGURED,
+        provider=provider,
+        env_var=LANGSMITH_GATEWAY_API_KEY_ENV,
+        source=ProviderAuthSource.ENV,
+        detail="LangSmith Gateway credentials set",
+    )
+
+
 def _resolve_configured(provider: str, env_var: str) -> ProviderAuthStatus | None:
     """Return a `CONFIGURED` status if a stored or env credential is set.
 
@@ -2004,6 +2071,15 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
             configured = _resolve_configured(provider, env_var)
             if configured:
                 return configured
+            # The gateway fallback is only valid when the built-in,
+            # gateway-aware integration will actually be constructed. A
+            # `class_path` override builds an arbitrary custom class via
+            # `_create_model_from_class` that need not consume the gateway
+            # variables, so its own `api_key_env` preflight must stand.
+            if not provider_config.get("class_path"):
+                gateway_configured = _resolve_gateway_configured(provider)
+                if gateway_configured:
+                    return gateway_configured
             return ProviderAuthStatus(
                 state=ProviderAuthState.MISSING,
                 provider=provider,
@@ -2027,6 +2103,9 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
         configured = _resolve_configured(provider, env_var)
         if configured:
             return configured
+        gateway_configured = _resolve_gateway_configured(provider)
+        if gateway_configured:
+            return gateway_configured
         if provider in IMPLICIT_AUTH_PROVIDERS:
             return ProviderAuthStatus(
                 state=ProviderAuthState.IMPLICIT,
@@ -3263,8 +3342,8 @@ def is_warning_suppressed(key: str, config_path: Path | None = None) -> bool:
 
     Returns:
         `True` if the warning is suppressed, `False` otherwise (including
-            when the file is missing, unreadable, or has no
-            `[warnings]` section).
+            when the file is missing, unreadable, or has a missing or
+            malformed `[warnings]` section).
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
@@ -3282,7 +3361,19 @@ def is_warning_suppressed(key: str, config_path: Path | None = None) -> bool:
         )
         return False
 
-    suppress_list = data.get("warnings", {}).get("suppress", [])
+    # A hand-edited `warnings = [...]` (or any non-table) would make the
+    # chained `.get` below raise `AttributeError`; fail open instead so a
+    # typo can never silently mute a warning.
+    warnings_section = data.get("warnings", {})
+    if not isinstance(warnings_section, dict):
+        logger.debug(
+            "[warnings] in %s should be a table, got %s",
+            config_path,
+            type(warnings_section).__name__,
+        )
+        return False
+
+    suppress_list = warnings_section.get("suppress", [])
     if not isinstance(suppress_list, list):
         logger.debug(
             "[warnings].suppress in %s should be a list, got %s",

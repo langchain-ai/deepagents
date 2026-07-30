@@ -1,7 +1,7 @@
 # Reusable workflow: one GHA eval run for a single model.
 #
 # Called by the per-provider matrix jobs in `evals.yml`. Inputs are validated
-# upstream by `prep` (`_SAFE_SPEC_RE` in `.github/scripts/models.py`); this
+# upstream by `prep` (`_SAFE_SPEC_RE` in `.github/scripts/evals/models.py`); this
 # workflow trusts that contract.
 
 name: "🔧 Eval run (internal)"
@@ -125,7 +125,7 @@ jobs:
       OPENROUTER_SESSION_ID: deepagents-evals-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.artifact_key }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -133,7 +133,7 @@ jobs:
           python-version: "3.12"
           # Per-shard scope so parallel matrix jobs don't race on the same
           # cache key. `artifact_key` is enforced unique by the matrix
-          # builder (`_artifact_key` in `.github/scripts/models.py`).
+          # builder (`_artifact_key` in `.github/scripts/evals/models.py`).
           cache-suffix: evals-${{ inputs.artifact_key }}
           working-directory: libs/evals
 
@@ -374,7 +374,7 @@ jobs:
           OPENAI_API_KEY: ${{ startsWith(inputs.analysis_model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ startsWith(inputs.analysis_model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(inputs.analysis_model, 'xai:') && secrets.XAI_API_KEY || '' }}
-        run: uv run python ../../.github/scripts/analyze_eval_failures.py evals_report.json
+        run: uv run python ../../.github/scripts/evals/analyze_eval_failures.py evals_report.json
 
       - name: "📤 Upload failure analysis"
         if: ${{ !cancelled() && inputs.analyze_failures && hashFiles('libs/evals/failure_analysis.json') != '' }}

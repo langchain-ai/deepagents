@@ -1207,6 +1207,27 @@ def test_should_retry_exception_group_top_level_auth_wins() -> None:
     assert _should_retry_after_failure(group) is False
 
 
+def test_should_retry_nested_exception_group_auth_wins() -> None:
+    """A nested group's definitive member blocks retry despite a transient sibling."""
+    group = ExceptionGroup(
+        "model graph failed",
+        [
+            ExceptionGroup("inner", [AuthenticationError(), _READ_ERROR]),
+        ],
+    )
+    assert _should_retry_after_failure(group) is False
+
+
+def test_should_retry_nested_exception_group_all_transient_still_retries() -> None:
+    group = ExceptionGroup(
+        "model graph failed",
+        [
+            ExceptionGroup("inner", [_READ_ERROR, _StatusError(503)]),
+        ],
+    )
+    assert _should_retry_after_failure(group) is True
+
+
 def test_should_retry_exception_group_all_transient_still_retries() -> None:
     group = ExceptionGroup(
         "model graph failed",

@@ -13,6 +13,7 @@ import shlex
 import stat
 import tempfile
 import time
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from enum import StrEnum
 from hashlib import sha256
@@ -47,6 +48,7 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.tools import BaseTool, tool
+from langgraph.errors import GraphInterrupt
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing_extensions import TypedDict
@@ -80,6 +82,13 @@ _TOTAL_DENIAL_FALLBACK = 20
 _CONSECUTIVE_DENIAL_FALLBACK = 3
 _CONSECUTIVE_UNAVAILABLE_FALLBACK = 2
 _MIN_SECRET_LENGTH = 8
+# One middleware instance serves every thread in the process, so these bound the
+# shared emission ledger. A thread suspended at `interrupt()` cannot propose
+# another batch, so one resolved scope per concurrently active thread is ample;
+# the pending cap is larger because each abandoned approval pins a scope until
+# the cap forces it out.
+_MAX_EMITTED_EVENT_SCOPES = 8
+_MAX_PENDING_EVENT_SCOPES = 32
 _MAX_ARGUMENT_DEPTH = 4
 _MIN_COMMAND_PARTS = 2
 _ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
@@ -513,9 +522,10 @@ def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float)
 
     Provider exception text stays out of the reason (it can carry secrets or
     noisy HTML). Only real local deadline expiry
-    (`_ClassifierDeadlineExceededError`) gets app-timeout wording; a bare
-    provider `TimeoutError` stays type-only so we do not claim dcode
-    cancelled a call the model failed first.
+    (`_ClassifierDeadlineExceededError`) says the classifier did not respond
+    within the configured wait budget; a bare provider `TimeoutError` stays
+    type-only so we do not claim dcode's deadline fired when the model failed
+    first.
 
     Args:
         exc: Failure raised while invoking or validating the classifier.
@@ -525,11 +535,8 @@ def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float)
         Compact single-line reason for tool messages and TUI events.
     """
     if isinstance(exc, _ClassifierDeadlineExceededError):
-        return (
-            "dcode cancelled the authorization classifier after its local "
-            f"{timeout_seconds:g}s timeout (app-imposed, not a provider timeout)."
-        )
-    return f"The authorization classifier was unavailable ({type(exc).__name__})."
+        return f"classifier did not respond within {timeout_seconds:g}s"
+    return f"failed ({type(exc).__name__})"
 
 
 def _default_counters(mode: ApprovalMode) -> AutoModeCounters:
@@ -1294,6 +1301,48 @@ def _batch_id(calls: Sequence[ToolCall]) -> str:
     return sha256(encoded).hexdigest()
 
 
+def _event_scope(runtime: object, calls: Sequence[ToolCall]) -> str:
+    """Return the emission-ledger scope for one action batch.
+
+    A trusted thread key isolates the scope per thread. When it is missing or
+    fails to match the active thread, fall back to the runtime's identity rather
+    than a shared literal: two threads with degraded keys can otherwise collapse
+    into one scope and silently suppress each other's fallback notice, which is
+    the line that explains why approval is suddenly required.
+
+    The runtime identity is per node invocation, so the degraded scope still
+    coalesces one batch's N tool calls but does not survive a replay. That
+    deliberately prefers a repeated transcript line over dropping another
+    thread's event, since only the latter can leave the client showing Auto
+    while the server has fallen back to Manual.
+    """
+    thread_key = _thread_key(runtime)
+    if thread_key is None:
+        logger.warning(
+            "Auto event scope has no trusted thread key; de-duplication is "
+            "scoped to this runtime only"
+        )
+        return f"untrusted-{id(runtime):x}:{_batch_id(calls)}"
+    return f"{thread_key}:{_batch_id(calls)}"
+
+
+def _validate_human_decision_count(
+    decisions: Sequence[object], calls: Sequence[ToolCall], *, manual: bool
+) -> None:
+    """Reject incomplete human responses before applying their decisions.
+
+    Raises:
+        ValueError: If the response has the wrong number of decisions.
+    """
+    if len(decisions) == len(calls):
+        return
+    if manual:
+        msg = "Human decision count does not match Manual pending calls"
+    else:
+        msg = "Human decision count does not match pending approval calls"
+    raise ValueError(msg)
+
+
 def _resolved_tools(request: ModelRequest) -> dict[str, BaseTool]:
     return {
         tool.name: tool
@@ -1685,6 +1734,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         self._known_secrets = _known_credential_values()
         self._trusted_ask_user_tool = trusted_ask_user_tool
         self._trusted_compaction_tool = trusted_compaction_tool
+        self._emitted_events: OrderedDict[str, set[tuple[str, ...]]] = OrderedDict()
+        self._pending_event_scopes: OrderedDict[str, None] = OrderedDict()
 
         @tool
         def create_temp_artifact(
@@ -2339,14 +2390,99 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
     def _emit_event(  # noqa: PLR6301
         self, runtime: object, payload: Mapping[str, object]
-    ) -> None:
+    ) -> bool:
         writer = getattr(runtime, "stream_writer", None)
         if not callable(writer):
-            return
+            return False
         try:
             writer({"type": AUTO_MODE_EVENT_TYPE, **payload})
         except Exception:
             logger.debug("Could not emit Auto mode event", exc_info=True)
+            return False
+        return True
+
+    def _trim_emitted_events(self) -> None:
+        """Evict least-recently-used resolved scopes, keeping pinned ones."""
+        completed = [
+            scope
+            for scope in self._emitted_events
+            if scope not in self._pending_event_scopes
+        ]
+        excess = len(completed) - _MAX_EMITTED_EVENT_SCOPES
+        if excess <= 0:
+            return
+        for scope in completed[:excess]:
+            del self._emitted_events[scope]
+
+    def _pin_event_scope(self, scope: str) -> None:
+        """Protect a scope from eviction while its interrupt is unresolved.
+
+        A scope waiting on a human is never refreshed by `move_to_end`, so plain
+        LRU would drop it once other threads push through enough batches and the
+        resume would repeat the line this ledger exists to suppress. Pins are
+        themselves capped and re-pinned on each replay, so an approval the user
+        never answers ages out instead of leaking for the life of the process.
+        """
+        self._pending_event_scopes.pop(scope, None)
+        self._pending_event_scopes[scope] = None
+        while len(self._pending_event_scopes) > _MAX_PENDING_EVENT_SCOPES:
+            stale, _ = self._pending_event_scopes.popitem(last=False)
+            logger.debug(
+                "Auto event scope %s unpinned by the pending cap; a late resume "
+                "may repeat its transcript line",
+                stale,
+            )
+        self._trim_emitted_events()
+
+    def _complete_event_scope(self, scope: str) -> None:
+        """Allow a resolved interrupt scope to participate in LRU eviction."""
+        self._pending_event_scopes.pop(scope, None)
+        self._trim_emitted_events()
+
+    def _emit_event_once(
+        self,
+        runtime: object,
+        *,
+        scope: str,
+        key: tuple[str, ...],
+        payload: Mapping[str, object],
+    ) -> None:
+        """Emit one Auto event at most once per action batch.
+
+        `interrupt()` restarts the whole `aafter_model` node when the user
+        answers an approval, so any emission that precedes it runs again on
+        resume and renders a duplicate transcript line. Recording the emission
+        against the thread and action batch lets a replay find it already sent
+        while a later batch can still emit the same text.
+
+        De-duplication is best-effort. The ledger is in-process and bounded, so
+        a restart, a degraded thread key, or enough pinned scopes to hit
+        `_MAX_PENDING_EVENT_SCOPES` can let a duplicate through; each per-scope
+        key set is bounded by the batch's own decisions.
+
+        Args:
+            runtime: LangGraph runtime carrying the custom stream writer.
+            scope: Emission scope from `_event_scope`.
+            key: De-duplication identity within `scope`. The first payload for a
+                key wins, so the key must capture every field that makes the
+                event distinct. `mode` especially: it drives a client-side
+                approval-mode change rather than just a transcript line.
+            payload: Event body merged into the custom stream message.
+        """
+        seen = self._emitted_events.get(scope)
+        if seen is None:
+            seen = set()
+            self._emitted_events[scope] = seen
+            self._trim_emitted_events()
+        else:
+            self._emitted_events.move_to_end(scope)
+        if key in seen:
+            logger.debug(
+                "Suppressed duplicate Auto mode event %s in scope %s", key, scope
+            )
+            return
+        if self._emit_event(runtime, payload):
+            seen.add(key)
 
     def _action_and_config(
         self,
@@ -2384,6 +2520,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         fallback: bool,
         counters: AutoModeCounters | None,
         all_manual_ids: set[str],
+        event_scope: str,
         fallback_reason: str | None = None,
         fallback_mode: ApprovalMode | None = None,
     ) -> tuple[AIMessage, list[ToolMessage], bool]:
@@ -2404,11 +2541,14 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             action_requests.append(action)
             review_configs.append(review)
         if not action_requests:
+            self._complete_event_scope(event_scope)
             return ai_message, [], False
+        self._pin_event_scope(event_scope)
         if fallback:
+            reason = fallback_reason or "human approval threshold reached"
             event: dict[str, object] = {
                 "event": "fallback",
-                "reason": fallback_reason or "human approval threshold reached",
+                "reason": reason,
                 "consecutive_denials": (counters or {}).get("consecutive_denials", 0),
                 "consecutive_unavailable": (counters or {}).get(
                     "consecutive_unavailable", 0
@@ -2417,77 +2557,102 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             }
             if fallback_mode is not None:
                 event["mode"] = fallback_mode.value
-            self._emit_event(
+            self._emit_event_once(
                 runtime,
-                event,
+                scope=event_scope,
+                # `mode` and `reason` belong to the identity. The same batch can
+                # emit a plain threshold notice and later, once control state is
+                # unreachable, a `mode: manual` event; that second one switches
+                # the client's approval mode, so a key covering only the target
+                # IDs would suppress it and leave the client showing Auto.
+                key=(
+                    "fallback",
+                    fallback_mode.value if fallback_mode is not None else "-",
+                    reason,
+                    *sorted(target_ids),
+                ),
+                payload=event,
             )
-        response = interrupt(
-            HITLRequest(
-                action_requests=action_requests,
-                review_configs=review_configs,
-            )
-        )
-        decisions = response.get("decisions", [])
-        switched_to_manual = any(
-            isinstance(decision, Mapping) and decision.get("type") == "switch_manual"
-            for decision in decisions
-        )
-        if switched_to_manual:
-            manual_calls = [
-                call
-                for call in ai_message.tool_calls
-                if _tool_call_id(call) in all_manual_ids
-            ]
-            manual_actions: list[ActionRequest] = []
-            manual_reviews: list[ReviewConfig] = []
-            for call in manual_calls:
-                action, review = self._action_and_config(
-                    call, state, runtime, fallback=False, counters=counters
-                )
-                manual_actions.append(action)
-                manual_reviews.append(review)
+        try:
             response = interrupt(
                 HITLRequest(
-                    action_requests=manual_actions,
-                    review_configs=manual_reviews,
+                    action_requests=action_requests,
+                    review_configs=review_configs,
                 )
             )
             decisions = response.get("decisions", [])
-            target_calls = manual_calls
-            target_ids = all_manual_ids
-            if len(decisions) != len(target_calls):
-                msg = "Human decision count does not match Manual pending calls"
-                raise ValueError(msg)
-        elif len(decisions) != len(target_calls):
-            msg = "Human decision count does not match pending approval calls"
-            raise ValueError(msg)
-
-        revised_calls: list[ToolCall] = []
-        artificial: list[ToolMessage] = []
-        decision_by_id = dict(
-            zip((_tool_call_id(call) for call in target_calls), decisions, strict=True)
-        )
-        approved = False
-        for call in ai_message.tool_calls:
-            raw_decision = decision_by_id.get(_tool_call_id(call))
-            if raw_decision is None:
-                revised_calls.append(call)
-                continue
-            config = self.interrupt_on[call["name"]]
-            revised, tool_message = self._process_decision(
-                cast("Decision", raw_decision), call, config
+            switched_to_manual = any(
+                isinstance(decision, Mapping)
+                and decision.get("type") == "switch_manual"
+                for decision in decisions
             )
-            if (
-                isinstance(raw_decision, Mapping)
-                and raw_decision.get("type") == "approve"
-            ):
-                approved = True
-            if revised is not None:
-                revised_calls.append(revised)
-            if tool_message is not None:
-                artificial.append(tool_message)
-        revised_ai = ai_message.model_copy(deep=True)
-        revised_ai.tool_calls = revised_calls
+            if switched_to_manual:
+                manual_calls = [
+                    call
+                    for call in ai_message.tool_calls
+                    if _tool_call_id(call) in all_manual_ids
+                ]
+                manual_actions: list[ActionRequest] = []
+                manual_reviews: list[ReviewConfig] = []
+                for call in manual_calls:
+                    action, review = self._action_and_config(
+                        call, state, runtime, fallback=False, counters=counters
+                    )
+                    manual_actions.append(action)
+                    manual_reviews.append(review)
+                response = interrupt(
+                    HITLRequest(
+                        action_requests=manual_actions,
+                        review_configs=manual_reviews,
+                    )
+                )
+                decisions = response.get("decisions", [])
+                target_calls = manual_calls
+                target_ids = all_manual_ids
+                _validate_human_decision_count(decisions, target_calls, manual=True)
+            else:
+                _validate_human_decision_count(decisions, target_calls, manual=False)
+
+            revised_calls: list[ToolCall] = []
+            artificial: list[ToolMessage] = []
+            decision_by_id = dict(
+                zip(
+                    (_tool_call_id(call) for call in target_calls),
+                    decisions,
+                    strict=True,
+                )
+            )
+            approved = False
+            for call in ai_message.tool_calls:
+                raw_decision = decision_by_id.get(_tool_call_id(call))
+                if raw_decision is None:
+                    revised_calls.append(call)
+                    continue
+                config = self.interrupt_on[call["name"]]
+                revised, tool_message = self._process_decision(
+                    cast("Decision", raw_decision), call, config
+                )
+                if (
+                    isinstance(raw_decision, Mapping)
+                    and raw_decision.get("type") == "approve"
+                ):
+                    approved = True
+                if revised is not None:
+                    revised_calls.append(revised)
+                if tool_message is not None:
+                    artificial.append(tool_message)
+            revised_ai = ai_message.model_copy(deep=True)
+            revised_ai.tool_calls = revised_calls
+        except GraphInterrupt:
+            # The only path that must keep the scope pinned: the human has yet
+            # to answer, and the resume replays every emission above.
+            raise
+        except BaseException:
+            # Includes `CancelledError`, which is not an `Exception`; leaving the
+            # scope pinned on an abandoned run would keep its ledger entry alive.
+            self._complete_event_scope(event_scope)
+            raise
+        self._complete_event_scope(event_scope)
         return revised_ai, artificial, approved
 
     def _validated_plan(
@@ -2593,13 +2758,25 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         )
         if ai_message is None or not ai_message.tool_calls:
             return {"_auto_decision_plan": None}
+        from deepagents_code.hooks.server_middleware import hook_decided_permission
+
+        hook_bypass_ids = {
+            _tool_call_id(call)
+            for call in ai_message.tool_calls
+            if hook_decided_permission(state, _tool_call_id(call))
+        }
         thread_key = _thread_key(runtime)
+        # Derive the emission scope once for the whole node run. Deriving it
+        # again inside `_human_review` would silently desync the two ledgers if
+        # a caller ever passed a message whose tool calls had been filtered.
+        event_scope = _event_scope(runtime, ai_message.tool_calls)
         plan = self._validated_plan(state, ai_message, thread_key)
         current_mode, current_mode_unavailable = await _live_mode(runtime)
         manual_ids = {
             _tool_call_id(call)
             for call in ai_message.tool_calls
             if call["name"] in self.interrupt_on
+            and _tool_call_id(call) not in hook_bypass_ids
         }
         if plan is None:
             if not manual_ids:
@@ -2625,6 +2802,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 fallback=manual_fallback,
                 counters=None,
                 all_manual_ids=manual_ids,
+                event_scope=event_scope,
                 fallback_reason=fallback_reason,
                 fallback_mode=(ApprovalMode.MANUAL if manual_fallback else None),
             )
@@ -2649,6 +2827,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 current_mode = ApprovalMode.MANUAL
 
         if proposal_mode is ApprovalMode.MANUAL or current_mode is ApprovalMode.MANUAL:
+            review_ids = set(plan["manual_gated_ids"]) - hook_bypass_ids
+            if not review_ids:
+                return {"_auto_decision_plan": None}
             manual_fallback = plan["fallback_reason"] in {
                 "approval_mode_unavailable",
                 "control_state_unavailable",
@@ -2662,10 +2843,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 state,
                 runtime,
                 ai_message,
-                set(plan["manual_gated_ids"]),
+                review_ids,
                 fallback=manual_fallback,
                 counters=counters,
                 all_manual_ids=manual_ids,
+                event_scope=event_scope,
                 fallback_reason=fallback_reason,
                 fallback_mode=(ApprovalMode.MANUAL if manual_fallback else None),
             )
@@ -2677,7 +2859,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             return {"_auto_decision_plan": None}
 
         decision_by_id = {
-            decision["tool_call_id"]: decision for decision in plan["decisions"]
+            decision["tool_call_id"]: decision
+            for decision in plan["decisions"]
+            if decision["tool_call_id"] not in hook_bypass_ids
         }
         human_ids = {
             tool_id
@@ -2689,8 +2873,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         # tool call in the batch with the same disposition and reason. Each call
         # still needs its own ToolMessage, but the transcript event is a
         # batch-level note, so coalesce identical events to avoid flooding the
-        # transcript with N duplicate lines for an N-tool batch.
-        emitted_events: set[tuple[str, str, str]] = set()
+        # transcript with N duplicate lines for an N-tool batch. The ledger is
+        # scoped to the action batch rather than to this node invocation, so a
+        # human-fallback interrupt later in the node does not re-emit them when
+        # the node replays.
+        if human_ids:
+            self._pin_event_scope(event_scope)
         for call in ai_message.tool_calls:
             decision = decision_by_id.get(_tool_call_id(call))
             if decision is None:
@@ -2712,17 +2900,18 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 )
             )
             event_kind = "unavailable" if unavailable else "denial"
-            event_key = (event_kind, label, decision["reason"])
-            if event_key in emitted_events:
-                continue
-            emitted_events.add(event_key)
-            self._emit_event(
+            self._emit_event_once(
                 runtime,
-                {
+                scope=event_scope,
+                # No `tool_name`: one event stands for every call sharing this
+                # category and reason, so naming the first one would attribute
+                # the batch to an arbitrary member. The per-call detail is
+                # already in each ToolMessage above.
+                key=(event_kind, label, decision["reason"]),
+                payload={
                     "event": event_kind,
                     "category": label,
                     "reason": decision["reason"],
-                    "tool_name": call["name"],
                 },
             )
 
@@ -2744,6 +2933,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 fallback=True,
                 counters=counters,
                 all_manual_ids=manual_ids,
+                event_scope=event_scope,
                 fallback_reason=fallback_reason,
                 fallback_mode=(ApprovalMode.MANUAL if manual_fallback else None),
             )

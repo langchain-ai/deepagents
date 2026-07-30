@@ -577,9 +577,10 @@ def _should_retry_after_failure(exc: BaseException) -> bool:
     non-transient: a permanent provider error code, a status-bearing
     deterministic client error (a 4xx other than 408/429 that is not an AWS
     throttle or known-transient SDK type), or a typed local opt-out marker.
-    The same guard applies to each **top-level member** of a
-    `BaseExceptionGroup`, so a grouped `group[401, ReadError]` is not retried
-    just because a sibling is transient.
+    The same guard applies recursively to members of a `BaseExceptionGroup`,
+    so a grouped `group[401, ReadError]` — or a nested
+    `group[group[401, ReadError]]` — is not retried just because a sibling is
+    transient.
 
     When the top-level error carries no such definitive verdict, fall back to
     scanning the chain so a genuinely transient fault wrapped in an opaque
@@ -595,13 +596,37 @@ def _should_retry_after_failure(exc: BaseException) -> bool:
         return False
     if isinstance(exc, BaseExceptionGroup):
         if any(
-            isinstance(member, Exception) and _is_definitive_non_retryable(member)
+            isinstance(member, Exception)
+            and (
+                _is_definitive_non_retryable(member)
+                or _nested_group_has_definitive_member(member)
+            )
             for member in exc.exceptions
         ):
             return False
     elif isinstance(exc, Exception) and _is_definitive_non_retryable(exc):
         return False
     return _contains_retryable_model_error(exc)
+
+
+def _nested_group_has_definitive_member(exc: Exception) -> bool:
+    """Return whether a group member nests a definitive non-retryable error.
+
+    `_should_retry_after_failure` inspects only top-level group members; a
+    nested `ExceptionGroup("inner", [401, ReadError])` has no status of its
+    own, so without this recursion the transient sibling would win and the
+    permanent failure would burn the full retry budget before surfacing.
+    """
+    if not isinstance(exc, BaseExceptionGroup):
+        return False
+    return any(
+        isinstance(member, Exception)
+        and (
+            _is_definitive_non_retryable(member)
+            or _nested_group_has_definitive_member(member)
+        )
+        for member in exc.exceptions
+    )
 
 
 def format_retry_status(attempt: int, max_retries: int) -> str:

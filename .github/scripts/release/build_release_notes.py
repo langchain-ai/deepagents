@@ -1,16 +1,16 @@
 """Build a production-shaped GitHub release body locally.
 
-Reconstructs the same release body that the ``release.yml`` ``release-notes``
+Reconstructs the same release body that the `release.yml` `release-notes`
 job publishes, so a maintainer can rebuild and apply it manually when the CI
 job fails or produces an empty body after a successful publish.
 
 The script is intentionally self-contained (no external dependencies) so it
-runs in any environment with Python 3.11+ and ``git`` available.
+runs in any environment with Python 3.11+ and `git` available.
 
-The ``gh`` CLI is optional, but a missing ``gh`` is *not* the same as
-``--offline``: contributor collection yields nothing either way, but the
-releaser still falls back to ``--actor`` (so the body keeps a
-``Released by:`` line), whereas ``--offline`` suppresses that line too.
+The `gh` CLI is optional, but a missing `gh` is *not* the same as
+`--offline`: contributor collection yields nothing either way, but the
+releaser still falls back to `--actor` (so the body keeps a
+`Released by:` line), whereas `--offline` suppresses that line too.
 
 Usage:
     python .github/scripts/release/build_release_notes.py \
@@ -20,7 +20,7 @@ Usage:
         --repo langchain-ai/deepagents \
         --out /tmp/release-body.md
 
-Run from the repository root (or pass ``--repo-root``) in a clone with full
+Run from the repository root (or pass `--repo-root`) in a clone with full
 history and tags; predecessor-tag resolution needs both.
 """
 
@@ -66,9 +66,9 @@ def _git(repo: Path, *args: str, check: bool = True) -> str:
 
     Args:
         repo: Repository root to run in.
-        args: Arguments passed to ``git``.
+        args: Arguments passed to `git`.
         check: When True (the default), a non-zero exit raises
-            ``CalledProcessError`` with git's stderr attached. Callers that
+            `CalledProcessError` with git's stderr attached. Callers that
             need to tell "command failed" apart from "empty result" use
             :func:`_git_run` instead, which surfaces the returncode.
 
@@ -151,13 +151,13 @@ _STABLE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 class PreRelease(NamedTuple):
     """A parsed pre-release version.
 
-    ``rank`` orders the phase (dev < a < b < rc) and ``serial`` orders within
+    `rank` orders the phase (dev < a < b < rc) and `serial` orders within
     a phase. Both are compared in :func:`_latest_earlier_prerelease_tag`; the
     named fields keep those comparisons from depending on tuple position.
 
-    Aliases share a rank, so some spellings tie: ``alpha`` == ``a``,
-    ``beta`` == ``b``, and ``pre`` == ``preview`` == ``rc``. A tie plus an
-    equal serial is treated as "not a predecessor" (see the ``>=`` check in
+    Aliases share a rank, so some spellings tie: `alpha` == `a`,
+    `beta` == `b`, and `pre` == `preview` == `rc`. A tie plus an
+    equal serial is treated as "not a predecessor" (see the `>=` check in
     :func:`_latest_earlier_prerelease_tag`).
     """
 
@@ -169,8 +169,8 @@ class PreRelease(NamedTuple):
     def precedence(self) -> tuple[int, int]:
         """Order two pre-releases *that share a base*; meaningless across bases.
 
-        Structural tuple comparison would put ``base`` first and compare it as
-        a string, ranking ``1.0.10`` below ``1.0.9``. Callers must compare this
+        Structural tuple comparison would put `base` first and compare it as
+        a string, ranking `1.0.10` below `1.0.9`. Callers must compare this
         instead, and only after establishing the bases match.
         """
         return (self.rank, self.serial)
@@ -179,10 +179,10 @@ class PreRelease(NamedTuple):
 def _is_prerelease(version: str) -> bool:
     """Detect PEP 440 pre-release versions.
 
-    Deliberately identical to the ``check-version`` step in ``release.yml``,
-    which drives the GitHub release's ``prerelease:`` flag. The two must agree
+    Deliberately identical to the `check-version` step in `release.yml`,
+    which drives the GitHub release's `prerelease:` flag. The two must agree
     or a release can be flagged as a pre-release while its body omits the
-    pre-release banner. CI passes ``--is-prerelease`` so the workflow's answer
+    pre-release banner. CI passes `--is-prerelease` so the workflow's answer
     wins outright; this is the fallback for local runs.
     """
     return bool(re.search(r"(a|b|rc|\.dev)\d", version)) or "-" in version
@@ -223,7 +223,7 @@ def _base_version(version: str) -> str:
 
 
 def _is_stable_version_tag(tag: str, pkg_name: str) -> bool:
-    """Check whether a tag looks like ``pkg==X.Y.Z`` (no pre-release suffix)."""
+    """Check whether a tag looks like `pkg==X.Y.Z` (no pre-release suffix)."""
     return bool(_STABLE_VERSION_RE.match(tag.removeprefix(f"{pkg_name}==")))
 
 
@@ -233,10 +233,10 @@ def _is_stable_version_tag(tag: str, pkg_name: str) -> bool:
 def _valid_previous_tag(repo: Path, tag: str, pkg_name: str, release_sha: str) -> bool:
     """Check whether *tag* is a usable predecessor for the release.
 
-    ``_git_ok`` collapses ``merge-base --is-ancestor``'s exit 1 ("not an
-    ancestor") and exit 128 (error) into the same ``False``. That is safe
+    `_git_ok` collapses `merge-base --is-ancestor`'s exit 1 ("not an
+    ancestor") and exit 128 (error) into the same `False`. That is safe
     *here*, unlike in :func:`_latest_earlier_prerelease_tag`, because both refs
-    are known to resolve: the tag via the ``rev-parse --verify`` below, and
+    are known to resolve: the tag via the `rev-parse --verify` below, and
     *release_sha* via the check in :func:`build_release_notes`. A non-zero exit
     therefore reflects ancestry rather than a bad ref, and falling back to the
     next predecessor tier is the conservative response.
@@ -255,8 +255,8 @@ def _latest_stable_tag(
 ) -> str:
     """Return the highest stable tag reachable from *release_sha*.
 
-    Sorting is ``-version:refname`` (not lexical) so ``1.0.10`` outranks
-    ``1.0.9``.
+    Sorting is `-version:refname` (not lexical) so `1.0.10` outranks
+    `1.0.9`.
     """
     tags = _git_lines(
         repo,
@@ -378,9 +378,9 @@ def resolve_previous_tag(
 
     Pre-releases try (1) the latest earlier sibling, (2) the base-version tag,
     (3) the latest stable. Stable releases try (1) the previous patch —
-    ``X.Y.0`` has none, so that tier is skipped — then (2) the latest stable.
+    `X.Y.0` has none, so that tier is skipped — then (2) the latest stable.
 
-    Returns ``""`` when no predecessor is reachable. That is expected for a
+    Returns `""` when no predecessor is reachable. That is expected for a
     genuine initial release; when prior stable tags exist but none are
     reachable, a warning is appended because the git log will then wrongly
     span the package's full history and be labeled an initial release. The
@@ -476,14 +476,14 @@ def resolve_release_commit(
 ) -> str:
     """Resolve the commit to attribute the release to.
 
-    For stable releases, uses the last ``CHANGELOG.md`` touch reachable from
+    For stable releases, uses the last `CHANGELOG.md` touch reachable from
     *release_sha* — release-please updates the changelog in the release commit.
-    Pre-releases do not update ``CHANGELOG.md``, so they use *release_sha*
+    Pre-releases do not update `CHANGELOG.md`, so they use *release_sha*
     itself.
 
-    Every lookup is bounded by *release_sha* rather than ``HEAD``. In CI the
+    Every lookup is bounded by *release_sha* rather than `HEAD`. In CI the
     checkout is already at the release SHA, so the two agree; locally they do
-    not, and searching from ``HEAD`` would resolve to a *later* release's
+    not, and searching from `HEAD` would resolve to a *later* release's
     commit and credit its contributors and merger to this release.
 
     Appends diagnostics to *warnings*.
@@ -537,7 +537,7 @@ def extract_changelog_section_text(
     the failure reason.
 
     Returns:
-        A ``(body, reason)`` pair. *reason* is None on success and otherwise
+        A `(body, reason)` pair. *reason* is None on success and otherwise
         explains why the body is empty, so the caller can distinguish "no
         CHANGELOG.md" from "version not found" from a genuinely empty section.
 
@@ -590,7 +590,7 @@ def read_changelog_at(
     produces notes.
 
     Returns:
-        A ``(text, reason)`` pair; *reason* is None when *text* was read.
+        A `(text, reason)` pair; *reason* is None when *text* was read.
 
     """
     rel_path = f"{working_dir}/CHANGELOG.md"
@@ -660,7 +660,7 @@ def generate_git_log(
 
     Appends diagnostics to *warnings*.
 
-    Returns the ``<details>`` block as a string.
+    Returns the `<details>` block as a string.
     """
     if prev_tag:
         range_spec = f"{prev_tag}..{release_sha}"
@@ -784,10 +784,10 @@ MAX_CONSECUTIVE_GH_FAILURES = 5
 class Contributor(NamedTuple):
     """A community contributor credited in the release notes.
 
-    ``twitter_handle`` is a bare handle with no leading ``@``.
-    ``linkedin_url`` is either empty or an absolute URL: :func:`_parse_socials`
-    prefixes ``https://`` when the PR body omits a scheme, and preserves an
-    explicit ``http://`` or ``https://`` as written. Normalizing at parse time
+    `twitter_handle` is a bare handle with no leading `@`.
+    `linkedin_url` is either empty or an absolute URL: :func:`_parse_socials`
+    prefixes `https://` when the PR body omits a scheme, and preserves an
+    explicit `http://` or `https://` as written. Normalizing at parse time
     rather than render time is what keeps the gap-filling merge in
     :func:`collect_contributors` from depending on commit order. Empty means
     "not supplied".
@@ -799,9 +799,9 @@ class Contributor(NamedTuple):
 
 
 def _run_gh(args: list[str]) -> subprocess.CompletedProcess[str] | None:
-    """Run a ``gh`` command.
+    """Run a `gh` command.
 
-    Returns None only when ``gh`` is genuinely absent, so callers can tell
+    Returns None only when `gh` is genuinely absent, so callers can tell
     "no GitHub CLI in this environment" apart from a per-call failure. Timeouts
     and exec errors come back as a synthetic non-zero result instead, and
     rate-limited calls are retried with backoff.
@@ -849,7 +849,7 @@ def _run_gh(args: list[str]) -> subprocess.CompletedProcess[str] | None:
 
 
 def _gh_result_detail(result: subprocess.CompletedProcess[str] | None) -> str:
-    """Describe a failed ``gh`` invocation."""
+    """Describe a failed `gh` invocation."""
     if result is None:
         return "gh executable not found"
     detail = result.stderr.strip() or result.stdout.strip()
@@ -857,7 +857,7 @@ def _gh_result_detail(result: subprocess.CompletedProcess[str] | None) -> str:
 
 
 def _gh_api(endpoint: str, *, jq: str = "") -> tuple[str, str | None]:
-    """Run ``gh api`` and return its output and any failure detail."""
+    """Run `gh api` and return its output and any failure detail."""
     cmd = ["api", endpoint]
     if jq:
         cmd.extend(["--jq", jq])
@@ -868,7 +868,7 @@ def _gh_api(endpoint: str, *, jq: str = "") -> tuple[str, str | None]:
 
 
 def _gh_pr_view(pr_num: str, repo: str, fields: str) -> tuple[dict | None, str | None]:
-    """Run ``gh pr view`` and return parsed JSON plus any failure detail."""
+    """Run `gh pr view` and return parsed JSON plus any failure detail."""
     result = _run_gh(["pr", "view", pr_num, "--repo", repo, "--json", fields])
     if result is None or result.returncode != 0:
         return None, _gh_result_detail(result)
@@ -898,12 +898,12 @@ _LINKEDIN_RE = re.compile(
 
 
 class Socials(NamedTuple):
-    """Social links advertised in a PR body; either may be ``""``.
+    """Social links advertised in a PR body; either may be `""`.
 
-    Named rather than a bare ``tuple[str, str]`` because both fields are
+    Named rather than a bare `tuple[str, str]` because both fields are
     strings feeding a positional :class:`Contributor` constructor — a
     transposition would type-check cleanly and publish
-    ``https://x.com/https://linkedin.com/in/...`` into a release body.
+    `https://x.com/https://linkedin.com/in/...` into a release body.
     """
 
     twitter_handle: str
@@ -913,7 +913,7 @@ class Socials(NamedTuple):
 def _parse_socials(pr_body: str) -> Socials:
     """Extract the Twitter handle and LinkedIn URL from a PR body.
 
-    Either value is ``""`` when the body does not advertise it.
+    Either value is `""` when the body does not advertise it.
     """
     twitter_match = _TWITTER_RE.search(pr_body)
     linkedin_match = _LINKEDIN_RE.search(pr_body)
@@ -1101,7 +1101,7 @@ def collect_contributors(
 
 
 def _merged_by(repository: str, pr_num: str, warnings: list[str]) -> str:
-    """Return the login of whoever merged *pr_num*, or ``""`` with a warning."""
+    """Return the login of whoever merged *pr_num*, or `""` with a warning."""
     result = _run_gh(
         ["pr", "view", pr_num, "--repo", repository,
          "--json", "mergedBy", "--jq", ".mergedBy.login // empty"]
@@ -1138,7 +1138,7 @@ def resolve_releaser(
     Primary source is whoever merged the release PR (the release commit is
     that PR's squash-merge); when the commit has no associated merged PR
     (initial release, direct push, manual recovery) it falls back to *actor*.
-    Bot accounts resolve to ``""``. Returns ``""`` in *offline* mode. Lookup
+    Bot accounts resolve to `""`. Returns `""` in *offline* mode. Lookup
     failures are appended to *warnings* — a real API failure must not silently
     fall through to the actor, which on a manual release would credit the
     dispatcher instead of the merger with no breadcrumb.
@@ -1276,7 +1276,7 @@ def build_base_body(
 def _with_section(base_body: str, section: str) -> str:
     """Join *section* onto *base_body*, skipping the separator when it is empty.
 
-    Must stay in step with the ``separator_bytes`` arithmetic in
+    Must stay in step with the `separator_bytes` arithmetic in
     :func:`finalize_body`.
     """
     return f"{base_body}\n\n{section}" if base_body else section
@@ -1285,7 +1285,7 @@ def _with_section(base_body: str, section: str) -> str:
 def finalize_body(base_body: str, git_log_details: str) -> tuple[str, list[str]]:
     """Append the git log details block, respecting the size budget.
 
-    Returns ``(final_body, warnings)``.
+    Returns `(final_body, warnings)`.
     """
     body_bytes = len(base_body.encode())
     details_bytes = len(git_log_details.encode())
@@ -1342,22 +1342,22 @@ def build_release_notes(
         package: Package name; used to look up *working_dir* when not given.
         version: Version being released.
         release_sha: Commit the release is cut from.
-        repository: ``owner/name`` for building commit links.
+        repository: `owner/name` for building commit links.
         offline: Skip all GitHub API lookups.
         actor: Fallback releaser when no merged PR is found.
         base_branch: Branch the release was cut from.
-        default_branch: Default branch; empty is treated as ``main``.
+        default_branch: Default branch; empty is treated as `main`.
         working_dir: Package directory; derived from *package* when empty.
         is_prerelease: Authoritative pre-release flag. When None, it is
             detected from *version*.
 
     Returns:
-        A ``(body, warnings)`` pair.
+        A `(body, warnings)` pair.
 
     Raises:
         ValueError: If the package is unknown, the package directory does not
             exist, or *release_sha* does not resolve to a commit.
-        subprocess.CalledProcessError: If a git command run with ``check=True``
+        subprocess.CalledProcessError: If a git command run with `check=True`
             fails (see :func:`_git`). Most git calls here go through
             :func:`_git_run` and degrade to a warning instead; the ones that do
             not are treated as unrecoverable.
@@ -1525,10 +1525,10 @@ def build_release_notes(
 
 
 def _write_github_output(body: str) -> None:
-    """Append the release body to ``$GITHUB_OUTPUT`` as a heredoc.
+    """Append the release body to `$GITHUB_OUTPUT` as a heredoc.
 
     Raises:
-        SystemExit: If ``GITHUB_OUTPUT`` is unset.
+        SystemExit: If `GITHUB_OUTPUT` is unset.
 
     """
     github_output = os.environ.get("GITHUB_OUTPUT", "")
@@ -1556,13 +1556,13 @@ def _write_step_summary(
 ) -> None:
     """Surface warnings on the run summary, where a reviewer will see them.
 
-    The ``release-notes`` job is deliberately fail-open and nothing gates on it,
+    The `release-notes` job is deliberately fail-open and nothing gates on it,
     so a green check is not evidence the body is good. Best-effort: a summary
     that cannot be written must not fail a job whose whole point is to not
     block the release.
 
     *repository* and *sha* are rendered into the recovery snippet literally.
-    Referencing CI-only variables like ``$GITHUB_REPOSITORY`` would produce a
+    Referencing CI-only variables like `$GITHUB_REPOSITORY` would produce a
     block that fails when pasted into the operator's shell, which is the only
     place it is ever meant to run.
 

@@ -2830,7 +2830,7 @@ def _run_cli(repo: Path, *args: str, env: dict | None = None):
 
 
 def _parse_heredoc(written: str) -> re.Match[str]:
-    """Parse the ``key<<DELIM\\n...\\nDELIM\\n`` framing written to $GITHUB_OUTPUT.
+    """Parse the `key<<DELIM\\n...\\nDELIM\\n` framing written to $GITHUB_OUTPUT.
 
     Group 1 is the delimiter, group 2 the body.
     """

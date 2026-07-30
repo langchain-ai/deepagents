@@ -166,7 +166,7 @@ class LangSmithSandbox(BaseSandbox):
         except SandboxClientError as e:
             return WriteResult(error=f"Failed to write file '{file_path}': {e}")
 
-    def read(  # noqa: PLR0911 - early returns for distinct error conditions
+    def read(  # noqa: C901, PLR0911 - branches are distinct read-result dispositions
         self,
         file_path: str,
         offset: int = 0,
@@ -179,7 +179,7 @@ class LangSmithSandbox(BaseSandbox):
         fetches bytes directly via the SDK and reproduces the base-class
         pagination semantics locally:
 
-        - Empty files surface the "empty contents" reminder.
+        - Empty and whitespace-only files surface the "empty contents" reminder.
         - Files routed as binary by extension (or that fail UTF-8 decode) are
             returned base64-encoded, capped at `MAX_BINARY_BYTES`.
         - Text content is normalized for universal newlines (`\r\n` and bare
@@ -240,6 +240,9 @@ class LangSmithSandbox(BaseSandbox):
         # stray \r in returned content, which then breaks `edit()` (issue
         # #2880).
         normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+        if not normalized.strip():
+            return ReadResult(file_data=FileData(content="", encoding="utf-8"))
+
         lines = normalized.split("\n")
         if lines and lines[-1] == "":
             lines.pop()

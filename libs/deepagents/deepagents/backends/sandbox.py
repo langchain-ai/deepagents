@@ -422,6 +422,30 @@ try:
         print(json.dumps({{'encoding': 'base64', 'content': base64.b64encode(raw).decode('ascii')}}))
         sys.exit(0)
 
+    # Match the in-memory backends' definition of an empty text file. This
+    # usually stops in the first chunk; scanning to EOF is only necessary for
+    # files that may actually contain nothing but whitespace.
+    whitespace_only = True
+    decoder = codecs.getincrementaldecoder('utf-8')()
+    with open(path, 'rb') as f:
+        while chunk := f.read(8192):
+            try:
+                decoded = decoder.decode(chunk, final=False)
+            except UnicodeDecodeError:
+                whitespace_only = False
+                break
+            if decoded.strip():
+                whitespace_only = False
+                break
+    if whitespace_only:
+        try:
+            whitespace_only = not decoder.decode(b'', final=True).strip()
+        except UnicodeDecodeError:
+            whitespace_only = False
+    if whitespace_only:
+        print(json.dumps({{'encoding': 'utf-8', 'content': ''}}))
+        sys.exit(0)
+
     offset = {offset}
     limit = {limit}
 
@@ -555,10 +579,11 @@ when the file is large enough that a full re-scan to count its lines would be
 unbounded. On success
 (binary): `{{"encoding": "base64", "content": ...}}` without pagination keys.
 An empty file short-circuits to `{{"encoding": "utf-8", "content": <empty-file
-reminder>}}`, and a non-positive `limit` to `{{"encoding": "utf-8", "content":
-"", "no_lines_requested": true}}`, both also without pagination keys. The
-empty-file check runs first, so an empty file yields the reminder even when
-`limit` is non-positive. On failure:
+reminder>}}`, a whitespace-only file to `{{"encoding": "utf-8", "content":
+""}}`, and a non-positive `limit` to `{{"encoding": "utf-8", "content": "",
+"no_lines_requested": true}}`, all without pagination keys. The empty-file
+checks run first, so an empty file yields the reminder even when `limit` is
+non-positive. On failure:
 `{{"error": ...}}`.
 """
 

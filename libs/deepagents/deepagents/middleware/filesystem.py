@@ -777,6 +777,22 @@ def _truncate_paginated_read(
     return content[:max_content_length] + truncation_msg
 
 
+def _restore_blank_window_lines(content: str, start_line: int, end_line: int) -> list[str]:
+    """Restore blank source rows omitted by a backend's text serialization.
+
+    Args:
+        content: Serialized content for a whitespace-only read window.
+        start_line: First source line in the window.
+        end_line: Last source line in the window.
+
+    Returns:
+        One string per source line reported by the backend.
+    """
+    line_count = end_line - start_line + 1
+    lines = content.split("\n")
+    return (lines + [""] * line_count)[:line_count]
+
+
 def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileData | None]) -> dict[str, FileData]:
     """Merge file updates with support for deletions.
 
@@ -1627,33 +1643,27 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
             # Empty files get a uniform warning regardless of encoding/type, so
             # check before routing to avoid a degenerate empty content block for
-            # binary reads (#3664). Pagination metadata is only set when the
-            # backend sliced a window out of a file that has content — genuinely
-            # empty (and whitespace-only) files short-circuit before slicing and
-            # leave it unset. So a window is never "the file is empty", and a
-            # blank window renders as blank numbered lines instead (#4955).
-            if read_result.start_line is None:
-                empty_msg = check_empty_content(content)
-                if empty_msg:
-                    # Empty content has two causes that must not be conflated:
-                    # a zero-line window, where the file was never inspected,
-                    # and a genuinely empty file. Reporting the former as the
-                    # latter states something false about a file that may have
-                    # contents. The backend declares which one happened: both
-                    # arrive as empty content with no pagination metadata, but
-                    # only the never-inspected window sets `no_lines_requested`
-                    # — a file that was inspected and is empty (whitespace-only
-                    # text from `slice_read_response`'s blank branch, or empty
-                    # base64 from a binary read that ignored `limit`) keeps the
-                    # empty-file reminder.
-                    if not content and read_result.no_lines_requested:
-                        empty_msg = NO_LINES_REQUESTED_WARNING.format(limit=limit)
-                    return ToolMessage(
-                        content=empty_msg,
-                        name="read_file",
-                        tool_call_id=tool_call_id,
-                        status="success",
-                    )
+            # binary reads (#3664). A whitespace-only result with pagination can
+            # either be a blank window in a non-empty file or the entire contents
+            # of a whitespace-only file. Only the latter gets the empty warning;
+            # blank windows render their reported source rows below (#4955).
+            empty_msg = check_empty_content(content)
+            window_is_entire_file = (
+                read_result.start_line == 1 and read_result.end_line is not None and read_result.total_lines == read_result.end_line
+            )
+            if empty_msg and (read_result.start_line is None or window_is_entire_file):
+                # Empty content has two causes that must not be conflated: a
+                # zero-line window, where the file was never inspected, and a
+                # genuinely empty file. Reporting the former as the latter
+                # states something false about a file that may have contents.
+                if not content and read_result.no_lines_requested:
+                    empty_msg = NO_LINES_REQUESTED_WARNING.format(limit=limit)
+                return ToolMessage(
+                    content=empty_msg,
+                    name="read_file",
+                    tool_call_id=tool_call_id,
+                    status="success",
+                )
 
             # Video reads must be sliced into a sampled frame window before the
             # generic base64 branch runs; otherwise raw video bytes would reach
@@ -1687,7 +1697,13 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # that returns numberable text without `start_line` would otherwise
             # render a zero or negative line marker, which the row-marker
             # parsers downstream assume never happens.
-            content = format_content_with_line_numbers(content, start_line=read_result.start_line or max(offset, 0) + 1)
+            content_to_format: str | list[str] = content
+            if empty_msg and read_result.start_line is not None and read_result.end_line is not None:
+                content_to_format = _restore_blank_window_lines(content, read_result.start_line, read_result.end_line)
+            content = format_content_with_line_numbers(
+                content_to_format,
+                start_line=read_result.start_line or max(offset, 0) + 1,
+            )
             # `limit` already bounded raw source lines at the backend; do not
             # re-truncate by row count here, or wrapped continuation rows would
             # push real source lines off the end of the page (#2453).

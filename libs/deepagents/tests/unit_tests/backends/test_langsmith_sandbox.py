@@ -274,6 +274,19 @@ def test_read_empty_file() -> None:
     assert "empty contents" in result.file_data["content"]
 
 
+def test_read_whitespace_only_file_has_no_pagination() -> None:
+    """Whitespace-only text is classified as empty before applying a window."""
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b" \n\t\r\n"
+
+    result = sb.read("/app/blank.txt", offset=1, limit=1)
+
+    assert result.error is None
+    assert result.file_data == {"content": "", "encoding": "utf-8"}
+    assert result.start_line is None
+    assert result.end_line is None
+
+
 def test_read_binary_file() -> None:
     sb, mock_sdk = _make_sandbox()
     raw = b"\x89PNG\r\n\x1a\n"

@@ -2436,6 +2436,45 @@ class TestFilesystemMiddleware:
         assert result.content != EMPTY_CONTENT_WARNING
         assert [line.strip() for line in result.content.splitlines()[:4]] == ["2", "3", "4", "5"]
 
+    def test_read_file_whitespace_only_file_with_pagination_returns_warning(self):
+        """A sandbox-style complete whitespace window still describes an empty file."""
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(content=" \n\t", encoding="utf-8"),
+            total_lines=2,
+            start_line=1,
+            end_line=2,
+        )
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/blank.txt"})
+
+        assert isinstance(result, ToolMessage)
+        assert result.content == EMPTY_CONTENT_WARNING
+
+    @pytest.mark.parametrize(("content", "end_line"), [("", 2), ("\n\n\n", 5)])
+    def test_read_file_sandbox_blank_window_restores_reported_rows(self, content: str, end_line: int):
+        """Sandbox blank-window serialization must not drop its final source row."""
+        backend, _ = _make_backend()
+        read_result = ReadResult(
+            file_data=FileData(content=content, encoding="utf-8"),
+            total_lines=end_line + 1,
+            start_line=2,
+            end_line=end_line,
+            next_offset=end_line,
+        )
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        with patch.object(backend, "read", return_value=read_result):
+            result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt"})
+
+        assert isinstance(result, ToolMessage)
+        numbered_content = result.content.partition("\n\n[Read")[0]
+        assert numbered_content == "\n".join(f"{line_number}  " for line_number in range(2, end_line + 1))
+
     def test_execute_tool_returns_error_when_backend_doesnt_support(self):
         """Test that execute tool returns friendly error instead of raising exception."""
         backend, _ = _make_backend()

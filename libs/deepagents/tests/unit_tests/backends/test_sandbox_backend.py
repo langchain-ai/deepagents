@@ -1521,6 +1521,16 @@ def test_read_script_zero_limit_returns_empty_content(tmp_path: Path) -> None:
     assert result == {"encoding": "utf-8", "content": "", "no_lines_requested": True}
 
 
+def test_read_script_whitespace_only_file_has_no_pagination(tmp_path: Path) -> None:
+    """Whitespace-only text is classified as empty before applying a window."""
+    target = tmp_path / "blank.txt"
+    target.write_text(" \n\t\n\n")
+
+    result = _run_read_script(target, offset=1, limit=1)
+
+    assert result == {"encoding": "utf-8", "content": ""}
+
+
 def test_build_read_cmd_clamps_negative_offset_to_first_line(tmp_path: Path) -> None:
     """A negative offset is clamped by the builder, which the script relies on.
 

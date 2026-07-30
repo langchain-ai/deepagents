@@ -26,10 +26,10 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, Interrupt
 from pydantic import TypeAdapter, ValidationError
 from rich.console import Console
@@ -83,18 +83,40 @@ from deepagents_code.unicode_security import (
 if TYPE_CHECKING:
     from asyncio.subprocess import Process
     from pathlib import Path
+    from uuid import UUID
 
     from deepagents import FsToolName
     from langchain_core.runnables import RunnableConfig
 
-    from deepagents_code.hooks.runtime import HooksRuntime
-    from deepagents_code.json_types import JsonObject
+    from deepagents_code.approval_mode import ApprovalMode
+    from deepagents_code.hooks.manager import HooksManager
+    from deepagents_code.hooks.models.domain import SessionEndCause
+    from deepagents_code.hooks.presenter import (
+        HookNoticeCallback,
+        HookNoticeSeverity,
+    )
+    from deepagents_code.hooks.transcript import TranscriptRecorder
 
 logger = logging.getLogger(__name__)
 
 
 class HITLIterationLimitError(RuntimeError):
     """Raised when the HITL interrupt loop exceeds `_MAX_HITL_ITERATIONS` rounds."""
+
+
+def _raise_hitl_iteration_limit(message: str) -> NoReturn:
+    """Raise the bounded-turn failure outside the stream-control try block.
+
+    Raises:
+        HITLIterationLimitError: Always, with the supplied message.
+    """
+    raise HITLIterationLimitError(message)
+
+
+def _raise_client_hook_stop(message: str) -> NoReturn:
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+
+    raise ClientHookStopError(message)
 
 
 _HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
@@ -174,6 +196,11 @@ class _ConsoleSpinner:
         self._console = console
         self._live: Live | None = None
 
+    @property
+    def is_running(self) -> bool:
+        """Whether the live spinner is active."""
+        return self._live is not None
+
     def start(self, message: str = "Working...") -> None:
         """Start the spinner with the given message.
 
@@ -185,17 +212,26 @@ class _ConsoleSpinner:
         """
         if self._live is not None:
             return
-        renderable = RichSpinner(
-            "dots",
-            text=Text(f" {message}", style="dim"),
-            style="dim",
-        )
+        renderable = self._build_spinner(message)
         try:
             self._live = Live(renderable, console=self._console, transient=True)
             self._live.start()
         except (AttributeError, TypeError, OSError) as exc:
             logger.warning("Spinner start failed: %s", exc)
             self._live = None
+
+    def update(self, message: str) -> None:
+        """Replace the message on a running spinner.
+
+        Args:
+            message: Status text to display next to the spinner.
+        """
+        if self._live is None:
+            return
+        try:
+            self._live.update(self._build_spinner(message))
+        except (AttributeError, TypeError, OSError) as exc:
+            logger.warning("Spinner update failed: %s", exc)
 
     def stop(self) -> None:
         """Stop the spinner if running. Can be restarted with `start`."""
@@ -206,6 +242,14 @@ class _ConsoleSpinner:
                 logger.warning("Spinner stop failed: %s", exc)
             finally:
                 self._live = None
+
+    @staticmethod
+    def _build_spinner(message: str) -> RichSpinner:
+        return RichSpinner(
+            "dots",
+            text=Text(f" {message}", style="dim"),
+            style="dim",
+        )
 
 
 async def _terminate_startup_process(proc: Process) -> None:
@@ -300,6 +344,37 @@ class InFlightToolCall:
     """The parsed tool-call arguments, for correlating the matching result."""
 
 
+def _inert_hooks() -> HooksManager:
+    """Build the placeholder coordinator used until hooks are configured.
+
+    Returns:
+        A manager that runs no hooks.
+    """
+    from deepagents_code.hooks.manager import HooksManager
+
+    return HooksManager.inert()
+
+
+def _plain_hook_notice(console: Console) -> HookNoticeCallback:
+    """Build a notice sink that prints hook output without styling.
+
+    Used for hooks loaded before the run owns a spinner; `attach_output` later
+    rebinds the manager's presenter to the styled, spinner-aware sinks.
+
+    Args:
+        console: Destination for notice text.
+
+    Returns:
+        An unstyled notice sink.
+    """
+
+    def notice(message: str, severity: HookNoticeSeverity) -> None:
+        del severity
+        console.print(Text(message), highlight=False)
+
+    return notice
+
+
 @dataclass
 class StreamState:
     """Mutable state accumulated while iterating over the agent stream."""
@@ -360,11 +435,26 @@ class StreamState:
     pending_hook_interrupts: dict[str, object] = field(default_factory=dict)
     """Raw Hooks v2 invocation interrupt payloads awaiting client fulfillment."""
 
-    hook_response: dict[str, JsonObject] = field(default_factory=dict)
+    hook_response: dict[str, Any] = field(default_factory=dict)
     """Resume values for fulfilled Hooks v2 interrupts, keyed by interrupt id."""
 
-    hooks_runtime: HooksRuntime | None = None
-    """Optional session-scoped HooksRuntime used to fulfill server hook interrupts."""
+    hooks: HooksManager = field(default_factory=_inert_hooks)
+    """Client-side Hooks v2 coordinator for this headless session."""
+
+    transcript: TranscriptRecorder | None = None
+    """Completed root and identified subagent stream messages."""
+
+    active_model: str | None = None
+    """Model projected into compact lifecycle events."""
+
+    summarization_observed: bool = False
+    """Whether the current stream crossed a compaction boundary."""
+
+    completed_compaction_ids: set[str] = field(default_factory=set)
+    """Compaction tool results whose post-boundary lifecycle already fired."""
+
+    session_end_fired: bool = False
+    """Whether the headless client session has emitted its terminal event."""
 
     interrupt_occurred: bool = False
     """Flag indicating whether any HITL interrupt was received during the
@@ -432,6 +522,7 @@ def _process_interrupts(
         console: Rich console for user-visible warnings.
     """
     from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
+    from deepagents_code.hooks.models.domain import HookEvent
 
     interrupts = data["__interrupt__"]
     if interrupts:
@@ -462,7 +553,8 @@ def _process_interrupts(
                 continue
             state.pending_interrupts[interrupt_obj.id] = validated_request
             state.interrupt_occurred = True
-            dispatch_hook_fire_and_forget("input.required", {})
+            if not state.hooks.has_handlers(HookEvent.NOTIFICATION):
+                dispatch_hook_fire_and_forget("input.required", {})
 
 
 def _process_ai_message(
@@ -619,6 +711,7 @@ def _process_message_chunk(
     # conversation history for the LLM. These are internal bookkeeping and
     # should not be rendered to the user.
     if metadata and metadata.get("lc_source") == "summarization":
+        state.summarization_observed = True
         return
 
     if isinstance(message_obj, AIMessage):
@@ -687,12 +780,13 @@ def _process_message_chunk(
             logger.exception("Failed to format tool output")
             tool_output = UNRENDERABLE_TOOL_OUTPUT
         # Headless always dispatches tool.result for every ToolMessage — there
-        # are no widgets to skip. The TUI handles ToolMessages in three branches
-        # in `textual_adapter.execute_task_textual`: the widget-backed path and
-        # an `else` for unmounted tools both dispatch (mirroring this
-        # always-dispatch behavior), while the `completed_tool_result_ids` branch
-        # suppresses a duplicate rather than dispatching. See the parity contract
-        # in `_tool_stream` for the full guarantee.
+        # are no widgets to skip. The TUI handles ToolMessages in four branches
+        # in `textual_adapter.execute_task_textual`: the widget-backed path, a
+        # deferred-`ask_user` path for a row that never mounted, and an `else` for
+        # unmounted tools all dispatch (mirroring this always-dispatch behavior),
+        # while the `completed_tool_result_ids` branch suppresses a duplicate
+        # rather than dispatching. See the parity contract in `_tool_stream` for
+        # the full guarantee.
         if tool_status == "error":
             dispatch_hook_fire_and_forget(
                 "tool.error",
@@ -830,6 +924,24 @@ def _process_stream_chunk(
     namespace, stream_mode, data = chunk
     is_main_agent = not namespace
 
+    if (
+        stream_mode == "messages"
+        and isinstance(data, tuple)
+        and len(data) == _MESSAGE_DATA_LENGTH
+        and state.transcript is not None
+    ):
+        message, metadata = data
+        transcript_metadata = (
+            {str(key): value for key, value in metadata.items()}
+            if isinstance(metadata, dict)
+            else None
+        )
+        state.transcript.record(
+            message,
+            transcript_metadata,
+            main_agent=is_main_agent,
+        )
+
     if not is_main_agent:
         return
 
@@ -952,36 +1064,18 @@ def _collect_action_request_warnings(action_request: ActionRequest) -> list[str]
 
 
 async def _fulfill_pending_hook_interrupts(state: StreamState) -> None:
-    """Execute pending server-owned hook interrupts on the client runtime.
-
-    Raises:
-        RuntimeError: If a hook interrupt arrives without a session runtime, or
-            if a payload cannot be parsed.
-        HooksSnapshotChangedError: If a hook resume cannot be applied because it
-            was made against a stale configuration snapshot.
-    """
+    """Execute pending server-owned hook interrupts on the client runtime."""
     if not state.pending_hook_interrupts:
         return
-    from deepagents_code.hooks.client import (
-        HooksSnapshotChangedError,
-        fulfill_pending_hook_interrupts,
-    )
-
-    if state.hooks_runtime is None:
-        msg = "Received hook invocation interrupt without a HooksRuntime"
-        raise RuntimeError(msg)
     pending = dict(state.pending_hook_interrupts)
     state.pending_hook_interrupts.clear()
-    try:
-        state.hook_response.update(
-            await fulfill_pending_hook_interrupts(state.hooks_runtime, pending)
-        )
-    except ValueError as exc:
-        msg = f"Hook resume could not be applied: {exc}"
-        raise HooksSnapshotChangedError(msg) from exc
+    state.hook_response.update(await state.hooks.fulfill_pending_interrupts(pending))
 
 
-def _process_hitl_interrupts(state: StreamState, console: Console) -> None:
+async def _process_hitl_interrupts(
+    state: StreamState,
+    console: Console,
+) -> None:
     """Iterate over pending HITL interrupts and build approval/rejection responses.
 
     After processing, `state.pending_interrupts` is cleared and decisions
@@ -990,16 +1084,60 @@ def _process_hitl_interrupts(state: StreamState, console: Console) -> None:
     Args:
         state: Stream state containing the pending interrupts to process.
         console: Rich console for status output.
+
+    Raises:
+        ClientHookStopError: If a hook stops or interrupts approval.
     """
     current_interrupts = dict(state.pending_interrupts)
     state.pending_interrupts.clear()
 
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+    from deepagents_code.hooks.models.domain import (
+        DcodeNotificationKind,
+        ToolCallData,
+    )
+
     for interrupt_id, hitl_request in current_interrupts.items():
-        decisions = [
-            _make_hitl_decision(action_request, console)
-            for action_request in hitl_request["action_requests"]
-        ]
-        state.hitl_response[interrupt_id] = {"decisions": decisions}
+        action_requests = hitl_request["action_requests"]
+        plan = await state.hooks.on_permission_request(
+            [
+                ToolCallData(
+                    id=f"{interrupt_id}:{index}",
+                    name=action_request.get("name", ""),
+                    args=action_request.get("args", {}),
+                )
+                for index, action_request in enumerate(action_requests)
+            ]
+        )
+        if plan.interrupted:
+            interrupting = next(
+                outcome for outcome in plan.outcomes if outcome.interrupt
+            )
+            reason = (
+                interrupting.decision.get("message")
+                if interrupting.decision is not None
+                else None
+            )
+            raise ClientHookStopError(reason or "Permission interrupted by hook")
+
+        if not plan.fully_resolved:
+            await state.hooks.notify(
+                DcodeNotificationKind.PERMISSION_REQUIRED,
+                "Permission required",
+            )
+        resolved: list[dict[str, str]] = []
+        for outcome, action_request in zip(
+            plan.outcomes,
+            action_requests,
+            strict=True,
+        ):
+            decision = outcome.decision
+            resolved.append(
+                cast("dict[str, str]", dict(decision))
+                if decision is not None
+                else _make_hitl_decision(action_request, console)
+            )
+        state.hitl_response[interrupt_id] = {"decisions": resolved}
 
 
 async def _stream_agent(
@@ -1034,10 +1172,86 @@ async def _stream_agent(
             context=context,
             durability="exit",
         ):
+            summarization = _summarization_stream_status(chunk)
+            compaction_id = _compaction_result_id(chunk)
+            if summarization is False and state.summarization_observed:
+                if compaction_id is not None:
+                    state.completed_compaction_ids.add(compaction_id)
+                await _after_headless_compact(state)
+                state.summarization_observed = False
+            elif (
+                compaction_id is not None
+                and compaction_id not in state.completed_compaction_ids
+            ):
+                state.completed_compaction_ids.add(compaction_id)
+                await _after_headless_compact(state)
             _process_stream_chunk(chunk, state, console, file_op_tracker)
+        if state.summarization_observed:
+            await _after_headless_compact(state)
+            state.summarization_observed = False
     finally:
         if state.spinner:
             state.spinner.stop()
+
+
+def _summarization_stream_status(chunk: object) -> bool | None:
+    if not isinstance(chunk, tuple) or len(chunk) != _STREAM_CHUNK_LENGTH:
+        return None
+    namespace, stream_mode, data = chunk
+    if namespace:
+        return None
+    if (
+        stream_mode != "messages"
+        or not isinstance(data, tuple)
+        or len(data) != _MESSAGE_DATA_LENGTH
+    ):
+        return None
+    _message, metadata = data
+    return isinstance(metadata, dict) and metadata.get("lc_source") == "summarization"
+
+
+def _compaction_result_id(chunk: object) -> str | None:
+    if not isinstance(chunk, tuple) or len(chunk) != _STREAM_CHUNK_LENGTH:
+        return None
+    namespace, stream_mode, data = chunk
+    if namespace:
+        return None
+    if (
+        stream_mode != "messages"
+        or not isinstance(data, tuple)
+        or len(data) != _MESSAGE_DATA_LENGTH
+    ):
+        return None
+    message, _metadata = data
+    if not (
+        isinstance(message, ToolMessage)
+        and getattr(message, "name", None) == "compact_conversation"
+        and str(message.content).startswith("Conversation compacted.")
+    ):
+        return None
+    tool_call_id = getattr(message, "tool_call_id", None)
+    return tool_call_id if isinstance(tool_call_id, str) and tool_call_id else None
+
+
+async def _after_headless_compact(state: StreamState) -> None:
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+    from deepagents_code.hooks.models.domain import SessionStartCause
+
+    outcome = await state.hooks.on_session_start(
+        SessionStartCause.COMPACT,
+        model=state.active_model,
+    )
+    if not outcome.ok:
+        raise ClientHookStopError(
+            outcome.stop_reason or "Compact session start stopped by hook"
+        )
+
+
+async def _end_headless_session(state: StreamState, cause: SessionEndCause) -> None:
+    if state.session_end_fired:
+        return
+    state.session_end_fired = True
+    await state.hooks.on_session_end(cause)
 
 
 def _dispatch_orphaned_tool_result_hooks(state: StreamState, tool_output: str) -> None:
@@ -1094,6 +1308,9 @@ async def _run_agent_loop(
     rubric: str | None = None,
     show_rubric_iterations: bool = False,
     trust_project_hooks: bool = False,
+    hooks: HooksManager | None = None,
+    approval_mode: ApprovalMode | None = None,
+    prompt_id: UUID | None = None,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -1131,9 +1348,12 @@ async def _run_agent_loop(
 
             Defaults to `False` so untrusted checkouts cannot execute repository
             hooks in CI without an explicit opt-in.
+        hooks: Preloaded Hooks v2 coordinator; one is built when omitted.
+        approval_mode: Effective client approval policy. Defaults to manual.
+        prompt_id: Stable identifier for the headless turn.
 
     Raises:
-        HITLIterationLimitError: If the effective turn limit is exceeded.
+        ClientHookStopError: If a client-owned hook stops processing.
     """
     spinner = None if quiet else _ConsoleSpinner(console)
     state = StreamState(
@@ -1160,22 +1380,116 @@ async def _run_agent_loop(
 
     from pathlib import Path
 
-    from deepagents_code.hooks.context import apply_hooks_context
-    from deepagents_code.hooks.runtime import HooksRuntime
+    from deepagents_code.approval_mode import ApprovalMode
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+    from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
+    from deepagents_code.hooks.models.domain import (
+        DcodeNotificationKind,
+        HookEvent,
+        SessionEndCause,
+        SessionStartCause,
+    )
+    from deepagents_code.hooks.trust import WorkspaceTrust
+
+    hook_owned_spinner = False
+
+    def present_hook_notice(
+        message: str,
+        severity: HookNoticeSeverity,
+    ) -> None:
+        style = (
+            "bold red"
+            if severity == "error"
+            else "yellow"
+            if severity == "warning"
+            else "dim"
+        )
+        console.print(Text(message, style=style), highlight=False)
+
+    def update_hook_status(message: str) -> None:
+        nonlocal hook_owned_spinner
+        if spinner is None:
+            return
+        if message:
+            if spinner.is_running:
+                spinner.update(message)
+            else:
+                spinner.start(message)
+                hook_owned_spinner = True
+        elif hook_owned_spinner:
+            spinner.stop()
+            hook_owned_spinner = False
+        elif spinner.is_running:
+            spinner.update("Working...")
+
+    hook_status = update_hook_status if spinner is not None else None
+    resolved_approval_mode = approval_mode or ApprovalMode.MANUAL
+    # One headless turn per process, so identity is fixed for the whole run.
+    identity = HookSessionIdentity(
+        thread_id=thread_id,
+        approval_mode=resolved_approval_mode,
+        prompt_id=prompt_id,
+    )
+    state.hooks = hooks or HooksManager.create(
+        cwd=Path.cwd(),
+        identity=lambda: identity,
+        # Project hooks require an explicit opt-in, matching `--trust-project-mcp`.
+        # Persisted interactive trust deliberately does not carry into headless
+        # runs, so CI never inherits a grant made at someone's terminal.
+        trust=WorkspaceTrust.explicit_only(Path.cwd(), granted=trust_project_hooks),
+    )
+    state.hooks.attach_output(notice=present_hook_notice, status=hook_status)
+    state.hooks.apply_graph_context(context)
+    context["approval_mode"] = resolved_approval_mode.value
+    context["auto_approve"] = resolved_approval_mode is ApprovalMode.YOLO
+    state.active_model = settings.model_name or None
+    state.transcript = state.hooks.recorder(thread_id)
+
+    start_outcome = await state.hooks.on_session_start(
+        SessionStartCause.STARTUP,
+        model=settings.model_name or None,
+    )
+    if not start_outcome.ok:
+        await _end_headless_session(state, SessionEndCause.OTHER)
+        raise ClientHookStopError(
+            start_outcome.stop_reason or "Session start stopped by hook"
+        )
+    session_context = state.hooks.take_pending_context()
+    if session_context:
+        stream_input["messages"].insert(
+            0,
+            {"role": "system", "content": "\n\n".join(session_context)},
+        )
 
     try:
-        # Project hooks require an explicit opt-in, matching `--trust-project-mcp`.
-        hooks_runtime = HooksRuntime.create(
-            cwd=Path.cwd(),
-            workspace_trusted=trust_project_hooks,
+        state.transcript.append([HumanMessage(content=message)])
+        if state.hooks.has_handlers(HookEvent.USER_PROMPT_SUBMIT):
+            prompt_outcome = await state.hooks.on_user_prompt(message)
+            if not prompt_outcome.ok:
+                _raise_client_hook_stop(
+                    prompt_outcome.stop_reason
+                    or "User prompt submission stopped by hook"
+                )
+            messages = stream_input["messages"]
+            if prompt_outcome.context:
+                messages.insert(
+                    len(messages) - 1,
+                    {
+                        "role": "system",
+                        "content": "\n\n".join(prompt_outcome.context),
+                    },
+                )
+            if prompt_outcome.suppress_original_prompt:
+                messages.pop()
+        else:
+            await dispatch_hook("session.start", {"thread_id": thread_id})
+            await dispatch_hook("user.prompt", {})
+    except BaseException:
+        await _end_headless_session(
+            state,
+            SessionEndCause.OTHER,
         )
-    except Exception:
-        logger.exception("Failed to create HooksRuntime; server hooks disabled")
-        hooks_runtime = None
-    apply_hooks_context(context, hooks_runtime)
-    state.hooks_runtime = hooks_runtime
-
-    await dispatch_hook("session.start", {"thread_id": thread_id})
+        raise
 
     start_time = time.monotonic()
 
@@ -1205,18 +1519,21 @@ async def _run_agent_loop(
                     "The agent may be stuck retrying rejected commands. "
                     "Increase --max-turns or break the task into smaller steps."
                 )
-                raise HITLIterationLimitError(msg)
+                _raise_hitl_iteration_limit(msg)
             turns += 1
             state.interrupt_occurred = False
             state.hitl_response.clear()
             state.hook_response.clear()
             await _fulfill_pending_hook_interrupts(state)
-            _process_hitl_interrupts(state, console)
+            await _process_hitl_interrupts(state, console)
             resume_payload = {**state.hook_response, **state.hitl_response}
             stream_input = Command(resume=resume_payload)
             await _stream_agent(
                 agent, stream_input, config, state, console, file_op_tracker, context
             )
+    except BaseException:
+        await _end_headless_session(state, SessionEndCause.OTHER)
+        raise
     finally:
         # Close out any `tool.use` with no matching `ToolMessage` — e.g. a stream
         # aborted by a provider error mid-tool. On a clean run every id was
@@ -1285,8 +1602,21 @@ async def _run_agent_loop(
         console.print("[green]✓ Task completed[/green]")
         print_usage_table(state.stats, wall_time, console)
 
-    await dispatch_hook("task.complete", {"thread_id": thread_id})
-    await dispatch_hook("session.end", {"thread_id": thread_id})
+    notification_stop: ClientHookStopError | None = None
+    try:
+        await state.hooks.notify(
+            DcodeNotificationKind.AGENT_COMPLETED,
+            "Agent completed",
+        )
+    except ClientHookStopError as exc:
+        notification_stop = exc
+    if not state.hooks.has_handlers(HookEvent.NOTIFICATION):
+        await dispatch_hook("task.complete", {"thread_id": thread_id})
+    await _end_headless_session(state, SessionEndCause.PROMPT_INPUT_EXIT)
+    if not state.hooks.has_handlers(HookEvent.SESSION_END):
+        await dispatch_hook("session.end", {"thread_id": thread_id})
+    if notification_stop is not None:
+        raise notification_stop
 
 
 def _build_non_interactive_header(
@@ -1678,6 +2008,13 @@ async def run_non_interactive(
             logger.warning("MCP metadata preload task creation failed", exc_info=True)
 
     try:
+        from pathlib import Path
+
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
+        from deepagents_code.hooks.models.domain import HookEvent
+        from deepagents_code.hooks.trust import WorkspaceTrust
+
         enable_shell = bool(settings.shell_allow_list)
         shell_is_unrestricted = isinstance(
             settings.shell_allow_list, type(SHELL_ALLOW_ALL)
@@ -1685,8 +2022,39 @@ async def run_non_interactive(
         # Currently, non-shell tools have no HITL handler in non-interactive
         # mode, so interrupting on them just fragments LangSmith traces
         # without adding value. Gate only shell execution via middleware.
-        use_auto_approve = not enable_shell or shell_is_unrestricted
-        use_interrupt_shell_only = enable_shell and not shell_is_unrestricted
+        requested_auto_approve = not enable_shell or shell_is_unrestricted
+        approval_mode = (
+            ApprovalMode.YOLO if requested_auto_approve else ApprovalMode.MANUAL
+        )
+
+        # One user turn per process: fresh turn id, turn_number 1. Built before
+        # the hooks manager so its session identity is fixed for the whole run.
+        from uuid import uuid4
+
+        from deepagents_code.config import build_stream_config
+
+        turn_id = uuid4()
+        identity = HookSessionIdentity(
+            thread_id=thread_id,
+            approval_mode=approval_mode,
+            prompt_id=turn_id,
+        )
+        hooks = HooksManager.create(
+            cwd=Path.cwd(),
+            identity=lambda: identity,
+            # Plain output until `_run_agent_loop` attaches the styled,
+            # spinner-aware sinks to this same presenter.
+            notice=_plain_hook_notice(console),
+            # Explicit opt-in only; see `_run_agent_loop` for the rationale.
+            trust=WorkspaceTrust.explicit_only(Path.cwd(), granted=trust_project_hooks),
+        )
+        # Permission hooks need every gated call to reach the client, so they
+        # override both middleware shortcuts that would skip HITL entirely.
+        has_permission_hooks = hooks.has_handlers(HookEvent.PERMISSION_REQUEST)
+        use_auto_approve = requested_auto_approve and not has_permission_hooks
+        use_interrupt_shell_only = (
+            enable_shell and not shell_is_unrestricted and not has_permission_hooks
+        )
         # Extract the concrete allow-list to forward to the server subprocess.
         # settings.shell_allow_list is already validated at this point.
         restrictive_allow_list: list[str] | None = (
@@ -1695,19 +2063,11 @@ async def run_non_interactive(
             else None
         )
 
-        # One user turn per process: fresh turn id, turn_number 1. Built here so
-        # the resolved `use_auto_approve` is stamped into the trace metadata
-        # (headless auto-approve means tools run without HITL because shell is
-        # unrestricted or disabled).
-        from uuid import uuid4
-
-        from deepagents_code.config import build_stream_config
-
         config: RunnableConfig = build_stream_config(
             thread_id,
             assistant_id,
             sandbox_type=sandbox_type,
-            turn_id=str(uuid4()),
+            turn_id=str(turn_id),
             turn_number=1,
             auto_approve=use_auto_approve,
         )
@@ -1774,6 +2134,9 @@ async def run_non_interactive(
                 rubric=rubric,
                 show_rubric_iterations=rubric_max_iterations is not None,
                 trust_project_hooks=trust_project_hooks,
+                hooks=hooks,
+                approval_mode=approval_mode,
+                prompt_id=turn_id,
             )
 
     except KeyboardInterrupt:

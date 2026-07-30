@@ -34,6 +34,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_core.tools import StructuredTool, tool
 from langgraph.channels import BinaryOperatorAggregate
+from langgraph.errors import GraphInterrupt
 from langgraph.graph import StateGraph
 from langgraph.runtime import ExecutionInfo
 from langgraph.types import Command
@@ -51,6 +52,8 @@ from deepagents_code.approval_mode import (
     approval_mode_key,
 )
 from deepagents_code.auto_mode import (
+    _MAX_EMITTED_EVENT_SCOPES,
+    _MAX_PENDING_EVENT_SCOPES,
     AUTO_MODE_COUNTERS_NAMESPACE,
     USER_PROMPT_METADATA_KEY,
     AutoDecision,
@@ -3536,6 +3539,529 @@ async def test_classifier_unavailable_emits_single_event_for_batch(
     ]
     assert len(unavailable_events) == 1
     assert unavailable_events[0]["reason"] == reason
+
+
+def _mixed_fallback_plan(key: str, ai_message: AIMessage) -> dict[str, Any]:
+    """Build a plan that blocks one call as unavailable and escalates the other."""
+    assert len(ai_message.tool_calls) == 2, "plan assumes a two-call batch"
+    unavailable_id, human_id = (call["id"] for call in ai_message.tool_calls)
+    return {
+        "batch_id": _batch_id(ai_message.tool_calls),
+        "thread_key": key,
+        "mode_at_proposal": "auto",
+        "phase": "planned",
+        "manual_gated_ids": [unavailable_id, human_id],
+        "decisions": [
+            {
+                "tool_call_id": unavailable_id,
+                "disposition": "classifier_unavailable",
+                "category": "other_policy",
+                "reason": "classifier did not respond within 1s",
+                "path": "classifier",
+            },
+            {
+                "tool_call_id": human_id,
+                "disposition": "require_human",
+                "category": "other_policy",
+                "reason": "Auto reached its human-fallback threshold.",
+                "path": "fallback",
+            },
+        ],
+        "pending_result_ids": [],
+        "processed_result_ids": [],
+        "counters_applied": True,
+        "fallback_reason": "classifier_unavailable",
+    }
+
+
+def _mixed_fallback_batch(suffix: str) -> AIMessage:
+    return AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "delete",
+                "args": {"file_path": "old.py"},
+                "id": f"call-{suffix}-1",
+                "type": "tool_call",
+            },
+            {
+                "name": "delete",
+                "args": {"file_path": "older.py"},
+                "id": f"call-{suffix}-2",
+                "type": "tool_call",
+            },
+        ],
+    )
+
+
+async def test_interrupt_replay_does_not_repeat_auto_events(tmp_path: Path) -> None:
+    middleware = _middleware(tmp_path)
+    ai_message = _mixed_fallback_batch("a")
+    key = approval_mode_key("thread-1")
+    store = _Store()
+    store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": "auto"})
+    counters = _default_counters(ApprovalMode.AUTO)
+    counters["consecutive_unavailable"] = 2
+    store.put(AUTO_MODE_COUNTERS_NAMESPACE, key, counters)
+    events: list[dict[str, Any]] = []
+    runtime = SimpleNamespace(
+        context={"approval_mode_key": key, "thread_id": "thread-1"},
+        store=store,
+        stream_writer=events.append,
+    )
+    state = cast(
+        "AgentState[Any]",
+        {
+            "messages": [ai_message],
+            "_auto_decision_plan": _mixed_fallback_plan(key, ai_message),
+        },
+    )
+
+    # Simulate the resume: answering the approval restarts the whole
+    # `aafter_model` node, so the second call replays every emission that
+    # precedes `interrupt()`. Patching `interrupt` to return rather than raise
+    # lets the first pass run past it, which real LangGraph would abandon; the
+    # emissions under test all happen before that point either way.
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}]},
+    ):
+        await middleware.aafter_model(state, cast("Runtime[Any]", runtime))
+        await middleware.aafter_model(state, cast("Runtime[Any]", runtime))
+
+    assert [event["event"] for event in events] == ["unavailable", "fallback"]
+    # The surviving pair is the first pass's payload, not a later re-render.
+    assert events[0]["reason"] == "classifier did not respond within 1s"
+    assert events[1]["consecutive_unavailable"] == 2
+
+
+@pytest.mark.parametrize("writer_failure", ["missing", "raises"])
+def test_failed_auto_event_emission_is_retried(
+    tmp_path: Path, writer_failure: str
+) -> None:
+    middleware = _middleware(tmp_path)
+    runtime = SimpleNamespace()
+    if writer_failure == "raises":
+
+        def fail(_event: object) -> None:
+            msg = "stream unavailable"
+            raise RuntimeError(msg)
+
+        runtime.stream_writer = fail
+    payload = {"event": "fallback", "reason": "control state unavailable"}
+
+    middleware._emit_event_once(
+        runtime,
+        scope="thread-1:batch-1",
+        key=("fallback", "call-1"),
+        payload=payload,
+    )
+    events: list[dict[str, Any]] = []
+    runtime.stream_writer = events.append
+    middleware._emit_event_once(
+        runtime,
+        scope="thread-1:batch-1",
+        key=("fallback", "call-1"),
+        payload=payload,
+    )
+    middleware._emit_event_once(
+        runtime,
+        scope="thread-1:batch-1",
+        key=("fallback", "call-1"),
+        payload=payload,
+    )
+
+    assert events == [{"type": "auto_mode", **payload}]
+
+
+async def test_pending_interrupt_scope_survives_completed_scope_eviction(
+    tmp_path: Path,
+) -> None:
+    middleware = _middleware(tmp_path)
+    ai_message = _mixed_fallback_batch("pending")
+    key = approval_mode_key("thread-1")
+    store = _Store()
+    store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": "auto"})
+    counters = _default_counters(ApprovalMode.AUTO)
+    counters["consecutive_unavailable"] = 2
+    store.put(AUTO_MODE_COUNTERS_NAMESPACE, key, counters)
+    events: list[dict[str, Any]] = []
+    runtime = SimpleNamespace(
+        context={"approval_mode_key": key, "thread_id": "thread-1"},
+        store=store,
+        stream_writer=events.append,
+    )
+    state = cast(
+        "AgentState[Any]",
+        {
+            "messages": [ai_message],
+            "_auto_decision_plan": _mixed_fallback_plan(key, ai_message),
+        },
+    )
+
+    with (
+        patch(
+            "deepagents_code.auto_mode.interrupt",
+            side_effect=GraphInterrupt(()),
+        ),
+        pytest.raises(GraphInterrupt),
+    ):
+        await middleware.aafter_model(state, cast("Runtime[Any]", runtime))
+
+    for index in range(9):
+        middleware._emit_event_once(
+            runtime,
+            scope=f"other-thread:batch-{index}",
+            key=("denial", str(index)),
+            payload={"event": "denial", "reason": str(index)},
+        )
+
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}]},
+    ):
+        await middleware.aafter_model(state, cast("Runtime[Any]", runtime))
+
+    original_events = [
+        event for event in events if event["event"] in {"unavailable", "fallback"}
+    ]
+    assert [event["event"] for event in original_events] == [
+        "unavailable",
+        "fallback",
+    ]
+
+
+async def test_auto_events_repeat_for_a_later_action_batch(tmp_path: Path) -> None:
+    middleware = _middleware(tmp_path)
+    key = approval_mode_key("thread-1")
+    store = _Store()
+    store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": "auto"})
+    counters = _default_counters(ApprovalMode.AUTO)
+    counters["consecutive_unavailable"] = 2
+    store.put(AUTO_MODE_COUNTERS_NAMESPACE, key, counters)
+    events: list[dict[str, Any]] = []
+    runtime = SimpleNamespace(
+        context={"approval_mode_key": key, "thread_id": "thread-1"},
+        store=store,
+        stream_writer=events.append,
+    )
+
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}]},
+    ):
+        for suffix in ("a", "b"):
+            ai_message = _mixed_fallback_batch(suffix)
+            await middleware.aafter_model(
+                cast(
+                    "AgentState[Any]",
+                    {
+                        "messages": [ai_message],
+                        "_auto_decision_plan": _mixed_fallback_plan(key, ai_message),
+                    },
+                ),
+                cast("Runtime[Any]", runtime),
+            )
+
+    assert [event["event"] for event in events] == [
+        "unavailable",
+        "fallback",
+        "unavailable",
+        "fallback",
+    ]
+
+
+def _all_human_plan(key: str, ai_message: AIMessage) -> dict[str, Any]:
+    """Build a plan that escalates every call in the batch to a human."""
+    return {
+        "batch_id": _batch_id(ai_message.tool_calls),
+        "thread_key": key,
+        "mode_at_proposal": "auto",
+        "phase": "planned",
+        "manual_gated_ids": [call["id"] for call in ai_message.tool_calls],
+        "decisions": [
+            {
+                "tool_call_id": call["id"],
+                "disposition": "require_human",
+                "category": "other_policy",
+                "reason": "Auto reached its human-fallback threshold.",
+                "path": "fallback",
+            }
+            for call in ai_message.tool_calls
+        ],
+        "pending_result_ids": [],
+        "processed_result_ids": [],
+        "counters_applied": True,
+        "fallback_reason": None,
+    }
+
+
+def _auto_runtime(
+    thread_id: str, events: list[dict[str, Any]], *, unavailable: int = 0
+) -> tuple[SimpleNamespace, _Store, str]:
+    """Build a runtime whose thread is in Auto with a readable control record."""
+    key = approval_mode_key(thread_id)
+    store = _Store()
+    store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": "auto"})
+    counters = _default_counters(ApprovalMode.AUTO)
+    counters["consecutive_unavailable"] = unavailable
+    store.put(AUTO_MODE_COUNTERS_NAMESPACE, key, counters)
+    runtime = SimpleNamespace(
+        context={"approval_mode_key": key, "thread_id": thread_id},
+        store=store,
+        stream_writer=events.append,
+    )
+    return runtime, store, key
+
+
+async def test_manual_fallback_event_survives_an_earlier_threshold_notice(
+    tmp_path: Path,
+) -> None:
+    """A `mode: manual` fallback must not be dropped as a duplicate.
+
+    The client switches its own approval mode on that event, so suppressing it
+    leaves the UI showing Auto while the server has fallen back to Manual.
+    """
+    middleware = _middleware(tmp_path)
+    ai_message = _mixed_fallback_batch("mode")
+    events: list[dict[str, Any]] = []
+    runtime, store, key = _auto_runtime("thread-1", events)
+    state = cast(
+        "AgentState[Any]",
+        {
+            "messages": [ai_message],
+            "_auto_decision_plan": _all_human_plan(key, ai_message),
+        },
+    )
+
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}, {"type": "approve"}]},
+    ):
+        await middleware.aafter_model(state, cast("Runtime[Any]", runtime))
+        # The control record becomes unreadable while the human deliberates, so
+        # the replay of this same batch has to escalate to Manual.
+        store.items.pop((APPROVAL_MODE_NAMESPACE, key))
+        await middleware.aafter_model(state, cast("Runtime[Any]", runtime))
+
+    assert [event.get("mode") for event in events] == [None, "manual"]
+
+
+async def test_auto_events_are_scoped_per_thread(tmp_path: Path) -> None:
+    """Two threads proposing identical tool-call IDs must both be notified."""
+    middleware = _middleware(tmp_path)
+    emitted: dict[str, list[str]] = {}
+    for thread_id in ("thread-1", "thread-2"):
+        ai_message = _mixed_fallback_batch("same")
+        events: list[dict[str, Any]] = []
+        runtime, _store, key = _auto_runtime(thread_id, events, unavailable=2)
+        with patch(
+            "deepagents_code.auto_mode.interrupt",
+            return_value={"decisions": [{"type": "approve"}]},
+        ):
+            await middleware.aafter_model(
+                cast(
+                    "AgentState[Any]",
+                    {
+                        "messages": [ai_message],
+                        "_auto_decision_plan": _mixed_fallback_plan(key, ai_message),
+                    },
+                ),
+                cast("Runtime[Any]", runtime),
+            )
+        emitted[thread_id] = [event["event"] for event in events]
+
+    assert emitted == {
+        "thread-1": ["unavailable", "fallback"],
+        "thread-2": ["unavailable", "fallback"],
+    }
+
+
+async def test_untrusted_thread_key_does_not_cross_suppress(tmp_path: Path) -> None:
+    """Runtimes with a degraded thread key must not silence each other.
+
+    Losing this event is worse than repeating it: it is the line that explains
+    why approval is suddenly required.
+    """
+    middleware = _middleware(tmp_path)
+    emitted: list[list[str]] = []
+    for thread_id in ("thread-1", "thread-2"):
+        ai_message = _mixed_fallback_batch("same")
+        events: list[dict[str, Any]] = []
+        runtime = SimpleNamespace(
+            # The key belongs to another thread, so `_thread_key` refuses it.
+            context={
+                "approval_mode_key": approval_mode_key("other-thread"),
+                "thread_id": thread_id,
+                "approval_mode": "auto",
+            },
+            store=_Store(),
+            stream_writer=events.append,
+        )
+        with patch(
+            "deepagents_code.auto_mode.interrupt",
+            return_value={"decisions": [{"type": "approve"}, {"type": "approve"}]},
+        ):
+            await middleware.aafter_model(
+                cast(
+                    "AgentState[Any]",
+                    {"messages": [ai_message], "_auto_decision_plan": None},
+                ),
+                cast("Runtime[Any]", runtime),
+            )
+        emitted.append([event["event"] for event in events])
+
+    assert emitted == [["fallback"], ["fallback"]]
+
+
+async def test_abandoned_approval_scopes_stay_bounded(tmp_path: Path) -> None:
+    """Approvals the user never answers must not pin the ledger forever."""
+    middleware = _middleware(tmp_path)
+    events: list[dict[str, Any]] = []
+    runtime, _store, key = _auto_runtime("thread-1", events, unavailable=2)
+
+    with patch("deepagents_code.auto_mode.interrupt", side_effect=GraphInterrupt(())):
+        for index in range(_MAX_PENDING_EVENT_SCOPES + 5):
+            ai_message = _mixed_fallback_batch(f"abandoned-{index}")
+            with pytest.raises(GraphInterrupt):
+                await middleware.aafter_model(
+                    cast(
+                        "AgentState[Any]",
+                        {
+                            "messages": [ai_message],
+                            "_auto_decision_plan": _mixed_fallback_plan(
+                                key, ai_message
+                            ),
+                        },
+                    ),
+                    cast("Runtime[Any]", runtime),
+                )
+
+    assert len(middleware._pending_event_scopes) == _MAX_PENDING_EVENT_SCOPES
+    assert (
+        len(middleware._emitted_events)
+        <= _MAX_PENDING_EVENT_SCOPES + _MAX_EMITTED_EVENT_SCOPES
+    )
+
+
+async def test_malformed_human_response_unpins_its_scope(tmp_path: Path) -> None:
+    """A rejected approval response must release its pin, not leak it."""
+    middleware = _middleware(tmp_path)
+    ai_message = _mixed_fallback_batch("malformed")
+    events: list[dict[str, Any]] = []
+    runtime, _store, key = _auto_runtime("thread-1", events, unavailable=2)
+
+    with (
+        patch(
+            "deepagents_code.auto_mode.interrupt",
+            return_value={"decisions": []},
+        ),
+        pytest.raises(ValueError, match="decision count"),
+    ):
+        await middleware.aafter_model(
+            cast(
+                "AgentState[Any]",
+                {
+                    "messages": [ai_message],
+                    "_auto_decision_plan": _mixed_fallback_plan(key, ai_message),
+                },
+            ),
+            cast("Runtime[Any]", runtime),
+        )
+
+    assert not middleware._pending_event_scopes
+
+
+def _two_reason_denial_plan(key: str, ai_message: AIMessage) -> dict[str, Any]:
+    """Build a plan denying both calls of a batch for different reasons."""
+    assert len(ai_message.tool_calls) == 2, "plan assumes a two-call batch"
+    first_id, second_id = (call["id"] for call in ai_message.tool_calls)
+    return {
+        "batch_id": _batch_id(ai_message.tool_calls),
+        "thread_key": key,
+        "mode_at_proposal": "auto",
+        "phase": "planned",
+        # Every gated call must appear here; the denials below mean none of them
+        # reaches a human, so the batch never interrupts.
+        "manual_gated_ids": [first_id, second_id],
+        "decisions": [
+            {
+                "tool_call_id": first_id,
+                "disposition": "policy_deny",
+                "category": "other_policy",
+                "reason": "deletes tracked history",
+                "path": "classifier",
+            },
+            {
+                "tool_call_id": second_id,
+                "disposition": "policy_deny",
+                "category": "other_policy",
+                "reason": "escapes the worktree",
+                "path": "classifier",
+            },
+        ],
+        "pending_result_ids": [],
+        "processed_result_ids": [],
+        "counters_applied": True,
+        "fallback_reason": None,
+    }
+
+
+async def test_distinct_denial_reasons_each_emit_an_event(tmp_path: Path) -> None:
+    """Coalescing is per reason, so two distinct denials stay two events."""
+    middleware = _middleware(tmp_path)
+    ai_message = _mixed_fallback_batch("reasons")
+    events: list[dict[str, Any]] = []
+    runtime, _store, key = _auto_runtime("thread-1", events)
+
+    await middleware.aafter_model(
+        cast(
+            "AgentState[Any]",
+            {
+                "messages": [ai_message],
+                "_auto_decision_plan": _two_reason_denial_plan(key, ai_message),
+            },
+        ),
+        cast("Runtime[Any]", runtime),
+    )
+
+    assert [event["reason"] for event in events] == [
+        "deletes tracked history",
+        "escapes the worktree",
+    ]
+    # The event stands for the whole batch, so it names no single tool.
+    assert all("tool_name" not in event for event in events)
+
+
+def test_resolved_scopes_evict_least_recently_used(tmp_path: Path) -> None:
+    """Recency, not insertion order, decides which resolved scope is dropped."""
+    middleware = _middleware(tmp_path)
+    events: list[dict[str, Any]] = []
+    runtime = SimpleNamespace(stream_writer=events.append)
+    for index in range(_MAX_EMITTED_EVENT_SCOPES):
+        middleware._emit_event_once(
+            runtime,
+            scope=f"scope-{index}",
+            key=("denial", "first"),
+            payload={"event": "denial", "reason": "first"},
+        )
+    # Touch the oldest scope so it is no longer the eviction candidate.
+    middleware._emit_event_once(
+        runtime,
+        scope="scope-0",
+        key=("denial", "second"),
+        payload={"event": "denial", "reason": "second"},
+    )
+    middleware._emit_event_once(
+        runtime,
+        scope="scope-new",
+        key=("denial", "first"),
+        payload={"event": "denial", "reason": "first"},
+    )
+
+    assert len(middleware._emitted_events) == _MAX_EMITTED_EVENT_SCOPES
+    assert "scope-0" in middleware._emitted_events
+    assert "scope-1" not in middleware._emitted_events
 
 
 async def test_headless_guard_rejects_gated_mcp_without_execution() -> None:

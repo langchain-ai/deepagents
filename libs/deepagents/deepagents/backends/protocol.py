@@ -789,6 +789,13 @@ class ExecuteOffloadResult:
     response: ExecuteResponse
     """The command result. `response.truncated` indicates the output hit the size cap."""
 
+    preview_lines_omitted: bool = False
+    """Whether the returned preview dropped lines between its head and tail.
+
+    Only meaningful when `offloaded` is `True`. Reported by the capture wrapper
+    itself so callers never have to infer it from the previewed output.
+    """
+
 
 class SandboxBackendProtocol(BackendProtocol):
     """Extension of `BackendProtocol` that adds shell command execution.

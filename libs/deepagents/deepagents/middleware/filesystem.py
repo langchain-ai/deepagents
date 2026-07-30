@@ -1294,11 +1294,11 @@ def _build_truncated_human_message(message: HumanMessage, file_path: str) -> Hum
         A new HumanMessage with truncated content and the same `id`.
     """
     content_str = _extract_text_from_message(message)
-    content_sample = _create_content_preview(content_str)
+    preview = _create_content_preview(content_str)
     replacement_text = TOO_LARGE_HUMAN_MSG.format(
         file_path=file_path,
-        preview_note=_preview_note(content_sample, subject="content"),
-        content_sample=content_sample,
+        preview_note=_preview_note(lines_omitted=preview.lines_omitted, subject="content"),
+        content_sample=preview.text,
     )
     evicted = _build_evicted_human_content(message, replacement_text)
     return message.model_copy(update={"content": evicted})
@@ -2549,7 +2549,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         return TOO_LARGE_TOOL_MSG.format(
             tool_call_id=tool_call_id,
             file_path=capture_path,
-            preview_note=_preview_note(content_sample),
+            preview_note=_preview_note(lines_omitted=offload.preview_lines_omitted),
             content_sample=content_sample,
         )
 

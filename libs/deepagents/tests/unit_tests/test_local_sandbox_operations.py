@@ -1609,6 +1609,10 @@ class TestLocalSandboxOperations:
 # 5000 of these lines (~250 KB) clear the default eviction budget (~80 KB).
 _BIG_OUTPUT_CMD = 'for i in $(seq 1 5000); do echo "line $i: padding text to make the output long enough to offload"; done'
 
+# ~120 KB spread over only 3 lines: clears the eviction budget without giving the
+# wrapper enough lines to drop any between the preview's head and tail.
+_FEW_LONG_LINES_CMD = "for i in 1 2 3; do printf 'line %s: ' \"$i\"; head -c 40000 /dev/zero | tr '\\0' x; echo; done"
+
 
 class TestExecuteCaptureOffload:
     """End-to-end capture-at-source offload via the execute tool on a real shell.
@@ -1681,6 +1685,26 @@ class TestExecuteCaptureOffload:
         # slice the preview never showed is present on disk.
         read = read_tool.invoke({"file_path": capture_path, "offset": 2499, "limit": 3, "runtime": rt})
         assert "line 2500:" in read.content
+
+    def test_offloaded_preview_reports_omitted_lines(self, sandbox: LocalSubprocessSandbox) -> None:
+        sandbox.enable_capture_offload = True
+        offload = sandbox.execute_with_offload(_BIG_OUTPUT_CMD, self._capture_path("c_omit"), max_inline_bytes=100)
+
+        assert offload.offloaded is True
+        assert offload.preview_lines_omitted is True
+
+    def test_offloaded_preview_reports_no_omitted_lines_for_few_long_lines(self, tools: tuple, sandbox: LocalSubprocessSandbox) -> None:
+        sandbox.enable_capture_offload = True
+        offload = sandbox.execute_with_offload(_FEW_LONG_LINES_CMD, self._capture_path("c_few"), max_inline_bytes=100)
+
+        assert offload.offloaded is True
+        assert offload.preview_lines_omitted is False
+
+        # The tool message therefore drops the head/tail truncation-marker explanation.
+        execute_tool, _ = tools
+        result = execute_tool.invoke({"command": _FEW_LONG_LINES_CMD, "runtime": self._runtime("c_few_tool")})
+        assert "Here is a preview of the result:" in result.content
+        assert "lines of the form" not in result.content
 
     def test_nonzero_exit_code_preserved(self, tools: tuple) -> None:
         execute_tool, _ = tools

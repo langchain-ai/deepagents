@@ -3087,46 +3087,48 @@ class TestFilesystemMiddleware:
 
         preview = _create_content_preview(content_str)
 
+        assert preview.lines_omitted is should_truncate
         if should_truncate:
             # Should have truncation notice
-            assert "truncated" in preview
+            assert "truncated" in preview.text
             # Should have head lines (0-4)
-            assert "line 0" in preview
-            assert "line 4" in preview
+            assert "line 0" in preview.text
+            assert "line 4" in preview.text
             # Should have tail lines
-            assert f"line {num_lines - 5}" in preview
-            assert f"line {num_lines - 1}" in preview
+            assert f"line {num_lines - 5}" in preview.text
+            assert f"line {num_lines - 1}" in preview.text
             # Should NOT have middle lines
             if num_lines > 11:
-                assert "line 5" not in preview
-                assert f"line {num_lines - 6}" not in preview
+                assert "line 5" not in preview.text
+                assert f"line {num_lines - 6}" not in preview.text
         else:
             # Should NOT have truncation notice
-            assert "truncated" not in preview
+            assert "truncated" not in preview.text
             # Should have all lines
             for i in range(num_lines):
-                assert f"line {i}" in preview
+                assert f"line {i}" in preview.text
 
 
 class TestPreviewNote:
-    def test_explains_marker_when_preview_is_truncated(self):
-        preview = _create_content_preview("\n".join(f"line {i}" for i in range(20)))
-        note = _preview_note(preview)
-        assert note == (
+    def test_explains_marker_when_preview_omits_lines(self):
+        assert _preview_note(lines_omitted=True) == (
             "Here is a preview showing the head and tail of the result "
             "(lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):"
         )
 
     def test_omits_marker_explanation_when_nothing_omitted(self):
-        preview = _create_content_preview("\n".join(f"line {i}" for i in range(3)))
-        assert _preview_note(preview) == "Here is a preview of the result:"
+        assert _preview_note(lines_omitted=False) == "Here is a preview of the result:"
 
     def test_custom_subject(self):
-        assert _preview_note("line 1", subject="content") == "Here is a preview of the content:"
+        assert _preview_note(lines_omitted=False, subject="content") == "Here is a preview of the content:"
 
-    def test_matches_sandbox_capture_marker(self):
-        note = _preview_note("head\n... [42 lines truncated] ...\ntail")
-        assert "lines of the form" in note
+    def test_literal_marker_in_content_does_not_claim_omission(self):
+        """Content that literally contains a marker is not mistaken for a truncated preview."""
+        content = "header\n... [42 lines truncated] ...\nfooter"
+        preview = _create_content_preview(content)
+
+        assert preview.lines_omitted is False
+        assert _preview_note(lines_omitted=preview.lines_omitted) == "Here is a preview of the result:"
 
     def test_offloaded_tool_message_omits_marker_explanation_for_short_content(self):
         backend, _ = _make_backend()

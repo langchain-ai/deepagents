@@ -11,8 +11,7 @@ Used by:
 
 from __future__ import annotations
 
-import re
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 from langchain_core.messages import BaseMessage, ToolMessage
 
@@ -34,34 +33,42 @@ You can do this by specifying an offset and limit in the read_file tool call. Fo
 {content_sample}
 """
 
-_TRUNCATION_MARKER_TEMPLATE = "... [{omitted_lines} lines truncated] ..."
+TRUNCATION_MARKER_TEMPLATE = "... [{omitted_lines} lines truncated] ..."
 """Marker inserted between the head and tail of a preview when lines are omitted."""
-
-_TRUNCATION_MARKER_PATTERN = re.compile(r"\.\.\. \[\d+ lines truncated\] \.\.\.")
-"""Matches `_TRUNCATION_MARKER_TEMPLATE`, including markers emitted by the sandbox capture wrapper."""
 
 _PREVIEW_NOTE = "Here is a preview of the {subject}:"
 _PREVIEW_NOTE_WITH_MARKERS = "Here is a preview showing the head and tail of the {subject} (lines of the form `... [N lines truncated] ...` indicate omitted lines in the middle of the content):"
 
 
-def _preview_note(content_sample: str, *, subject: str = "result") -> str:
-    """Build the sentence introducing `content_sample`.
+class ContentPreview(NamedTuple):
+    """A rendered preview plus whether the producer omitted lines from its middle.
 
-    The head/tail wording and the truncation-marker explanation are only
-    included when `content_sample` actually contains a truncation marker.
+    `lines_omitted` is reported by whoever built `text`, so the marker
+    explanation is never inferred from the previewed content itself -- content
+    that happens to contain a literal `... [N lines truncated] ...` line cannot
+    masquerade as an inserted marker.
+    """
+
+    text: str
+    lines_omitted: bool
+
+
+def _preview_note(*, lines_omitted: bool, subject: str = "result") -> str:
+    """Build the sentence introducing a preview.
 
     Args:
-        content_sample: The rendered preview the note will introduce.
+        lines_omitted: Whether the preview omits lines behind a truncation marker.
         subject: Noun describing what is being previewed, e.g. `result`.
 
     Returns:
-        A single-sentence note ending in a colon.
+        A single-sentence note ending in a colon. The head/tail wording and the
+        truncation-marker explanation are included only when `lines_omitted`.
     """
-    template = _PREVIEW_NOTE_WITH_MARKERS if _TRUNCATION_MARKER_PATTERN.search(content_sample) else _PREVIEW_NOTE
+    template = _PREVIEW_NOTE_WITH_MARKERS if lines_omitted else _PREVIEW_NOTE
     return template.format(subject=subject)
 
 
-def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines: int = 5) -> str:
+def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines: int = 5) -> ContentPreview:
     """Create a preview of content showing head and tail with truncation marker.
 
     Args:
@@ -70,25 +77,25 @@ def _create_content_preview(content_str: str, *, head_lines: int = 5, tail_lines
         tail_lines: Number of lines to show from the end.
 
     Returns:
-        Formatted preview string with line numbers.
+        The formatted preview with line numbers, and whether lines were omitted.
     """
     lines = content_str.splitlines()
 
     if len(lines) <= head_lines + tail_lines:
         # If file is small enough, show all lines
         preview_lines = [line[:1000] for line in lines]
-        return format_content_with_line_numbers(preview_lines, start_line=1)
+        return ContentPreview(format_content_with_line_numbers(preview_lines, start_line=1), lines_omitted=False)
 
     # Show head and tail with truncation marker
     head = [line[:1000] for line in lines[:head_lines]]
     tail = [line[:1000] for line in lines[-tail_lines:]]
 
     head_sample = format_content_with_line_numbers(head, start_line=1)
-    marker = _TRUNCATION_MARKER_TEMPLATE.format(omitted_lines=len(lines) - head_lines - tail_lines)
+    marker = TRUNCATION_MARKER_TEMPLATE.format(omitted_lines=len(lines) - head_lines - tail_lines)
     truncation_notice = f"\n{marker}\n"
     tail_sample = format_content_with_line_numbers(tail, start_line=len(lines) - tail_lines + 1)
 
-    return head_sample + truncation_notice + tail_sample
+    return ContentPreview(head_sample + truncation_notice + tail_sample, lines_omitted=True)
 
 
 def _extract_text_from_message(message: BaseMessage) -> str:
@@ -162,12 +169,12 @@ def _offload_tool_message_content(
     result = backend.write(file_path, content_str)
     if result is None or result.error:
         return None
-    content_sample = _create_content_preview(content_str)
+    preview = _create_content_preview(content_str)
     replacement_text = TOO_LARGE_TOOL_MSG.format(
         tool_call_id=message.tool_call_id,
         file_path=file_path,
-        preview_note=_preview_note(content_sample),
-        content_sample=content_sample,
+        preview_note=_preview_note(lines_omitted=preview.lines_omitted),
+        content_sample=preview.text,
     )
     return _build_evicted_tool_message(message, _build_evicted_content(message, replacement_text))
 
@@ -184,11 +191,11 @@ async def _aoffload_tool_message_content(
     result = await backend.awrite(file_path, content_str)
     if result is None or result.error:
         return None
-    content_sample = _create_content_preview(content_str)
+    preview = _create_content_preview(content_str)
     replacement_text = TOO_LARGE_TOOL_MSG.format(
         tool_call_id=message.tool_call_id,
         file_path=file_path,
-        preview_note=_preview_note(content_sample),
-        content_sample=content_sample,
+        preview_note=_preview_note(lines_omitted=preview.lines_omitted),
+        content_sample=preview.text,
     )
     return _build_evicted_tool_message(message, _build_evicted_content(message, replacement_text))

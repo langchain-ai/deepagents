@@ -808,7 +808,10 @@ def _build_edit_tmpfile_cmd(file_path: str, old_tmp: str, new_tmp: str, *, repla
 
 
 _EXECUTE_CAPTURE_SENTINEL: Final = "__DEEPAGENTS_EXEC_META__"
-"""First-line marker identifying capture-wrapper output: `<sentinel> <exit_code> <offloaded> <capped>`."""
+"""First-line marker identifying capture-wrapper output: `<sentinel> <exit_code> <offloaded> <capped> <omitted_lines>`."""
+
+_EXECUTE_CAPTURE_META_FIELDS: Final = 5
+"""Number of space-separated fields on the capture wrapper's meta line."""
 
 _EXECUTE_CAPTURE_HEAD_LINES: Final = 5
 _EXECUTE_CAPTURE_TAIL_LINES: Final = 5
@@ -857,14 +860,14 @@ __da_bytes=$(wc -c < "$__da_f" 2>/dev/null | tr -d ' ')
 __da_capped=0
 [ "$__da_bytes" -ge __MAXBYTES__ ] && __da_capped=1
 if [ "$__da_bytes" -le __BUDGET__ ]; then
-  printf '%s %s %s %s\\n' '__SENTINEL__' "$__da_ec" 0 0
+  printf '%s %s %s %s %s\\n' '__SENTINEL__' "$__da_ec" 0 0 0
   cat "$__da_f"
   rm -f "$__da_f"
 else
   __da_lines=$(wc -l < "$__da_f" 2>/dev/null | tr -d ' ')
   : "${__da_lines:=0}"
   __da_omitted=$((__da_lines - __HEADLINES__ - __TAILLINES__))
-  printf '%s %s %s %s\\n' '__SENTINEL__' "$__da_ec" 1 "$__da_capped"
+  printf '%s %s %s %s %s\\n' '__SENTINEL__' "$__da_ec" 1 "$__da_capped" "$__da_omitted"
   if [ "$__da_omitted" -gt 0 ]; then
     head -c __HEAD__ "$__da_f" | head -n __HEADLINES__
     printf '... [%s lines truncated] ...\\n' "$__da_omitted"
@@ -919,13 +922,17 @@ def _parse_capture_execute_output(output: str, *, backend_truncated: bool = Fals
 
     The wrapper emits a meta line followed by the body:
 
-        <sentinel> <exit_code> <offloaded> <capped>\n<inline output or preview>
+        <sentinel> <exit_code> <offloaded> <capped> <omitted_lines>\n<inline output or preview>
 
-    i.e. four space-separated fields on the first line — the sentinel, the
+    i.e. five space-separated fields on the first line — the sentinel, the
     command's exit code, `1`/`0` for whether output was offloaded to the capture
-    file, and `1`/`0` for whether it hit the size cap — then everything after the
-    first newline is the body (full output when inline, head/tail preview when
-    offloaded).
+    file, `1`/`0` for whether it hit the size cap, and how many lines the preview
+    dropped between its head and tail — then everything after the first newline
+    is the body (full output when inline, head/tail preview when offloaded).
+
+    `omitted_lines` is reported by the wrapper rather than inferred from the
+    body, so command output that happens to contain a literal
+    `... [N lines truncated] ...` line is never mistaken for an inserted marker.
 
     Falls back to `offloaded=False` with the raw output when the meta line is
     absent or malformed — e.g. if the backend truncated transport; the caller
@@ -935,17 +942,19 @@ def _parse_capture_execute_output(output: str, *, backend_truncated: bool = Fals
     """
     first, _, body = output.partition("\n")
     parts = first.split(" ")
-    # Expect exactly the four meta fields described above; anything else is not
-    # our wrapper's output, so fall back to returning it verbatim.
-    if len(parts) != 4 or parts[0] != _EXECUTE_CAPTURE_SENTINEL:  # noqa: PLR2004
+    # Expect exactly the meta fields described above; anything else is not our
+    # wrapper's output, so fall back to returning it verbatim.
+    if len(parts) != _EXECUTE_CAPTURE_META_FIELDS or parts[0] != _EXECUTE_CAPTURE_SENTINEL:
         return ExecuteOffloadResult(offloaded=False, response=ExecuteResponse(output=output, truncated=backend_truncated))
     try:
         exit_code = int(parts[1])
+        omitted_lines = int(parts[4])
     except ValueError:
         return ExecuteOffloadResult(offloaded=False, response=ExecuteResponse(output=output, truncated=backend_truncated))
     return ExecuteOffloadResult(
         offloaded=parts[2] == "1",
         response=ExecuteResponse(output=body, exit_code=exit_code, truncated=parts[3] == "1" or backend_truncated),
+        preview_lines_omitted=omitted_lines > 0,
     )
 
 

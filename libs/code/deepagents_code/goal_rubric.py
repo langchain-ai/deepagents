@@ -102,6 +102,16 @@ requirements unless the goal explicitly requests or clearly requires them. Descr
 observable results rather than how to implement them. Do not start implementing the
 goal.
 
+Resolving what the objective refers to is not inventing requirements. When the
+objective is too underspecified to judge on its own — a bare "do it", "fix it", or a
+pointer to earlier discussion — determine which specific work it refers to from the
+conversation context and write criteria for that work, naming the files, commands,
+behavior, or deliverables involved. Never return a criterion that only restates the
+objective or asserts completion in the abstract: a bullet such as "the requested work
+is completed as specified" carries no information and is never acceptable. If the
+referent cannot be determined, draft the most specific criteria the available context
+supports.
+
 Read-only repository tools, `fetch_url`, `web_search`, and configured MCP tools may
 be available. Use `web_search` only when external or current information is needed
 to make an explicitly referenced goal concrete, and never use search to invent
@@ -1131,8 +1141,10 @@ def _prompt_with_conversation_context(
     return (
         f"{prompt}\n\n<conversation_context>\n"
         "The messages below are background context only. The explicit goal "
-        "operation above is authoritative; do not infer additional requirements "
-        "from this context.\n"
+        "operation above is authoritative. Use this context to resolve what an "
+        "underspecified objective refers to, then write criteria for that resolved "
+        "work. Do not treat the context as a source of additional requirements: work "
+        "it discusses that the objective does not ask for stays out of the criteria.\n"
         f"{context}\n"
         "</conversation_context>"
     )

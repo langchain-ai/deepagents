@@ -1591,6 +1591,35 @@ def option_keys() -> tuple[str, ...]:
     return tuple(opt.key for opt in get_config_options())
 
 
+def options_with_key_prefix(prefix: str) -> tuple[ConfigOption, ...]:
+    """Return every option whose key sits under the dotted `prefix` section.
+
+    Matching is exact on segment boundaries: `credentials` matches
+    `credentials.openai` but `credential` matches nothing, so `config get` can
+    accept a section name without also accepting truncated guesses.
+
+    Matching is case-insensitive, and key prefixes are the only section
+    namespace: display group titles (`Credentials`, `Tools`) are not accepted,
+    since several headings (`Models`, `Tools`) name a different set of options
+    than the same word as a prefix — one namespace keeps a section unambiguous.
+
+    Args:
+        prefix: Dotted key prefix (e.g. `credentials`). A trailing dot is not
+            stripped here — `credentials.` matches nothing, since it would look
+            for keys under `credentials..`. Callers that accept user input
+            should strip it first.
+
+    Returns:
+        Matching options in manifest order; empty when no key uses `prefix`.
+    """
+    if not prefix:
+        return ()
+    section = f"{prefix.casefold()}."
+    return tuple(
+        opt for opt in get_config_options() if opt.key.casefold().startswith(section)
+    )
+
+
 @lru_cache(maxsize=1)
 def _options_by_key() -> dict[str, ConfigOption]:
     return {opt.key: opt for opt in get_config_options()}

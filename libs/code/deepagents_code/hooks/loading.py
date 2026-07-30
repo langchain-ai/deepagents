@@ -6,10 +6,11 @@ Precedence (highest first, earlier in reduction order):
 2. User: `~/.deepagents/hooks.json` (or `config_dir/hooks.json` in tests)
 3. Plugin: `hooks.json` documents contributed by enabled plugins
 
-Sources are concatenated per event. Project groups precede user groups so a
-project `continue: false` wins before lower-precedence handlers run, and
-third-party plugin groups run last so a user's own configuration can preempt
-them.
+Sources are concatenated per event. Precedence is reduction order, not
+execution order: every matching handler runs, and the first one that stops
+processing decides the event. Project groups precede user groups, and
+third-party plugin groups come last, so a user's own configuration decides an
+event over a plugin's.
 
 Legacy list-shaped documents are migrated only for events whose lifecycle
 semantics genuinely match Hooks v2.
@@ -23,6 +24,8 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
 
@@ -38,6 +41,9 @@ from deepagents_code.hooks.models.config import (
 from deepagents_code.hooks.models.domain import HookDiagnostic, HookEvent
 from deepagents_code.model_config import DEFAULT_CONFIG_DIR
 
+if TYPE_CHECKING:
+    from deepagents_code.json_types import JsonValue
+
 logger = logging.getLogger(__name__)
 _LEGACY_HOOKS_REMOVAL_DATE = "September 1, 2026"
 
@@ -49,17 +55,28 @@ class HooksSource:
     Attributes:
         location: Path of the document the groups were read from, used to locate
             diagnostics.
-        origin: Stable identity of a source whose authority is not its path,
-            currently a plugin id. `None` for the project and user files. Unlike
-            `location` it is portable across machines, so it is what the snapshot
-            hash records.
+        plugin_id: Identity of the plugin that contributed the groups, or `None`
+            for the project and user files. Unlike `location` it is portable
+            across machines, so it is what the snapshot hash records.
         env: Environment overlay applied to every handler from this source, on
-            top of the sanitized process environment.
+            top of the sanitized process environment. Only a plugin source may
+            carry one, so two sources that hash alike also execute alike.
     """
 
     location: str
-    origin: str | None = None
+    plugin_id: str | None = None
     env: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Enforce the plugin-only environment invariant and freeze the overlay.
+
+        Raises:
+            ValueError: If an environment overlay is supplied without a plugin.
+        """
+        if self.env and self.plugin_id is None:
+            msg = "Only a plugin hooks source may carry an environment overlay"
+            raise ValueError(msg)
+        object.__setattr__(self, "env", MappingProxyType(dict(self.env)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +137,8 @@ def load_hooks_config(
     workspace_trusted: bool,
     config_dir: Path | None = None,
     paths: Sequence[Path] | None = None,
-    documents: Sequence[tuple[HooksSource, Mapping[str, object]]] = (),
+    documents: Sequence[tuple[HooksSource, object]] = (),
+    document_diagnostics: Sequence[HookDiagnostic] = (),
 ) -> LoadedHooksConfig:
     """Load, validate, merge, and hash Hooks v2 configuration.
 
@@ -133,13 +151,17 @@ def load_hooks_config(
             followed by user hooks.
         documents: Already-decoded documents with their provenance, merged after
             every file source so they hold the least authority. Used for plugin
-            hooks, which are not read from a configuration path.
+            hooks, which are not read from a configuration path. Each is
+            validated here, so a malformed one is reported rather than dropped.
+        document_diagnostics: Diagnostics the caller collected while producing
+            `documents`, carried into the load result so they reach the user
+            through the same presenter as file diagnostics.
 
     Returns:
         Frozen load result with canonical `snapshot_id` and explicit project
         source provenance.
     """
-    diagnostics: list[HookDiagnostic] = []
+    diagnostics: list[HookDiagnostic] = list(document_diagnostics)
     merged: dict[HookEvent, list[SourcedGroup]] = {}
     loaded_paths: list[Path] = []
     project_source_loaded = False
@@ -288,21 +310,34 @@ def _canonical_group(
     matcher = raw.get("matcher")
     if matcher is not None:
         result["matcher"] = matcher
-    if source is not None and source.origin is not None:
-        result["origin"] = source.origin
+    if source is not None and source.plugin_id is not None:
+        result["origin"] = source.plugin_id
         if source.env:
             result["env"] = dict(sorted(source.env.items()))
     return result
 
 
-def _read_hooks_document(
-    path: Path,
-) -> tuple[HooksConfig | None, tuple[HookDiagnostic, ...]]:
+def read_hooks_json(path: Path) -> tuple[JsonValue, tuple[HookDiagnostic, ...]]:
+    """Decode one hooks JSON document, reporting read failures as diagnostics.
+
+    Shared by the project/user file loader and by callers that must transform a
+    document before it is validated, so every hooks document on disk reports
+    unreadable bytes, invalid UTF-8, and malformed JSON the same way instead of
+    raising into an unrelated caller.
+
+    Args:
+        path: Document path.
+
+    Returns:
+        The decoded JSON value and any read diagnostics. The value is `None`
+        when the file is absent or could not be decoded, and a document that is
+        literally `null` is treated the same way. An absent file is not a
+        diagnostic.
+    """
     if not path.is_file():
         return None, ()
     try:
-        raw = path.read_text(encoding="utf-8")
-        data: object = json.loads(raw)
+        decoded: JsonValue = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         message = f"Failed to read hooks config at {path}: {exc}"
         logger.warning(message)
@@ -314,6 +349,15 @@ def _read_hooks_document(
                 field=str(path),
             ),
         )
+    return decoded, ()
+
+
+def _read_hooks_document(
+    path: Path,
+) -> tuple[HooksConfig | None, tuple[HookDiagnostic, ...]]:
+    data, read_diagnostics = read_hooks_json(path)
+    if data is None:
+        return None, read_diagnostics
 
     if is_legacy_hooks_document(data):
         hooks = data.get("hooks", []) if isinstance(data, dict) else []

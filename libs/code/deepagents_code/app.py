@@ -4488,9 +4488,11 @@ class DeepAgentsApp(App):
                 timeout=10,
             )
             return
-        # Loading stays on the event loop deliberately: it is a cheap config
-        # read, and `to_thread` races server-ready startup tests that only
-        # yield a few event-loop turns.
+        # Loading stays on the event loop deliberately: `to_thread` races
+        # server-ready startup tests that only yield a few event-loop turns.
+        # It is no longer only a config read — it also discovers plugins and
+        # reads their hook documents — so it is a candidate for moving off-loop
+        # once it can reuse an already-discovered plugin snapshot.
         session_state.hooks = HooksManager.create(
             cwd=Path(self._cwd),
             identity=session_state.hook_identity,
@@ -13462,6 +13464,12 @@ class DeepAgentsApp(App):
                     skill_lines.append(f"  - Removed: {', '.join(removed_skills)}")
                 report += "\nSkills updated:\n" + "\n".join(skill_lines)
 
+            # Rebuild the hook snapshot before anything restarts the server: the
+            # set of server-owned events is sent when a server starts, so a
+            # newly enabled plugin's server hooks are only registered if the
+            # snapshot is already refreshed.
+            await self._reload_hooks()
+
             # Rediscover plugins and restart the owned server so plugin MCP config
             # is picked up without a separate slash command.
             from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
@@ -20606,7 +20614,11 @@ class DeepAgentsApp(App):
         """
         fingerprints: dict[str, _PluginFingerprint] = {}
         for plugin in plugins:
-            paths = (*plugin.inventory.skills, *plugin.inventory.mcp_files)
+            paths = (
+                *plugin.inventory.skills,
+                *plugin.inventory.mcp_files,
+                *plugin.inventory.hook_files,
+            )
             fingerprints[plugin.plugin_id] = _PluginFingerprint(
                 version=plugin.version,
                 manifest=plugin.manifest,

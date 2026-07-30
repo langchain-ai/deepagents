@@ -25,11 +25,12 @@ from deepagents_code.model_config import DEFAULT_CONFIG_DIR
 from deepagents_code.project_utils import ProjectContext
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 
     from langchain_core.messages import BaseMessage
 
     from deepagents_code.hooks.loading import HooksSource
+    from deepagents_code.hooks.models.domain import HookDiagnostic
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +78,8 @@ class HooksRuntime:
         config_dir: Path | None = None,
         transcript_root: Path | None = None,
         presenter: HookPresenter | None = None,
-        plugin_sources: Sequence[tuple[HooksSource, Mapping[str, object]]] = (),
+        plugin_sources: Sequence[tuple[HooksSource, object]] = (),
+        plugin_diagnostics: Sequence[HookDiagnostic] = (),
     ) -> HooksRuntime:
         """Load configuration once and freeze a session runtime.
 
@@ -95,7 +97,11 @@ class HooksRuntime:
                 when omitted, so output is logged rather than surfaced.
             plugin_sources: Hook documents contributed by enabled plugins, which
                 the caller discovers so the runtime stays independent of plugin
-                state. Merged last, holding the least authority.
+                state. Merged last, holding the least authority, and validated
+                here like any other hooks document.
+            plugin_diagnostics: Diagnostics the caller collected while
+                discovering `plugin_sources`, so a plugin that could not be read
+                is reported alongside configuration diagnostics.
 
         Returns:
             A runtime ready to execute invocations for this session.
@@ -107,6 +113,7 @@ class HooksRuntime:
             workspace_trusted=workspace_trusted,
             config_dir=config_dir,
             documents=plugin_sources,
+            document_diagnostics=plugin_diagnostics,
         )
         snapshot = HooksSnapshot.from_loaded(loaded)
         store = TranscriptStore(

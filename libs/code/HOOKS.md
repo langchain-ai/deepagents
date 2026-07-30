@@ -12,7 +12,7 @@ Hooks are user-configured shell commands that run at agent lifecycle events. Eac
 | Project | `{project_root}/.deepagents/hooks.json` | Only after workspace trust |
 | Plugin | `hooks/hooks.json` inside an installed plugin | Whenever the plugin is enabled |
 
-Matcher groups are applied project first, then user, then plugin. A handler that stops further processing wins over every lower-precedence handler for the same event, so a project hook preempts a user hook and both preempt a third-party plugin hook.
+Matcher groups are applied project first, then user, then plugin. Precedence decides whose answer wins, not who runs: every matching handler for an event runs concurrently, and their results are then reduced in that order, so the first handler that stops processing decides the event. A plugin handler still executes even when a project or user handler stops the event, so treat a plugin's side effects as unconditional.
 
 ### Project workspace trust
 
@@ -30,7 +30,7 @@ A plugin contributes hooks from `hooks/hooks.json` in its root, from a `hooks` p
 
 Installing and enabling the plugin is the consent gate — workspace trust governs project hooks only, so it neither grants nor withholds a plugin's hooks. Review a plugin before enabling it; the plugin manager lists the events each one hooks. Because the set of server-owned events is fixed when a session starts, newly enabled plugin hooks take effect after `/reload`.
 
-Plugin handlers run with their plugin's variables both substituted into `command` / `argv` and exported to their environment:
+Plugin handlers run with their plugin's variables both substituted into `command` / `argv` and exported to their environment. Substitution is literal, so quote the variable in a shell-form `command` — an installation path may contain spaces:
 
 | Variable | Value |
 | --- | --- |
@@ -47,7 +47,7 @@ Plugin handlers run with their plugin's variables both substituted into `command
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/format.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/format.sh\""
           }
         ]
       }
@@ -55,6 +55,8 @@ Plugin handlers run with their plugin's variables both substituted into `command
   }
 }
 ```
+
+Setting `argv` instead avoids the question entirely: those handlers are executed directly, so no shell ever re-reads the substituted path.
 
 ## Events and matchers
 

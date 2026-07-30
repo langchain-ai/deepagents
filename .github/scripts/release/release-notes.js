@@ -380,7 +380,7 @@ function overrideBody({ component, version, head, headingHash, fingerprint, sect
     `changelog-fingerprint: ${fingerprint}`,
     'state: draft',
     '-->',
-    'Review and edit the release notes between the content markers below. Keep the version heading intact.',
+    'Review and edit the release notes between the content markers below as needed. Keep the version heading intact.',
     '',
     '---',
     CONTENT_START,

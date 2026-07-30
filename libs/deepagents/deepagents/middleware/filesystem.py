@@ -13,7 +13,7 @@ from binascii import Error as BinasciiError
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Final, Literal, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NotRequired, cast
 
 import wcmatch.glob as wcglob
 from langchain.agents.middleware.types import (
@@ -86,6 +86,9 @@ from deepagents.middleware._video import (
     video_dependencies_available,
 )
 
+if TYPE_CHECKING:
+    from langchain.chat_models import BaseChatModel
+
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
 """wcmatch flags enabling brace expansion and `**` globstar recursion."""
 
@@ -111,6 +114,20 @@ _READ_FILE_MEDIA_RESULT: Final = "read_file_media_result"
 
 _VIDEO_SAMPLING_RATE: Final = 0.5
 """Seconds between sampled frames when extracting stills from a video."""
+
+_MULTIMODAL_BLOCK_TYPES: Final = frozenset({"image", "audio", "video", "file"})
+"""Content block types `read_file` may emit that require multimodal model support."""
+
+_PDF_MIME_TYPE: Final = "application/pdf"
+
+_MULTIMODAL_FILE_TOLERANT_PROVIDERS: Final = frozenset({"openai", "google_genai"})
+"""Providers known to accept non-PDF `file` blocks (e.g. `.docx`, `.pptx`) today.
+
+[`ModelProfile`][langchain_core.language_models.model_profile.ModelProfile] only
+encodes PDF support (`pdf_inputs`/`pdf_tool_message`); it has no field yet for
+other office/document formats. Until it does, these providers get a hard-coded
+pass for non-PDF `file` blocks instead of being blocked by that profile gap.
+"""
 
 
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
@@ -152,6 +169,128 @@ def _move_media_results_after_tool_results(messages: list[AnyMessage]) -> list[A
             reordered.extend(message for message in batch if isinstance(message, ToolMessage))
             reordered.extend(message for message in batch if _is_read_file_media_result(message))
     return reordered
+
+
+_PROVIDER_BY_CLASS_NAME: Final = {
+    "ChatOpenAI": "openai",
+    "AzureChatOpenAI": "openai",
+    "ChatAnthropic": "anthropic",
+    "ChatGoogleGenerativeAI": "google_genai",
+    "ChatVertexAI": "google_genai",
+}
+"""Fallback provider lookup for models whose `_get_ls_params` isn't usable (e.g. in tests)."""
+
+_PROFILE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_inputs", "audio": "audio_inputs", "video": "video_inputs", "file": "pdf_inputs"}
+"""`ModelProfile` field gating each block type. `file` only applies to PDF `mime_type`; other
+file types have no field yet and are handled separately via `_MULTIMODAL_FILE_TOLERANT_PROVIDERS`."""
+
+_TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message", "file": "pdf_tool_message"}
+"""Extra `ModelProfile` field that can gate a block type specifically within a `ToolMessage`."""
+
+
+def _infer_model_provider(model: "BaseChatModel | None") -> str | None:
+    """Best-effort normalized provider name for `model` (e.g. `"openai"`).
+
+    Prefers the `ls_provider` value chat model providers already populate via
+    `_get_ls_params` for LangSmith tracing, falling back to a lookup by class
+    name. Returns `None` when no provider can be identified.
+    """
+    get_ls_params = getattr(model, "_get_ls_params", None)
+    if callable(get_ls_params):
+        with contextlib.suppress(Exception):
+            ls_params = get_ls_params()
+            if isinstance(ls_params, dict) and isinstance(ls_params.get("ls_provider"), str):
+                return ls_params["ls_provider"].replace("-", "_").lower()
+    return _PROVIDER_BY_CLASS_NAME.get(type(model).__name__)
+
+
+def _multimodal_block_supported(
+    block: Mapping[str, Any],
+    *,
+    profile: Mapping[str, Any],
+    provider: str | None,
+    in_tool_message: bool,
+) -> bool:
+    """Check whether `profile` (plus hard-coded provider exceptions) accepts `block`.
+
+    A field absent from `profile` defaults to supported: `ModelProfile` coverage
+    is incomplete for many models, and treating an absent field as unsupported
+    would strip content that would have gone through fine. Only an explicit
+    `False` blocks a block type.
+    """
+    block_type = block.get("type")
+    if not isinstance(block_type, str):
+        return True
+    if block_type == "file" and block.get("mime_type") != _PDF_MIME_TYPE:
+        # Non-PDF `file` blocks (`.docx`, `.pptx`, ...) aren't described by any
+        # `ModelProfile` field yet; only the hard-coded tolerant providers pass.
+        return provider in _MULTIMODAL_FILE_TOLERANT_PROVIDERS
+
+    field = _PROFILE_FIELD_BY_BLOCK_TYPE.get(block_type)
+    if field is None:
+        return True
+    if in_tool_message:
+        tool_field = _TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE.get(block_type)
+        if tool_field and profile.get(tool_field) is False:
+            return False
+    return profile.get(field) is not False
+
+
+def _unsupported_multimodal_placeholder(block: Mapping[str, Any], message: AnyMessage) -> ContentBlock:
+    """Build the text block replacing a multimodal block the model can't accept."""
+    block_type = block.get("type", "file")
+    mime_type = block.get("mime_type", "unknown")
+    path = message.additional_kwargs.get("read_file_path", "the requested file")
+    return cast(
+        "ContentBlock",
+        {
+            "type": "text",
+            "text": (
+                f"[read_file: {path} was not attached because this model does not support "
+                f"{block_type} content ({mime_type}). Ask the user to share the contents "
+                "directly, or use a model that supports this file type.]"
+            ),
+        },
+    )
+
+
+def _scrub_message_multimodal_content(message: AnyMessage, *, profile: Mapping[str, Any], provider: str | None) -> AnyMessage:
+    """Return `message` unchanged, or a copy with unsupported blocks replaced by placeholders."""
+    if not isinstance(message, (ToolMessage, HumanMessage)):
+        return message
+
+    in_tool_message = isinstance(message, ToolMessage)
+    blocks = message.content_blocks
+    new_blocks = [
+        block
+        if not (isinstance(block, dict) and block.get("type") in _MULTIMODAL_BLOCK_TYPES)
+        or _multimodal_block_supported(block, profile=profile, provider=provider, in_tool_message=in_tool_message)
+        else _unsupported_multimodal_placeholder(block, message)
+        for block in blocks
+    ]
+    if new_blocks == blocks:
+        return message
+    return message.model_copy(update={"content": new_blocks})
+
+
+def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "BaseChatModel | None") -> list[AnyMessage]:
+    """Replace multimodal content blocks `model.profile` marks unsupported.
+
+    Some providers return a non-retryable 400 when sent a content block they
+    don't support (e.g. a `file` block whose `mime_type` isn't
+    `application/pdf`, produced when `read_file` reads a `.docx`), which would
+    otherwise end the thread. Swapping the unsupported block for a text
+    placeholder here — before the request reaches the model — lets the agent
+    recover instead.
+
+    A `model` with no `profile` (or no `model` at all, e.g. `None` in tests) is
+    left untouched: without profile data there is nothing to gate on.
+    """
+    profile = getattr(model, "profile", None)
+    if not isinstance(profile, dict):
+        return messages
+    provider = _infer_model_provider(model)
+    return [_scrub_message_multimodal_content(message, profile=profile, provider=provider) for message in messages]
 
 
 def _handle_video_read(
@@ -2750,6 +2889,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             eviction threshold, its content is written to the backend and the
             message is tagged in state via `ExtendedModelResponse`.
 
+        It also scrubs multimodal content blocks (image/audio/video/file) that
+        `request.model.profile` marks unsupported, replacing each with a text
+        placeholder so an unsupported `read_file` attachment (e.g. a `.docx` on
+        a model that only supports PDF `file` blocks) can't end the thread with
+        a non-retryable provider error. See `_scrub_unsupported_multimodal_content`.
+
         Args:
             request: The model request being processed.
             handler: The handler function to call with the modified request.
@@ -2761,6 +2906,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request = self._filter_unsupported_tools_and_apply_prompt(request)
 
         request_messages = _move_media_results_after_tool_results(list(request.messages))
+        request_messages = _scrub_unsupported_multimodal_content(request_messages, request.model)
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
 
@@ -2796,6 +2942,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request = self._filter_unsupported_tools_and_apply_prompt(request)
 
         request_messages = _move_media_results_after_tool_results(list(request.messages))
+        request_messages = _scrub_unsupported_multimodal_content(request_messages, request.model)
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
 

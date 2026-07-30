@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from time import time
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,7 +18,15 @@ from pydantic import ValidationError
 from rich.console import Console
 
 from deepagents_code import config as config_module
-from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+from deepagents_code._ask_user_types import (
+    ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
+    ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY,
+    ASK_USER_ANSWERED_SUMMARY,
+    ASK_USER_CANCELLED_SUMMARY,
+    ASK_USER_FAILED_SUMMARY,
+    AskUserWidgetResult,
+    Question,
+)
 from deepagents_code._tool_stream import (
     TOOL_OUTPUT_TRUNCATION_MARKER,
     UNRENDERABLE_TOOL_OUTPUT,
@@ -48,6 +56,7 @@ from deepagents_code.tui.textual_adapter import (
     SessionStats,
     TextualUIAdapter,
     _build_interrupted_ai_message,
+    _dispatch_tool_result_hook,
     _format_rubric_details,
     _format_rubric_event,
     _handle_interrupt_cleanup,
@@ -55,6 +64,7 @@ from deepagents_code.tui.textual_adapter import (
     _is_auto_mode_classifier_chunk,
     _is_summarization_chunk,
     _read_mentioned_file,
+    _set_running_unless_deferred,
     execute_task_textual,
 )
 from deepagents_code.tui.widgets.messages import (
@@ -254,9 +264,7 @@ class TestTextualUIAdapterInit:
             request_approval=_mock_approval,
             set_active_message=MagicMock(),
         )
-        tool_widget = MagicMock()
-        tool_widget.tool_name = "read_file"
-        tool_widget.args = {"path": "notes.txt"}
+        tool_widget = _make_tool_widget("read_file", {"path": "notes.txt"})
         adapter._current_tool_messages = {"call-1": tool_widget}
 
         with patch(
@@ -300,9 +308,7 @@ class TestInterruptCleanup:
             set_active_message=set_active,
         )
 
-        tool_widget = MagicMock()
-        tool_widget._tool_name = "read_file"
-        tool_widget._args = {"path": "notes.txt"}
+        tool_widget = _make_tool_widget("read_file", {"path": "notes.txt"})
         adapter._current_tool_messages = {"call-1": tool_widget}
 
         show_calls: list[bool] = []
@@ -356,14 +362,7 @@ class TestInterruptCleanup:
             request_approval=_mock_approval,
             set_active_message=MagicMock(),
         )
-        tool_widget = MagicMock()
-        # Public accessors feed the terminal-hook payload; the private backing
-        # fields feed the interrupted-AIMessage rebuild — set both consistently,
-        # mirroring the real `ToolCallMessage` where the accessors read these.
-        tool_widget.tool_name = "execute"
-        tool_widget.args = {"command": "sleep 100"}
-        tool_widget._tool_name = "execute"
-        tool_widget._args = {"command": "sleep 100"}
+        tool_widget = _make_tool_widget("execute", {"command": "sleep 100"})
         adapter._current_tool_messages = {"call-1": tool_widget}
         agent = SimpleNamespace(aupdate_state=AsyncMock())
 
@@ -396,6 +395,75 @@ class TestInterruptCleanup:
         tool_widget.set_rejected.assert_called_once_with()
         assert adapter._current_tool_messages == {}
 
+    async def test_interrupt_cleanup_keeps_answered_ask_user_a_success(self) -> None:
+        """Cancelling with an answered `ask_user` tracked must not fail that row.
+
+        Ctrl+C between "user submits answers" and "the `ToolMessage` arrives"
+        sweeps the row like any other pending tool. All three behaviors here are
+        implemented separately and each fails silently on its own: the recovery
+        `AIMessage` must omit the tool call (a duplicate `tool_use` surfaces as an
+        opaque provider 400 turns later), the terminal hook must report the
+        success the user earned rather than "Turn cancelled" — `ask_user` results
+        double as authorization records — and no `tool.error` may claim the
+        question failed. The hook body still says the result never arrived, so an
+        audit consumer is not told the prompt completed.
+        """
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_active_message=MagicMock(),
+        )
+        questions = [{"question": "Deploy to prod?"}]
+        ask_widget = _make_tool_widget(
+            "ask_user",
+            {"questions": questions},
+            deferred_success_output=ASK_USER_ANSWERED_SUMMARY,
+        )
+        adapter._current_tool_messages = {"ask-1": ask_widget}
+        saved: list[Any] = []
+
+        async def _record_update(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
+            saved.append(values)
+
+        agent = SimpleNamespace(aupdate_state=_record_update)
+
+        with patch(
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            await _handle_interrupt_cleanup(
+                adapter=adapter,
+                agent=agent,
+                config={"configurable": {"thread_id": "t-1"}},  # ty: ignore
+                pending_text_by_namespace={(): "working on it"},
+                captured_input_tokens=0,
+                captured_output_tokens=0,
+                turn_stats=SessionStats(),
+                start_time=0.0,
+            )
+
+        events = [(c[0][0], c[0][1]) for c in mock_dispatch.call_args_list]
+        assert [p for e, p in events if e == "tool.result"] == [
+            {
+                "tool_name": "ask_user",
+                "tool_id": "ask-1",
+                "tool_args": {"questions": questions},
+                "tool_status": "success",
+                "tool_output": ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
+            }
+        ]
+        assert "tool.error" not in [e for e, _ in events]
+        # The recovery AIMessage keeps the partial text but not the tool call.
+        recovered = [
+            m
+            for values in saved
+            for m in values.get("messages", [])
+            if getattr(m, "tool_calls", None) is not None
+        ]
+        assert len(recovered) == 1
+        assert recovered[0].tool_calls == []
+        assert adapter._current_tool_messages == {}
+
     async def test_terminal_hooks_dispatched_before_state_writes(self) -> None:
         """Terminal hooks are scheduled before the (possibly slow) state writes.
 
@@ -420,11 +488,7 @@ class TestInterruptCleanup:
             request_approval=_mock_approval,
             set_active_message=MagicMock(),
         )
-        tool_widget = MagicMock()
-        tool_widget.tool_name = "execute"
-        tool_widget.args = {"command": "sleep 100"}
-        tool_widget._tool_name = "execute"
-        tool_widget._args = {"command": "sleep 100"}
+        tool_widget = _make_tool_widget("execute", {"command": "sleep 100"})
         adapter._current_tool_messages = {"call-1": tool_widget}
         agent = SimpleNamespace(aupdate_state=_record_update)
 
@@ -766,9 +830,7 @@ class TestInterruptCleanup:
         async def _capture(*_args: object, **_kwargs: object) -> None:  # noqa: RUF029
             captured.append(get_tracing_context().get("enabled"))
 
-        tool_widget = MagicMock()
-        tool_widget._tool_name = "read_file"
-        tool_widget._args = {"path": "notes.txt"}
+        tool_widget = _make_tool_widget("read_file", {"path": "notes.txt"})
 
         agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
         adapter = TextualUIAdapter(
@@ -940,9 +1002,7 @@ class TestInterruptCleanupTokenPersist:
         async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
             captured.append(values)
 
-        tool_widget = MagicMock()
-        tool_widget._tool_name = "read_file"
-        tool_widget._args = {"path": "notes.txt"}
+        tool_widget = _make_tool_widget("read_file", {"path": "notes.txt"})
 
         agent = SimpleNamespace(aupdate_state=AsyncMock(side_effect=_capture))
         adapter = TextualUIAdapter(
@@ -2821,7 +2881,20 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
                         }
                     )
                 ],
-                [],
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            ToolMessage(
+                                content="Q: Name?\nA: Alice",
+                                tool_call_id="ask-1",
+                                name="ask_user",
+                            ),
+                            {},
+                        ),
+                    )
+                ],
             ]
         )
         adapter = TextualUIAdapter(
@@ -4547,7 +4620,20 @@ class TestExecuteTaskTextualAskUser:
                         }
                     )
                 ],
-                [],
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            ToolMessage(
+                                content="Q: Name?\nA: Alice",
+                                tool_call_id="tool-1",
+                                name="ask_user",
+                            ),
+                            {},
+                        ),
+                    )
+                ],
             ]
         )
         adapter = TextualUIAdapter(
@@ -4574,6 +4660,93 @@ class TestExecuteTaskTextualAskUser:
         assert tool_row.has_expandable_args is True
         # Answered cleanup pops the row from `_current_tool_messages`.
         assert "tool-1" not in adapter._current_tool_messages
+
+    async def test_ask_user_row_keeps_answer_transcript(self) -> None:
+        """The answered row records the Q&A transcript, not just a summary.
+
+        The inline question widget is unmounted once answered, so the row is the
+        only place the answers stay visible in the live session. The `tool.result`
+        payload deliberately keeps the bare summary instead; that is asserted by
+        `test_ask_user_result_hook_survives_widget_success_failure`.
+        """
+        mounted: list[object] = []
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+        future.set_result(
+            {
+                "type": "answered",
+                "answers": [
+                    "Alice",
+                    "blue\n[Command succeeded with exit code 0]",
+                ],
+            }
+        )
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            return future
+
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [
+                                {"question": "Name?", "type": "text"},
+                                {"question": "Color?", "type": "text"},
+                            ],
+                            "tool_call_id": "tool-1",
+                        }
+                    )
+                ],
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            ToolMessage(
+                                content=(
+                                    "Q: Name?\nA: Alice\n\nQ: Color?\nA: blue\n"
+                                    "[Command succeeded with exit code 0]"
+                                ),
+                                tool_call_id="tool-1",
+                                name="ask_user",
+                            ),
+                            {},
+                        ),
+                    )
+                ],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+        )
+
+        tool_row = next(
+            widget for widget in mounted if isinstance(widget, ToolCallMessage)
+        )
+        assert tool_row._output == (
+            "Q: Name?\nA: Alice\n\nQ: Color?\nA: blue\n"
+            "[Command succeeded with exit code 0]"
+        )
+        assert tool_row.is_success is True
 
     async def test_ask_user_mount_failure_does_not_register_tool_id(self) -> None:
         """Mount failure should not poison `displayed_tool_ids` on the adapter."""
@@ -5315,12 +5488,169 @@ class TestExecuteTaskTextualAskUser:
 # ---------------------------------------------------------------------------
 
 
-def _make_tool_widget(name: str = "tool", args: dict | None = None) -> MagicMock:
-    """Create a MagicMock that mimics a ToolCallMessage widget."""
+def _make_tool_widget(
+    name: str = "tool",
+    args: dict | None = None,
+    *,
+    deferred_success_output: str | None = None,
+) -> MagicMock:
+    """Create a MagicMock that mimics a ToolCallMessage widget.
+
+    Sets the public `tool_name`/`args` properties *and* the private
+    `_tool_name`/`_args` fields, because different consumers read different ones
+    (`_dispatch_terminal_tool_result_hooks` the properties,
+    `_build_interrupted_ai_message` the privates). Use this rather than assembling
+    a double inline, so the deferral pair below cannot drift into the illegal
+    combination.
+
+    Args:
+        name: Tool name the double reports.
+        args: Tool args the double reports.
+        deferred_success_output: Set to a summary to model an answered `ask_user`
+            row still awaiting its `ToolMessage`.
+    """
     widget = MagicMock()
+    widget.tool_name = name
+    widget.args = args or {}
     widget._tool_name = name
     widget._args = args or {}
+    # Both deferral attributes must be set explicitly. Left unset, MagicMock
+    # auto-creates a truthy attribute, which reads as "this row already
+    # succeeded" and silently excludes the double from terminal-hook and
+    # interrupted-state handling — a passing test that asserts nothing.
+    # `MagicMock(spec=ToolCallMessage)` does *not* help: the attributes exist on
+    # the real class, so spec still auto-creates them.
+    widget.deferred_success_output = deferred_success_output
+    widget.is_awaiting_deferred_result = deferred_success_output is not None
     return widget
+
+
+class TestAskUserHookBodySanitization:
+    """`tool.result` for `ask_user` can never carry the answer transcript.
+
+    The per-call-site substitution is positional: it depends on a live entry in the
+    turn-local `deferred_tool_result_hooks` dict. These tests pin the structural
+    backstop in `_dispatch_tool_result_hook`, which holds for any branch — including
+    a `ToolMessage` that arrives on a later turn, when no deferral entry survives.
+    """
+
+    def test_transcript_is_replaced_on_the_success_path(self) -> None:
+        """A raw transcript is swapped for the answered summary."""
+        with patch(
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as dispatch:
+            _dispatch_tool_result_hook(
+                "ask_user",
+                "ask-1",
+                {"questions": [{"question": "Name?"}]},
+                "success",
+                "Q: Name?\nA: Alice",
+            )
+
+        payload = dispatch.call_args[0][1]
+        assert payload["tool_output"] == ASK_USER_ANSWERED_SUMMARY
+        assert "Alice" not in str(payload)
+
+    def test_transcript_is_replaced_on_the_error_path(self) -> None:
+        """A failed prompt reports the failure summary, not its `(error: ...)` body."""
+        with patch(
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as dispatch:
+            _dispatch_tool_result_hook(
+                "ask_user",
+                "ask-1",
+                {},
+                "error",
+                "Q: Name?\nA: (error: some arbitrary detail)",
+            )
+
+        payload = dispatch.call_args[0][1]
+        assert payload["tool_output"] == ASK_USER_FAILED_SUMMARY
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(ASK_USER_ANSWERED_SUMMARY, id="answered"),
+            pytest.param(ASK_USER_ANSWERED_NO_RESULT_SUMMARY, id="no-result"),
+            pytest.param(ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY, id="not-delivered"),
+            pytest.param(ASK_USER_CANCELLED_SUMMARY, id="cancelled"),
+            pytest.param(ASK_USER_FAILED_SUMMARY, id="failed"),
+            # Widget-failure bodies are free text by design (see
+            # `ASK_USER_FAILED_SUMMARY`'s docstring) and contain no user input, so
+            # the guard must be a denylist of the transcript shape rather than an
+            # allowlist of constants — otherwise it rewrites these.
+            pytest.param("ask_user not supported by this UI", id="unsupported"),
+            pytest.param("invalid ask_user answers payload", id="invalid-payload"),
+        ],
+    )
+    def test_legitimate_bodies_pass_through(self, body: str) -> None:
+        """Every body a real call site passes must survive unchanged.
+
+        Guards against the backstop silently rewriting a legitimate body — which
+        would break the hook contracts those constants document.
+        """
+        with patch(
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as dispatch:
+            _dispatch_tool_result_hook("ask_user", "ask-1", {}, "success", body)
+
+        assert dispatch.call_args[0][1]["tool_output"] == body
+
+    def test_other_tools_are_untouched(self) -> None:
+        """The substitution is scoped to `ask_user` and must not affect any other."""
+        with patch(
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as dispatch:
+            _dispatch_tool_result_hook("read_file", "call-1", {}, "success", "contents")
+
+        assert dispatch.call_args[0][1]["tool_output"] == "contents"
+
+
+class TestSetRunningDeferredGuard:
+    """A spinner must never visibly un-answer an `ask_user` row.
+
+    The `set_running` sweeps run *after* the `ask_user` resolution loop in the same
+    `pending_interrupts` pass, and are not namespace scoped for the main agent, so a
+    batch mixing a question with a gated or hook-resolved tool reaches the answered
+    row.
+    """
+
+    def test_awaiting_row_is_skipped(self) -> None:
+        """An answered row keeps its outcome instead of spinning."""
+        widget = _make_tool_widget(
+            "ask_user",
+            {"questions": [{"question": "Name?"}]},
+            deferred_success_output=ASK_USER_ANSWERED_SUMMARY,
+        )
+
+        _set_running_unless_deferred(widget)
+
+        widget.set_running.assert_not_called()
+
+    def test_ordinary_row_still_runs(self) -> None:
+        """A gated sibling waiting to execute must still get its spinner."""
+        widget = _make_tool_widget("execute", {"command": "ls"})
+
+        _set_running_unless_deferred(widget)
+
+        widget.set_running.assert_called_once_with()
+
+    def test_settled_row_still_runs(self) -> None:
+        """A row that already fell back has no outcome left to protect.
+
+        Mirrors `_pop_rows_not_awaiting_deferred_result`: the immunity is scoped to
+        rows still waiting, so it cannot be spent and then relied on.
+        """
+        widget = _make_tool_widget(
+            "ask_user",
+            {"questions": [{"question": "Name?"}]},
+            deferred_success_output=ASK_USER_ANSWERED_SUMMARY,
+        )
+        widget.is_awaiting_deferred_result = False
+
+        _set_running_unless_deferred(widget)
+
+        widget.set_running.assert_called_once_with()
 
 
 class _MutatingItemsDict(dict):  # noqa: FURB189  # must subclass dict to override C-level iteration
@@ -5445,6 +5775,69 @@ class TestDictIterationSafety:
     def test_build_interrupted_ai_message_empty(self) -> None:
         """Returns None when there is no text and no tool calls."""
         result = _build_interrupted_ai_message({}, {})
+        assert result is None
+
+    def test_build_interrupted_ai_message_omits_deferred_rows(self) -> None:
+        """A row awaiting its deferred result must not be re-added as a tool call.
+
+        An answered `ask_user` stays tracked until its `ToolMessage` arrives, so a
+        cancel in that window reaches here with the row present. The graph already
+        owns that tool call in its checkpoint; adding it appends a second
+        `tool_use` with no matching `tool_result`, which the provider rejects as
+        an opaque 400 several turns later with nothing pointing back here.
+        """
+        widgets = {
+            "id_0": _make_tool_widget("execute", {"command": "ls"}),
+            "ask-1": _make_tool_widget(
+                "ask_user",
+                {"questions": [{"question": "Name?"}]},
+                deferred_success_output=ASK_USER_ANSWERED_SUMMARY,
+            ),
+            "id_2": _make_tool_widget("read_file", {"path": "a.txt"}),
+        }
+
+        result = _build_interrupted_ai_message({(): "hi"}, widgets)
+
+        assert result is not None
+        assert [tc["id"] for tc in result.tool_calls] == ["id_0", "id_2"]
+
+    def test_build_interrupted_ai_message_deferred_only_is_empty(self) -> None:
+        """A lone deferred row leaves nothing to recover, so no AIMessage."""
+        widgets = {
+            "ask-1": _make_tool_widget(
+                "ask_user",
+                {"questions": [{"question": "Name?"}]},
+                deferred_success_output=ASK_USER_ANSWERED_SUMMARY,
+            )
+        }
+
+        assert _build_interrupted_ai_message({}, widgets) is None
+
+    def test_settled_deferred_row_is_omitted_too(self) -> None:
+        """A row that already fell back is skipped as well, not only an awaiting one.
+
+        The hazard is that the graph *owns* this tool call: `defer_success` is only
+        ever called after the `ask_user` interrupt fired, which happens after the
+        model node commits, so the checkpoint already holds the `AIMessage` with
+        this `tool_call`. Settling the row is a rendering event — it does not
+        un-own the call. Appending it here would emit a second `tool_use` with no
+        matching `tool_result`, which the provider rejects turns later as an opaque
+        400.
+
+        So the skip keys on `deferred_success_output`, not
+        `is_awaiting_deferred_result`. A settled-but-still-tracked row is reachable:
+        a permission hook returning `plan.interrupted` settles it via
+        `set_rejected` without popping it, and the turn still resumes.
+        """
+        widget = _make_tool_widget(
+            "ask_user",
+            {"questions": [{"question": "Name?"}]},
+            deferred_success_output=ASK_USER_ANSWERED_SUMMARY,
+        )
+        widget.is_awaiting_deferred_result = False
+
+        result = _build_interrupted_ai_message({}, {"ask-1": widget})
+
         assert result is None
 
 
@@ -5952,13 +6345,30 @@ class TestToolHooksTextual:
             "tool_output": "User answered",
         }
 
-    async def test_ask_user_mount_failure_skips_tool_use_hook(self) -> None:
+    @pytest.mark.parametrize(
+        ("tool_message_status", "expected_output"),
+        [
+            ("success", ASK_USER_ANSWERED_SUMMARY),
+            ("error", ASK_USER_FAILED_SUMMARY),
+        ],
+        ids=["answered", "middleware-error"],
+    )
+    async def test_ask_user_mount_failure_skips_tool_use_hook(
+        self, tool_message_status: str, expected_output: str
+    ) -> None:
         """A failed ask_user mount fires no tool.use, so nothing is orphaned.
 
         tool.use is gated on a successful mount, so a mount failure (e.g. a
         torn-down DOM) never emits a tool.use that a later cancel could leave
-        unterminated. The question still resolves via the resolution loop, which
-        dispatches the terminal tool.result independently of the widget.
+        unterminated. The authoritative ToolMessage still dispatches a sanitized
+        terminal result with the interrupt's original arguments.
+
+        Parametrized over the streamed status because this unmounted branch pairs
+        `tool.error` with `tool.result` itself rather than going through
+        `_dispatch_terminal_tool_result_hooks`. A failing prompt here (the
+        answer-count mismatch is the easy trigger) must still emit `tool.error`,
+        or an audit consumer sees a `tool_status="error"` result with no matching
+        error event — a pairing the rest of this module maintains everywhere else.
         """
 
         async def mount_message(_widget: object) -> None:
@@ -5987,7 +6397,23 @@ class TestToolHooksTextual:
                         }
                     )
                 ],
-                [],
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            ToolMessage(
+                                content="Q: Name?\nA: Alice",
+                                tool_call_id="ask-1",
+                                name="ask_user",
+                                status=cast(
+                                    "Literal['success', 'error']", tool_message_status
+                                ),
+                            ),
+                            {},
+                        ),
+                    )
+                ],
             ]
         )
         adapter = TextualUIAdapter(
@@ -6024,8 +6450,30 @@ class TestToolHooksTextual:
             if c[0][0] == "tool.result"
         ]
         assert len(tool_result_calls) == 1
-        assert tool_result_calls[0][0][1]["tool_id"] == "ask-1"
-        assert tool_result_calls[0][0][1]["tool_status"] == "success"
+        # Assert the whole payload, not just the status: the two properties that
+        # distinguish this branch from the unmounted `else` fallback are the
+        # interrupt's args (instead of `{}`) and the sanitized summary (instead
+        # of `output_str`, which is the transcript of the user's answers).
+        # Asserting only id/status lets a regression leak "Alice" to hook scripts
+        # while keeping this test green.
+        assert tool_result_calls[0][0][1] == {
+            "tool_name": "ask_user",
+            "tool_id": "ask-1",
+            "tool_args": {"questions": questions},
+            "tool_status": tool_message_status,
+            "tool_output": expected_output,
+        }
+        # tool.error must accompany a failing result, and must not appear for a
+        # normal answer.
+        error_events = [
+            c[0][1]
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.error"
+        ]
+        if tool_message_status == "error":
+            assert error_events == [{"tool_names": ["ask_user"]}]
+        else:
+            assert error_events == []
 
     async def test_ask_user_result_hook_survives_widget_success_failure(
         self,
@@ -6108,12 +6556,16 @@ class TestToolHooksTextual:
             if c[0][0] == "tool.result"
         ]
         assert len(tool_result_calls) == 1
+        # `tool_output` is the bare summary, never the transcript: user-typed
+        # answers must not be forwarded to hook scripts. Compared against the
+        # constant so rewording it fails here rather than silently widening the
+        # payload.
         assert tool_result_calls[0][0][1] == {
             "tool_name": "ask_user",
             "tool_id": "ask-1",
             "tool_args": {"questions": questions},
             "tool_status": "success",
-            "tool_output": "User answered",
+            "tool_output": ASK_USER_ANSWERED_SUMMARY,
         }
 
     async def test_ask_user_interrupt_error_dispatches_tool_result_hook(self) -> None:
@@ -7224,6 +7676,368 @@ class TestToolHooksTextual:
             "tool_status": "error",
             "tool_output": "Tool approval rejected",
         }
+        # The reject sweep leaves the answered `ask_user` tracked (its answer is
+        # why the turn resumes), so the stream-end backstop closes it out here —
+        # this resume stream carries no ToolMessage for it. It still succeeded,
+        # its answers reached the graph per the resume above, so it must report
+        # its own success rather than the sweep's "Tool approval rejected", and
+        # must not emit a spurious tool.error. The body says the result never
+        # arrived, which is what distinguishes this from a completed prompt.
+        ask_results = [
+            c
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result" and c[0][1]["tool_name"] == "ask_user"
+        ]
+        assert len(ask_results) == 1
+        assert ask_results[0][0][1] == {
+            "tool_name": "ask_user",
+            "tool_id": "ask-1",
+            "tool_args": {"questions": questions},
+            "tool_status": "success",
+            "tool_output": ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
+        }
+        assert [
+            c[0][1]["tool_names"]
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.error"
+        ] == [["execute"]]
+
+    async def test_answered_ask_user_settles_when_a_sibling_is_cancelled(
+        self,
+    ) -> None:
+        """Cancelling one `ask_user` call reports an answered sibling as undelivered.
+
+        Needs two parallel `ask_user` tool calls: a single widget cancels its whole
+        prompt, never one question within it. `ASK_USER_SYSTEM_PROMPT` tells the
+        model to group questions into one call, so this is an edge case — but
+        nothing enforces it, and the data loss below is silent without this.
+
+        A cancel halts the turn by returning *before* `Command(resume=...)`, so the
+        resume payload — including this row's answers — is discarded. The answers
+        never reach the graph, and the inline widget is already unmounted, so they
+        are unrecoverable.
+
+        The row must therefore not spin for the rest of the session, and must not
+        report the ordinary answered success either: `ask_user` results double as
+        authorization records, and a `"success"` here would record an authorization
+        that never took effect. It settles as an error carrying
+        `ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY`, distinct from
+        `ASK_USER_ANSWERED_NO_RESULT_SUMMARY` (answers delivered, tool never
+        completed).
+        """
+        mounted: list[ToolCallMessage] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                mounted.append(widget)
+
+        results: list[AskUserWidgetResult] = [
+            {"type": "answered", "answers": ["Alice"]},
+            {"type": "cancelled"},
+        ]
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+            future.set_result(results.pop(0))
+            return future
+
+        answered_qs: list[Question] = [{"question": "Name?", "type": "text"}]
+        cancelled_qs: list[Question] = [{"question": "Deploy?", "type": "text"}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "updates",
+                        {
+                            "__interrupt__": [
+                                SimpleNamespace(
+                                    id="interrupt-1",
+                                    value={
+                                        "type": "ask_user",
+                                        "questions": answered_qs,
+                                        "tool_call_id": "ask-1",
+                                    },
+                                ),
+                                SimpleNamespace(
+                                    id="interrupt-2",
+                                    value={
+                                        "type": "ask_user",
+                                        "questions": cancelled_qs,
+                                        "tool_call_id": "ask-2",
+                                    },
+                                ),
+                            ]
+                        },
+                    )
+                ],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        with (
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+            )
+
+        # The answered row reached a terminal state rather than staying pending,
+        # and it reports the delivery failure rather than a success.
+        answered_row = next(
+            row for row in mounted if row._args["questions"] == answered_qs
+        )
+        assert answered_row.is_success is False
+        assert answered_row._output == ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY
+        # Nothing is left tracked to leak into the next turn's sweeps.
+        assert adapter._current_tool_messages == {}
+        # Its `tool.use` is closed by an error naming the discarded answers — never
+        # by a success, and never carrying the answer text.
+        payloads = {
+            c[0][1]["tool_id"]: c[0][1]
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result"
+        }
+        assert payloads["ask-1"] == {
+            "tool_name": "ask_user",
+            "tool_id": "ask-1",
+            "tool_args": {"questions": answered_qs},
+            "tool_status": "error",
+            "tool_output": ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY,
+        }
+        # Whole-payload equality above already excludes it, but assert explicitly:
+        # the answer must not reach a hook script by any route.
+        assert "Alice" not in str(mock_dispatch_background.call_args_list)
+        assert payloads["ask-2"]["tool_status"] == "error"
+        assert payloads["ask-2"]["tool_output"] == ASK_USER_CANCELLED_SUMMARY
+
+    @pytest.mark.parametrize(
+        ("tool_status", "transcript"),
+        [
+            pytest.param("success", "Q: Name?\nA: Alice", id="success"),
+            pytest.param(
+                "error",
+                "Q: Name?\nA: (error: expected 1 answer, got 0)",
+                id="validation-error",
+            ),
+        ],
+    )
+    async def test_answered_ask_user_row_survives_a_co_occurring_reject(
+        self,
+        tool_status: Literal["success", "error"],
+        transcript: str,
+    ) -> None:
+        """The reject sweep must preserve the authoritative ask_user result.
+
+        Deferring the row's settlement to its streamed `ToolMessage` left it in
+        `_current_tool_messages`, where every teardown sweep treats a tracked row
+        as a failure. A bare reject in the same interrupt batch must leave that
+        row tracked so either the transcript or the middleware's validation error
+        can replace the provisional success.
+        """
+        mounted: list[ToolCallMessage] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                mounted.append(widget)
+
+        questions: list[Question] = [{"question": "Name?", "type": "text"}]
+        ask_interrupt = SimpleNamespace(
+            id="ask-int",
+            value={
+                "type": "ask_user",
+                "questions": questions,
+                "tool_call_id": "ask-1",
+            },
+        )
+        hitl_interrupt = SimpleNamespace(
+            id="hitl-int",
+            value={
+                "action_requests": [
+                    {"name": "execute", "args": {"command": "echo hi"}}
+                ],
+                "review_configs": [
+                    {
+                        "action_name": "execute",
+                        "allowed_decisions": ["approve", "reject"],
+                    }
+                ],
+            },
+        )
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [((), "updates", {"__interrupt__": [ask_interrupt, hitl_interrupt]})],
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            ToolMessage(
+                                content=transcript,
+                                tool_call_id="ask-1",
+                                name="ask_user",
+                                status=tool_status,
+                            ),
+                            {},
+                        ),
+                    )
+                ],
+            ]
+        )
+
+        ask_future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+        ask_future.set_result({"type": "answered", "answers": ["Alice"]})
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            return ask_future
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "reject"})
+            return future
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=request_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        with (
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch("deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"),
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+            )
+
+        ask_row = next(row for row in mounted if row.tool_name == "ask_user")
+        assert ask_row._status == tool_status
+        assert ask_row._output == transcript
+        assert ask_row.deferred_success_output is None
+
+    async def test_answered_ask_user_row_settles_when_no_tool_message_arrives(
+        self,
+    ) -> None:
+        """A deferred row must not stay pending when the stream ends without it.
+
+        The clean-stream-end backstop is hooks-only by design, so nothing settled
+        the row: it kept its paused-pending look for the rest of the session,
+        showing neither the answers nor a failure.
+        """
+        mounted: list[ToolCallMessage] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                mounted.append(widget)
+
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+        future.set_result({"type": "answered", "answers": ["Alice"]})
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            return future
+
+        questions: list[Question] = [{"question": "Name?", "type": "text"}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": questions,
+                            "tool_call_id": "ask-1",
+                        }
+                    )
+                ],
+                # Resume stream carries no ToolMessage for `ask-1`.
+                [],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        with (
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+            )
+
+        assert len(mounted) == 1
+        assert mounted[0].is_success is True
+        assert mounted[0]._output == ASK_USER_ANSWERED_SUMMARY
+        assert mounted[0].has_expandable_output is False
+        # The backstop reports the success it earned, not a fabricated failure,
+        # and never the answers. The body distinguishes this from a prompt whose
+        # ToolMessage did arrive, so an audit consumer can tell the two apart.
+        results = [
+            c[0][1]
+            for c in mock_dispatch_background.call_args_list
+            if c[0][0] == "tool.result"
+        ]
+        assert len(results) == 1
+        assert results[0] == {
+            "tool_name": "ask_user",
+            "tool_id": "ask-1",
+            "tool_args": {"questions": questions},
+            "tool_status": "success",
+            "tool_output": ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
+        }
+        assert "tool.error" not in [
+            c[0][0] for c in mock_dispatch_background.call_args_list
+        ]
 
     async def test_ask_user_interrupt_cancelled_dispatches_tool_result(self) -> None:
         """A cancelled ask_user emits tool.error and an error tool.result."""
@@ -7288,7 +8102,9 @@ class TestToolHooksTextual:
         assert payload["tool_name"] == "ask_user"
         assert payload["tool_id"] == "ask-1"
         assert payload["tool_status"] == "error"
-        assert payload["tool_output"] == "Question cancelled"
+        # Compared against the constant, not the literal: this string is part of
+        # the `tool.result` hook contract, so a reword must fail here loudly.
+        assert payload["tool_output"] == ASK_USER_CANCELLED_SUMMARY
 
     async def test_ask_user_interrupt_non_list_answers_dispatches_error(self) -> None:
         """A non-list answers payload emits tool.error and an error tool.result."""
@@ -7357,6 +8173,100 @@ class TestToolHooksTextual:
         assert payload["tool_name"] == "ask_user"
         assert payload["tool_status"] == "error"
         assert payload["tool_output"] == "invalid ask_user answers payload"
+
+    @pytest.mark.parametrize("answers", [[], ["Alice", "blue"]])
+    async def test_ask_user_uses_authoritative_mismatch_result(
+        self, answers: list[str]
+    ) -> None:
+        """The streamed middleware result controls row and terminal hook status."""
+        mounted: list[ToolCallMessage] = []
+        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
+        future.set_result({"type": "answered", "answers": answers})
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                mounted.append(widget)
+
+        async def request_ask_user(
+            _questions: list[Question],
+        ) -> asyncio.Future[AskUserWidgetResult] | None:
+            await asyncio.sleep(0)
+            return future
+
+        questions: list[Question] = [{"question": "Name?", "type": "text"}]
+        error = f"ask_user answer count mismatch (expected 1, got {len(answers)})"
+        transcript = f"Q: Name?\nA: (error: {error})"
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": questions,
+                            "tool_call_id": "ask-1",
+                        }
+                    )
+                ],
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            ToolMessage(
+                                content=transcript,
+                                tool_call_id="ask-1",
+                                name="ask_user",
+                                status="error",
+                            ),
+                            {},
+                        ),
+                    )
+                ],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=request_ask_user,
+        )
+
+        with (
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
+            ) as mock_dispatch_background,
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+            )
+
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        assert resume_payload["interrupt-1"] == {"answers": answers}
+        assert len(mounted) == 1
+        assert mounted[0]._status == "error"
+        assert mounted[0]._output == transcript
+        assert "tool.error" in [
+            call[0][0] for call in mock_dispatch_background.call_args_list
+        ]
+        result_payloads = [
+            call[0][1]
+            for call in mock_dispatch_background.call_args_list
+            if call[0][0] == "tool.result"
+        ]
+        assert len(result_payloads) == 1
+        assert result_payloads[0]["tool_status"] == "error"
+        assert result_payloads[0]["tool_output"] == ASK_USER_FAILED_SUMMARY
 
     async def test_tool_use_not_dispatched_without_id(self) -> None:
         """tool.use waits for a tool id even when name and args are complete.

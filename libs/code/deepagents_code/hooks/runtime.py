@@ -18,6 +18,7 @@ from deepagents_code.hooks.models.domain import (
     SubagentStartEvent,
     SubagentStopEvent,
 )
+from deepagents_code.hooks.presenter import HookPresenter
 from deepagents_code.hooks.snapshot import HooksSnapshot
 from deepagents_code.hooks.transcript import TranscriptStore
 from deepagents_code.model_config import DEFAULT_CONFIG_DIR
@@ -62,6 +63,7 @@ class HooksRuntime:
     """
 
     project_hooks_loaded: bool
+    presenter: HookPresenter
     fulfillments: HookFulfillmentLedger
 
     @classmethod
@@ -72,6 +74,7 @@ class HooksRuntime:
         workspace_trusted: bool = False,
         config_dir: Path | None = None,
         transcript_root: Path | None = None,
+        presenter: HookPresenter | None = None,
     ) -> HooksRuntime:
         """Load configuration once and freeze a session runtime.
 
@@ -85,6 +88,8 @@ class HooksRuntime:
                 Defaults to `~/.deepagents/transcripts` regardless of
                 `config_dir` (project and test hook configs must not relocate
                 the global transcript store).
+            presenter: Shared user-facing presenter. A private one is created
+                when omitted, so output is logged rather than surfaced.
 
         Returns:
             A runtime ready to execute invocations for this session.
@@ -114,6 +119,7 @@ class HooksRuntime:
             cwd=project_context.user_cwd,
             workspace_trusted=workspace_trusted,
             project_hooks_loaded=loaded.project_source_loaded,
+            presenter=presenter if presenter is not None else HookPresenter(),
             fulfillments=HookFulfillmentLedger(),
         )
 
@@ -176,6 +182,7 @@ class HooksRuntime:
             prepared.invocation,
             transcript_path=prepared.transcript_path,
             agent_transcript_path=prepared.agent_transcript_path,
+            on_progress=self.presenter.update_progress,
         )
 
     def prepare_invocation(

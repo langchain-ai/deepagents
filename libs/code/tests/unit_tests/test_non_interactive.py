@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 from rich.style import Style
 from rich.text import Text
 
+from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code._tool_stream import (
     TOOL_OUTPUT_TRUNCATION_MARKER,
     UNRENDERABLE_TOOL_OUTPUT,
@@ -379,8 +380,11 @@ class TestSandboxTypeForwarding:
         assert kwargs["profile_overrides"] == {"max_input_tokens": 32_000}
         assert kwargs["enable_interpreter"] is None
 
-    async def test_permission_hooks_override_headless_yolo_bypass(self) -> None:
+    async def test_permission_hooks_override_headless_yolo_bypass(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Permission hooks force client resolution while retaining YOLO context."""
+        monkeypatch.setenv(EXPERIMENTAL, "1")
         runtime = MagicMock()
         runtime.configured_events.return_value = frozenset(
             {HookEvent.PERMISSION_REQUEST}
@@ -1415,7 +1419,6 @@ def _manager(runtime: MagicMock) -> HooksManager:
             thread_id="t1",
             approval_mode=ApprovalMode.MANUAL,
         ),
-        notice=lambda _message: None,
     )
 
 
@@ -1435,7 +1438,6 @@ async def test_headless_compact_permission_uses_live_context() -> None:
             approval_mode=approval_mode,
             prompt_id="00000000-0000-4000-8000-000000000001",
         ),
-        notice=lambda _message: None,
     )
     state = StreamState(hooks=hooks)
     state.pending_interrupts["interrupt-1"] = {
@@ -1676,6 +1678,7 @@ class TestMaxTurns:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """`--trust-project-hooks` loads repository hook handlers."""
+        monkeypatch.setenv(EXPERIMENTAL, "1")
         monkeypatch.chdir(tmp_path)
         project_hooks = tmp_path / ".deepagents"
         project_hooks.mkdir()

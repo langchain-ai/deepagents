@@ -2770,7 +2770,7 @@ wheels = [
 
 [[package]]
 name = "langchain-daytona"
-version = "0.0.7"
+version = "0.0.8"
 source = { editable = "../partners/daytona" }
 dependencies = [
     { name = "daytona" },
@@ -2967,7 +2967,7 @@ wheels = [
 
 [[package]]
 name = "langchain-modal"
-version = "0.0.5"
+version = "0.0.6"
 source = { editable = "../partners/modal" }
 dependencies = [
     { name = "deepagents" },
@@ -3074,7 +3074,7 @@ wheels = [
 
 [[package]]
 name = "langchain-quickjs"
-version = "0.3.4"
+version = "0.3.5"
 source = { editable = "../partners/quickjs" }
 dependencies = [
     { name = "bsdiff4" },
@@ -3117,7 +3117,7 @@ test = [
 
 [[package]]
 name = "langchain-runloop"
-version = "0.0.6"
+version = "0.0.7"
 source = { editable = "../partners/runloop" }
 dependencies = [
     { name = "deepagents" },
@@ -3163,7 +3163,7 @@ wheels = [
 
 [[package]]
 name = "langchain-vercel-sandbox"
-version = "0.0.1"
+version = "0.0.2"
 source = { editable = "../partners/vercel" }
 dependencies = [
     { name = "deepagents" },

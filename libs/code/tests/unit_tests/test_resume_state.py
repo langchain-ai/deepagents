@@ -387,6 +387,29 @@ class TestCostDisplayCallbacks:
 
         assert app._displayed_cost_usd == pytest.approx(1.0)
 
+    def test_cost_summary_guides_fresh_thread(self) -> None:
+        app = DeepAgentsApp()
+
+        summary = app._format_cost_summary()
+
+        assert summary == (
+            "No cost data available yet. Send a message to begin tracking "
+            "estimated costs for this thread."
+        )
+
+    def test_cost_summary_guides_thread_with_unpriced_usage(self) -> None:
+        stats = SessionStats()
+        stats.record_request("unknown-model", 100, 10, provider="example")
+        app = DeepAgentsApp()
+        app._thread_stats = stats
+
+        summary = app._format_cost_summary()
+
+        assert summary == (
+            "No estimated cost yet. Keep chatting—costs will appear here when "
+            "pricing data is available."
+        )
+
     def test_cost_summary_includes_total_and_type_model_breakdown(self) -> None:
         stats = SessionStats()
         stats.record_request(

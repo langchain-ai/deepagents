@@ -7366,8 +7366,14 @@ class DeepAgentsApp(App):
         displayed_cost_usd = self._displayed_cost_usd
         if displayed_cost_usd <= 0 and not self._thread_stats.priced_request_count:
             if self._thread_stats.request_count:
-                return "No priceable usage recorded for this thread."
-            return "No estimated cost yet."
+                return (
+                    "No estimated cost yet. Keep chatting—costs will appear here "
+                    "when pricing data is available."
+                )
+            return (
+                "No cost data available yet. Send a message to begin tracking "
+                "estimated costs for this thread."
+            )
 
         lines = [f"Estimated thread cost: {format_cost(displayed_cost_usd)}"]
         priced_kinds = [

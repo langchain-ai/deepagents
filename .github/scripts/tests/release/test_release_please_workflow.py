@@ -57,6 +57,28 @@ def _evaluate(
     return bool(eval(expr))  # noqa: S307 - workflow-derived, no external input
 
 
+def test_condition_references_only_declared_needs() -> None:
+    """Every job referenced in a job-level `if:` must appear in its `needs:`.
+
+    The Actions `needs` context only contains declared dependencies: a
+    reference to an undeclared job evaluates to an empty string instead of
+    erroring, so a `result == 'success'` clause silently fails and the job
+    skips even when its real dependency succeeded. This is what let the
+    `update-lockfiles` fix reference the guard jobs without depending on
+    them. Checking for undeclared references in `env:`/`run:` steps is out of
+    scope — there it is a runtime bug, not an always-skip gate.
+    """
+    for job_name, job in _load_workflow()["jobs"].items():
+        condition = str(job.get("if", ""))
+        declared = _needs(job)
+        undeclared = {
+            ref.split(".")[1]
+            for ref in re.findall(r"needs\.[\w-]+(?=\.(?:result|outputs)\b)", condition)
+            if ref.split(".")[1] not in declared
+        }
+        assert not undeclared, f"{job_name} if: references undeclared needs: {undeclared}"
+
+
 def test_trigger_releases_can_comment_on_release_pr() -> None:
     """Grant only the permissions needed to dispatch and report releases."""
     workflow = _load_workflow()
@@ -115,6 +137,15 @@ def test_release_dispatch_precedes_release_please_maintenance() -> None:
 
     update_lockfiles = jobs["update-lockfiles"]
     assert "release-please" in _needs(update_lockfiles)
+    # The `needs` context only carries declared dependencies, so every
+    # ancestor whose result the `if:` hand-checks must be listed — an
+    # undeclared reference compares an empty string against 'success' and
+    # the job skips even when release-please opened PRs.
+    assert {
+        "guard-empty-commit",
+        "detect-release-commit",
+        "guard-pending-release",
+    } <= _needs(update_lockfiles)
     # Same skip poison as on `release-please`: this job's needs chain also ends
     # at a legitimately-skipped `trigger-releases`, so a bare outputs-only `if:`
     # keeps the implicit success() gate and the job silently skips even when
@@ -133,6 +164,15 @@ def test_release_dispatch_precedes_release_please_maintenance() -> None:
     # would tolerate red ancestors), so it must pin the same hand-checked
     # dependency results — except `update-lockfiles` itself, which is a
     # sequencing-only need whose own failure must not block the check.
+    # Same declared-needs requirement as update-lockfiles: the hand-checked
+    # ancestors must be listed, while `update-lockfiles` itself stays a
+    # sequencing-only need whose result the `if:` does not check.
+    assert {
+        "guard-empty-commit",
+        "detect-release-commit",
+        "guard-pending-release",
+        "update-lockfiles",
+    } <= _needs(jobs["dispatch-release-notes-check"])
     dispatch_if = _condition(jobs["dispatch-release-notes-check"])
     assert "always()" in dispatch_if
     assert "!cancelled()" in dispatch_if

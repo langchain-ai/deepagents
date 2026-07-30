@@ -740,7 +740,11 @@ jobs:
   # release-please updates pyproject.toml versions but doesn't regenerate lockfiles
   # https://github.com/googleapis/release-please/issues/2561
   update-lockfiles:
-    needs: release-please
+    # The `needs` list must cover every job the `if:` references: the `needs`
+    # context only carries direct dependencies, so checking an undeclared
+    # ancestor's result compares an empty string against 'success' and the
+    # condition always fails.
+    needs: [guard-empty-commit, detect-release-commit, guard-pending-release, release-please]
     # Same skip poison as #5161/#5169: `release-please` transitively needs
     # `trigger-releases` (via the guard), which is legitimately skipped on
     # ordinary pushes, and this job's bare `if:` kept Actions' implicit
@@ -750,8 +754,10 @@ jobs:
     # `!cancelled()` plus explicit result checks on every dependency in the
     # direct needs chain, and still require a positively non-empty `prs` (unset
     # after a crash stays blocked). `trigger-releases` itself is deliberately
-    # NOT re-checked: on release-commit pushes, `release-please` succeeding
-    # already implies the guard saw a successful dispatch.
+    # NOT re-checked (and deliberately NOT in `needs`): it is skipped on
+    # release-commit pushes, where `release-please` succeeding already implies
+    # the guard saw a successful dispatch — depending on it would reintroduce
+    # the poison.
     if: |
       !cancelled() &&
       needs.guard-empty-commit.result == 'success' &&
@@ -880,7 +886,9 @@ jobs:
   # `trigger-releases` is not re-checked — on release commits, a successful
   # `release-please` already implies the guard saw the dispatch succeed.
   dispatch-release-notes-check:
-    needs: [release-please, update-lockfiles]
+    # `needs` must list every job the `if:` references (see update-lockfiles);
+    # `update-lockfiles` is sequencing-only, so its result is not checked.
+    needs: [guard-empty-commit, detect-release-commit, guard-pending-release, release-please, update-lockfiles]
     if: |
       always() &&
       !cancelled() &&

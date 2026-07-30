@@ -453,7 +453,14 @@ jobs:
           fi
 
   # Generate release notes from CHANGELOG.md, append the package commit history,
-  # and collect contributor shoutouts
+  # and collect contributor shoutouts.
+  #
+  # Intentionally fail-open: `publish` does not depend on this job, and
+  # `mark-release` deliberately omits it from its `if:` condition, so a failure
+  # here still tags and publishes the release — with an empty body. Do not add
+  # `needs.release-notes.result == 'success'` to `mark-release`; that would
+  # trade a cosmetic failure for a blocked release. Recovery is documented in
+  # RELEASING.md > Release Notes Job Failed or GitHub Release Body Is Empty.
   release-notes:
     name: 📝 Generate release notes
     needs:
@@ -504,8 +511,14 @@ jobs:
           sparse-checkout-cone-mode: false
 
       # Build the release body with the shared script. This replaces the
-      # previous inline bash steps so the same logic can be reused locally
-      # for post-publish recovery (see RELEASING.md > Release Notes Failed).
+      # previous inline bash steps so the same logic can be reused locally for
+      # post-publish recovery (see RELEASING.md > Release Notes Job Failed or
+      # GitHub Release Body Is Empty).
+      #
+      # WORKING_DIR and IS_PRERELEASE are passed explicitly rather than
+      # re-derived by the script: the workflow already resolved both, and
+      # IS_PRERELEASE is the same value that drives the GitHub release's
+      # `prerelease:` flag below, so the banner and the flag cannot disagree.
       - name: Build release notes
         id: finalize-release-body
         env:
@@ -515,8 +528,9 @@ jobs:
           RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
           ACTOR: ${{ github.actor }}
           BASE_BRANCH: ${{ github.ref_name }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
           REPOSITORY: ${{ github.repository }}
+          IS_PRERELEASE: ${{ needs.build.outputs.is-prerelease }}
         run: |
           python _workflow/.github/scripts/release/build_release_notes.py \
             --package "$PKG_NAME" \
@@ -526,6 +540,8 @@ jobs:
             --actor "$ACTOR" \
             --base-branch "$BASE_BRANCH" \
             --default-branch "$DEFAULT_BRANCH" \
+            --working-dir "$WORKING_DIR" \
+            --is-prerelease "$IS_PRERELEASE" \
             --github-output
 
   test-pypi-publish:
@@ -784,7 +800,13 @@ jobs:
           # Temp workaround since attestations are on by default as of gh-action-pypi-publish v1.11.0
           attestations: false
 
-  # Create GitHub release after checks pass
+  # Create GitHub release after checks pass.
+  #
+  # The `if:` below gates on pre-release-checks and publish only. `release-notes`
+  # is listed in `needs` purely to consume its output — its result is
+  # deliberately not a condition, so a failed notes job publishes an empty body
+  # rather than blocking an already-published PyPI release. See the fail-open
+  # note on the `release-notes` job.
   mark-release:
     name: 🏷️ Tag GitHub release
     needs:

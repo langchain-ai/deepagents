@@ -854,7 +854,9 @@ To rebuild and apply the release body manually:
 
 1. **Check out the release commit locally.** Use the same SHA that was used for the release (visible in the workflow run's "Resolved release target" summary, or via `gh pr view <pr-number> --json mergeCommit --jq .mergeCommit.oid`).
 
-2. **Rebuild the body** with the shared script:
+   The clone must have **full history and all tags** — the script resolves the predecessor tag that bounds the git log, and CI does this with `fetch-depth: 0` and `fetch-tags: true`. On a shallow or tag-less clone, run `git fetch --tags --unshallow` first.
+
+2. **Rebuild the body** with the shared script. Run it **from the repository root** (or pass `--repo-root`):
 
    ```bash
    python .github/scripts/release/build_release_notes.py \
@@ -862,10 +864,16 @@ To rebuild and apply the release body manually:
      --version <VERSION> \
      --sha <RELEASE_SHA> \
      --repo langchain-ai/deepagents \
+     --actor <YOUR_GITHUB_USERNAME> \
+     --base-branch <BRANCH_RELEASED_FROM> \
      --out /tmp/release-body.md
    ```
 
-   Add `--offline` to skip GitHub API calls (contributor and releaser lookups). The body will still include the changelog section and git log scaffolding. Review the generated file before applying it.
+   `--actor` supplies the `Released by:` line when the release commit has no merged PR to read the merger from. `--base-branch` is required to reproduce the `Released from <branch> at commit ...` provenance line — omit it and that line is silently absent, which matters most for the `vX.Y` and `alpha/*` releases this recovery path usually serves. Pass `--default-branch` too if the repository default is not `main`.
+
+   Add `--offline` to skip GitHub API calls entirely (contributors *and* the releaser). The body will still include the changelog section and git log scaffolding. Note that a missing `gh` CLI is **not** equivalent: contributor collection yields nothing either way, but the releaser still falls back to `--actor`, so the `Released by:` line survives.
+
+   Review the generated file before applying it. The script exits non-zero and prints a `::error::` line if the SHA does not resolve or the package directory is missing. Warnings are printed as `::warning::` lines on stderr — read them. In particular, **`<summary>Git log for initial release</summary>` on a package that has shipped before means your tags are missing**; re-fetch and rebuild rather than publishing that body.
 
 3. **Apply the body** to the existing GitHub release:
 

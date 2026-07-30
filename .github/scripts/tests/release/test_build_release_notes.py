@@ -3122,6 +3122,10 @@ class TestCli:
         aggregate "this output is untrustworthy" lines must outrank the
         per-item ones they summarize or they fall off the run page entirely.
         """
+        # GITHUB_ACTIONS would prepend the "--is-prerelease not supplied"
+        # warning ahead of the build warnings, masking the sort this test pins.
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+
         def fake_build(*_a: object, **_k: object) -> tuple[str, list[str]]:
             return "body", ["per-item detail", "contributor list is INCOMPLETE"]
 
@@ -3188,16 +3192,16 @@ class TestWorkflowWiring:
         """`mark-release` must not gate on the notes job.
 
         Gating would trade a cosmetic empty body for a blocked release that has
-        already been published to PyPI.
+        already been published to PyPI. Reading `needs.release-notes.result` is
+        fine — the "Surface failed release notes" step uses it to warn — as
+        long as the job-level `if:` still runs when notes fail.
         """
-        # Comments are stripped deliberately: release.yml carries a "do NOT add
-        # needs.release-notes.result" note, which is the string being banned.
-        live_lines = [
-            line
-            for line in _release_yml_text().splitlines()
-            if not line.lstrip().startswith("#")
-        ]
-        assert "needs.release-notes.result" not in "\n".join(live_lines)
+        import yaml
+
+        job = yaml.safe_load(_release_yml_text())["jobs"]["mark-release"]
+        condition = str(job["if"])
+        assert "always()" in condition
+        assert "release-notes.result" not in condition
 
     def test_every_variable_the_step_interpolates_is_defined(self) -> None:
         """The deleted Bash tests executed the step; this replaces that guard.

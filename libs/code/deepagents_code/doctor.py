@@ -269,14 +269,15 @@ def _format_latest_version(
     statement about the installed version. Otherwise the cause is named:
     editable installs and disabled checks never contact PyPI at all, so any
     stamp on disk was written by another install sharing the state directory.
-    Failing that, `get_cached_update_available` has already applied `CACHE_TTL`,
-    so a recorded stamp means the cache was rejected as stale (repeated fetch
-    failures leave the stamp untouched) and no stamp means no check has ever
-    completed.
+    Failing that, the stamp separates an expired cache (repeated fetch failures
+    leave it untouched) from one never written at all, and a current cache that
+    still yields no answer is reported as incomplete rather than stale: it holds
+    no entry this install can use, as when only pre-release pins were recorded
+    or a pre-release install meets a stable-only payload.
 
     Args:
         available: Whether the cached answer is newer than the running version.
-        latest: Cached latest version, or `None` when the cache has no fresh
+        latest: Cached latest version, or `None` when the cache holds no usable
             answer.
         editable: Whether this is an editable install.
         checks_enabled: Whether update checks are enabled by config and env.
@@ -285,6 +286,8 @@ def _format_latest_version(
     Returns:
         The `Latest version` value.
     """
+    from deepagents_code.update_check import is_update_cache_fresh
+
     if latest is not None:
         return f"v{latest} available" if available else "up to date"
     if editable:
@@ -293,7 +296,9 @@ def _format_latest_version(
         return "not checked (checks disabled)"
     if checked_at is None:
         return "unknown (never checked)"
-    return "unknown (cache stale)"
+    if not is_update_cache_fresh(checked_at):
+        return "unknown (cache stale)"
+    return "unknown (cache incomplete)"
 
 
 def _format_last_checked(checked_at: float | None) -> str:

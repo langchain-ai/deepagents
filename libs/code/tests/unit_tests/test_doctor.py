@@ -518,6 +518,14 @@ class TestCollectUpdates:
         )
         return cache
 
+    def _fresh_cache(self, tmp_path: Path) -> Path:
+        """Write a cache stamped five minutes ago, well inside `CACHE_TTL`."""
+        cache = tmp_path / "latest_version.json"
+        cache.write_text(
+            json.dumps({"checked_at": time.time() - 300}), encoding="utf-8"
+        )
+        return cache
+
     def test_last_checked_shows_relative_time(self, tmp_path: Path) -> None:
         """A check stamped an hour ago renders as `1h ago` via the real read."""
         cache = tmp_path / "latest_version.json"
@@ -573,6 +581,17 @@ class TestCollectUpdates:
         labels = self._labels(self._stale_cache(tmp_path), cached=(False, None))
         assert labels["Latest version"] == "unknown (cache stale)"
         assert labels["Last checked"] == "3d ago"
+
+    def test_latest_version_reports_incomplete_cache(self, tmp_path: Path) -> None:
+        """A current cache with no usable entry is incomplete, not stale.
+
+        Reachable when only pre-release pins were written or a pre-release
+        install meets a stable-only payload, so the row must not claim the cache
+        expired.
+        """
+        labels = self._labels(self._fresh_cache(tmp_path), cached=(False, None))
+        assert labels["Latest version"] == "unknown (cache incomplete)"
+        assert labels["Last checked"] == "5m ago"
 
     def test_latest_version_reports_never_checked(self, tmp_path: Path) -> None:
         """With no stamp on disk, no check has ever completed."""

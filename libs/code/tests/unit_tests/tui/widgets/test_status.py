@@ -523,6 +523,22 @@ class TestStatusMessageVisibility:
             await pilot.pause()
             assert msg.display is False
 
+    async def test_hook_and_agent_status_do_not_clobber(self) -> None:
+        """Hook and agent writers acquire/release the shared slot without clobber."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            msg = pilot.app.query_one("#status-message", Static)
+
+            bar.set_status_message("Loading thread", source="agent")
+            bar.set_status_message("Running [bold]hook[/bold]", source="hooks")
+            bar.set_status_message("Still loading", source="agent")
+            await pilot.pause()
+            assert str(msg.render()) == "Running [bold]hook[/bold]"
+
+            bar.set_status_message("", source="hooks")
+            await pilot.pause()
+            assert str(msg.render()) == "Still loading"
+
     async def test_busy_shows_slot_and_clearing_hides(self) -> None:
         """A busy indicator reveals the slot; clearing busy (no message) hides it."""
         async with StatusBarApp().run_test() as pilot:

@@ -425,9 +425,8 @@ try:
     offset = {offset}
     limit = {limit}
 
-    # A non-positive limit asks for no lines. Reported after the checks above so
-    # a missing file, a directory, or a binary payload still wins, and without
-    # pagination keys since there is no line range to describe.
+    # No lines requested: no line range to report. Checked here so a missing
+    # file, a directory, or a binary payload is still reported first.
     if limit <= 0:
         print(json.dumps({{'encoding': 'utf-8', 'content': ''}}))
         sys.exit(0)
@@ -602,11 +601,8 @@ def _parse_ls_output(output: str, path: str) -> LsResult:
 def _build_read_cmd(file_path: str, offset: int, limit: int) -> str:
     file_type = _get_backend_read_file_type(file_path)
     path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
-    # Clamp here (defensively coercing to int, in case callers bypass type
-    # checking) so a degenerate window never reaches the script: a negative
-    # offset would otherwise be reported as `start_line=0`, which `ReadResult`
-    # rejects. A non-positive limit survives as `0` and the script short-circuits
-    # to an empty read.
+    # Clamp (and defensively coerce to int, in case callers bypass type
+    # checking) so the script never reports a line range starting before line 1.
     offset, limit = normalize_read_bounds(offset, limit)
     return _READ_COMMAND_TEMPLATE.format(
         path_b64=path_b64,

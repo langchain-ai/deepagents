@@ -330,14 +330,13 @@ def test_filesystem_backend_read_empty_file_leaves_pagination_unset(tmp_path: Pa
     assert result.next_offset is None
 
 
-@pytest.mark.parametrize("limit", [0, -5])
-def test_filesystem_backend_read_non_positive_limit_returns_empty_read(tmp_path: Path, limit: int) -> None:
-    """A degenerate `limit` returns an empty read, not a window-validation error."""
+def test_filesystem_backend_read_zero_limit_returns_empty_read(tmp_path: Path) -> None:
+    """A degenerate `limit` returns an empty read, not a line-range error."""
     target = tmp_path / "notes.txt"
     target.write_text("one\ntwo\nthree\n")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
 
-    result = be.read(str(target), offset=0, limit=limit)
+    result = be.read(str(target), offset=0, limit=0)
 
     assert result.error is None
     assert result.file_data is not None

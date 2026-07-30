@@ -39,14 +39,13 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
-    EMPTY_READ_WINDOW,
     MAX_VIDEO_INPUT_BYTES,
     _get_backend_read_file_type,
     check_empty_content,
     compile_grep_include_glob,
     compile_recursive_glob,
     perform_string_replacement,
-    resolve_read_window,
+    slice_read_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -463,32 +462,16 @@ class FilesystemBackend(BackendProtocol):
                 if fd >= 0:
                     os.close(fd)
 
-            # Binary reads and empty files carry no line range, so they keep the
-            # metadata-free window.
-            window = EMPTY_READ_WINDOW
             if file_type == "text":
                 empty_msg = check_empty_content(content)
                 if empty_msg:
                     file_data = FileData(content=empty_msg, encoding="utf-8")
                 else:
-                    # `splitlines(keepends=True)` preserves whether the final line
-                    # has a terminator; joining with `""` round-trips the file's
-                    # trailing-newline state. Required so `edit()` can detect
-                    # EOF-newline mismatches in the model's `old_string`.
-                    lines = content.splitlines(keepends=True)
-                    resolved = resolve_read_window(len(lines), offset, limit)
-                    if resolved is None:
-                        return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
-                    window = resolved
-                    file_data = FileData(content="".join(lines[window.start_idx : window.end_idx]), encoding="utf-8")
+                    # Reuse the shared slicer so local reads paginate exactly
+                    # like the state and store backends.
+                    return slice_read_response(FileData(content=content, encoding="utf-8"), offset, limit)
 
-            return ReadResult(
-                file_data=file_data,
-                total_lines=window.total_lines,
-                start_line=window.start_line,
-                end_line=window.end_line,
-                next_offset=window.next_offset,
-            )
+            return ReadResult(file_data=file_data)
         except (OSError, UnicodeDecodeError) as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 

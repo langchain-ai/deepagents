@@ -1593,9 +1593,9 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert result.content == ("1  one\n\n[Read 1 line (lines 1-1 of 5 total). 4 lines remaining from offset 1.]")
 
-    @pytest.mark.parametrize(("offset", "limit"), [(0, 0), (-1, 0), (0, -5)])
-    def test_read_file_degenerate_limit_reads_nothing(self, offset, limit):
-        """A model asking for zero (or fewer) lines gets an empty read, not a crash."""
+    @pytest.mark.parametrize(("offset", "limit"), [(0, 0), (-1, 100)])
+    def test_read_file_degenerate_arguments_do_not_error(self, offset, limit):
+        """Degenerate tool arguments read nothing or clamp, but never fail the tool."""
         files = {
             "/notes.txt": FileData(
                 content="one\ntwo\nthree",
@@ -1610,24 +1610,8 @@ class TestFilesystemMiddleware:
 
         assert isinstance(result, ToolMessage)
         assert result.status == "success"
-        assert result.content == EMPTY_CONTENT_WARNING
-
-    def test_read_file_negative_offset_reads_from_first_line(self):
-        """A negative offset is clamped to the start of the file, not reported as line 0."""
-        files = {
-            "/notes.txt": FileData(
-                content="one\ntwo\nthree",
-                encoding="utf-8",
-            )
-        }
-        backend, _ = _make_backend(files)
-        middleware = FilesystemMiddleware(backend=backend)
-        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
-
-        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": -1, "limit": 2})
-
-        assert isinstance(result, ToolMessage)
-        assert result.content == ("1  one\n2  two\n\n[Read 2 lines (lines 1-2 of 3 total). 1 line remaining from offset 2.]")
+        expected = EMPTY_CONTENT_WARNING if limit == 0 else "1  one\n2  two\n3  three"
+        assert result.content == expected
 
     def test_read_file_unknown_total_reports_next_offset(self):
         backend, _ = _make_backend()

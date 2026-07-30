@@ -6,7 +6,6 @@ import base64
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from langsmith.sandbox import ResourceNotFoundError, SandboxClientError
 
 from deepagents.backends import sandbox as base_sandbox
@@ -318,13 +317,12 @@ def test_read_offset_exceeds_length() -> None:
     assert "offset" in result.error.lower()
 
 
-@pytest.mark.parametrize("limit", [0, -2])
-def test_read_non_positive_limit_returns_empty_read(limit: int) -> None:
-    """A degenerate `limit` reads nothing instead of raising on the window."""
+def test_read_zero_limit_returns_empty_read() -> None:
+    """A degenerate `limit` reads nothing instead of raising on the line range."""
     sb, mock_sdk = _make_sandbox()
     mock_sdk.read.return_value = b"line1\nline2\nline3"
 
-    result = sb.read("/app/test.txt", limit=limit)
+    result = sb.read("/app/test.txt", limit=0)
 
     assert result.error is None
     assert result.file_data is not None

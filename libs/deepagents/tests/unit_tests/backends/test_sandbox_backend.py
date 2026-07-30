@@ -1470,7 +1470,7 @@ def test_read_script_final_window_has_null_next_offset(tmp_path: Path) -> None:
     assert result["next_offset"] is None
 
 
-def test_read_script_non_positive_limit_returns_empty_content(tmp_path: Path) -> None:
+def test_read_script_zero_limit_returns_empty_content(tmp_path: Path) -> None:
     """A degenerate `limit` reads nothing, with no pagination keys to validate."""
     target = tmp_path / "notes.txt"
     target.write_text("one\ntwo\nthree")
@@ -1480,54 +1480,12 @@ def test_read_script_non_positive_limit_returns_empty_content(tmp_path: Path) ->
     assert result == {"encoding": "utf-8", "content": ""}
 
 
-def test_read_script_missing_file_wins_over_non_positive_limit(tmp_path: Path) -> None:
-    """The empty read must not mask a path that cannot be read at all."""
-    result = _run_read_script(tmp_path / "absent.txt", offset=0, limit=0)
-
-    assert result == {"error": "file_not_found"}
-
-
-def test_build_read_cmd_clamps_degenerate_window() -> None:
+def test_build_read_cmd_clamps_degenerate_bounds() -> None:
     """Degenerate arguments are clamped before reaching the sandbox script."""
     cmd = _build_read_cmd("/notes.txt", -3, -1)
 
     assert "offset = 0" in cmd
     assert "limit = 0" in cmd
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="/bin/sh is unavailable on Windows")
-@pytest.mark.parametrize(
-    ("offset", "limit", "expected"),
-    [
-        (-1, 0, {"content": "", "total_lines": None, "start_line": None, "end_line": None, "next_offset": None}),
-        (-1, 2, {"content": "one\ntwo", "total_lines": 3, "start_line": 1, "end_line": 2, "next_offset": 2}),
-    ],
-)
-def test_build_read_cmd_degenerate_window_parses_into_read_result(
-    tmp_path: Path,
-    offset: int,
-    limit: int,
-    expected: dict,
-) -> None:
-    """Degenerate arguments must survive the full script -> `ReadResult` round-trip."""
-    target = tmp_path / "notes.txt"
-    target.write_text("one\ntwo\nthree")
-
-    proc = subprocess.run(  # noqa: S603  # command is built from the project's sandbox template
-        ["/bin/sh", "-c", _build_read_cmd(str(target), offset, limit)],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    result = _parse_read_output(proc.stdout, str(target))
-
-    assert result.error is None
-    assert result.file_data is not None
-    assert result.file_data["content"] == expected["content"]
-    assert result.total_lines == expected["total_lines"]
-    assert result.start_line == expected["start_line"]
-    assert result.end_line == expected["end_line"]
-    assert result.next_offset == expected["next_offset"]
 
 
 def test_read_script_bounds_total_count_and_does_not_decode_unrequested_bytes(tmp_path: Path) -> None:

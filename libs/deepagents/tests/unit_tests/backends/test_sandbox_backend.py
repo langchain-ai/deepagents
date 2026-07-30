@@ -1349,13 +1349,13 @@ def test_sandbox_edit_upload_malformed_output_cleans_up() -> None:
 # _FakeSandbox-style tests cannot reach because they stub execute() output.
 
 
-def _run_read_script(target: Path, *, file_type: str = "text", offset: int = 0, limit: int = 2000) -> dict:
-    cmd = _READ_COMMAND_TEMPLATE.format(
-        path_b64=base64.b64encode(str(target).encode("utf-8")).decode("ascii"),
-        file_type=file_type,
-        offset=offset,
-        limit=limit,
-    )
+def _run_read_cmd(cmd: str) -> dict:
+    """Execute the read script embedded in `cmd` and return its parsed JSON.
+
+    Accepts any command string in `_READ_COMMAND_TEMPLATE`'s shape, so callers
+    can pass either a directly-formatted template or the output of
+    `_build_read_cmd` to cover the argument-clamping it performs.
+    """
     _, _, tail = cmd.partition('python3 -c "')
     script, _, _ = tail.rpartition('" 2>&1')
     proc = subprocess.run(  # noqa: S603  # script is the project's own _READ_COMMAND_TEMPLATE, not user input
@@ -1365,6 +1365,17 @@ def _run_read_script(target: Path, *, file_type: str = "text", offset: int = 0, 
         check=True,
     )
     return json.loads(proc.stdout.strip())
+
+
+def _run_read_script(target: Path, *, file_type: str = "text", offset: int = 0, limit: int = 2000) -> dict:
+    return _run_read_cmd(
+        _READ_COMMAND_TEMPLATE.format(
+            path_b64=base64.b64encode(str(target).encode("utf-8")).decode("ascii"),
+            file_type=file_type,
+            offset=offset,
+            limit=limit,
+        )
+    )
 
 
 def test_read_script_cjk_at_prefix_boundary(tmp_path: Path) -> None:
@@ -1480,12 +1491,42 @@ def test_read_script_zero_limit_returns_empty_content(tmp_path: Path) -> None:
     assert result == {"encoding": "utf-8", "content": ""}
 
 
-def test_build_read_cmd_clamps_degenerate_bounds() -> None:
-    """Degenerate arguments are clamped before reaching the sandbox script."""
-    cmd = _build_read_cmd("/notes.txt", -3, -1)
+def test_build_read_cmd_clamps_negative_offset_to_first_line(tmp_path: Path) -> None:
+    """A negative offset is clamped by the builder, which the script relies on.
 
-    assert "offset = 0" in cmd
-    assert "limit = 0" in cmd
+    Asserted through the script's output rather than the generated source: the
+    script has no negative-offset guard of its own, so an unclamped value would
+    reach `_parse_read_output` as `start_line=-2` and surface to the model as an
+    opaque "unexpected server response".
+    """
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree")
+
+    result = _run_read_cmd(_build_read_cmd(str(target), -3, 2))
+
+    assert result["start_line"] == 1
+    assert result["end_line"] == 2
+    assert result["content"] == "one\ntwo"
+
+
+def test_build_read_cmd_clamps_negative_limit_to_empty_read(tmp_path: Path) -> None:
+    """A negative limit is floored to the zero-limit case the script handles."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree")
+
+    result = _run_read_cmd(_build_read_cmd(str(target), -3, -1))
+
+    assert result == {"encoding": "utf-8", "content": ""}
+
+
+def test_read_script_zero_limit_on_empty_file_reports_empty_file(tmp_path: Path) -> None:
+    """The empty-file check precedes the limit check, so the reminder wins."""
+    target = tmp_path / "blank.txt"
+    target.write_text("")
+
+    result = _run_read_script(target, offset=0, limit=0)
+
+    assert "empty contents" in result["content"]
 
 
 def test_read_script_bounds_total_count_and_does_not_decode_unrequested_bytes(tmp_path: Path) -> None:

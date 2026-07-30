@@ -425,8 +425,12 @@ try:
     offset = {offset}
     limit = {limit}
 
-    # No lines requested: no line range to report. Checked here so a missing
-    # file, a directory, or a binary payload is still reported first.
+    # No lines requested: no line range to report. Reached whenever a caller
+    # asks for zero lines, including a negative `limit` that `_build_read_cmd`
+    # floored to `0`; without this the empty window would fall through to the
+    # offset-exceeds-length error below. Checked here, after the not-found,
+    # directory, empty-file, and binary branches, so real failures and the
+    # empty-file reminder are still reported first.
     if limit <= 0:
         print(json.dumps({{'encoding': 'utf-8', 'content': ''}}))
         sys.exit(0)
@@ -537,8 +541,11 @@ except PermissionError:
 
 Runs on the sandbox via `execute()`. Only the requested page is returned,
 avoiding full-file transfer for paginated text reads. The path is
-base64-encoded; `file_type`, `offset`, and `limit` are interpolated directly
-(safe because they come from internal code, not user input).
+base64-encoded; `file_type`, `offset`, and `limit` are interpolated directly.
+`offset` and `limit` are model-supplied tool arguments, so interpolation is
+only safe because `_build_read_cmd` coerces both to `int` via
+`normalize_read_bounds` first — that coercion is what bounds them to integer
+literals, and must not be removed.
 
 Output: single-line JSON. On success (text): `{{"encoding", "content",
 "total_lines", "start_line", "end_line", "next_offset"}}`, where `start_line`
@@ -549,7 +556,9 @@ unbounded. On success
 (binary): `{{"encoding": "base64", "content": ...}}` without pagination keys.
 An empty file short-circuits to `{{"encoding": "utf-8", "content": <empty-file
 reminder>}}`, and a non-positive `limit` to `{{"encoding": "utf-8", "content":
-""}}`, both also without pagination keys. On failure: `{{"error": ...}}`.
+""}}`, both also without pagination keys. The empty-file check runs first, so an
+empty file yields the reminder even when `limit` is non-positive. On failure:
+`{{"error": ...}}`.
 """
 
 
@@ -601,8 +610,12 @@ def _parse_ls_output(output: str, path: str) -> LsResult:
 def _build_read_cmd(file_path: str, offset: int, limit: int) -> str:
     file_type = _get_backend_read_file_type(file_path)
     path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
-    # Clamp (and defensively coerce to int, in case callers bypass type
-    # checking) so the script never reports a line range starting before line 1.
+    # The `offset` clamp is load-bearing: the script has no negative-offset
+    # guard of its own and would report `start_line` 0 or lower, which
+    # `ReadResult` rejects. The `limit` clamp only normalizes negatives into the
+    # zero-limit case that the script itself short-circuits. The `int()`
+    # coercion inside the helper is what makes interpolating these
+    # model-supplied values into the script source safe.
     offset, limit = normalize_read_bounds(offset, limit)
     return _READ_COMMAND_TEMPLATE.format(
         path_b64=path_b64,
@@ -1075,8 +1088,9 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
                 when negative.
             limit: Maximum number of lines to return.
 
-                Only applied to text files. A non-positive value returns empty
-                content with no pagination metadata.
+                Only applied to text files with content: a non-positive value
+                returns empty content with no pagination metadata. Empty files
+                return the empty-file reminder regardless of `limit`.
 
         Returns:
             `ReadResult` with `file_data` on success or `error` on failure.

@@ -419,6 +419,17 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     ) -> ReadResult:
         """Read file content for the requested line range.
 
+        Implementations must tolerate degenerate windows rather than raising:
+        a negative `offset` reads from the first line, and a non-positive
+        `limit` returns empty content with every pagination field unset.
+        `deepagents.backends.utils.normalize_read_bounds` clamps both bounds for
+        implementations that slice in Python.
+
+        Implementations must also set `start_line` whenever they return
+        line-numberable text. The middleware falls back to deriving the gutter
+        from `offset` when `start_line` is unset, which only yields a valid
+        1-indexed gutter for windows the backend actually sliced.
+
         Args:
             file_path: Absolute path to the file to read. Must start with `'/'`.
             offset: Line number to start reading from (0-indexed).

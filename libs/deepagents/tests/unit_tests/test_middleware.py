@@ -48,6 +48,7 @@ from deepagents.middleware.filesystem import (
     EMPTY_CONTENT_WARNING,
     GLOB_TRUNCATION_NOTE,
     GREP_TRUNCATION_NOTE,
+    NO_LINES_REQUESTED_WARNING,
     FileData,
     FilesystemMiddleware,
     FilesystemPermission,
@@ -1593,9 +1594,8 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert result.content == ("1  one\n\n[Read 1 line (lines 1-1 of 5 total). 4 lines remaining from offset 1.]")
 
-    @pytest.mark.parametrize(("offset", "limit"), [(0, 0), (-1, 100)])
-    def test_read_file_degenerate_arguments_do_not_error(self, offset, limit):
-        """Degenerate tool arguments read nothing or clamp, but never fail the tool."""
+    def _read_notes(self, *, offset: int, limit: int) -> ToolMessage:
+        """Invoke `read_file` against a fixed 3-line file with the given window."""
         files = {
             "/notes.txt": FileData(
                 content="one\ntwo\nthree",
@@ -1607,11 +1607,41 @@ class TestFilesystemMiddleware:
         read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
 
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": offset, "limit": limit})
-
         assert isinstance(result, ToolMessage)
+        return result
+
+    @pytest.mark.parametrize("limit", [0, -3])
+    def test_read_file_non_positive_limit_does_not_claim_the_file_is_empty(self, limit):
+        """A zero-line window must not borrow the empty-file reminder.
+
+        The `read_file` description teaches the model that reminder means the
+        file itself is empty, so reusing it here would state something false
+        about a file that has contents.
+        """
+        result = self._read_notes(offset=0, limit=limit)
+
         assert result.status == "success"
-        expected = EMPTY_CONTENT_WARNING if limit == 0 else "1  one\n2  two\n3  three"
-        assert result.content == expected
+        assert result.content == NO_LINES_REQUESTED_WARNING.format(limit=limit)
+        assert result.content != EMPTY_CONTENT_WARNING
+        assert "empty contents" not in result.content
+
+    def test_read_file_negative_offset_clamps_and_discloses(self):
+        """A clamped offset still reads, and says so.
+
+        The window reaches EOF here, which suppresses the pagination notice, so
+        the disclosure has to come from its own notice or the model gets a
+        gutter starting at line 1 with no sign its request was reinterpreted.
+        """
+        result = self._read_notes(offset=-1, limit=100)
+
+        assert result.status == "success"
+        assert result.content == ("1  one\n2  two\n3  three\n\n[Requested offset -1 is before the start of the file; read from line 1 instead.]")
+
+    def test_read_file_non_negative_offset_has_no_clamp_notice(self):
+        """The clamp notice must not appear on ordinary reads."""
+        result = self._read_notes(offset=0, limit=100)
+
+        assert result.content == "1  one\n2  two\n3  three"
 
     def test_read_file_unknown_total_reports_next_offset(self):
         backend, _ = _make_backend()
@@ -2132,6 +2162,35 @@ class TestFilesystemMiddleware:
         result = middleware._intercept_large_tool_result(tool_message)
 
         assert result == tool_message
+
+    def test_read_file_zero_limit_on_image_still_returns_the_image(self):
+        """A zero limit must not turn a binary read into a no-lines reminder.
+
+        `limit` never applies to binary payloads, so the no-lines guard is
+        conditioned on empty content as well. Guarding on `limit` alone would
+        regress every image read that happens to carry a degenerate limit.
+        """
+
+        class ImageBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(file_data={"content": "<base64_data>", "encoding": "base64"})
+
+        middleware = FilesystemMiddleware(backend=ImageBackend())
+        runtime = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="img-zero-limit",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/app/screenshot.png", "runtime": runtime, "limit": 0})
+
+        assert isinstance(result, ToolMessage)
+        assert isinstance(result.content, list)
+        assert result.content[0]["type"] == "image"
 
     def test_read_file_image_returns_standard_image_content_block(self):
         """Test image reads return standard image blocks with base64 + mime_type."""

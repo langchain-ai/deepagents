@@ -6,6 +6,7 @@ enable composition without fragile string parsing.
 """
 
 import functools
+import logging
 import os
 import re
 from collections.abc import Callable, Sequence
@@ -16,6 +17,8 @@ from typing import Any, Final, Literal, overload
 import wcmatch.glob as wcglob
 
 from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, GrepResult, ReadResult
+
+logger = logging.getLogger(__name__)
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 MAX_VIDEO_INPUT_BYTES: Final = 1024 * 1024 * 1024
@@ -393,17 +396,37 @@ def normalize_read_bounds(offset: int, limit: int) -> tuple[int, int]:
     """Floor a requested read window at a zero offset and zero lines.
 
     Models occasionally emit degenerate `read_file` arguments (`offset=-1`,
-    `limit=0`). Clamping them keeps backends from reporting a line range that
-    starts before line 1 or runs backward, which `ReadResult` rejects.
+    `limit=0`). Clamping `offset` keeps backends from reporting a line range
+    that starts before line 1, which `ReadResult` rejects.
+
+    Clamping `limit` is *not* sufficient on its own: flooring a negative limit
+    at `0` produces a zero-length window, which still has no valid
+    `start_line`/`end_line` pair. Callers must additionally treat a returned
+    `limit` of `0` as an empty read — see `slice_read_response` below, or the
+    equivalent short-circuits in the sandbox and LangSmith backends.
+
+    The `int()` coercion is deliberate and load-bearing, not redundant with the
+    annotations: `offset` and `limit` originate from model-supplied tool
+    arguments, and the sandbox backend interpolates them into the source of a
+    script it executes (`_READ_COMMAND_TEMPLATE`). Do not remove it.
 
     Args:
         offset: Requested 0-indexed line offset.
         limit: Requested maximum number of lines.
 
     Returns:
-        Tuple of `(offset, limit)`, each floored at `0`.
+        Tuple of `(offset, limit)`, each coerced to `int` and floored at `0`.
     """
-    return max(int(offset), 0), max(int(limit), 0)
+    normalized_offset, normalized_limit = max(int(offset), 0), max(int(limit), 0)
+    if (normalized_offset, normalized_limit) != (offset, limit):
+        logger.debug(
+            "Clamped degenerate read window: offset %r -> %d, limit %r -> %d",
+            offset,
+            normalized_offset,
+            limit,
+            normalized_limit,
+        )
+    return normalized_offset, normalized_limit
 
 
 def slice_read_response(
@@ -422,21 +445,29 @@ def slice_read_response(
         offset: Line offset (0-indexed).
         limit: Maximum number of lines.
 
+    Both bounds are clamped through `normalize_read_bounds` before slicing, so
+    a negative `offset` reads from the first line and a negative `limit` is
+    treated as `0`.
+
     Returns:
         `ReadResult` with the sliced raw content and pagination metadata
             (`total_lines`, `start_line`, `end_line`, `next_offset`). The
             pagination fields are left unset for empty or whitespace-only
-            content, and when `limit` selects no lines. `error` is set instead
+            content, and when the clamped `limit` is `0`. `error` is set instead
             when the offset exceeds the file length.
     """
     content = file_data_to_string(file_data)
     offset, limit = normalize_read_bounds(offset, limit)
 
+    # Ordering note: blank content is reported before the zero-limit check, so a
+    # whitespace-only file returns its content (which the middleware maps to the
+    # empty-file reminder) rather than `""`, regardless of `limit`.
     if not content or content.strip() == "":
         return ReadResult(file_data=_copy_file_data_with_content(file_data, content))
 
-    # Nothing was requested, so there is no line range to report — same shape as
-    # an empty file above.
+    # Nothing was requested, so there is no line range to report — same
+    # pagination shape as the blank-content branch above. The middleware
+    # distinguishes this from a genuinely empty file by re-checking `limit`.
     if limit == 0:
         return ReadResult(file_data=_copy_file_data_with_content(file_data, ""))
 

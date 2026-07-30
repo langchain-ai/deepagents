@@ -247,8 +247,9 @@ class LangSmithSandbox(BaseSandbox):
         offset, limit = normalize_read_bounds(offset, limit)
 
         # Nothing was requested: no line range to describe, and nothing for the
-        # byte cap below to shorten.
-        if limit == 0:
+        # byte cap below to shorten. Guarded at `<= 0` so this holds even if the
+        # clamp above is ever bypassed or removed.
+        if limit <= 0:
             return ReadResult(file_data=FileData(content="", encoding="utf-8"))
 
         total_lines = len(lines)

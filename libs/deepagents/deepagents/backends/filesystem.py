@@ -423,11 +423,14 @@ class FilesystemBackend(BackendProtocol):
             file_path: Absolute or relative file path.
             offset: Line offset to start reading from (0-indexed).
 
-                Clamped to the start of the file when negative.
+                Only applied to text files, and clamped to the start of the file
+                when negative.
             limit: Maximum number of lines to read.
 
-                A non-positive value returns empty content with no pagination
-                metadata.
+                Only applied to text files with content: a non-positive value
+                returns empty content with no pagination metadata. Empty and
+                whitespace-only files return the empty-file reminder regardless
+                of `limit`, and binary files return their full payload.
 
         Returns:
             `ReadResult` with raw (unformatted) content for the requested window.
@@ -467,8 +470,11 @@ class FilesystemBackend(BackendProtocol):
                 if empty_msg:
                     file_data = FileData(content=empty_msg, encoding="utf-8")
                 else:
-                    # Reuse the shared slicer so local reads paginate exactly
-                    # like the state and store backends.
+                    # Reuse the shared slicer so local reads paginate, clamp
+                    # degenerate bounds, and preserve trailing-newline state
+                    # exactly like the state and store backends. `edit()`
+                    # depends on that last property to detect EOF-newline
+                    # mismatches in the model's `old_string`.
                     return slice_read_response(FileData(content=content, encoding="utf-8"), offset, limit)
 
             return ReadResult(file_data=file_data)

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, assert_never
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, ClassVar, assert_never
 
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical
@@ -83,6 +84,15 @@ class AskUserTextArea(InlinePromptTextArea):
     Adds one behavior over the shared base: when the cursor is on the first or
     last line of a choice question's Other free-text input, Up/Down are handed
     back to the enclosing choice list instead of moving the text cursor.
+    """
+
+    # TextArea defaults to `height: 1fr`, which lets open Other fields swallow
+    # leftover vertical space when several are visible. Stay content-sized; app
+    # CSS still sets min/max height per role (main text vs Other).
+    DEFAULT_CSS = """
+    AskUserTextArea {
+        height: auto;
+    }
     """
 
     class Submitted(InlinePromptTextArea.Submitted):
@@ -486,11 +496,40 @@ class _MultiSelectOption(_ChoiceOption):
         )
 
 
-class _MultiSelectOtherEntry(NamedTuple):
+class _OtherSlot(Vertical):
+    """One multi-select Other checkbox paired with its free-text field."""
+
+    DEFAULT_CSS = """
+    _OtherSlot {
+        height: auto;
+        width: 1fr;
+        margin: 0;
+        padding: 0;
+    }
+    """
+
+    def __init__(
+        self,
+        option: _MultiSelectOption,
+        text_input: AskUserTextArea,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(classes="ask-user-other-slot", **kwargs)
+        self._option = option
+        self._text_input = text_input
+
+    def compose(self) -> ComposeResult:
+        yield self._option
+        yield self._text_input
+
+
+@dataclass(slots=True)
+class _MultiSelectOtherEntry:
     """One multi-select custom Other row: checkbox + free-text input."""
 
     option: _MultiSelectOption
     text_input: AskUserTextArea
+    slot: _OtherSlot
 
 
 class _QuestionWidget(Vertical):
@@ -650,11 +689,14 @@ class _QuestionWidget(Vertical):
     def _other_label(entry_index: int) -> str:
         return OTHER_CHOICE_LABEL if entry_index == 0 else ADD_ANOTHER_OTHER_LABEL
 
-    def _compose_other_entry(self, *, selected: bool) -> ComposeResult:
-        """Yield one multi-select Other checkbox + free-text input automatically.
+    def _make_other_entry(self, *, selected: bool) -> _MultiSelectOtherEntry:
+        """Build one multi-select Other checkbox + free-text pair.
 
         Args:
             selected: Whether the new checkbox row starts with the highlight.
+
+        Returns:
+            The entry tracking widgets for toggle/answer collection.
         """
         entry_index = len(self._other_entries)
         option = _MultiSelectOption(
@@ -664,10 +706,15 @@ class _QuestionWidget(Vertical):
         )
         text_input = AskUserTextArea(classes="ask-user-other-input")
         text_input.display = False
+        slot = _OtherSlot(option, text_input)
         self._choice_widgets.append(option)
-        self._other_entries.append(_MultiSelectOtherEntry(option, text_input))
-        yield option
-        yield text_input
+        entry = _MultiSelectOtherEntry(option, text_input, slot)
+        self._other_entries.append(entry)
+        return entry
+
+    def _compose_other_entry(self, *, selected: bool) -> ComposeResult:
+        """Yield one multi-select Other slot (checkbox + free-text)."""
+        yield self._make_other_entry(selected=selected).slot
 
     def _mount_other_entry(self) -> None:
         """Dynamically append another multi-select Other slot."""
@@ -675,18 +722,8 @@ class _QuestionWidget(Vertical):
             return
         if len(self._other_entries) >= MAX_MULTI_SELECT_OTHER_ENTRIES:
             return
-        entry_index = len(self._other_entries)
-        option = _MultiSelectOption(
-            self._other_label(entry_index),
-            index=len(self._choices) + entry_index,
-            selected=False,
-        )
-        text_input = AskUserTextArea(classes="ask-user-other-input")
-        text_input.display = False
-        self._choice_widgets.append(option)
-        self._other_entries.append(_MultiSelectOtherEntry(option, text_input))
-        self.mount(option)
-        self.mount(text_input)
+        entry = self._make_other_entry(selected=False)
+        self.mount(entry.slot)
 
     @staticmethod
     def _entry_custom_text(entry: _MultiSelectOtherEntry) -> str:

@@ -1,9 +1,10 @@
-"""Confirmation modal shown after a successful MCP login.
+"""Confirmation modals for MCP changes that need a server restart.
 
 Restarting the LangGraph server is required for newly minted MCP tokens
-to take effect, but auto-restarting interrupts users who want to
-authenticate against several MCP servers back-to-back. This modal lets
-the user choose between restarting now and deferring until later.
+and for `/mcp` disable/enable toggles to take effect, but auto-restarting
+interrupts users who want to make several MCP changes back-to-back. These
+modals let the user choose between restarting now and deferring until
+later.
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ from textual.widgets import Static
 from deepagents_code.config import get_glyphs
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from textual.app import ComposeResult
 
 
@@ -128,6 +131,111 @@ class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
         present, else falls through to `dismiss(None)`. Without this
         alias, Esc would dismiss with `None`, which the caller treats as
         a programmatic dismiss (no toast, no reopen) instead of an
+        explicit defer.
+        """
+        self.action_later()
+
+
+class MCPDisableReconnectPromptScreen(ModalScreen[ReconnectChoice]):
+    """Modal asking whether to reconnect after `/mcp` disable/enable toggles.
+
+    Shown when the user closes the `/mcp` viewer with pending `F2`
+    disable-state changes but without pressing `Ctrl+R`, so the toggles
+    do not silently sit unapplied. Dismisses with `"reconnect"` when the
+    user accepts the restart and `"later"` when the user defers; Esc is
+    treated as "later".
+    """
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "reconnect", "Reconnect", show=False, priority=True),
+        Binding("escape", "later", "Later", show=False, priority=True),
+    ]
+
+    CSS = """
+    MCPDisableReconnectPromptScreen {
+        align: center middle;
+    }
+
+    MCPDisableReconnectPromptScreen > Vertical {
+        width: 64;
+        max-width: 90%;
+        height: auto;
+        background: $surface;
+        border: solid $primary;
+        padding: 1 2;
+    }
+
+    MCPDisableReconnectPromptScreen .mcp-reconnect-title {
+        text-style: bold;
+        color: $primary;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    MCPDisableReconnectPromptScreen .mcp-reconnect-body {
+        height: auto;
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    MCPDisableReconnectPromptScreen .mcp-reconnect-help {
+        height: 1;
+        color: $text-muted;
+        text-style: italic;
+        text-align: center;
+    }
+    """
+
+    def __init__(self, server_names: Sequence[str]) -> None:
+        """Initialize the prompt.
+
+        Args:
+            server_names: Servers whose disabled state changed and is
+                waiting on a reconnect.
+        """
+        super().__init__()
+        self._server_names = tuple(server_names)
+
+    def compose(self) -> ComposeResult:
+        """Compose the confirmation dialog.
+
+        Yields:
+            Title, body, and help-row widgets parented inside a `Vertical`.
+        """
+        with Vertical():
+            yield Static(
+                "Apply MCP server changes?",
+                classes="mcp-reconnect-title",
+                markup=False,
+            )
+            yield Static(
+                Content.from_markup(
+                    "Reconnect to apply the changes to $names.",
+                    names=", ".join(self._server_names) or "the MCP servers",
+                ),
+                classes="mcp-reconnect-body",
+                markup=False,
+            )
+            yield Static(
+                "Enter to reconnect, Esc to defer",
+                classes="mcp-reconnect-help",
+                markup=False,
+            )
+
+    def action_reconnect(self) -> None:
+        """Dismiss with `"reconnect"`."""
+        self.dismiss("reconnect")
+
+    def action_later(self) -> None:
+        """Dismiss with `"later"`."""
+        self.dismiss("later")
+
+    def action_cancel(self) -> None:
+        """Alias for `action_later` so the app-level Esc handler defers.
+
+        Same rationale as `MCPReconnectPromptScreen.action_cancel`: the
+        app's priority `escape` binding dispatches to `action_cancel`, so
+        without this alias Esc would dismiss with `None` instead of an
         explicit defer.
         """
         self.action_later()

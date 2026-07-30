@@ -11,7 +11,7 @@ import re
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import Any, Final, Literal, overload
+from typing import Any, Final, Literal, NamedTuple, overload
 
 import wcmatch.glob as wcglob
 
@@ -389,6 +389,105 @@ def _copy_file_data_with_content(file_data: FileData, content: str) -> FileData:
     return sliced_fd
 
 
+def normalize_read_bounds(offset: int, limit: int) -> tuple[int, int]:
+    """Clamp a requested read window to a non-negative offset and line count.
+
+    Models occasionally emit degenerate `read_file` arguments (`offset=-1`,
+    `limit=0`). Clamping them in one place keeps every backend from building a
+    `ReadResult` window that starts before line 1 or runs backward, which
+    `ReadResult.__post_init__` rejects.
+
+    Args:
+        offset: Requested 0-indexed line offset.
+        limit: Requested maximum number of lines.
+
+    Returns:
+        Tuple of `(offset, limit)`, each floored at `0`.
+    """
+    return max(int(offset), 0), max(int(limit), 0)
+
+
+class ReadWindow(NamedTuple):
+    """Resolved bounds for a single page of a paginated text read.
+
+    `start_idx`/`end_idx` are 0-indexed slice bounds into the file's lines; the
+    remaining fields are the pagination metadata `ReadResult` expects, and are
+    all `None` for a window that returns no lines (see `EMPTY_READ_WINDOW`).
+    """
+
+    start_idx: int
+    end_idx: int
+    total_lines: int | None
+    start_line: int | None
+    end_line: int | None
+    next_offset: int | None
+
+    @property
+    def is_empty(self) -> bool:
+        """Whether the window deliberately selects no lines."""
+        return self.start_line is None
+
+
+EMPTY_READ_WINDOW = ReadWindow(
+    start_idx=0,
+    end_idx=0,
+    total_lines=None,
+    start_line=None,
+    end_line=None,
+    next_offset=None,
+)
+"""Window for a read that returns no lines.
+
+A non-positive `limit` asks for nothing, so there is no line range to describe:
+every pagination field stays unset, exactly as it does for an empty file.
+"""
+
+
+def resolve_read_window(total_lines: int, offset: int, limit: int) -> ReadWindow | None:
+    """Resolve which lines a paginated read should return.
+
+    Shared by every built-in text read path so the emitted window always
+    satisfies the `ReadResult` contract: it runs forward from line 1 or later,
+    stays inside the file, and resumes at the first line not shown.
+
+    Args:
+        total_lines: Number of source lines in the file.
+        offset: Requested 0-indexed line offset; clamped at `0`.
+        limit: Requested maximum number of lines; `<= 0` selects no lines.
+
+    Returns:
+        `EMPTY_READ_WINDOW` when nothing was requested, `None` when the offset
+            starts at or past the end of the file (the caller reports that as
+            its own error), otherwise the resolved `ReadWindow`.
+    """
+    offset, limit = normalize_read_bounds(offset, limit)
+    if limit == 0:
+        return EMPTY_READ_WINDOW
+    if offset >= total_lines:
+        return None
+    end_idx = min(offset + limit, total_lines)
+    return ReadWindow(
+        start_idx=offset,
+        end_idx=end_idx,
+        total_lines=total_lines,
+        start_line=offset + 1,
+        end_line=end_idx,
+        next_offset=end_idx if end_idx < total_lines else None,
+    )
+
+
+def empty_read_result(encoding: str = "utf-8") -> ReadResult:
+    """Build the result for a read whose window returns no lines.
+
+    Args:
+        encoding: Encoding recorded on the returned `FileData`.
+
+    Returns:
+        `ReadResult` with empty content and no pagination metadata.
+    """
+    return ReadResult(file_data=FileData(content="", encoding=encoding))
+
+
 def slice_read_response(
     file_data: FileData,
     offset: int,
@@ -409,8 +508,8 @@ def slice_read_response(
         `ReadResult` with the sliced raw content and pagination metadata
             (`total_lines`, `start_line`, `end_line`, `next_offset`). The
             pagination fields are left unset for empty or whitespace-only
-            content. `error` is set instead when the offset exceeds the file
-            length.
+            content, and for a window that returns no lines. `error` is set
+            instead when the offset exceeds the file length.
     """
     content = file_data_to_string(file_data)
 
@@ -424,24 +523,20 @@ def slice_read_response(
     # also splits on CR / CRLF, so line indexing matches the LF-normalized
     # form without first rewriting the whole (potentially huge) string.
     lines = content.splitlines(keepends=True)
-    start_idx = offset
-    end_idx = min(start_idx + limit, len(lines))
-    total_lines = len(lines)
-
-    if start_idx >= total_lines:
-        return ReadResult(error=f"Line offset {offset} exceeds file length ({total_lines} lines)")
+    window = resolve_read_window(len(lines), offset, limit)
+    if window is None:
+        return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
 
     # Normalize line endings to LF, but only across the requested window.
     # State/Store backends may carry CRLF or CR content as written;
     # downstream tooling (edit match, grep, format) assumes LF.
-    sliced = "".join(lines[start_idx:end_idx]).replace("\r\n", "\n").replace("\r", "\n")
-    next_offset = end_idx if end_idx < total_lines else None
+    sliced = "".join(lines[window.start_idx : window.end_idx]).replace("\r\n", "\n").replace("\r", "\n")
     return ReadResult(
         file_data=_copy_file_data_with_content(file_data, sliced),
-        total_lines=total_lines,
-        start_line=start_idx + 1,
-        end_line=end_idx,
-        next_offset=next_offset,
+        total_lines=window.total_lines,
+        start_line=window.start_line,
+        end_line=window.end_line,
+        next_offset=window.next_offset,
     )
 
 

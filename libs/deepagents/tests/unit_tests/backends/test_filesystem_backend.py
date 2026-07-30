@@ -330,6 +330,40 @@ def test_filesystem_backend_read_empty_file_leaves_pagination_unset(tmp_path: Pa
     assert result.next_offset is None
 
 
+@pytest.mark.parametrize("limit", [0, -5])
+def test_filesystem_backend_read_non_positive_limit_returns_empty_read(tmp_path: Path, limit: int) -> None:
+    """A degenerate `limit` returns an empty read, not a window-validation error."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=0, limit=limit)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+    assert result.total_lines is None
+    assert result.start_line is None
+    assert result.end_line is None
+    assert result.next_offset is None
+
+
+def test_filesystem_backend_read_negative_offset_starts_at_first_line(tmp_path: Path) -> None:
+    """A negative offset is clamped to the start of the file instead of erroring."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=-1, limit=2)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "one\ntwo\n"
+    assert result.start_line == 1
+    assert result.end_line == 2
+    assert result.next_offset == 2
+
+
 def test_filesystem_backend_reads_mkv_as_binary(tmp_path: Path) -> None:
     """Local `.mkv` reads must be routed as binary before UTF-8 decoding."""
     target = tmp_path / "clip.mkv"

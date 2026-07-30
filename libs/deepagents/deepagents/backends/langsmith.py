@@ -20,7 +20,7 @@ from deepagents.backends.sandbox import (
     TRUNCATION_MSG,
     BaseSandbox,
 )
-from deepagents.backends.utils import _get_backend_read_file_type
+from deepagents.backends.utils import _get_backend_read_file_type, empty_read_result, resolve_read_window
 
 if TYPE_CHECKING:
     from langsmith.sandbox import AsyncSandbox, AsyncSandboxClient, ExecutionResult, Sandbox
@@ -186,6 +186,9 @@ class LangSmithSandbox(BaseSandbox):
             `\r` collapse to `\n`), split on `\n`, paginated by `offset` /
             `limit`, joined back with `\n`, and capped at `MAX_OUTPUT_BYTES`
             with `TRUNCATION_MSG` appended on overflow.
+        - A negative `offset` is clamped to the start of the file, and a
+            non-positive `limit` returns empty content with no pagination
+            metadata.
 
         Args:
             file_path: Absolute path to the file to read.
@@ -241,14 +244,16 @@ class LangSmithSandbox(BaseSandbox):
         if lines and lines[-1] == "":
             lines.pop()
 
-        offset = int(offset)
-        limit = int(limit)
-
         total_lines = len(lines)
-        if not lines or offset >= total_lines:
+        window = resolve_read_window(total_lines, offset, limit)
+        if window is None:
             return ReadResult(error=f"File '{file_path}': Line offset {offset} exceeds file length ({total_lines} lines)")
+        # Nothing was requested, so skip the byte-cap bookkeeping below: it
+        # describes a rendered line range, and there is none.
+        if window.is_empty:
+            return empty_read_result()
 
-        page = lines[offset : offset + limit]
+        page = lines[window.start_idx : window.end_idx]
         content = "\n".join(page)
         returned_lines = len(page)
 
@@ -270,13 +275,13 @@ class LangSmithSandbox(BaseSandbox):
             returned_lines = truncated.count("\n") or 1
             content = truncated + TRUNCATION_MSG
 
-        end_line = offset + returned_lines
+        end_line = window.start_idx + returned_lines
         next_offset = end_line if end_line < total_lines else None
 
         return ReadResult(
             file_data=FileData(content=content, encoding="utf-8"),
             total_lines=total_lines,
-            start_line=offset + 1,
+            start_line=window.start_line,
             end_line=end_line,
             next_offset=next_offset,
         )

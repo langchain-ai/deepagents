@@ -42,7 +42,7 @@ from deepagents.backends.protocol import (
     WriteResult,
     execute_accepts_timeout,
 )
-from deepagents.backends.utils import _get_backend_read_file_type
+from deepagents.backends.utils import _get_backend_read_file_type, normalize_read_bounds
 
 logger = logging.getLogger(__name__)
 
@@ -424,6 +424,14 @@ try:
 
     offset = {offset}
     limit = {limit}
+
+    # A non-positive limit asks for no lines. Reported after the checks above so
+    # a missing file, a directory, or a binary payload still wins, and without
+    # pagination keys since there is no line range to describe.
+    if limit <= 0:
+        print(json.dumps({{'encoding': 'utf-8', 'content': ''}}))
+        sys.exit(0)
+
     line_count = 0
     returned_lines = 0
     truncated = False
@@ -541,7 +549,8 @@ when the file is large enough that a full re-scan to count its lines would be
 unbounded. On success
 (binary): `{{"encoding": "base64", "content": ...}}` without pagination keys.
 An empty file short-circuits to `{{"encoding": "utf-8", "content": <empty-file
-reminder>}}`, also without pagination keys. On failure: `{{"error": ...}}`.
+reminder>}}`, and a non-positive `limit` to `{{"encoding": "utf-8", "content":
+""}}`, both also without pagination keys. On failure: `{{"error": ...}}`.
 """
 
 
@@ -593,12 +602,17 @@ def _parse_ls_output(output: str, path: str) -> LsResult:
 def _build_read_cmd(file_path: str, offset: int, limit: int) -> str:
     file_type = _get_backend_read_file_type(file_path)
     path_b64 = base64.b64encode(file_path.encode("utf-8")).decode("ascii")
-    # Defensive int coercion in case callers bypass type checking.
+    # Clamp here (defensively coercing to int, in case callers bypass type
+    # checking) so a degenerate window never reaches the script: a negative
+    # offset would otherwise be reported as `start_line=0`, which `ReadResult`
+    # rejects. A non-positive limit survives as `0` and the script short-circuits
+    # to an empty read.
+    offset, limit = normalize_read_bounds(offset, limit)
     return _READ_COMMAND_TEMPLATE.format(
         path_b64=path_b64,
         file_type=file_type,
-        offset=int(offset),
-        limit=int(limit),
+        offset=offset,
+        limit=limit,
     )
 
 
@@ -1061,10 +1075,12 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             file_path: Absolute path to the file to read.
             offset: Starting line number (0-indexed).
 
-                Only applied to text files.
+                Only applied to text files, and clamped to the start of the file
+                when negative.
             limit: Maximum number of lines to return.
 
-                Only applied to text files.
+                Only applied to text files. A non-positive value returns empty
+                content with no pagination metadata.
 
         Returns:
             `ReadResult` with `file_data` on success or `error` on failure.

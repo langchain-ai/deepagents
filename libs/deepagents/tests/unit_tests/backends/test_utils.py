@@ -9,13 +9,16 @@ from pydantic import TypeAdapter
 from deepagents.backends.protocol import FileData, ReadResult
 from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
+    EMPTY_READ_WINDOW,
     _get_backend_read_file_type,
     _get_file_type,
     _glob_search_files,
     _looks_like_regex,
     grep_matches_from_files,
+    normalize_read_bounds,
     perform_string_replacement,
     regex_literal_hint,
+    resolve_read_window,
     slice_read_response,
     to_posix_path,
     validate_path,
@@ -522,6 +525,81 @@ class TestSliceReadResponse:
         result = slice_read_response(self._file("a\nb"), offset=10, limit=5)
         assert result.error is not None
         assert "exceeds file length" in result.error
+
+    @pytest.mark.parametrize("limit", [0, -3])
+    def test_non_positive_limit_returns_empty_read(self, limit: int) -> None:
+        """A degenerate `limit` reads nothing instead of raising on the window."""
+        result = slice_read_response(self._file("a\nb\nc"), offset=0, limit=limit)
+        assert result.error is None
+        assert self._content(result) == ""
+        assert result.total_lines is None
+        assert result.start_line is None
+        assert result.end_line is None
+        assert result.next_offset is None
+
+    def test_negative_offset_reads_from_first_line(self) -> None:
+        """A degenerate `offset` is clamped rather than reported as line 0."""
+        result = slice_read_response(self._file("a\nb\nc"), offset=-1, limit=2)
+        assert result.error is None
+        assert self._content(result) == "a\nb\n"
+        assert result.start_line == 1
+        assert result.end_line == 2
+        assert result.next_offset == 2
+
+
+class TestResolveReadWindow:
+    """`resolve_read_window` is the single window source for built-in text reads.
+
+    Its output feeds `ReadResult`, whose constructor rejects windows that run
+    backward or advertise a resume offset past unshown lines.
+    """
+
+    @pytest.mark.parametrize(
+        ("offset", "limit", "expected"),
+        [
+            (0, 0, (0, 0)),
+            (-1, 10, (0, 10)),
+            (-1, -1, (0, 0)),
+            (2, 5, (2, 5)),
+        ],
+    )
+    def test_normalize_read_bounds_floors_at_zero(self, offset: int, limit: int, expected: tuple[int, int]) -> None:
+        assert normalize_read_bounds(offset, limit) == expected
+
+    def test_partial_window(self) -> None:
+        window = resolve_read_window(5, offset=1, limit=2)
+        assert window is not None
+        assert (window.start_idx, window.end_idx) == (1, 3)
+        assert window.total_lines == 5
+        assert (window.start_line, window.end_line) == (2, 3)
+        assert window.next_offset == 3
+
+    def test_final_window_has_no_next_offset(self) -> None:
+        window = resolve_read_window(5, offset=3, limit=10)
+        assert window is not None
+        assert window.end_idx == 5
+        assert window.next_offset is None
+
+    @pytest.mark.parametrize("limit", [0, -1])
+    def test_non_positive_limit_is_the_empty_window(self, limit: int) -> None:
+        window = resolve_read_window(5, offset=0, limit=limit)
+        assert window == EMPTY_READ_WINDOW
+        assert window.is_empty
+
+    def test_negative_offset_is_clamped(self) -> None:
+        window = resolve_read_window(5, offset=-4, limit=2)
+        assert window is not None
+        assert window.start_idx == 0
+        assert window.start_line == 1
+        assert not window.is_empty
+
+    def test_offset_at_or_past_end_has_no_window(self) -> None:
+        assert resolve_read_window(5, offset=5, limit=2) is None
+        assert resolve_read_window(0, offset=0, limit=2) is None
+
+    def test_empty_window_wins_over_offset_past_end(self) -> None:
+        """Nothing was requested, so there is nothing to report as out of range."""
+        assert resolve_read_window(5, offset=99, limit=0) == EMPTY_READ_WINDOW
 
 
 class TestGrepMaxCount:

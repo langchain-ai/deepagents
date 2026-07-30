@@ -269,7 +269,9 @@ class TestGoalReviewMenu:
             text_input.focus()
 
             big = "- crit\n" * 5
-            await text_input._on_paste(events.Paste(big))
+            # Post through the App so Textual's MRO dispatch reaches the
+            # base handlers that perform the insert.
+            pilot.app.post_message(events.Paste(big))
             await pilot.pause()
             assert text_input.text == "[Pasted text #1 +5 lines]"
 
@@ -301,7 +303,9 @@ class TestGoalReviewMenu:
             text_input.focus()
 
             big = "- feedback\n" * 5
-            await text_input._on_paste(events.Paste(big))
+            # Post through the App so Textual's MRO dispatch reaches the
+            # base handlers that perform the insert.
+            pilot.app.post_message(events.Paste(big))
             await pilot.pause()
             assert text_input.text == "[Pasted text #1 +5 lines]"
 

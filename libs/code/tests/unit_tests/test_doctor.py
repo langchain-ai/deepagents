@@ -78,9 +78,10 @@ class TestCollectSections:
         from deepagents_code._version import __version__
 
         # Isolate the SDK requirement check so the workspace pin cannot inject a
-        # mismatch annotation into the CLI value under test.
+        # mismatch annotation into the CLI value under test. Editable installs
+        # resolve the pin through `_sdk_requirement_for_cli`.
         with patch(
-            "deepagents_code.extras_info.sdk_requirement_from_cli",
+            "deepagents_code.extras_info._sdk_requirement_for_cli",
             return_value=None,
         ):
             diagnostics = collect_sections()[0]
@@ -629,10 +630,11 @@ class TestRunDoctorCommand:
     def test_text_output_contains_sections(self) -> None:
         """Text output renders each section title and key facts."""
         # Isolate the SDK requirement check so a workspace where the declared
-        # `deepagents` pin intentionally leads the installed SDK does not make
-        # the section unhealthy; the mismatch path has dedicated coverage.
+        # `deepagents` pin intentionally leads or lags the installed SDK does
+        # not make the section unhealthy; the mismatch path has dedicated
+        # coverage. Editable installs resolve via `_sdk_requirement_for_cli`.
         with patch(
-            "deepagents_code.extras_info.sdk_requirement_from_cli",
+            "deepagents_code.extras_info._sdk_requirement_for_cli",
             return_value=None,
         ):
             code, output = self._run_text()
@@ -652,8 +654,9 @@ class TestRunDoctorCommand:
         args = argparse.Namespace(output_format="json")
         # Isolate the SDK requirement check (see text-output test) so the
         # envelope reports the healthy shape regardless of the workspace pin.
+        # Editable installs resolve the pin through `_sdk_requirement_for_cli`.
         with patch(
-            "deepagents_code.extras_info.sdk_requirement_from_cli",
+            "deepagents_code.extras_info._sdk_requirement_for_cli",
             return_value=None,
         ):
             code = run_doctor_command(args)

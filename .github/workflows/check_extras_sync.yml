@@ -1,4 +1,4 @@
-# See `.github/scripts/check_extras_sync.py` for the rationale.
+# See `.github/scripts/checks/check_extras_sync.py` for the rationale.
 
 name: "🔍 Check Extras Sync"
 
@@ -6,13 +6,13 @@ on:
   pull_request:
     paths:
       - "libs/**/pyproject.toml"
-      - ".github/scripts/check_extras_sync.py"
+      - ".github/scripts/checks/check_extras_sync.py"
       - ".github/workflows/check_extras_sync.yml"
   push:
     branches: [main]
     paths:
       - "libs/**/pyproject.toml"
-      - ".github/scripts/check_extras_sync.py"
+      - ".github/scripts/checks/check_extras_sync.py"
       - ".github/workflows/check_extras_sync.yml"
 
 concurrency:
@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 2
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🐍 Set up Python and uv"
         uses: "./.github/actions/uv_setup"
@@ -62,7 +62,7 @@ jobs:
           fi
           failed=()
           for f in "${files[@]}"; do
-            if ! python .github/scripts/check_extras_sync.py "$f"; then
+            if ! python .github/scripts/checks/check_extras_sync.py "$f"; then
               failed+=("$f")
             fi
           done

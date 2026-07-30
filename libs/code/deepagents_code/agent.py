@@ -1107,12 +1107,25 @@ def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]
     return agents
 
 
+_AGENT_DIR_MARKER = "AGENTS.md"
+"""Filename that marks a `~/.deepagents/<name>/` directory as an agent profile.
+
+Discovery is fail-closed: only directories containing this marker are listed by
+the `/agent` picker. Real agents always create it (empty on first use when
+memory is enabled), so empty folders stay out of the picker without being
+named. Known app-owned directory names are still denylisted so a forced
+invocation such as `dcode -a plugins` cannot stamp the marker into app state
+and surface that directory as a selectable agent.
+"""
+
+
 @functools.lru_cache(maxsize=1)
 def _reserved_agent_dir_names() -> frozenset[str]:
     """Return non-agent directory names reserved by the app under `~/.deepagents/`.
 
     These directories are created by the app for its own use and must never
-    appear in the agent picker:
+    appear in the agent picker — even if they contain an `AGENTS.md` file
+    (e.g. after `dcode -a plugins` stamps the marker via memory setup):
 
     - `bin/` holds the managed `rg` binary (`managed_tools.BIN_DIR`).
     - `plugins/` holds installed plugin state (`plugins.store`).
@@ -1134,28 +1147,38 @@ def _reserved_agent_dir_names() -> frozenset[str]:
 def _is_agent_dir_entry(entry: Path) -> bool:
     """Return whether a `~/.deepagents/` entry should be listed as an agent.
 
-    Filters out symlinks (so dangling links don't masquerade as agents),
-    dot-prefixed names — `.state/` (app internal state) plus any other
-    hidden directory the user may have placed there — and reserved names
-    the app owns (`bin/`, `plugins/`, and `conversation_history/`).
+    Fail-closed on the `AGENTS.md` marker: a directory is an agent only when
+    that file exists as a regular (non-symlink) file inside it.
 
-    `OSError` from `is_dir`/`is_symlink` propagates so callers can log
-    with the failing entry's name as context.
+    Also rejects:
+
+    - Dot-prefixed names (hidden dirs such as `.state/`)
+    - Reserved app-owned names (`bin/`, `plugins/`, `conversation_history/`),
+      even if they contain the marker
+    - Symlinked directories (including dangling links)
+    - Non-directories
+
+    `OSError` from `is_dir`/`is_symlink`/`is_file` propagates so callers can
+    log with the failing entry's name as context.
     """
     if entry.name.startswith(".") or entry.name in _reserved_agent_dir_names():
         return False
-    return entry.is_dir() and not entry.is_symlink()
+    if entry.is_symlink() or not entry.is_dir():
+        return False
+    marker = entry / _AGENT_DIR_MARKER
+    # `is_file()` is True for a symlink-to-file; reject those so a dangling or
+    # external link cannot mint an agent entry.
+    return marker.is_file() and not marker.is_symlink()
 
 
 def get_available_agent_names() -> list[str]:
     """Return a sorted list of available agent names from `~/.deepagents/`.
 
     Scans the user's `.deepagents` directory and returns each real
-    subdirectory found there. Symlinks excluded so a dangling link does not
-    masquerade as an agent. Dot-prefixed entries (e.g., `.state/`) and
-    reserved app-owned directories (`bin/`, `plugins/`, and
-    `conversation_history/`) are skipped so internal state never appears as an
-    agent.
+    subdirectory that contains the `AGENTS.md` agent marker and is not an
+    app-reserved name. Fail-closed: bare directories, reserved app state
+    (`bin/`, `plugins/`, `conversation_history/`), symlinks, and hidden
+    entries are not agents.
 
     Filesystem errors (missing parent, permission denied, broken entries) are
     logged and surfaced as an empty list rather than raised — the caller shows
@@ -1222,7 +1245,9 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
                 {
                     "name": name,
                     "path": str(agent_path),
-                    "has_agents_md": (agent_path / "AGENTS.md").exists(),
+                    # Always True for names from `get_available_agent_names`
+                    # (fail-closed marker). Kept for JSON schema stability.
+                    "has_agents_md": (agent_path / _AGENT_DIR_MARKER).is_file(),
                     "is_default": name == DEFAULT_AGENT_NAME,
                 }
             )
@@ -1240,17 +1265,10 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
         is_default = name == DEFAULT_AGENT_NAME
         default_label = " [dim](default)[/dim]" if is_default else ""
 
-        if (agent_path / "AGENTS.md").exists():
-            console.print(
-                f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
-                style=theme.PRIMARY,
-            )
-        else:
-            console.print(
-                f"  {bullet} [bold]{agent_name}[/bold]{default_label}"
-                " [dim](incomplete)[/dim]",
-                style=theme.WARNING,
-            )
+        console.print(
+            f"  {bullet} [bold]{agent_name}[/bold]{default_label}",
+            style=theme.PRIMARY,
+        )
         console.print(
             f"    {escape_markup(str(agent_path))}",
             style=theme.MUTED,
@@ -1911,6 +1929,13 @@ def _should_interrupt_tool_call(
     Returns:
         `True` to interrupt, or `False` for Auto/YOLO bypass.
     """
+    from deepagents_code.hooks.server_middleware import hook_decided_permission
+
+    tool_call = getattr(request, "tool_call", None)
+    tool_call_id = str(tool_call.get("id") or "") if isinstance(tool_call, dict) else ""
+    if hook_decided_permission(getattr(request, "state", None), tool_call_id):
+        return False
+
     runtime = getattr(request, "runtime", None)
     mode = _async_routing_mode(getattr(request, "state", None))
     if mode is None:
@@ -2429,6 +2454,24 @@ def create_cli_agent(
             middleware.append(_GlmTerminalStallRecovery())
         if restrictive_shell_allow_list is not None:
             middleware.append(ShellAllowListMiddleware(restrictive_shell_allow_list))
+        # Server-owned hooks must wrap subagent tools too; otherwise Pre/Post
+        # ToolUse only fire on the parent graph. Disable Stop so finishing a
+        # subagent does not emit the main-agent Stop event (SubagentStop still
+        # fires from the parent wrap around `task`). Hooks v2 stays off unless
+        # experimental mode is on.
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+        if is_env_truthy(EXPERIMENTAL):
+            from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
+
+            hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
+            middleware.append(
+                ServerHooksMiddleware(
+                    cwd=hooks_cwd,
+                    emit_stop=False,
+                    mcp_tools=mcp_tools,
+                )
+            )
         # Subagents share the on-disk filesystem backend and can edit the user
         # AGENTS.md, so they get the same managed onboarding-name block guard as
         # the main agent. Gated on memory because the block only exists when
@@ -2723,24 +2766,19 @@ def create_cli_agent(
             fs_tools=fs_tools,
         )
 
-    interrupt_on: dict[str, bool | InterruptOnConfig] | None
+    interrupt_on: dict[str, bool | InterruptOnConfig] = {}
     auto_mode_config: tuple[Path, list[str]] | None = None
-    if resolved_interrupt_on is None:
-        interrupt_on = {}
-    else:
-        interrupt_on = resolved_interrupt_on  # ty: ignore[invalid-assignment]  # InterruptOnConfig is compatible at runtime
-        if auto_mode_enabled:
-            configured_allow_list = shell_allow_list or settings.shell_allow_list
-            narrow_allow_list = (
-                configured_allow_list if isinstance(configured_allow_list, list) else []
-            )
-            trusted_root = (
-                project_context.project_root
-                if project_context is not None
-                and project_context.project_root is not None
-                else effective_cwd or Path.cwd()
-            )
-            auto_mode_config = (Path(trusted_root), narrow_allow_list)
+    if resolved_interrupt_on is not None and auto_mode_enabled:
+        configured_allow_list = shell_allow_list or settings.shell_allow_list
+        narrow_allow_list = (
+            configured_allow_list if isinstance(configured_allow_list, list) else []
+        )
+        trusted_root = (
+            project_context.project_root
+            if project_context is not None and project_context.project_root is not None
+            else effective_cwd or Path.cwd()
+        )
+        auto_mode_config = (Path(trusted_root), narrow_allow_list)
 
     # Set up composite backend with routing.
     if sandbox is None:
@@ -2799,6 +2837,26 @@ def create_cli_agent(
                 trusted_ask_user_tool=trusted_ask_user_tool,
                 trusted_compaction_tool=compaction_middleware.tools[0],
             )
+        )
+    elif resolved_interrupt_on is not None:
+        # `AutoModeHITLMiddleware` reports the same `HumanInTheLoopMiddleware`
+        # name, so installing both would trip `create_agent`'s duplicate-name
+        # assertion. Auto mode's specialized replacement wins when active.
+        agent_middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
+
+    # Server-owned Hooks v2 lifecycle events (Pre/Post tool, Stop, subagent).
+    # Mounted only in experimental mode; when mounted, also gated at runtime by
+    # `hooks_server_events` on the per-run context so idle sessions without
+    # configured handlers pay no interrupt round-trip. Appended after the HITL
+    # middleware so `PreToolUse` resolves before approval routing.
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    if is_env_truthy(EXPERIMENTAL):
+        from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
+
+        hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
+        agent_middleware.append(
+            ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools)
         )
 
     if fs_tools is not None:

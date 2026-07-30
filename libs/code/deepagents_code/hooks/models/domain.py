@@ -6,25 +6,25 @@ from enum import StrEnum
 from pathlib import (
     Path,  # ruff:ignore[typing-only-standard-library-import] - Pydantic resolves model annotations at runtime.
 )
-from typing import Annotated, Literal, TypeAlias
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeAlias
 from uuid import (
     UUID,  # ruff:ignore[typing-only-standard-library-import] - Pydantic resolves model annotations at runtime.
 )
 
-from langchain_core.messages import (  # ruff:ignore[typing-only-third-party-import] - Pydantic runtime annotation.
-    ToolMessage,
-)
-from langgraph.types import (
-    Command,  # ruff:ignore[typing-only-third-party-import] - Pydantic runtime annotation.
-)
+from langchain_core.messages import ToolMessage
 from pydantic import BaseModel, ConfigDict, Field
 
 from deepagents_code.approval_mode import (  # ruff:ignore[typing-only-first-party-import] - Pydantic runtime annotation.
     ApprovalMode,
 )
-from deepagents_code.json_types import (  # ruff:ignore[typing-only-first-party-import] - Pydantic runtime annotation.
+from deepagents_code.json_types import (
+    JSON_VALUE_ADAPTER,
     JsonObject,
+    JsonValue,
 )
+
+if TYPE_CHECKING:
+    from langgraph.types import Command
 
 
 class _DomainModel(BaseModel):
@@ -74,6 +74,14 @@ class SessionEndCause(StrEnum):
     PROMPT_INPUT_EXIT = "prompt_input_exit"
     BYPASS_PERMISSIONS_DISABLED = "bypass_permissions_disabled"
     OTHER = "other"
+
+
+class DcodeNotificationKind(StrEnum):
+    """dcode lifecycle notifications with compatible wire mappings."""
+
+    PERMISSION_REQUIRED = "permission_required"
+    AGENT_NEEDS_INPUT = "agent_needs_input"
+    AGENT_COMPLETED = "agent_completed"
 
 
 class CompactTrigger(StrEnum):
@@ -197,12 +205,52 @@ class PreToolUseEvent(_DomainModel):
 
 
 class PostToolUseEvent(_DomainModel):
-    """Domain payload for `PostToolUse`."""
+    """Domain payload for `PostToolUse`.
+
+    `result` is the JSON projection of the native tool return value, not a
+    live `Command` / `ToolMessage`. The live value stays in the tool wrapper
+    for decision application; only JSON crosses the interrupt boundary to the
+    client.
+    """
 
     event: Literal[HookEvent.POST_TOOL_USE]
     call: ToolCallData
-    result: ToolMessage | Command[str]
+    result: JsonValue
     duration_ms: int | None = None
+
+    @classmethod
+    def from_tool_result(
+        cls,
+        result: ToolMessage | Command[Any],
+        *,
+        call: ToolCallData,
+        duration_ms: int | None = None,
+    ) -> PostToolUseEvent:
+        """Build a `PostToolUseEvent` from a native tool return value.
+
+        `PostToolUse` crosses a LangGraph interrupt boundary, so the domain
+        event must carry JSON — not a live `Command` / `ToolMessage`.
+        Re-validating a dumped `Command` as `ToolMessage` raises
+        `KeyError: 'tool_call_id'` in LangChain's message coercion.
+
+        Args:
+            result: Native tool return value from the tool wrapper.
+            call: Tool-call data for the hook payload.
+            duration_ms: Tool execution duration in milliseconds.
+
+        Returns:
+            A `PostToolUseEvent` with a JSON-projected `result`.
+        """
+        if isinstance(result, ToolMessage):
+            value: object = result.model_dump(mode="json")
+        else:
+            value = JSON_VALUE_ADAPTER.dump_python(result, mode="json", warnings=False)
+        return cls(
+            event=HookEvent.POST_TOOL_USE,
+            call=call,
+            result=JSON_VALUE_ADAPTER.validate_python(value),
+            duration_ms=duration_ms,
+        )
 
 
 class PreCompactEvent(_DomainModel):

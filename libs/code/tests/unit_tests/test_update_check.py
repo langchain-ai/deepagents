@@ -93,6 +93,7 @@ from deepagents_code.update_check import (
     prerelease_upgrade_supported,
     release_prerelease_pins,
     release_requires_prereleases,
+    safe_install_extra_recovery_command,
     set_auto_update,
     should_announce_auto_update_default,
     should_defer_startup_auto_update_for_resume,
@@ -3641,6 +3642,51 @@ class TestInstallExtraCommand:
             install_extra_command("quickjs']; touch /tmp/pwned; '")
         with pytest.raises(ValueError, match="Invalid extra name"):
             install_extras_command(["quickjs", "bad;name"])
+
+
+class TestSafeInstallExtraRecoveryCommand:
+    """`safe_install_extra_recovery_command` guards recovery-hint call sites."""
+
+    def test_returns_recovery_command_on_success(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.update_check.install_extra_recovery_command",
+            lambda _extra: "uv tool install recovery",
+        )
+        assert (
+            safe_install_extra_recovery_command("quickjs", fallback="fallback cmd")
+            == "uv tool install recovery"
+        )
+
+    def test_falls_back_on_value_error(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.update_check.install_extra_recovery_command",
+            MagicMock(side_effect=ValueError("bad extra")),
+        )
+        assert (
+            safe_install_extra_recovery_command("quickjs", fallback="fallback cmd")
+            == "fallback cmd"
+        )
+
+    def test_falls_back_on_introspection_error(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.update_check.install_extra_recovery_command",
+            MagicMock(side_effect=ExtrasIntrospectionError("metadata unreadable")),
+        )
+        assert (
+            safe_install_extra_recovery_command("quickjs", fallback="fallback cmd")
+            == "fallback cmd"
+        )
+
+    def test_falls_back_on_unexpected_error(self, monkeypatch) -> None:
+        """Unexpected recovery errors must not escape the helper."""
+        monkeypatch.setattr(
+            "deepagents_code.update_check.install_extra_recovery_command",
+            MagicMock(side_effect=RuntimeError("metadata broken")),
+        )
+        assert (
+            safe_install_extra_recovery_command("quickjs", fallback="fallback cmd")
+            == "fallback cmd"
+        )
 
 
 class TestEditableExtraHint:

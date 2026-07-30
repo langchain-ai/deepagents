@@ -185,7 +185,7 @@ _HOOK_EVENT_SPECS: Final[Mapping[HookEvent, HookEventSpec]] = MappingProxyType(
         ),
         HookEvent.PRE_COMPACT: HookEventSpec(
             event=HookEvent.PRE_COMPACT,
-            owner=HookOwner.CLIENT,
+            owner=HookOwner.SERVER,
             event_model=PreCompactEvent,
             decision_model=PreCompactDecision,
             matcher_field="trigger",

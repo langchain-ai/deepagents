@@ -499,7 +499,13 @@ async def prewarm_thread_message_counts(limit: int | None = None) -> None:
 
     Fetches a bounded list of recent threads and populates checkpoint-derived
     fields for currently visible columns into the in-memory cache. Intended to
-    run in a background worker during app startup.
+    run in a background worker during app startup and again whenever the
+    session database has changed (e.g. after a turn writes new checkpoints), so
+    the selector's first paint is never missing a thread the user just created.
+
+    Re-running this is cheap: the per-thread message-count and initial-prompt
+    caches are keyed on checkpoint freshness, so only threads whose latest
+    checkpoint changed are read back from disk.
 
     Args:
         limit: Maximum threads to prewarm. Uses `get_thread_limit()` when `None`.

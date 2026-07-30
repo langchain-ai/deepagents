@@ -701,6 +701,32 @@ When a `feat`/`fix` (etc.) also edits non-lockfile files under other managed pac
 
 `release_please_scope_check.yml` blocks bump-worthy multi-component real-file PRs the same way it blocks lockfile-only fan-out (same sticky / `allow-lockfile-release` bypass). `pr_scope_file_check.yml` sticky copy also states this release-please consequence when title scope and package dirs disagree. See also [Lockfile churn fan-out](#lockfile-churn-fan-out).
 
+### Releasing a new line ahead of its dependents
+
+Local development installs sibling packages as editable path dependencies via `[tool.uv.sources]`, which hides whether published dependency ranges would resolve for real users installing from PyPI. The `📦 Check Release Dependencies` workflow closes that gap on `release(...)` PRs: it strips local sources and runs `uv pip compile --no-sources --universal --prerelease allow --all-extras` against PyPI for each changed release manifest, failing when the public install graph is unsatisfiable.
+
+When cutting a new major/minor line of a core package, it is normal for the release PR to be red on this check even with correct metadata: the branch already opens sibling upper bounds and floors in-tree, but **already-published** dependents on PyPI still reject the new line until they cut their own releases. In that case:
+
+1. **Lift sibling bounds in-tree first** (partner upper bounds, downstream floors, exact consumer pins) so follow-up releases are ready to cut.
+2. **Publish the core package**, acknowledging the check with the `release-deps: acknowledged` label. The label soft-runs the check: resolution still executes and the PR keeps a sticky listing the follow-up releases the public graph needs — the label does **not** mean "deps resolved."
+3. **Publish dependents immediately after**, in dependency order: partners whose published metadata caps the new line (these gate extras like `deepagents-code[daytona]`) → exact-pinned primary consumers (e.g. `deepagents-code`) → packages with floors on those consumers.
+
+Use `release-deps: acknowledged` only for this coordinated release order. If the pins on the branch are wrong (not merely ahead of what siblings have published), fix the dependency metadata instead of acknowledging. The follow-up list on the sticky is generated from live PyPI metadata, so treat "green under ack" as "the listed packages still owe releases," never as an all-clear.
+
+The follow-up sticky is independent of the label: a release PR that resolves cleanly still gets one whenever a sibling's *published* metadata caps the new line, because resolution only proves the changed package installs — not that its reverse-dependents still do. The sticky clears itself once nothing is outstanding. Packages listed under a "could not be determined" warning are neither confirmed clean nor confirmed to owe a release; re-run the job before treating that list as exhaustive.
+
+#### What `release-deps: acknowledged` does to each check
+
+The label means "the release dependencies were reviewed," never "they are resolved." It no longer skips any job — every check still runs and still reports, so the outstanding work stays on the PR:
+
+| Check | Effect of the label |
+| --- | --- |
+| [`📦 Check Release Dependencies`](#releasing-a-new-line-ahead-of-its-dependents) | Resolves in report-only mode: the check goes green, and the sticky still lists the follow-up releases the public install graph needs. |
+| `📦 Check Dependency Freshness` | No effect on whether it runs. It is advisory in all cases, and its comment stays on the PR. |
+| `🔗 Check SDK Pin` | Clears the hard failure on a **prerelease** pin, recording that the pin was reviewed. Stale-pin behaviour is unchanged (advisory; `release.yml` enforces it at publish). |
+
+Because the label stops the release-dependency check from *blocking* without stopping it from *reporting*, treat everything still on the PR after applying it as a to-do list for the release sequence.
+
 ### Overriding a Merged Commit's Changelog Entry
 
 Append a `BEGIN_COMMIT_OVERRIDE` block (shown below) to the **merged PR's body** when release-please needs to use a different message than the actual squash-merge commit. release-please reads merged PR bodies on every run within its lookback window and uses the override in place of the original commit message — no history rewrite, no force-push.

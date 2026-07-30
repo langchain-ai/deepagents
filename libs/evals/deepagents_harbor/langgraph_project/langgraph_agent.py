@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_WORKDIR = Path("/app")
 _MAX_ASSISTANT_ID_LENGTH = 64
 _ASSISTANT_ID_HASH_LENGTH = 12
 _INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
@@ -169,7 +168,7 @@ def _build_model(configurable: dict[str, object]) -> BaseChatModel:
 def _workdir(configurable: dict[str, object]) -> Path:
     value = configurable.get("cwd")
     if value is None:
-        return _DEFAULT_WORKDIR
+        return Path.cwd()
     if not isinstance(value, str | Path):
         msg = "`configurable.cwd` must be a string path"
         raise TypeError(msg)

@@ -515,7 +515,9 @@ def test_make_graph_leaves_non_glm_model_kwargs_untouched(
     assert captured_kwargs[0] == {"temperature": 0.0}
 
 
-def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_make_graph_defaults_to_task_workdir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     captured_create: list[dict[str, object]] = []
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_args, **_kwargs: object())
@@ -525,6 +527,7 @@ def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> 
         lambda **kwargs: (captured_create.append(kwargs) or object(), object()),
     )
     monkeypatch.delenv("HARBOR_SESSION_ID", raising=False)
+    monkeypatch.chdir(tmp_path)
 
     langgraph_agent.make_graph(
         {
@@ -534,8 +537,13 @@ def test_make_graph_defaults_to_app_workdir(monkeypatch: pytest.MonkeyPatch) -> 
         }
     )
 
-    assert captured_create[0]["cwd"] == Path("/app")
+    assert captured_create[0]["cwd"] == tmp_path
     assert captured_create[0]["assistant_id"]
+
+
+def test_workdir_rejects_non_path_value() -> None:
+    with pytest.raises(TypeError, match="must be a string path"):
+        langgraph_agent._workdir({"cwd": 123})
 
 
 def test_make_graph_openai_defaults_to_responses_api(

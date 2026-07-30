@@ -24,6 +24,7 @@ from deepagents_code.extras_info import (
     _requirement_satisfied,
     _resolve_source_path,
     _sdk_requirement_comparison_version,
+    _with_editable_local_version,
     collect_cli_version_info,
     collect_sdk_version_info,
     collect_version_report,
@@ -1132,6 +1133,45 @@ class TestVersionAnnotations:
         assert format_sdk_version_annotation(report) == (
             " (editable; installed metadata: 0.6.12)"
         )
+
+
+class TestWithEditableLocalVersion:
+    """Tests for `_with_editable_local_version`.
+
+    Mirrors the SDK's `test_version.py` cases for
+    `deepagents._version._with_editable_local_version`; both helpers must stamp
+    identical strings so the two `lc_versions` entries in a trace match.
+    """
+
+    def test_appends_editable_local_segment(self) -> None:
+        assert _with_editable_local_version("0.6.12") == "0.6.12+editable"
+
+    def test_preserves_existing_local_segment(self) -> None:
+        assert _with_editable_local_version("0.6.12+build") == "0.6.12+build.editable"
+
+    def test_returns_original_for_invalid_version(self) -> None:
+        assert _with_editable_local_version("not-a-version") == "not-a-version"
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            pytest.param(
+                "1.0.0-alpha1", "1.0.0a1+editable", id="prerelease-normalized"
+            ),
+            pytest.param("v1.2.3", "1.2.3+editable", id="v-prefix-stripped"),
+            pytest.param("01.2.3", "1.2.3+editable", id="leading-zeros-stripped"),
+            pytest.param("1.0+Build", "1.0+build.editable", id="local-lowercased"),
+            pytest.param("1!2.0", "1!2.0+editable", id="epoch-preserved"),
+        ],
+    )
+    def test_reemits_base_in_canonical_form(self, value: str, expected: str) -> None:
+        """The base version is canonicalized, so output can differ beyond the suffix."""
+        assert _with_editable_local_version(value) == expected
+
+    def test_is_not_idempotent(self) -> None:
+        """Applying twice stacks segments; callers must apply exactly once."""
+        once = _with_editable_local_version("0.7.0")
+        assert _with_editable_local_version(once) == "0.7.0+editable.editable"
 
 
 class TestRequirementSatisfied:

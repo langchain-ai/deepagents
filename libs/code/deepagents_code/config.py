@@ -1292,9 +1292,10 @@ def _format_lc_version(base_version: str, *, editable: bool) -> str:
     # Imported lazily on purpose, for the same reason as `_get_deepagents_version`
     # above: this pulls in `packaging`, which we keep off `config`'s module-import
     # path (the startup hot path). Do not hoist this to the top of the module.
-    from deepagents._version import (  # noqa: PLC2701
-        _with_editable_local_version,
-    )
+    # Import from `extras_info` rather than `deepagents._version`: the SDK copy
+    # only exists in releases newer than the exact `deepagents` pin, and a
+    # PyPI-resolved SDK would raise `ImportError` here on every editable run.
+    from deepagents_code.extras_info import _with_editable_local_version
 
     return _with_editable_local_version(base_version)
 

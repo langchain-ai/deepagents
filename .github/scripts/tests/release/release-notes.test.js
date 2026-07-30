@@ -6,11 +6,14 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 
-const releaseNotes = require('../../release/dcode-release-notes.js');
+const releaseNotes = require('../../release/release-notes.js');
 
-const APP_SLUG = 'dcode-release-bot';
+const APP_SLUG = 'release-notes-bot';
 const BOT = { login: `${APP_SLUG}[bot]`, id: 42 };
 const BOT_AUTH = { appSlug: APP_SLUG, login: BOT.login, id: BOT.id };
+const COMPONENT = 'deepagents-code';
+const RELEASE_BRANCH = `${releaseNotes.RELEASE_BRANCH_PREFIX}${COMPONENT}`;
+const CHANGELOG_PATH = 'libs/code/CHANGELOG.md';
 const HEAD = 'a'.repeat(40);
 const APPLIED_HEAD = 'b'.repeat(40);
 const VERSION = '0.1.35';
@@ -32,7 +35,7 @@ function releasePr(overrides = {}) {
     draft: false,
     body: `Release notes preview\n\n${GENERATED_SECTION}\n_End release notes preview._\n`,
     head: {
-      ref: releaseNotes.RELEASE_BRANCH,
+      ref: RELEASE_BRANCH,
       sha: HEAD,
       repo: { full_name: 'langchain-ai/deepagents' },
     },
@@ -48,7 +51,7 @@ function overrideComment({ id = 10, section = CURATED_SECTION, fingerprint = rel
     updated_at: updatedAt,
     user: BOT,
     body: [
-      '<!-- dcode-release-notes-override',
+      '<!-- release-notes-override',
       'package: deepagents-code',
       `version: ${VERSION}`,
       `release-pr-head: ${head}`,
@@ -70,7 +73,7 @@ function appliedComment({ id = 20, overrideId = 10, overrideUpdatedAt = OVERRIDE
     updated_at: updatedAt,
     user: BOT,
     body: [
-      '<!-- dcode-release-notes-applied',
+      '<!-- release-notes-applied',
       'package: deepagents-code',
       `version: ${VERSION}`,
       `source-head: ${sourceHead}`,
@@ -208,18 +211,18 @@ function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adm
 }
 
 function tempWorkspace(section = GENERATED_SECTION) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dcode-release-test-'));
-  const file = path.join(root, releaseNotes.CHANGELOG_PATH);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-test-'));
+  const file = path.join(root, CHANGELOG_PATH);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, changelog(section));
   return { root, file };
 }
 
-test('identifies only the exact deepagents-code release title and branch', () => {
-  assert.equal(releaseNotes.releaseVersion(`release(deepagents-code): ${VERSION}`), VERSION);
-  assert.equal(releaseNotes.releaseVersion(`release(deepagents): ${VERSION}`), null);
+test('identifies only an exact release title and branch pair', () => {
+  assert.equal(releaseNotes.releaseVersion(`release(deepagents-code): ${VERSION}`, COMPONENT), VERSION);
+  assert.equal(releaseNotes.releaseVersion(`release(deepagents): ${VERSION}`, COMPONENT), null);
   assert.equal(releaseNotes.isReleasePr(releasePr()), true);
-  assert.equal(releaseNotes.isReleasePr(releasePr({ head: { ...releasePr().head, ref: `${releaseNotes.RELEASE_BRANCH}-extra` } })), false);
+  assert.equal(releaseNotes.isReleasePr(releasePr({ head: { ...releasePr().head, ref: `${RELEASE_BRANCH}-extra` } })), false);
   assert.equal(releaseNotes.isReleasePr(releasePr({ base: { ref: 'v0.1', repo: { full_name: 'langchain-ai/deepagents' } } })), false);
   assert.equal(releaseNotes.isReleasePr(releasePr({ head: { ...releasePr().head, repo: null } })), false);
 });
@@ -234,8 +237,8 @@ test('extracts and replaces exactly one version section', () => {
 });
 
 test('release version and section extraction accept prerelease and build metadata', () => {
-  assert.equal(releaseNotes.releaseVersion('release(deepagents-code): 0.2.0-rc.1'), '0.2.0-rc.1');
-  assert.equal(releaseNotes.releaseVersion('release(deepagents-code): 1.0.0+build.5'), '1.0.0+build.5');
+  assert.equal(releaseNotes.releaseVersion('release(deepagents-code): 0.2.0-rc.1', COMPONENT), '0.2.0-rc.1');
+  assert.equal(releaseNotes.releaseVersion('release(deepagents-code): 1.0.0+build.5', COMPONENT), '1.0.0+build.5');
   const version = '0.2.0-rc.1';
   const heading = `## [${version}](https://example.test) (2026-07-09)`;
   const doc = `# Changelog\n\n${heading}\n\n* Prerelease note\n\n## [0.1.34](https://example.test) (2026-07-01)\n\n* Older\n`;
@@ -276,19 +279,19 @@ test('fingerprint changes only with generated entries', () => {
 });
 
 test('parses commands in surrounding text and rejects ambiguous comments', () => {
-  assert.equal(releaseNotes.commandFromComment('@dcode-release-bot draft'), 'draft');
-  assert.equal(releaseNotes.commandFromComment('Please @dcode-release-bot apply when ready.'), 'apply');
-  assert.equal(releaseNotes.commandFromComment('@dcode-release-bot draft after fixing the notes'), 'draft');
-  assert.equal(releaseNotes.commandFromComment('not@dcode-release-bot apply'), null);
-  assert.equal(releaseNotes.commandFromComment('@dcode-release-bot application'), null);
-  assert.equal(releaseNotes.commandFromComment('@dcode-release-bot draft and @dcode-release-bot apply'), null);
+  assert.equal(releaseNotes.commandFromComment('@release-bot draft'), 'draft');
+  assert.equal(releaseNotes.commandFromComment('Please @release-bot apply when ready.'), 'apply');
+  assert.equal(releaseNotes.commandFromComment('@release-bot draft after fixing the notes'), 'draft');
+  assert.equal(releaseNotes.commandFromComment('not@release-bot apply'), null);
+  assert.equal(releaseNotes.commandFromComment('@release-bot application'), null);
+  assert.equal(releaseNotes.commandFromComment('@release-bot draft and @release-bot apply'), null);
 });
 
 test('trusts only marked comments from the configured bot identity', () => {
   const valid = overrideComment();
   const impostor = { ...overrideComment({ id: 11 }), user: { login: BOT.login, id: 99 } };
-  assert.equal(releaseNotes.latestOverride([valid, impostor], BOT.login, BOT.id, VERSION).comment.id, 10);
-  assert.equal(releaseNotes.latestOverride([impostor], BOT.login, BOT.id, VERSION), null);
+  assert.equal(releaseNotes.latestOverride({ comments: [valid, impostor], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }).comment.id, 10);
+  assert.equal(releaseNotes.latestOverride({ comments: [impostor], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }), null);
   assert.equal(releaseNotes.parseOverrideComment({ ...valid, body: valid.body.replace('state: draft', 'state: applied') }), null);
 });
 
@@ -301,7 +304,7 @@ test('manual commands require write permission and ready status', async () => {
       issue: { number: 123, pull_request: {} },
       // A read-access collaborator: an insider (so feedback is allowed) who still
       // lacks the write permission the command requires.
-      comment: { body: '@dcode-release-bot apply', user: { login: 'reader' }, author_association: 'COLLABORATOR' },
+      comment: { body: '@release-bot apply', user: { login: 'reader' }, author_association: 'COLLABORATOR' },
     },
   };
   const denied = makeGithub({ permission: 'read' });
@@ -320,7 +323,7 @@ test('manual commands ignore comments authored by the configured bot', async () 
     payload: {
       action: 'created',
       issue: { number: 123, pull_request: {} },
-      comment: { body: '@dcode-release-bot draft', user: BOT },
+      comment: { body: '@release-bot draft', user: BOT },
     },
   };
   const run = makeGithub({ permission: 'write' });
@@ -347,14 +350,15 @@ test('ready_for_review automatically validates as draft command', async () => {
     shouldRun: true,
     command: 'draft',
     number: 123,
+    component: COMPONENT,
     version: VERSION,
     head: HEAD,
-    branch: releaseNotes.RELEASE_BRANCH,
+    branch: RELEASE_BRANCH,
   });
 });
 
 test('prepares agent input from the exact validated head', async t => {
-  const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'dcode-release-runner-'));
+  const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-runner-'));
   t.after(() => fs.rmSync(runnerTemp, { recursive: true, force: true }));
   const { github, calls } = makeGithub();
   const prepared = await releaseNotes.prepareDraft({
@@ -376,21 +380,21 @@ test('prepares agent input from the exact validated head', async t => {
 });
 
 test('posts a bot-authored draft and refuses stale agent output', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dcode-release-post-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-post-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const state = path.join(dir, 'state.json');
   const output = path.join(dir, 'output.md');
-  fs.writeFileSync(state, JSON.stringify({ number: 123, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
   fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
   const { github, calls } = makeGithub();
   await releaseNotes.postDraft({ github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, ...BOT_AUTH });
   assert.deepEqual(calls.getByUsername, [{ username: BOT.login }]);
   assert.equal(calls.createComment.length, 1);
   assert.match(calls.createComment[0].body, /changelog-fingerprint:/);
-  assert.match(calls.createComment[0].body, /---\n<!-- dcode-release-notes-content-start -->/);
-  assert.match(calls.createComment[0].body, /<!-- dcode-release-notes-content-end -->\n---/);
-  assert.match(calls.createComment[0].body, /```\n@dcode-release-bot apply\n```/);
-  assert.match(calls.createComment[0].body, /```\n@dcode-release-bot draft\n```/);
+  assert.match(calls.createComment[0].body, /---\n<!-- release-notes-content-start -->/);
+  assert.match(calls.createComment[0].body, /<!-- release-notes-content-end -->\n---/);
+  assert.match(calls.createComment[0].body, /```\n@release-bot apply\n```/);
+  assert.match(calls.createComment[0].body, /```\n@release-bot draft\n```/);
   assert.match(calls.createComment[0].body, /only way to skip the curated-notes merge gate/);
 
   const stale = makeGithub({ pr: releasePr({ head: { ...releasePr().head, sha: 'c'.repeat(40) } }) });
@@ -494,7 +498,7 @@ test('prepare apply rejects a draft from a rewritten release branch with unchang
 
   await assert.rejects(
     releaseNotes.prepareApply({ github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: rewrittenHead, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), ...BOT_AUTH }),
-    /Release PR was rewritten after drafting; run @dcode-release-bot draft before apply/,
+    /Release PR was rewritten after drafting; run @release-bot draft before apply/,
   );
 });
 
@@ -683,12 +687,14 @@ test('a failed new-entries warning comment does not mask the actionable gate rea
   assert.ok(core.warnings.some(message => /Could not post the new-entries warning comment/.test(message)));
 });
 
-test('draft, unrelated package, and bypass label pass without metadata', async () => {
+test('draft, unmanaged branch, and bypass label pass without metadata', async () => {
   for (const pr of [
     releasePr({ draft: true }),
+    // Not a component release-please manages, so the gate does not apply. Every
+    // managed component IS gated — see the companion test below.
     releasePr({
-      title: `release(deepagents): ${VERSION}`,
-      head: { ...releasePr().head, ref: 'release-please--branches--main--components--deepagents' },
+      title: `release(not-a-package): ${VERSION}`,
+      head: { ...releasePr().head, ref: 'release-please--branches--main--components--not-a-package' },
     }),
     releasePr({ labels: [{ name: releaseNotes.BYPASS_LABEL }] }),
     // Labels can also arrive as plain strings; the bypass escape hatch and the
@@ -704,17 +710,17 @@ test('draft, unrelated package, and bypass label pass without metadata', async (
 
 test('validateDraftOutput rejects empty, metadata, and heading content', () => {
   assert.throws(() => releaseNotes.validateDraftOutput('   \n'), /empty release notes/);
-  assert.throws(() => releaseNotes.validateDraftOutput('<!-- dcode-release-notes-applied\npackage: x\n-->\nnotes'), /only section content/);
+  assert.throws(() => releaseNotes.validateDraftOutput('<!-- release-notes-applied\npackage: x\n-->\nnotes'), /only section content/);
   assert.throws(() => releaseNotes.validateDraftOutput(`${HEADING}\n\n* smuggled heading`), /only section content/);
   assert.equal(releaseNotes.validateDraftOutput('### Features\n\n* Real note.\n'), '### Features\n\n* Real note.\n');
 });
 
 test('postDraft fails when the installation App is not the configured bot', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dcode-release-auth-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-auth-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const state = path.join(dir, 'state.json');
   const output = path.join(dir, 'output.md');
-  fs.writeFileSync(state, JSON.stringify({ number: 123, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
   fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
 
   const wrongSlug = makeGithub();
@@ -727,7 +733,7 @@ test('postDraft fails when the installation App is not the configured bot', asyn
   const wrongUser = makeGithub({ appUser: { login: BOT.login, id: 7 } });
   await assert.rejects(
     releaseNotes.postDraft({ github: wrongUser.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, ...BOT_AUTH }),
-    /GitHub App bot is dcode-release-bot\[bot\] \(7\)/,
+    /GitHub App bot is release-notes-bot\[bot\] \(7\)/,
   );
   assert.equal(wrongUser.calls.createComment.length, 0);
   assert.equal(wrongUser.calls.updateComment.length, 0);
@@ -1007,11 +1013,11 @@ test('extractVersionSection rejects more than one matching heading', () => {
 });
 
 test('postDraft output round-trips through parseOverrideComment', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dcode-release-rt-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-rt-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const state = path.join(dir, 'state.json');
   const output = path.join(dir, 'output.md');
-  fs.writeFileSync(state, JSON.stringify({ number: 123, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
   fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
   const { github, calls } = makeGithub();
   await releaseNotes.postDraft({ github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, ...BOT_AUTH });
@@ -1037,11 +1043,11 @@ test('apply uses an exact-parent commit and a non-force branch update', async t 
   assert.deepEqual(committed, { appliedHead: APPLIED_HEAD, created: true });
   assert.deepEqual(calls.createCommit[0].parents, [HEAD]);
   assert.equal(calls.createTree[0].base_tree, 'tree-base');
-  assert.equal(calls.createTree[0].tree[0].path, releaseNotes.CHANGELOG_PATH);
+  assert.equal(calls.createTree[0].tree[0].path, CHANGELOG_PATH);
   assert.deepEqual(calls.updateRef[0], {
     owner: 'langchain-ai',
     repo: 'deepagents',
-    ref: `heads/${releaseNotes.RELEASE_BRANCH}`,
+    ref: `heads/${RELEASE_BRANCH}`,
     sha: APPLIED_HEAD,
     force: false,
   });
@@ -1059,7 +1065,7 @@ test('apply uses an exact-parent commit and a non-force branch update', async t 
   assert.deepEqual(calls.getRef, [{
     owner: 'langchain-ai',
     repo: 'deepagents',
-    ref: `heads/${releaseNotes.RELEASE_BRANCH}`,
+    ref: `heads/${RELEASE_BRANCH}`,
   }]);
 });
 
@@ -1219,7 +1225,7 @@ test('manual commands run for maintainers and admins', async () => {
     payload: {
       action: 'created',
       issue: { number: 123, pull_request: {} },
-      comment: { body: '@dcode-release-bot apply', user: { login: 'maintainer' } },
+      comment: { body: '@release-bot apply', user: { login: 'maintainer' } },
     },
   };
   const maintain = makeGithub({ permission: 'maintain' });
@@ -1240,14 +1246,14 @@ test('an explicit command on a non-release PR is explained, not silently ignored
     payload: {
       action: 'created',
       issue: { number: 123, pull_request: {} },
-      comment: { body: '@dcode-release-bot apply', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+      comment: { body: '@release-bot apply', user: { login: 'maintainer' }, author_association: 'MEMBER' },
     },
   };
   const run = makeGithub({ pr: releasePr({ title: 'feat: something else' }) });
   const result = await releaseNotes.validateTrigger({ github: run.github, context, core: makeCore() });
   assert.equal(result.shouldRun, false);
   assert.equal(run.calls.createComment.length, 1);
-  assert.match(run.calls.createComment[0].body, /only applies to the `deepagents-code` release PR/);
+  assert.match(run.calls.createComment[0].body, /only applies to a release-please release PR/);
 });
 
 test('required check fails when applied and override fingerprints differ', async () => {
@@ -1290,7 +1296,7 @@ test('required check fails when the PR changes during the final re-read', async 
 test('prepareDraft and prepareApply reject a changed release head', async t => {
   const workspace = tempWorkspace();
   t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
-  const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'dcode-release-runner-'));
+  const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-runner-'));
   t.after(() => fs.rmSync(runnerTemp, { recursive: true, force: true }));
   const staleHead = 'c'.repeat(40);
   const draft = makeGithub();
@@ -1322,7 +1328,7 @@ test('rejects a fork PR whose head branch mimics the release branch', () => {
   // release branch. The headRepository === baseRepository guard must reject it so a
   // fork can never be treated as the trusted internal release PR.
   const fork = releasePr({
-    head: { ref: releaseNotes.RELEASE_BRANCH, sha: HEAD, repo: { full_name: 'attacker/deepagents' } },
+    head: { ref: RELEASE_BRANCH, sha: HEAD, repo: { full_name: 'attacker/deepagents' } },
     base: { ref: 'main', repo: { full_name: 'langchain-ai/deepagents' } },
   });
   assert.equal(releaseNotes.isReleaseBranchPr(fork), false);
@@ -1334,10 +1340,10 @@ test('rejects a fork PR whose head branch mimics the release branch', () => {
 test('rejects a bot impostor in both identity directions', () => {
   // Right id, wrong login: a renamed/cloned account must not impersonate the bot.
   const rightIdWrongLogin = { ...overrideComment({ id: 12 }), user: { login: 'evil-clone', id: BOT.id } };
-  assert.equal(releaseNotes.latestOverride([rightIdWrongLogin], BOT.login, BOT.id, VERSION), null);
+  assert.equal(releaseNotes.latestOverride({ comments: [rightIdWrongLogin], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }), null);
   // Right login, wrong id: a reused login must not impersonate the bot either.
   const rightLoginWrongId = { ...overrideComment({ id: 13 }), user: { login: BOT.login, id: 999 } };
-  assert.equal(releaseNotes.latestOverride([rightLoginWrongId], BOT.login, BOT.id, VERSION), null);
+  assert.equal(releaseNotes.latestOverride({ comments: [rightLoginWrongId], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }), null);
 });
 
 test('parseOverrideComment enforces the content-marker boundary', () => {
@@ -1387,7 +1393,7 @@ test('an ambiguous two-command comment from an insider is explained, not dropped
     payload: {
       action: 'created',
       issue: { number: 123, pull_request: {} },
-      comment: { body: '@dcode-release-bot draft and then @dcode-release-bot apply', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+      comment: { body: '@release-bot draft and then @release-bot apply', user: { login: 'maintainer' }, author_association: 'MEMBER' },
     },
   };
   const run = makeGithub();
@@ -1405,7 +1411,7 @@ test('an external comment never amplifies into a bot reply', async () => {
       action: 'created',
       issue: { number: 123, pull_request: {} },
       // A drive-by outsider (association NONE) issuing a valid-looking command.
-      comment: { body: '@dcode-release-bot apply', user: { login: 'drive-by' }, author_association: 'NONE' },
+      comment: { body: '@release-bot apply', user: { login: 'drive-by' }, author_association: 'NONE' },
     },
   };
   const run = makeGithub({ pr: releasePr({ title: 'feat: unrelated' }) });
@@ -1415,11 +1421,11 @@ test('an external comment never amplifies into a bot reply', async () => {
 });
 
 test('re-drafting updates the existing override comment instead of creating a new one', async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dcode-release-redraft-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-redraft-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const state = path.join(dir, 'state.json');
   const output = path.join(dir, 'output.md');
-  fs.writeFileSync(state, JSON.stringify({ number: 123, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
   fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
   const run = makeGithub({ comments: [overrideComment({ id: 55 })] });
   await releaseNotes.postDraft({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, ...BOT_AUTH });
@@ -1475,13 +1481,13 @@ test('latest override and applied bind to the newest comment by id, not array or
   // gate/apply to a stale draft while every single-survivor test still passed.
   const olderOverride = overrideComment({ id: 10 });
   const newerOverride = overrideComment({ id: 30, updatedAt: '2026-07-09T13:00:00Z' });
-  assert.equal(releaseNotes.latestOverride([olderOverride, newerOverride], BOT.login, BOT.id, VERSION).comment.id, 30);
-  assert.equal(releaseNotes.latestOverride([newerOverride, olderOverride], BOT.login, BOT.id, VERSION).comment.id, 30);
+  assert.equal(releaseNotes.latestOverride({ comments: [olderOverride, newerOverride], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }).comment.id, 30);
+  assert.equal(releaseNotes.latestOverride({ comments: [newerOverride, olderOverride], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }).comment.id, 30);
 
   const olderApplied = appliedComment({ id: 20 });
   const newerApplied = appliedComment({ id: 40, updatedAt: '2026-07-09T13:05:00Z' });
-  assert.equal(releaseNotes.latestApplied([olderApplied, newerApplied], BOT.login, BOT.id, VERSION).comment.id, 40);
-  assert.equal(releaseNotes.latestApplied([newerApplied, olderApplied], BOT.login, BOT.id, VERSION).comment.id, 40);
+  assert.equal(releaseNotes.latestApplied({ comments: [olderApplied, newerApplied], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }).comment.id, 40);
+  assert.equal(releaseNotes.latestApplied({ comments: [newerApplied, olderApplied], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }).comment.id, 40);
 });
 
 test('required check fails when the PR body preview terminator is unparseable', async () => {
@@ -1507,7 +1513,7 @@ test('a comment on a plain issue (not a PR) never triggers the bot', async () =>
       // No `pull_request` field: the comment is on a plain issue, not a PR, so the
       // bot must not act on it (and must not read the PR or post any feedback).
       issue: { number: 123 },
-      comment: { body: '@dcode-release-bot apply', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+      comment: { body: '@release-bot apply', user: { login: 'maintainer' }, author_association: 'MEMBER' },
     },
   };
   const run = makeGithub();
@@ -1548,7 +1554,7 @@ test('required check warns about a marked-but-unparsable bot comment without tru
     id: 30,
     updated_at: OVERRIDE_UPDATED_AT,
     user: BOT,
-    body: '<!-- dcode-release-notes-override\npackage: deepagents-code\n-->\nnot a valid draft',
+    body: '<!-- release-notes-override\npackage: deepagents-code\n-->\nnot a valid draft',
   };
   const { github } = makeGithub({ comments: [marked] });
   const core = makeCore();
@@ -1560,7 +1566,7 @@ test('required check warns about a marked-but-unparsable bot comment without tru
     ...BOT_AUTH,
   });
   assert.equal(result.status, 'missing');
-  assert.match(core.failed, /draft and then @dcode-release-bot apply/);
+  assert.match(core.failed, /draft and then @release-bot apply/);
   assert.ok(core.warnings.some(message => message.includes('failed validation')));
 });
 
@@ -1597,6 +1603,236 @@ test('latest override ignores a bot comment for a different package', () => {
   // only thing rejecting a well-formed bot comment scoped to another package.
   const wrongPackage = overrideComment();
   wrongPackage.body = wrongPackage.body.replace('package: deepagents-code', 'package: deepagents');
-  assert.equal(releaseNotes.latestOverride([wrongPackage], BOT.login, BOT.id, VERSION), null);
-  assert.ok(releaseNotes.latestOverride([overrideComment()], BOT.login, BOT.id, VERSION));
+  assert.equal(releaseNotes.latestOverride({ comments: [wrongPackage], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }), null);
+  assert.ok(releaseNotes.latestOverride({ comments: [overrideComment()], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }));
+});
+
+// --- multi-component coverage -------------------------------------------------
+// The helper used to be hardcoded to deepagents-code. These tests pin the
+// generalized behavior: the component comes from the PR head ref, is validated
+// against release-please-config.json, and drives every path and ref the apply
+// commit touches.
+
+const OTHER_COMPONENT = 'langchain-daytona';
+const OTHER_CHANGELOG_PATH = 'libs/partners/daytona/CHANGELOG.md';
+const OTHER_BRANCH = `${releaseNotes.RELEASE_BRANCH_PREFIX}${OTHER_COMPONENT}`;
+
+function prForComponent(component, overrides = {}) {
+  const base = releasePr();
+  return releasePr({
+    title: `release(${component}): ${VERSION}`,
+    head: { ...base.head, ref: `${releaseNotes.RELEASE_BRANCH_PREFIX}${component}` },
+    ...overrides,
+  });
+}
+
+function commentForComponent(component, section = CURATED_SECTION) {
+  return {
+    ...overrideComment({ section }),
+    body: overrideComment({ section }).body.replace(
+      `package: ${COMPONENT}`,
+      `package: ${component}`,
+    ),
+  };
+}
+
+test('every release-please component resolves to its own changelog and branch', () => {
+  const registry = releaseNotes.componentRegistry();
+  assert.ok(registry.size > 1, 'expected more than one managed component');
+  for (const [component, target] of registry) {
+    const pr = prForComponent(component);
+    assert.equal(releaseNotes.isReleaseBranchPr(pr), true, component);
+    assert.deepEqual(releaseNotes.releaseTarget(pr), { ...target, version: VERSION });
+    assert.equal(target.releaseBranch, `${releaseNotes.RELEASE_BRANCH_PREFIX}${component}`);
+    assert.ok(target.changelogPath.startsWith(`${target.packagePath}/`));
+  }
+  // The component the workflow was originally scoped to must keep resolving
+  // exactly as the old hardcoded constants did.
+  assert.equal(registry.get(COMPONENT).changelogPath, CHANGELOG_PATH);
+  assert.equal(registry.get(OTHER_COMPONENT).changelogPath, OTHER_CHANGELOG_PATH);
+});
+
+test('the merge gate now applies to every managed component', async () => {
+  for (const component of releaseNotes.componentRegistry().keys()) {
+    const { github } = makeGithub({ pr: prForComponent(component) });
+    const core = makeCore();
+    const result = await releaseNotes.checkCuratedState({
+      github,
+      context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+      core,
+      number: 123,
+      ...BOT_AUTH,
+    });
+    assert.equal(result.status, 'missing', component);
+    assert.match(core.failed, /Run @release-bot draft and then @release-bot apply/);
+  }
+});
+
+test('rejects a head ref that is not a managed component', () => {
+  for (const ref of [
+    'release-please--branches--main--components--not-a-package',
+    // Path traversal through the component name must not reach a changelog path.
+    'release-please--branches--main--components--../../evil',
+    'release-please--branches--main--components--',
+    'some-unrelated-branch',
+  ]) {
+    const pr = releasePr({ head: { ...releasePr().head, ref } });
+    assert.equal(releaseNotes.isReleaseBranchPr(pr), false, ref);
+    assert.equal(releaseNotes.releaseTarget(pr), null, ref);
+  }
+  assert.throws(() => releaseNotes.targetForComponent('../../evil'), /Unknown release component/);
+  assert.throws(() => releaseNotes.targetForComponent('not-a-package'), /Unknown release component/);
+});
+
+test('rejects a release PR whose title and branch name different components', () => {
+  const mismatched = prForComponent(COMPONENT, {
+    title: `release(${OTHER_COMPONENT}): ${VERSION}`,
+  });
+  // The branch is a real managed component, so the branch check alone passes...
+  assert.equal(releaseNotes.isReleaseBranchPr(mismatched), true);
+  // ...but the title must name that same component before a target is derived.
+  assert.equal(releaseNotes.releaseTarget(mismatched), null);
+  assert.equal(releaseNotes.isReleasePr(mismatched), false);
+  assert.equal(releaseNotes.releaseVersion(`release(${OTHER_COMPONENT}): ${VERSION}`, COMPONENT), null);
+  assert.equal(releaseNotes.releaseVersion(`release(${OTHER_COMPONENT}): ${VERSION}`, OTHER_COMPONENT), VERSION);
+});
+
+test('a curated draft for one component does not satisfy another component', async () => {
+  // Two release PRs are open at once during a fanout release. A draft comment
+  // carrying a different package must not be accepted as this PR's draft.
+  const { github } = makeGithub({
+    pr: prForComponent(OTHER_COMPONENT),
+    comments: [overrideComment()],
+  });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+  });
+  assert.equal(result.status, 'missing');
+  assert.equal(
+    releaseNotes.latestOverride({
+      comments: [overrideComment()],
+      login: BOT.login,
+      id: BOT.id,
+      component: OTHER_COMPONENT,
+      version: VERSION,
+    }),
+    null,
+  );
+  assert.ok(releaseNotes.latestOverride({
+    comments: [commentForComponent(OTHER_COMPONENT)],
+    login: BOT.login,
+    id: BOT.id,
+    component: OTHER_COMPONENT,
+    version: VERSION,
+  }));
+});
+
+test('apply commits to the changelog and branch of the PR component', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-other-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const changelogFile = path.join(root, 'CHANGELOG.md');
+  const stateFile = path.join(root, 'apply.json');
+  const { github, calls } = makeGithub({
+    pr: prForComponent(OTHER_COMPONENT),
+    comments: [commentForComponent(OTHER_COMPONENT)],
+  });
+  const state = await releaseNotes.prepareApply({
+    github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
+    changelogFile, stateFile, ...BOT_AUTH,
+  });
+  assert.equal(state.component, OTHER_COMPONENT);
+  // prepareApply reads the component's own changelog, not deepagents-code's.
+  assert.ok(calls.getContent.every(call => call.path === OTHER_CHANGELOG_PATH));
+
+  await releaseNotes.createApplyCommit({
+    github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+    changelogFile, ...BOT_AUTH,
+  });
+  assert.equal(calls.createTree[0].tree[0].path, OTHER_CHANGELOG_PATH);
+  assert.equal(calls.updateRef[0].ref, `heads/${OTHER_BRANCH}`);
+  assert.equal(calls.updateRef[0].force, false);
+  assert.equal(calls.createCommit[0].message, `chore(${OTHER_COMPONENT}): apply curated release notes`);
+
+  await releaseNotes.publishAppliedState({
+    github, owner: 'langchain-ai', repo: 'deepagents', stateFile, appliedHead: APPLIED_HEAD, ...BOT_AUTH,
+  });
+  assert.deepEqual(calls.getRef, [{
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    ref: `heads/${OTHER_BRANCH}`,
+  }]);
+  const applied = releaseNotes.parseAppliedComment({ body: calls.createComment[0].body });
+  assert.ok(applied, 'applied comment should parse');
+  assert.equal(applied.metadata.package, OTHER_COMPONENT);
+});
+
+test('apply refuses a PR retargeted to a different component mid-flight', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-retarget-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const changelogFile = path.join(root, 'CHANGELOG.md');
+  const stateFile = path.join(root, 'apply.json');
+  const harness = makeGithub({
+    pr: prForComponent(OTHER_COMPONENT),
+    comments: [commentForComponent(OTHER_COMPONENT)],
+  });
+  await releaseNotes.prepareApply({
+    github: harness.github, owner: 'langchain-ai', repo: 'deepagents', number: 123,
+    expectedHead: HEAD, changelogFile, stateFile, ...BOT_AUTH,
+  });
+  // Swap the PR onto another component's branch/title after prepare captured state.
+  harness.setPr(prForComponent(COMPONENT));
+  await assert.rejects(
+    releaseNotes.createApplyCommit({
+      github: harness.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+      changelogFile, ...BOT_AUTH,
+    }),
+    /Release PR changed while apply was preparing/,
+  );
+  assert.equal(harness.calls.updateRef.length, 0);
+});
+
+test('the component registry fails closed on a malformed release-please config', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-config-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const write = (name, value) => {
+    const file = path.join(root, name);
+    fs.writeFileSync(file, JSON.stringify(value));
+    return file;
+  };
+  assert.throws(
+    () => releaseNotes.loadComponentRegistry(write('empty.json', { packages: {} })),
+    /no non-empty 'packages' map/,
+  );
+  assert.throws(
+    () => releaseNotes.loadComponentRegistry(write('missing.json', { packages: { 'libs/x': {} } })),
+    /no usable 'component' name/,
+  );
+  assert.throws(
+    () => releaseNotes.loadComponentRegistry(write('traversal.json', {
+      packages: { 'libs/x': { component: '../../evil' } },
+    })),
+    /no usable 'component' name/,
+  );
+  assert.throws(
+    () => releaseNotes.loadComponentRegistry(write('dupe.json', {
+      packages: { 'libs/x': { component: 'same' }, 'libs/y': { component: 'same' } },
+    })),
+    /more than once/,
+  );
+  assert.throws(
+    () => releaseNotes.loadComponentRegistry(write('escape.json', {
+      packages: { 'libs/x': { component: 'x', 'changelog-path': '../../../etc/passwd' } },
+    })),
+    /unsafe changelog path/,
+  );
+  // A well-formed config defaults the changelog name and keeps the package prefix.
+  const registry = releaseNotes.loadComponentRegistry(write('ok.json', {
+    packages: { 'libs/x': { component: 'x' } },
+  }));
+  assert.equal(registry.get('x').changelogPath, 'libs/x/CHANGELOG.md');
 });

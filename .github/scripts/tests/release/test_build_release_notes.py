@@ -1,6 +1,7 @@
 """Test the shared release-notes builder."""
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -138,6 +139,10 @@ def _entry(sha: str, subject: str) -> str:
     return f"- [`{sha[:7]}`](https://github.com/{REPOSITORY}/commit/{sha}) {subject}"
 
 
+def _release_yml_text() -> str:
+    return (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text()
+
+
 def _release_please_header(version: str, previous: str) -> str:
     """A production-shaped release-please header.
 
@@ -219,10 +224,6 @@ class TestVersionDetection:
         assert brn._base_version("1.0.1-rc.1") == "1.0.1"
         assert brn._base_version("1.0.1.dev3") == "1.0.1"
         assert brn._base_version("1.0.1") == "1.0.1"
-
-
-def _release_yml_text() -> str:
-    return (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text()
 
 
 # ── Changelog extraction ────────────────────────────────────────────────────
@@ -336,6 +337,7 @@ class TestGitLogGeneration:
             "example==1.0.0",
             commits["hotfix"],
             REPOSITORY,
+            warnings=[],
         )
 
         assert "<summary>Git log since example==1.0.0</summary>" in details
@@ -344,6 +346,10 @@ class TestGitLogGeneration:
             commits["feature"][:7]
         )
         assert commits["unrelated"] not in details
+        # Package-scoped means the whole package path, including tests/. The
+        # fixture's release-please `exclude-paths` governs version bumping, not
+        # the git log, so a tests-only commit must still be listed.
+        assert _entry(commits["test_only"], "test(example): add coverage") in details
 
     def test_initial_release_git_log(self, tmp_path: Path) -> None:
         commits = _create_history(tmp_path)
@@ -353,6 +359,7 @@ class TestGitLogGeneration:
             "",
             commits["release"],
             REPOSITORY,
+            warnings=[],
         )
         assert "<summary>Git log for initial release</summary>" in details
         assert _entry(commits["baseline"], "feat(example): initial package") in details
@@ -371,6 +378,7 @@ class TestGitLogGeneration:
             "example==1.0.0",
             commits["fix"],
             REPOSITORY,
+            warnings=[],
         )
         assert _entry(commits["fix"], "fix(example): correct feature") in details
         assert "hotfix(example): repair release" not in details
@@ -385,6 +393,7 @@ class TestGitLogGeneration:
             "example==2.0.0",
             commits["hotfix"],
             REPOSITORY,
+            warnings=[],
         )
         assert "No commits found." in details
         assert "Git log unavailable" not in details
@@ -409,7 +418,8 @@ class TestGitLogGeneration:
         subject = "fix(example): escape </details><!--"
         tip = _commit(tmp_path, PACKAGE_PATH / "module.py", "ESCAPED = 1\n", subject)
         details = brn.generate_git_log(
-            tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY
+            tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY,
+            warnings=[],
         )
         assert "&lt;/details&gt;&lt;!--" in details
         assert "escape </details><!--" not in details
@@ -419,7 +429,8 @@ class TestGitLogGeneration:
         long_subject = f"fix(example): {'x' * 250}"
         tip = _commit(tmp_path, PACKAGE_PATH / "module.py", "LONG = 1\n", long_subject)
         details = brn.generate_git_log(
-            tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY
+            tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY,
+            warnings=[],
         )
         assert "…" in details
 
@@ -428,7 +439,8 @@ class TestGitLogGeneration:
         subject = "x" * 199 + "&" + "x" * 60
         tip = _commit(tmp_path, PACKAGE_PATH / "module.py", "ORDER = 1\n", subject)
         details = brn.generate_git_log(
-            tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY
+            tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY,
+            warnings=[],
         )
         assert "&amp;…" in details
         assert "&…" not in details
@@ -445,10 +457,14 @@ class TestGitLogGeneration:
             )
 
         details = brn.generate_git_log(
-            tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY
+            tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY,
+            warnings=[],
         )
         assert "truncated to the newest" in details
-        assert details.count("https://github.com/") == brn.MAX_COMMITS
+        # The literal, not brn.MAX_COMMITS: asserting against the constant would
+        # keep passing if the constant were lowered.
+        assert details.count("https://github.com/") == 100
+        assert "truncated to the newest 100 commits" in details
 
     def test_git_log_includes_exactly_max_commits_without_truncation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -469,7 +485,8 @@ class TestGitLogGeneration:
             )
 
         details = brn.generate_git_log(
-            tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY
+            tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY,
+            warnings=[],
         )
         assert details.count("https://github.com/") == max_commits
         assert "truncated to the newest" not in details
@@ -489,9 +506,12 @@ class TestGitLogGeneration:
             )
 
         details = brn.generate_git_log(
-            tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY
+            tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY,
+            warnings=[],
         )
-        assert len(details.encode()) < 26_000
+        # Scaffolding (the <details> wrapper and description) sits outside the
+        # entry budget, so allow a small margin over MAX_GIT_LOG_BYTES.
+        assert len(details.encode()) < brn.MAX_GIT_LOG_BYTES + 1_000
         assert details.count(f"https://github.com/{REPOSITORY}/commit/") < 30
         assert "The log is truncated to the newest" in details
 
@@ -511,7 +531,8 @@ class TestGitLogGeneration:
             )
 
         details = brn.generate_git_log(
-            tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY
+            tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY,
+            warnings=[],
         )
         assert "truncated to the newest" in details
         assert details.count("https://github.com/") < 10
@@ -524,7 +545,8 @@ class TestPreviousTagResolution:
     def test_stable_patch_uses_previous_patch(self, tmp_path: Path) -> None:
         commits = _create_history(tmp_path)
         prev = brn.resolve_previous_tag(
-            tmp_path, "example", "1.0.1", commits["hotfix"], is_prerelease=False
+            tmp_path, "example", "1.0.1", commits["hotfix"], is_prerelease=False,
+            warnings=[],
         )
         assert prev == "example==1.0.0"
 
@@ -551,7 +573,8 @@ class TestPreviousTagResolution:
         )
 
         prev = brn.resolve_previous_tag(
-            tmp_path, "example", "1.0.2", head, is_prerelease=False
+            tmp_path, "example", "1.0.2", head, is_prerelease=False,
+            warnings=[],
         )
         assert prev == "example==1.0.0"
 
@@ -573,7 +596,8 @@ class TestPreviousTagResolution:
         )
 
         prev = brn.resolve_previous_tag(
-            tmp_path, "example", "2.0.0", head, is_prerelease=False
+            tmp_path, "example", "2.0.0", head, is_prerelease=False,
+            warnings=[],
         )
         assert prev == "example==1.0.10"
 
@@ -682,7 +706,8 @@ class TestPreviousTagResolution:
         )
 
         prev = brn.resolve_previous_tag(
-            tmp_path, "example", version, release, is_prerelease=True
+            tmp_path, "example", version, release, is_prerelease=True,
+            warnings=[],
         )
         assert prev == f"example=={expected}"
 
@@ -703,7 +728,8 @@ class TestPreviousTagResolution:
         )
 
         prev = brn.resolve_previous_tag(
-            tmp_path, "example", "1.1.0rc1", head, is_prerelease=True
+            tmp_path, "example", "1.1.0rc1", head, is_prerelease=True,
+            warnings=[],
         )
         assert prev == "example==1.0.0"
 
@@ -724,7 +750,8 @@ class TestPreviousTagResolution:
         )
 
         prev = brn.resolve_previous_tag(
-            tmp_path, "example", "1.1.0b1", head, is_prerelease=True
+            tmp_path, "example", "1.1.0b1", head, is_prerelease=True,
+            warnings=[],
         )
         assert prev == "example==1.0.0"
 
@@ -746,7 +773,8 @@ class TestPreviousTagResolution:
         )
 
         prev = brn.resolve_previous_tag(
-            tmp_path, "example", "1.1.0a1", head, is_prerelease=True
+            tmp_path, "example", "1.1.0a1", head, is_prerelease=True,
+            warnings=[],
         )
         assert prev == "example==1.0.0"
 
@@ -781,7 +809,8 @@ class TestPreviousTagResolution:
         )
 
         prev = brn.resolve_previous_tag(
-            tmp_path, "example", "1.0.1a1", head, is_prerelease=True
+            tmp_path, "example", "1.0.1a1", head, is_prerelease=True,
+            warnings=[],
         )
         assert prev == "example==1.0.1"
 
@@ -794,7 +823,8 @@ class TestPreviousTagResolution:
         )
 
         prev = brn.resolve_previous_tag(
-            tmp_path, "example", "1.1.0a1", head, is_prerelease=True
+            tmp_path, "example", "1.1.0a1", head, is_prerelease=True,
+            warnings=[],
         )
         assert prev == "example==1.0.0"
 
@@ -816,7 +846,8 @@ class TestPreviousTagResolution:
         _git(tmp_path, "checkout", "main")
 
         prev = brn.resolve_previous_tag(
-            tmp_path, "example", "1.1.0a7", release, is_prerelease=True
+            tmp_path, "example", "1.1.0a7", release, is_prerelease=True,
+            warnings=[],
         )
         assert prev == "example==1.0.0"
 
@@ -839,9 +870,175 @@ class TestPreviousTagResolution:
             tmp_path, "example==0.0.0", "example", head
         )
         prev = brn.resolve_previous_tag(
-            tmp_path, "example", "0.0.1", head, is_prerelease=False
+            tmp_path, "example", "0.0.1", head, is_prerelease=False,
+            warnings=[],
         )
         assert prev == "example==0.0.0"
+
+
+class TestLatestStableTag:
+    """Direct coverage of the two guards inside `_latest_stable_tag`."""
+
+    def test_excludes_the_release_its_own_tag(self, tmp_path: Path) -> None:
+        """A re-run whose own tag is already pushed must not select it.
+
+        On notes recovery the tag exists at the release commit. Selecting it
+        would make the range `tag..release_sha` empty and publish a "No commits
+        found." log — the exact empty-body symptom recovery exists to fix.
+        """
+        _init_repo(tmp_path)
+        head = _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): base"
+        )
+        _git(tmp_path, "tag", "example==1.0.1")
+
+        assert (
+            brn._latest_stable_tag(tmp_path, "example", head, "example==1.0.1") == ""
+        )
+        # Without the exclusion the tag would come back and empty the range.
+        assert (
+            brn._latest_stable_tag(tmp_path, "example", head, "") == "example==1.0.1"
+        )
+        prev = brn.resolve_previous_tag(
+            tmp_path, "example", "1.0.1", head, is_prerelease=False, warnings=[]
+        )
+        assert prev == ""
+
+    def test_skips_prereleases_that_version_sort_above_stable(
+        self, tmp_path: Path
+    ) -> None:
+        """`--sort=-version:refname` ranks 1.1.0rc1 above 1.0.10.
+
+        Only the stable-only filter stops a stable release from taking a
+        pre-release as its predecessor.
+        """
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.0.10")
+        head = _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): rc"
+        )
+        _git(tmp_path, "tag", "example==1.1.0rc1")
+
+        merged = _git(
+            tmp_path, "tag", "--merged", head, "--sort=-version:refname",
+            "--list", "example==*",
+        ).splitlines()
+        assert merged[0] == "example==1.1.0rc1", "precondition: pre-release sorts first"
+
+        assert (
+            brn._latest_stable_tag(tmp_path, "example", head, "example==2.0.0")
+            == "example==1.0.10"
+        )
+
+
+class TestUnreachablePredecessorWarnings:
+    def _repo_with_unreachable_tag(self, tmp_path: Path) -> str:
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "checkout", "-b", "other")
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 9\n", "feat(example): other")
+        _git(tmp_path, "tag", "example==1.0.0")
+        _git(tmp_path, "checkout", "main")
+        return _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): main"
+        )
+
+    def test_prerelease_warns_like_stable_does(self, tmp_path: Path) -> None:
+        """The anomaly warning must not be stable-only.
+
+        Pre-releases are cut from throwaway branches and partial clones more
+        often than stable releases, so they need this warning most.
+        """
+        head = self._repo_with_unreachable_tag(tmp_path)
+        warnings: list[str] = []
+        prev = brn.resolve_previous_tag(
+            tmp_path, "example", "1.1.0rc1", head, is_prerelease=True,
+            warnings=warnings,
+        )
+        assert prev == ""
+        assert any("No prior stable tag reachable" in w for w in warnings)
+
+    def test_stable_still_warns(self, tmp_path: Path) -> None:
+        head = self._repo_with_unreachable_tag(tmp_path)
+        warnings: list[str] = []
+        prev = brn.resolve_previous_tag(
+            tmp_path, "example", "1.1.0", head, is_prerelease=False,
+            warnings=warnings,
+        )
+        assert prev == ""
+        assert any("No prior stable tag reachable" in w for w in warnings)
+
+    @pytest.mark.parametrize("version", ["1.0.1", "1.1.0"])
+    def test_warns_for_both_patch_and_minor_bumps(
+        self, tmp_path: Path, version: str
+    ) -> None:
+        """Must fire regardless of whether the patch component is zero."""
+        head = self._repo_with_unreachable_tag(tmp_path)
+        warnings: list[str] = []
+        brn.resolve_previous_tag(
+            tmp_path, "example", version, head, is_prerelease=False,
+            warnings=warnings,
+        )
+        assert any("No prior stable tag reachable" in w for w in warnings)
+
+    def test_silent_when_a_predecessor_is_found(self, tmp_path: Path) -> None:
+        """The anomaly warning must not fire on the happy path."""
+        commits = _create_history(tmp_path)
+        warnings: list[str] = []
+        prev = brn.resolve_previous_tag(
+            tmp_path, "example", "1.0.1", commits["hotfix"], is_prerelease=False,
+            warnings=warnings,
+        )
+        assert prev == "example==1.0.0"
+        assert not any("No prior stable tag reachable" in w for w in warnings)
+
+    def test_non_numeric_patch_warns_and_falls_back(self, tmp_path: Path) -> None:
+        """A PEP 440 post-release takes the stable path and must not crash."""
+        assert not brn._is_prerelease("1.0.0.post1")
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.0.0")
+        head = _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): post"
+        )
+        warnings: list[str] = []
+        prev = brn.resolve_previous_tag(
+            tmp_path, "example", "1.0.0.post1", head, is_prerelease=False,
+            warnings=warnings,
+        )
+        assert prev == "example==1.0.0"
+        assert any("does not end in a numeric patch" in w for w in warnings)
+
+    def test_is_ancestor_error_skips_candidate_and_warns(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A git error must not be read as "not an ancestor" and accepted."""
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.0.0")
+        head = _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): a1"
+        )
+        _git(tmp_path, "tag", "example==1.1.0a1")
+        tip = _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 2\n", "feat(example): a2"
+        )
+
+        real_git_run = brn._git_run
+
+        def fake(repo, *args):
+            if args[:2] == ("merge-base", "--is-ancestor"):
+                return subprocess.CompletedProcess(args=list(args), returncode=128)
+            return real_git_run(repo, *args)
+
+        monkeypatch.setattr(brn, "_git_run", fake)
+        warnings: list[str] = []
+        prev = brn._latest_earlier_prerelease_tag(
+            tmp_path, "example", "1.1.0a2", tip, warnings
+        )
+        assert prev == ""
+        assert any("--is-ancestor exited 128" in w for w in warnings)
 
 
 # ── Release commit resolution ───────────────────────────────────────────────
@@ -851,40 +1048,66 @@ class TestReleaseCommit:
     def test_stable_uses_changelog_touch(self, tmp_path: Path) -> None:
         commits = _create_history(tmp_path)
         commit = brn.resolve_release_commit(
-            tmp_path, str(PACKAGE_PATH), is_prerelease=False
+            tmp_path,
+            str(PACKAGE_PATH),
+            commits["hotfix"],
+            is_prerelease=False,
+            warnings=[],
         )
         assert commit == commits["release"]
 
-    def test_prerelease_uses_head(self, tmp_path: Path) -> None:
+    def test_prerelease_uses_the_release_sha(self, tmp_path: Path) -> None:
         commits = _create_history(tmp_path)
         commit = brn.resolve_release_commit(
-            tmp_path, str(PACKAGE_PATH), is_prerelease=True
+            tmp_path,
+            str(PACKAGE_PATH),
+            commits["fix"],
+            is_prerelease=True,
+            warnings=[],
         )
-        assert commit == commits["hotfix"]
+        assert commit == commits["fix"]
 
-    def test_stable_falls_back_to_head_without_changelog(self, tmp_path: Path) -> None:
+    def test_stable_is_bounded_by_the_release_sha(self, tmp_path: Path) -> None:
+        """A later release's commit must not be attributed to this one.
+
+        Searching from HEAD would find the newest CHANGELOG.md touch in the
+        whole clone, so a local rebuild run from an up-to-date checkout would
+        credit a *later* release's contributors and merger to this release.
+        """
+        commits = _create_history(tmp_path)
+        later_release = _commit(
+            tmp_path,
+            PACKAGE_PATH / "CHANGELOG.md",
+            "## 1.0.2\n\n## 1.0.1\n",
+            "release(example): 1.0.2",
+        )
+        assert _git(tmp_path, "rev-parse", "HEAD") == later_release
+
+        commit = brn.resolve_release_commit(
+            tmp_path,
+            str(PACKAGE_PATH),
+            commits["hotfix"],
+            is_prerelease=False,
+            warnings=[],
+        )
+        assert commit == commits["release"]
+
+    def test_stable_falls_back_to_release_sha_without_changelog(
+        self, tmp_path: Path
+    ) -> None:
         _init_repo(tmp_path)
         head = _commit(
             tmp_path, PACKAGE_PATH / "module.py", "BASE = 1\n", "feat(example): base"
         )
         warnings: list[str] = []
         commit = brn.resolve_release_commit(
-            tmp_path, str(PACKAGE_PATH), is_prerelease=False, warnings=warnings
+            tmp_path, str(PACKAGE_PATH), head, is_prerelease=False, warnings=warnings
         )
         assert commit == head
-        assert any("falling back to HEAD" in w for w in warnings)
+        assert any("falling back to the release SHA" in w for w in warnings)
 
 
 # ── gh helpers ──────────────────────────────────────────────────────────────
-
-
-def _gh_stub(handler):
-    """Build a `_run_gh` replacement from a callable taking the arg list."""
-
-    def _run(args: list[str]) -> subprocess.CompletedProcess[str] | None:
-        return handler(args)
-
-    return _run
 
 
 def _ok(stdout: str) -> subprocess.CompletedProcess[str]:
@@ -897,6 +1120,20 @@ def _fail(stderr: str, code: int = 1) -> subprocess.CompletedProcess[str]:
     return subprocess.CompletedProcess(
         args=["gh"], returncode=code, stdout="", stderr=stderr
     )
+
+
+def _pr_handler(pr_number: str, payload: str):
+    """A `_run_gh` replacement for the common two-call contributor lookup.
+
+    The commit-to-PR `gh api` call answers *pr_number*; the follow-up
+    `gh pr view` answers *payload* verbatim, so a caller can hand over either
+    JSON or the raw string a `--jq` query would print.
+    """
+
+    def handler(args: list[str]) -> subprocess.CompletedProcess[str]:
+        return _ok(pr_number) if args[0] == "api" else _ok(payload)
+
+    return handler
 
 
 class TestCollectContributors:
@@ -916,12 +1153,7 @@ class TestCollectContributors:
         monkeypatch: pytest.MonkeyPatch,
         warnings: list[str] | None = None,
     ):
-        def handler(args: list[str]):
-            if args[0] == "api":
-                return _ok("7")
-            return _ok(json.dumps(pr_payload))
-
-        monkeypatch.setattr(brn, "_run_gh", _gh_stub(handler))
+        monkeypatch.setattr(brn, "_run_gh", _pr_handler("7", json.dumps(pr_payload)))
         return brn.collect_contributors(
             tmp_path,
             str(PACKAGE_PATH),
@@ -987,7 +1219,54 @@ class TestCollectContributors:
             },
             monkeypatch,
         )
-        assert community[0].linkedin == "https://www.linkedin.com/in/alice"
+        assert community[0].linkedin_url == "https://www.linkedin.com/in/alice"
+
+    def test_linkedin_scheme_is_added_at_parse_time(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A schemeless URL is normalized before it is stored.
+
+        Storing one spelling keeps the gap-filling merge across PRs from making
+        the published link depend on commit order.
+        """
+        head = self._repo(tmp_path)
+        community, _ = self._run(
+            tmp_path,
+            head,
+            {
+                "author": {"login": "alice", "is_bot": False},
+                "body": "LinkedIn: linkedin.com/in/alice\n",
+                "labels": [],
+            },
+            monkeypatch,
+        )
+        assert community[0].linkedin_url == "https://linkedin.com/in/alice"
+
+    @pytest.mark.parametrize(
+        "url",
+        ["HTTPS://linkedin.com/in/alice", "Https://LinkedIn.com/in/alice"],
+    )
+    def test_an_uppercase_scheme_is_not_prefixed_again(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, url: str
+    ) -> None:
+        """`_LINKEDIN_RE` is IGNORECASE, so the scheme check must be too.
+
+        A case-sensitive check turns `HTTPS://...` into `https://HTTPS://...`,
+        publishing a dead link under a real contributor's name.
+        """
+        head = self._repo(tmp_path)
+        community, _ = self._run(
+            tmp_path,
+            head,
+            {
+                "author": {"login": "alice", "is_bot": False},
+                "body": f"LinkedIn: {url}\n",
+                "labels": [],
+            },
+            monkeypatch,
+        )
+        assert community[0].linkedin_url == url
+        assert "https://https://" not in community[0].linkedin_url.lower()
 
     def test_skips_bot_by_flag(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1081,7 +1360,7 @@ class TestCollectContributors:
                 return _ok(str(calls["n"]))
             return _ok(json.dumps(payloads[args[2]]))
 
-        monkeypatch.setattr(brn, "_run_gh", _gh_stub(handler))
+        monkeypatch.setattr(brn, "_run_gh", handler)
         community, internal = brn.collect_contributors(
             tmp_path,
             str(PACKAGE_PATH),
@@ -1099,7 +1378,7 @@ class TestCollectContributors:
         """A truncated contributor list must not look like a complete one."""
         head = self._repo(tmp_path)
         monkeypatch.setattr(
-            brn, "_run_gh", _gh_stub(lambda _args: _fail("HTTP 403 rate limit", 1))
+            brn, "_run_gh", lambda _args: _fail("HTTP 403 rate limit", 1)
         )
         warnings: list[str] = []
         community, internal = brn.collect_contributors(
@@ -1130,17 +1409,245 @@ class TestCollectContributors:
             "example==1.0.0",
             REPOSITORY,
             offline=True,
+            warnings=[],
         ) == ([], [])
+
+
+class TestContributorEdgeCases:
+    def _history(self, tmp_path: Path, count: int) -> str:
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.0.0")
+        tip = ""
+        for index in range(count):
+            tip = _commit(
+                tmp_path,
+                PACKAGE_PATH / "module.py",
+                f"V = {index + 1}\n",
+                f"fix(example): generated {index}",
+            )
+        return tip
+
+    def _collect(
+        self, tmp_path: Path, tip: str, warnings: list[str]
+    ) -> brn.Contributors:
+        return brn.collect_contributors(
+            tmp_path, str(PACKAGE_PATH), tip, "example==1.0.0", REPOSITORY,
+            warnings=warnings,
+        )
+
+    def test_warns_when_the_range_exceeds_the_commit_cap(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A silently truncated contributor list looks complete in the body.
+
+        The git log announces its own truncation in the rendered notes; this
+        path has no such surface, so the warning is the only signal.
+        """
+        monkeypatch.setattr(brn, "MAX_CONTRIBUTOR_COMMITS", 3)
+        tip = self._history(tmp_path, 5)
+
+        seen: list[str] = []
+
+        def handler(args: list[str]):
+            if args[0] == "api":
+                seen.append(args[1])
+                return _ok(str(len(seen)))
+            return _ok(
+                json.dumps(
+                    {
+                        "author": {"login": f"user{len(seen)}", "is_bot": False},
+                        "body": "",
+                        "labels": [],
+                    }
+                )
+            )
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        warnings: list[str] = []
+        community, _ = self._collect(tmp_path, tip, warnings)
+        assert len(community) == 3
+        assert any(
+            "only the newest 3 were scanned" in w and "INCOMPLETE" in w
+            for w in warnings
+        )
+
+    def test_abandons_the_walk_after_consecutive_failures(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A permanent auth fault must not be retried once per commit."""
+        monkeypatch.setattr(brn, "MAX_CONSECUTIVE_GH_FAILURES", 3)
+        tip = self._history(tmp_path, 20)
+        calls = 0
+
+        def handler(args: list[str]):
+            nonlocal calls
+            calls += 1
+            return _fail("HTTP 403: Resource not accessible by integration")
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        warnings: list[str] = []
+        community, internal = self._collect(tmp_path, tip, warnings)
+        assert community == [] and internal == []
+        assert calls == 3, "must stop at the failure threshold, not walk 20 commits"
+        assert any("abandoned after 3 consecutive failures" in w for w in warnings)
+
+    def test_null_labels_warns_like_a_missing_field(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`labels: null` hides an `internal` label just as an absent field does."""
+        tip = self._history(tmp_path, 1)
+
+        payload = json.dumps(
+            {"author": {"login": "alice", "is_bot": False}, "body": "", "labels": None}
+        )
+        monkeypatch.setattr(brn, "_run_gh", _pr_handler("7", payload))
+        warnings: list[str] = []
+        self._collect(tmp_path, tip, warnings)
+        assert any("returned no labels field" in w for w in warnings)
+
+    def test_one_pr_spanning_two_commits_is_viewed_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        tip = self._history(tmp_path, 2)
+        views = 0
+
+        def handler(args: list[str]):
+            nonlocal views
+            if args[0] == "api":
+                return _ok("42")
+            views += 1
+            return _ok(
+                json.dumps(
+                    {
+                        "author": {"login": "alice", "is_bot": False},
+                        "body": "",
+                        "labels": [],
+                    }
+                )
+            )
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        community, _ = self._collect(tmp_path, tip, [])
+        assert views == 1
+        assert [c.login for c in community] == ["alice"]
+
+    def test_socials_are_merged_across_prs_first_value_wins(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Later PRs fill gaps only; an earlier non-empty value is kept."""
+        tip = self._history(tmp_path, 2)
+        bodies = [
+            "Twitter: @firsthandle\n",
+            "Twitter: @secondhandle\nLinkedIn: https://linkedin.com/in/alice\n",
+        ]
+        pr_index = 0
+
+        def handler(args: list[str]):
+            nonlocal pr_index
+            if args[0] == "api":
+                pr_index += 1
+                return _ok(str(pr_index))
+            return _ok(
+                json.dumps(
+                    {
+                        "author": {"login": "alice", "is_bot": False},
+                        "body": bodies[pr_index - 1],
+                        "labels": [],
+                    }
+                )
+            )
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        community, _ = self._collect(tmp_path, tip, [])
+        assert community == [
+            brn.Contributor("alice", "firsthandle", "https://linkedin.com/in/alice")
+        ]
+
+    def test_rev_list_failure_warns_and_credits_nobody(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._history(tmp_path, 1)
+        monkeypatch.setattr(brn, "_run_gh", lambda args: _ok("1"))
+        warnings: list[str] = []
+        community, internal = self._collect(tmp_path, "nope-nope-nope", warnings)
+        assert community == [] and internal == []
+        assert any("git rev-list failed" in w for w in warnings)
+
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            ("", "gh returned empty output"),
+            ("not json", "unparseable gh output"),
+            ("[1, 2]", "expected a JSON object"),
+        ],
+    )
+    def test_malformed_pr_payloads_are_reported_distinctly(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        payload: str,
+        expected: str,
+    ) -> None:
+        tip = self._history(tmp_path, 1)
+
+        monkeypatch.setattr(brn, "_run_gh", _pr_handler("7", payload))
+        warnings: list[str] = []
+        community, _ = self._collect(tmp_path, tip, warnings)
+        assert community == []
+        assert any(expected in w for w in warnings)
+
+    @pytest.mark.parametrize("author", [None, "alice", {"is_bot": False}])
+    def test_unusable_author_payloads_warn(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, author: object
+    ) -> None:
+        tip = self._history(tmp_path, 1)
+
+        payload = json.dumps({"author": author, "body": "", "labels": []})
+        monkeypatch.setattr(brn, "_run_gh", _pr_handler("7", payload))
+        warnings: list[str] = []
+        community, _ = self._collect(tmp_path, tip, warnings)
+        assert community == []
+        assert any("PR #7" in w for w in warnings)
+
+    def test_incomplete_warning_names_the_first_cause(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A bare count cannot be debugged; the reason must survive."""
+        tip = self._history(tmp_path, 1)
+        monkeypatch.setattr(
+            brn, "_run_gh", lambda args: _fail("HTTP 404: no such repo")
+        )
+        warnings: list[str] = []
+        self._collect(tmp_path, tip, warnings)
+        assert any("no such repo" in w and "INCOMPLETE" in w for w in warnings)
 
 
 # ── Releaser resolution ─────────────────────────────────────────────────
 
 
 class TestResolveReleaser:
+    def test_warns_when_merged_by_is_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unmerged PR returns "" on a *successful* call.
+
+        Without this warning the actor is credited as the releaser with nothing
+        recorded about why the real lookup came back empty.
+        """
+
+        monkeypatch.setattr(brn, "_run_gh", _pr_handler("42", ""))
+        warnings: list[str] = []
+        releaser = brn.resolve_releaser(
+            REPOSITORY, "abc123", "dispatcher", warnings=warnings
+        )
+        assert releaser == "dispatcher"
+        assert any("has no mergedBy" in w for w in warnings)
+
     def test_warns_when_commit_pulls_lookup_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(brn, "_run_gh", _gh_stub(lambda _a: _fail("HTTP 500")))
+        monkeypatch.setattr(brn, "_run_gh", lambda _a: _fail("HTTP 500"))
         warnings: list[str] = []
 
         releaser = brn.resolve_releaser(
@@ -1155,7 +1662,7 @@ class TestResolveReleaser:
     def test_no_warning_when_commit_has_no_pull_request(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(brn, "_run_gh", _gh_stub(lambda _a: _ok("")))
+        monkeypatch.setattr(brn, "_run_gh", lambda _a: _ok(""))
         warnings: list[str] = []
 
         releaser = brn.resolve_releaser(
@@ -1166,19 +1673,16 @@ class TestResolveReleaser:
         assert warnings == []
 
     def test_uses_merger_when_available(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def handler(args: list[str]):
-            return _ok("7") if args[0] == "api" else _ok("merger")
-
-        monkeypatch.setattr(brn, "_run_gh", _gh_stub(handler))
+        monkeypatch.setattr(brn, "_run_gh", _pr_handler("7", "merger"))
         assert (
-            brn.resolve_releaser(REPOSITORY, "abc123", "dispatcher") == "merger"
+            brn.resolve_releaser(REPOSITORY, "abc123", "dispatcher", warnings=[]) == "merger"
         )
 
     def test_warns_when_pr_view_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def handler(args: list[str]):
             return _ok("7") if args[0] == "api" else _fail("HTTP 502")
 
-        monkeypatch.setattr(brn, "_run_gh", _gh_stub(handler))
+        monkeypatch.setattr(brn, "_run_gh", handler)
         warnings: list[str] = []
         assert (
             brn.resolve_releaser(
@@ -1194,27 +1698,137 @@ class TestResolveReleaser:
     def test_drops_bot_accounts(
         self, monkeypatch: pytest.MonkeyPatch, actor: str
     ) -> None:
-        monkeypatch.setattr(brn, "_run_gh", _gh_stub(lambda _a: _ok("")))
-        assert brn.resolve_releaser(REPOSITORY, "abc123", actor) == ""
+        monkeypatch.setattr(brn, "_run_gh", lambda _a: _ok(""))
+        assert brn.resolve_releaser(REPOSITORY, "abc123", actor, warnings=[]) == ""
 
     def test_offline_returns_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def explode(_args):
             raise AssertionError("gh must not run in offline mode")
 
         monkeypatch.setattr(brn, "_run_gh", explode)
-        assert brn.resolve_releaser(REPOSITORY, "abc", "actor", offline=True) == ""
+        assert brn.resolve_releaser(REPOSITORY, "abc", "actor", offline=True, warnings=[]) == ""
 
     def test_missing_gh_falls_back_to_actor(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A missing gh is not the same as --offline: the actor still counts."""
-        monkeypatch.setattr(brn, "_run_gh", _gh_stub(lambda _a: None))
+        monkeypatch.setattr(brn, "_run_gh", lambda _a: None)
         warnings: list[str] = []
         assert (
             brn.resolve_releaser(REPOSITORY, "abc", "actor", warnings=warnings)
             == "actor"
         )
         assert any("gh executable not found" in w for w in warnings)
+
+
+class TestRunGh:
+    """Exercise the real `_run_gh`, which every other gh test stubs out."""
+
+    def test_missing_gh_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """None means "no gh here", which callers treat differently from a
+        failed call — it is what keeps `--offline` distinguishable."""
+
+        def boom(*args, **kwargs):
+            raise FileNotFoundError(2, "No such file or directory: 'gh'")
+
+        monkeypatch.setattr(brn.subprocess, "run", boom)
+        assert brn._run_gh(["api", "/x"]) is None
+        assert brn._gh_result_detail(None) == "gh executable not found"
+
+    def test_timeout_becomes_a_failed_result_not_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def boom(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="gh", timeout=brn.GH_TIMEOUT_SECONDS)
+
+        monkeypatch.setattr(brn.subprocess, "run", boom)
+        result = brn._run_gh(["api", "/x"])
+        assert result is not None
+        assert result.returncode == 124
+        assert "timed out" in result.stderr
+
+    def test_oserror_becomes_a_failed_result_not_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A permission or exec error is not "gh is missing"."""
+
+        def boom(*args, **kwargs):
+            raise PermissionError(13, "Permission denied")
+
+        monkeypatch.setattr(brn.subprocess, "run", boom)
+        result = brn._run_gh(["api", "/x"])
+        assert result is not None
+        assert result.returncode == 126
+
+    def test_rate_limit_is_retried_with_backoff(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        attempts = 0
+        sleeps: list[float] = []
+
+        def fake_run(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            return subprocess.CompletedProcess(
+                args=["gh"],
+                returncode=1,
+                stdout="",
+                stderr="API rate limit exceeded for user",
+            )
+
+        monkeypatch.setattr(brn.subprocess, "run", fake_run)
+        monkeypatch.setattr(brn.time, "sleep", sleeps.append)
+        brn._run_gh(["api", "/x"])
+        assert attempts == brn.GH_MAX_ATTEMPTS
+        assert sleeps == [2, 4]
+
+    def test_non_rate_limit_failure_is_not_retried(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        attempts = 0
+
+        def fake_run(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            return subprocess.CompletedProcess(
+                args=["gh"], returncode=1, stdout="", stderr="could not resolve host"
+            )
+
+        monkeypatch.setattr(brn.subprocess, "run", fake_run)
+        monkeypatch.setattr(brn.time, "sleep", lambda _: pytest.fail("must not sleep"))
+        brn._run_gh(["api", "/x"])
+        assert attempts == 1
+
+    def test_a_sha_containing_403_is_not_treated_as_throttling(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bare status codes are valid hex and match inside commit SHAs.
+
+        Matching "403" as a substring would turn a permanent failure into the
+        full retry budget on every commit in the range.
+        """
+        attempts = 0
+
+        def fake_run(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            return subprocess.CompletedProcess(
+                args=["gh"],
+                returncode=1,
+                stdout="",
+                stderr="no pull request found for 403bead1c0ffee0000000000000000000000000",
+            )
+
+        monkeypatch.setattr(brn.subprocess, "run", fake_run)
+        monkeypatch.setattr(brn.time, "sleep", lambda _: pytest.fail("must not sleep"))
+        brn._run_gh(["api", "/x"])
+        assert attempts == 1
+
+    def test_detail_falls_back_to_the_exit_status(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=["gh"], returncode=7, stdout="", stderr=""
+        )
+        assert brn._gh_result_detail(result) == "exit status 7"
 
 
 # ── Body finalization / size budget ─────────────────────────────────────────
@@ -1253,6 +1867,32 @@ class TestFinalizeBody:
         assert body == base
         assert any("Base release body" in w for w in warnings)
 
+    def test_oversized_base_does_not_also_blame_the_git_log(self) -> None:
+        """Two warnings would defeat the point of distinguishing the causes.
+
+        Nothing here can shrink the base body, so reporting the Git log as the
+        thing that did not fit would send a maintainer after the wrong cause.
+        """
+        base = "x" * (brn.MAX_RELEASE_BODY_BYTES + 1)
+        _, warnings = brn.finalize_body(base, "<details>Git log</details>")
+        assert not any("Full Git log omitted" in w for w in warnings)
+
+    def test_exact_budget_boundary_appends_cleanly(self) -> None:
+        """The budget is inclusive: a body landing exactly on it still fits."""
+        details = "<details>Git log</details>"
+        base = "x" * (brn.MAX_RELEASE_BODY_BYTES - len(details) - 2)
+        body, warnings = brn.finalize_body(base, details)
+        assert len(body.encode()) == brn.MAX_RELEASE_BODY_BYTES
+        assert body.endswith(details)
+        assert warnings == []
+
+    def test_one_byte_over_the_budget_falls_back_to_compact(self) -> None:
+        details = "<details>Git log</details>"
+        base = "x" * (brn.MAX_RELEASE_BODY_BYTES - len(details) - 1)
+        body, warnings = brn.finalize_body(base, details)
+        assert not body.endswith(details)
+        assert any("Full Git log omitted" in w for w in warnings)
+
 
 # ── Body assembly ────────────────────────────────────────────────────────────
 
@@ -1283,11 +1923,33 @@ class TestBuildBaseBody:
         assert "> [!WARNING]" in body
         assert "pip install example==1.0.1a1" in body
 
+    def test_prerelease_banner_is_separated_from_the_changelog(self) -> None:
+        body = self._body(
+            version="1.0.1a1", is_prerelease=True, changelog_body="* fix something"
+        )
+        assert body.endswith("`\n\n* fix something")
+
+    def test_empty_changelog_leaves_no_blank_line_run(self) -> None:
+        """Pre-releases have no CHANGELOG.md section, so this is the normal case.
+
+        An unconditional separator after the banner stacks with the one every
+        later section prepends, leaving three blank lines in the published body.
+        """
+        body = self._body(
+            version="1.0.1a1",
+            is_prerelease=True,
+            changelog_body="",
+            releaser="shipper",
+        )
+        assert "\n\n\n" not in body
+        assert body.count("---") == 1
+        assert "Released by: @shipper" in body
+
     def test_contributors_and_releaser(self) -> None:
         body = self._body(
             community=[
                 brn.Contributor("user1", "user1tw", ""),
-                brn.Contributor("user2", "", "linkedin.com/in/user2"),
+                brn.Contributor("user2", "", "https://linkedin.com/in/user2"),
             ],
             internal=["maintainer1"],
             releaser="releaser1",
@@ -1315,14 +1977,15 @@ class TestBuildBaseBody:
         assert "Released by: @dual" in body
 
     def test_contributor_without_socials(self) -> None:
-        body = self._body(community=[brn.Contributor("plain")])
+        body = self._body(community=[brn.Contributor("plain", "", "")])
         assert "contributors: @plain" in body
         assert "[Twitter]" not in body
 
-    def test_linkedin_already_absolute_is_not_double_prefixed(self) -> None:
+    def test_linkedin_url_is_rendered_verbatim(self) -> None:
         body = self._body(
             community=[brn.Contributor("u", "", "https://linkedin.com/in/u")]
         )
+        assert "[LinkedIn](https://linkedin.com/in/u)" in body
         assert "https://https://" not in body
 
     def test_branch_annotation(self) -> None:
@@ -1472,6 +2135,168 @@ class TestBuildReleaseNotes:
             )
 
 
+class TestBuildReleaseNotesOnline:
+    """The non-offline path, where contributor and releaser lookups run.
+
+    Every other integration test passes `offline=True`, which skips this seam
+    entirely — including the argument order and which commit bounds the
+    contributor range.
+    """
+
+    def _stub(self, monkeypatch: pytest.MonkeyPatch, seen_ranges: list[str]) -> None:
+        real_git_run = brn._git_run
+
+        def spy(repo, *args):
+            if args and args[0] == "rev-list":
+                seen_ranges.append(args[1])
+            return real_git_run(repo, *args)
+
+        def handler(args: list[str]):
+            if args[0] == "api":
+                return _ok("11")
+            if "mergedBy" in args:
+                return _ok("merger-person")
+            return _ok(
+                json.dumps(
+                    {
+                        "author": {"login": "outside-dev", "is_bot": False},
+                        "body": "Twitter: @outsidedev\n",
+                        "labels": [],
+                    }
+                )
+            )
+
+        monkeypatch.setattr(brn, "_git_run", spy)
+        monkeypatch.setattr(brn, "_run_gh", handler)
+
+    def test_contributors_and_releaser_reach_the_body(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        commits = _create_history(tmp_path)
+        ranges: list[str] = []
+        self._stub(monkeypatch, ranges)
+
+        body, _ = brn.build_release_notes(
+            tmp_path,
+            package="example",
+            version="1.0.1",
+            release_sha=commits["hotfix"],
+            repository=REPOSITORY,
+            working_dir=str(PACKAGE_PATH),
+            actor="dispatcher",
+        )
+        assert "Thanks to our community contributors: @outside-dev" in body
+        assert "[Twitter](https://x.com/outsidedev)" in body
+        assert "Released by: @merger-person" in body
+
+    def test_contributor_range_ends_at_the_release_commit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Attribution stops at the release commit, not the release SHA.
+
+        A transposed or HEAD-anchored range yields an empty list at exit 0 with
+        no warning, so the range itself has to be pinned.
+        """
+        commits = _create_history(tmp_path)
+        ranges: list[str] = []
+        self._stub(monkeypatch, ranges)
+
+        brn.build_release_notes(
+            tmp_path,
+            package="example",
+            version="1.0.1",
+            release_sha=commits["hotfix"],
+            repository=REPOSITORY,
+            working_dir=str(PACKAGE_PATH),
+        )
+        assert ranges == [f"example==1.0.0..{commits['release']}"]
+
+
+class TestMissingTagsDetection:
+    def test_tagless_clone_warns_instead_of_claiming_initial_release(
+        self, tmp_path: Path
+    ) -> None:
+        """No tags at all looks identical to a genuine first release.
+
+        The changelog documenting earlier versions is the evidence that tells
+        the two apart, and RELEASING.md names this as the case to watch for.
+        """
+        _init_repo(tmp_path)
+        head = _commit(
+            tmp_path,
+            PACKAGE_PATH / "CHANGELOG.md",
+            "## 1.0.1\n\n* second release\n\n## 1.0.0\n\n* first release\n",
+            "release(example): 1.0.1",
+        )
+        assert _git(tmp_path, "tag", "--list") == "", "precondition: no tags"
+
+        body, warnings = brn.build_release_notes(
+            tmp_path,
+            package="example",
+            version="1.0.1",
+            release_sha=head,
+            repository=REPOSITORY,
+            offline=True,
+            working_dir=str(PACKAGE_PATH),
+        )
+        assert "<summary>Git log for initial release</summary>" in body
+        assert any("probably missing tags" in w for w in warnings)
+
+    def test_genuine_initial_release_does_not_warn(self, tmp_path: Path) -> None:
+        """A changelog with only this version is a real first release."""
+        _init_repo(tmp_path)
+        head = _commit(
+            tmp_path,
+            PACKAGE_PATH / "CHANGELOG.md",
+            "## 1.0.0\n\n* first release\n",
+            "release(example): 1.0.0",
+        )
+        _, warnings = brn.build_release_notes(
+            tmp_path,
+            package="example",
+            version="1.0.0",
+            release_sha=head,
+            repository=REPOSITORY,
+            offline=True,
+            working_dir=str(PACKAGE_PATH),
+        )
+        assert not any("missing tags" in w for w in warnings)
+
+
+class TestChangelogIsReadAtTheReleaseSha:
+    def test_later_changelog_edits_do_not_leak_into_the_body(
+        self, tmp_path: Path
+    ) -> None:
+        """The section comes from the release commit, not the working tree."""
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.0.0")
+        release = _commit(
+            tmp_path,
+            PACKAGE_PATH / "CHANGELOG.md",
+            "## 1.0.1\n\n* as released\n",
+            "release(example): 1.0.1",
+        )
+        _commit(
+            tmp_path,
+            PACKAGE_PATH / "CHANGELOG.md",
+            "## 1.0.1\n\n* edited after the fact\n",
+            "docs(example): rewrite changelog",
+        )
+
+        body, _ = brn.build_release_notes(
+            tmp_path,
+            package="example",
+            version="1.0.1",
+            release_sha=release,
+            repository=REPOSITORY,
+            offline=True,
+            working_dir=str(PACKAGE_PATH),
+        )
+        assert "* as released" in body
+        assert "edited after the fact" not in body
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
@@ -1484,6 +2309,16 @@ def _run_cli(repo: Path, *args: str, env: dict | None = None):
         cwd=repo,
         env=env,
     )
+
+
+def _parse_heredoc(written: str) -> re.Match[str]:
+    """Parse the ``key<<DELIM\\n...\\nDELIM\\n`` framing written to $GITHUB_OUTPUT.
+
+    Group 1 is the delimiter, group 2 the body.
+    """
+    match = re.match(r"release-body<<(\S+)\n(.*)\n\1\n\Z", written, re.DOTALL)
+    assert match, f"unexpected framing: {written[:200]!r}"
+    return match
 
 
 class TestCli:
@@ -1502,8 +2337,6 @@ class TestCli:
         commits = _create_history(tmp_path)
         output_file = tmp_path / "gh_output"
         output_file.touch()
-        import os
-
         env = {**os.environ, "GITHUB_OUTPUT": str(output_file)}
         result = _run_cli(
             tmp_path,
@@ -1512,9 +2345,7 @@ class TestCli:
             env=env,
         )
         assert result.returncode == 0, result.stderr
-        written = output_file.read_text()
-        match = re.match(r"release-body<<(\S+)\n(.*)\n\1\n\Z", written, re.DOTALL)
-        assert match, f"unexpected framing: {written[:200]!r}"
+        match = _parse_heredoc(output_file.read_text())
         assert "<details>" in match.group(2)
 
     def test_github_output_delimiter_is_not_bare_eof(self, tmp_path: Path) -> None:
@@ -1531,16 +2362,12 @@ class TestCli:
         head = _git(tmp_path, "rev-parse", "HEAD")
         output_file = tmp_path / "gh_output"
         output_file.touch()
-        import os
-
         env = {**os.environ, "GITHUB_OUTPUT": str(output_file)}
         result = _run_cli(
             tmp_path, *self._base_args(tmp_path, head), "--github-output", env=env
         )
         assert result.returncode == 0, result.stderr
-        written = output_file.read_text()
-        match = re.match(r"release-body<<(\S+)\n(.*)\n\1\n\Z", written, re.DOTALL)
-        assert match, f"unexpected framing: {written[:200]!r}"
+        match = _parse_heredoc(output_file.read_text())
         assert match.group(1) != "EOF"
         body = match.group(2)
         assert "Before" in body
@@ -1548,8 +2375,6 @@ class TestCli:
 
     def test_github_output_unset_is_an_error(self, tmp_path: Path) -> None:
         commits = _create_history(tmp_path)
-        import os
-
         env = {k: v for k, v in os.environ.items() if k != "GITHUB_OUTPUT"}
         result = _run_cli(
             tmp_path,
@@ -1605,7 +2430,128 @@ class TestCli:
         commits = _create_history(tmp_path)
         result = _run_cli(tmp_path, *self._base_args(tmp_path, commits["hotfix"]))
         assert result.returncode == 0, result.stderr
+        # stderr, not stdout: the body itself goes to stdout by default, so an
+        # annotation there would corrupt it. The runner parses both streams.
         assert "::warning::" in result.stderr
+
+    @pytest.mark.parametrize(
+        ("flag_value", "expect_banner"),
+        [("true", True), ("false", False)],
+    )
+    def test_is_prerelease_flag_decides_the_banner(
+        self, tmp_path: Path, flag_value: str, expect_banner: bool
+    ) -> None:
+        """The workflow's authoritative flag must win over version sniffing.
+
+        A regression to a plain truthiness check would put the pre-release
+        banner on every stable release.
+        """
+        commits = _create_history(tmp_path)
+        result = _run_cli(
+            tmp_path,
+            *self._base_args(tmp_path, commits["hotfix"]),
+            "--is-prerelease",
+            flag_value,
+        )
+        assert result.returncode == 0, result.stderr
+        assert ("> [!WARNING]" in result.stdout) is expect_banner
+
+    def test_empty_is_prerelease_falls_back_to_sniffing(self, tmp_path: Path) -> None:
+        """An unset CI expression must degrade, not fail the step."""
+        _init_repo(tmp_path)
+        head = _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): v1"
+        )
+        result = _run_cli(
+            tmp_path,
+            "--package", "example",
+            "--version", "1.0.1a1",
+            "--sha", head,
+            "--repo", REPOSITORY,
+            "--working-dir", str(PACKAGE_PATH),
+            "--offline",
+            "--repo-root", str(tmp_path),
+            "--is-prerelease", "",
+        )
+        assert result.returncode == 0, result.stderr
+        assert "> [!WARNING]" in result.stdout
+
+    def test_unwritable_out_path_echoes_the_body_to_stdout(
+        self, tmp_path: Path
+    ) -> None:
+        """The body costs up to 200 API calls; a write failure must not lose it."""
+        commits = _create_history(tmp_path)
+        result = _run_cli(
+            tmp_path,
+            *self._base_args(tmp_path, commits["hotfix"]),
+            "--out",
+            str(tmp_path / "no-such-dir" / "body.md"),
+        )
+        assert result.returncode == 1
+        assert "::error::" in result.stderr
+        assert "body follows on stdout" in result.stderr
+        assert "<details>" in result.stdout
+
+    def test_warnings_are_written_to_the_step_summary(self, tmp_path: Path) -> None:
+        """A green fail-open job needs a surface a reviewer actually sees."""
+        commits = _create_history(tmp_path)
+        summary = tmp_path / "summary.md"
+        summary.touch()
+        env = {**os.environ, "GITHUB_STEP_SUMMARY": str(summary)}
+        result = _run_cli(
+            tmp_path, *self._base_args(tmp_path, commits["hotfix"]), env=env
+        )
+        assert result.returncode == 0, result.stderr
+        written = summary.read_text()
+        assert "Release notes built with warnings" in written
+        assert "gh release edit" in written
+
+    def test_step_summary_is_skipped_when_there_are_no_warnings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        summary = tmp_path / "summary.md"
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+        brn._write_step_summary("example", "1.0.1", [])
+        assert not summary.exists()
+
+
+class TestWorkflowWiring:
+    """Pin the coupling between the script and the workflow that calls it.
+
+    Renaming the step id or the output key publishes an empty release body, and
+    the fail-open design means nothing else would fail.
+    """
+
+    def test_step_id_and_output_key_match_the_script(self) -> None:
+        text = _release_yml_text()
+        assert "id: finalize-release-body" in text
+        assert (
+            "release-body: ${{ steps.finalize-release-body.outputs.release-body }}"
+            in text
+        )
+        # The key the script writes into $GITHUB_OUTPUT.
+        assert 'handle.write(f"release-body<<' in SCRIPT_PATH.read_text()
+
+    def test_workflow_invokes_the_script_with_the_authoritative_flags(self) -> None:
+        text = _release_yml_text()
+        assert "build_release_notes.py" in text
+        for flag in ("--working-dir", "--is-prerelease", "--github-output"):
+            assert flag in text, f"workflow no longer passes {flag}"
+
+    def test_release_notes_job_stays_fail_open(self) -> None:
+        """`mark-release` must not gate on the notes job.
+
+        Gating would trade a cosmetic empty body for a blocked release that has
+        already been published to PyPI.
+        """
+        # Comments are stripped deliberately: release.yml carries a "do NOT add
+        # needs.release-notes.result" note, which is the string being banned.
+        live_lines = [
+            line
+            for line in _release_yml_text().splitlines()
+            if not line.lstrip().startswith("#")
+        ]
+        assert "needs.release-notes.result" not in "\n".join(live_lines)
 
 
 # ── Package map ──────────────────────────────────────────────────────────────

@@ -873,12 +873,16 @@ To rebuild and apply the release body manually:
 
    Add `--offline` to skip GitHub API calls entirely (contributors *and* the releaser). The body will still include the changelog section and git log scaffolding. Note that a missing `gh` CLI is **not** equivalent: contributor collection yields nothing either way, but the releaser still falls back to `--actor`, so the `Released by:` line survives.
 
-   Review the generated file before applying it. The script exits non-zero and prints a `::error::` line if the SHA does not resolve or the package directory is missing. Warnings are printed as `::warning::` lines on stderr — read them. In particular, **`<summary>Git log for initial release</summary>` on a package that has shipped before means your tags are missing**; re-fetch and rebuild rather than publishing that body.
+   Review the generated file before applying it. The script exits non-zero and prints an `::error::` line if the SHA does not resolve, the package directory is missing, or a git command fails. Warnings are printed as `::warning::` lines on stderr — read them; any warning containing `INCOMPLETE` is listed first.
+
+   The script detects the most common recovery mistake for you: if it finds no predecessor tag but the package `CHANGELOG.md` documents earlier releases, it warns that **the clone is probably missing tags**. Re-fetch and rebuild rather than publishing that body. `<summary>Git log for initial release</summary>` on a package that has shipped before is the same symptom seen from the other side.
 
 3. **Apply the body** to the existing GitHub release:
 
    ```bash
-   gh release edit "<PACKAGE>==<VERSION>" --notes-file /tmp/release-body.md
+   gh release edit "<PACKAGE>==<VERSION>" \
+     --repo langchain-ai/deepagents \
+     --notes-file /tmp/release-body.md
    ```
 
    Pass **only** `--notes-file`. Flags such as `--tag`, `--target`, `--prerelease`, or `--latest` can change release metadata and are not part of note recovery. See [Enrich the published pre-release notes](#enrich-the-published-pre-release-notes) for the same `gh release edit` pattern used in pre-release workflows.

@@ -69,8 +69,8 @@ def _git(repo: Path, *args: str, check: bool = True) -> str:
         args: Arguments passed to ``git``.
         check: When True (the default), a non-zero exit raises
             ``CalledProcessError`` with git's stderr attached. Callers that
-            need to tell "command failed" apart from "empty result" pass
-            False and inspect the returncode themselves.
+            need to tell "command failed" apart from "empty result" use
+            :func:`_git_run` instead, which surfaces the returncode.
 
     Raises:
         subprocess.CalledProcessError: If the command fails and *check* is set.
@@ -100,10 +100,10 @@ def _git(repo: Path, *args: str, check: bool = True) -> str:
 def _git_run(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Run a git command and return the raw result, never raising.
 
-    Used where a failure must stay distinguishable from an empty result — the
-    bash original captured output up front for the same reason (a command
-    inside `< <(...)` is exempt from `set -e`, so its failure would otherwise
-    be swallowed and mistaken for an empty history).
+    Used where a failure must stay distinguishable from an empty result: git
+    exits 0 with empty output for a pathspec or range that matches nothing, so
+    a caller that only sees the stdout cannot tell "no commits" from "the
+    command failed".
     """
     return subprocess.run(
         ["git", "-C", str(repo), *args],
@@ -154,6 +154,11 @@ class PreRelease(NamedTuple):
     ``rank`` orders the phase (dev < a < b < rc) and ``serial`` orders within
     a phase. Both are compared in :func:`_latest_earlier_prerelease_tag`; the
     named fields keep those comparisons from depending on tuple position.
+
+    Aliases share a rank, so some spellings tie: ``alpha`` == ``a``,
+    ``beta`` == ``b``, and ``pre`` == ``preview`` == ``rc``. A tie plus an
+    equal serial is treated as "not a predecessor" (see the ``>=`` check in
+    :func:`_latest_earlier_prerelease_tag`).
     """
 
     base: str
@@ -277,7 +282,7 @@ def _latest_earlier_prerelease_tag(
         )
         return ""
 
-    best = PreRelease("", -1, -1)
+    best: PreRelease | None = None
     best_tag = ""
 
     for raw_tag in tags_result.stdout.splitlines():
@@ -308,7 +313,7 @@ def _latest_earlier_prerelease_tag(
         if not _git_ok(repo, "merge-base", tag, release_sha):
             continue
 
-        # Skip "future" siblings: a tag that descends from RELEASE_SHA cannot
+        # Skip "future" siblings: a tag that descends from release_sha cannot
         # be a predecessor. --is-ancestor exits 0 (ancestor -> skip), 1
         # (not -> keep), or 128 (error); treat any non-1 as skip so a git error
         # never silently accepts a bad candidate. Warn on the error case so it
@@ -325,8 +330,9 @@ def _latest_earlier_prerelease_tag(
             continue
 
         # Track the latest earlier sibling: highest rank, then highest serial.
-        if (candidate.rank > best.rank) or (
-            candidate.rank == best.rank and candidate.serial > best.serial
+        if best is None or (candidate.rank, candidate.serial) > (
+            best.rank,
+            best.serial,
         ):
             best_tag = tag
             best = candidate
@@ -341,23 +347,22 @@ def resolve_previous_tag(
     release_sha: str,
     *,
     is_prerelease: bool,
-    warnings: list[str] | None = None,
+    warnings: list[str],
 ) -> str:
     """Resolve the predecessor tag for the git log range.
 
-    Mirrors the three-tier fallback from ``release.yml``: pre-releases try
-    (1) the latest earlier sibling, (2) the base-version tag, (3) the latest
-    stable. Stable releases try (1) the previous patch — ``X.Y.0`` has none, so
-    that tier is skipped — then (2) the latest stable.
+    Pre-releases try (1) the latest earlier sibling, (2) the base-version tag,
+    (3) the latest stable. Stable releases try (1) the previous patch —
+    ``X.Y.0`` has none, so that tier is skipped — then (2) the latest stable.
 
     Returns ``""`` when no predecessor is reachable. That is expected for a
     genuine initial release; when prior stable tags exist but none are
     reachable, a warning is appended because the git log will then wrongly
-    span the package's full history and be labeled an initial release.
+    span the package's full history and be labeled an initial release. The
+    check runs on both the stable and the pre-release path — pre-releases are
+    the ones most often cut from throwaway branches and partial clones, so
+    they need it most.
     """
-    if warnings is None:
-        warnings = []
-
     if is_prerelease:
         base = _base_version(version)
         if not _STABLE_VERSION_RE.match(base):
@@ -373,34 +378,37 @@ def resolve_previous_tag(
         candidate = f"{pkg_name}=={base}"
         if _valid_previous_tag(repo, candidate, pkg_name, release_sha):
             return candidate
-        return _latest_stable_tag(repo, pkg_name, release_sha, f"{pkg_name}=={version}")
-
-    # Stable release: try previous patch.
-    parts = version.split(".")
-    try:
-        patch = int(parts[-1])
-    except ValueError:
-        warnings.append(
-            f"Version '{version}' does not end in a numeric patch component;"
-            " falling back to the latest stable tag"
-        )
-        patch = 0
-    if patch == 0:
-        prev_tag = ""
     else:
-        prev_tag = f"{pkg_name}==" + ".".join([*parts[:-1], str(patch - 1)])
-    if _valid_previous_tag(repo, prev_tag, pkg_name, release_sha):
-        return prev_tag
+        # Stable release: try previous patch.
+        parts = version.split(".")
+        try:
+            patch = int(parts[-1])
+        except ValueError:
+            warnings.append(
+                f"Version '{version}' does not end in a numeric patch component;"
+                " falling back to the latest stable tag"
+            )
+            patch = 0
+        prev_tag = (
+            ""
+            if patch == 0
+            else f"{pkg_name}==" + ".".join([*parts[:-1], str(patch - 1)])
+        )
+        if _valid_previous_tag(repo, prev_tag, pkg_name, release_sha):
+            return prev_tag
 
+    # Both paths share the same last tier: the latest stable tag, excluding this
+    # release's own.
     resolved = _latest_stable_tag(repo, pkg_name, release_sha, f"{pkg_name}=={version}")
+
     if not resolved:
-        # A stable release with no reachable predecessor is anomalous unless
-        # this is genuinely the package's first release. Distinguish the two by
-        # whether any prior stable tag exists at all: none means a true initial
-        # release (the log spanning full history is expected); some, but none
-        # reachable from the release commit, means the log would wrongly span
-        # the full history and be labeled an initial release — surface that.
-        # Covers minor/major bumps (X.Y.0), not just patches.
+        # No reachable predecessor is anomalous unless this is genuinely the
+        # package's first release. Distinguish the two by whether any prior
+        # stable tag exists at all: none means a true initial release (the log
+        # spanning full history is expected); some, but none reachable from the
+        # release commit, means the log would wrongly span the full history and
+        # be labeled an initial release — surface that. Covers minor/major
+        # bumps (X.Y.0), not just patches.
         all_tags = _git_run(repo, "tag", "--list", f"{pkg_name}==*")
         prior_stable = [
             tag
@@ -424,39 +432,49 @@ def resolve_previous_tag(
 def resolve_release_commit(
     repo: Path,
     working_dir: str,
+    release_sha: str,
     *,
     is_prerelease: bool,
-    warnings: list[str] | None = None,
+    warnings: list[str],
 ) -> str:
     """Resolve the commit to attribute the release to.
 
-    For stable releases, uses the last ``CHANGELOG.md`` touch — release-please
-    updates the changelog in the release commit. On ``workflow_dispatch``
-    (manual/recovery) HEAD may be ahead, and using it would attribute
-    post-release commits to this release's contributor list. Pre-releases do
-    not update ``CHANGELOG.md``, so they use HEAD directly.
-    """
-    if warnings is None:
-        warnings = []
+    For stable releases, uses the last ``CHANGELOG.md`` touch reachable from
+    *release_sha* — release-please updates the changelog in the release commit.
+    Pre-releases do not update ``CHANGELOG.md``, so they use *release_sha*
+    itself.
 
+    Every lookup is bounded by *release_sha* rather than ``HEAD``. In CI the
+    checkout is already at the release SHA, so the two agree; locally they do
+    not, and searching from ``HEAD`` would resolve to a *later* release's
+    commit and credit its contributors and merger to this release.
+    """
+    resolved_sha = _git(repo, "rev-parse", f"{release_sha}^{{commit}}")
     if is_prerelease:
-        return _git(repo, "rev-parse", "HEAD")
+        return resolved_sha
 
     result = _git_run(
-        repo, "log", "-1", "--format=%H", "--", f"{working_dir}/CHANGELOG.md"
+        repo,
+        "log",
+        "-1",
+        "--format=%H",
+        release_sha,
+        "--",
+        f"{working_dir}/CHANGELOG.md",
     )
     if result.returncode != 0:
         warnings.append(
             f"CHANGELOG.md commit lookup failed ({result.stderr.strip()});"
-            " falling back to HEAD"
+            " falling back to the release SHA"
         )
     elif not result.stdout.strip():
         warnings.append(
-            f"No commit touches {working_dir}/CHANGELOG.md; falling back to HEAD"
+            f"No commit reachable from {release_sha[:7]} touches"
+            f" {working_dir}/CHANGELOG.md; falling back to the release SHA"
         )
     else:
         return result.stdout.strip()
-    return _git(repo, "rev-parse", "HEAD")
+    return resolved_sha
 
 
 # ── Changelog extraction ────────────────────────────────────────────────────
@@ -469,15 +487,15 @@ def resolve_release_commit(
 _CHANGELOG_HEADER_RE = re.compile(r"^## \[?(?P<version>\d+\.\d+\.\d+[^\]\s)]*)\]?")
 
 
-def extract_changelog_section(
-    changelog_path: Path, version: str
+def extract_changelog_section_text(
+    text: str, version: str, source: str
 ) -> tuple[str, str | None]:
-    """Extract the section for *version* from a CHANGELOG.md file.
+    """Extract the section for *version* out of CHANGELOG.md *text*.
 
-    Ports the awk logic from ``release.yml``, with two deliberate differences:
-    the version match is exact rather than a substring test (see
-    :data:`_CHANGELOG_HEADER_RE`), and leading/trailing blank lines are
-    stripped where the awk original preserved a leading one.
+    The version match is anchored to the header's own token rather than being a
+    substring test (see :data:`_CHANGELOG_HEADER_RE`), and leading/trailing
+    blank lines are stripped. *source* names the origin of *text* for use in
+    the failure reason.
 
     Returns:
         A ``(body, reason)`` pair. *reason* is None on success and otherwise
@@ -485,18 +503,10 @@ def extract_changelog_section(
         CHANGELOG.md" from "version not found" from a genuinely empty section.
 
     """
-    if not changelog_path.is_file():
-        return "", f"No CHANGELOG.md found at {changelog_path}"
-
-    try:
-        lines = changelog_path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeDecodeError) as err:
-        return "", f"Could not read {changelog_path}: {err}"
-
     body_lines: list[str] = []
     printing = False
 
-    for line in lines:
+    for line in text.splitlines():
         header = _CHANGELOG_HEADER_RE.match(line)
         if header:
             if printing:
@@ -508,12 +518,74 @@ def extract_changelog_section(
             body_lines.append(line)
 
     if not printing:
-        return "", f"Could not find version {version} in {changelog_path}"
+        return "", f"Could not find version {version} in {source}"
 
     body = "\n".join(body_lines).strip()
     if not body:
-        return "", f"Section for version {version} in {changelog_path} is empty"
+        return "", f"Section for version {version} in {source} is empty"
     return body, None
+
+
+def extract_changelog_section(
+    changelog_path: Path, version: str
+) -> tuple[str, str | None]:
+    """Extract the section for *version* from a CHANGELOG.md file on disk."""
+    if not changelog_path.is_file():
+        return "", f"No CHANGELOG.md found at {changelog_path}"
+    try:
+        text = changelog_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as err:
+        return "", f"Could not read {changelog_path}: {err}"
+    return extract_changelog_section_text(text, version, str(changelog_path))
+
+
+def read_changelog_at(
+    repo: Path, working_dir: str, release_sha: str, warnings: list[str]
+) -> tuple[str, str | None]:
+    """Read CHANGELOG.md as it stood at *release_sha*.
+
+    Reading the blob out of the commit rather than the working tree keeps the
+    notes consistent with the rest of the body, which is all derived from
+    *release_sha*. Falls back to the working tree when the file does not exist
+    at that commit, so a local run against a checkout that has the file still
+    produces notes.
+
+    Returns:
+        A ``(text, reason)`` pair; *reason* is None when *text* was read.
+
+    """
+    rel_path = f"{working_dir}/CHANGELOG.md"
+    result = _git_run(repo, "show", f"{release_sha}:{rel_path}")
+    if result.returncode == 0:
+        return result.stdout, None
+
+    worktree_path = repo / working_dir / "CHANGELOG.md"
+    if worktree_path.is_file():
+        warnings.append(
+            f"{rel_path} does not exist at {release_sha[:7]}; read from the"
+            " working tree instead, which may not match the released content"
+        )
+        try:
+            return worktree_path.read_text(encoding="utf-8"), None
+        except (OSError, UnicodeDecodeError) as err:
+            return "", f"Could not read {worktree_path}: {err}"
+
+    return "", f"No CHANGELOG.md at {release_sha[:7]}:{rel_path} or in the working tree"
+
+
+def changelog_lists_other_versions(text: str, version: str) -> bool:
+    """Whether *text* documents a release other than *version*.
+
+    Used as independent evidence that the package has shipped before, so a
+    clone with no tags at all can be told apart from a genuine first release.
+    """
+    return any(
+        header.group("version") != version
+        for header in (
+            _CHANGELOG_HEADER_RE.match(line) for line in text.splitlines()
+        )
+        if header
+    )
 
 
 # ── Git log generation ───────────────────────────────────────────────────────
@@ -522,6 +594,11 @@ MAX_COMMITS = 100
 MAX_GIT_LOG_BYTES = 25000
 MAX_SUBJECT_LENGTH = 200
 
+# Kept separate from MAX_COMMITS even though the values match: this one bounds
+# the GitHub API budget (up to 2 calls per commit), so raising the git-log cap
+# must not silently multiply the number of API calls.
+MAX_CONTRIBUTOR_COMMITS = 100
+
 
 def generate_git_log(
     repo: Path,
@@ -529,15 +606,12 @@ def generate_git_log(
     prev_tag: str,
     release_sha: str,
     repository: str,
-    warnings: list[str] | None = None,
+    warnings: list[str],
 ) -> str:
     """Generate the collapsible package-scoped git log section.
 
     Returns the ``<details>`` block as a string.
     """
-    if warnings is None:
-        warnings = []
-
     if prev_tag:
         range_spec = f"{prev_tag}..{release_sha}"
         summary = f"Git log since {prev_tag}"
@@ -573,12 +647,14 @@ def generate_git_log(
     git_log_bytes = 0
     truncated = False
 
+    # `--max-count` fetched one commit past the cap so this loop can tell
+    # "exactly at the cap" from "there is more".
     for sha in commits:
-        subject = _git(repo, "show", "-s", "--format=%s", sha)
-
         if commit_count >= MAX_COMMITS:
             truncated = True
             break
+
+        subject = _git(repo, "show", "-s", "--format=%s", sha)
         if len(subject) > MAX_SUBJECT_LENGTH:
             subject = subject[:MAX_SUBJECT_LENGTH] + "…"
         subject = html.escape(subject, quote=False)
@@ -600,16 +676,20 @@ def generate_git_log(
 
     if git_log_failed:
         log_text = f"Git log unavailable: `git log` failed for range `{range_spec}`."
-    elif not entries:
-        log_text = "No commits found."
-    else:
+    elif entries:
         log_text = "\n".join(entries)
+    elif truncated:
+        # The first entry alone blew the byte budget, so there are commits but
+        # none are shown. Saying "No commits found." here would be false.
+        log_text = "Git log omitted: the first commit entry exceeds the size budget."
+    else:
+        log_text = "No commits found."
 
     description = (
         "This commit history includes changes to this package. "
         "Commits are listed newest first."
     )
-    if truncated:
+    if truncated and commit_count:
         description += (
             f" The log is truncated to the newest {commit_count} commits"
             " to keep the release notes a reasonable size."
@@ -629,15 +709,40 @@ def generate_git_log(
 GH_TIMEOUT_SECONDS = 30
 GH_MAX_ATTEMPTS = 3
 GH_RETRY_BACKOFF_SECONDS = 2
-_RATE_LIMIT_MARKERS = ("rate limit", "secondary rate", "429", "403")
+
+# Retry only on throttling, matched against gh's own wording. Bare status codes
+# are deliberately NOT listed: "403" and "429" are valid hex, so they match
+# inside any commit SHA echoed in an error message, which would turn a
+# permanent failure (missing `pull-requests: read`, a token that cannot read
+# the repo) into 3 attempts and 6s of backoff on every one of up to 100
+# commits. GitHub reports secondary rate limits as 403, so the phrase matters
+# rather than the code.
+_RATE_LIMIT_MARKERS = (
+    "rate limit",
+    "secondary rate",
+    "too many requests",
+    "retry-after",
+)
+
+# Abandon the per-commit contributor walk after this many consecutive failures.
+# A permanent auth or connectivity fault fails identically for every commit;
+# without this the loop pays the full retry budget 100 times over to learn the
+# same thing once.
+MAX_CONSECUTIVE_GH_FAILURES = 5
 
 
 class Contributor(NamedTuple):
-    """A community contributor credited in the release notes."""
+    """A community contributor credited in the release notes.
+
+    ``twitter_handle`` is a bare handle with no leading ``@``;
+    ``linkedin_url`` is either empty or an absolute ``https://`` URL —
+    :func:`collect_contributors` adds the scheme at parse time so every
+    consumer sees one spelling. Empty means "not supplied".
+    """
 
     login: str
-    twitter: str = ""
-    linkedin: str = ""
+    twitter_handle: str
+    linkedin_url: str
 
 
 def _run_gh(args: list[str]) -> subprocess.CompletedProcess[str] | None:
@@ -730,11 +835,37 @@ _TWITTER_RE = re.compile(
 )
 # The URL must appear on a `LinkedIn:` line. Without that gate any
 # linkedin.com/in/ link anywhere in the PR body — a thanks, a quoted review, a
-# linked issue — is published as the author's own profile.
+# linked issue — is published as the author's own profile. `.` excludes
+# newlines under MULTILINE, which is what confines the match to one line.
 _LINKEDIN_RE = re.compile(
     r"^\s*LinkedIn:\s*.*?((?:https?://)?(?:www\.)?linkedin\.com/in/[a-zA-Z0-9_-]+/?)",
     re.IGNORECASE | re.MULTILINE,
 )
+
+
+def _parse_socials(pr_body: str) -> tuple[str, str]:
+    """Extract ``(twitter_handle, linkedin_url)`` from a PR body.
+
+    Either value is ``""`` when the body does not advertise it.
+    """
+    twitter_match = _TWITTER_RE.search(pr_body)
+    linkedin_match = _LINKEDIN_RE.search(pr_body)
+    linkedin = linkedin_match.group(1) if linkedin_match else ""
+    # Normalize the scheme here rather than at render time so the stored value
+    # has one spelling. Otherwise which spelling survives the gap-filling merge
+    # in `collect_contributors` depends on commit order. The check is
+    # case-insensitive to match `_LINKEDIN_RE`: a body writing `HTTPS://` would
+    # otherwise be prefixed again into `https://HTTPS://...`, a dead link.
+    if linkedin and not linkedin.lower().startswith(("http://", "https://")):
+        linkedin = f"https://{linkedin}"
+    return twitter_match.group(1) if twitter_match else "", linkedin
+
+
+class Contributors(NamedTuple):
+    """The community/internal split credited in the release notes."""
+
+    community: list[Contributor]
+    internal: list[str]
 
 
 def collect_contributors(
@@ -745,17 +876,14 @@ def collect_contributors(
     repository: str,
     *,
     offline: bool = False,
-    warnings: list[str] | None = None,
-) -> tuple[list[Contributor], list[str]]:
+    warnings: list[str],
+) -> Contributors:
     """Collect community and internal contributors from merged PRs.
 
-    Returns ``(community, internal)`` where *community* is a list of
-    :class:`Contributor` and *internal* is a sorted list of logins.
+    *internal* comes back sorted; *community* keeps commit order.
     """
-    if warnings is None:
-        warnings = []
     if offline:
-        return [], []
+        return Contributors([], [])
 
     range_spec = f"{prev_tag}..{release_commit}" if prev_tag else release_commit
     commits_result = _git_run(repo, "rev-list", range_spec, "--", working_dir)
@@ -764,15 +892,26 @@ def collect_contributors(
             f"contributor lookup: git rev-list failed for range '{range_spec}'"
             f" ({commits_result.stderr.strip()}); no contributors will be credited"
         )
-        return [], []
-    shas = [
+        return Contributors([], [])
+    all_shas = [
         line.strip() for line in commits_result.stdout.splitlines() if line.strip()
-    ][:MAX_COMMITS]
+    ]
+    shas = all_shas[:MAX_CONTRIBUTOR_COMMITS]
+    if len(all_shas) > MAX_CONTRIBUTOR_COMMITS:
+        # The git log announces its own truncation in the rendered body; this
+        # path has no such surface, so the only signal is this warning.
+        warnings.append(
+            f"contributor lookup: range '{range_spec}' has {len(all_shas)} commits;"
+            f" only the newest {MAX_CONTRIBUTOR_COMMITS} were scanned — the"
+            " contributor list is INCOMPLETE"
+        )
 
     contributors: dict[str, Contributor] = {}
     internal_users: set[str] = set()
     seen_prs: set[str] = set()
     failed_lookups = 0
+    consecutive_failures = 0
+    first_api_error = ""
 
     for sha in shas:
         pr_num, api_error = _gh_api(
@@ -780,7 +919,18 @@ def collect_contributors(
         )
         if api_error:
             failed_lookups += 1
+            consecutive_failures += 1
+            first_api_error = first_api_error or api_error
+            if consecutive_failures >= MAX_CONSECUTIVE_GH_FAILURES:
+                warnings.append(
+                    "contributor lookup: abandoned after"
+                    f" {consecutive_failures} consecutive failures"
+                    f" ({api_error}); {len(shas) - len(seen_prs)} commits were"
+                    " left unchecked"
+                )
+                break
             continue
+        consecutive_failures = 0
         if not pr_num or pr_num in seen_prs:
             continue
         seen_prs.add(pr_num)
@@ -808,7 +958,10 @@ def collect_contributors(
         if author.get("is_bot", False) or gh_user.endswith("[bot]"):
             continue
 
-        if "labels" not in pr_data:
+        # `is None` rather than `not in`: a present-but-null labels field is
+        # swallowed by the `or []` below just as an absent one is, so both must
+        # warn or an `internal` maintainer lands in the community shoutouts.
+        if pr_data.get("labels") is None:
             warnings.append(
                 f"contributor lookup: PR #{pr_num} returned no labels field;"
                 " the internal/community split may be wrong"
@@ -836,27 +989,21 @@ def collect_contributors(
             )
             continue
 
-        pr_body = pr_data.get("body") or ""
-        twitter_match = _TWITTER_RE.search(pr_body)
-        twitter = twitter_match.group(1) if twitter_match else ""
-        linkedin_match = _LINKEDIN_RE.search(pr_body)
-        linkedin = linkedin_match.group(1) if linkedin_match else ""
+        twitter, linkedin = _parse_socials(pr_data.get("body") or "")
 
-        existing = contributors.get(gh_user)
-        if existing is None:
-            contributors[gh_user] = Contributor(gh_user, twitter, linkedin)
-        else:
-            # Later PRs only fill gaps; the first non-empty value wins.
-            contributors[gh_user] = Contributor(
-                gh_user,
-                existing.twitter or twitter,
-                existing.linkedin or linkedin,
-            )
+        # Later PRs only fill gaps; the first non-empty value wins.
+        existing = contributors.get(gh_user, Contributor(gh_user, "", ""))
+        contributors[gh_user] = Contributor(
+            gh_user,
+            existing.twitter_handle or twitter,
+            existing.linkedin_url or linkedin,
+        )
 
     if failed_lookups:
+        detail = f" (first error: {first_api_error})" if first_api_error else ""
         warnings.append(
             f"contributor lookup: {failed_lookups}/{len(shas)} commits could not be"
-            " resolved to a PR; the contributor list is INCOMPLETE"
+            f" resolved to a PR{detail}; the contributor list is INCOMPLETE"
         )
 
     # Internal contributors are org members regardless of what labels their
@@ -864,7 +1011,32 @@ def collect_contributors(
     for user in internal_users:
         contributors.pop(user, None)
 
-    return list(contributors.values()), sorted(internal_users)
+    return Contributors(list(contributors.values()), sorted(internal_users))
+
+
+def _merged_by(repository: str, pr_num: str, warnings: list[str]) -> str:
+    """Return the login of whoever merged *pr_num*, or ``""`` with a warning."""
+    result = _run_gh(
+        ["pr", "view", pr_num, "--repo", repository,
+         "--json", "mergedBy", "--jq", ".mergedBy.login // empty"]
+    )
+    if result is None or result.returncode != 0:
+        warnings.append(
+            f"releaser lookup: gh pr view #{pr_num} failed: "
+            f"{_gh_result_detail(result)} — falling back to actor"
+        )
+        return ""
+
+    login = result.stdout.strip()
+    if not login:
+        # `.mergedBy.login // empty` yields "" on a successful call when the PR
+        # is not merged (an open PR on the release branch), which would
+        # otherwise credit the actor with no trace of why.
+        warnings.append(
+            f"releaser lookup: PR #{pr_num} has no mergedBy"
+            " (not merged?) — falling back to actor"
+        )
+    return login
 
 
 def resolve_releaser(
@@ -873,7 +1045,7 @@ def resolve_releaser(
     actor: str,
     *,
     offline: bool = False,
-    warnings: list[str] | None = None,
+    warnings: list[str],
 ) -> str:
     """Resolve who shipped the release.
 
@@ -885,8 +1057,6 @@ def resolve_releaser(
     fall through to the actor, which on a manual release would credit the
     dispatcher instead of the merger with no breadcrumb.
     """
-    if warnings is None:
-        warnings = []
     if offline:
         return ""
 
@@ -902,29 +1072,9 @@ def resolve_releaser(
                 f"{api_error} — falling back to actor"
             )
         if pr_num:
-            result = _run_gh(
-                [
-                    "pr",
-                    "view",
-                    pr_num,
-                    "--repo",
-                    repository,
-                    "--json",
-                    "mergedBy",
-                    "--jq",
-                    ".mergedBy.login // empty",
-                ]
-            )
-            if result is not None and result.returncode == 0:
-                releaser = result.stdout.strip()
-            else:
-                warnings.append(
-                    f"releaser lookup: gh pr view #{pr_num} failed: "
-                    f"{_gh_result_detail(result)} — falling back to actor"
-                )
+            releaser = _merged_by(repository, pr_num, warnings)
 
-    if not releaser:
-        releaser = actor
+    releaser = releaser or actor
 
     # Drop bot accounts — there is no human to credit. The bare
     # "github-actions" arm covers github.actor surfacing without the "[bot]"
@@ -937,9 +1087,11 @@ def resolve_releaser(
 
 # ── Body assembly ────────────────────────────────────────────────────────────
 
-# Conservative margin beneath GitHub's 125,000-character release-body limit.
-# Do not raise this to the real limit: the margin absorbs the difference
-# between bytes counted here and characters counted by GitHub.
+# Arbitrary ~5,000 safety margin beneath GitHub's 125,000-character
+# release-body limit. Counting bytes is already the conservative direction
+# (UTF-8 bytes >= characters, so this budget can only under-fill), so the
+# margin is not compensating for the byte/character mismatch — it is slack for
+# anything the release action might add around the body we hand it.
 MAX_RELEASE_BODY_BYTES = 120000
 
 _COMPACT_GIT_LOG = (
@@ -954,13 +1106,10 @@ _COMPACT_GIT_LOG = (
 def _build_contributor_entry(contributor: Contributor) -> str:
     """Format a single contributor entry."""
     socials = ""
-    if contributor.twitter:
-        socials = f"[Twitter](https://x.com/{contributor.twitter})"
-    if contributor.linkedin:
-        linkedin = contributor.linkedin
-        if not linkedin.startswith(("http://", "https://")):
-            linkedin = f"https://{linkedin}"
-        link = f"[LinkedIn]({linkedin})"
+    if contributor.twitter_handle:
+        socials = f"[Twitter](https://x.com/{contributor.twitter_handle})"
+    if contributor.linkedin_url:
+        link = f"[LinkedIn]({contributor.linkedin_url})"
         socials = f"{socials}, {link}" if socials else link
 
     if socials:
@@ -986,11 +1135,15 @@ def build_base_body(
     body = changelog_body
 
     if is_prerelease:
-        body = (
+        banner = (
             "> [!WARNING]\n"
             "> This is a pre-release version. Install with:"
-            f" `pip install {pkg_name}=={version}`\n\n"
-        ) + body
+            f" `pip install {pkg_name}=={version}`"
+        )
+        # Join only when there is a changelog section to separate from.
+        # Pre-releases usually have none, and an unconditional "\n\n" would
+        # then stack with the "\n\n" every later section prepends.
+        body = f"{banner}\n\n{body}" if body else banner
 
     separator_added = False
     if community:
@@ -1020,7 +1173,9 @@ def build_base_body(
     # the link targets the commit SHA, never tree/<branch>: alpha branches are
     # deleted after release, so a branch link would 404, and the commit is the
     # exact code that shipped even when release-sha points somewhere other than
-    # the branch tip.
+    # the branch tip. Unlike the attribution lines this does not introduce a
+    # `---` rule of its own — with no contributors, maintainers, or releaser it
+    # follows the changelog directly.
     default_branch = default_branch or "main"
     if base_branch and base_branch != default_branch:
         body += (
@@ -1030,6 +1185,15 @@ def build_base_body(
         )
 
     return body
+
+
+def _with_section(base_body: str, section: str) -> str:
+    """Join *section* onto *base_body*, skipping the separator when it is empty.
+
+    Must stay in step with the ``separator_bytes`` arithmetic in
+    :func:`finalize_body`.
+    """
+    return f"{base_body}\n\n{section}" if base_body else section
 
 
 def finalize_body(base_body: str, git_log_details: str) -> tuple[str, list[str]]:
@@ -1052,18 +1216,14 @@ def finalize_body(base_body: str, git_log_details: str) -> tuple[str, list[str]]
         ]
 
     if body_bytes + details_bytes + separator_bytes <= MAX_RELEASE_BODY_BYTES:
-        if base_body:
-            return f"{base_body}\n\n{git_log_details}", []
-        return git_log_details, []
+        return _with_section(base_body, git_log_details), []
 
     warnings = [
         "Full Git log omitted to keep the release body within GitHub's size limit"
     ]
     compact_bytes = len(_COMPACT_GIT_LOG.encode())
     if body_bytes + compact_bytes + separator_bytes <= MAX_RELEASE_BODY_BYTES:
-        if base_body:
-            return f"{base_body}\n\n{_COMPACT_GIT_LOG}", warnings
-        return _COMPACT_GIT_LOG, warnings
+        return _with_section(base_body, _COMPACT_GIT_LOG), warnings
 
     warnings.append(
         "Git log dropped entirely: even the omission notice does not fit within"
@@ -1135,9 +1295,11 @@ def build_release_notes(
         raise ValueError(msg)
 
     # Fail closed on an unresolvable SHA. It is passed to `merge-base
-    # --is-ancestor` and `git tag --merged`, where an unresolvable value exits
-    # 128 — indistinguishable from "no predecessor" — and would silently
-    # mislabel the Git log as an initial release.
+    # --is-ancestor`, where an unresolvable value exits non-zero —
+    # indistinguishable from "no predecessor" — and would silently mislabel the
+    # Git log as an initial release. (`git tag --merged` rejects it outright and
+    # would surface as a CalledProcessError, but a named error here beats a
+    # traceback from three frames down.)
     sha_ref = f"{release_sha}^{{commit}}"
     if not _git_ok(repo_root, "rev-parse", "-q", "--verify", sha_ref):
         msg = f"Release SHA '{release_sha}' does not resolve to a commit in {repo_root}"
@@ -1156,18 +1318,43 @@ def build_release_notes(
     print(f"Previous tag: {prev_tag or '<none>'}", file=sys.stderr)
 
     release_commit = resolve_release_commit(
-        repo_root, working_dir, is_prerelease=is_pre, warnings=warnings
+        repo_root, working_dir, release_sha, is_prerelease=is_pre, warnings=warnings
     )
     print(f"Release commit: {release_commit}", file=sys.stderr)
 
-    changelog_path = package_dir / "CHANGELOG.md"
-    changelog_body, changelog_reason = extract_changelog_section(
-        changelog_path, version
+    # On a read failure the text comes back empty and the reason is passed
+    # straight through, so the body stays empty and the reporting below is
+    # identical either way.
+    changelog_body = ""
+    changelog_text, changelog_reason = read_changelog_at(
+        repo_root, working_dir, release_sha, warnings
     )
+    if not changelog_reason:
+        changelog_body, changelog_reason = extract_changelog_section_text(
+            changelog_text, version, f"{working_dir}/CHANGELOG.md"
+        )
+
     if changelog_reason:
-        warnings.append(changelog_reason)
+        if is_pre:
+            # Pre-releases do not get a CHANGELOG.md section, so a missing one
+            # is the expected state, not something a maintainer can act on.
+            print(f"No changelog section: {changelog_reason}", file=sys.stderr)
+        else:
+            warnings.append(changelog_reason)
     else:
         print(f"Extracted changelog for version {version}", file=sys.stderr)
+
+    if not prev_tag and changelog_lists_other_versions(changelog_text, version):
+        # No usable predecessor tag, yet the changelog documents earlier
+        # releases. `resolve_previous_tag` only warns when tags exist but are
+        # unreachable; a clone with no tags at all looks identical to a genuine
+        # first release, and this is the evidence that distinguishes them.
+        warnings.append(
+            f"No predecessor tag was found for {package}=={version}, but"
+            f" {working_dir}/CHANGELOG.md documents earlier releases — this clone"
+            " is probably missing tags (run 'git fetch --tags'). The Git log will"
+            " span the package's full history and be labeled an initial release"
+        )
 
     git_log_details = generate_git_log(
         repo_root, working_dir, prev_tag, release_sha, repository, warnings
@@ -1179,6 +1366,11 @@ def build_release_notes(
         internal: list[str] = []
         releaser = ""
     else:
+        # Deliberately bounded by release_commit, not release_sha: the git log
+        # above shows everything that shipped, while attribution stops at the
+        # release commit so commits merged after it are not credited here. For
+        # a stable release the two differ whenever anything landed between the
+        # changelog bump and the release SHA.
         community, internal = collect_contributors(
             repo_root,
             working_dir,
@@ -1240,6 +1432,38 @@ def _write_github_output(body: str) -> None:
         handle.write(f"release-body<<{delimiter}\n{body}\n{delimiter}\n")
 
 
+def _write_step_summary(package: str, version: str, warnings: list[str]) -> None:
+    """Surface warnings on the run summary, where a reviewer will see them.
+
+    The ``release-notes`` job is deliberately fail-open and nothing gates on it,
+    so a green check is not evidence the body is good. Best-effort: a summary
+    that cannot be written must not fail a job whose whole point is to not
+    block the release.
+    """
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY", "")
+    if not summary_path or not warnings:
+        return
+    lines = [
+        "### ⚠️ Release notes built with warnings",
+        "",
+        f"`{package}=={version}` published, but the generated body may be"
+        " incomplete or wrong. Review it, and rebuild locally if needed:",
+        "",
+        "```bash",
+        f'gh release edit "{package}=={version}" --repo "$GITHUB_REPOSITORY" \\',
+        "  --notes-file /tmp/release-body.md",
+        "```",
+        "",
+        *(f"- {warning}" for warning in warnings),
+        "",
+    ]
+    try:
+        with Path(summary_path).open("a", encoding="utf-8") as handle:
+            handle.write("\n".join(lines))
+    except OSError as err:
+        print(f"::warning::Could not write step summary: {err}", file=sys.stderr)
+
+
 def _write_out_file(path: str, body: str) -> None:
     """Write the body to *path* atomically, echoing it to stdout on failure.
 
@@ -1253,6 +1477,7 @@ def _write_out_file(path: str, body: str) -> None:
         tmp.write_text(body, encoding="utf-8")
         tmp.replace(target)
     except OSError as err:
+        tmp.unlink(missing_ok=True)
         # Never lose the body: it cost up to 200 API calls to build, and a
         # truncating rewrite would also have destroyed any previous good copy.
         print(
@@ -1342,6 +1567,16 @@ def main() -> None:
     args = parser.parse_args()
 
     is_prerelease = args.is_prerelease == "true" if args.is_prerelease else None
+    if is_prerelease is None and os.environ.get("GITHUB_ACTIONS"):
+        # CI is supposed to pass the authoritative flag. Losing it means the
+        # banner is decided by version sniffing and can disagree with the
+        # GitHub release's own prerelease flag.
+        print(
+            "::warning::--is-prerelease was not supplied; pre-release status will be"
+            f" sniffed from version '{args.version}' and may disagree with the"
+            " GitHub release's prerelease flag",
+            file=sys.stderr,
+        )
 
     try:
         body, warnings = build_release_notes(
@@ -1357,12 +1592,19 @@ def main() -> None:
             working_dir=args.working_dir,
             is_prerelease=is_prerelease,
         )
-    except ValueError as err:
+    except (ValueError, subprocess.CalledProcessError) as err:
+        # CalledProcessError included so an unexpected git failure still names
+        # itself on the run summary instead of exiting with a bare traceback.
         print(f"::error::{err}", file=sys.stderr)
         raise SystemExit(1) from err
 
+    # GitHub renders only the first 10 warning annotations per step, so emit the
+    # aggregate "the output is untrustworthy" lines ahead of the per-item ones
+    # they summarize.
+    warnings.sort(key=lambda w: "INCOMPLETE" not in w)
     for warning in warnings:
         print(f"::warning::{warning}", file=sys.stderr)
+    _write_step_summary(args.package, args.version, warnings)
 
     if args.github_output:
         _write_github_output(body)

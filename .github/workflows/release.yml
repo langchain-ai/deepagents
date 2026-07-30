@@ -519,6 +519,10 @@ jobs:
       # re-derived by the script: the workflow already resolved both, and
       # IS_PRERELEASE is the same value that drives the GitHub release's
       # `prerelease:` flag below, so the banner and the flag cannot disagree.
+      #
+      # --repo-root is passed explicitly rather than relying on the script's
+      # cwd default, so adding a `working-directory:` to this step (as most
+      # other steps in this file have) cannot break predecessor resolution.
       - name: Build release notes
         id: finalize-release-body
         env:
@@ -542,6 +546,7 @@ jobs:
             --default-branch "$DEFAULT_BRANCH" \
             --working-dir "$WORKING_DIR" \
             --is-prerelease "$IS_PRERELEASE" \
+            --repo-root "$GITHUB_WORKSPACE" \
             --github-output
 
   test-pypi-publish:

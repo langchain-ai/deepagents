@@ -3864,6 +3864,8 @@ class DiffMessage(Static):
         file_path: str = "",
         *,
         tool_name: str | None = None,
+        before: str = "",
+        after: str = "",
         **kwargs: Any,
     ) -> None:
         """Initialize a diff message.
@@ -3872,12 +3874,16 @@ class DiffMessage(Static):
             diff_content: The unified diff content
             file_path: Path to the file being modified
             tool_name: Name of the file tool that produced the diff
+            before: Full file content the diff starts from, for highlighting
+            after: Full file content the diff arrives at, for highlighting
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._diff_content = diff_content
         self._file_path = file_path
         self._tool_name = tool_name
+        self._before = before
+        self._after = after
 
     def compose(self) -> ComposeResult:
         """Compose the diff message layout.
@@ -3915,7 +3921,11 @@ class DiffMessage(Static):
         elif additions or deletions:
             # Render the diff with per-line Statics (CSS-driven backgrounds)
             yield from compose_diff_lines(
-                self._diff_content, max_lines=100, path=self._file_path
+                self._diff_content,
+                max_lines=100,
+                path=self._file_path,
+                before=self._before,
+                after=self._after,
             )
 
     def on_mount(self) -> None:

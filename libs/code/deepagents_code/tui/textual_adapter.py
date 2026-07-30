@@ -1504,6 +1504,8 @@ async def execute_task_textual(
                                         record.diff or "",
                                         record.display_path,
                                         tool_name=record.tool_name,
+                                        before=record.before_content or "",
+                                        after=record.after_content or "",
                                     )
                                 )
 

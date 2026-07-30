@@ -143,13 +143,19 @@ class TestComposeDiffLines:
         ]
         assert emphasized == ["new_arg"]
 
-    def test_known_path_syntax_highlights_without_shifting_text(self) -> None:
-        """A recognized path adds syntax spans but leaves the row text intact."""
-        diff = "@@ -1 +1 @@\n+\tdef f(): pass"
-        (row,) = [
-            w for w in compose_diff_lines(diff, path="m.py") if isinstance(w, Static)
+    def test_rows_are_highlighted_with_whole_file_lexer_state(self) -> None:
+        """Highlighting reads the file, not the hunk, so string state is right."""
+        after = 'def f():\n    """Doc.\n\n    More.\n    """\n    if x:\n\tpass\n'
+        # The hunk opens on the line *closing* a docstring. Lexed on its own
+        # that `\"\"\"` reads as the start of a string, and every line after it
+        # is painted as one — the "everything is green" failure.
+        diff = '@@ -5 +5,3 @@\n     """\n+    if x:\n+\tpass'
+        rows = [
+            cast("Content", w.render())
+            for w in compose_diff_lines(diff, path="m.py", after=after)
+            if isinstance(w, Static)
         ]
-        content = cast("Content", row.render())
+        keyword = next(r for r in rows if "if x:" in r.plain)
+        assert any(s.style == "$text-accent" for s in keyword.spans)
         # Tabs must survive unexpanded, or the emphasis offsets would misalign.
-        assert content.plain.endswith("\tdef f(): pass")
-        assert any(s.style == "$text-accent" for s in content.spans)
+        assert any(r.plain.endswith("\tpass") for r in rows)

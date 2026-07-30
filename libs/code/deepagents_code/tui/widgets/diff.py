@@ -30,6 +30,9 @@ _SIMILARITY_FLOOR = 0.4
 _MAX_EMPHASIS_LEN = 400
 """Longer lines skip word-level emphasis so the token matcher stays cheap."""
 
+_MAX_HIGHLIGHT_CHARS = 400_000
+"""Files larger than this render unhighlighted rather than stall the lexer."""
+
 _GUTTERS = {
     "added": "$text-success 80% on $success 20%",
     "removed": "$text-error 80% on $error 20%",
@@ -100,6 +103,8 @@ def compose_diff_lines(
     max_lines: int | None = 100,
     *,
     path: str = "",
+    before: str = "",
+    after: str = "",
 ) -> ComposeResult:
     """Yield per-line Static widgets for a unified diff.
 
@@ -113,6 +118,8 @@ def compose_diff_lines(
         diff: Unified diff string.
         max_lines: Maximum number of diff lines to show (None for unlimited).
         path: Path of the diffed file, used to pick a syntax highlighter.
+        before: Full file content the diff starts from, for syntax highlighting.
+        after: Full file content the diff arrives at, for syntax highlighting.
 
     Yields:
         Static widgets — one per diff line — with appropriate CSS classes.
@@ -120,13 +127,15 @@ def compose_diff_lines(
     if not diff:
         yield Static(Content.styled("No changes detected", "dim"))
     else:
-        yield from _compose_diff_content(diff, max_lines, path)
+        yield from _compose_diff_content(diff, max_lines, path, before, after)
 
 
 def _compose_diff_content(
     diff: str,
     max_lines: int | None,
     path: str,
+    before: str,
+    after: str,
 ) -> ComposeResult:
     """Yield styled diff line widgets for non-empty diff content.
 
@@ -134,6 +143,8 @@ def _compose_diff_content(
         diff: Non-empty unified diff string.
         max_lines: Maximum number of diff lines to show (None for unlimited).
         path: Path of the diffed file, used to pick a syntax highlighter.
+        before: Full file content the diff starts from, for syntax highlighting.
+        after: Full file content the diff arrives at, for syntax highlighting.
 
     Yields:
         Static widgets for individual diff lines.
@@ -143,7 +154,7 @@ def _compose_diff_content(
     hidden = 0 if max_lines is None else max(0, len(rows) - max_lines)
     rows = rows[: len(rows) - hidden]
     emphasis = _emphasis_by_row(rows)
-    highlighted = _highlighted_rows(rows, path)
+    highlighted = _highlighted_rows(rows, path, before, after)
     width = max(2, len(str(max((row.number for row in rows), default=0))))
 
     for index, row in enumerate(rows):
@@ -169,34 +180,45 @@ def _compose_diff_content(
         yield Static(Content.styled(f"\n... ({hidden} more lines)", "dim"))
 
 
-def _highlighted_rows(rows: list[_Row], path: str) -> dict[int, Content]:
+def _highlighted_rows(
+    rows: list[_Row], path: str, before: str, after: str
+) -> dict[int, Content]:
     """Syntax-highlight the diff body, keyed by row index.
 
-    Each side of the diff is reassembled and highlighted as one document so the
-    lexer sees real context instead of isolated lines. Highlighting is skipped
-    when the language is unknown, or when a side's line count survives the round
-    trip unevenly — the emphasis ranges are character offsets into the original
-    row text, so a rewritten line would misplace them.
+    Each row is highlighted as a line of its whole file rather than as a line of
+    the hunk: a hunk is an arbitrary fragment, so a lexer reading one alone
+    mistakes the closing `\"\"\"` of a docstring for an opening one and paints
+    every line after it as a string. Only the text up to the last line the diff
+    references is lexed, so cost tracks the hunks' position, not the file size.
 
     Args:
         rows: Parsed diff rows.
         path: Path of the diffed file, used to pick a syntax highlighter.
+        before: Full file content the diff starts from.
+        after: Full file content the diff arrives at.
 
     Returns:
-        Highlighted content per row index; empty when highlighting is skipped.
+        Highlighted content per row index. Rows whose highlighted text does not
+        match the diff exactly are left out, which also covers file content that
+        has moved on since the diff was computed.
     """
     if not path:
         return {}
     highlighted: dict[int, Content] = {}
-    for kind in ("removed", "added"):
-        indexes = [i for i, row in enumerate(rows) if row.kind in {kind, "context"}]
-        if not indexes:
+    # Context rows are numbered against the old file, and are identical in both.
+    for kinds, code in ((("removed", "context"), before), (("added",), after)):
+        wanted = {row.number: i for i, row in enumerate(rows) if row.kind in kinds}
+        if not wanted or not code:
             continue
-        code = "\n".join(rows[i].text for i in indexes)
+        head = "\n".join(code.splitlines()[: max(wanted)])
+        if len(head) > _MAX_HIGHLIGHT_CHARS:
+            continue
         # `tab_size=0` leaves tabs alone; expanding them would shift the offsets.
-        lines = highlight(code, path=path, tab_size=0).split("\n")
-        if len(lines) == len(indexes):
-            highlighted.update(zip(indexes, lines, strict=True))
+        lines = highlight(head, path=path, tab_size=0).split("\n")
+        for number, index in wanted.items():
+            line = lines[number - 1] if 0 < number <= len(lines) else None
+            if line is not None and line.plain == rows[index].text:
+                highlighted[index] = line
     return highlighted
 
 

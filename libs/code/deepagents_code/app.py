@@ -16314,8 +16314,9 @@ class DeepAgentsApp(App):
         Scans the messages container for maximal runs of consecutive,
         successfully-completed tool calls (optionally interleaved with their
         diff previews) and inserts a `ToolGroupSummary` that collapses each run
-        into a single dim line. Footers stay transparent to the scan so a
-        timestamp row between two tools does not split a run.
+        into a single dim line. A timestamp footer does not split a run: it is
+        attributed as an accessory of the collapsible it trails, so it hides and
+        shows with that row instead of lingering over a hidden tool.
 
         Idempotent: tools already folded carry the `-grouped` class and are
         skipped, so it is safe to call on every stream boundary and on
@@ -16352,10 +16353,22 @@ class DeepAgentsApp(App):
         with self.batch_update():
             for child in list(messages.children):
                 if child.has_class(_MESSAGE_TIMESTAMP_FOOTER_CLASS):
-                    if run_collapsible:
-                        run_accessories.setdefault(run_collapsible[-1], []).append(
-                            child
-                        )
+                    # A footer is always mounted directly after the message it
+                    # belongs to, so the most recent collapsible owns it. It is
+                    # recorded as an accessory, never appended to the run: a
+                    # member would take `-grouped` and a `display` flip, which
+                    # would clobber the footer's own `/timestamps` class. An
+                    # empty run means the preceding message is not being folded,
+                    # so the footer is left alone. Matching on the derived id
+                    # rather than position alone keeps an unanticipated DOM
+                    # shape degrading to "skip" instead of misattributing.
+                    owner = run_collapsible[-1] if run_collapsible else None
+                    if (
+                        owner is not None
+                        and owner.id
+                        and child.id == _message_timestamp_footer_id(owner.id)
+                    ):
+                        run_accessories.setdefault(owner, []).append(child)
                     continue
                 if isinstance(child, ToolCallMessage):
                     groupable = (
@@ -16393,7 +16406,17 @@ class DeepAgentsApp(App):
         accessories: dict[Widget, list[Widget]],
         anchor: Widget,
     ) -> None:
-        """Insert a `ToolGroupSummary` before `anchor` and collapse the run."""
+        """Insert a `ToolGroupSummary` before `anchor` and collapse the run.
+
+        Args:
+            messages: The transcript container to mount into.
+            tools: Successful tools the summary aggregates.
+            collapsible: Widgets folded with the group (tools plus diffs).
+            accessories: Footers keyed by the collapsible they trail. Wired for
+                collapse only, not for approval hiding: this path folds solely
+                succeeded tools, which never re-enter an approval prompt.
+            anchor: The widget to insert the summary before.
+        """
         if not anchor.is_attached:
             return
         summary = ToolGroupSummary(
@@ -16407,8 +16430,13 @@ class DeepAgentsApp(App):
             await messages.mount(summary, before=anchor)
         except Exception:
             logger.warning("Failed to mount tool group summary", exc_info=True)
-            for widget in collapsible:
-                widget.remove_class("-grouped")
+            # `on_mount` may already have hidden the run and classed its
+            # footers, and a partially-mounted summary would leave a second
+            # stand-in behind on the next regroup. Undo everything the summary
+            # could have applied, not just `-grouped`.
+            if summary.is_attached:
+                summary.remove()
+            summary._release_all_collapsible()
 
     def _on_user_visible_output_started(self) -> None:
         """Record that the current turn has rendered model text or a tool call.

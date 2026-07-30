@@ -33238,6 +33238,283 @@ class TestToolGroupCollapse:
             assert summary._finalized is True
             assert summary._tools == [completed]
 
+    async def test_approval_hides_and_restores_timestamp_footer(self) -> None:
+        """An approval prompt hides a revealed row's footer, then restores it.
+
+        The row is released from its group first, so only the approval linkage
+        can be keeping the footer hidden. That linkage must survive the release:
+        `_release_collapsible` drops the group's hide reason but deliberately
+        leaves the tool's own, or the footer would strand visible over a row
+        replaced by the approval prompt.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-approval-footer")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            pending = ToolCallMessage("execute", {"command": "rm scratch.txt"})
+            await app._mount_message(pending)
+            await pilot.pause()
+
+            pending_footer = app.query_one(f"#{pending.id}-timestamp-footer", Static)
+            app._reveal_pending_tool_calls()
+            await pilot.pause()
+            assert pending.display is True
+            assert pending_footer.display is True
+
+            pending.set_awaiting_approval()
+            await pilot.pause()
+            assert pending.display is False
+            assert pending_footer.display is False
+
+            pending.clear_awaiting_approval()
+            await pilot.pause()
+            assert pending.display is True
+            assert pending_footer.display is True
+
+    async def test_timestamps_toggle_respects_collapsed_group(self) -> None:
+        """Turning `/timestamps` on must not surface a collapsed run's footers.
+
+        `_sync_message_timestamps_display` flips the preference class on every
+        footer at once, including those hidden because their tool is folded. The
+        group's marker class has to keep winning, or enabling timestamps would
+        paint a timestamp over an invisible tool row — the bug this whole
+        mechanism exists to prevent.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-ts-toggle")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = False
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            tool = ToolCallMessage("read_file", {"file_path": "a.py"})
+            await app._mount_message(tool)
+            tool.set_success("done")
+            await pilot.pause()
+
+            footer = app.query_one(f"#{tool.id}-timestamp-footer", Static)
+            summary = app._active_tool_group
+            assert summary is not None
+            assert tool.display is False
+            assert footer.display is False
+
+            # Timestamps ON while the group is still collapsed.
+            await app._toggle_message_timestamp_footers()
+            await pilot.pause()
+            assert app._message_timestamps_visible is True
+            assert tool.display is False
+            assert footer.display is False, (
+                "collapsed group's footer must stay hidden when timestamps are enabled"
+            )
+
+            # Expanding now honours the freshly-enabled preference.
+            summary.toggle()
+            await pilot.pause()
+            assert tool.display is True
+            assert footer.display is True
+
+            # OFF then ON while expanded tracks the preference both ways.
+            await app._toggle_message_timestamp_footers()
+            await pilot.pause()
+            assert footer.display is False
+            await app._toggle_message_timestamp_footers()
+            await pilot.pause()
+            assert footer.display is True
+
+            # Re-collapsing hides it again even though the preference is on.
+            summary.toggle()
+            await pilot.pause()
+            assert tool.display is False
+            assert footer.display is False
+
+    async def test_grouped_diff_folds_its_timestamp_footer(self) -> None:
+        """A groupable diff's own footer folds with the group, like a tool's.
+
+        A `write_file` diff is not in `_TOOL_GROUP_EXCLUSIONS`, so it folds via
+        `add_collapsible` rather than `add_member` — a separate accessory path
+        that no other test reaches, and one that does get a footer since only
+        app/summarization messages are excluded from footers.
+        """
+        from deepagents_code.tui.widgets.messages import DiffMessage
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-diff-footer")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            tool = ToolCallMessage("write_file", {"file_path": "a.py"})
+            await app._mount_message(tool)
+            tool.set_success("written")
+            diff = DiffMessage("--- a\n+++ b\n+added\n", "a.py", tool_name="write_file")
+            await app._mount_message(diff)
+            await pilot.pause()
+
+            summary = app._active_tool_group
+            assert summary is not None
+            tool_footer = app.query_one(f"#{tool.id}-timestamp-footer", Static)
+            diff_footer = app.query_one(f"#{diff.id}-timestamp-footer", Static)
+
+            assert diff.display is False
+            assert diff_footer.display is False, (
+                "a diff folded via add_collapsible must hide its own footer"
+            )
+            assert tool_footer.display is False
+
+            summary.toggle()
+            await pilot.pause()
+            assert diff.display is True
+            assert diff_footer.display is True
+            assert tool_footer.display is True
+
+    async def test_evicted_failed_tool_releases_its_footer(self) -> None:
+        """Ejecting a failed tool restores its footer along with its row.
+
+        `_evict_failed` is the last owner of that footer's marker class: once
+        the tool is out of the group nothing else will clear it, so a failure
+        would leave an error row visible with no timestamp beneath it.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-evict-footer")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            good = ToolCallMessage("read_file", {"file_path": "a.py"})
+            await app._mount_message(good)
+            good.set_success("done")
+            bad = ToolCallMessage("read_file", {"file_path": "b.py"})
+            await app._mount_message(bad)
+            await pilot.pause()
+
+            summary = app._active_tool_group
+            assert summary is not None
+            good_footer = app.query_one(f"#{good.id}-timestamp-footer", Static)
+            bad_footer = app.query_one(f"#{bad.id}-timestamp-footer", Static)
+            assert bad_footer.display is False
+
+            bad.set_error("boom")
+            summary.close()
+            await pilot.pause()
+
+            # The failure is surfaced with its timestamp; the survivor stays
+            # folded under the summary.
+            assert bad.display is True
+            assert bad_footer.display is True
+            assert not bad.has_class("-grouped")
+            assert good.display is False
+            assert good_footer.display is False
+
+    async def test_removed_summary_releases_folded_diff(self) -> None:
+        """A summary that removes itself must not strand what it folded.
+
+        When every tool is ejected the summary deletes itself, so anything still
+        folded — a groupable diff and its footer — has nothing left to expand it.
+        Releasing has to happen before removal or the diff and its timestamp
+        stay hidden for the rest of the session, unrecoverable even by toggling
+        `/timestamps`.
+        """
+        from deepagents_code.tui.widgets.messages import DiffMessage
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-strand")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            tool = ToolCallMessage("write_file", {"file_path": "a.py"})
+            await app._mount_message(tool)
+            tool.set_success("written")
+            diff = DiffMessage("--- a\n+++ b\n+added\n", "a.py", tool_name="write_file")
+            await app._mount_message(diff)
+            await pilot.pause()
+
+            summary = app._active_tool_group
+            assert summary is not None
+            diff_footer = app.query_one(f"#{diff.id}-timestamp-footer", Static)
+            assert diff.display is False
+
+            # The group's only tool ends up failed, so `close` ejects it and the
+            # summary removes itself with the diff still folded.
+            tool.set_error("boom")
+            summary.close()
+            await pilot.pause()
+
+            assert summary.is_attached is False
+            assert diff.display is True, "a removed summary must release its diff"
+            assert diff_footer.display is True
+            assert not diff.has_class("-grouped")
+
+    async def test_regroup_leaves_unfolded_footers_untouched(self) -> None:
+        """Footers of widgets outside a run keep their own visibility.
+
+        Regroup attributes a footer to the collapsible it trails, so a footer
+        following a run-ending widget (an excluded tool, assistant text) must be
+        left alone rather than swept into the neighbouring group. Without the
+        `flush()` that empties the run at each boundary, these would be
+        misattributed and hidden.
+        """
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-attrib")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
+
+        def footer_for(owner_id: str) -> Static:
+            built = app._build_message_timestamp_footer(
+                MessageData(
+                    type=MessageType.USER,
+                    content="",
+                    id=owner_id,
+                    timestamp=1_704_110_405.0,
+                ),
+                visible=True,
+            )
+            assert built is not None
+            return built
+
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            # Shape under test: groupable tool, its footer, an excluded tool,
+            # its footer, a second groupable tool, its footer.
+            t1 = ToolCallMessage("read_file", {"file_path": "a.py"})
+            t1.id = "a1"
+            excluded = ToolCallMessage("write_todos", {"todos": []})
+            excluded.id = "a2"
+            t2 = ToolCallMessage("read_file", {"file_path": "b.py"})
+            t2.id = "a3"
+            f1, f_excl, f2 = footer_for("a1"), footer_for("a2"), footer_for("a3")
+            for widget in (t1, f1, excluded, f_excl, t2, f2):
+                await messages.mount(widget)
+            await pilot.pause()
+            for tool in (t1, excluded, t2):
+                tool.set_success("ok")
+            await pilot.pause()
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+
+            # The excluded tool breaks the run, so each groupable tool folds
+            # alone and the excluded row keeps both itself and its footer.
+            assert len(list(app.query(ToolGroupSummary))) == 2
+            assert t1.display is False
+            assert f1.display is False
+            assert t2.display is False
+            assert f2.display is False
+            assert excluded.display is True
+            assert f_excl.display is True, (
+                "an excluded tool's footer must not be folded into a neighbour"
+            )
+
     async def test_regroup_collapses_success_run(self) -> None:
         """A run of successful tools folds into one collapsed summary."""
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
@@ -33352,14 +33629,18 @@ class TestToolGroupCollapse:
             assert not edit.has_class("-grouped")
             assert not todos.has_class("-grouped")
 
-    async def test_regroup_treats_timestamp_footer_as_transparent(self) -> None:
+    async def test_regroup_folds_timestamp_footer_with_its_tool(self) -> None:
         """A timestamp footer between two tools does not split the run.
 
         Production mounts a footer after every message, so a completed run
-        reaches regroup as (tool, footer, tool). The footer must be transparent
-        to grouping or every timestamped run would fragment into single-tool
-        summaries. `_mount_tools` mounts tools with no footers, so this shape is
-        otherwise never exercised.
+        reaches regroup as (tool, footer, tool). The footer must not split the
+        run or every timestamped run would fragment into single-tool summaries.
+        `_mount_tools` mounts tools with no footers, so this shape is otherwise
+        never exercised.
+
+        Also covers accessory visibility: the footer hides with the collapsed
+        run, returns on expand, and still defers to the `/timestamps`
+        preference rather than being pinned visible by the group.
         """
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType
         from deepagents_code.tui.widgets.messages import (
@@ -33369,6 +33650,7 @@ class TestToolGroupCollapse:
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t-footer")
         app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
         async with app.run_test() as pilot:
             messages = app.query_one("#messages", Container)
             await messages.remove_children()
@@ -33377,8 +33659,10 @@ class TestToolGroupCollapse:
             t1.id = "f1"
             t2 = ToolCallMessage("read_file", {"file_path": "b.py"})
             t2.id = "f2"
-            # A USER footer is the simplest to build; only its footer CSS class
-            # matters to the transparency branch under test.
+            # The footer is built for `t1`'s id so regroup can match it to its
+            # owner, and built visible so the assertions below prove the
+            # group's collapse class and the `/timestamps` class compose
+            # instead of clobbering each other.
             footer = app._build_message_timestamp_footer(
                 MessageData(
                     type=MessageType.USER,
@@ -33416,7 +33700,11 @@ class TestToolGroupCollapse:
             assert footer.display is True
             assert t2.display is True
 
-            footer.remove_class("message-timestamp-footer-visible")
+            # Driven through the real preference path rather than by removing
+            # the class literal, so renaming the class cannot turn this into a
+            # vacuous assertion.
+            app._message_timestamps_visible = False
+            app._sync_message_timestamps_display()
             await pilot.pause()
             assert footer.display is False
 

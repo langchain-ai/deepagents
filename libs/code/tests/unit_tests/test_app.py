@@ -5506,6 +5506,277 @@ class TestMessageQueue:
             assert any(w._content == "hello agent" for w in user_msgs)
 
 
+class TestTurnStateRelease:
+    """Tests that every abandoned turn hands `_agent_running` back.
+
+    A turn that ends without releasing that flag wedges the session: the app
+    still believes the agent is streaming, so later messages are queued instead
+    of sent, `Esc` only pops them back into the chat input, and even
+    `/force-clear` cannot recover.
+    """
+
+    @staticmethod
+    def _configured_app() -> DeepAgentsApp:
+        """Build an app with the collaborators `_send_to_agent` requires."""
+        app = DeepAgentsApp()
+        app._agent = MagicMock()
+        app._agent.aupdate_state = AsyncMock()
+        app._ui_adapter = MagicMock()
+        app._session_state = MagicMock()
+        app._session_state.hooks = HooksManager.inert()
+        return app
+
+    async def test_interrupt_before_worker_starts_releases_turn(self) -> None:
+        """An interrupt landing before the worker's first step ends the turn.
+
+        Textual never runs the coroutine of a worker cancelled before its first
+        event-loop step (and leaves its state as `RUNNING`), so the
+        `_cleanup_agent_task` call in `_run_agent_task`'s `finally` never fires
+        on its own.
+        """
+        app = self._configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._send_to_agent("hello")
+            # No await between worker creation and the interrupt, so the worker
+            # task cannot have started yet. Asserted rather than assumed: any
+            # future await added after `run_worker` would let the worker run and
+            # clean up after itself, and this test would pass without exercising
+            # the recovery path at all.
+            assert app._agent_turn_started is False
+            app.action_interrupt()
+            await pilot.pause()
+
+            assert app._agent_running is False
+
+            app.post_message(ChatInput.Submitted("next message", "normal"))
+            await pilot.pause()
+            assert not app._pending_messages
+
+    async def test_later_turns_can_still_recover(self) -> None:
+        """The started-marker resets at turn end, so turn 2 recovers as well.
+
+        `_recover_unstarted_agent_worker` bails when the marker is set, so a
+        marker left `True` by a completed turn would silently disable recovery
+        for the rest of the session — the original wedge, one turn later.
+        """
+        app = self._configured_app()
+        app._approval_mode_blocked = True
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # Turn 1 reaches `_run_agent_task` (setting the marker) and is then
+            # rejected, so it runs the cleanup that must clear the marker again.
+            await app._send_to_agent("first")
+            for _ in range(3):
+                await pilot.pause()
+            assert app._agent_turn_started is False
+
+            app._approval_mode_blocked = False
+            await app._send_to_agent("second")
+            app.action_interrupt()
+            await pilot.pause()
+
+            assert app._agent_running is False
+
+    async def test_force_clear_releases_unstarted_turn(self) -> None:
+        """`/force-clear` recovers a worker that never started.
+
+        It cancels the worker inline rather than through `_cancel_worker`, so it
+        needs its own coverage.
+        """
+        app = self._configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._send_to_agent("hello")
+            assert app._agent_turn_started is False
+            app._force_interrupt_active_work()
+            await pilot.pause()
+
+            assert app._agent_running is False
+
+    async def test_restart_releases_unstarted_turn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`/restart` recovers a worker cancelled before its first step."""
+        app = self._configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+
+            async def _noop_restart() -> bool:  # noqa: RUF029  # awaited by handler
+                return False
+
+            monkeypatch.setattr(app, "_restart_server_manual", _noop_restart)
+
+            await app._send_to_agent("hello")
+            assert app._agent_turn_started is False
+            await app._handle_command("/restart")
+            for _ in range(3):
+                await pilot.pause()
+
+            assert app._agent_running is False
+
+    async def test_recovery_skips_a_worker_from_a_newer_turn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A turn started after the interrupt is not torn down by the callback.
+
+        Recovery is deferred to a refresh callback, so a new turn can install
+        its own worker in between. Without the re-check the stale callback would
+        clean up the live turn instead.
+        """
+        app = self._configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._send_to_agent("hello")
+            app.action_interrupt()
+
+            # Stand in for a turn that started between the cancel and the
+            # callback: a different worker, and the marker cleared the way
+            # `_send_to_agent` clears it before spawning one. Only the identity
+            # check distinguishes this from the worker that was cancelled.
+            app._agent_worker = MagicMock()
+            app._agent_turn_started = False
+            with caplog.at_level(logging.WARNING):
+                await pilot.pause()
+
+            assert "cancelled before it started" not in caplog.text
+            # The stand-in turn is still live rather than torn down.
+            assert app._agent_running is True
+
+    async def test_early_return_in_run_agent_task_releases_turn(self) -> None:
+        """A turn rejected before streaming still releases the running flag."""
+        app = self._configured_app()
+        app._approval_mode_blocked = True
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            await app._send_to_agent("hello")
+            for _ in range(3):
+                await pilot.pause()
+
+            assert app._agent_running is False
+
+            app.post_message(ChatInput.Submitted("next message", "normal"))
+            await pilot.pause()
+            assert not app._pending_messages
+
+    async def test_failed_turn_setup_releases_turn(self) -> None:
+        """A failure before the worker exists releases the running flag.
+
+        `_send_to_agent` reports busy before its awaited setup, and there is no
+        worker to cancel yet, so the setup path owns the release itself.
+        """
+        app = self._configured_app()
+        msg = "shell flush failed"
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with (
+                patch.object(
+                    app,
+                    "_flush_pending_shell_messages",
+                    AsyncMock(side_effect=RuntimeError(msg)),
+                ),
+                pytest.raises(RuntimeError, match=msg),
+            ):
+                await app._send_to_agent("hello")
+
+            assert app._agent_running is False
+            assert app._agent_worker is None
+
+    async def test_queued_message_drains_after_abandoned_turn(self) -> None:
+        """A message queued behind an abandoned turn is sent, not just dropped."""
+        app = self._configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_messages.append(QueuedMessage(text="queued", mode="normal"))
+
+            # Fail only the abandoned turn's setup. If the drained message hit
+            # the same failure it would be popped and swallowed, and an
+            # emptied-queue assertion alone could not tell that apart from
+            # delivery.
+            with patch.object(
+                app,
+                "_flush_pending_shell_messages",
+                AsyncMock(side_effect=[RuntimeError("boom"), None]),
+            ):
+                with pytest.raises(RuntimeError):
+                    await app._send_to_agent("hello")
+                for _ in range(3):
+                    await pilot.pause()
+
+            assert not app._pending_messages
+            assert any(w._content == "queued" for w in app.query(UserMessage))
+
+    async def test_failed_drain_after_abandoned_turn_is_reported(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A drain that cannot even report its own failure still tells the user.
+
+        `_process_next_from_queue` handles its own errors, so an exception
+        escaping it means its error reporting failed too — and by then the
+        queued message has already been popped.
+        """
+        app = self._configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_messages.append(QueuedMessage(text="queued", mode="normal"))
+
+            with (
+                patch.object(
+                    app,
+                    "_flush_pending_shell_messages",
+                    AsyncMock(side_effect=RuntimeError("boom")),
+                ),
+                patch.object(
+                    app,
+                    "_process_next_from_queue",
+                    AsyncMock(side_effect=RuntimeError("drain exploded")),
+                ),
+                caplog.at_level(logging.ERROR),
+            ):
+                with pytest.raises(RuntimeError, match="boom"):
+                    await app._send_to_agent("hello")
+                await pilot.pause()
+
+            assert app._agent_running is False
+            assert "Failed to drain queue after abandoned turn" in caplog.text
+            errors = [str(w._content) for w in app.query(ErrorMessage)]
+            assert any("queued message could not be sent" in m for m in errors)
+
+    async def test_setup_failure_is_not_reported_as_an_agent_error(self) -> None:
+        """A local fault during turn setup is not blamed on the agent.
+
+        Setup runs inside the same `try` as the stream so cleanup cannot be
+        skipped, which puts local TUI faults in reach of the agent-error
+        handler. They must not be rendered as though the model or backend
+        failed.
+        """
+        app = self._configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch.object(
+                app,
+                "_ensure_goal_state_notice",
+                AsyncMock(side_effect=RuntimeError("notice exploded")),
+            ):
+                await app._send_to_agent("hello")
+                for _ in range(3):
+                    await pilot.pause()
+
+            errors = [str(w._content) for w in app.query(ErrorMessage)]
+            assert any("Internal error preparing this turn" in m for m in errors)
+            assert not any(m.startswith("Agent error") for m in errors)
+            assert app._agent_running is False
+
+
 class TestAskUserLifecycle:
     """Tests for ask_user widget cleanup flows."""
 
@@ -30590,6 +30861,7 @@ class TestRestartCommand:
             worker = MagicMock()
             app._agent_worker = worker
             app._set_agent_running(True)
+            app._agent_turn_started = True
             app._pending_messages.append(QueuedMessage(text="hi", mode="normal"))
 
             from deepagents_code.config import settings
@@ -33794,6 +34066,7 @@ class TestToolGroupCollapse:
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t-approval-group")
         app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
         async with app.run_test() as pilot:
             messages = app.query_one("#messages", Container)
             stale = ToolCallMessage("grep", {"pattern": "old"})
@@ -33811,9 +34084,15 @@ class TestToolGroupCollapse:
 
             summary = app._active_tool_group
             assert summary is not None
+            completed_footer = app.query_one(
+                f"#{completed.id}-timestamp-footer", Static
+            )
+            pending_footer = app.query_one(f"#{pending.id}-timestamp-footer", Static)
             assert stale.display is False
             assert completed.display is False
+            assert completed_footer.display is False
             assert pending.display is False
+            assert pending_footer.display is False
 
             app._reveal_pending_tool_calls()
             await pilot.pause()
@@ -33822,10 +34101,289 @@ class TestToolGroupCollapse:
             assert stale.display is False
             assert stale_group.is_attached
             assert completed.display is False
+            assert completed_footer.display is False
             assert pending.display is True
+            assert pending_footer.display is True
             assert not pending.has_class("-grouped")
             assert summary._finalized is True
             assert summary._tools == [completed]
+
+    async def test_approval_hides_and_restores_timestamp_footer(self) -> None:
+        """An approval prompt hides a revealed row's footer, then restores it.
+
+        The row is released from its group first, so only the approval linkage
+        can be keeping the footer hidden. That linkage must survive the release:
+        `_release_collapsible` drops the group's hide reason but deliberately
+        leaves the tool's own, or the footer would strand visible over a row
+        replaced by the approval prompt.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-approval-footer")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            pending = ToolCallMessage("execute", {"command": "rm scratch.txt"})
+            await app._mount_message(pending)
+            await pilot.pause()
+
+            pending_footer = app.query_one(f"#{pending.id}-timestamp-footer", Static)
+            app._reveal_pending_tool_calls()
+            await pilot.pause()
+            assert pending.display is True
+            assert pending_footer.display is True
+
+            pending.set_awaiting_approval()
+            await pilot.pause()
+            assert pending.display is False
+            assert pending_footer.display is False
+
+            pending.clear_awaiting_approval()
+            await pilot.pause()
+            assert pending.display is True
+            assert pending_footer.display is True
+
+    async def test_timestamps_toggle_respects_collapsed_group(self) -> None:
+        """Turning `/timestamps` on must not surface a collapsed run's footers.
+
+        `_sync_message_timestamps_display` flips the preference class on every
+        footer at once, including those hidden because their tool is folded. The
+        group's marker class has to keep winning, or enabling timestamps would
+        paint a timestamp over an invisible tool row — the bug this whole
+        mechanism exists to prevent.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-ts-toggle")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = False
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            tool = ToolCallMessage("read_file", {"file_path": "a.py"})
+            await app._mount_message(tool)
+            tool.set_success("done")
+            await pilot.pause()
+
+            footer = app.query_one(f"#{tool.id}-timestamp-footer", Static)
+            summary = app._active_tool_group
+            assert summary is not None
+            assert tool.display is False
+            assert footer.display is False
+
+            # Timestamps ON while the group is still collapsed.
+            await app._toggle_message_timestamp_footers()
+            await pilot.pause()
+            assert app._message_timestamps_visible is True
+            assert tool.display is False
+            assert footer.display is False, (
+                "collapsed group's footer must stay hidden when timestamps are enabled"
+            )
+
+            # Expanding now honours the freshly-enabled preference.
+            summary.toggle()
+            await pilot.pause()
+            assert tool.display is True
+            assert footer.display is True
+
+            # OFF then ON while expanded tracks the preference both ways.
+            await app._toggle_message_timestamp_footers()
+            await pilot.pause()
+            assert footer.display is False
+            await app._toggle_message_timestamp_footers()
+            await pilot.pause()
+            assert footer.display is True
+
+            # Re-collapsing hides it again even though the preference is on.
+            summary.toggle()
+            await pilot.pause()
+            assert tool.display is False
+            assert footer.display is False
+
+    async def test_grouped_diff_folds_its_timestamp_footer(self) -> None:
+        """A groupable diff's own footer folds with the group, like a tool's.
+
+        A `write_file` diff is not in `_TOOL_GROUP_EXCLUSIONS`, so it folds via
+        `add_collapsible` rather than `add_member` — a separate accessory path
+        that no other test reaches, and one that does get a footer since only
+        app/summarization messages are excluded from footers.
+        """
+        from deepagents_code.tui.widgets.messages import DiffMessage
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-diff-footer")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            tool = ToolCallMessage("write_file", {"file_path": "a.py"})
+            await app._mount_message(tool)
+            tool.set_success("written")
+            diff = DiffMessage("--- a\n+++ b\n+added\n", "a.py", tool_name="write_file")
+            await app._mount_message(diff)
+            await pilot.pause()
+
+            summary = app._active_tool_group
+            assert summary is not None
+            tool_footer = app.query_one(f"#{tool.id}-timestamp-footer", Static)
+            diff_footer = app.query_one(f"#{diff.id}-timestamp-footer", Static)
+
+            assert diff.display is False
+            assert diff_footer.display is False, (
+                "a diff folded via add_collapsible must hide its own footer"
+            )
+            assert tool_footer.display is False
+
+            summary.toggle()
+            await pilot.pause()
+            assert diff.display is True
+            assert diff_footer.display is True
+            assert tool_footer.display is True
+
+    async def test_evicted_failed_tool_releases_its_footer(self) -> None:
+        """Ejecting a failed tool restores its footer along with its row.
+
+        `_evict_failed` is the last owner of that footer's marker class: once
+        the tool is out of the group nothing else will clear it, so a failure
+        would leave an error row visible with no timestamp beneath it.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-evict-footer")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            good = ToolCallMessage("read_file", {"file_path": "a.py"})
+            await app._mount_message(good)
+            good.set_success("done")
+            bad = ToolCallMessage("read_file", {"file_path": "b.py"})
+            await app._mount_message(bad)
+            await pilot.pause()
+
+            summary = app._active_tool_group
+            assert summary is not None
+            good_footer = app.query_one(f"#{good.id}-timestamp-footer", Static)
+            bad_footer = app.query_one(f"#{bad.id}-timestamp-footer", Static)
+            assert bad_footer.display is False
+
+            bad.set_error("boom")
+            summary.close()
+            await pilot.pause()
+
+            # The failure is surfaced with its timestamp; the survivor stays
+            # folded under the summary.
+            assert bad.display is True
+            assert bad_footer.display is True
+            assert not bad.has_class("-grouped")
+            assert good.display is False
+            assert good_footer.display is False
+
+    async def test_removed_summary_releases_folded_diff(self) -> None:
+        """A summary that removes itself must not strand what it folded.
+
+        When every tool is ejected the summary deletes itself, so anything still
+        folded — a groupable diff and its footer — has nothing left to expand it.
+        Releasing has to happen before removal or the diff and its timestamp
+        stay hidden for the rest of the session, unrecoverable even by toggling
+        `/timestamps`.
+        """
+        from deepagents_code.tui.widgets.messages import DiffMessage
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-strand")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            tool = ToolCallMessage("write_file", {"file_path": "a.py"})
+            await app._mount_message(tool)
+            tool.set_success("written")
+            diff = DiffMessage("--- a\n+++ b\n+added\n", "a.py", tool_name="write_file")
+            await app._mount_message(diff)
+            await pilot.pause()
+
+            summary = app._active_tool_group
+            assert summary is not None
+            diff_footer = app.query_one(f"#{diff.id}-timestamp-footer", Static)
+            assert diff.display is False
+
+            # The group's only tool ends up failed, so `close` ejects it and the
+            # summary removes itself with the diff still folded.
+            tool.set_error("boom")
+            summary.close()
+            await pilot.pause()
+
+            assert summary.is_attached is False
+            assert diff.display is True, "a removed summary must release its diff"
+            assert diff_footer.display is True
+            assert not diff.has_class("-grouped")
+
+    async def test_regroup_leaves_unfolded_footers_untouched(self) -> None:
+        """Footers of widgets outside a run keep their own visibility.
+
+        Regroup attributes a footer to the collapsible it trails, so a footer
+        following a run-ending widget (an excluded tool, assistant text) must be
+        left alone rather than swept into the neighbouring group. Without the
+        `flush()` that empties the run at each boundary, these would be
+        misattributed and hidden.
+        """
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+        from deepagents_code.tui.widgets.messages import ToolGroupSummary
+
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-attrib")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
+
+        def footer_for(owner_id: str) -> Static:
+            built = app._build_message_timestamp_footer(
+                MessageData(
+                    type=MessageType.USER,
+                    content="",
+                    id=owner_id,
+                    timestamp=1_704_110_405.0,
+                ),
+                visible=True,
+            )
+            assert built is not None
+            return built
+
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            # Shape under test: groupable tool, its footer, an excluded tool,
+            # its footer, a second groupable tool, its footer.
+            t1 = ToolCallMessage("read_file", {"file_path": "a.py"})
+            t1.id = "a1"
+            excluded = ToolCallMessage("write_todos", {"todos": []})
+            excluded.id = "a2"
+            t2 = ToolCallMessage("read_file", {"file_path": "b.py"})
+            t2.id = "a3"
+            f1, f_excl, f2 = footer_for("a1"), footer_for("a2"), footer_for("a3")
+            for widget in (t1, f1, excluded, f_excl, t2, f2):
+                await messages.mount(widget)
+            await pilot.pause()
+            for tool in (t1, excluded, t2):
+                tool.set_success("ok")
+            await pilot.pause()
+
+            await app._regroup_completed_tools()
+            await pilot.pause()
+
+            # The excluded tool breaks the run, so each groupable tool folds
+            # alone and the excluded row keeps both itself and its footer.
+            assert len(list(app.query(ToolGroupSummary))) == 2
+            assert t1.display is False
+            assert f1.display is False
+            assert t2.display is False
+            assert f2.display is False
+            assert excluded.display is True
+            assert f_excl.display is True, (
+                "an excluded tool's footer must not be folded into a neighbour"
+            )
 
     async def test_regroup_collapses_success_run(self) -> None:
         """A run of successful tools folds into one collapsed summary."""
@@ -33941,14 +34499,18 @@ class TestToolGroupCollapse:
             assert not edit.has_class("-grouped")
             assert not todos.has_class("-grouped")
 
-    async def test_regroup_treats_timestamp_footer_as_transparent(self) -> None:
+    async def test_regroup_folds_timestamp_footer_with_its_tool(self) -> None:
         """A timestamp footer between two tools does not split the run.
 
         Production mounts a footer after every message, so a completed run
-        reaches regroup as (tool, footer, tool). The footer must be transparent
-        to grouping or every timestamped run would fragment into single-tool
-        summaries. `_mount_tools` mounts tools with no footers, so this shape is
-        otherwise never exercised.
+        reaches regroup as (tool, footer, tool). The footer must not split the
+        run or every timestamped run would fragment into single-tool summaries.
+        `_mount_tools` mounts tools with no footers, so this shape is otherwise
+        never exercised.
+
+        Also covers accessory visibility: the footer hides with the collapsed
+        run, returns on expand, and still defers to the `/timestamps`
+        preference rather than being pinned visible by the group.
         """
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType
         from deepagents_code.tui.widgets.messages import (
@@ -33958,6 +34520,7 @@ class TestToolGroupCollapse:
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t-footer")
         app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
         async with app.run_test() as pilot:
             messages = app.query_one("#messages", Container)
             await messages.remove_children()
@@ -33966,8 +34529,10 @@ class TestToolGroupCollapse:
             t1.id = "f1"
             t2 = ToolCallMessage("read_file", {"file_path": "b.py"})
             t2.id = "f2"
-            # A USER footer is the simplest to build; only its footer CSS class
-            # matters to the transparency branch under test.
+            # The footer is built for `t1`'s id so regroup can match it to its
+            # owner, and built visible so the assertions below prove the
+            # group's collapse class and the `/timestamps` class compose
+            # instead of clobbering each other.
             footer = app._build_message_timestamp_footer(
                 MessageData(
                     type=MessageType.USER,
@@ -33993,10 +34558,25 @@ class TestToolGroupCollapse:
             summaries = list(app.query(ToolGroupSummary))
             assert len(summaries) == 1
             assert t1.display is False
+            assert footer.display is False
             assert t2.display is False
             rendered = summaries[0].render()
             assert isinstance(rendered, Content)
             assert "Read 2 files" in rendered.plain
+
+            summaries[0].toggle()
+            await pilot.pause()
+            assert t1.display is True
+            assert footer.display is True
+            assert t2.display is True
+
+            # Driven through the real preference path rather than by removing
+            # the class literal, so renaming the class cannot turn this into a
+            # vacuous assertion.
+            app._message_timestamps_visible = False
+            app._sync_message_timestamps_display()
+            await pilot.pause()
+            assert footer.display is False
 
     async def test_regroup_is_idempotent(self) -> None:
         """Re-running regroup does not create duplicate summaries."""
@@ -34098,6 +34678,7 @@ class TestToolGroupCollapse:
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t-live")
         app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
         async with app.run_test() as pilot:
             messages = app.query_one("#messages", Container)
             await messages.remove_children()
@@ -34109,8 +34690,10 @@ class TestToolGroupCollapse:
 
             # A live group was opened and the tool hidden from the start.
             summaries = list(app.query(ToolGroupSummary))
+            footer = app.query_one(f"#{tool.id}-timestamp-footer", Static)
             assert len(summaries) == 1
             assert tool.display is False
+            assert footer.display is False
             assert app._active_tool_group is summaries[0]
 
             # A boundary closes the group and flips it to past tense.
@@ -34122,7 +34705,12 @@ class TestToolGroupCollapse:
             assert isinstance(rendered, Content)
             assert "Read 1 file" in rendered.plain
             assert tool.display is False
+            assert footer.display is False
+
+            summaries[0].toggle()
             await pilot.pause()
+            assert tool.display is True
+            assert footer.display is True
 
     @pytest.mark.parametrize("tool_name", ["ask_user", "edit_file", "write_todos"])
     async def test_mount_leaves_excluded_tools_expanded(self, tool_name: str) -> None:

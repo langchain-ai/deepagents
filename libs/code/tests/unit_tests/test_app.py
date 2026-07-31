@@ -30025,35 +30025,90 @@ class TestMCPLoginCommand:
             assert any("still pending" in m for m in messages)
 
     async def test_viewer_close_without_toggle_does_not_prompt(self) -> None:
-        """A plain `/mcp` close never asks about a reconnect."""
+        """A plain `/mcp` close never asks about a reconnect.
+
+        Asserts on the screen stack rather than on a patched
+        `_prompt_mcp_disable_reconnect` so the test still means something
+        if that helper is renamed or inlined.
+        """
+        from deepagents_code.tui.widgets.mcp_reconnect import (
+            MCPDisableReconnectPromptScreen,
+        )
+
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             # A login-pending reconnect alone must not trigger the prompt —
             # that flow has its own post-login modal.
-            app._pending_mcp_reconnect = True
-            with patch.object(
-                app, "_prompt_mcp_disable_reconnect"
-            ) as prompt_disable_reconnect:
+            app._pending_mcp_login_reconnect = True
+            app._sync_pending_mcp_reconnect()
+            await app._show_mcp_viewer()
+            await pilot.pause()
+            await app.screen.dismiss(None)
+            for _ in range(3):
+                await pilot.pause()
+            assert not isinstance(app.screen, MCPDisableReconnectPromptScreen)
+
+    async def test_viewer_close_after_undone_toggle_ignores_pending_login(
+        self,
+    ) -> None:
+        """An undone disable does not borrow pending state from an MCP login."""
+        from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+
+        original = MCPServerInfo(
+            name="filesystem",
+            transport="stdio",
+            tools=(MCPToolInfo(name="read_file", description="Read a file"),),
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[original])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._pending_mcp_login_reconnect = True
+            app._sync_pending_mcp_reconnect()
+            with (
+                patch(
+                    "deepagents_code.mcp_disabled.is_server_disabled",
+                    side_effect=[False, True],
+                ),
+                patch(
+                    "deepagents_code.mcp_disabled.set_server_disabled",
+                    return_value=(True, None),
+                ),
+                patch.object(app, "_prompt_mcp_disable_reconnect") as prompt,
+                patch.object(app, "notify"),
+            ):
                 await app._show_mcp_viewer()
                 await pilot.pause()
-                await app.screen.dismiss(None)
+                await pilot.press("f2")
+                await pilot.pause()
+                await pilot.press("f2")
+                await pilot.pause()
+
+                assert app._pending_mcp_reconnect is True
+                assert not app._pending_mcp_disable_reconnect_servers
+
+                await pilot.press("escape")
                 for _ in range(3):
                     await pilot.pause()
-            prompt_disable_reconnect.assert_not_called()
 
-    async def test_prompt_disable_reconnect_skips_when_nothing_pending(self) -> None:
-        """An undone toggle (nothing pending) skips the prompt entirely."""
+            prompt.assert_not_called()
+
+    async def test_prompt_disable_reconnect_skips_when_only_login_pending(
+        self,
+    ) -> None:
+        """A delayed prompt recheck ignores unrelated pending login state."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
             app._mcp_viewer_disable_toggled = True
-            app._pending_mcp_reconnect = False
+            app._pending_mcp_login_reconnect = True
+            app._sync_pending_mcp_reconnect()
             with patch.object(app, "push_screen") as push_screen:
                 app._prompt_mcp_disable_reconnect()
                 await pilot.pause()
             push_screen.assert_not_called()
             assert app._mcp_viewer_disable_toggled is False
+            assert app._pending_mcp_reconnect is True
 
     async def test_prompt_disable_reconnect_survives_push_failure(
         self, caplog: pytest.LogCaptureFixture
@@ -30063,7 +30118,8 @@ class TestMCPLoginCommand:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._mcp_viewer_disable_toggled = True
-            app._pending_mcp_reconnect = True
+            app._pending_mcp_disable_reconnect_servers.add("notion")
+            app._sync_pending_mcp_reconnect()
             with (
                 patch.object(
                     app,
@@ -30081,6 +30137,209 @@ class TestMCPLoginCommand:
             )
             notify.assert_called_once()
             assert "/mcp reconnect" in notify.call_args.args[0]
+
+    @pytest.mark.timeout(15)
+    async def test_disable_prompt_reconnect_keeps_chat_input_responsive(
+        self,
+    ) -> None:
+        """Accepting the close prompt must not freeze the chat input.
+
+        Regression guard mirroring `test_viewer_ctrl_r_keeps_chat_input_
+        responsive` for the second entry point. Scheduling the reconnect
+        with `call_later` awaits the multi-second restart inside the app
+        message pump, which stops forwarding key events. Without the
+        detached task this test times out (pump stalled on the gated
+        coroutine).
+        """
+        from deepagents_code.tui.widgets.mcp_reconnect import (
+            MCPDisableReconnectPromptScreen,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            app._chat_input.focus_input()
+            await pilot.pause()
+
+            gate = asyncio.Event()
+
+            async def _blocked_reconnect() -> None:
+                await gate.wait()
+
+            app._mcp_viewer_disable_toggled = True
+            app._pending_mcp_disable_reconnect_servers.add("filesystem")
+            app._sync_pending_mcp_reconnect()
+            with patch.object(
+                app, "_reconnect_from_viewer_safe", new=_blocked_reconnect
+            ):
+                app._prompt_mcp_disable_reconnect()
+                await pilot.pause()
+                assert isinstance(app.screen, MCPDisableReconnectPromptScreen)
+
+                await pilot.press("enter")
+                await pilot.pause()
+                # The reconnect is in-flight and gated open; the pump must
+                # still deliver keystrokes to the chat input.
+                await pilot.press("h", "i")
+                await pilot.pause()
+                typed = app._chat_input.value
+                gate.set()
+                await pilot.pause()
+
+            assert typed == "hi"
+
+    async def test_viewer_close_after_enable_toggle_prompts_reconnect(self) -> None:
+        """Re-enabling a server disabled in a prior session also prompts.
+
+        `F2` toggles both directions. Enabling a server that started the
+        session disabled has no optimistic original to restore, so it adds
+        to the pending set rather than discarding from it — the branch that
+        makes the prompt reachable in the enable direction.
+        """
+        from deepagents_code.mcp_tools import MCPServerInfo
+        from deepagents_code.tui.widgets.mcp_reconnect import (
+            MCPDisableReconnectPromptScreen,
+        )
+
+        original = MCPServerInfo(
+            name="filesystem",
+            transport="stdio",
+            status="disabled",
+            error="Disabled by user.",
+        )
+        app = DeepAgentsApp(agent=MagicMock(), mcp_server_info=[original])
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.mcp_disabled.is_server_disabled",
+                    return_value=True,
+                ),
+                patch(
+                    "deepagents_code.mcp_disabled.set_server_disabled",
+                    return_value=(True, None),
+                ),
+                patch.object(app, "notify"),
+            ):
+                await app._show_mcp_viewer()
+                await pilot.pause()
+                await pilot.press("f2")
+                await pilot.pause()
+
+                assert app._pending_mcp_disable_reconnect_servers == {"filesystem"}
+
+                await pilot.press("escape")
+                for _ in range(3):
+                    await pilot.pause()
+
+                assert isinstance(app.screen, MCPDisableReconnectPromptScreen)
+
+    async def test_prompt_lists_every_pending_server_in_sorted_order(self) -> None:
+        """Multiple pending servers render deterministically, not set order.
+
+        Set iteration order varies with per-process string hash seeding, so
+        without the explicit sort the modal body would name the servers in a
+        different order on different runs.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_viewer_disable_toggled = True
+            app._pending_mcp_disable_reconnect_servers.update(
+                {"notion", "filesystem", "atlassian"}
+            )
+            app._sync_pending_mcp_reconnect()
+
+            app._prompt_mcp_disable_reconnect()
+            await pilot.pause()
+
+            bodies = app.screen.query(".mcp-reconnect-body")
+            assert "atlassian, filesystem, notion" in str(bodies.first().render())
+
+    async def test_prompt_disable_reconnect_none_dismiss_silent(self) -> None:
+        """A programmatic dismiss stays quiet — the user didn't pick `later`."""
+        from deepagents_code.tui.widgets.mcp_reconnect import (
+            MCPDisableReconnectPromptScreen,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_viewer_disable_toggled = True
+            app._pending_mcp_disable_reconnect_servers.add("filesystem")
+            app._sync_pending_mcp_reconnect()
+            with patch.object(app, "notify") as notify:
+                app._prompt_mcp_disable_reconnect()
+                await pilot.pause()
+                assert isinstance(app.screen, MCPDisableReconnectPromptScreen)
+
+                await app.screen.dismiss(None)
+                for _ in range(3):
+                    await pilot.pause()
+
+            notify.assert_not_called()
+            assert app._pending_mcp_disable_reconnect_servers == {"filesystem"}
+
+    async def test_prompt_disable_reconnect_defers_to_an_open_modal(self) -> None:
+        """A modal already on the stack gets the toast, not a stacked prompt.
+
+        `push_screen` stacks rather than raising, so without the guard the
+        prompt would mount on top of an unrelated modal and steal Enter/Esc.
+        """
+        from deepagents_code.tui.widgets.mcp_reconnect import (
+            MCPReconnectForceConfirmScreen,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_viewer_disable_toggled = True
+            app._pending_mcp_disable_reconnect_servers.add("filesystem")
+            app._sync_pending_mcp_reconnect()
+
+            app.push_screen(MCPReconnectForceConfirmScreen())
+            await pilot.pause()
+
+            with patch.object(app, "notify") as notify:
+                app._prompt_mcp_disable_reconnect()
+                for _ in range(3):
+                    await pilot.pause()
+
+            assert isinstance(app.screen, MCPReconnectForceConfirmScreen)
+            notify.assert_called_once()
+            assert "/mcp reconnect" in notify.call_args.args[0]
+
+    async def test_viewer_close_prompts_when_login_is_rejected(self) -> None:
+        """A rejected login still surfaces the pending disable toggle.
+
+        Activating an unauthenticated row dismisses the viewer before
+        `_start_mcp_login` runs its guards. When login is refused outright
+        (here: MCP disabled for the session), the toggle made in the same
+        viewer session would otherwise sit unapplied with no further nudge.
+        """
+        from deepagents_code.tui.widgets.mcp_reconnect import (
+            MCPDisableReconnectPromptScreen,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._mcp_preload_kwargs = None
+            with patch.object(app, "notify"):
+                await app._show_mcp_viewer()
+                await pilot.pause()
+                # Set after opening: `_show_mcp_viewer` resets the flag so
+                # each viewer session starts clean.
+                app._mcp_viewer_disable_toggled = True
+                app._pending_mcp_disable_reconnect_servers.add("filesystem")
+                app._sync_pending_mcp_reconnect()
+
+                await app.screen.dismiss("notion")
+                for _ in range(3):
+                    await pilot.pause()
+
+            assert isinstance(app.screen, MCPDisableReconnectPromptScreen)
 
 
 class TestParseReconnectArgs:

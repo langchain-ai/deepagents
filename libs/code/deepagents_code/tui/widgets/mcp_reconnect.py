@@ -2,9 +2,13 @@
 
 Restarting the LangGraph server is required for newly minted MCP tokens
 and for `/mcp` disable/enable toggles to take effect, but auto-restarting
-interrupts users who want to make several MCP changes back-to-back. These
-modals let the user choose between restarting now and deferring until
-later.
+interrupts users who want to make several MCP changes back-to-back. The
+two `_ReconnectPromptScreen` subclasses let the user choose between
+restarting now and deferring until later.
+
+`MCPReconnectForceConfirmScreen` is the exception: it guards
+`/mcp reconnect --force` when nothing is queued, so its Esc cancels the
+restart outright rather than deferring it.
 """
 
 from __future__ import annotations
@@ -26,15 +30,22 @@ if TYPE_CHECKING:
 
 
 ReconnectChoice = Literal["reconnect", "later"]
-"""Outcome of the prompt: restart the server now or keep the current one."""
+"""Outcome of the prompt: restart the server now or keep the current one.
+
+Callers must also handle `None`, which Textual passes when a screen is
+dismissed programmatically rather than by a user keypress. That is not a
+choice, and callers deliberately stay quiet for it rather than narrating
+an action the user did not take.
+"""
 
 
-class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
-    """Modal asking whether to restart the server after an MCP login.
+class _ReconnectPromptScreen(ModalScreen[ReconnectChoice]):
+    """Shared base for the reconnect-or-defer MCP modals.
 
-    Dismisses with `"reconnect"` when the user accepts the restart and
-    `"later"` when the user defers. Esc is treated as "later" so the
-    user is never forced into a reconnect they did not explicitly choose.
+    Subclasses supply only their title and body copy; the base owns the
+    bindings, layout, styling, and the `"reconnect"`/`"later"` dismissal
+    contract. The `DEFAULT_CSS` type selector matches subclasses because
+    Textual resolves type selectors against every class name in the MRO.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -42,12 +53,12 @@ class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
         Binding("escape", "later", "Later", show=False, priority=True),
     ]
 
-    CSS = """
-    MCPReconnectPromptScreen {
+    DEFAULT_CSS = """
+    _ReconnectPromptScreen {
         align: center middle;
     }
 
-    MCPReconnectPromptScreen > Vertical {
+    _ReconnectPromptScreen > Vertical {
         width: 64;
         max-width: 90%;
         height: auto;
@@ -56,20 +67,20 @@ class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
         padding: 1 2;
     }
 
-    MCPReconnectPromptScreen .mcp-reconnect-title {
+    _ReconnectPromptScreen .mcp-reconnect-title {
         text-style: bold;
         color: $primary;
         text-align: center;
         margin-bottom: 1;
     }
 
-    MCPReconnectPromptScreen .mcp-reconnect-body {
+    _ReconnectPromptScreen .mcp-reconnect-body {
         height: auto;
         color: $text;
         margin-bottom: 1;
     }
 
-    MCPReconnectPromptScreen .mcp-reconnect-help {
+    _ReconnectPromptScreen .mcp-reconnect-help {
         height: 1;
         color: $text-muted;
         text-style: italic;
@@ -77,14 +88,16 @@ class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
     }
     """
 
-    def __init__(self, server_name: str) -> None:
-        """Initialize the prompt.
+    def __init__(self, *, title: str | Content, body: str | Content) -> None:
+        """Store the dialog copy for `compose`.
 
         Args:
-            server_name: Server whose login just succeeded.
+            title: Bold heading shown at the top of the dialog.
+            body: Explanatory paragraph beneath the title.
         """
         super().__init__()
-        self._server_name = server_name
+        self._title = title
+        self._body = body
 
     def compose(self) -> ComposeResult:
         """Compose the confirmation dialog.
@@ -92,19 +105,14 @@ class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
         Yields:
             Title, body, and help-row widgets parented inside a `Vertical`.
         """
-        glyphs = get_glyphs()
         with Vertical():
             yield Static(
-                Content.from_markup(
-                    "$check Connected to [bold]$name[/bold]",
-                    check=glyphs.checkmark,
-                    name=self._server_name,
-                ),
+                self._title,
                 classes="mcp-reconnect-title",
                 markup=False,
             )
             yield Static(
-                "Reconnect to load new tools.",
+                self._body,
                 classes="mcp-reconnect-body",
                 markup=False,
             )
@@ -136,7 +144,31 @@ class MCPReconnectPromptScreen(ModalScreen[ReconnectChoice]):
         self.action_later()
 
 
-class MCPDisableReconnectPromptScreen(ModalScreen[ReconnectChoice]):
+class MCPReconnectPromptScreen(_ReconnectPromptScreen):
+    """Modal asking whether to restart the server after an MCP login.
+
+    Dismisses with `"reconnect"` when the user accepts the restart and
+    `"later"` when the user defers. Esc is treated as "later" so the
+    user is never forced into a reconnect they did not explicitly choose.
+    """
+
+    def __init__(self, server_name: str) -> None:
+        """Initialize the prompt.
+
+        Args:
+            server_name: Server whose login just succeeded.
+        """
+        super().__init__(
+            title=Content.from_markup(
+                "$check Connected to [bold]$name[/bold]",
+                check=get_glyphs().checkmark,
+                name=server_name,
+            ),
+            body="Reconnect to load new tools.",
+        )
+
+
+class MCPDisableReconnectPromptScreen(_ReconnectPromptScreen):
     """Modal asking whether to reconnect after `/mcp` disable/enable toggles.
 
     Shown when the user closes the `/mcp` viewer with pending `F2`
@@ -146,99 +178,22 @@ class MCPDisableReconnectPromptScreen(ModalScreen[ReconnectChoice]):
     treated as "later".
     """
 
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("enter", "reconnect", "Reconnect", show=False, priority=True),
-        Binding("escape", "later", "Later", show=False, priority=True),
-    ]
-
-    CSS = """
-    MCPDisableReconnectPromptScreen {
-        align: center middle;
-    }
-
-    MCPDisableReconnectPromptScreen > Vertical {
-        width: 64;
-        max-width: 90%;
-        height: auto;
-        background: $surface;
-        border: solid $primary;
-        padding: 1 2;
-    }
-
-    MCPDisableReconnectPromptScreen .mcp-reconnect-title {
-        text-style: bold;
-        color: $primary;
-        text-align: center;
-        margin-bottom: 1;
-    }
-
-    MCPDisableReconnectPromptScreen .mcp-reconnect-body {
-        height: auto;
-        color: $text;
-        margin-bottom: 1;
-    }
-
-    MCPDisableReconnectPromptScreen .mcp-reconnect-help {
-        height: 1;
-        color: $text-muted;
-        text-style: italic;
-        text-align: center;
-    }
-    """
-
     def __init__(self, server_names: Sequence[str]) -> None:
         """Initialize the prompt.
 
         Args:
-            server_names: Servers whose disabled state changed and is
-                waiting on a reconnect.
+            server_names: Servers whose disabled state changed and are
+                waiting on a reconnect. Must be non-empty — the caller
+                only opens this modal when at least one toggle is
+                pending, and the body would otherwise name no server.
         """
-        super().__init__()
-        self._server_names = tuple(server_names)
-
-    def compose(self) -> ComposeResult:
-        """Compose the confirmation dialog.
-
-        Yields:
-            Title, body, and help-row widgets parented inside a `Vertical`.
-        """
-        with Vertical():
-            yield Static(
-                "Apply MCP server changes?",
-                classes="mcp-reconnect-title",
-                markup=False,
-            )
-            yield Static(
-                Content.from_markup(
-                    "Reconnect to apply the changes to $names.",
-                    names=", ".join(self._server_names) or "the MCP servers",
-                ),
-                classes="mcp-reconnect-body",
-                markup=False,
-            )
-            yield Static(
-                "Enter to reconnect, Esc to defer",
-                classes="mcp-reconnect-help",
-                markup=False,
-            )
-
-    def action_reconnect(self) -> None:
-        """Dismiss with `"reconnect"`."""
-        self.dismiss("reconnect")
-
-    def action_later(self) -> None:
-        """Dismiss with `"later"`."""
-        self.dismiss("later")
-
-    def action_cancel(self) -> None:
-        """Alias for `action_later` so the app-level Esc handler defers.
-
-        Same rationale as `MCPReconnectPromptScreen.action_cancel`: the
-        app's priority `escape` binding dispatches to `action_cancel`, so
-        without this alias Esc would dismiss with `None` instead of an
-        explicit defer.
-        """
-        self.action_later()
+        super().__init__(
+            title="Apply MCP server changes?",
+            body=Content.from_markup(
+                "Reconnect to apply the changes to $names.",
+                names=", ".join(server_names),
+            ),
+        )
 
 
 class MCPReconnectForceConfirmScreen(ModalScreen[bool]):

@@ -1,8 +1,9 @@
-"""Tests for the MCP reconnect confirmation modal."""
+"""Tests for the MCP reconnect confirmation modals."""
 
 from __future__ import annotations
 
 from textual.app import App, ComposeResult
+from textual.containers import Vertical
 from textual.widgets import Static
 
 from deepagents_code.tui.widgets.mcp_reconnect import (
@@ -97,7 +98,7 @@ class TestMCPDisableReconnectPromptScreen:
     """Behavior tests for `MCPDisableReconnectPromptScreen`."""
 
     async def test_enter_dismisses_with_reconnect(self) -> None:
-        """Pressing Enter applies the pending disable toggles."""
+        """Pressing Enter chooses `reconnect`."""
         app = _ReconnectTestApp()
         async with app.run_test() as pilot:
             outcomes: list[str | None] = []
@@ -114,7 +115,7 @@ class TestMCPDisableReconnectPromptScreen:
             assert outcomes == ["reconnect"]
 
     async def test_escape_dismisses_with_later(self) -> None:
-        """Pressing Esc defers the reconnect."""
+        """Pressing Esc chooses `later` (no implicit reconnect)."""
         app = _ReconnectTestApp()
         async with app.run_test() as pilot:
             outcomes: list[str | None] = []
@@ -163,15 +164,33 @@ class TestMCPDisableReconnectPromptScreen:
             assert "filesystem" in rendered
             assert "notion" in rendered
 
-    async def test_renders_fallback_without_server_names(self) -> None:
-        """An empty name list still renders a sensible body."""
+    async def test_shares_styling_with_login_prompt(self) -> None:
+        """Both prompts inherit one style contract from the shared base.
+
+        The two screens used to duplicate a 34-line CSS block, so a tweak
+        to one silently diverged the other. They now share `DEFAULT_CSS`
+        via `_ReconnectPromptScreen`, which Textual resolves through the
+        MRO — this pins that the shared rules actually reach both.
+        """
         app = _ReconnectTestApp()
         async with app.run_test() as pilot:
-            app.push_screen(MCPDisableReconnectPromptScreen([]))
-            await pilot.pause()
+            for screen in (
+                MCPDisableReconnectPromptScreen(["filesystem"]),
+                MCPReconnectPromptScreen("notion"),
+            ):
+                app.push_screen(screen)
+                await pilot.pause()
 
-            bodies = app.screen.query(".mcp-reconnect-body")
-            assert "the MCP servers" in str(bodies.first().render())
+                dialog = app.screen.query_one(Vertical)
+                assert dialog.styles.width is not None
+                assert dialog.styles.width.value == 64
+                help_rows = app.screen.query(".mcp-reconnect-help")
+                assert str(help_rows.first().render()) == (
+                    "Enter to reconnect, Esc to defer"
+                )
+
+                app.pop_screen()
+                await pilot.pause()
 
 
 class TestMCPReconnectForceConfirmScreen:

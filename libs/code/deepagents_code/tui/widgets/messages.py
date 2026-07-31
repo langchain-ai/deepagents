@@ -58,7 +58,7 @@ from deepagents_code.tui.widgets._links import (
     open_style_link,
 )
 from deepagents_code.tui.widgets.diff import (
-    compose_diff_lines,
+    DiffBody,
     count_diff_changes,
     diff_stats_content,
 )
@@ -4399,7 +4399,7 @@ class DiffMessage(Static):
             # Gated on the diff text, not the counts: a body we failed to
             # classify must still render rather than silently disappear behind
             # a "no changes" claim.
-            yield from compose_diff_lines(
+            yield DiffBody(
                 self._diff_content,
                 max_lines=100,
                 path=self._file_path,

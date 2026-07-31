@@ -24,6 +24,22 @@ EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 MAX_VIDEO_INPUT_BYTES: Final = 1024 * 1024 * 1024
 """Maximum raw video payload size accepted by `read_file` frame extraction."""
 
+TRUNCATION_MARKER_TEMPLATE: Final = "... [{omitted_lines} lines truncated] ..."
+"""Marker standing in for lines dropped from the middle of a head/tail preview.
+
+The single source of truth for the marker's shape. Two independent producers
+render it and one consumer describes it to the model, so they must agree:
+
+- `_message_eviction._create_content_preview` (Python, line-numbered previews)
+- the capture-at-source wrapper in `backends.sandbox` (POSIX `sh` `printf`)
+- the preview note built by `_message_eviction._preview_note`, which quotes the
+    shape back to the model as `... [N lines truncated] ...`
+
+An inserted marker occupies a whole line with no line-number gutter, which is
+what distinguishes it from a literal `... [N lines truncated] ...` line that
+happens to appear in the previewed content (that one gets a gutter prefix).
+"""
+
 FileType = Literal["text", "image", "audio", "video", "file"]
 """Classification of a file by extension."""
 

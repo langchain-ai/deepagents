@@ -781,13 +781,35 @@ class ExecuteOffloadResult:
     offloaded: bool
     """Whether the output was left at the capture path.
 
-    When `True`, `response.output` holds only a head/tail preview and the full
-    output lives at the capture path on the sandbox filesystem. When `False`,
-    `response.output` is the complete output.
+    When `True`, `response.output` holds only a preview -- a head/tail excerpt
+    when the output had more lines than the wrapper's head+tail budget, else a
+    leading byte excerpt -- and the full output lives at the capture path on the
+    sandbox filesystem. When `False`, `response.output` is the complete output.
     """
 
     response: ExecuteResponse
     """The command result. `response.truncated` indicates the output hit the size cap."""
+
+    preview_has_truncation_marker: bool = False
+    """Whether the preview has a `... [N lines truncated] ...` marker standing in
+    for lines dropped from its middle.
+
+    Reported by the capture wrapper itself, so callers never infer it from the
+    previewed bytes -- command output containing a literal marker line cannot
+    make a caller claim lines were omitted.
+
+    This reports *marker presence*, not preview completeness: `False` does not
+    mean the preview is the whole output. When the output has no more lines than
+    the head+tail budget the wrapper emits a leading byte excerpt instead, which
+    drops the end of the output and says so in-band rather than with this marker.
+
+    Deliberately a bool and not the omitted-line count: the wrapper's count is
+    computed before its byte caps are applied, so it understates whenever lines
+    are long. Only the binary marker-present answer is trustworthy.
+
+    Always `False` when `offloaded` is `False` -- a non-offloaded response
+    carries the complete output, so there is no preview.
+    """
 
 
 class SandboxBackendProtocol(BackendProtocol):

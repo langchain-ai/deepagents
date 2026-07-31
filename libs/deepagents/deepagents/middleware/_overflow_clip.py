@@ -10,7 +10,7 @@ ToolMessage batch in the preserved suffix. Two per-TM paths:
     is needed because the original file already lives at that path.
 - Any other tool result: full offload to `/large_tool_results/{tool_call_id}`
     via the shared eviction helper, then replace the message with a
-    `TOO_LARGE_TOOL_MSG` stub.
+    large-tool-result stub.
 """
 
 from __future__ import annotations

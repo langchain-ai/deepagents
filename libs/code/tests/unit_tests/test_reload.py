@@ -2032,6 +2032,8 @@ class TestReloadPluginsViaReload:
         from deepagents_code.tui.widgets.messages import AppMessage
 
         app = DeepAgentsApp()
+        reload_hooks = AsyncMock()
+        monkeypatch.setattr(app, "_reload_hooks", reload_hooks)
         async with app.run_test() as pilot:
             await pilot.pause()
 
@@ -2053,6 +2055,7 @@ class TestReloadPluginsViaReload:
             # no plugin summary line was emitted.
             assert "Configuration reloaded." in text
             assert "Plugins:" not in text
+            reload_hooks.assert_awaited_once_with(plugins=())
 
     @pytest.mark.parametrize(
         ("restarted", "expected_ids"),
@@ -2073,6 +2076,8 @@ class TestReloadPluginsViaReload:
 
         plugin = MagicMock(plugin_id="new@tools")
         app = DeepAgentsApp()
+        order: list[str] = []
+        reload_hooks = AsyncMock(side_effect=lambda **_kwargs: order.append("hooks"))
         async with app.run_test() as pilot:
             await pilot.pause()
             app._session_plugin_ids = frozenset({"old@tools"})
@@ -2083,9 +2088,11 @@ class TestReloadPluginsViaReload:
                 return True
 
             async def _fake_restart() -> bool:  # noqa: RUF029
+                order.append("restart")
                 return restarted
 
             monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(app, "_reload_hooks", reload_hooks)
             monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
             monkeypatch.setattr(app, "_discard_queue", lambda: None)
             monkeypatch.setattr(
@@ -2101,3 +2108,4 @@ class TestReloadPluginsViaReload:
             await pilot.pause()
 
             assert app._session_plugin_ids == expected_ids
+            assert order == ["hooks", "restart"]

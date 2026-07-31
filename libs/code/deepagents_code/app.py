@@ -18229,7 +18229,11 @@ class DeepAgentsApp(App):
         return self._effective_model_spec() or "the main agent model"
 
     def _notify_auto_classifier_active(self) -> None:
-        """Disclose the effective authorization classifier on Auto activation."""
+        """Disclose a distinct authorization classifier on Auto activation."""
+        if self._auto_classifier_model is None:
+            return
+        if self._auto_classifier_model == self._effective_model_spec():
+            return
         self.notify(
             f"Auto reviews actions with {self._auto_classifier_model_label()}.",
             severity="information",

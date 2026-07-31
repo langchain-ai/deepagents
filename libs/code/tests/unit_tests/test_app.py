@@ -28125,16 +28125,17 @@ class TestLiveApprovalModeWrites:
                 app._prompt_yolo_switcher_acknowledgement()
                 push.assert_not_called()
 
-    async def test_set_approval_mode_reports_classifier_on_each_auto_entry(
+    async def test_set_approval_mode_reports_distinct_classifier_on_each_auto_entry(
         self,
     ) -> None:
-        """A later Auto toggle discloses the effective startup classifier."""
+        """A later Auto toggle discloses a distinct startup classifier."""
         from deepagents_code.approval_mode import ApprovalMode
 
         classifier = "anthropic:claude-haiku-4-5"
         app = DeepAgentsApp(
             server_kwargs={"auto_classifier_model": classifier},
         )
+        app._model_override = "openai:gpt-5.5"
         with (
             patch.object(app, "_notify_auto_mode_enabled_once"),
             patch.object(app, "notify") as notify,
@@ -28146,6 +28147,26 @@ class TestLiveApprovalModeWrites:
             severity="information",
             markup=False,
         )
+
+    @pytest.mark.parametrize("classifier", [None, "openai:gpt-5.5"])
+    async def test_set_approval_mode_skips_classifier_toast_when_same_as_active(
+        self,
+        classifier: str | None,
+    ) -> None:
+        """Inherited and explicitly identical classifiers need no extra toast."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(
+            server_kwargs={"auto_classifier_model": classifier},
+        )
+        app._model_override = "openai:gpt-5.5"
+        with (
+            patch.object(app, "_notify_auto_mode_enabled_once"),
+            patch.object(app, "notify") as notify,
+        ):
+            assert await app._set_approval_mode(ApprovalMode.AUTO) is True
+
+        notify.assert_not_called()
 
     def test_auto_classifier_label_inherits_effective_main_model(self) -> None:
         """The notice names the main model when no classifier override exists."""

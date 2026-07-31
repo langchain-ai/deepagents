@@ -4878,6 +4878,30 @@ class TestCreateCliAgentInterpreterWiring:
             auto_middleware._configured_classifier_model == "anthropic:claude-haiku-4-5"
         )
 
+    def test_auto_classifier_model_argument_beats_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The explicit argument outranks env / `config.toml`.
+
+        The tiers are only ever exercised separately elsewhere, so an inverted
+        precedence would let a stale exported env var quietly authorize actions
+        with a model the caller did not choose.
+        """
+        from deepagents_code._env_vars import AUTO_CLASSIFIER_MODEL
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        monkeypatch.setenv(AUTO_CLASSIFIER_MODEL, "anthropic:stale-from-env")
+        middleware = self._capture_middleware(
+            tmp_path,
+            auto_mode_enabled=True,
+            auto_classifier_model="openai:gpt-5.5-mini",
+        )
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert auto_middleware._configured_classifier_model == "openai:gpt-5.5-mini"
+
     def test_auto_classifier_model_defaults_to_inheriting(self, tmp_path: Path) -> None:
         """Nothing configured leaves the classifier on the main agent model."""
         from deepagents_code.auto_mode import AutoModeHITLMiddleware

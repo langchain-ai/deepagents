@@ -22,6 +22,7 @@ from urllib.request import url2pathname
 
 from deepagents_code._constants import FIREWORKS_PROVIDER_ID_PREFIX
 from deepagents_code._env_vars import (
+    AUTO_CLASSIFIER_MODEL,
     DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
     DISABLED_PROJECT_MCP_SERVERS,
     HIDE_SPLASH_VERSION,
@@ -170,12 +171,13 @@ _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
     {
         DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         DISABLED_PROJECT_MCP_SERVERS,
+        AUTO_CLASSIFIER_MODEL,
     }
 )
 """Env keys a *project* `.env` must not inject, even though they are otherwise
 safe process-env inputs.
 
-These two vars are the env form of the user-level project-MCP allow/deny lists
+The first two are the env form of the user-level project-MCP allow/deny lists
 (`model_config.load_mcp_server_trust_lists`). Their whole purpose is to be a
 *user-level* decision: naming a project MCP server here pre-approves it from an
 untrusted `.mcp.json` (stdio → local command execution; remote → SSRF and
@@ -183,6 +185,15 @@ untrusted `.mcp.json` (stdio → local command execution; remote → SSRF and
 travels with a cloned repo, so honoring it would let an attacker commit
 `.mcp.json` + `.env` and self-approve their own servers — exactly the trust
 boundary the feature exists to hold.
+
+`AUTO_CLASSIFIER_MODEL` chooses the model that authorizes gated tool calls in
+Auto approval mode. Honoring it from a project `.env` would let a cloned repo
+silently point that review at a weaker model — degrading the control, including
+its resistance to prompt injection in the untrusted material it reads — which is
+a repo-supplied downgrade of a user-level security decision, not a project build
+setting. Choosing a classifier stays available through the trusted surfaces:
+shell exports, the global `~/.deepagents/.env`, `[models].auto_classifier` in
+`~/.deepagents/config.toml`, `--auto-classifier-model`, and `/auto model`.
 
 Unlike `_DOTENV_DENIED_ENV_KEYS` (denied from *any* `.env` because they turn
 `.env` loading into code execution), these are denied only from the *project*
@@ -3335,9 +3346,18 @@ def resolve_auto_classifier_model() -> str | None:
     option = get_option("models.auto_classifier")
     if option is None:
         return None
-    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    value, source = resolve_scalar(option, toml_data=load_config_toml())
     if isinstance(value, str) and value.strip():
         return value.strip()
+    if isinstance(value, str) and source != "default":
+        # A blank value is a configured security control being ignored, so it
+        # gets the same audible treatment as a malformed one rather than
+        # reverting to the main agent model in silence.
+        logger.warning(
+            "Ignoring blank %s auto_classifier model; the Auto approval "
+            "classifier will review with the main agent model",
+            source,
+        )
     return None
 
 

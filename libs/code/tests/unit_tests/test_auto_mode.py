@@ -167,12 +167,20 @@ class _UnavailableAsyncStore(_Store):
 
 
 class _StructuredModel:
-    def __init__(self, result: object = None, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        result: object = None,
+        error: Exception | None = None,
+        model_name: str | None = None,
+    ) -> None:
         self.result = result
         self.error = error
         self.calls: list[list[object]] = []
         self.call_kwargs: list[dict[str, object]] = []
         self.schema: object = None
+        # `_extract_model_name` reads `model_name` first and ignores a non-str,
+        # so the default keeps existing tests labelled by class name.
+        self.model_name = model_name
 
     def with_structured_output(self, schema: object) -> _StructuredModel:
         self.schema = schema
@@ -283,6 +291,7 @@ def _middleware(
     tmp_path: Path,
     *,
     classifier_model: str | BaseChatModel | None = None,
+    classifier_timeout_seconds: float = 1,
     trusted_ask_user_tool: BaseTool | None = None,
     trusted_compaction_tool: BaseTool | None = None,
 ) -> AutoModeHITLMiddleware:
@@ -299,7 +308,7 @@ def _middleware(
             "mcp_read": config,
         },
         worktree_root=tmp_path,
-        classifier_timeout_seconds=1,
+        classifier_timeout_seconds=classifier_timeout_seconds,
         classifier_model=classifier_model,
         trusted_ask_user_tool=trusted_ask_user_tool,
         trusted_compaction_tool=trusted_compaction_tool,
@@ -3036,7 +3045,15 @@ class _RecordingModelFactory:
         self.specs.append(spec)
         if self.error is not None:
             raise self.error
-        model = self.models[min(len(self.specs), len(self.models)) - 1]
+        if len(self.models) == 1:
+            # One model means "any classifier will do" — the cache tests build
+            # many specs and assert on eviction, not on model identity.
+            model = self.models[0]
+        else:
+            # With several models each spec maps to its own, and running past
+            # the end raises: a test that has lost track of which model it is
+            # asserting on should fail loudly, not silently reuse the last one.
+            model = self.models[len(self.specs) - 1]
         return SimpleNamespace(model=model)
 
 
@@ -3081,7 +3098,9 @@ async def test_classifier_model_spec_is_resolved_once_and_cached(
     _install_model_factory(monkeypatch, factory)
     middleware = _middleware(tmp_path, classifier_model="openai:gpt-5.5-mini")
 
-    for call_id in ("call-1", "call-1"):
+    # Distinct ids so the second batch is a genuinely new one, rather than one
+    # that batch-replay detection could short-circuit before reaching the cache.
+    for call_id in ("call-1", "call-2"):
         request, _store, _key = _request(
             tmp_path,
             model=_FailIfClassifiedModel(),
@@ -3100,6 +3119,49 @@ async def test_classifier_model_spec_is_resolved_once_and_cached(
 
     assert factory.specs == ["openai:gpt-5.5-mini"]
     assert len(classifier.calls) == 2
+
+
+async def test_classifier_model_construction_respects_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hung model constructor reaches fail-closed human fallback promptly."""
+    started = threading.Event()
+    release = threading.Event()
+
+    def create_model(_spec: str) -> SimpleNamespace:
+        started.set()
+        release.wait()
+        return SimpleNamespace(model=_StructuredModel(_allow_result()))
+
+    import deepagents_code.config as config_module
+
+    monkeypatch.setattr(config_module, "create_model", create_model)
+    middleware = _middleware(
+        tmp_path,
+        classifier_model="openai:gpt-5.5-mini",
+        classifier_timeout_seconds=0.01,
+    )
+    request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    try:
+        plan = await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+    finally:
+        release.set()
+
+    assert started.is_set()
+    assert middleware._classifier_model_lock.locked() is False
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    assert plan["decisions"][0]["reason"] == ("classifier did not respond within 0.01s")
 
 
 async def test_context_classifier_model_overrides_construction_value(
@@ -3371,6 +3433,185 @@ async def test_classifier_failure_with_counter_store_failure_routes_human(
 
     assert plan["fallback_reason"] == "control_state_unavailable"
     assert plan["decisions"][0]["disposition"] == "require_human"
+
+
+async def test_blank_configured_classifier_inherits_main_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blank spec means "inherit", never "build `[models].default`".
+
+    `create_model("")` silently resolves the default model spec, so letting a
+    blank value through would review with a model nobody chose for
+    authorization — and label it `inherited` in traces while doing so.
+    """
+    primary = _StructuredModel(_allow_result())
+    factory = _RecordingModelFactory(_StructuredModel(_allow_result()))
+    _install_model_factory(monkeypatch, factory)
+    middleware = _middleware(tmp_path, classifier_model="   ")
+    request, _store, _key = _request(
+        tmp_path,
+        model=primary,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+    # The primary model reviewed, and no model was ever constructed from "   ".
+    assert len(primary.calls) == 1
+    assert factory.specs == []
+    metadata = cast("dict[str, Any]", primary.call_kwargs[0]["config"])["metadata"]
+    assert metadata["classifier_model"] == "inherited"
+
+
+async def test_classifier_instance_is_labelled_by_model_name(
+    tmp_path: Path,
+) -> None:
+    """A chat model instance has no spec, so traces name it by model name.
+
+    Pins that the instance branch is not silently labelled `inherited`, which
+    would hide a distinct reviewer in traces and decision logs.
+    """
+    classifier = _StructuredModel(_allow_result(), model_name="sentinel-classifier")
+    middleware = _middleware(tmp_path, classifier_model=cast("Any", classifier))
+    request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    metadata = cast("dict[str, Any]", classifier.call_kwargs[0]["config"])["metadata"]
+    assert metadata["classifier_model"] == "sentinel-classifier"
+
+
+async def test_classifier_cache_keeps_recently_used_spec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Eviction is least-recently-*used*, so a re-hit spec outlives an older one.
+
+    Without `move_to_end` on a cache hit the policy silently degrades to FIFO
+    and the spec in active use is the one thrown away.
+    """
+    factory = _RecordingModelFactory(_StructuredModel(_allow_result()))
+    _install_model_factory(monkeypatch, factory)
+    middleware = _middleware(tmp_path)
+    specs = [f"openai:model-{index}" for index in range(4)]
+
+    async def _review(spec: str) -> None:
+        request, _store, _key = _request(
+            tmp_path,
+            model=_FailIfClassifiedModel(),
+            tool_name="delete",
+            args={"file_path": "old.py"},
+            classifier_model=spec,
+        )
+        await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    for spec in specs:
+        await _review(spec)
+    # Re-touch the oldest entry, then overflow the bound by one.
+    await _review(specs[0])
+    await _review("openai:model-4")
+
+    cached = list(middleware._classifier_model_cache)
+    assert specs[0] in cached
+    assert specs[1] not in cached
+
+
+async def test_counter_write_failure_keeps_classifier_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two independent faults must not collapse into the one that self-heals.
+
+    Control state tends to recover; a misconfigured classifier spec never does.
+    Reporting only the former sends the user back for another round after they
+    fix the disk.
+    """
+    store = _FailingCounterStore()
+    _install_model_factory(
+        monkeypatch, _RecordingModelFactory(error=RuntimeError("no credentials"))
+    )
+    middleware = _middleware(tmp_path, classifier_model="openai:missing-model")
+    request, _active_store, key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        store=store,
+    )
+    counters = _default_counters(ApprovalMode.AUTO)
+    counters["last_turn_id"] = "turn-1"
+    store.put(AUTO_MODE_COUNTERS_NAMESPACE, key, counters)
+    store.fail_counter_writes = True
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "require_human"
+    reason = plan["decisions"][0]["reason"]
+    assert "control state was unavailable" in reason
+    assert "openai:missing-model" in reason
+
+
+async def test_unavailable_decision_log_names_classifier_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The unavailable log names the misconfigured model, not just the primary.
+
+    This is the line an operator reads when Auto suddenly denies everything.
+    """
+    _install_model_factory(
+        monkeypatch, _RecordingModelFactory(error=RuntimeError("no credentials"))
+    )
+    middleware = _middleware(tmp_path, classifier_model="openai:missing-model")
+    request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    with caplog.at_level("INFO", logger="deepagents_code.auto_mode"):
+        await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "deepagents_code.auto_mode"
+        and "decision=unavailable" in record.getMessage()
+    ]
+    assert len(messages) == 1
+    assert "classifier_model=openai:missing-model" in messages[0]
 
 
 async def test_three_denials_route_next_review_to_human_without_classifier(

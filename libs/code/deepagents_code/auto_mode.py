@@ -132,9 +132,15 @@ class _ClassifierModelUnavailableError(RuntimeError):
     Distinct from provider/runtime failures so the agent and UI can say the
     *configured* classifier model is the problem (bad spec, missing
     credentials, uninstalled provider package) instead of implying a transient
-    outage. Auto never silently falls back to the main agent model here: the
-    classifier is an authorization control, so an unusable one fails closed to
-    human approval.
+    outage. Construction failures are attributed to configuration regardless of
+    their underlying cause, since a transient fault during a build is
+    indistinguishable from a bad setting here.
+
+    Auto never silently falls back to the main agent model: the classifier is an
+    authorization control, so an unusable one fails closed. The batch is
+    *denied* — every call in it gets a `classifier unavailable` error and does
+    not execute — and only after `_CONSECUTIVE_UNAVAILABLE_FALLBACK` consecutive
+    failing batches does Auto escalate to human approval.
     """
 
     def __init__(self, spec: str) -> None:
@@ -531,7 +537,9 @@ def sanitize_auto_reason(reason: object, *, known_secrets: Sequence[str] = ()) -
     return text[:_REASON_LIMIT] or "The action was not authorized by the user request."
 
 
-def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float) -> str:
+def classifier_unavailable_reason(
+    exc: BaseException, *, timeout_seconds: float, spec: str | None = None
+) -> str:
     """Build a safe agent/UI reason for a failed auto classifier call.
 
     Provider exception text stays out of the reason (it can carry secrets or
@@ -545,6 +553,12 @@ def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float)
     Args:
         exc: Failure raised while invoking or validating the classifier.
         timeout_seconds: Configured local wait budget for one batch.
+        spec: Spec of the distinct classifier model that failed, when one is in
+            use. Naming it points the user at the setting to change; a cached
+            model built against a since-rotated credential fails here rather
+            than at construction, so an unnamed reason would send them back to
+            `/auth` instead of restarting. `None` when reviews inherit the main
+            agent model and the spec would say nothing.
 
     Returns:
         Compact single-line reason for tool messages and TUI events.
@@ -555,6 +569,8 @@ def classifier_unavailable_reason(exc: BaseException, *, timeout_seconds: float)
         # The spec is user-supplied config, not provider text, so naming it is
         # safe and is the fastest route to a fix.
         return f"configured classifier model {exc.spec} is unavailable"
+    if spec is not None:
+        return f"configured classifier model {spec} failed ({type(exc).__name__})"
     return f"failed ({type(exc).__name__})"
 
 
@@ -2043,6 +2059,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         instead sends `INHERIT_CLASSIFIER_MODEL`, which does override a session
         started with a separate classifier back to the main agent model.
 
+        A blank spec from either tier means "inherit", matching
+        `ServerConfig.from_env`. Passing it through would reach `create_model`,
+        which treats an empty spec as "use `[models].default`" and would build a
+        model nobody selected for authorization review.
+
         Returns:
             A `provider:model` spec, a chat model instance, or `None` to inherit
                 the main agent model.
@@ -2055,16 +2076,26 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 return None
             if context_spec.strip():
                 return context_spec.strip()
-        return self._configured_classifier_model
+        configured = self._configured_classifier_model
+        if isinstance(configured, str):
+            return configured.strip() or None
+        return configured
 
-    def _classifier_model_label(self, request: ModelRequest) -> str:
-        """Return the log label for the classifier model of this request."""
+    def _distinct_classifier_label(self, request: ModelRequest) -> str | None:
+        """Return the classifier label, or `None` when inheriting the main model.
+
+        A chat model instance has no spec, so it is labelled by model name.
+        """
         selected = self._classifier_spec(request)
         if selected is None:
-            return "inherited"
+            return None
         if isinstance(selected, str):
             return selected
         return _extract_model_name(selected)
+
+    def _classifier_model_label(self, request: ModelRequest) -> str:
+        """Return the log label for the classifier model of this request."""
+        return self._distinct_classifier_label(request) or "inherited"
 
     async def _classifier_model(
         self, request: ModelRequest
@@ -2075,14 +2106,17 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             request: Resolved primary-model request for the current batch.
 
         Returns:
-            The chat model to classify with, and its spec when it is a model
-                distinct from the primary one (`None` when inheriting).
+            The chat model to classify with, and its label when it is a separate
+                model object from the primary one — its spec, or its model name
+                when a chat model instance was supplied. `None` when inheriting,
+                which is what gates forwarding the primary model's settings.
 
         Raises:
             asyncio.CancelledError: If model construction is cancelled.
             _ClassifierModelUnavailableError: If a configured spec cannot be
-                built. Auto fails closed to human approval rather than quietly
-                reviewing with the main agent model.
+                built. Auto denies the batch rather than quietly reviewing with
+                the main agent model, and escalates to human approval only after
+                `_CONSECUTIVE_UNAVAILABLE_FALLBACK` consecutive failing batches.
         """
         selected = self._classifier_spec(request)
         if selected is None:
@@ -2119,47 +2153,51 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         dispositions: Mapping[str, str],
         tools: Mapping[str, BaseTool],
     ) -> AutoDecisionBatch:
-        model, spec = await self._classifier_model(request)
-        structured = model.with_structured_output(AutoDecisionBatch)
-        messages = [
-            SystemMessage(content=_CLASSIFIER_POLICY),
-            HumanMessage(
-                content=_classifier_context(
-                    request,
-                    calls,
-                    all_calls,
-                    dispositions,
-                    tools,
-                    self._trusted_environment,
-                    self._trusted_ask_user_tool,
-                )
-            ),
-        ]
-        # Primary-model settings are provider- and model-specific (Anthropic
-        # `cache_control`, OpenAI `prompt_cache_key`, reasoning budgets,
-        # `--model-params`), so they only travel with the primary model. A
-        # distinct classifier runs on its own defaults.
-        settings = request.model_settings if spec is None else {}
-        invoke = structured.ainvoke(
-            messages,
-            config={
-                "run_name": "dcode_auto_classifier",
-                "tags": ["dcode:auto"],
-                "metadata": {
-                    "lc_source": "auto_mode_classifier",
-                    "classifier_model": spec or "inherited",
-                },
-            },
-            **settings,
-        )
-        # `asyncio.timeout(...).expired()` distinguishes our wait budget from a
-        # provider that raises `TimeoutError` itself. `wait_for` cannot;
-        # both ends surface the same type.
+        # The deadline covers lazy model construction as well as inference. An
+        # unavailable provider constructor must fail closed on the same bounded
+        # schedule as a provider call, even while classifier resolution holds
+        # its cache lock.
         timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
         try:
             async with timeout_cm:
-                result = await invoke
+                model, spec = await self._classifier_model(request)
+                structured = model.with_structured_output(AutoDecisionBatch)
+                messages = [
+                    SystemMessage(content=_CLASSIFIER_POLICY),
+                    HumanMessage(
+                        content=_classifier_context(
+                            request,
+                            calls,
+                            all_calls,
+                            dispositions,
+                            tools,
+                            self._trusted_environment,
+                            self._trusted_ask_user_tool,
+                        )
+                    ),
+                ]
+                # Primary-model settings are provider- and model-specific
+                # (Anthropic `cache_control`, OpenAI `prompt_cache_key`,
+                # reasoning budgets, `--model-params`), so they only travel
+                # with the primary model. A distinct classifier runs on its
+                # own defaults.
+                settings = request.model_settings if spec is None else {}
+                result = await structured.ainvoke(
+                    messages,
+                    config={
+                        "run_name": "dcode_auto_classifier",
+                        "tags": ["dcode:auto"],
+                        "metadata": {
+                            "lc_source": "auto_mode_classifier",
+                            "classifier_model": spec or "inherited",
+                        },
+                    },
+                    **settings,
+                )
         except TimeoutError:
+            # `asyncio.timeout(...).expired()` distinguishes our wait budget
+            # from a provider that raises `TimeoutError` itself. `wait_for`
+            # cannot; both ends surface the same type.
             if timeout_cm.expired():
                 raise _ClassifierDeadlineExceededError(
                     self._classifier_timeout_seconds
@@ -2389,8 +2427,21 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             )
             reason = sanitize_auto_reason(
                 classifier_unavailable_reason(
-                    exc, timeout_seconds=self._classifier_timeout_seconds
+                    exc,
+                    timeout_seconds=self._classifier_timeout_seconds,
+                    spec=self._distinct_classifier_label(request),
                 ),
+                known_secrets=self._known_secrets,
+            )
+            # A failed counter write routes to human approval, but the classifier
+            # diagnostic is the actionable half of the two faults: control state
+            # tends to recover on its own, a misconfigured spec never does. Carry
+            # both so fixing the disk does not just surface the same wall again.
+            # Re-sanitized as one string so the combined text still respects the
+            # reason length cap.
+            unavailable_reason = sanitize_auto_reason(
+                f"Auto control state was unavailable ({reason}); "
+                "human approval is required.",
                 known_secrets=self._known_secrets,
             )
             for call in review_calls:
@@ -2403,14 +2454,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                             else "require_human"
                         ),
                         "category": AutoDecisionCategory.OTHER_POLICY.value,
-                        "reason": (
-                            reason
-                            if counters_saved
-                            else (
-                                "Auto control state was unavailable; human approval "
-                                "is required."
-                            )
-                        ),
+                        "reason": (reason if counters_saved else unavailable_reason),
                         "path": "classifier" if counters_saved else "fallback",
                     }
                 )

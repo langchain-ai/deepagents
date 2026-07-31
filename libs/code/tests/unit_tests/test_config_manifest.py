@@ -243,6 +243,33 @@ def test_resolve_auto_classifier_model_env_overrides_toml(monkeypatch) -> None:
     assert resolve_auto_classifier_model() is None
 
 
+def test_resolve_auto_classifier_model_warns_on_blank_value(
+    monkeypatch, caplog
+) -> None:
+    """A blank configured classifier is reported, not dropped in silence.
+
+    Reverting to the main agent model is a security control quietly changing
+    behavior, so it gets the same audible treatment a malformed value gets.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "   "}},
+    )
+
+    with caplog.at_level("WARNING", logger="deepagents_code.config"):
+        assert resolve_auto_classifier_model() is None
+
+    assert any(
+        "blank" in record.getMessage() and "auto_classifier" in record.getMessage()
+        for record in caplog.records
+    )
+
+
 def test_goal_auto_accept_criteria_defaults_to_review(monkeypatch) -> None:
     """Auto mode reviews generated goal criteria when no preference is set."""
     option = get_option("goals.auto_accept_criteria")

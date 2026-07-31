@@ -37,7 +37,7 @@ is once per policy version, that indicator is the only remaining in-session
 signal for a returning user who has muted the toast.
 """
 
-AUTO_NOTICE_VERSION = "2026-07-24"
+AUTO_NOTICE_VERSION = "2026-07-30"
 """Version of the first-run Auto mode education notice.
 
 Bump this string whenever the notice copy changes materially enough that

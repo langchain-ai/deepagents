@@ -1120,7 +1120,8 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         group="Models",
         summary=(
             "Model spec ('provider:model') used by the Auto approval classifier; "
-            "unset reuses the main agent model."
+            "unset reuses the main agent model. A weaker model weakens Auto's "
+            "review of gated actions."
         ),
         kind=OptionKind.STR,
         env_var=_env_vars.AUTO_CLASSIFIER_MODEL,

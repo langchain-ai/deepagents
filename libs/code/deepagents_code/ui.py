@@ -144,9 +144,9 @@ def show_help() -> None:
         "  --startup-cmd CMD          Shell command to run at startup, before first prompt"  # noqa: E501
     )
     console.print("  -y, --auto-approve         Enable classifier-backed Auto mode")
+    console.print("  --auto-classifier-model MODEL")
     console.print(
-        "  --auto-classifier-model MODEL"
-        "  Model the Auto classifier reviews actions with"
+        "                             Model the Auto classifier reviews actions with"
     )
     console.print("                             Defaults to the main agent model")
     console.print(

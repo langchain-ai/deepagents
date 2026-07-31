@@ -341,10 +341,11 @@ class ServerConfig:
     """Explicit grader iterations per rubric attempt; `None` uses the SDK default."""
 
     auto_classifier_model: str | None = None
-    """Classifier model spec for Auto approval mode (e.g. `'openai:...'`).
+    """Classifier model spec for Auto mode (e.g. `'anthropic:claude-haiku-4-5'`).
 
-    `None` falls through to `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` /
-    `[models].auto_classifier`, and then to the main agent model.
+    `None` falls through to `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL`, then
+    `[models].auto_classifier`, and then to the main agent model. An empty value
+    round-trips to `None`, so it means "inherit", never "empty spec".
     """
 
     recursion_limit: int | None = None

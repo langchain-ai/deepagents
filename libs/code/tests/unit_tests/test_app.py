@@ -12791,6 +12791,77 @@ class TestAutoClassifierModelCommand:
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Auto classifier model set to openai:gpt-5.5-mini" in rendered
 
+    async def test_set_auto_classifier_model_rejects_colon_only_spec(self) -> None:
+        """A normalized-empty spec must not masquerade as an explicit clear."""
+        startup_spec = "anthropic:claude-haiku-4-5"
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._auto_classifier_model = startup_spec
+            app._server_kwargs = {"auto_classifier_model": startup_spec}
+            with patch(
+                "deepagents_code.app._create_model_with_deepagents_import_lock"
+            ) as create_model:
+                await app._handle_command("/auto model :")
+            await pilot.pause()
+
+            create_model.assert_not_called()
+            assert app._auto_classifier_model == startup_spec
+            assert app._auto_classifier_model_cleared is False
+            assert app._auto_classifier_context_value() == startup_spec
+            rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "Auto classifier model must not be empty" in rendered
+
+    async def test_selected_classifier_reaches_the_turn_context(self) -> None:
+        """The chosen spec must ride the run context, not just app state.
+
+        Every other test here asserts app state or the helper's return value, so
+        dropping the `classifier_model` kwarg from the outgoing `CLIContext`
+        would leave the command reporting success while the server keeps
+        reviewing with whatever it resolved at startup.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._auto_classifier_model = "openai:gpt-5.5-mini"
+
+            with patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+            ) as mock_execute:
+                await app._run_agent_task("hello")
+
+            assert mock_execute.await_args is not None
+            context = mock_execute.await_args.kwargs["context"]
+            assert context["classifier_model"] == "openai:gpt-5.5-mini"
+
+    async def test_cleared_classifier_sends_inherit_marker_on_the_turn(self) -> None:
+        """`/auto model clear` must override a server-side startup classifier.
+
+        A bare `None` means "no per-run preference", which would leave a startup
+        classifier in force while the UI claims reviews returned to the main
+        agent model — so the clear has to travel as the explicit marker.
+        """
+        from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._auto_classifier_model = "openai:gpt-5.5-mini"
+            app._server_kwargs = {"auto_classifier_model": "openai:gpt-5.5-mini"}
+            await app._handle_command("/auto model clear")
+            await pilot.pause()
+
+            with patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+            ) as mock_execute:
+                await app._run_agent_task("hello")
+
+            assert mock_execute.await_args is not None
+            context = mock_execute.await_args.kwargs["context"]
+            assert context["classifier_model"] == INHERIT_CLASSIFIER_MODEL
+
     async def test_set_auto_classifier_model_clear_restores_main_model(self) -> None:
         """`/auto model clear` returns reviews to the main agent model."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -27715,6 +27786,28 @@ class TestLiveApprovalModeWrites:
                 app._prompt_yolo_switcher_acknowledgement()
                 push.assert_not_called()
 
+    async def test_set_approval_mode_reports_classifier_on_each_auto_entry(
+        self,
+    ) -> None:
+        """A later Auto toggle discloses the effective startup classifier."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        classifier = "anthropic:claude-haiku-4-5"
+        app = DeepAgentsApp(
+            server_kwargs={"auto_classifier_model": classifier},
+        )
+        with (
+            patch.object(app, "_notify_auto_mode_enabled_once"),
+            patch.object(app, "notify") as notify,
+        ):
+            assert await app._set_approval_mode(ApprovalMode.AUTO) is True
+
+        notify.assert_called_once_with(
+            f"Auto reviews actions with {classifier}.",
+            severity="information",
+            markup=False,
+        )
+
     async def test_toggle_warns_when_auto_ineligible_and_switcher_disabled(
         self,
     ) -> None:
@@ -27855,7 +27948,7 @@ class TestLiveApprovalModeWrites:
                 assert not isinstance(app.screen, AutoModeNoticeScreen)
                 assert app._approval_mode is ApprovalMode.AUTO
 
-    async def test_mount_auto_silent_when_notice_already_shown(self) -> None:
+    async def test_mount_auto_skips_modal_when_notice_already_shown(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
 
@@ -27871,6 +27964,29 @@ class TestLiveApprovalModeWrites:
                 await pilot.pause()
                 assert not isinstance(app.screen, AutoModeNoticeScreen)
                 save_notice.assert_not_called()
+
+    async def test_mount_auto_reports_classifier_after_notice_was_shown(self) -> None:
+        """Returning Auto users still see which model authorizes actions."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        classifier = "anthropic:claude-haiku-4-5"
+        with patch(
+            "deepagents_code.approval_mode.has_auto_mode_notice",
+            return_value=True,
+        ):
+            app = DeepAgentsApp(
+                approval_mode=ApprovalMode.AUTO,
+            )
+            app._auto_classifier_model = classifier
+            with patch.object(app, "notify") as notify:
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+
+        notify.assert_any_call(
+            f"Auto reviews actions with {classifier}.",
+            severity="information",
+            markup=False,
+        )
 
     async def test_mount_auto_notice_escape_reverts_to_manual_without_save(
         self,

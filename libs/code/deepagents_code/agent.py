@@ -2330,10 +2330,10 @@ def create_cli_agent(
 
             A `'provider:model'` string or `BaseChatModel`.
 
-            When `None`, `[models].auto_classifier` /
-            `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` are consulted, and the main
-            `model` is reused when those are unset too. Only meaningful when
-            `auto_mode_enabled` is `True`.
+            When `None`, `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` is consulted,
+            then `[models].auto_classifier`, and the main `model` is reused when
+            both are unset. A blank string means the same as `None`. Only
+            meaningful when `auto_mode_enabled` is `True`.
         recursion_limit: Explicit LangGraph `recursion_limit` (graph step budget)
             for the main agent. When `None`, it is resolved from the
             `DEEPAGENTS_CODE_RECURSION_LIMIT` env var, `[runtime].recursion_limit`

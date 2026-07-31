@@ -317,6 +317,39 @@ class TestAutoApproveHeadlessValidation:
         assert exc_info.value.code == 2
         assert "--yolo is only supported in interactive mode" in capsys.readouterr().err
 
+    def test_rejects_auto_classifier_model_with_sandbox(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Auto is disabled under a sandbox, so its classifier flag is a no-op.
+
+        `create_cli_agent` turns Auto off for a sandboxed run, so accepting the
+        flag would silently ignore a setting that governs action authorization —
+        the same reason the headless form is rejected.
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "--sandbox",
+                    "daytona",
+                    "--auto-classifier-model",
+                    "anthropic:claude-haiku-4-5",
+                ],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        assert "--auto-classifier-model is only supported" in capsys.readouterr().err
+
     def test_accepts_auto_approve_in_interactive_mode(self) -> None:
         """`--auto-approve` must still be honored on an interactive launch.
 

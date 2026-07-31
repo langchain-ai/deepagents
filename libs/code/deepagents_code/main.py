@@ -1920,7 +1920,8 @@ def parse_args() -> argparse.Namespace:
         dest="auto_classifier_model",
         metavar="MODEL",
         help="Model the Auto approval classifier reviews actions with "
-        "(e.g. anthropic:claude-haiku-4-5). Defaults to [models].auto_classifier, "
+        "(e.g. anthropic:claude-haiku-4-5). Defaults to "
+        "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL, then [models].auto_classifier, "
         "then the main agent model. A weaker model weakens Auto's review.",
     )
 
@@ -2440,6 +2441,7 @@ async def run_textual_cli_async(
     from deepagents_code.config import (
         _get_default_model_spec,
         detect_provider,
+        resolve_auto_classifier_model,
         settings,
     )
     from deepagents_code.model_config import (
@@ -2485,6 +2487,12 @@ async def run_textual_cli_async(
         settings.model_provider = ""
         settings.model_name = ""
 
+    resolved_auto_classifier_model = (
+        auto_classifier_model
+        if auto_classifier_model is not None
+        else resolve_auto_classifier_model()
+    )
+
     model_kwargs: dict[str, Any] | None = None
     if not defer_server_start:
         model_kwargs = {
@@ -2509,7 +2517,7 @@ async def run_textual_cli_async(
         "interpreter_ptc": interpreter_ptc,
         "interpreter_ptc_acknowledge_unsafe": interpreter_ptc_acknowledge_unsafe,
         "allow_fs_tools": allow_fs_tools,
-        "auto_classifier_model": auto_classifier_model,
+        "auto_classifier_model": resolved_auto_classifier_model,
         "mcp_config_path": mcp_config_path,
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
@@ -3869,6 +3877,12 @@ def cli_main() -> None:
                     f"Error: {flag} is only supported by the interactive Textual TUI.\n"
                 )
                 sys.exit(2)
+            if getattr(args, "auto_classifier_model", None) is not None:
+                sys.stderr.write(
+                    "Error: --auto-classifier-model is only supported by the "
+                    "interactive Textual TUI.\n"
+                )
+                sys.exit(2)
             assistant_id = _resolve_agent_arg(args)
             try:
                 from acp import run_agent as run_acp_agent
@@ -4055,19 +4069,24 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
-        # Auto approval mode (and therefore its classifier) only exists in the
-        # interactive TUI, so accepting the flag headlessly would silently do
+        # Auto approval mode (and therefore its classifier) requires the
+        # interactive TUI *and* no sandbox — `agent.create_cli_agent` disables
+        # Auto for either. Accepting the flag in those runs would silently do
         # nothing to a setting that governs action authorization.
-        if (
-            getattr(args, "auto_classifier_model", None) is not None
-            and args.non_interactive_message
+        if getattr(args, "auto_classifier_model", None) is not None and (
+            args.non_interactive_message or args.sandbox not in {"none", None}
         ):
             from rich.console import Console as _Console
 
+            unavailable_because = (
+                "a sandbox is in use"
+                if not args.non_interactive_message
+                else "it runs headlessly"
+            )
             _Console(stderr=True).print(
                 "[bold red]Error:[/bold red] --auto-classifier-model is only "
                 "supported in the interactive TUI, where Auto approval mode "
-                "runs.\n"
+                f"runs; {unavailable_because}.\n"
                 "  dcode --auto-classifier-model anthropic:claude-haiku-4-5"
             )
             sys.exit(2)

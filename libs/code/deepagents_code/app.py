@@ -3368,18 +3368,18 @@ class DeepAgentsApp(App):
         self._auto_classifier_model: str | None = (server_kwargs or {}).get(
             "auto_classifier_model"
         )
-        """Optional model spec the Auto approval classifier reviews with.
+        """Effective model spec the Auto approval classifier reviews with.
 
-        `None` leaves the classifier on whatever the server resolved at startup
-        (`[models].auto_classifier`, then the main agent model)."""
+        The launch path resolves the CLI/env/TOML preference before app
+        construction. `None` means reviews inherit the main agent model."""
 
         self._auto_classifier_model_cleared: bool = False
         """Whether the user cleared the classifier back to the main agent model.
 
-        The server resolves its own startup classifier from env / `config.toml`,
-        which the client cannot see, so "no classifier set here" and "review with
-        the main agent model" are different statements. This flag distinguishes
-        them and is what puts `INHERIT_CLASSIFIER_MODEL` on the run context."""
+        An absent per-run value leaves the server's startup classifier in place,
+        so "no override" and "review with the main agent model" are different
+        statements. This flag puts `INHERIT_CLASSIFIER_MODEL` on the run context
+        for the latter."""
 
         self._active_goal: str | None = None
         """Goal objective accepted by the user and backed by the active rubric."""
@@ -4041,6 +4041,7 @@ class DeepAgentsApp(App):
         self._status_bar.set_approval_mode(self._approval_mode.value)
         if self._approval_mode.value == "auto":
             self._notify_auto_mode_enabled_once()
+            self._notify_auto_classifier_active()
         elif self._approval_mode.value == "yolo":
             self._warn_yolo_active(timeout=10)
 
@@ -8222,6 +8223,7 @@ class DeepAgentsApp(App):
         if self._session_state:
             self._session_state.approval_mode = ApprovalMode.AUTO
         self._notify_auto_mode_enabled_once()
+        self._notify_auto_classifier_active()
         await self._auto_accept_pending_goal_rubric()
         return True
 
@@ -17968,14 +17970,7 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(target.value)
         if target is ApprovalMode.AUTO:
             self._notify_auto_mode_enabled_once()
-            if self._auto_classifier_model:
-                # A session reviewing with a non-default (often cheaper) model
-                # should never be invisible at the moment Auto turns on.
-                self.notify(
-                    f"Auto reviews actions with {self._auto_classifier_model}.",
-                    severity="information",
-                    markup=False,
-                )
+            self._notify_auto_classifier_active()
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
         elif target is ApprovalMode.YOLO:
@@ -17995,6 +17990,14 @@ class DeepAgentsApp(App):
         if self._auto_classifier_model:
             return self._auto_classifier_model
         return "the main agent model"
+
+    def _notify_auto_classifier_active(self) -> None:
+        """Disclose the effective authorization classifier on Auto activation."""
+        self.notify(
+            f"Auto reviews actions with {self._auto_classifier_model_label()}.",
+            severity="information",
+            markup=False,
+        )
 
     def _auto_classifier_context_value(self) -> str | None:
         """Return the per-run `classifier_model` value for the graph context.
@@ -18020,8 +18023,8 @@ class DeepAgentsApp(App):
             "  /auto model clear          Reuse the main agent model\n\n"
             "Auto reviews gated actions with a classifier model. It currently "
             f"uses {self._auto_classifier_model_label()}. A weaker model makes "
-            "that review weaker; unreviewable actions always fall back to your "
-            "approval."
+            "that review weaker; actions it cannot review are denied, and "
+            "repeated review failures fall back to your approval."
         )
 
     async def _handle_auto_command(self, command: str) -> None:
@@ -18115,8 +18118,9 @@ class DeepAgentsApp(App):
         The value rides on the per-run graph context, so it applies from the
         next turn without restarting the agent server. A spec that cannot be
         resolved here is rejected outright rather than staged, because a
-        classifier the server cannot build fails closed to manual approval on
-        every gated action.
+        classifier the server cannot build denies every action it is asked to
+        review — those deterministic policy could not already clear — and only
+        escalates to approval once failures repeat.
 
         Args:
             model_spec: `provider:model` spec, or `None` to reuse the main model.
@@ -18127,6 +18131,14 @@ class DeepAgentsApp(App):
         display: str | None = None
         if model_spec is not None:
             model_spec = model_spec.removeprefix(":")
+            if not model_spec:
+                await self._mount_message(
+                    ErrorMessage(
+                        "Auto classifier model must not be empty. Use `/auto model "
+                        "clear` to review with the main agent model."
+                    )
+                )
+                return
             parsed = ModelSpec.try_parse(model_spec)
             provider = parsed.provider if parsed else detect_provider(model_spec)
             model_name = parsed.model if parsed else model_spec
@@ -18172,7 +18184,8 @@ class DeepAgentsApp(App):
                     AppMessage(
                         f"{display} does not advertise structured output. Auto "
                         "asks the classifier for a structured verdict, so "
-                        "reviews may fail and fall back to your approval."
+                        "reviews may fail — those actions are denied, and "
+                        "repeated failures fall back to your approval."
                     )
                 )
         elif (

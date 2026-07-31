@@ -38,8 +38,9 @@ behavior. A `provider:model` value points the authorization classifier at a
 separate — typically faster and cheaper — model without changing the model that
 writes code. The classifier is a security control: a model that cannot be
 resolved (bad spec, missing credentials, uninstalled provider package) never
-falls back to the main model, it fails closed to human approval. Also settable
-via `[models].auto_classifier` in config.toml and `--auto-classifier-model`.
+falls back to the main model — reviewed actions are denied, and repeated
+failures escalate to your approval. Also settable via `[models].auto_classifier`
+in config.toml and `--auto-classifier-model`.
 """
 
 AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"

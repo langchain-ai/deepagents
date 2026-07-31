@@ -2,6 +2,25 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.51](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.50...deepagents-code==0.1.51) (2026-07-31)
+
+### Features
+
+- The status bar and usage view now show the running session cost. ([#5036](https://github.com/langchain-ai/deepagents/issues/5036))
+- Removed redundant `shell` and `web_search` prompt guidance. ([#5213](https://github.com/langchain-ai/deepagents/issues/5213))
+- After switching threads, Deep Agents now points back to the previous thread. ([#5172](https://github.com/langchain-ai/deepagents/issues/5172))
+- Leaving `/mcp` with pending toggles now prompts you to reconnect. ([#5211](https://github.com/langchain-ai/deepagents/issues/5211))
+- `dcode config get` now accepts configuration sections. ([#5134](https://github.com/langchain-ai/deepagents/issues/5134))
+
+### Fixes
+
+- Kept the `/goal` criteria prompt responsive. ([#5142](https://github.com/langchain-ai/deepagents/issues/5142))
+- Improved goal handling so underspecified objectives can be resolved from conversation context. ([#5201](https://github.com/langchain-ai/deepagents/issues/5201))
+- Released the turn when an interrupted worker never starts. ([#5196](https://github.com/langchain-ai/deepagents/issues/5196))
+- Hid timestamp footers together with their associated rows. ([#5167](https://github.com/langchain-ai/deepagents/issues/5167))
+- Fixed editable SDK detection by scanning and correlating SDK locations more accurately. ([#5199](https://github.com/langchain-ai/deepagents/issues/5199))
+- Improved `doctor` output to explain why it may not have a latest-version answer. ([#5209](https://github.com/langchain-ai/deepagents/issues/5209))
+
 ## [0.1.50](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.49...deepagents-code==0.1.50) (2026-07-30)
 
 ### Highlights

@@ -5,6 +5,8 @@ import os
 import re
 import subprocess
 import sys
+import time
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -18,23 +20,45 @@ import build_release_notes as brn
 
 PACKAGE_PATH = Path("libs/example")
 REPOSITORY = "langchain-ai/deepagents"
+COMMITTER_NAME = "Release Test"
+COMMITTER_EMAIL = "release-test@example.com"
+
+
+def _run_git(repo: Path, *args: str, stdin: bytes | None = None) -> bytes:
+    """Run git in *repo*, raising with git's own diagnosis when it fails.
+
+    `check=True` would raise a `CalledProcessError` whose message carries only
+    argv and the exit status, which turns an infrastructure failure into an
+    undebuggable report.
+    """
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        input=stdin,
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"git {' '.join(args)} failed (exit {result.returncode}):\n"
+            f"{result.stdout.decode(errors='replace')}\n"
+            f"{result.stderr.decode(errors='replace')}"
+        )
+    return result.stdout
 
 
 def _git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
+    return _run_git(repo, *args).decode().strip()
 
 
 def _init_repo(repo: Path) -> None:
     _git(repo, "init", "--initial-branch=main")
-    _git(repo, "config", "user.email", "release-test@example.com")
-    _git(repo, "config", "user.name", "Release Test")
+    _git(repo, "config", "user.email", COMMITTER_EMAIL)
+    _git(repo, "config", "user.name", COMMITTER_NAME)
     _git(repo, "config", "commit.gpgSign", "false")
+    # Background maintenance forked by `git commit` can hold the repository
+    # locks while the next command runs, failing it with a lock error.
+    _git(repo, "config", "gc.auto", "0")
+    _git(repo, "config", "maintenance.auto", "false")
 
 
 def _commit(repo: Path, path: Path, content: str, message: str) -> str:
@@ -43,6 +67,48 @@ def _commit(repo: Path, path: Path, content: str, message: str) -> str:
     target.write_text(content)
     _git(repo, "add", str(path))
     _git(repo, "commit", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _commit_many(repo: Path, entries: Sequence[tuple[Path, str, str]]) -> str:
+    """Append one commit per `(path, content, message)` entry to the current branch.
+
+    Every commit is written by a single `git fast-import` process. Looping over
+    `_commit` instead spawns three git processes per commit, which is slow for
+    the synthetic histories used to exercise truncation and gives every
+    iteration another chance to trip over a transient git failure.
+
+    Returns the SHA of the newest commit.
+    """
+    if not entries:
+        return _git(repo, "rev-parse", "HEAD")
+
+    branch = _git(repo, "symbolic-ref", "--short", "HEAD")
+    timestamp = int(time.time())
+    stream = bytearray()
+
+    def _emit_data(payload: str) -> None:
+        raw = payload.encode()
+        stream.extend(f"data {len(raw)}\n".encode())
+        stream.extend(raw)
+        stream.extend(b"\n")
+
+    for index, (path, content, message) in enumerate(entries):
+        stream.extend(f"commit refs/heads/{branch}\n".encode())
+        stream.extend(
+            f"committer {COMMITTER_NAME} <{COMMITTER_EMAIL}>"
+            f" {timestamp + index} +0000\n".encode()
+        )
+        _emit_data(message)
+        if index == 0:
+            stream.extend(f"from refs/heads/{branch}^0\n".encode())
+        stream.extend(f"M 100644 inline {path.as_posix()}\n".encode())
+        _emit_data(content)
+
+    _run_git(repo, "fast-import", "--quiet", stdin=bytes(stream))
+    # fast-import updates the ref only, so the index and worktree still describe
+    # the pre-import tip.
+    _git(repo, "reset", "--hard", branch)
     return _git(repo, "rev-parse", "HEAD")
 
 
@@ -153,6 +219,45 @@ def _release_please_header(version: str, previous: str) -> str:
         f"## [{version}](https://github.com/{REPOSITORY}/compare/"
         f"example=={previous}...example=={version}) (2026-07-27)"
     )
+
+
+# ── Test harness ─────────────────────────────────────────────────────────────
+
+
+class TestHistoryHelpers:
+    """The helpers every other test builds its fixtures with."""
+
+    def test_batched_commits_extend_the_current_branch(self, tmp_path: Path) -> None:
+        commits = _create_history(tmp_path)
+        tip = _commit_many(
+            tmp_path,
+            [
+                (
+                    PACKAGE_PATH / "module.py",
+                    f"VALUE = {index}\n",
+                    f"fix(example): {index}",
+                )
+                for index in range(3)
+            ],
+        )
+
+        assert tip == _git(tmp_path, "rev-parse", "HEAD")
+        assert _git(tmp_path, "log", "--format=%s", "-4").splitlines() == [
+            "fix(example): 2",
+            "fix(example): 1",
+            "fix(example): 0",
+            "hotfix(example): repair release",
+        ]
+        assert _git(tmp_path, "rev-parse", f"{tip}~3") == commits["hotfix"]
+        # A stale index would make later `_commit` calls stage the wrong content.
+        assert _git(tmp_path, "status", "--porcelain") == ""
+        assert (tmp_path / PACKAGE_PATH / "module.py").read_text() == "VALUE = 2\n"
+
+    def test_git_failures_carry_the_fatal_line(self, tmp_path: Path) -> None:
+        """An exit status alone cannot be debugged from a CI log."""
+        _init_repo(tmp_path)
+        with pytest.raises(AssertionError, match="fatal"):
+            _git(tmp_path, "rev-parse", "refs/heads/nope")
 
 
 # ── Version / prerelease detection ──────────────────────────────────────────
@@ -476,15 +581,18 @@ class TestGitLogGeneration:
         assert "&…" not in details
 
     def test_git_log_limits_large_history(self, tmp_path: Path) -> None:
-        commits = _create_history(tmp_path)
-        tip = commits["hotfix"]
-        for index in range(101):
-            tip = _commit(
-                tmp_path,
-                PACKAGE_PATH / "module.py",
-                f"VALUE = {index}\n",
-                f"fix(example): generated {index}",
-            )
+        _create_history(tmp_path)
+        tip = _commit_many(
+            tmp_path,
+            [
+                (
+                    PACKAGE_PATH / "module.py",
+                    f"VALUE = {index}\n",
+                    f"fix(example): generated {index}",
+                )
+                for index in range(101)
+            ],
+        )
 
         details = brn.generate_git_log(
             tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY,
@@ -505,14 +613,17 @@ class TestGitLogGeneration:
         _init_repo(tmp_path)
         _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
         _git(tmp_path, "tag", "example==1.0.0")
-        tip = ""
-        for index in range(max_commits):
-            tip = _commit(
-                tmp_path,
-                PACKAGE_PATH / "module.py",
-                f"V = {index + 1}\n",
-                f"fix(example): generated {index}",
-            )
+        tip = _commit_many(
+            tmp_path,
+            [
+                (
+                    PACKAGE_PATH / "module.py",
+                    f"V = {index + 1}\n",
+                    f"fix(example): generated {index}",
+                )
+                for index in range(max_commits)
+            ],
+        )
 
         details = brn.generate_git_log(
             tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY,
@@ -525,15 +636,18 @@ class TestGitLogGeneration:
         self, tmp_path: Path
     ) -> None:
         """The byte budget counts escaped bytes, so `&` costs 5, not 1."""
-        commits = _create_history(tmp_path)
-        tip = commits["hotfix"]
-        for index in range(30):
-            tip = _commit(
-                tmp_path,
-                PACKAGE_PATH / "module.py",
-                f"VALUE = {index}\n",
-                f"fix(example): {index} {'&' * 250}",
-            )
+        _create_history(tmp_path)
+        tip = _commit_many(
+            tmp_path,
+            [
+                (
+                    PACKAGE_PATH / "module.py",
+                    f"VALUE = {index}\n",
+                    f"fix(example): {index} {'&' * 250}",
+                )
+                for index in range(30)
+            ],
+        )
 
         details = brn.generate_git_log(
             tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY,
@@ -550,15 +664,18 @@ class TestGitLogGeneration:
     ) -> None:
         """Truncation can be driven by bytes even well under MAX_COMMITS."""
         monkeypatch.setattr(brn, "MAX_GIT_LOG_BYTES", 400)
-        commits = _create_history(tmp_path)
-        tip = commits["hotfix"]
-        for index in range(10):
-            tip = _commit(
-                tmp_path,
-                PACKAGE_PATH / "module.py",
-                f"VALUE = {index}\n",
-                f"fix(example): generated {index}",
-            )
+        _create_history(tmp_path)
+        tip = _commit_many(
+            tmp_path,
+            [
+                (
+                    PACKAGE_PATH / "module.py",
+                    f"VALUE = {index}\n",
+                    f"fix(example): generated {index}",
+                )
+                for index in range(10)
+            ],
+        )
 
         details = brn.generate_git_log(
             tmp_path, str(PACKAGE_PATH), "example==1.0.0", tip, REPOSITORY,
@@ -1650,15 +1767,17 @@ class TestContributorEdgeCases:
         _init_repo(tmp_path)
         _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
         _git(tmp_path, "tag", "example==1.0.0")
-        tip = ""
-        for index in range(count):
-            tip = _commit(
-                tmp_path,
-                PACKAGE_PATH / "module.py",
-                f"V = {index + 1}\n",
-                f"fix(example): generated {index}",
-            )
-        return tip
+        return _commit_many(
+            tmp_path,
+            [
+                (
+                    PACKAGE_PATH / "module.py",
+                    f"V = {index + 1}\n",
+                    f"fix(example): generated {index}",
+                )
+                for index in range(count)
+            ],
+        )
 
     def _collect(
         self, tmp_path: Path, tip: str, warnings: list[str]

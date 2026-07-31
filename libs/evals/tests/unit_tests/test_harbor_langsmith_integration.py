@@ -14,7 +14,13 @@ EVALS = ROOT / "libs" / "evals"
 def test_evals_uses_published_harbor_langsmith_dependency() -> None:
     pyproject = tomllib.loads((EVALS / "pyproject.toml").read_text())
 
-    assert "harbor[langsmith]>=0.16.1,<0.17.0" in pyproject["project"]["dependencies"]
+    deps = pyproject["project"]["dependencies"]
+    assert "harbor[langsmith]>=0.20.0,<0.21.0" in deps
+    # harbor-langsmith 0.3.0+ honors experiment_name (no job-id suffix); pin its
+    # floor explicitly since harbor's extra leaves it unconstrained (would resolve
+    # an older, still-suffixing release otherwise).
+    assert "harbor-langsmith>=0.3.0,<0.4.0" in deps
+    # Published packages only — no git override / uv source for harbor.
     assert "harbor" not in pyproject["tool"]["uv"]["sources"]
 
 
@@ -96,7 +102,8 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert '--n-attempts "$HARBOR_ROLLOUTS_PER_TASK"' in run_step
     # Results are written under a jobs dir the aggregate job later collects.
     assert "--jobs-dir harbor-jobs/" in run_step
-    # LangSmith is driven by the plugin, with dataset + experiment names passed to it.
+    # LangSmith is driven by harbor's stock plugin (harbor-langsmith >=0.3.0 honors
+    # experiment_name, so all shards of a leaf converge on one queryable experiment).
     assert "--plugin langsmith" in run_step
     assert '--plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET"' in run_step
     assert '--plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"' in run_step

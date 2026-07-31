@@ -2794,6 +2794,11 @@ class TestMiddlewareStackConformance:
         """
         from langchain.agents.middleware.types import AgentMiddleware
 
+        from deepagents_code.cost_tracking import CostTrackingMiddleware
+        from deepagents_code.goal_tools import GoalToolsMiddleware
+        from deepagents_code.reliable_rubric import ReliableRubricMiddleware
+        from deepagents_code.resume_state import ResumeStateMiddleware
+
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
         skills_dir = tmp_path / "skills"
@@ -2852,6 +2857,28 @@ class TestMiddlewareStackConformance:
             assert isinstance(mw, AgentMiddleware), (
                 f"{type(mw).__name__} does not inherit from AgentMiddleware"
             )
+
+        middleware_types = [type(middleware) for middleware in middleware_list]
+        assert middleware_types.count(CostTrackingMiddleware) == 1
+        assert (
+            middleware_types.index(ResumeStateMiddleware)
+            < middleware_types.index(CostTrackingMiddleware)
+            < middleware_types.index(GoalToolsMiddleware)
+        )
+        # `after_agent` hooks run in reverse list order, so cost tracking must
+        # stay *before* the rubric middleware. Reversed, the grading agent's
+        # spend lands in the next turn's checkpoint or is lost outright on a
+        # session's final turn. The two are registered ~460 lines apart in
+        # different functions, so nothing but this assertion pins the order.
+        assert middleware_types.index(CostTrackingMiddleware) < middleware_types.index(
+            ReliableRubricMiddleware
+        )
+        # The main agent owns the thread's cumulative cost; only nested
+        # instances opt out of writing it.
+        cost_middleware = next(
+            mw for mw in middleware_list if isinstance(mw, CostTrackingMiddleware)
+        )
+        assert cost_middleware._nested is False
 
 
 class TestEnableAskUser:
@@ -3516,18 +3543,22 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 isinstance(mw, ShellAllowListMiddleware) for mw in middleware
             ), f"Unexpected shell middleware on subagent {name!r}"
 
-    def test_subagent_middleware_combines_shell_and_configurable_model(
-        self, tmp_path: Path
+    def test_subagent_middleware_combines_shell_configurable_model_and_cost(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Restrictive shell + implicit model should yield both middlewares.
+        """Restrictive shell + implicit model should yield shell, model, and cost.
 
-        Explicitly pinned subagents keep shell restriction but must not gain
-        `ConfigurableModelMiddleware`, which would let a runtime `/model` switch
-        clobber the pinned model.
+        Explicitly pinned subagents keep shell restriction and cost tracking but
+        must not gain `ConfigurableModelMiddleware`, which would let a runtime
+        `/model` switch clobber the pinned model.
         """
+        from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.agent import ShellAllowListMiddleware
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
+        from deepagents_code.cost_tracking import CostTrackingMiddleware
+        from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
+        monkeypatch.setenv(EXPERIMENTAL, "1")
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
@@ -3585,8 +3616,18 @@ class TestCreateCliAgentShellMiddlewareWiring:
             ]
             assert middleware_types == [
                 ConfigurableModelMiddleware,
+                CostTrackingMiddleware,
                 ShellAllowListMiddleware,
+                ServerHooksMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
+            assert subagents_by_name[name]["middleware"][-1]._emit_stop is False
+            # Nested spend is priced once by the main agent, so a subagent's
+            # instance must not also write the shared cost channel.
+            assert all(
+                mw._nested
+                for mw in subagents_by_name[name]["middleware"]
+                if isinstance(mw, CostTrackingMiddleware)
+            ), f"Subagent {name!r} must install cost tracking in nested mode"
 
         pinned = subagents_by_name["pinned"]
         assert pinned["model"] == "anthropic:claude-haiku-4-5"
@@ -3594,9 +3635,20 @@ class TestCreateCliAgentShellMiddlewareWiring:
         assert any(
             isinstance(mw, ShellAllowListMiddleware) for mw in pinned_middleware
         ), "Pinned subagent should retain shell middleware"
+        assert any(
+            isinstance(mw, CostTrackingMiddleware) and mw._nested
+            for mw in pinned_middleware
+        ), "Pinned subagent should retain nested cost tracking"
         assert not any(
             isinstance(mw, ConfigurableModelMiddleware) for mw in pinned_middleware
         ), "Pinned subagent must not gain configurable model middleware"
+        assert any(isinstance(mw, ServerHooksMiddleware) for mw in pinned_middleware), (
+            "Pinned subagent should wrap tools with server hooks"
+        )
+        hooks_mw = next(
+            mw for mw in pinned_middleware if isinstance(mw, ServerHooksMiddleware)
+        )
+        assert hooks_mw._emit_stop is False
 
     def test_subagents_get_managed_memory_guard_when_memory_enabled(
         self, tmp_path: Path
@@ -4831,6 +4883,53 @@ class TestCreateCliAgentInterpreterWiring:
         assert middleware.index(auto_middleware) < middleware.index(
             compaction_middleware
         )
+
+    @pytest.mark.parametrize("auto_mode_enabled", [True, False])
+    def test_single_hitl_slot_precedes_server_hooks(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        auto_mode_enabled: bool,
+    ) -> None:
+        """One HITL middleware is installed, ahead of the server hook middleware.
+
+        `AutoModeHITLMiddleware` reports the stock `HumanInTheLoopMiddleware`
+        name, so pairing it with the standalone approval middleware would trip
+        `create_agent`'s duplicate-name assertion. `ServerHooksMiddleware` must
+        stay behind whichever one is installed so its `after_model` `PreToolUse`
+        pass resolves before approval routing.
+        """
+        from deepagents_code._env_vars import EXPERIMENTAL
+        from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
+
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        middleware = self._capture_middleware(
+            tmp_path, auto_mode_enabled=auto_mode_enabled
+        )
+
+        hitl = [item for item in middleware if item.name == "HumanInTheLoopMiddleware"]
+        hooks = next(
+            item for item in middleware if isinstance(item, ServerHooksMiddleware)
+        )
+
+        assert len(hitl) == 1
+        assert middleware.index(hitl[0]) < middleware.index(hooks)
+
+    def test_auto_mode_agent_builds(self, tmp_path: Path) -> None:
+        """Auto mode compiles a real graph rather than aborting on duplicates."""
+        agent, _backend = create_cli_agent(
+            model=_make_fake_chat_model(),
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+            auto_mode_enabled=True,
+        )
+
+        assert agent is not None
 
     def test_auto_mode_omitted_outside_interactive(self, tmp_path: Path) -> None:
         """Auto is refused (no middleware) in a non-interactive session."""

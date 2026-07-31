@@ -20,18 +20,25 @@ import re
 import tempfile
 import threading
 import unicodedata
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+if os.name != "nt":
+    import fcntl
+else:
+    import msvcrt
+
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
+    BaseMessageChunk,
     HumanMessage,
     SystemMessage,
     ToolMessage,
+    message_chunk_to_message,
 )
 from pydantic import BaseModel, ConfigDict
 
@@ -39,9 +46,23 @@ from deepagents_code.config_manifest import _is_secret_env
 from deepagents_code.json_types import JSON_VALUE_ADAPTER, JsonValue
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Mapping, Sequence
+    from typing import Protocol
+
+    class _TranscriptRuntime(Protocol):
+        def append_messages(
+            self,
+            thread_id: str,
+            messages: Sequence[BaseMessage],
+            *,
+            agent_id: str | None = None,
+        ) -> None: ...
+
 
 logger = logging.getLogger(__name__)
+
+SUBAGENT_TRANSCRIPT_ID_METADATA_KEY = "dcode_subagent_id"
+_INTERNAL_STREAM_SOURCES = frozenset({"summarization", "auto_mode_classifier"})
 
 TRANSCRIPT_SCHEMA_VERSION = 1
 DEFAULT_RETENTION_REVISIONS = 20
@@ -120,6 +141,7 @@ class TranscriptHandle:
 @dataclass
 class _TranscriptBuffer:
     records: list[TranscriptRecord] = field(default_factory=list)
+    record_ids: set[str] = field(default_factory=set)
     dirty: bool = False
     revision: str = _EMPTY_REVISION
 
@@ -205,7 +227,13 @@ class TranscriptStore:
                 )
                 if record is None:
                     continue
+                if (
+                    record.message_id is not None
+                    and record.record_id in buffer.record_ids
+                ):
+                    continue
                 buffer.records.append(record)
+                buffer.record_ids.add(record.record_id)
                 buffer.dirty = True
 
     def materialize(
@@ -215,6 +243,11 @@ class TranscriptStore:
         agent_id: str | None = None,
     ) -> TranscriptHandle:
         """Flush pending records and return the client-readable path.
+
+        Materialization rewrites the whole per-thread JSONL file, so it runs
+        under a cross-process advisory lock and re-reads the on-disk records
+        first, merging in anything another dcode process appended since this
+        process last loaded the file.
 
         Args:
             thread_id: Conversation thread identifier.
@@ -233,15 +266,17 @@ class TranscriptStore:
             _ensure_private_directories(self.root, path.parent)
             if path.is_file() and os.name != "nt":
                 path.chmod(_FILE_MODE)
-            if buffer.dirty or not path.is_file():
-                revision = _write_transcript(
-                    self.root,
-                    path,
-                    buffer.records,
-                    self.retention_revisions,
-                )
-                buffer.revision = revision
-                buffer.dirty = False
+            with _file_lock(path.with_suffix(path.suffix + ".lock")):
+                _merge_disk_records(path, buffer)
+                if buffer.dirty or not path.is_file():
+                    revision = _write_transcript(
+                        self.root,
+                        path,
+                        buffer.records,
+                        self.retention_revisions,
+                    )
+                    buffer.revision = revision
+                    buffer.dirty = False
             return TranscriptHandle(
                 path=path,
                 revision=buffer.revision,
@@ -277,10 +312,82 @@ class TranscriptStore:
             )
             if path.is_file():
                 buffer.records, valid = _read_transcript(path)
+                buffer.record_ids = {record.record_id for record in buffer.records}
                 buffer.revision = _revision_for_records(buffer.records)
                 buffer.dirty = not valid
             self._buffers[key] = buffer
         return buffer
+
+
+@dataclass(slots=True)
+class TranscriptRecorder:
+    """Collect completed stream messages into a Hooks transcript runtime."""
+
+    runtime: _TranscriptRuntime
+    thread_id: str
+    _chunks: dict[tuple[str | None, str], BaseMessageChunk] = field(
+        default_factory=dict
+    )
+
+    def record(
+        self,
+        message: object,
+        metadata: Mapping[str, object] | None,
+        *,
+        main_agent: bool,
+    ) -> None:
+        """Record one streamed message when its transcript identity is stable.
+
+        Args:
+            message: Streamed LangChain message or chunk.
+            metadata: Stream metadata carrying optional subagent identity.
+            main_agent: Whether the message belongs to the root graph.
+        """
+        if (
+            metadata is not None
+            and metadata.get("lc_source") in _INTERNAL_STREAM_SOURCES
+        ):
+            return
+        agent_id = None if main_agent else _stream_agent_id(metadata)
+        if not main_agent and agent_id is None:
+            return
+        if isinstance(message, BaseMessageChunk):
+            key = (agent_id, message.id or type(message).__name__)
+            previous = self._chunks.get(key)
+            combined = message if previous is None else previous + message
+            self._chunks[key] = combined
+            if getattr(message, "chunk_position", None) != "last":
+                return
+            self._chunks.pop(key, None)
+            self._append(message_chunk_to_message(combined), agent_id=agent_id)
+            return
+        if isinstance(message, BaseMessage):
+            self._append(message, agent_id=agent_id)
+
+    def append(self, messages: Sequence[BaseMessage]) -> None:
+        """Append checkpoint or input messages to the root transcript."""
+        append_messages = getattr(self.runtime, "append_messages", None)
+        if callable(append_messages):
+            append_messages(self.thread_id, messages)
+
+    def _append(self, message: BaseMessage, *, agent_id: str | None) -> None:
+        append_messages = getattr(self.runtime, "append_messages", None)
+        if not callable(append_messages):
+            return
+        try:
+            append_messages(self.thread_id, [message], agent_id=agent_id)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Skipping invalid streamed transcript message",
+                exc_info=True,
+            )
+
+
+def _stream_agent_id(metadata: Mapping[str, object] | None) -> str | None:
+    if metadata is None:
+        return None
+    value = metadata.get(SUBAGENT_TRANSCRIPT_ID_METADATA_KEY)
+    return value if isinstance(value, str) and value else None
 
 
 def _record_from_message(
@@ -372,6 +479,61 @@ def _redact_url(value: str) -> str:
     query = urlencode([(key, "[redacted]") for key, _value in query_items])
     fragment = "[redacted]" if parsed.fragment else ""
     return urlunsplit((parsed.scheme, netloc, path, query, fragment))
+
+
+@contextmanager
+def _file_lock(lock_path: Path) -> Iterator[None]:
+    """Hold an advisory cross-process lock on `lock_path`.
+
+    Materialization rewrites the whole transcript file, so concurrent dcode
+    processes resuming the same thread must serialize their read-merge-write
+    cycle on something stronger than the in-process `threading.RLock`.
+    """
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, _FILE_MODE)
+    try:
+        if os.name != "nt":
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        try:
+            yield
+        finally:
+            if os.name != "nt":
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            else:
+                with suppress(OSError):
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    finally:
+        os.close(fd)
+
+
+def _merge_disk_records(path: Path, buffer: _TranscriptBuffer) -> None:
+    """Fold on-disk records missing from `buffer` back into it.
+
+    Another process may have materialized the shared transcript since this
+    process last loaded it; re-reading under the file lock prevents the next
+    rewrite from silently dropping that process's records. Buffer records win
+    ordering ties; disk-only records keep their relative order appended after.
+    """
+    if not path.is_file():
+        return
+    disk_records, valid = _read_transcript(path)
+    if not valid:
+        return
+    buffer_ids = {record.record_id for record in buffer.records}
+    if all(record.record_id in buffer_ids for record in disk_records):
+        return
+    merged = list(buffer.records)
+    merged_ids = set(buffer_ids)
+    for record in disk_records:
+        if record.record_id in merged_ids:
+            continue
+        merged.append(record.model_copy(update={"sequence": len(merged)}))
+        merged_ids.add(record.record_id)
+    buffer.records = merged
+    buffer.record_ids = merged_ids
+    buffer.dirty = True
 
 
 def _write_transcript(

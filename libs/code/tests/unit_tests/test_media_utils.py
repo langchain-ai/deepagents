@@ -20,8 +20,27 @@ from deepagents_code.media_utils import (
     get_clipboard_image,
     get_image_from_path,
     get_video_from_path,
+    is_media_path,
     strip_media_placeholders,
 )
+
+
+class TestIsMediaPath:
+    """Tests for the extension-only media classifier."""
+
+    def test_image_extension_is_media(self) -> None:
+        """Image extensions are recognized regardless of case."""
+        assert is_media_path(Path("/tmp/a.png"))
+        assert is_media_path(Path("/tmp/a.JPG"))
+
+    def test_video_extension_is_media(self) -> None:
+        """Video extensions are recognized as media."""
+        assert is_media_path(Path("/tmp/clip.mp4"))
+
+    def test_non_media_extension_is_not_media(self) -> None:
+        """Text and other files are not treated as media."""
+        assert not is_media_path(Path("/tmp/notes.txt"))
+        assert not is_media_path(Path("/tmp/no_extension"))
 
 
 class TestImageData:

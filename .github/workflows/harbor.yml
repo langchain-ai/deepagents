@@ -257,7 +257,7 @@ jobs:
 
       - name: "🐍 Compute Harbor matrix"
         id: set-matrix
-        run: python .github/scripts/models.py harbor
+        run: python .github/scripts/evals/models.py harbor
         env:
           HARBOR_MODELS: ${{ inputs.models_override || inputs.models || 'fireworks:accounts/fireworks/models/glm-5p2' }}
 
@@ -277,7 +277,7 @@ jobs:
           CONCURRENCY: ${{ inputs.concurrency || '4' }}
           ROLLOUTS: ${{ inputs.rollouts_per_task }}
           MODEL_MATRIX: ${{ steps.set-matrix.outputs.matrix }}
-        run: python .github/scripts/validate_harbor_limits.py
+        run: python .github/scripts/evals/validate_harbor_limits.py
 
       - name: "🎯 Extract single model"
         id: extract-model

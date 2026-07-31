@@ -1,6 +1,6 @@
 r"""Runtime patches over Textual internals, imported for side effect.
 
-This module hosts three independent best-effort patches over private Textual
+This module hosts four independent best-effort patches over private Textual
 APIs. Each guards its own import/assignment and degrades to stock Textual
 behavior (logging a warning) if the targeted internals move, so they have
 separate lifecycles — do not delete the whole file when only one lands
@@ -41,6 +41,15 @@ upstream.
     a click chain; these patches narrow a double-click (and double-click
     drag) to word boundaries. No upstream issue tracks this yet, so it has
     no removal criterion — it stays until Textual grows native word select.
+
+4. Detached-widget hit filtering. The compositor keeps reporting a widget as
+    visible for a few event-loop iterations after it leaves the DOM, which
+    `Markdown.update` (and therefore the `MarkdownStream` that drives every
+    streaming assistant message) does constantly. `Screen._forward_event`
+    starts a text selection from `content_widget.parent`, which is `None` for
+    such a widget, so a mouse press landing on freshly replaced markdown
+    crashes the app with `AttributeError: 'NoneType' object has no attribute
+    'region'`. Tracked in Textualize/textual#6643; remove when that lands.
 
 Imported for side effect from `app.py` before any `App()` is created.
 """
@@ -417,6 +426,49 @@ else:
     except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
         logger.warning(
             "Textual word-selection patch assignment rejected (textual %s): %s",
+            _textual_version,
+            exc,
+        )
+
+
+try:
+    from textual.screen import Screen as _HitScreen
+
+    _original_get_widget_and_offset_at = _HitScreen.get_widget_and_offset_at
+except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
+    logger.warning(
+        "Textual detached-hit patch skipped (textual %s): %s",
+        _textual_version,
+        exc,
+    )
+else:
+
+    def _get_widget_and_offset_at_attached(
+        self: Screen,
+        x: int,
+        y: int,
+    ) -> tuple[Widget | None, Offset | None]:
+        """Ignore compositor hits on widgets that already left the DOM.
+
+        Returns:
+            The stock result, or `(None, None)` when the hit widget is
+            detached, which sends Textual down its existing "nothing
+            selectable here" branch instead of dereferencing a `None` parent.
+        """
+        widget, offset = _original_get_widget_and_offset_at(self, x, y)
+        if (
+            widget is not None
+            and not isinstance(widget, _HitScreen)
+            and (widget.parent is None or not widget.is_attached)
+        ):
+            return None, None
+        return widget, offset
+
+    try:
+        _HitScreen.get_widget_and_offset_at = _get_widget_and_offset_at_attached  # ty: ignore[invalid-assignment]
+    except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "Textual detached-hit patch assignment rejected (textual %s): %s",
             _textual_version,
             exc,
         )

@@ -20,7 +20,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 
 from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents._tools import _apply_tool_description_overrides, _tool_name
-from deepagents._version import __version__
+from deepagents._version import __version__, _lc_version, _with_editable_local_version
 from deepagents.backends import StateBackend
 from deepagents.graph import (
     _REQUIRED_MIDDLEWARE_CLASSES,
@@ -70,13 +70,40 @@ def _make_model(attrs: dict[str, Any]) -> MagicMock:
 class TestCreateDeepAgentMetadata:
     """Tests for metadata on the compiled graph."""
 
-    def test_versions_metadata_contains_sdk_version(self) -> None:
-        """`create_deep_agent` should attach SDK version in metadata.lc_versions."""
+    def teardown_method(self) -> None:
+        """Drop any version cached under a patched `_is_editable_install`."""
+        _lc_version.cache_clear()
+
+    def test_versions_metadata_reports_release_for_wheel_install(self) -> None:
+        """A published install reports the bare release version."""
         model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
-        agent = create_deep_agent(model=model)
+        _lc_version.cache_clear()
+        with patch("deepagents._version._is_editable_install", return_value=False):
+            agent = create_deep_agent(model=model)
         assert agent.config is not None
-        versions = agent.config["metadata"]["lc_versions"]
-        assert versions["deepagents"] == __version__
+        assert agent.config["metadata"]["lc_versions"]["deepagents"] == __version__
+
+    def test_versions_metadata_marks_editable_installs(self) -> None:
+        """An editable install reports an `editable` PEP 440 local segment."""
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        _lc_version.cache_clear()
+        with patch("deepagents._version._is_editable_install", return_value=True):
+            agent = create_deep_agent(model=model)
+        assert agent.config is not None
+        assert agent.config["metadata"]["lc_versions"]["deepagents"] == (_with_editable_local_version(__version__))
+
+    def test_versions_metadata_uses_lc_version(self) -> None:
+        """`create_deep_agent` must forward `_lc_version()` rather than `__version__`.
+
+        This is the only test pinning that wiring; without it the call site could
+        revert to the bare constant and the editable marker would vanish.
+        """
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+        sentinel = "1.2.3+sentinel"
+        with patch("deepagents.graph._lc_version", return_value=sentinel):
+            agent = create_deep_agent(model=model)
+        assert agent.config is not None
+        assert agent.config["metadata"]["lc_versions"]["deepagents"] == sentinel
 
     def test_ls_integration_metadata_preserved(self) -> None:
         """`ls_integration` should still be present alongside versions."""

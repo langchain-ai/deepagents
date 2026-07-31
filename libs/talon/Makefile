@@ -6,12 +6,13 @@
 UV_FROZEN = true
 
 TEST_FILE ?= tests/
+COV_ARGS ?= --cov=deepagents_talon --cov-report=term-missing
 PYTEST_EXTRA ?=
 
 test: ## Run unit tests
 test tests:
 	uv run --group test pytest --disable-socket --allow-unix-socket $(PYTEST_EXTRA) $(TEST_FILE) \
-		--timeout 10 --cov=deepagents_talon --cov-report=term-missing
+		--timeout 10 $(COV_ARGS)
 
 test_watch: ## Run tests in watch mode
 	uv run --group test ptw . -- $(TEST_FILE)

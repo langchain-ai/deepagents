@@ -25,10 +25,13 @@ from pydantic import Field
 
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
+    ASK_USER_CANCELLED_ANSWER,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
     AskUserAuthorizationReceipt,
     AskUserRequest,
     Question,
+    format_ask_user_error_answer,
+    format_ask_user_transcript,
 )
 
 logger = logging.getLogger(__name__)
@@ -150,7 +153,9 @@ def _parse_answers(
 
     Supports explicit status signaling from the adapter:
 
-    - `answered` (default): consume provided `answers`
+    - `answered` (default): consume provided `answers`. An answer count that does
+      not match `questions` is rejected as `error` rather than padded or
+      truncated, since either would misattribute answers to questions.
     - `cancelled`: synthesize `(cancelled)` answers
     - `error`: synthesize `(error: ...)` answers
 
@@ -165,10 +170,19 @@ def _parse_answers(
         turn_id: Trusted runtime user-turn identity.
 
     Returns:
-        `Command` containing a formatted `ToolMessage` with Q&A pairs.
+        `Command` containing a formatted `ToolMessage` with Q&A pairs, carrying an
+            explicit `status` — `"error"` for a failed prompt, `"success"` for an
+            answered or cancelled one. Consumers depend on that field; see the
+            comment at the `ToolMessage` construction below.
     """
+    # Untrusted: holds whatever `status` the resume payload carried until the
+    # branches below normalize it to one of answered/cancelled/error.
     status: str = "answered"
-    error_text: str | None = None
+    # Detail for a defect found here while trusting the payload, kept apart from
+    # `client_error_text` so the two cannot clobber each other in either order.
+    local_error_text: str | None = None
+    # Detail supplied by a caller that declared the failure itself.
+    client_error_text: str | None = None
     answers_are_strings = False
     answers: list[str]
     if not isinstance(response, dict):
@@ -179,12 +193,20 @@ def _parse_answers(
         )
         answers = []
         status = "error"
-        error_text = "invalid ask_user response payload"
+        local_error_text = "invalid ask_user response payload"
     else:
         response_dict = cast("dict[str, Any]", response)
         response_status = response_dict.get("status")
         if isinstance(response_status, str):
             status = response_status
+
+        if status == "error":
+            # Read before local validation can flip `status` to "error" itself:
+            # a payload claiming "answered" may carry a stale `error` field, and
+            # that must not end up describing a failure detected here.
+            response_error = response_dict.get("error")
+            if isinstance(response_error, str) and response_error:
+                client_error_text = response_error
 
         if "answers" not in response_dict:
             if status == "answered":
@@ -194,7 +216,7 @@ def _parse_answers(
                 )
                 answers = []
                 status = "error"
-                error_text = "missing ask_user answers payload"
+                local_error_text = "missing ask_user answers payload"
             else:
                 answers = []
         else:
@@ -203,6 +225,26 @@ def _parse_answers(
                 answers_are_strings = all(
                     isinstance(answer, str) for answer in raw_answers
                 )
+                if not answers_are_strings:
+                    # Coerced rather than rejected so the model still sees
+                    # something for each question, but logged: the `str()` of a
+                    # non-string element is presented to the model as the user's
+                    # own words, and it silently withholds the authorization
+                    # receipt below (which requires `answers_are_strings`).
+                    logger.warning(
+                        "ask_user received non-string answer element(s) (%s); "
+                        "coercing with str() and withholding the authorization "
+                        "receipt",
+                        ", ".join(
+                            sorted(
+                                {
+                                    type(answer).__name__
+                                    for answer in raw_answers
+                                    if not isinstance(answer, str)
+                                }
+                            )
+                        ),
+                    )
                 answers = [str(answer) for answer in raw_answers]
             else:
                 logger.error(
@@ -212,33 +254,47 @@ def _parse_answers(
                 )
                 answers = []
                 status = "error"
-                error_text = "invalid ask_user answers payload"
+                local_error_text = "invalid ask_user answers payload"
 
-        if status == "error":
-            response_error = response_dict.get("error")
-            if isinstance(response_error, str) and response_error:
-                error_text = response_error
-        elif status == "cancelled":
-            answers = ["(cancelled)" for _ in questions]
-        elif status == "answered":
-            if len(answers) != len(questions):
-                logger.warning(
-                    "ask_user answer count mismatch: expected %d, got %d",
-                    len(questions),
-                    len(answers),
+        match status:
+            case "cancelled":
+                answers = [ASK_USER_CANCELLED_ANSWER for _ in questions]
+            case "answered":
+                if len(answers) != len(questions):
+                    # Treated as a failed prompt, not a partial one. A short list
+                    # silently re-attributes every answer after the gap to the
+                    # wrong question, and a long one drops the extras — either way
+                    # the payload is untrustworthy, and a `"success"` transcript
+                    # would hand the model a confident wrong Q->A pairing.
+                    logger.error(
+                        "ask_user answer count mismatch: expected %d, got %d; "
+                        "returning explicit error answers",
+                        len(questions),
+                        len(answers),
+                    )
+                    status = "error"
+                    local_error_text = (
+                        f"ask_user answer count mismatch (expected "
+                        f"{len(questions)}, got {len(answers)})"
+                    )
+            case "error":
+                # Already normalized above; the detail is resolved below.
+                pass
+            case _:
+                logger.error(
+                    "ask_user received unknown status %r; returning explicit "
+                    "error answers",
+                    status,
                 )
-        else:
-            logger.error(
-                "ask_user received unknown status %r; returning explicit error answers",
-                status,
-            )
-            answers = []
-            status = "error"
-            error_text = "invalid ask_user response status"
+                answers = []
+                status = "error"
+                local_error_text = "invalid ask_user response status"
 
     if status == "error":
-        detail = error_text or "ask_user interaction failed"
-        answers = [f"(error: {detail})" for _ in questions]
+        # A caller that declared the failure knows the root cause; a detail
+        # derived here describes a payload defect found while trusting it.
+        detail = client_error_text or local_error_text or "ask_user interaction failed"
+        answers = [format_ask_user_error_answer(detail) for _ in questions]
 
     additional_kwargs: dict[str, object] = {}
     if (
@@ -260,11 +316,7 @@ def _parse_answers(
         )
         additional_kwargs[ASK_USER_AUTHORIZATION_METADATA_KEY] = receipt
 
-    formatted_answers = []
-    for i, question in enumerate(questions):
-        answer = answers[i] if i < len(answers) else "(no answer)"
-        formatted_answers.append(f"Q: {question['question']}\nA: {answer}")
-    result_text = "\n\n".join(formatted_answers)
+    result_text = format_ask_user_transcript(questions, answers)
     return Command(
         update={
             "messages": [
@@ -273,6 +325,20 @@ def _parse_answers(
                     name="ask_user",
                     tool_call_id=tool_call_id,
                     additional_kwargs=additional_kwargs,
+                    # Consumers, so a failed prompt must not be left at the
+                    # `"success"` default:
+                    #   - `normalize_tool_status`, on both the live TUI stream and
+                    #     the headless surface (`client.non_interactive`);
+                    #   - the `case "error"` arm of `_restore_deferred_state`, on
+                    #     reload;
+                    #   - `auto_mode`, which refuses to mint a trusted
+                    #     authorization receipt unless this reads `"success"` —
+                    #     the consumer with real consequences.
+                    # A cancel stays `"success"` — it is a user choice, not a tool
+                    # failure — and is safe for that last consumer because the
+                    # receipt above requires `status == "answered"`, so a cancelled
+                    # prompt carries none to trust.
+                    status="error" if status == "error" else "success",
                 )
             ],
         }

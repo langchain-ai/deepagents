@@ -60,6 +60,34 @@ def test_store_backend_read_surfaces_pagination_metadata():
     assert result.next_offset == 3
 
 
+@pytest.mark.parametrize(("offset", "limit"), [(0, 0), (0, -3), (-1, 0)])
+def test_store_backend_read_non_positive_limit_returns_empty_read(offset: int, limit: int):
+    """`StoreBackend.read` inherits the shared clamp rather than raising."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/notes.txt", "one\ntwo\nthree")
+
+    result = be.read("/notes.txt", offset=offset, limit=limit)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+    assert result.start_line is None
+
+
+def test_store_backend_read_negative_offset_starts_at_first_line():
+    """A negative offset is clamped to the start of the file instead of erroring."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/notes.txt", "one\ntwo\nthree")
+
+    result = be.read("/notes.txt", offset=-1, limit=2)
+
+    assert result.error is None
+    assert result.start_line == 1
+    assert result.end_line == 2
+
+
 def test_store_backend_reads_mkv_as_binary_without_slicing():
     """`.mkv` reads bypass text line-slicing so binary bytes are returned intact.
 

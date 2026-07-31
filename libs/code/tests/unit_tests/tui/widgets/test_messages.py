@@ -1,8 +1,10 @@
 """Unit tests for message widgets markup safety."""
 
 import asyncio
+import logging
 from time import time
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,6 +19,7 @@ from textual.content import Content
 from textual.widgets import Markdown, Static
 
 from deepagents_code import theme
+from deepagents_code._ask_user_types import ASK_USER_ANSWERED_SUMMARY
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import (
@@ -205,16 +208,16 @@ class TestMutedRichMarkdown:
     )
 
     @staticmethod
-    def _render(renderable: object) -> str:
+    def _render(renderable: object, *, width: int = 80, color: bool = True) -> str:
         import io
 
         from rich.console import Console
 
         console = Console(
             file=io.StringIO(),
-            force_terminal=True,
-            color_system="truecolor",
-            width=80,
+            force_terminal=color,
+            color_system="truecolor" if color else None,
+            width=width,
             legacy_windows=False,
         )
         console.print(renderable)
@@ -239,6 +242,21 @@ class TestMutedRichMarkdown:
         # plain cells should be dim ("2m"), and both must be present.
         assert "\x1b[1;2m" in muted
         assert "\x1b[2m" in muted
+
+    def test_folds_long_table_cells_instead_of_eliding(self) -> None:
+        """Narrow Markdown tables must retain every character in their cells."""
+        source = (
+            "| Tool | Description |\n| --- | --- |\n| a_very_long_tool_name | desc |\n"
+        )
+        # Rendered without color: the name is reassembled from the fragments the
+        # fold leaves on consecutive lines, and interleaved ANSI style codes
+        # would sit between them and break the substring.
+        rendered = self._render(_MutedRichMarkdown(source), width=30, color=False)
+
+        assert "…" not in rendered
+        # The Description cell shares the fold's first line, so drop it before
+        # rejoining the Tool column's fragments.
+        assert "a_very_long_tool_name" in "".join(rendered.replace("desc", "").split())
 
     def test_render_failure_falls_back_to_plain_source(self) -> None:
         """A crash inside Rich markdown rendering must not escape.
@@ -902,6 +920,111 @@ class TestToolCallMessageTerminalStateGuards:
             app.msg.set_error("boom")
             await pilot.pause()
             assert app.msg._status == "skipped"
+
+
+class TestToolCallMessageDeferredSuccess:
+    """A row awaiting a richer result must survive the teardown sweeps.
+
+    An answered `ask_user` stays tracked so its streamed `ToolMessage` can settle
+    it with the full transcript. Every teardown sweep terminates tracked rows as
+    failures, so without `defer_success` an answered question renders as rejected
+    or as an agent error.
+    """
+
+    async def test_set_rejected_settles_deferred_success_instead(self) -> None:
+        """A co-occurring reject must not overwrite an earned success."""
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
+            app.msg.set_rejected()
+            await pilot.pause()
+
+            assert app.msg._status == "success"
+            assert app.msg._output == "User answered"
+
+    async def test_set_error_settles_deferred_success_instead(self) -> None:
+        """A generic teardown error must not overwrite an earned success."""
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
+            app.msg.set_error("Agent error before tool result")
+            await pilot.pause()
+
+            assert app.msg._status == "success"
+            assert app.msg._output == "User answered"
+
+    async def test_cleared_deferred_success_lets_a_real_error_land(self) -> None:
+        """The authoritative result wins, including when it is an error.
+
+        The `ToolMessage` path clears the deferral before settling the row, so a
+        genuine tool failure (a mismatched answer count, whose transcript is all
+        `(error: ...)` placeholders) still renders as an error.
+        """
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
+            app.msg.clear_deferred_success()
+            app.msg.set_error("Q: Name?\nA: (error: count mismatch)")
+            await pilot.pause()
+
+            assert app.msg._status == "error"
+            assert app.msg.deferred_success_output is None
+
+    async def test_settle_reports_whether_it_acted(self) -> None:
+        """Sweeps rely on the return value to know if they must record a state."""
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.msg.settle_deferred_success() is False
+
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
+            assert app.msg.settle_deferred_success() is True
+            # Not cleared: a caller may dispatch terminal hooks on either side of
+            # the widget mutation, and those hooks read this back to report the
+            # success rather than a fabricated failure.
+            assert app.msg.deferred_success_output == "User answered"
+            # Settled, though — so the row is no longer *awaiting* a result.
+            assert app.msg.is_awaiting_deferred_result is False
+
+    async def test_awaiting_flag_tracks_the_deferral_lifecycle(self) -> None:
+        """`is_awaiting_deferred_result` is the PENDING half of the deferral."""
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.msg.is_awaiting_deferred_result is False
+
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
+            assert app.msg.is_awaiting_deferred_result is True
+
+            app.msg.clear_deferred_success()
+            assert app.msg.is_awaiting_deferred_result is False
+            assert app.msg.deferred_success_output is None
+
+    async def test_settled_row_is_not_immune_to_a_later_error(self) -> None:
+        """The fallback redirect fires once; it is not a permanent latch.
+
+        `settle_deferred_success` keeps the recorded output so terminal hooks can
+        read it back, so a redirect keyed on that value alone would silently
+        swallow every later `set_error` on the row for the rest of the session.
+        Gating on *awaiting* instead means the fallback protects the row once and
+        a subsequent genuine failure still renders.
+        """
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
+            app.msg.set_error("Agent error before tool result")
+            await pilot.pause()
+            assert app.msg._status == "success"
+
+            app.msg.set_error("something genuinely broke later")
+            await pilot.pause()
+
+            assert app.msg._status == "error"
+            assert app.msg._output == "something genuinely broke later"
 
 
 class TestToolCallMessageStatusTint:
@@ -1964,6 +2087,374 @@ class TestToolCallMessageExpandHint:
             await pilot.pause()
             event.stop.assert_called_once()
             assert app.msg._expanded is True
+
+
+class TestToolCallMessageAskUserOutput:
+    """`ask_user` rows summarize the answer and expand to the full transcript."""
+
+    _TRANSCRIPT = "Q: What is your name?\nA: Alice\n\nQ: Favorite color?\nA: blue"
+    _ARGS: ClassVar[dict[str, list[dict[str, str]]]] = {
+        "questions": [
+            {"question": "What is your name?", "type": "text"},
+            {"question": "Favorite color?", "type": "text"},
+        ]
+    }
+
+    def test_preview_summarizes_answers(self) -> None:
+        """Collapsed output keeps the one-line summary and advertises a count."""
+        msg = ToolCallMessage("ask_user", self._ARGS)
+
+        result = msg._format_ask_user_output(self._TRANSCRIPT, is_preview=True)
+
+        assert result.content.plain == "User answered"
+        assert result.truncation == "2 answers"
+
+    async def test_fallback_summary_suppression_survives_rehydration(self) -> None:
+        """A rebuilt fallback row still advertises no expansion.
+
+        The suppression is derived from the recorded output, not from
+        `_deferred_success_settled`, precisely because that flag is not persisted by
+        `MessageStore`. Virtualization alone re-creates the widget — scrolling a
+        settled row out of the viewport and back is enough — so a flag-based check
+        would resurrect the dead affordance mid-session: a "… 2 answers" hint over a
+        body that is only `"User answered"`.
+        """
+        app = _tool_msg_app("ask_user", self._ARGS)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            # A fresh widget carrying only what the store round-trips: status and
+            # output. No deferred state at all.
+            app.msg.set_success(ASK_USER_ANSWERED_SUMMARY)
+            await pilot.pause()
+
+            assert app.msg._deferred_success_settled is False
+            assert app.msg.has_expandable_output is False
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is False
+
+    async def test_settle_is_idempotent(self) -> None:
+        """A second settle is a no-op, so callers need no `awaiting` guard.
+
+        `set_error`/`set_rejected` both call it unguarded to redirect a teardown
+        sweep; if it re-fired, a row that had already fallen back would keep
+        immunity against a later genuine error forever.
+        """
+        app = _tool_msg_app("ask_user", self._ARGS)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
+
+            assert app.msg.settle_deferred_success() is True
+            assert app.msg.settle_deferred_success() is False
+            # The output stays readable for a later terminal-hook sweep.
+            assert app.msg.deferred_success_output == ASK_USER_ANSWERED_SUMMARY
+            assert app.msg.is_awaiting_deferred_result is False
+
+    def test_settle_declines_a_rejected_row(self) -> None:
+        """A rejected row keeps its terminal state; the caller records its own.
+
+        Low-reachability today (the sweeps pop deferred rows before rejecting
+        them), pinned so deleting the guard is a deliberate act.
+        """
+        msg = ToolCallMessage("ask_user", self._ARGS)
+        msg.set_rejected()
+        msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
+
+        assert msg.settle_deferred_success() is False
+        assert msg._status == "rejected"
+
+    def test_set_success_keeps_a_command_trailer_in_an_answer(self) -> None:
+        """`ask_user` output is user-authored, so no trailer stripping.
+
+        `_strip_success_exit_line` would otherwise eat an answer that happens to end
+        in a command-success trailer. The sibling `execute` case is covered by
+        `test_set_success_strips_trailer`.
+        """
+        answer = "Q: Paste the output\nA: [Command succeeded with exit code 0]"
+        msg = ToolCallMessage("ask_user", self._ARGS)
+
+        msg.set_success(answer)
+
+        assert msg._output == answer
+
+    async def test_unusable_question_args_fall_back_and_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Malformed `questions` degrades to generic formatting, loudly and once.
+
+        The collapsed row then shows the transcript rather than a summary — the
+        opposite of the design — so it must not pass in silence. `_args` is
+        unvalidated on the streamed and persisted paths, so this is reachable.
+        """
+        app = _tool_msg_app("ask_user", {"questions": "not-a-list"})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with caplog.at_level(logging.WARNING):
+                app.msg._format_ask_user_output(self._TRANSCRIPT, is_preview=True)
+                app.msg._format_ask_user_output(self._TRANSCRIPT, is_preview=True)
+
+        warnings = [
+            record
+            for record in caplog.records
+            if "no usable `questions` args" in record.message
+        ]
+        assert len(warnings) == 1
+
+    async def test_fallback_summary_does_not_advertise_expansion(self) -> None:
+        """A row without an authoritative transcript has nothing to expand."""
+        app = _tool_msg_app("ask_user", self._ARGS)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.defer_success(ASK_USER_ANSWERED_SUMMARY)
+            app.msg.settle_deferred_success()
+            await pilot.pause()
+
+            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert preview.plain == ASK_USER_ANSWERED_SUMMARY
+            assert app.msg.has_expandable_output is False
+            assert app.msg._hint_widget is not None
+            assert app.msg._hint_widget.display is False
+
+    def test_literal_cancelled_answer_still_says_answered(self) -> None:
+        """Free-form answer text must not be interpreted as control state."""
+        msg = ToolCallMessage("ask_user", {"questions": [{"question": "Name?"}]})
+
+        result = msg._format_ask_user_output(
+            "Q: Name?\nA: (cancelled)", is_preview=True
+        )
+
+        assert result.content.plain == "User answered"
+        assert result.truncation == "1 answer"
+
+    def test_preview_of_failed_prompt_says_failed(self) -> None:
+        """The tool's own error transcript must not read as "User answered".
+
+        `ask_user` renders a failure as `(error: ...)` placeholder answers run
+        through the same formatter, so a reloaded thread would otherwise show an
+        affirmative "User answered" row for a prompt that never got an answer.
+        The row's status is what a reload restores from `ToolMessage.status`.
+        """
+        msg = ToolCallMessage("ask_user", {"questions": [{"question": "Name?"}]})
+        msg._status = "error"
+
+        result = msg._format_ask_user_output(
+            "Q: Name?\nA: (error: ask_user interaction failed)", is_preview=True
+        )
+
+        assert result.content.plain == "Question failed"
+        # Expandable, so the `(error: <detail>)` reason stays reachable — but
+        # counted as questions, since the transcript behind the expand holds
+        # `(error: ...)` placeholders and no answers.
+        assert result.truncation == "1 question"
+
+    def test_user_typed_error_placeholder_still_says_answered(self) -> None:
+        """The `(error: ...)` sentinel is in-band, so status decides, not text.
+
+        A successful prompt whose answer happens to look like the failure
+        placeholder is still an answer; only a row `ask_user` recorded as
+        `status="error"` is a failure.
+        """
+        msg = ToolCallMessage("ask_user", {"questions": [{"question": "Name?"}]})
+        msg._status = "success"
+
+        result = msg._format_ask_user_output(
+            "Q: Name?\nA: (error: not really an error)", is_preview=True
+        )
+
+        assert result.content.plain == "User answered"
+        assert result.truncation == "1 answer"
+
+    def test_full_output_renders_question_and_answer(self) -> None:
+        """Expanded output pairs each question with what was sent back."""
+        msg = ToolCallMessage("ask_user", self._ARGS)
+
+        result = msg._format_ask_user_output(self._TRANSCRIPT, is_preview=False)
+
+        assert result.content.plain == (
+            "Q: What is your name?\nA: Alice\n\nQ: Favorite color?\nA: blue"
+        )
+        assert result.truncation is None
+
+    def test_preview_does_not_parse_output(self) -> None:
+        """Preview semantics come from status and args, not free-form output.
+
+        The status is set explicitly because it is what drives the summary: a row
+        only ever carries output after `set_success`/`set_error`/a reload, so the
+        default `pending` is not a state this formatter is reached in.
+        """
+        msg = ToolCallMessage("ask_user", self._ARGS)
+        msg._status = "success"
+
+        result = msg._format_ask_user_output(
+            "ask_user interaction failed", is_preview=True
+        )
+
+        assert result.content.plain == "User answered"
+        assert result.truncation == "2 answers"
+
+    def test_long_malformed_args_output_is_truncated(self) -> None:
+        """The no-question-count fallback must still cap the collapsed row.
+
+        `ask_user` is in `_ALWAYS_PREVIEW_TOOLS`, so `_format_output`'s size
+        thresholds no longer apply to it. Returning the body bare would fill the
+        collapsed row with an arbitrarily long dump and no expand affordance.
+        """
+        msg = ToolCallMessage("ask_user", {})
+        body = "\n".join(f"line{i}" for i in range(60))
+
+        result = msg._format_ask_user_output(body, is_preview=True)
+
+        assert result.truncation is not None
+        assert len(result.content.plain) < len(body)
+
+    def test_missing_question_args_render_verbatim(self) -> None:
+        """Without a structured question count, generic formatting is used."""
+        msg = ToolCallMessage("ask_user", {})
+
+        result = msg._format_ask_user_output("Q: Name?\nA: Alice", is_preview=True)
+
+        assert result.content.plain == "Q: Name?\nA: Alice"
+        assert result.truncation is None
+
+    @pytest.mark.parametrize(
+        "questions",
+        [
+            pytest.param("notalist", id="not-a-list"),
+            pytest.param([], id="empty-list"),
+            pytest.param(["Name?"], id="bare-strings"),
+            pytest.param([{"question": "Name?"}, "bad"], id="mixed"),
+            pytest.param([{"type": "text"}], id="missing-question"),
+            pytest.param([{"question": ""}], id="empty-question"),
+            pytest.param([{"question": "   "}], id="blank-question"),
+        ],
+    )
+    def test_malformed_question_args_yield_no_count(self, questions: object) -> None:
+        """Malformed `questions` must degrade, not raise.
+
+        `_args` holds the raw streamed tool call, populated at mount time before
+        pydantic validation, so a model emitting `questions: ["Name?"]` can
+        reach this code. `has_expandable_output` is called by unguarded click
+        handlers, so malformed arguments must degrade without raising.
+        """
+        msg = ToolCallMessage("ask_user", {"questions": questions})
+
+        assert msg._ask_user_question_count() == 0
+
+    def test_long_output_uses_the_same_compact_summary(self) -> None:
+        """Preview size depends on structured args, not transcript contents."""
+        msg = ToolCallMessage("ask_user", self._ARGS)
+        body = "\n".join(f"line{i}" for i in range(60))
+
+        result = msg._format_ask_user_output(body, is_preview=True)
+
+        assert result.content.plain == "User answered"
+        assert result.truncation == "2 answers"
+
+    async def test_question_with_markup_is_not_interpreted(self) -> None:
+        """The literal transcript must not interpret markup in a question."""
+        app = _tool_msg_app(
+            "ask_user", {"questions": [{"question": "[bold]Which[/bold] one?"}]}
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("Q: [bold]Which[/bold] one?\nA: this")
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "[bold]Which[/bold] one?" in full.plain
+
+    async def test_short_transcript_collapses_and_expands(self) -> None:
+        """End to end: a short answer still hides behind the summary line."""
+        app = _tool_msg_app("ask_user", self._ARGS)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(self._TRANSCRIPT)
+            await pilot.pause()
+
+            assert app.msg._preview_widget is not None
+            assert app.msg._preview_row is not None
+            assert app.msg._hint_widget is not None
+            assert app.msg._preview_row.display is True
+            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert preview.plain == "User answered"
+            assert app.msg.has_expandable_output is True
+            hint = app.msg._hint_widget._Static__content  # ty: ignore[unresolved-attribute]
+            # `has_expandable_args` is unconditionally true for `ask_user`, so
+            # Ctrl+O is routed to the questions block and the hint must advertise
+            # the click that actually reveals the answers.
+            assert hint.plain.endswith("2 answers — click to expand")
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            assert app.msg._full_row is not None
+            assert app.msg._full_row.display is True
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "A: Alice" in full.plain
+            assert "A: blue" in full.plain
+
+    async def test_clicking_body_reveals_answers_and_header_reveals_questions(
+        self,
+    ) -> None:
+        """Clicking is the only route to the answers, so pin both click targets.
+
+        `toggle_output` is reachable from a body click; the header toggles the
+        arguments block instead. A regression in that routing would leave the
+        answers unreachable by any input while the direct-call tests still pass.
+        """
+        app = _tool_msg_app("ask_user", self._ARGS)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success(self._TRANSCRIPT)
+            await pilot.pause()
+
+            await pilot.click(app.msg._preview_widget)
+            await pilot.pause()
+            assert app.msg._expanded is True
+            assert app.msg._args_expanded is False
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "A: Alice" in full.plain
+
+            # Collapsing clicks the full-output widget: expanding hid the preview.
+            await pilot.click(app.msg._full_widget)
+            await pilot.pause()
+            assert app.msg._expanded is False
+
+            await pilot.click(app.msg._header_widget)
+            await pilot.pause()
+            assert app.msg._args_expanded is True
+            assert app.msg._expanded is False
+
+    async def test_literal_cancelled_answer_stays_expandable(self) -> None:
+        """A literal `(cancelled)` answer remains an ordinary visible answer."""
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Name?"}]})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("Q: Name?\nA: (cancelled)")
+            await pilot.pause()
+
+            preview = app.msg._preview_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert preview.plain == "User answered"
+            assert app.msg.has_expandable_output is True
+
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert full.plain == "Q: Name?\nA: (cancelled)"
+
+    async def test_answer_with_markup_is_not_interpreted(self) -> None:
+        """User-typed square brackets render literally, not as Rich markup."""
+        app = _tool_msg_app("ask_user", {"questions": [{"question": "Tag?"}]})
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.msg.set_success("Q: Tag?\nA: [bold]not markup[/bold]")
+            app.msg.toggle_output()
+            await pilot.pause()
+
+            full = app.msg._full_widget._Static__content  # ty: ignore[unresolved-attribute]
+            assert "[bold]not markup[/bold]" in full.plain
 
 
 class TestToolCallMessageEmptyResult:
@@ -4176,6 +4667,116 @@ class TestAppMessageOnClickOpensLink:
 
         mock_open.assert_not_called()
         event.stop.assert_not_called()
+
+
+class _AppMessageApp(App[None]):
+    """Minimal app that mounts an `AppMessage` for runtime pointer tests."""
+
+    def compose(self) -> ComposeResult:
+        yield AppMessage("Resumed thread: tid-1", id="app-msg")
+
+
+class TestAppMessageLinkPointer:
+    """Tests for the pointer cursor shown when hovering embedded links."""
+
+    @staticmethod
+    def _move_event(
+        *, link: str | None = None, meta: dict | None = None
+    ) -> SimpleNamespace:
+        """Build a minimal mouse-move-like event exposing the hovered style."""
+        return SimpleNamespace(style=SimpleNamespace(link=link, meta=meta or {}))
+
+    async def test_hovering_link_sets_pointer_cursor(self) -> None:
+        """An OSC 8 `Style(link=...)` span switches the pointer to pointer."""
+        async with _AppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+
+            msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
+
+            assert msg.styles.pointer == "pointer"
+
+    async def test_hovering_text_keeps_text_pointer(self) -> None:
+        """Plain message text keeps the text pointer."""
+        async with _AppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+
+            msg.on_mouse_move(self._move_event())  # ty: ignore
+
+            assert msg.styles.pointer == "text"
+
+    async def test_leave_resets_pointer(self) -> None:
+        """Leaving the message resets the pointer after a link hover."""
+        async with _AppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+            msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
+
+            msg.on_leave()
+
+            assert msg.styles.pointer == "text"
+
+    async def test_link_then_text_resets_pointer_without_leaving(self) -> None:
+        """Moving off a link onto plain text resets the pointer without leaving.
+
+        `on_leave` cannot cover this: the mouse stays inside the widget, so only
+        the handler's non-link branch clears the inline `pointer` set by the
+        previous move. Without it the hand cursor sticks over non-link text.
+        """
+        async with _AppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+            msg.on_mouse_move(self._move_event(link="https://example.com"))  # ty: ignore
+            assert msg.styles.pointer == "pointer"
+
+            msg.on_mouse_move(self._move_event())  # ty: ignore
+
+            assert msg.styles.pointer == "text"
+
+
+class _LinkedAppMessageApp(App[None]):
+    """Mounts an `AppMessage` whose thread ID is a real OSC 8 link span."""
+
+    PREFIX = "Resumed thread: "
+    URL = "https://smith.langchain.com/o/org/projects/p/proj/t/tid-123"
+
+    def compose(self) -> ComposeResult:
+        from textual.content import Content
+        from textual.style import Style as TStyle
+
+        note = TStyle(dim=True, italic=True)
+        yield AppMessage(
+            Content.assemble(
+                (self.PREFIX, note),
+                ("tid-123", TStyle(dim=True, italic=True, link=self.URL)),
+            ),
+            id="app-msg",
+        )
+
+
+class TestAppMessagePointerEventDelivery:
+    """Pins that Textual actually delivers hover events to `AppMessage`.
+
+    Every other pointer test in this repo calls `on_mouse_move` directly with a
+    stand-in event, which cannot catch Textual routing `MouseMove` elsewhere or
+    leaving `event.style` unpopulated at the hovered offset. This drives a real
+    `pilot.hover` instead, so the delivery assumption the whole family of
+    pointer handlers shares is verified in one place.
+    """
+
+    async def test_hover_over_real_link_span_toggles_pointer(self) -> None:
+        """Hovering a real link span sets the pointer and moving off resets it."""
+        async with _LinkedAppMessageApp().run_test() as pilot:
+            msg = pilot.app.query_one("#app-msg", AppMessage)
+            # `AppMessage` pads by 1 column, so content offset N sits at N + 1.
+            link_x = len(_LinkedAppMessageApp.PREFIX) + 1
+            prefix_x = 1
+
+            await pilot.hover("#app-msg", offset=(prefix_x, 0))
+            assert msg.styles.pointer == "text"
+
+            await pilot.hover("#app-msg", offset=(link_x, 0))
+            assert msg.styles.pointer == "pointer"
+
+            await pilot.hover("#app-msg", offset=(prefix_x, 0))
+            assert msg.styles.pointer == "text"
 
 
 class TestMountMessageIdSync:

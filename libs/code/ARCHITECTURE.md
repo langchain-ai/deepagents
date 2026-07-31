@@ -66,5 +66,6 @@ The main cost is the client/server boundary. When debugging, first decide which 
 
 - For local setup and debugging, see [`DEVELOPMENT.md`](./DEVELOPMENT.md).
 - For command behavior, see [`COMMANDS.md`](./COMMANDS.md).
+- For lifecycle hooks (`hooks.json`), see [`HOOKS.md`](./HOOKS.md).
 - For security boundaries, see [`THREAT_MODEL.md`](./THREAT_MODEL.md).
 - For package-specific coding conventions, see [`AGENTS.md`](./AGENTS.md).

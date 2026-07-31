@@ -15,8 +15,10 @@ import re
 import tomllib
 from dataclasses import dataclass
 from importlib.metadata import (
+    Distribution,
     PackageNotFoundError,
     distribution,
+    distributions,
     version as pkg_version,
 )
 from pathlib import Path
@@ -40,43 +42,190 @@ that don't care which kind of failure happened can treat both the same.
 """
 
 
-def _editable_sdk_source_root() -> Path | None:
-    """Return the editable `deepagents` source root from package metadata."""
+def _sdk_distribution_name(dist: Distribution) -> str:
+    """Return `dist`'s lowercased, hyphenated name, or `""` when unavailable.
+
+    `Distribution.name` is a property that reads and parses `METADATA`, so it can
+    raise rather than return `None` — a distribution with non-UTF-8 `METADATA`
+    raises `UnicodeDecodeError`. Those failures are contained here so one
+    unreadable distribution cannot abort the caller's whole scan.
+    """
     try:
-        raw = distribution("deepagents").read_text("direct_url.json")
-        if not raw:
-            return None
-        data = json.loads(raw)
-        if not isinstance(data, dict):
-            logger.debug("Ignoring malformed deepagents direct_url.json metadata")
-            return None
-        dir_info = data.get("dir_info")
-        if not isinstance(dir_info, dict):
-            logger.debug("Ignoring malformed deepagents direct_url.json dir_info")
-            return None
-        if not dir_info.get("editable", False):
-            return None
-        url = data.get("url")
-        if not isinstance(url, str):
-            logger.debug("Ignoring editable deepagents metadata without a source URL")
-            return None
-        parsed = urlparse(url)
-        if parsed.scheme != "file":
-            logger.debug("Ignoring editable deepagents metadata with non-file URL")
-            return None
-        path = url2pathname(parsed.path)
-        if parsed.netloc and parsed.netloc != "localhost":
-            path = f"//{parsed.netloc}{path}"
-        return Path(path)
-    except (PackageNotFoundError, OSError, ValueError, TypeError):
-        # `OSError` covers `FileNotFoundError`/`PermissionError`/etc. while
-        # reading the metadata file; `ValueError` covers malformed JSON
-        # (`json.JSONDecodeError`), bad encodings (`UnicodeDecodeError`), and an
-        # invalid IPv6 host from `urlparse`; `TypeError` covers a non-text
-        # `read_text` payload. `url2pathname` is intentionally lenient and adds
-        # no new failure modes. This probe must never propagate, since callers
-        # treat it as a best-effort refinement over the metadata version.
+        name = dist.name
+    except (AttributeError, KeyError, OSError, TypeError, ValueError):
+        # `KeyError` is future-proofing: on a metadata-less `*.dist-info`,
+        # `Distribution.name` returns `None` today but is documented to raise
+        # `KeyError` in a later Python (`DeprecationWarning` as of 3.14).
+        logger.debug("Could not read distribution name; skipping", exc_info=True)
+        return ""
+    if not isinstance(name, str):
+        # A partial install can leave a `*.dist-info` with no `METADATA`, for
+        # which `Distribution.name` is currently `None`.
+        return ""
+    return name.lower().replace("_", "-")
+
+
+def _read_sdk_direct_url(dist: Distribution) -> dict[str, object] | None:
+    """Return `dist`'s parsed PEP 610 payload, or `None` when it is unusable.
+
+    Unreadable or unparseable metadata reports `None` rather than raising, so one
+    bad distribution cannot abort the caller's scan.
+    """
+    try:
+        raw = dist.read_text("direct_url.json")
+    except (OSError, TypeError, ValueError):
+        # `read_text` already suppresses the ordinary absent-file cases, so
+        # reaching here means the path exists but is unusable (`OSError`) or holds
+        # non-UTF-8 bytes (`UnicodeDecodeError`, a `ValueError`). `TypeError` is
+        # unreachable through the stdlib's `PathDistribution` and is kept only as
+        # insurance against third-party `Distribution` implementations.
+        logger.debug("Could not read direct_url.json", exc_info=True)
         return None
+    if not raw:
+        # Normal and common: non-editable installs omit the file entirely, as
+        # does the source-tree `*.egg-info`. Deliberately not logged.
+        return None
+    try:
+        data = json.loads(raw)
+    except (RecursionError, ValueError):
+        # `ValueError` covers `json.JSONDecodeError`; pathologically nested
+        # input raises `RecursionError`, which is not a `ValueError`.
+        logger.debug("Malformed direct_url.json", exc_info=True)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _file_url_to_path(url: str) -> Path | None:
+    """Convert a `file://` URL to a local path.
+
+    Returns:
+        The local path, or `None` when the URL is not a `file://` URL or cannot
+            be parsed.
+    """
+    try:
+        parsed = urlparse(url)
+    except ValueError:  # e.g. an invalid IPv6 host
+        logger.debug("Unparseable direct_url.json url", exc_info=True)
+        return None
+    if parsed.scheme != "file":
+        return None
+    path = url2pathname(parsed.path)
+    if parsed.netloc and parsed.netloc != "localhost":
+        # A UNC path such as `file://server/share/proj`.
+        path = f"//{parsed.netloc}{path}"
+    return Path(path)
+
+
+def _sdk_editable_record_root(dist: Distribution) -> Path | None:
+    """Return `dist`'s editable source root, or `None` when it is not editable.
+
+    `None` also covers an editable record whose source location cannot be
+    determined, since such a record cannot be correlated with the running module.
+    """
+    data = _read_sdk_direct_url(dist)
+    if data is None:
+        return None
+    dir_info = data.get("dir_info")
+    if not isinstance(dir_info, dict) or dir_info.get("editable") is not True:
+        return None
+    url = data.get("url")
+    if not isinstance(url, str):
+        return None
+    return _file_url_to_path(url)
+
+
+def _running_sdk_package_root() -> Path | None:
+    """Return the directory of the `deepagents` package importable in this process.
+
+    Located with `importlib.util.find_spec` rather than an `import`, so the
+    probe does not execute the SDK — dcode resolves the SDK version for trace
+    metadata without importing the SDK package, and a findable-but-broken SDK
+    install must not fail here.
+
+    `None` when the package cannot be located or has no determinable origin —
+    some frozen and embedded interpreters report no `__file__`, and a namespace
+    package carries no `__init__.py`. Separate function so tests can substitute
+    a location without touching the real install layout.
+    """
+    try:
+        spec = importlib.util.find_spec("deepagents")
+    except (ImportError, ValueError):
+        # `ValueError` covers `sys.modules["deepagents"]` being `None`, which
+        # `find_spec` rejects instead of searching.
+        logger.debug("Could not search for the deepagents package", exc_info=True)
+        return None
+    if spec is None or spec.origin is None:
+        return None
+    try:
+        return Path(spec.origin).resolve().parent
+    except (OSError, ValueError):
+        logger.debug("Could not locate the deepagents package", exc_info=True)
+        return None
+
+
+def _is_under(root: Path, candidate: Path) -> bool:
+    """Return whether `candidate` is `root` or lives inside it."""
+    try:
+        resolved = root.resolve()
+    except OSError:
+        logger.debug("Could not resolve editable source root", exc_info=True)
+        return False
+    return resolved == candidate or resolved in candidate.parents
+
+
+def _editable_sdk_source_root() -> Path | None:
+    """Return the editable `deepagents` source root from package metadata.
+
+    Scans every installed distribution named `deepagents` for PEP 610
+    `direct_url.json` with `dir_info.editable: true`, and credits a record only
+    when its source root actually contains the `deepagents` module imported into
+    this process.
+
+    Both halves are load-bearing, and they guard opposite errors:
+
+    - Scanning, rather than a single `importlib.metadata.distribution` lookup,
+      avoids a false negative. `setuptools` leaves a gitignored
+      `deepagents.egg-info/` in the source tree after any local build, and the cwd
+      is on `sys.path` for `-c`, `-m`, and the REPL, so that `*.egg-info` is found
+      *first* when running from the checkout. It carries no `direct_url.json`, so
+      the single-lookup form reports "not editable" and never consults the real
+      editable install in site-packages — disagreeing with the SDK's own
+      `lc_versions.deepagents` trace entry, which scans.
+    - Correlating against the located package avoids a false positive. An
+      environment can hold more than one `deepagents` record — a wheel earlier on
+      `sys.path` and an unrelated editable checkout later on it. Only the wheel's
+      code is actually importable, so reporting the other checkout's root would
+      attribute a workspace build to a published install.
+
+    Per-distribution metadata failures are contained by the helpers above, so one
+    unreadable distribution cannot end the scan early and mask a later editable
+    one. Missing or unparseable metadata reports no source root, keeping version
+    reporting best-effort rather than a source of diagnostic failures.
+    """
+    package_root = _running_sdk_package_root()
+    if package_root is None:
+        # Without a location for the importable package, no editable record can
+        # be attributed to it, so report the plain metadata version.
+        return None
+    try:
+        for dist in distributions():
+            if _sdk_distribution_name(dist) != "deepagents":
+                continue
+            source_root = _sdk_editable_record_root(dist)
+            if source_root is not None and _is_under(source_root, package_root):
+                return source_root
+    except (OSError, TypeError, ValueError, RecursionError):
+        # Backstop for `distributions()` itself: it yields lazily, so a broken
+        # `sys.path` entry surfaces mid-iteration and cannot be contained
+        # per-distribution the way the two helpers above are. `RecursionError`
+        # is included so the helpers' containment of pathological metadata keeps
+        # the answer independent of iteration order when the outer loop is the
+        # only place such an error can surface from.
+        logger.debug(
+            "Stopped scanning installed distributions for PEP 610 metadata",
+            exc_info=True,
+        )
+    return None
 
 
 def _sdk_version_from_source(root: Path) -> str | None:
@@ -523,11 +672,18 @@ def _parse_version(value: str | None) -> Version | None:
 
 
 def _with_editable_local_version(value: str) -> str:
-    """Add an `editable` local segment to a normalized version string.
+    """Return `value` with an `editable` PEP 440 local segment appended.
 
-    Returns:
-        The version with an `editable` local segment, or the original value when
-            it cannot be parsed.
+    Mirrors `deepagents._version._with_editable_local_version`, which stamps
+    `lc_versions["deepagents"]` the same way, so both entries in a trace share
+    one encoding. Kept local because the SDK helper only exists in releases
+    newer than the exact `deepagents` pin.
+
+    The base version is re-emitted in canonical PEP 440 form, so the result can
+    differ from `value` beyond the added segment (`1.0.0-alpha1` becomes
+    `1.0.0a1+editable`). An existing local segment is preserved and extended
+    rather than clobbered (`1.0+build` becomes `1.0+build.editable`), which makes
+    this non-idempotent. Unparseable input is returned unchanged.
     """
     parsed = _parse_version(value)
     if parsed is None:
@@ -638,6 +794,27 @@ def _display_sdk_version(
     if version is None or not _uses_exact_requirement_as_effective_version(
         cli, sdk, requirement
     ):
+        return version
+    return _with_editable_local_version(version)
+
+
+def _trace_sdk_version(
+    cli: DistributionVersion, sdk: DistributionVersion, requirement: Requirement | None
+) -> str | None:
+    """Return the SDK version string for LangSmith trace metadata.
+
+    Every editable SDK install gets the `editable` local segment, not just the
+    sibling workspace HEAD case that `_display_sdk_version` marks. A trace
+    carries the version string alone, with no room for the `(editable)`
+    annotation the human-facing surfaces render alongside it, and the SDK stamps
+    `lc_versions["deepagents"]` for any editable install — so suffixing only the
+    workspace HEAD case left the two entries in a single trace disagreeing.
+
+    Returns:
+        The version string, or `None` when it cannot be resolved.
+    """
+    version = _effective_sdk_version(cli, sdk, requirement)
+    if version is None or not sdk.editable:
         return version
     return _with_editable_local_version(version)
 
@@ -795,9 +972,10 @@ def resolve_sdk_version() -> tuple[str | None, DistributionMetadataStatus]:
     """Resolve the diagnostic `deepagents` SDK version.
 
     Compatibility wrapper for callers that only need one SDK version string and
-    lookup status. For sibling monorepo packages whose stable source marker trails
-    dcode's exact SDK pin, the pin identifies the nearest published baseline and
-    an `+editable` local segment identifies the running workspace HEAD.
+    lookup status. Every editable install carries an `+editable` local segment,
+    matching how the SDK stamps `lc_versions["deepagents"]`. For sibling monorepo
+    packages whose stable source marker trails dcode's exact SDK pin, the pin
+    identifies the nearest published baseline the workspace HEAD represents.
 
     Returns:
         `(version, status)`. `version` is the resolved version string when
@@ -808,7 +986,7 @@ def resolve_sdk_version() -> tuple[str | None, DistributionMetadataStatus]:
     if sdk.status != "resolved":
         return None, sdk.status
     requirement = _sdk_requirement_for_cli(cli)
-    return _display_sdk_version(cli, sdk, requirement), "resolved"
+    return _trace_sdk_version(cli, sdk, requirement), "resolved"
 
 
 _EXTRA_MARKER_RE = re.compile(r"""extra\s*==\s*["']([^"']+)["']""")

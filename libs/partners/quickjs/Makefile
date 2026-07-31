@@ -10,6 +10,7 @@ UV_FROZEN = true
 ######################
 
 TEST_FILE ?= tests/unit_tests/
+COV_ARGS ?= --cov=langchain_quickjs --cov-report=term-missing
 PYTEST_EXTRA ?=
 
 integration_test integration_tests: TEST_FILE=tests/integration_tests/
@@ -17,8 +18,7 @@ integration_test integration_tests: TEST_FILE=tests/integration_tests/
 test: ## Run unit tests
 test tests:
 	uv run --group test pytest -vvv $(PYTEST_EXTRA) --disable-socket --allow-unix-socket $(TEST_FILE) \
-		--cov=langchain_quickjs \
-		--cov-report=term-missing
+		$(COV_ARGS)
 
 coverage: ## Run unit tests with coverage
 	uv run --group test pytest --cov \

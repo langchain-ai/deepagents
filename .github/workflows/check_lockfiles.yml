@@ -36,4 +36,4 @@ jobs:
       - name: "🔍 Check changed lockfiles"
         run: |
           mapfile -t changed < <(git diff --name-only HEAD^ HEAD)
-          python3 .github/scripts/check_lockfiles_pre_commit.py "${changed[@]}"
+          python3 .github/scripts/checks/check_lockfiles_pre_commit.py "${changed[@]}"

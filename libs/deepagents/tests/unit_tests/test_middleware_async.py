@@ -655,6 +655,29 @@ class TestFilesystemMiddlewareAsync:
         assert "Line 2" in result.content
         assert "Line 3" in result.content
 
+    async def test_aread_file_degenerate_arguments(self):
+        """The async tool applies the same disclosure and no-lines reminder as the sync one."""
+        files = {
+            "/test.txt": FileData(
+                content="Line 1\nLine 2\nLine 3",
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        zero_limit = await read_file_tool.ainvoke({"file_path": "/test.txt", "offset": 0, "limit": 0, "runtime": _runtime()})
+        assert zero_limit.status == "success"
+        assert "empty contents" not in zero_limit.content
+        assert "`limit` was 0" in zero_limit.content
+
+        negative_offset = await read_file_tool.ainvoke({"file_path": "/test.txt", "offset": -1, "limit": 100, "runtime": _runtime()})
+        assert negative_offset.status == "success"
+        assert negative_offset.content.startswith("1  Line 1")
+        assert "before the start of the file" in negative_offset.content
+
     async def test_aread_file_with_offset(self):
         """Test async read_file tool with offset."""
         files = {

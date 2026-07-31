@@ -1248,9 +1248,9 @@ def _get_deepagents_version() -> str | None:
     """Resolve the installed Deep Agents SDK version for diagnostics.
 
     Editable installs can leave package metadata behind the source checkout, so
-    this uses the shared resolver that prefers the editable source marker. A
-    sibling monorepo workspace whose marker trails dcode's exact pin reports the
-    pinned release baseline with a `+editable` suffix.
+    this uses the shared resolver that prefers the editable source marker and
+    appends an `+editable` suffix. A sibling monorepo workspace whose marker
+    trails dcode's exact pin reports the pinned release baseline instead.
 
     Returns:
         The resolved Deep Agents SDK version, or `None` when unavailable.
@@ -1275,14 +1275,29 @@ def _get_deepagents_version() -> str | None:
 def _format_lc_version(base_version: str, *, editable: bool) -> str:
     """Format an `lc_versions` value with editable-install context.
 
+    Editable installs get an `editable` PEP 440 local segment (`1.2.3+editable`).
+    The SDK stamps `lc_versions["deepagents"]` the same way and LangChain merges
+    the two dicts, so both entries in a single trace share one encoding. It is
+    also what `dcode_client_deepagents_version` already reports.
+
     Args:
         base_version: The base version string.
         editable: Whether the distribution is installed in editable mode.
 
     Returns:
-        The version string, suffixed with ` (editable)` when `editable`.
+        The version string, with an `editable` local segment when `editable`.
     """
-    return f"{base_version} (editable)" if editable else base_version
+    if not editable:
+        return base_version
+    # Imported lazily on purpose, for the same reason as `_get_deepagents_version`
+    # above: this pulls in `packaging`, which we keep off `config`'s module-import
+    # path (the startup hot path). Do not hoist this to the top of the module.
+    # Import from `extras_info` rather than `deepagents._version`: the SDK copy
+    # only exists in releases newer than the exact `deepagents` pin, and a
+    # PyPI-resolved SDK would raise `ImportError` here on every editable run.
+    from deepagents_code.extras_info import _with_editable_local_version
+
+    return _with_editable_local_version(base_version)
 
 
 def _resolve_editable_info() -> tuple[bool, str | None]:
@@ -1723,9 +1738,10 @@ def build_stream_config(
 
     Also records `dcode_client_deepagents_version` as a dcode-client diagnostic.
     This describes the Deep Agents package installed alongside the TUI, which
-    can differ from a remote graph's Deep Agents runtime version. For sibling
-    monorepo packages, a `+editable` suffix identifies workspace HEAD relative
-    to the pinned published SDK baseline.
+    can differ from a remote graph's Deep Agents runtime version. Editable
+    installs carry an `+editable` suffix, matching how the SDK stamps
+    `lc_versions["deepagents"]`; for sibling monorepo packages that suffix
+    identifies workspace HEAD relative to the pinned published SDK baseline.
 
     Also records `dcode_experimental=True` when `DEEPAGENTS_CODE_EXPERIMENTAL`
     is enabled, so experimental runs are filterable in trace metadata.
@@ -4892,6 +4908,9 @@ def create_model(
         model = _create_model_via_init(model_name, provider, kwargs)
 
     resolved_provider = provider or getattr(model, "_model_provider", provider)
+    from deepagents_code.cost_tracking import _set_configured_provider_metadata
+
+    _set_configured_provider_metadata(model, resolved_provider)
 
     # Apply profile overrides from config.toml (e.g., max_input_tokens)
     if provider:

@@ -91,6 +91,13 @@ What is allowed to differ (and is not part of the contract):
     in the interactive UI *before* any `ToolMessage` streams back. Only that
     pre-`ToolMessage` terminal drain is TUI-only — headless has no interactive
     approval path that can reject a call before its result arrives.
+- **`ask_user` body sanitization**: the TUI replaces the `tool_output` of an
+    answered `ask_user` `tool.result` with a fixed summary constant, so user-typed
+    answers are never forwarded to hook scripts; headless would dispatch the raw
+    transcript from the `ToolMessage`. Unobservable today because headless sets
+    `enable_ask_user=False` and so never produces one — which is precisely why the
+    divergence is safe. Enabling `ask_user` headlessly requires porting that
+    sanitization first.
 
 When changing the dispatch or gating logic in one surface, verify the parity
 contract still holds against the other surface.

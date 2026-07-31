@@ -1,8 +1,7 @@
 """Legacy dotted-event migration helpers for Hooks v2 configuration.
 
-These utilities are intentionally not activated at legacy dispatch call sites.
-Lifecycle wiring belongs to later tickets; this module only converts
-semantically equivalent config when an explicit loader asks for it.
+Legacy documents are converted by the loader so lifecycle call sites dispatch
+only canonical events and do not duplicate old dotted-event hooks.
 """
 
 from __future__ import annotations

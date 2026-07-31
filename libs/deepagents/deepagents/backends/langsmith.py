@@ -20,7 +20,7 @@ from deepagents.backends.sandbox import (
     TRUNCATION_MSG,
     BaseSandbox,
 )
-from deepagents.backends.utils import _get_backend_read_file_type
+from deepagents.backends.utils import _get_backend_read_file_type, normalize_read_bounds
 
 if TYPE_CHECKING:
     from langsmith.sandbox import AsyncSandbox, AsyncSandboxClient, ExecutionResult, Sandbox
@@ -186,6 +186,9 @@ class LangSmithSandbox(BaseSandbox):
             `\r` collapse to `\n`), split on `\n`, paginated by `offset` /
             `limit`, joined back with `\n`, and capped at `MAX_OUTPUT_BYTES`
             with `TRUNCATION_MSG` appended on overflow.
+        - A negative `offset` is clamped to the start of the file, and a
+            non-positive `limit` returns empty content with no pagination
+            metadata.
 
         Args:
             file_path: Absolute path to the file to read.
@@ -241,8 +244,15 @@ class LangSmithSandbox(BaseSandbox):
         if lines and lines[-1] == "":
             lines.pop()
 
-        offset = int(offset)
-        limit = int(limit)
+        offset, limit = normalize_read_bounds(offset, limit)
+
+        # Nothing was requested: no line range to describe, and nothing for the
+        # byte cap below to shorten. Guarded at `<= 0` so this holds even if the
+        # clamp above is ever bypassed or removed. `no_lines_requested` flags
+        # the window as never inspected so the middleware can tell it apart
+        # from a genuinely empty file.
+        if limit <= 0:
+            return ReadResult(file_data=FileData(content="", encoding="utf-8"), no_lines_requested=True)
 
         total_lines = len(lines)
         if not lines or offset >= total_lines:

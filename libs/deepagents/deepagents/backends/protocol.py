@@ -213,6 +213,15 @@ class ReadResult:
     next_offset: int | None = None
     """0-indexed offset for the next unread source line."""
 
+    no_lines_requested: bool = False
+    """The read asked for zero lines and the file was never inspected.
+
+    Set by backends when a non-positive `limit` short-circuits the read, so
+    the middleware can tell a never-inspected window apart from a file that
+    was inspected and is genuinely empty — both otherwise arrive as empty
+    content with no pagination metadata.
+    """
+
     def __post_init__(self) -> None:
         """Reject malformed pagination-field combinations at construction.
 
@@ -229,6 +238,11 @@ class ReadResult:
         """
         if (self.start_line is None) != (self.end_line is None):
             msg = "ReadResult.start_line and end_line must be set together or both left unset"
+            raise ValueError(msg)
+        if self.no_lines_requested and (
+            self.error is not None or self.start_line is not None or self.next_offset is not None or self.total_lines is not None
+        ):
+            msg = "ReadResult.no_lines_requested describes an uninspected window; it cannot be combined with error or pagination fields"
             raise ValueError(msg)
         if self.next_offset is not None and self.start_line is None:
             msg = "ReadResult.next_offset requires start_line and end_line to be set"
@@ -418,6 +432,17 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         limit: int = 2000,
     ) -> ReadResult:
         """Read file content for the requested line range.
+
+        Implementations must tolerate degenerate windows rather than raising:
+        a negative `offset` reads from the first line, and a non-positive
+        `limit` returns empty content with every pagination field unset.
+        `deepagents.backends.utils.normalize_read_bounds` clamps both bounds for
+        implementations that slice in Python.
+
+        Implementations must also set `start_line` whenever they return
+        line-numberable text. The middleware falls back to deriving the gutter
+        from `offset` when `start_line` is unset, which only yields a valid
+        1-indexed gutter for windows the backend actually sliced.
 
         Args:
             file_path: Absolute path to the file to read. Must start with `'/'`.

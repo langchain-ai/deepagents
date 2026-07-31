@@ -33,7 +33,7 @@
 # How it stays faithful to release-please:
 #   - Package path -> component map and the bump-worthy type set are both read
 #     from release-please-config.json by the helper script — see
-#     .github/scripts/check_lockfile_release_scope.py for the rationale.
+#     .github/scripts/release/check_lockfile_release_scope.py for the rationale.
 #
 # Trust model:
 #   - The detector and release-please-config.json run from the PR *base*
@@ -138,7 +138,13 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          detector=".github/scripts/check_lockfile_release_scope.py"
+          # Preferred nested path ships on this PR; until that lands on base,
+          # fall back to the flat layout so the gate still enforces.
+          detector=".github/scripts/release/check_lockfile_release_scope.py"
+          legacy_detector=".github/scripts/check_lockfile_release_scope.py"
+          if [[ ! -f "$detector" && -f "$legacy_detector" ]]; then
+            detector="$legacy_detector"
+          fi
           if [[ ! -f "$detector" ]]; then
             # The detector does not exist on the base revision: the bootstrapping
             # PR that first introduces this check, or a branch cut from before it

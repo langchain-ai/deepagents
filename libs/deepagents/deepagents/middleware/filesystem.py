@@ -592,7 +592,43 @@ def _remaining_lines_notice(read_result: ReadResult) -> str:
     )
 
 
+def _clamped_offset_notice(offset: int) -> str:
+    """Disclose that a negative requested offset was read from the file start.
+
+    Backends clamp a negative `offset` to `0` rather than erroring, so without
+    this the model sees a correct-looking gutter starting at line 1 and no
+    indication its request was reinterpreted. `_remaining_lines_notice` cannot
+    carry the disclosure: it returns an empty string once the window reaches the
+    end of the file, which is exactly the common degenerate case
+    (`offset=-1` with a default `limit`).
+
+    Args:
+        offset: Offset as requested by the caller, before clamping.
+
+    Returns:
+        A model-facing notice when `offset` was negative, else an empty string.
+    """
+    if offset >= 0:
+        return ""
+    return f"\n\n[Requested offset {offset} is before the start of the file; read from line 1 instead.]"
+
+
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+NO_LINES_REQUESTED_WARNING = (
+    "System reminder: no lines were read because `limit` was {limit}. The file was "
+    "not inspected and may have contents; retry with `limit` >= 1 to read it."
+)
+"""Reported when a read requested zero lines.
+
+Distinct from `EMPTY_CONTENT_WARNING` on purpose: the `read_file` description
+teaches the model that the empty-contents reminder means the file itself is
+empty, so reusing it for a zero-line window would state something false about
+the filesystem that a following `write_file` could act on destructively.
+
+Backends declare the zero-line window with `ReadResult.no_lines_requested`,
+so an inspected-but-empty file (which otherwise arrives identically: empty
+content, no pagination metadata) keeps the empty-file reminder instead.
+"""
 GLOB_TIMEOUT = 10.0  # seconds
 GREP_TRUNCATION_NOTE = (
     "Note: the search stopped early (it hit its time limit or the maximum match count). "
@@ -1594,6 +1630,19 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # binary reads.
             empty_msg = check_empty_content(content)
             if empty_msg:
+                # Empty content has two causes that must not be conflated: a
+                # zero-line window, where the file was never inspected, and a
+                # genuinely empty file. Reporting the former as the latter
+                # states something false about a file that may have contents.
+                # The backend declares which one happened: both arrive as
+                # empty content with no pagination metadata, but only the
+                # never-inspected window sets `no_lines_requested` — a file
+                # that was inspected and is empty (whitespace-only text from
+                # `slice_read_response`'s blank branch, or empty base64 from
+                # a binary read that ignored `limit`) keeps the empty-file
+                # reminder.
+                if not content and read_result.no_lines_requested:
+                    empty_msg = NO_LINES_REQUESTED_WARNING.format(limit=limit)
                 return ToolMessage(
                     content=empty_msg,
                     name="read_file",
@@ -1629,12 +1678,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="success",
                 )
 
-            content = format_content_with_line_numbers(content, start_line=read_result.start_line or offset + 1)
+            # `max(offset, 0)` so the fallback gutter stays 1-indexed: a backend
+            # that returns numberable text without `start_line` would otherwise
+            # render a zero or negative line marker, which the row-marker
+            # parsers downstream assume never happens.
+            content = format_content_with_line_numbers(content, start_line=read_result.start_line or max(offset, 0) + 1)
             # `limit` already bounded raw source lines at the backend; do not
             # re-truncate by row count here, or wrapped continuation rows would
             # push real source lines off the end of the page (#2453).
+            # The clamp notice is appended after truncation so it cannot be cut.
             return ToolMessage(
-                content=_truncate_paginated_read(content, validated_path, read_result, token_limit),
+                content=_truncate_paginated_read(content, validated_path, read_result, token_limit) + _clamped_offset_notice(offset),
                 name="read_file",
                 tool_call_id=tool_call_id,
                 status="success",

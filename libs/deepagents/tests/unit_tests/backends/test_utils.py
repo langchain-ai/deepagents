@@ -523,6 +523,61 @@ class TestSliceReadResponse:
         assert result.error is not None
         assert "exceeds file length" in result.error
 
+    @pytest.mark.parametrize("limit", [0, -3])
+    def test_non_positive_limit_returns_empty_read(self, limit: int) -> None:
+        """A degenerate `limit` reads nothing instead of raising on the line range.
+
+        `no_lines_requested` flags the window as never inspected so the
+        middleware can tell it apart from an inspected-but-empty file, whose
+        `ReadResult` is otherwise identical.
+        """
+        result = slice_read_response(self._file("a\nb\nc"), offset=0, limit=limit)
+        assert result.error is None
+        assert self._content(result) == ""
+        assert result.no_lines_requested is True
+        assert result.total_lines is None
+        assert result.start_line is None
+        assert result.end_line is None
+        assert result.next_offset is None
+
+    def test_negative_offset_reads_from_first_line(self) -> None:
+        """A degenerate `offset` is clamped rather than reported as line 0."""
+        result = slice_read_response(self._file("a\nb\nc"), offset=-1, limit=2)
+        assert result.error is None
+        assert self._content(result) == "a\nb\n"
+        assert result.start_line == 1
+        assert result.end_line == 2
+        assert result.next_offset == 2
+
+    def test_negative_offset_and_non_positive_limit_combine(self) -> None:
+        """Both bounds degenerate at once still yields an empty read."""
+        result = slice_read_response(self._file("a\nb\nc"), offset=-3, limit=-3)
+        assert result.error is None
+        assert self._content(result) == ""
+        assert result.start_line is None
+
+    def test_zero_limit_takes_precedence_over_offset_past_eof(self) -> None:
+        """The zero-limit check runs before the bounds check, so no error is raised.
+
+        Pins the ordering rather than endorsing it: the offset is also invalid
+        here, and reporting the empty read first costs the caller a round trip
+        to discover that. Reordering would have to change all four read paths.
+        """
+        result = slice_read_response(self._file("a\nb\nc"), offset=99, limit=0)
+        assert result.error is None
+        assert self._content(result) == ""
+
+    def test_blank_content_takes_precedence_over_zero_limit(self) -> None:
+        """Whitespace-only content is returned verbatim even for a zero limit.
+
+        The blank-content branch precedes the zero-limit branch, so the content
+        is the whitespace rather than `""`. The middleware maps either to a
+        reminder, but the two branches must not be reordered silently.
+        """
+        result = slice_read_response(self._file("   \n\t\n"), offset=0, limit=0)
+        assert result.error is None
+        assert self._content(result) == "   \n\t\n"
+
 
 class TestGrepMaxCount:
     """`max_count` total-cap semantics for `grep_matches_from_files`.

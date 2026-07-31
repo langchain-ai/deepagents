@@ -86,16 +86,16 @@ repos:
       - id: lock-check
         name: check lockfiles are up-to-date
         language: system
-        entry: python3 .github/scripts/check_lockfiles_pre_commit.py
+        entry: python3 .github/scripts/checks/check_lockfiles_pre_commit.py
         files: (^libs/.*/pyproject\.toml|^libs/.*/uv\.lock)$
       - id: extras-sync
         name: check extras sync with required deps
         language: system
-        entry: python3 .github/scripts/check_extras_sync.py
+        entry: python3 .github/scripts/checks/check_extras_sync.py
         files: ^libs/.*/pyproject\.toml$
       - id: version-equality
         name: check pyproject.toml and _version.py match
         language: system
-        entry: python3 .github/scripts/check_version_equality.py
+        entry: python3 .github/scripts/checks/check_version_equality.py
         files: (^libs/deepagents/pyproject\.toml|^libs/deepagents/deepagents/_version\.py|^libs/cli/pyproject\.toml|^libs/cli/deepagents_cli/_version\.py)$
         pass_filenames: false

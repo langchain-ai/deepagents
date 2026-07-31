@@ -19,7 +19,7 @@
 # Without it, the workflow will fail.
 #
 # Contributor tier thresholds and label colors are in
-# .github/scripts/pr-labeler-config.json
+# .github/scripts/labeling/pr-labeler-config.json
 
 name: Tag External Issues
 
@@ -66,7 +66,7 @@ jobs:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const { owner, repo } = context.repo;
-            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
+            const { h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const author = context.payload.sender.login;
             const { isExternal } = await h.checkMembership(
@@ -84,7 +84,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
-            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
+            const { h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const issue = context.payload.issue;
             // new-contributor is only meaningful on PRs, not issues
@@ -99,7 +99,7 @@ jobs:
             const { owner, repo } = context.repo;
             const issue_number = context.payload.issue.number;
 
-            const { h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
+            const { h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const label = '${{ steps.check-membership.outputs.is-external }}' === 'true'
               ? 'external' : 'internal';
@@ -139,7 +139,7 @@ jobs:
               return;
             }
 
-            const { config, h } = require('./.github/scripts/pr-labeler.js').loadAndInit(github, owner, repo, core);
+            const { config, h } = require('./.github/scripts/labeling/pr-labeler.js').loadAndInit(github, owner, repo, core);
 
             const tierLabels = ['trusted-contributor'];
             for (const name of tierLabels) {

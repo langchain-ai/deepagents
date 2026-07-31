@@ -178,7 +178,7 @@ jobs:
 
           repo = Path.cwd()
           runner_temp = Path(os.environ["RUNNER_TEMP"])
-          script = repo.parent / "trusted-source" / ".github" / "scripts" / "check_lockfiles_pre_commit.py"
+          script = repo.parent / "trusted-source" / ".github" / "scripts" / "checks" / "check_lockfiles_pre_commit.py"
           spec = importlib.util.spec_from_file_location("lockfile_check", script)
           if spec is None or spec.loader is None:
               raise RuntimeError(f"Unable to load {script}")

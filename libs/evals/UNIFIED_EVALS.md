@@ -25,7 +25,7 @@ The `prep` job writes a **run-configuration summary** — every input plus the v
 
 ## The three categories
 
-A "deep agent" is not one skill, so a single benchmark can't score one. We split the evaluation into three capability categories, and map each to one benchmark. This mapping is the source of truth in [`unified_prep.py`](../../.github/scripts/unified_prep.py) (`CATEGORY_MAP`):
+A "deep agent" is not one skill, so a single benchmark can't score one. We split the evaluation into three capability categories, and map each to one benchmark. This mapping is the source of truth in [`unified_prep.py`](../../.github/scripts/evals/unified_prep.py) (`CATEGORY_MAP`):
 
 | Category | Capability it stands for | Benchmark | Harness |
 |---|---|---|---|
@@ -99,7 +99,7 @@ Reach for the unified evals when the question is *"how good is model X, versus Y
 
 ## Changing the battery
 
-- **Category → benchmark + harness mapping, shard defaults:** `CATEGORY_MAP` and `DEFAULT_N_SHARDS` in [`unified_prep.py`](../../.github/scripts/unified_prep.py).
+- **Category → benchmark + harness mapping, shard defaults:** `CATEGORY_MAP` and `DEFAULT_N_SHARDS` in [`unified_prep.py`](../../.github/scripts/evals/unified_prep.py).
 - **Conversation subset + tiers:** [`deepagents_evals/tau3_subset.py`](deepagents_evals/tau3_subset.py) (re-run and update each `justification`).
 - **Context subset + tiers:** [`datasets/context-retrieval-evals`](datasets/context-retrieval-evals/README.md) and its `calibration.json`.
-- **Model catalog / presets:** [`.github/scripts/models.py`](../../.github/scripts/models.py) and [`MODEL_GROUPS.md`](MODEL_GROUPS.md).
+- **Model catalog / presets:** [`.github/scripts/evals/models.py`](../../.github/scripts/evals/models.py) and [`MODEL_GROUPS.md`](MODEL_GROUPS.md).

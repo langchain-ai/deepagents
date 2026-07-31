@@ -2,6 +2,12 @@
 
 # Changelog
 
+## [0.0.8](https://github.com/langchain-ai/deepagents/compare/langchain-daytona==0.0.7...langchain-daytona==0.0.8) (2026-07-29)
+
+### Bug Fixes
+
+* Require deepagents 0.7.x ([#5147](https://github.com/langchain-ai/deepagents/issues/5147)) ([e326721](https://github.com/langchain-ai/deepagents/commit/e326721d2de3bdcb01843f4bd1ef2165aefd9a7f))
+
 ## [0.0.7](https://github.com/langchain-ai/deepagents/compare/langchain-daytona==0.0.6...langchain-daytona==0.0.7) (2026-06-03)
 
 * Version bumps

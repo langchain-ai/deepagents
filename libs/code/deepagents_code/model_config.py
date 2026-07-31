@@ -3349,8 +3349,8 @@ def is_warning_suppressed(key: str, config_path: Path | None = None) -> bool:
 
     Returns:
         `True` if the warning is suppressed, `False` otherwise (including
-            when the file is missing, unreadable, or has no
-            `[warnings]` section).
+            when the file is missing, unreadable, or has a missing or
+            malformed `[warnings]` section).
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
@@ -3368,7 +3368,19 @@ def is_warning_suppressed(key: str, config_path: Path | None = None) -> bool:
         )
         return False
 
-    suppress_list = data.get("warnings", {}).get("suppress", [])
+    # A hand-edited `warnings = [...]` (or any non-table) would make the
+    # chained `.get` below raise `AttributeError`; fail open instead so a
+    # typo can never silently mute a warning.
+    warnings_section = data.get("warnings", {})
+    if not isinstance(warnings_section, dict):
+        logger.debug(
+            "[warnings] in %s should be a table, got %s",
+            config_path,
+            type(warnings_section).__name__,
+        )
+        return False
+
+    suppress_list = warnings_section.get("suppress", [])
     if not isinstance(suppress_list, list):
         logger.debug(
             "[warnings].suppress in %s should be a list, got %s",

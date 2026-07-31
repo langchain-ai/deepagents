@@ -173,6 +173,16 @@ Per-trial `evals_report_trial_NNN.json` files written by `pytest_reporter` conta
 }
 ```
 
+## Harbor LangGraph agent deps
+
+The Harbor agent config at `deepagents_harbor/langgraph_project/langgraph.json` is the source of truth for which packages the agent env installs. When changing its `dependencies` (especially provider packages):
+
+- Keep `PROVIDER_TO_PACKAGE` in `.github/scripts/evals/prune_agent_deps.py` in sync with every prunable provider package in that file.
+- Wire credentials / agent-env for new providers in the Harbor workflow.
+- Run `python -m pytest .github/scripts/tests/evals/test_prune_agent_deps.py` (also covered by CI's **Validate Release Options** job).
+
+Those tests load the real `langgraph.json` directly; do not reintroduce a hand-copied dependency fixture.
+
 ## Relationship to the `Makefile`
 
 `make evals MODEL=...` and `make evals-trials MODEL=... TRIALS=...` still work and remain the form CI invokes. The console script is a strict superset — every flag the Makefile passes through to pytest is exposed as a first-class option on `deepagents-evals run` / `trials`, plus the discovery and JSON-output features the Makefile cannot offer.

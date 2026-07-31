@@ -29,6 +29,7 @@ from deepagents_code._env_vars import (
 )
 from deepagents_code._version import __version__
 from deepagents_code.config import (
+    _assemble_langsmith_thread_url,
     _get_editable_install_path,
     _is_editable_install,
     fetch_langsmith_project_url,
@@ -36,6 +37,7 @@ from deepagents_code.config import (
     get_langsmith_project_name,
     get_langsmith_replica_project,
 )
+from deepagents_code.tui.widgets._copy_spans import copy_span_style, copy_span_target
 from deepagents_code.tui.widgets._links import open_style_link
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,9 @@ rather than by the app, so link styles use bold instead of a parsed color."""
 
 _LANGSMITH_UTM_SOURCE: Final[str] = "deepagents-code"
 """UTM source tag appended to LangSmith project URLs in the welcome banner."""
+
+_THREAD_COPY_LABEL: Final[str] = "Thread ID"
+"""Label used to word the toast shown after copying the thread ID."""
 
 
 def _langsmith_project_link(project_url: str) -> str:
@@ -170,8 +175,9 @@ class WelcomeBanner(Static):
     active model
     (`SPLASH_SHOW_MODEL`, opt-in), working directory (`SPLASH_SHOW_CWD`,
     opt-in), LangSmith tracing project and its replica (each clickable once its
-    URL resolves), thread ID (debug mode only), and the MCP tool count. MCP
-    server warnings and the editable-install path follow.
+    URL resolves), thread ID (debug mode only; click to copy, with an
+    `(open in langsmith)` trace link once the project URL resolves), and the MCP
+    tool count. MCP server warnings and the editable-install path follow.
     """
 
     # Disable Textual's auto_links to prevent a flicker cycle: Style.__add__
@@ -301,6 +307,23 @@ class WelcomeBanner(Static):
             return None
         return self._project_urls.get(project)
 
+    def _thread_url(self) -> str | None:
+        """Return the LangSmith trace URL for the current thread.
+
+        Reuses the project URL already resolved for the tracing row, so no extra
+        lookup is made.
+
+        Returns:
+            Thread trace URL, or `None` when the thread ID or project URL is
+                unavailable.
+        """
+        if not self._cli_thread_id:
+            return None
+        project_url = self._project_url(self._project_name)
+        if not project_url:
+            return None
+        return _assemble_langsmith_thread_url(project_url, self._cli_thread_id)
+
     def update_model(self, *, provider: str, model: str) -> None:
         """Track a new model and re-render when it is displayed.
 
@@ -355,13 +378,42 @@ class WelcomeBanner(Static):
         self._mcp_awaiting_reconnect = mcp_awaiting_reconnect
         self.update(self._build_banner())
 
-    def on_click(self, event: Click) -> None:  # noqa: PLR6301  # Textual event handler
-        """Open style-embedded hyperlinks on single click."""
+    def on_click(self, event: Click) -> None:
+        """Copy a marked span (e.g. the thread ID), else open a link span.
+
+        Copy spans never carry a link, so the two branches cannot both apply.
+        """
+        target = copy_span_target(event.style)
+        if target is not None:
+            event.stop()
+            self._copy_span_text(*target)
+            return
         open_style_link(event)
 
+    def _copy_span_text(self, text: str, label: str) -> None:
+        """Copy a clicked span's text to the clipboard with a toast.
+
+        Args:
+            text: The span text to copy.
+            label: The field label used to word the success toast.
+        """
+        from deepagents_code.clipboard import copy_text_to_clipboard
+
+        success, error = copy_text_to_clipboard(self.app, text)
+        if success:
+            self.app.notify(
+                f"{label} copied", severity="information", timeout=2, markup=False
+            )
+            return
+        suffix = f": {error}" if error else ""
+        self.app.notify(
+            f"Failed to copy{suffix}", severity="warning", timeout=3, markup=False
+        )
+
     def on_mouse_move(self, event: MouseMove) -> None:
-        """Show a hand pointer over link spans and reset it elsewhere."""
-        self.styles.pointer = "pointer" if event.style.link else "default"
+        """Show a hand pointer over clickable spans and reset it elsewhere."""
+        clickable = bool(event.style.link) or copy_span_target(event.style) is not None
+        self.styles.pointer = "pointer" if clickable else "default"
 
     def on_leave(self) -> None:
         """Reset the pointer shape when the mouse leaves the banner."""
@@ -377,7 +429,8 @@ class WelcomeBanner(Static):
             installs when the version is shown), followed by any applicable rows
             in order: model (when `SPLASH_SHOW_MODEL`), directory (when
             `SPLASH_SHOW_CWD`), tracing and replica (each clickable once its URL
-            resolves), thread ID (debug only), MCP tool count, MCP server
+            resolves), thread ID (debug only; click-to-copy plus a trace link
+            once the project URL resolves), MCP tool count, MCP server
             warnings, and the editable-install path.
         """
         colors = theme.get_theme_colors(self)
@@ -466,7 +519,20 @@ class WelcomeBanner(Static):
                     [("replica:   ", "dim"), (f"'{self._replica_project}'", accent)]
                 )
         if self._show_thread_id and self._cli_thread_id:
-            rows.append([("thread:    ", "dim"), (self._cli_thread_id, "dim")])
+            thread_row: list[tuple[str, str | TStyle]] = [
+                ("thread:    ", "dim"),
+                (
+                    self._cli_thread_id,
+                    TStyle(dim=True)
+                    + copy_span_style(self._cli_thread_id, _THREAD_COPY_LABEL),
+                ),
+            ]
+            thread_url = self._thread_url()
+            if thread_url:
+                thread_row.extend(
+                    [("  ", "dim"), ("(open in langsmith)", TStyle(link=thread_url))]
+                )
+            rows.append(thread_row)
         if self._mcp_tool_count > 0:
             label = "tool" if self._mcp_tool_count == 1 else "tools"
             rows.append(

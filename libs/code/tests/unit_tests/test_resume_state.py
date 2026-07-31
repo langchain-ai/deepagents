@@ -1,11 +1,13 @@
 """Tests for resume-state persistence and token display callbacks."""
 
 from types import SimpleNamespace
-from typing import Any, get_type_hints
+from typing import Any, cast, get_type_hints
 
+import pytest
 from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.messages import AIMessage, HumanMessage
 
+from deepagents_code._session_stats import SessionStats
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.resume_state import (
     ResumeState,
@@ -304,3 +306,422 @@ class TestTokenDisplayCallbacks:
 
         assert app._context_tokens == 0
         assert display_calls == [0]
+
+
+class TestCostDisplayCallbacks:
+    """Verify persisted thread cost is restored and accumulated in the TUI."""
+
+    def test_payload_restores_valid_session_cost(self) -> None:
+        payload = DeepAgentsApp._goal_rubric_payload_from_state(
+            {"_session_cost_usd": 1.25},
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+        )
+        assert payload.session_cost_usd == pytest.approx(1.25)
+
+    def test_payload_rejects_invalid_session_cost(self) -> None:
+        for value in (-1, float("nan"), "1.25", True, 10**1000):
+            payload = DeepAgentsApp._goal_rubric_payload_from_state(
+                {"_session_cost_usd": value},
+                messages=[],
+                context_tokens=0,
+                model_spec="",
+            )
+            assert payload.session_cost_usd == pytest.approx(0.0)
+
+    def test_server_total_replaces_the_displayed_value(self) -> None:
+        """The graph's absolute total is adopted outright, never added to."""
+        app = DeepAgentsApp()
+        app._session_cost_usd = 1.0
+
+        app._set_session_cost(1.25)
+
+        assert app._session_cost_usd == pytest.approx(1.25)
+        assert app._displayed_cost_usd == pytest.approx(1.25)
+
+    def test_streamed_estimate_shows_ahead_of_the_server_total(self) -> None:
+        """Spend the graph has not reported yet still moves the display."""
+        app = DeepAgentsApp()
+        app._set_session_cost(1.0)
+
+        app._add_provisional_cost(0.25)
+
+        assert app._displayed_cost_usd == pytest.approx(1.25)
+        # The server-owned figure is untouched by a client estimate.
+        assert app._session_cost_usd == pytest.approx(1.0)
+
+    def test_server_total_supersedes_provisional_estimates(self) -> None:
+        """A provisional estimate cannot be counted twice once a total lands."""
+        app = DeepAgentsApp()
+        app._set_session_cost(1.0)
+        app._add_provisional_cost(0.25)
+
+        app._set_session_cost(1.25)
+
+        assert app._displayed_cost_usd == pytest.approx(1.25)
+
+    def test_zero_cost_does_not_change_running_total(self) -> None:
+        app = DeepAgentsApp()
+        app._session_cost_usd = 1.0
+
+        app._add_provisional_cost(0.0)
+
+        assert app._displayed_cost_usd == pytest.approx(1.0)
+
+    def test_total_for_an_inactive_thread_is_discarded(self) -> None:
+        """A total in flight during `/force-clear` must not land on the new thread."""
+        app = DeepAgentsApp()
+        app._lc_thread_id = "thread-1"
+        app._set_session_cost(1.0, thread_id="thread-1")
+
+        app._set_session_cost(99.0, thread_id="thread-0")
+
+        assert app._displayed_cost_usd == pytest.approx(1.0)
+
+    def test_total_for_the_active_thread_is_applied(self) -> None:
+        app = DeepAgentsApp()
+        app._lc_thread_id = "thread-1"
+
+        app._set_session_cost(2.5, thread_id="thread-1")
+
+        assert app._displayed_cost_usd == pytest.approx(2.5)
+
+    def test_unattributed_total_is_applied(self) -> None:
+        """A restored checkpoint read names no thread and must still apply."""
+        app = DeepAgentsApp()
+        app._lc_thread_id = "thread-1"
+
+        app._set_session_cost(3.0)
+
+        assert app._displayed_cost_usd == pytest.approx(3.0)
+
+    def test_downward_reprice_lowers_the_provisional_display(self) -> None:
+        """A re-priced request must not strand the estimate it superseded."""
+        app = DeepAgentsApp()
+        app._set_session_cost(1.0)
+        app._add_provisional_cost(0.1545)
+
+        app._add_provisional_cost(-0.1512)
+
+        assert app._displayed_cost_usd == pytest.approx(1.0033)
+
+    def test_provisional_total_never_goes_below_the_server_total(self) -> None:
+        """Clamping the accumulator, not the increment, keeps retractions honest."""
+        app = DeepAgentsApp()
+        app._set_session_cost(1.0)
+        app._add_provisional_cost(0.25)
+
+        app._add_provisional_cost(-10.0)
+
+        assert app._displayed_cost_usd == pytest.approx(1.0)
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), "0.5", True, None])
+    def test_malformed_provisional_delta_is_ignored(self, value: object) -> None:
+        app = DeepAgentsApp()
+        app._set_session_cost(1.0)
+
+        app._add_provisional_cost(cast("float", value))
+
+        assert app._displayed_cost_usd == pytest.approx(1.0)
+
+    def test_streamed_pricing_health_is_remembered(self) -> None:
+        """Pricing runs server-side, so only the event can report it broken."""
+        app = DeepAgentsApp()
+        app._lc_thread_id = "thread-1"
+
+        app._set_session_cost(1.0, thread_id="thread-1", pricing_ok=False)
+
+        assert app._pricing_is_broken() is True
+
+    def test_unreported_pricing_health_leaves_the_last_value(self) -> None:
+        """A checkpoint read says nothing about pricing and must not erase it."""
+        app = DeepAgentsApp()
+        app._lc_thread_id = "thread-1"
+        app._set_session_cost(1.0, thread_id="thread-1", pricing_ok=False)
+
+        app._set_session_cost(2.0)
+
+        assert app._pricing_is_broken() is True
+
+    def test_committed_state_lowers_an_optimistic_display(self) -> None:
+        """The client defers to the checkpoint instead of pushing its own total."""
+        app = DeepAgentsApp()
+        app._set_session_cost(1.0)
+        app._add_provisional_cost(0.5)
+
+        app._sync_session_cost_from_state({"_session_cost_usd": 1.1})
+
+        assert app._displayed_cost_usd == pytest.approx(1.1)
+
+    def test_state_without_a_cost_channel_leaves_the_display_alone(self) -> None:
+        app = DeepAgentsApp()
+        app._set_session_cost(1.0)
+
+        app._sync_session_cost_from_state({"messages": []})
+
+        assert app._displayed_cost_usd == pytest.approx(1.0)
+
+    def test_cost_summary_guides_fresh_thread(self) -> None:
+        app = DeepAgentsApp()
+
+        summary = app._format_cost_summary()
+
+        assert summary == "No model usage recorded for this thread yet."
+
+    def test_cost_summary_explains_unreported_usage_after_completed_turn(self) -> None:
+        app = DeepAgentsApp()
+        app._thread_has_completed_turn = True
+
+        summary = app._format_cost_summary()
+
+        assert summary == (
+            "We couldn't track the requests so far because the provider didn't "
+            "report token usage. Requests from providers that report usage will "
+            "appear here."
+        )
+
+    async def test_resumed_zero_cost_usage_is_not_reported_as_unused(self) -> None:
+        """Checkpoint history preserves usage when its total cannot prove it."""
+        from deepagents_code.app import _ThreadHistoryPayload
+
+        app = DeepAgentsApp(thread_id="thread-1")
+        payload = _ThreadHistoryPayload(
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+            session_cost_usd=0.0,
+            transcript_messages=(AIMessage(content=""),),
+        )
+
+        await app._load_thread_history(
+            thread_id="thread-1",
+            preloaded_payload=payload,
+        )
+
+        assert app._thread_stats.request_count == 0
+        assert app._format_cost_summary() == (
+            "Cost estimate unavailable\n\n"
+            "Earlier model usage was restored for this thread, but its request "
+            "and pricing details were not persisted. This does not mean the usage "
+            "was free."
+        )
+
+    def test_cost_summary_guides_thread_with_unpriced_usage(self) -> None:
+        stats = SessionStats()
+        stats.record_request("unknown-model", 100, 10, provider="example")
+        app = DeepAgentsApp()
+        app._thread_stats = stats
+
+        summary = app._format_cost_summary()
+
+        assert summary == (
+            "We couldn't calculate costs for the requests so far because pricing "
+            "isn't available for the models used. Unpriced usage may still count "
+            "toward subscription limits or incur charges."
+        )
+
+    def test_cost_summary_blames_the_pricing_install_when_it_failed_to_load(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broken `genai-prices` makes every model unpriceable.
+
+        Reporting that as missing catalog coverage points the user at their
+        model choice instead of the one thing they can actually fix.
+        """
+        from deepagents_code import cost_tracking
+
+        monkeypatch.setattr(cost_tracking, "_PRICING_UNAVAILABLE", True)
+        stats = SessionStats()
+        stats.record_request("gpt-5.5", 100, 10, provider="openai")
+        app = DeepAgentsApp()
+        app._thread_stats = stats
+
+        summary = app._format_cost_summary()
+
+        assert "pricing data failed to load" in summary
+        assert "Reinstalling Deep Agents Code" in summary
+        assert "pricing isn't available for the models used" not in summary
+
+    def test_cost_summary_includes_total_and_type_model_breakdown(self) -> None:
+        stats = SessionStats()
+        stats.record_request(
+            "gpt-5.5",
+            1_000,
+            100,
+            provider="openai",
+            cost_usd=0.32,
+            kind="assistant",
+        )
+        stats.record_request(
+            "gpt-5.5",
+            200,
+            20,
+            provider="openai",
+            cost_usd=0.10,
+            kind="offload",
+        )
+        process_stats = SessionStats()
+        process_stats.record_request(
+            "claude-sonnet-4-6",
+            1_000,
+            100,
+            provider="anthropic",
+            cost_usd=2.0,
+        )
+        app = DeepAgentsApp()
+        app._session_cost_usd = 0.42
+        app._thread_stats = stats
+        app._session_stats = process_stats
+
+        summary = app._format_cost_summary()
+
+        assert "Estimated thread cost: $0.42" in summary
+        assert "By type since this thread was loaded:" in summary
+        assert "Assistant: $0.32" in summary
+        assert "Offload: $0.10" in summary
+        assert "openai:gpt-5.5: $0.42" in summary
+        assert "claude-sonnet-4-6" not in summary
+        assert "detailed usage metadata was unavailable" not in summary
+
+    def test_cost_summary_warns_when_current_details_are_incomplete(self) -> None:
+        """Checkpoint spend missing from streamed stats is called out."""
+        stats = SessionStats()
+        stats.record_request(
+            "gpt-5.5",
+            1_000,
+            100,
+            provider="openai",
+            cost_usd=0.32,
+        )
+        app = DeepAgentsApp()
+        app._reset_thread_usage(1.0)
+        app._thread_stats = stats
+        # The graph charged another $0.10 that the client message stream did
+        # not expose, in addition to the represented $0.32.
+        app._set_session_cost(1.42)
+
+        summary = app._format_cost_summary()
+
+        assert "Estimated thread cost: $1.42" in summary
+        assert "openai:gpt-5.5: $0.32" in summary
+        assert (
+            "Some current-session usage is included only in the total because "
+            "detailed usage metadata was unavailable."
+        ) in summary
+
+    def test_missing_current_details_are_not_labeled_as_restored(self) -> None:
+        """Fresh-thread usage without details gets only the current warning."""
+        app = DeepAgentsApp()
+        app._set_session_cost(0.20)
+
+        summary = app._format_cost_summary()
+
+        assert "Estimated thread cost: $0.20" in summary
+        assert "restored usage" not in summary.lower()
+        assert "detailed usage metadata was unavailable" in summary
+
+    def test_cost_summary_marks_restored_usage_outside_breakdown(self) -> None:
+        stats = SessionStats()
+        stats.record_request(
+            "gpt-5.5",
+            1_000,
+            100,
+            provider="openai",
+            cost_usd=0.42,
+        )
+        app = DeepAgentsApp()
+        app._reset_thread_usage(1.0)
+        app._thread_stats = stats
+        app._set_session_cost(1.42)
+
+        summary = app._format_cost_summary()
+
+        assert "Estimated thread cost: $1.42" in summary
+        assert "openai:gpt-5.5: $0.42" in summary
+        assert "Restored usage is included only in the total above." in summary
+
+    def test_cost_summary_distinguishes_zero_priced_and_unknown_requests(self) -> None:
+        stats = SessionStats()
+        stats.record_request(
+            "free-model",
+            100,
+            10,
+            provider="example",
+            cost_usd=0.0,
+        )
+        stats.record_request("unknown-model", 100, 10, provider="example")
+        app = DeepAgentsApp()
+        app._thread_stats = stats
+
+        summary = app._format_cost_summary()
+
+        assert "Estimated cost for priced requests: $0.00" in summary
+        assert "1 of 2 recorded requests is included." in summary
+        assert "example:unknown-model — 1 request" in summary
+        assert "The full thread cost may be higher." in summary
+        assert "example:free-model: $0.00" in summary
+        assert "The recorded request was priced at $0.00." not in summary
+
+    @pytest.mark.parametrize(
+        ("request_count", "expected"),
+        [
+            (1, "The recorded request was priced at $0.00."),
+            (2, "All 2 recorded requests were priced at $0.00."),
+        ],
+    )
+    def test_cost_summary_explains_fully_priced_zero_cost(
+        self,
+        request_count: int,
+        expected: str,
+    ) -> None:
+        stats = SessionStats()
+        for _ in range(request_count):
+            stats.record_request(
+                "free-model",
+                100,
+                10,
+                provider="example",
+                cost_usd=0.0,
+            )
+        app = DeepAgentsApp()
+        app._thread_stats = stats
+
+        summary = app._format_cost_summary()
+
+        assert "Estimated thread cost: $0.00" in summary
+        assert "example:free-model: $0.00" in summary
+        assert expected in summary
+        assert "Your provider's bill may still differ" in summary
+
+    async def test_checkpoint_reconcile_never_writes_cost(self) -> None:
+        """The client reads the graph's total; it never back-fills the channel."""
+        from unittest.mock import AsyncMock
+
+        app = DeepAgentsApp()
+        app._agent = object()
+        app._lc_thread_id = "thread-1"
+        app._set_session_cost(1.0)
+        app._add_provisional_cost(0.25)
+        app._get_thread_state_values = AsyncMock(
+            return_value={"_session_cost_usd": 1.5}
+        )
+        app._aupdate_thread_state = AsyncMock()
+
+        await app._sync_session_cost_from_checkpoint()
+
+        assert app._displayed_cost_usd == pytest.approx(1.5)
+        app._aupdate_thread_state.assert_not_awaited()
+
+    async def test_failed_state_read_keeps_the_displayed_cost(self) -> None:
+        from unittest.mock import AsyncMock
+
+        app = DeepAgentsApp()
+        app._agent = object()
+        app._lc_thread_id = "thread-1"
+        app._set_session_cost(1.0)
+        app._get_thread_state_values = AsyncMock(side_effect=RuntimeError("no server"))
+
+        await app._sync_session_cost_from_checkpoint()
+
+        assert app._displayed_cost_usd == pytest.approx(1.0)

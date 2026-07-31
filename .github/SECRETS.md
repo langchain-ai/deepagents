@@ -62,6 +62,7 @@ This environment is used by standard evals, Harbor evals, unified evals, and clb
 | `OLLAMA_API_KEY` | Ollama Cloud models selected by an eval matrix. |
 | `OPENAI_API_KEY` | OpenAI models and Harbor judges or verifiers. |
 | `OPENROUTER_API_KEY` | OpenRouter-hosted models selected by an eval matrix. |
+| `TAVILY_API_KEY` | Tavily-backed `web_search` (under OSS integrations account). |
 | `XAI_API_KEY` | xAI models selected by an eval matrix. |
 
 The current `LANGSMITH_API_KEY` needs this practical permission union for the repository's locked eval clients:
@@ -91,20 +92,20 @@ This environment is intentionally uncredentialed. `.github/workflows/integration
 
 Will expand as needed.
 
-### `release-dcode`
+### `release-bot`
 
-This environment supports curated Deep Agents Code release-note drafting.
+This environment supports curated release-note drafting for every release-please
+managed package.
 
 | Secret | Condition | Purpose |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | `DCODE_RELEASE_MODEL` starts with `openai:` | Draft structured release notes with OpenAI. |
+| `OPENAI_API_KEY` | `RELEASE_BOT_MODEL` starts with `openai:` | Draft structured release notes with OpenAI. |
 
 | Actions variable | Value | Type | Purpose |
 | --- | --- | --- | --- |
-| `DCODE_RELEASE_CLI_VERSION` | Variable | Environment | `deepagents-code` version to use. |
-| `DCODE_RELEASE_MODEL` | Variable | Environment | Model used for changelog generation. |
-| `DCODE_RELEASE_BOT_ID` | - | Repository | GitHub App bot account user ID. |
-| `DCODE_RELEASE_BOT_LOGIN` | `langchain-oss-automated-triage[bot]` | Repository | Login ID. |
+| `RELEASE_BOT_MODEL` | Variable | Environment | Model used for changelog generation (`provider:model`). Must support JSON Schema structured output and a 32,768-token output ceiling. For `openai:…`, use a Chat Completions model. See [RELEASING.md](RELEASING.md) for the exact list. |
+| `RELEASE_BOT_ID` | - | Repository | GitHub App bot account user ID. |
+| `RELEASE_BOT_LOGIN` | `langchain-oss-automated-triage[bot]` | Repository | Login ID. |
 
 Of the model-provider credentials, only the credential for the configured provider is required. Prefer a provider project or service-account key limited to model inference, with model allowlists and spend limits where supported. The workflow also uses the repository GitHub App credentials for repository mutations.
 

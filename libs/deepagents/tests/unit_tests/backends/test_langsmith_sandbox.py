@@ -6,6 +6,7 @@ import base64
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from langsmith.sandbox import ResourceNotFoundError, SandboxClientError
 
 from deepagents.backends import sandbox as base_sandbox
@@ -315,6 +316,43 @@ def test_read_offset_exceeds_length() -> None:
 
     assert result.error is not None
     assert "offset" in result.error.lower()
+
+
+@pytest.mark.parametrize("limit", [0, -3])
+def test_read_non_positive_limit_returns_empty_read(limit: int) -> None:
+    """A degenerate `limit` reads nothing instead of raising on the line range.
+
+    A negative `limit` is covered separately from `0`: the guard in `read()` is
+    what makes this hold, and a clamp-dependent `== 0` check would pass the
+    zero case while raising on the negative one.
+    """
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line1\nline2\nline3"
+
+    result = sb.read("/app/test.txt", limit=limit)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+    assert result.total_lines is None
+    assert result.start_line is None
+    assert result.end_line is None
+    assert result.next_offset is None
+
+
+def test_read_negative_offset_starts_at_first_line() -> None:
+    """A negative offset is clamped to the start of the file instead of erroring."""
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line1\nline2\nline3"
+
+    result = sb.read("/app/test.txt", offset=-1, limit=2)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "line1\nline2"
+    assert result.start_line == 1
+    assert result.end_line == 2
+    assert result.next_offset == 2
 
 
 def test_read_normalizes_crlf_to_lf() -> None:

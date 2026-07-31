@@ -1,5 +1,4 @@
 import mimetypes
-import string
 import time
 from unittest.mock import MagicMock, patch
 
@@ -42,20 +41,18 @@ from deepagents.backends.utils import (
 )
 from deepagents.middleware._message_eviction import (
     PREVIEW_LINE_CHAR_LIMIT,
-    TOO_LARGE_TOOL_MSG,
     TRUNCATION_MARKER_TEMPLATE,
     _build_evicted_content,
     _create_content_preview,
     _extract_text_from_message,
     _preview_note,
-    render_too_large_tool_msg,
+    _render_too_large_tool_msg,
 )
 from deepagents.middleware.filesystem import (
     EMPTY_CONTENT_WARNING,
     GLOB_TRUNCATION_NOTE,
     GREP_TRUNCATION_NOTE,
     NO_LINES_REQUESTED_WARNING,
-    TOO_LARGE_HUMAN_MSG,
     FileData,
     FilesystemMiddleware,
     FilesystemPermission,
@@ -3189,7 +3186,7 @@ class TestPreviewNote:
 
 
 class TestTruncatedHumanMessage:
-    """`TOO_LARGE_HUMAN_MSG` describes *content*, not a tool *result*."""
+    """The truncated-human-message stub describes *content*, not a tool *result*."""
 
     def test_explains_marker_and_names_content_as_the_subject(self):
         message = HumanMessage(content="\n".join(f"line {i}" for i in range(50)), id="h1")
@@ -3218,25 +3215,9 @@ class TestTruncatedHumanMessage:
         assert "of the content (" in result.content
 
 
-class TestTooLargeTemplateContract:
-    """The stub templates are importable from `middleware.filesystem`, so pin their keys."""
-
-    @pytest.mark.parametrize(
-        ("template", "expected_keys"),
-        [
-            (TOO_LARGE_TOOL_MSG, {"tool_call_id", "file_path", "preview_note", "content_sample"}),
-            (TOO_LARGE_HUMAN_MSG, {"file_path", "preview_note", "content_sample"}),
-        ],
-    )
-    def test_placeholder_set_is_pinned(self, template: str, expected_keys: set[str]):
-        """Adding or removing a placeholder breaks every caller's `.format()`."""
-        keys = {name for _, name, _, _ in string.Formatter().parse(template) if name}
-
-        assert keys == expected_keys
-
+class TestTooLargeToolMessage:
     def test_render_helper_pairs_note_with_its_own_preview(self):
-        """`render_too_large_tool_msg` is the way to fill the template consistently."""
-        rendered = render_too_large_tool_msg(
+        rendered = _render_too_large_tool_msg(
             tool_call_id="call_1",
             file_path="/large_tool_results/call_1",
             content_str="\n".join(f"line {i}" for i in range(50)),

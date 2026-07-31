@@ -73,7 +73,7 @@ from deepagents.backends.utils import (
     validate_path,
 )
 from deepagents.middleware._message_eviction import (
-    TOO_LARGE_TOOL_MSG as TOO_LARGE_TOOL_MSG,
+    _TOO_LARGE_TOOL_MSG,
     _aoffload_tool_message_content,
     _create_content_preview,
     _extract_text_from_message,
@@ -1244,7 +1244,7 @@ TOOLS_EXCLUDED_FROM_EVICTION = (
 )
 
 
-TOO_LARGE_HUMAN_MSG = """Message content too large and was saved to the filesystem at: {file_path}
+_TOO_LARGE_HUMAN_MSG = """Message content too large and was saved to the filesystem at: {file_path}
 
 You can read the full content using the read_file tool with pagination (offset and limit parameters).
 
@@ -1295,7 +1295,7 @@ def _build_truncated_human_message(message: HumanMessage, file_path: str) -> Hum
     """
     content_str = _extract_text_from_message(message)
     preview = _create_content_preview(content_str)
-    replacement_text = TOO_LARGE_HUMAN_MSG.format(
+    replacement_text = _TOO_LARGE_HUMAN_MSG.format(
         file_path=file_path,
         preview_note=_preview_note(
             lines_omitted=preview.lines_omitted,
@@ -2550,7 +2550,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if response.truncated:
             status_line += "\n[Output exceeded the capture size limit and was truncated; the saved file is incomplete]"
         content_sample = f"{status_line}\n{response.output}"
-        return TOO_LARGE_TOOL_MSG.format(
+        return _TOO_LARGE_TOOL_MSG.format(
             tool_call_id=tool_call_id,
             file_path=capture_path,
             # The wrapper clips whole bytes, never individual lines, and says so

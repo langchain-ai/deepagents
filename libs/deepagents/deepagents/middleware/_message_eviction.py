@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
     from deepagents.backends.protocol import BackendProtocol
 
-TOO_LARGE_TOOL_MSG = """Tool result too large, the result of this tool call {tool_call_id} was saved in the filesystem at this path: {file_path}
+_TOO_LARGE_TOOL_MSG = """Tool result too large, the result of this tool call {tool_call_id} was saved in the filesystem at this path: {file_path}
 
 You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
 
@@ -204,13 +204,11 @@ def _build_evicted_tool_message(message: ToolMessage, evicted_content: str | lis
     )
 
 
-def render_too_large_tool_msg(*, tool_call_id: str, file_path: str, content_str: str) -> str:
-    """Render the `TOO_LARGE_TOOL_MSG` stub for `content_str`.
+def _render_too_large_tool_msg(*, tool_call_id: str, file_path: str, content_str: str) -> str:
+    """Render the large-tool-result stub for `content_str`.
 
-    The sanctioned way to fill `TOO_LARGE_TOOL_MSG`: it derives the preview and
-    its matching note together, so the note can never describe a different
-    preview than the one shown. Prefer this over formatting the template
-    directly.
+    Derive the preview and its matching note together so the note cannot
+    describe a different preview than the one shown.
 
     Args:
         tool_call_id: Tool call whose result was offloaded.
@@ -221,7 +219,7 @@ def render_too_large_tool_msg(*, tool_call_id: str, file_path: str, content_str:
         The rendered stub, ready to use as message content.
     """
     preview = _create_content_preview(content_str)
-    return TOO_LARGE_TOOL_MSG.format(
+    return _TOO_LARGE_TOOL_MSG.format(
         tool_call_id=tool_call_id,
         file_path=file_path,
         preview_note=_preview_note(lines_omitted=preview.lines_omitted, lines_clipped=preview.lines_clipped),
@@ -238,7 +236,7 @@ def _offload_tool_message_content(
     """Write `content_str` to `{prefix}/{tool_call_id}` and return a clipped replacement.
 
     The replacement carries a head+tail preview and the offload path in
-    `TOO_LARGE_TOOL_MSG` format so the agent can `read_file` the full content
+    large-tool-result format so the agent can `read_file` the full content
     by tool_call_id. Returns `None` if the backend write fails — caller should
     keep the original message in that case.
     """
@@ -247,7 +245,7 @@ def _offload_tool_message_content(
     result = backend.write(file_path, content_str)
     if result is None or result.error:
         return None
-    replacement_text = render_too_large_tool_msg(tool_call_id=message.tool_call_id, file_path=file_path, content_str=content_str)
+    replacement_text = _render_too_large_tool_msg(tool_call_id=message.tool_call_id, file_path=file_path, content_str=content_str)
     return _build_evicted_tool_message(message, _build_evicted_content(message, replacement_text))
 
 
@@ -263,5 +261,5 @@ async def _aoffload_tool_message_content(
     result = await backend.awrite(file_path, content_str)
     if result is None or result.error:
         return None
-    replacement_text = render_too_large_tool_msg(tool_call_id=message.tool_call_id, file_path=file_path, content_str=content_str)
+    replacement_text = _render_too_large_tool_msg(tool_call_id=message.tool_call_id, file_path=file_path, content_str=content_str)
     return _build_evicted_tool_message(message, _build_evicted_content(message, replacement_text))

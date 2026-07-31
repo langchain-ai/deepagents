@@ -18,6 +18,7 @@ from deepagents_code.hooks.capabilities import (
 )
 from deepagents_code.hooks.env import HOOK_SUBPROCESS_TIMEOUT
 from deepagents_code.hooks.loading import (
+    PluginHooksSource,
     canonical_hooks_bytes,
     compute_snapshot_id,
     load_hooks_config,
@@ -45,6 +46,20 @@ def test_registry_covers_all_hook_events() -> None:
     ).default_timeout_seconds == pytest.approx(30.0)
     assert get_event_spec(HookEvent.PRE_COMPACT).matcher_field == "trigger"
     assert get_event_spec(HookEvent.PRE_COMPACT).owner is HookOwner.SERVER
+
+
+def test_plugin_source_uses_windows_environment_references(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = PluginHooksSource(
+        location="hooks.json", plugin_id="plugin@market", env={"PLUGIN_ROOT": "ignored"}
+    )
+    monkeypatch.setattr("deepagents_code.hooks.loading.os.name", "nt")
+
+    assert (
+        source.resolve_variables('"${PLUGIN_ROOT}/check.cmd"', shell_syntax=True)
+        == '"%PLUGIN_ROOT%/check.cmd"'
+    )
 
 
 def test_load_hooks_config_precedence_and_snapshot_hash(tmp_path: Path) -> None:

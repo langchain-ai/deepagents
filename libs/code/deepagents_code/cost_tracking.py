@@ -87,6 +87,39 @@ _PROVIDER_ALIASES: dict[str, str] = {
 _UNPRICEABLE_PROVIDERS: frozenset[str] = frozenset({"openai_codex"})
 """Providers whose access model is not equivalent to per-token API billing."""
 
+_CONFIGURED_PROVIDER_METADATA_KEY = "deepagents_code_configured_provider"
+"""Model metadata key preserving the provider selected by `create_model`."""
+
+
+def _set_configured_provider_metadata(model: object, provider: str) -> None:
+    """Attach the configured provider to every request made by a model.
+
+    LangChain provider integrations can report a generic backend in response
+    metadata: Azure and the Codex subscription model both report `openai`.
+    Model metadata reaches `on_chat_model_start`, so recording the configured
+    provider there preserves the distinction for main, side, and nested calls.
+
+    Args:
+        model: Chat model whose callback metadata should carry the provider.
+        provider: Provider selected while constructing the model.
+    """
+    if not provider:
+        return
+    try:
+        current = getattr(model, "metadata", None)
+        metadata = dict(current) if isinstance(current, Mapping) else {}
+        metadata[_CONFIGURED_PROVIDER_METADATA_KEY] = provider
+        model.metadata = metadata  # ty: ignore[unresolved-attribute]
+    except Exception:
+        # Cost estimation is best-effort and must never make a usable model fail
+        # construction. The response metadata and main-message fallback still
+        # cover providers whose model object rejects metadata assignment.
+        logger.debug(
+            "Could not attach configured provider metadata to %s",
+            type(model).__name__,
+            exc_info=True,
+        )
+
 
 def _resolve_pricing_provider(provider: object, fallback_provider: str) -> str:
     """Resolve response metadata without losing a configured provider alias.
@@ -279,6 +312,17 @@ class _ModelCallRecord:
     """Provider named by the response, or `""` when it named none."""
 
 
+@dataclass(frozen=True, slots=True)
+class _ModelCallContext:
+    """Request metadata retained until its model callback completes."""
+
+    thread_id: str
+    """Thread that owns the request's eventual cost."""
+
+    configured_provider: str
+    """Provider selected for this request, or `""` when unavailable."""
+
+
 class _SessionCostRecorder(BaseCallbackHandler):
     """Collect completed model requests per thread for the graph to price.
 
@@ -300,7 +344,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
     def __init__(self) -> None:
         """Initialize empty per-run and per-thread state."""
         self._lock = threading.Lock()
-        self._run_threads: OrderedDict[UUID, str] = OrderedDict()
+        self._run_contexts: OrderedDict[UUID, _ModelCallContext] = OrderedDict()
         self._records: OrderedDict[str, list[_ModelCallRecord]] = OrderedDict()
 
     def _start(self, run_id: UUID, metadata: Mapping[str, Any] | None) -> None:
@@ -315,12 +359,21 @@ class _SessionCostRecorder(BaseCallbackHandler):
             # Without a thread there is nothing to attribute the cost to. The
             # middleware still prices the agent's own response from state.
             return
+        provider = (
+            metadata.get(_CONFIGURED_PROVIDER_METADATA_KEY)
+            if metadata is not None
+            else None
+        )
+        configured_provider = provider if isinstance(provider, str) and provider else ""
         with self._lock:
-            self._run_threads[run_id] = thread_id
+            self._run_contexts[run_id] = _ModelCallContext(
+                thread_id=thread_id,
+                configured_provider=configured_provider,
+            )
             # A request that neither completes nor errors (a cancelled turn)
             # leaves its entry behind, so evict the oldest rather than growing.
-            while len(self._run_threads) > _MAX_INFLIGHT_REQUESTS:
-                self._run_threads.popitem(last=False)
+            while len(self._run_contexts) > _MAX_INFLIGHT_REQUESTS:
+                self._run_contexts.popitem(last=False)
 
     def on_chat_model_start(
         self,
@@ -355,24 +408,27 @@ class _SessionCostRecorder(BaseCallbackHandler):
     ) -> None:
         """Record the completed request's usage for its thread."""
         with self._lock:
-            thread_id = self._run_threads.pop(run_id, None)
-        if thread_id is None:
+            context = self._run_contexts.pop(run_id, None)
+        if context is None:
             return
         try:
-            record = _record_from_response(response)
+            record = _record_from_response(
+                response,
+                configured_provider=context.configured_provider,
+            )
         except Exception:
             logger.debug("Could not read usage from a model response", exc_info=True)
             return
         if record is None:
             return
         with self._lock:
-            while thread_id not in self._records and (
+            while context.thread_id not in self._records and (
                 len(self._records) >= _MAX_TRACKED_THREADS
             ):
                 self._records.popitem(last=False)
                 logger.debug("Dropped undrained cost records for an inactive thread")
-            records = self._records.setdefault(thread_id, [])
-            self._records.move_to_end(thread_id)
+            records = self._records.setdefault(context.thread_id, [])
+            self._records.move_to_end(context.thread_id)
             records.append(record)
             if len(records) > _MAX_RECORDS_PER_THREAD:
                 del records[:-_MAX_RECORDS_PER_THREAD]
@@ -387,7 +443,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
     ) -> None:
         """Forget a failed request so its run entry cannot leak."""
         with self._lock:
-            self._run_threads.pop(run_id, None)
+            self._run_contexts.pop(run_id, None)
 
     def drain(self, thread_id: str) -> list[_ModelCallRecord]:
         """Remove and return the records collected for one thread.
@@ -402,8 +458,16 @@ class _SessionCostRecorder(BaseCallbackHandler):
             return self._records.pop(thread_id, [])
 
 
-def _record_from_response(response: LLMResult) -> _ModelCallRecord | None:
+def _record_from_response(
+    response: LLMResult,
+    *,
+    configured_provider: str = "",
+) -> _ModelCallRecord | None:
     """Build a pricing record from a completed model response.
+
+    Args:
+        response: Completed LangChain model response containing usage metadata.
+        configured_provider: Provider selected for this specific request.
 
     Returns:
         The record, or `None` when the response carries no usage to price.
@@ -421,7 +485,10 @@ def _record_from_response(response: LLMResult) -> _ModelCallRecord | None:
                 usage_metadata = candidate_usage
     if message is None or not isinstance(usage_metadata, Mapping):
         return None
-    model_name, provider = resolve_message_model(message)
+    model_name, provider = resolve_message_model(
+        message,
+        fallback_provider=configured_provider,
+    )
     message_id = getattr(message, "id", None)
     return _ModelCallRecord(
         message_id=message_id if isinstance(message_id, str) and message_id else None,

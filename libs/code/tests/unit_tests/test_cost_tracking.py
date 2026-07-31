@@ -26,12 +26,14 @@ from langgraph.types import Overwrite
 
 from deepagents_code._fake_models import _ToolBindingFakeModel
 from deepagents_code.cost_tracking import (
+    _CONFIGURED_PROVIDER_METADATA_KEY,
     _RECORDER_VAR,
     SESSION_COST_EVENT_TYPE,
     CostState,
     CostTrackingMiddleware,
     _ModelCallRecord,
     _SessionCostRecorder,
+    _set_configured_provider_metadata,
     estimate_cost,
     resolve_message_model,
 )
@@ -145,14 +147,18 @@ def _collect(
     record: _ModelCallRecord,
     *,
     thread_id: str = THREAD_ID,
+    configured_provider: str = "",
 ) -> None:
     """Put one already-built record into a recorder's pending queue."""
     run_id = uuid4()
+    metadata = {"thread_id": thread_id}
+    if configured_provider:
+        metadata[_CONFIGURED_PROVIDER_METADATA_KEY] = configured_provider
     recorder.on_chat_model_start(
         {},
         [],
         run_id=run_id,
-        metadata={"thread_id": thread_id},
+        metadata=metadata,
     )
     recorder.on_llm_end(
         LLMResult(
@@ -611,6 +617,55 @@ class TestCostTrackingMiddleware:
     @pytest.mark.parametrize(
         ("configured_provider", "expected_delta"),
         [
+            pytest.param("azure_openai", 0.42, id="azure"),
+            pytest.param("openai_codex", None, id="codex-subscription"),
+        ],
+    )
+    def test_hidden_openai_response_uses_its_configured_provider(
+        self,
+        recorder: _SessionCostRecorder,
+        monkeypatch: pytest.MonkeyPatch,
+        configured_provider: str,
+        expected_delta: float | None,
+    ) -> None:
+        """A side call retains its provider without sharing the main message ID."""
+        from deepagents_code import cost_tracking
+
+        pricing_targets: list[tuple[str, str]] = []
+
+        def price(
+            usage_metadata: object,
+            model_name: str,
+            provider: str = "",
+        ) -> float | None:
+            assert usage_metadata
+            pricing_targets.append((model_name, provider))
+            return None if provider == "openai_codex" else 0.42
+
+        monkeypatch.setattr(cost_tracking, "estimate_cost", price)
+        _collect(
+            recorder,
+            _record(message_id="summary-1", model="gpt-5.4", provider="openai"),
+            configured_provider=configured_provider,
+        )
+        middleware = CostTrackingMiddleware()
+        state: CostState = {
+            "messages": [_message(_usage(), model="gpt-5.4", provider="openai")],
+            "_model_spec": f"{configured_provider}:gpt-5.4",
+        }
+
+        result = middleware.after_agent(state, _runtime(thread_id=THREAD_ID))
+
+        assert pricing_targets == [("gpt-5.4", configured_provider)]
+        if expected_delta is None:
+            assert result is None
+        else:
+            assert result is not None
+            assert result["_session_cost_usd"] == pytest.approx(expected_delta)
+
+    @pytest.mark.parametrize(
+        ("configured_provider", "expected_delta"),
+        [
             pytest.param("azure_openai", 0.67, id="azure"),
             pytest.param("openai_codex", 0.25, id="codex-subscription"),
         ],
@@ -648,6 +703,7 @@ class TestCostTrackingMiddleware:
                 model=KNOWN_MODEL,
                 provider=KNOWN_PROVIDER,
             ),
+            configured_provider=KNOWN_PROVIDER,
         )
         _collect(
             recorder,
@@ -656,6 +712,7 @@ class TestCostTrackingMiddleware:
                 model="gpt-5.4",
                 provider="openai",
             ),
+            configured_provider=configured_provider,
         )
         middleware = CostTrackingMiddleware()
         state: CostState = {
@@ -739,6 +796,34 @@ class TestSessionCostRecorder:
         )
 
         assert len(recorder.drain(THREAD_ID)) == 1
+
+    async def test_model_provider_metadata_survives_side_invoke_metadata(
+        self, recorder: _SessionCostRecorder
+    ) -> None:
+        """Per-call metadata must not erase the provider attached to the model."""
+        model = _fake_model(
+            _message(
+                _usage(),
+                model="gpt-5.4",
+                provider="openai",
+                message_id="summary-1",
+            )
+        )
+        _set_configured_provider_metadata(model, "openai_codex")
+
+        await model.ainvoke(
+            "summarize",
+            config={
+                "metadata": {
+                    "thread_id": THREAD_ID,
+                    "lc_source": "summarization",
+                }
+            },
+        )
+
+        records = recorder.drain(THREAD_ID)
+        assert len(records) == 1
+        assert records[0].provider == "openai_codex"
 
     def test_request_without_a_thread_is_not_recorded(
         self, recorder: _SessionCostRecorder

@@ -16,23 +16,15 @@ if TYPE_CHECKING:
 
 GOAL_CONTROL_MESSAGE_SOURCE: Final = "goal_control"
 GOAL_STATE_MESSAGE_SOURCE: Final = "goal_state"
-GOAL_MESSAGE_SCHEMA_VERSION: Final = 2
+GOAL_MESSAGE_SCHEMA_VERSION: Final = 3
 """Canonical goal-message schema version.
 
 Bump this whenever notice *content* changes in a way that makes an already
 checkpointed notice misleading rather than merely stale. `goal_state_notice_info`
 rejects any other version, so a resumed thread's outdated notice stops counting
 as authoritative and the next model boundary appends a current one. Version 2
-dropped the `get_goal`/`get_rubric` references version 1 notices carried.
-"""
-
-EMBEDDED_TEXT_LIMIT: Final = 4000
-"""Max characters of user-controlled text embedded per notice section.
-
-The notice is re-pinned into every model request and its channel is append-only,
-so unbounded objective or criteria text would grow the context on every
-fingerprint change. Truncation is marked explicitly so the model can tell it is
-reading a prefix rather than the whole text.
+dropped the `get_goal`/`get_rubric` references version 1 notices carried, and
+version 3 stopped truncating the only model-visible objective and rubric text.
 """
 _GOAL_MESSAGE_SCHEMA_KEY: Final = "goal_message_schema_version"
 _GOAL_MESSAGE_KIND_KEY: Final = "goal_message_kind"
@@ -375,23 +367,12 @@ def has_goal_or_rubric_state(state: Mapping[str, object]) -> bool:
 
 
 def _embedded_text(value: str) -> str:
-    """Escape and length-bound user-controlled text for notice embedding.
-
-    Slices before escaping so a truncation can never split an HTML entity. The
-    marker says the untruncated text still applies because it does: grading reads
-    the rubric from state, not from this notice, and there is no read tool left for
-    the model to fetch the remainder with.
+    """Escape user-controlled text for notice embedding.
 
     Returns:
-        Escaped text, followed by an explicit marker when it was truncated.
+        Escaped text safe to place within the notice's boundary tags.
     """
-    if len(value) <= EMBEDDED_TEXT_LIMIT:
-        return html.escape(value, quote=False)
-    kept = html.escape(value[:EMBEDDED_TEXT_LIMIT], quote=False)
-    return (
-        f"{kept}\n[truncated to fit context after {EMBEDDED_TEXT_LIMIT} of "
-        f"{len(value)} characters; the full text still applies]"
-    )
+    return html.escape(value, quote=False)
 
 
 def build_goal_state_notice(
@@ -411,10 +392,9 @@ def build_goal_state_notice(
         Internal `HumanMessage` carrying goal/rubric state and identity metadata.
         An actionable goal embeds its objective and status note; an active rubric
         embeds its acceptance criteria, independent of goal actionability (a
-        one-shot rubric stays active over a paused goal). Embedded text is
-        escaped, tagged, and length-bounded per `EMBEDDED_TEXT_LIMIT`. Only a
-        state with neither an actionable goal nor an active rubric stays coarse,
-        and it instructs the model not to act on a prior goal.
+        one-shot rubric stays active over a paused goal). Embedded text is escaped
+        and tagged. Only a state with neither an actionable goal nor an active
+        rubric stays coarse, and it instructs the model not to act on a prior goal.
     """
     from langchain_core.messages import HumanMessage
 

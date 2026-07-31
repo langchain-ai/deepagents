@@ -579,8 +579,8 @@ async def test_awrap_model_call_restores_notice_after_compaction() -> None:
 def test_stale_schema_notice_is_replaced_then_settles() -> None:
     """A resumed thread holding a prior-schema notice gets a current one, once.
 
-    Version 1 notices instructed the model to call `get_goal`/`get_rubric`, which
-    no longer exist, so a resumed thread must not keep treating one as
+    Prior notices could truncate required text or instruct the model to call read
+    tools that no longer exist, so a resumed thread must not keep treating one as
     authoritative. The replacement must also converge: the notice channel is
     append-only, so a predicate that never settles would grow history every turn.
     """
@@ -589,7 +589,7 @@ def test_stale_schema_notice_is_replaced_then_settles() -> None:
         "_goal_status": "active",
         "_goal_rubric": "tests pass",
     }
-    stale = build_goal_state_notice(state, event_id="old-v1")
+    stale = build_goal_state_notice(state, event_id="old-schema")
     stale.additional_kwargs = {
         **stale.additional_kwargs,
         "goal_message_schema_version": GOAL_MESSAGE_SCHEMA_VERSION - 1,

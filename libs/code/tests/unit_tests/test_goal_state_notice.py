@@ -3,7 +3,6 @@
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code.goal_state_notice import (
-    EMBEDDED_TEXT_LIMIT,
     GOAL_CONTROL_MESSAGE_SOURCE,
     GOAL_MESSAGE_SCHEMA_VERSION,
     GOAL_STATE_MESSAGE_SOURCE,
@@ -123,10 +122,10 @@ def test_blocked_notice_embeds_the_models_own_status_note() -> None:
     )
 
 
-def test_embedded_text_is_truncated_with_an_explicit_marker() -> None:
-    """Oversized objective/criteria are bounded and marked, not silently cut."""
-    objective = "A" * (EMBEDDED_TEXT_LIMIT + 500)
-    criteria = "B" * (EMBEDDED_TEXT_LIMIT + 700)
+def test_embedded_text_is_not_truncated() -> None:
+    """The notice carries requirements beyond the former 4,000-character cap."""
+    objective = "A" * 4_500
+    criteria = "B" * 4_700
 
     content = build_goal_state_notice(
         {
@@ -137,25 +136,9 @@ def test_embedded_text_is_truncated_with_an_explicit_marker() -> None:
         event_id="x",
     ).content
 
-    for text in (objective, criteria):
-        assert (
-            f"[truncated to fit context after {EMBEDDED_TEXT_LIMIT} of "
-            f"{len(text)} characters; the full text still applies]" in content
-        )
-    assert "A" * (EMBEDDED_TEXT_LIMIT + 1) not in content
-    assert "B" * (EMBEDDED_TEXT_LIMIT + 1) not in content
-
-
-def test_embedded_text_at_the_limit_is_not_truncated() -> None:
-    """The cap is inclusive, so exactly-at-limit text renders whole."""
-    objective = "A" * EMBEDDED_TEXT_LIMIT
-
-    content = build_goal_state_notice(
-        {"_goal_objective": objective, "_goal_status": "active"}, event_id="x"
-    ).content
-
     assert f"<goal_objective>{objective}</goal_objective>" in content
-    assert "[truncated:" not in content
+    assert f"<acceptance_criteria>{criteria}</acceptance_criteria>" in content
+    assert "truncated to fit context" not in content
 
 
 def test_fingerprint_tracks_objective_and_criteria_text() -> None:
@@ -182,24 +165,25 @@ def test_fingerprint_tracks_objective_and_criteria_text() -> None:
     )
 
 
-def test_schema_version_is_past_the_read_tool_era() -> None:
-    """Version 1 notices named `get_goal`/`get_rubric` and must stay superseded.
+def test_schema_version_is_past_the_truncated_notice_era() -> None:
+    """Older notices can omit required text and must stay superseded.
 
     Pinning the floor (rather than the exact value) keeps a future bump free while
-    making a revert to 1 — which would silently re-trust those notices on resume —
+    making a revert to 2 — which would silently re-trust truncated notices on resume —
     fail here instead of in a resumed session.
     """
-    assert GOAL_MESSAGE_SCHEMA_VERSION >= 2
+    assert GOAL_MESSAGE_SCHEMA_VERSION >= 3
 
 
-def test_v1_schema_notice_is_not_authoritative() -> None:
+def test_prior_schema_notice_is_not_authoritative() -> None:
     """A notice from a prior schema version stops counting as authoritative.
 
-    Version 1 notices told the model to call `get_goal`/`get_rubric`, which no
-    longer exist, so they must be superseded rather than trusted on resume.
+    Version 2 notices could truncate the objective and rubric, while version 1
+    notices named read tools that no longer exist. Both must be superseded rather
+    than trusted on resume.
     """
     state = {"_goal_objective": "ship it", "_goal_status": "active"}
-    stale = build_goal_state_notice(state, event_id="old-v1")
+    stale = build_goal_state_notice(state, event_id="old-schema")
     stale.additional_kwargs = {
         **stale.additional_kwargs,
         "goal_message_schema_version": GOAL_MESSAGE_SCHEMA_VERSION - 1,

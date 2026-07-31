@@ -125,9 +125,10 @@ since it's `_get_file_type`'s default for unmapped extensions).
 
 _PDF_MIME_TYPE: Final = "application/pdf"
 
-_NON_PDF_FILE_TOLERANT_LLM_TYPE_MARKERS: Final = ("openai", "google-generative-ai")
-"""Substrings of `_llm_type` identifying providers known to accept non-PDF `file`
-blocks (e.g. `.docx`, `.pptx`) today.
+_NON_PDF_FILE_TOLERANT_LLM_TYPES: Final = frozenset({"openai-chat", "azure-openai-chat", "chat-google-generative-ai"})
+"""Exact `_llm_type` values for chat models known to accept non-PDF `file`
+blocks (e.g. `.docx`, `.pptx`) today: `ChatOpenAI`, `AzureChatOpenAI`, and
+`ChatGoogleGenerativeAI`.
 
 [`ModelProfile`][langchain_core.language_models.model_profile.ModelProfile] only
 encodes PDF support (`pdf_inputs`/`pdf_tool_message`); it has no field yet for
@@ -179,7 +180,7 @@ def _move_media_results_after_tool_results(messages: list[AnyMessage]) -> list[A
 
 _PROFILE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_inputs", "audio": "audio_inputs", "video": "video_inputs", "file": "pdf_inputs"}
 """`ModelProfile` field gating each block type. `file` only applies to PDF `mime_type`; other
-file types have no field yet and are handled separately via `_NON_PDF_FILE_TOLERANT_LLM_TYPE_MARKERS`."""
+file types have no field yet and are handled separately via `_NON_PDF_FILE_TOLERANT_LLM_TYPES`."""
 
 _TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message", "file": "pdf_tool_message"}
 """Extra `ModelProfile` field that can gate a block type specifically within a `ToolMessage`."""
@@ -192,7 +193,7 @@ def _model_tolerates_non_pdf_files(model: "BaseChatModel | None") -> bool:
     """
     if model is None:
         return False
-    return any(marker in model._llm_type for marker in _NON_PDF_FILE_TOLERANT_LLM_TYPE_MARKERS)
+    return model._llm_type in _NON_PDF_FILE_TOLERANT_LLM_TYPES
 
 
 def _multimodal_block_supported(

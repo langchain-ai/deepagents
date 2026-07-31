@@ -188,11 +188,11 @@ _TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message", "file
 def _model_tolerates_non_pdf_files(model: "BaseChatModel | None") -> bool:
     """Whether `model` is known to accept non-PDF `file` blocks.
 
-    Checks `_llm_type` rather than maintaining a class-name mapping. Reads it
-    defensively since `model` may be a lightweight test double.
+    Checks `_llm_type`, a property every `BaseChatModel` implements
     """
-    llm_type = getattr(model, "_llm_type", None)
-    return isinstance(llm_type, str) and any(marker in llm_type for marker in _NON_PDF_FILE_TOLERANT_LLM_TYPE_MARKERS)
+    if model is None:
+        return False
+    return any(marker in model._llm_type for marker in _NON_PDF_FILE_TOLERANT_LLM_TYPE_MARKERS)
 
 
 def _multimodal_block_supported(
@@ -278,7 +278,7 @@ def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "Ba
     `.docx`-on-Anthropic bug this fixes unfixed for those models. An empty
     profile still defaults every per-field check to "supported."
     """
-    profile = getattr(model, "profile", None)
+    profile = model.profile if model is not None else None
     if not isinstance(profile, dict):
         profile = {}
     tolerates_non_pdf_files = _model_tolerates_non_pdf_files(model)

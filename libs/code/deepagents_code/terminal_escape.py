@@ -1,10 +1,14 @@
 """Best-effort writer for terminal escape/control sequences.
 
 Centralizes the "fire and forget" pattern the app uses for cosmetic terminal
-control (OSC 9;4 taskbar progress today; eventually OSC 52 clipboard and the
-iTerm2 cursor guide). Writes prefer `/dev/tty` so output reaches the terminal
-even when stdout/stderr are redirected, fall back to `sys.__stderr__`, and
-never raise — cosmetic control output must not crash the app.
+control (OSC 9;4 taskbar progress, OSC 11 background, OSC 52 clipboard).
+Writes prefer `/dev/tty` so output reaches the terminal even when stdout/stderr
+are redirected, fall back to `sys.__stderr__`, and never raise — cosmetic
+control output must not crash the app.
+
+It is also the single place that knows a terminal multiplexer may be in the
+way: `write_osc` wraps its sequence for tmux, which otherwise drops every OSC
+its panes emit.
 
 Set `DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE=1` to disable all output (useful for
 unsupported terminals or noisy logs).
@@ -23,9 +27,16 @@ from typing import TYPE_CHECKING
 from deepagents_code._env_vars import NO_TERMINAL_ESCAPE, is_env_truthy
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from typing import TextIO
 
 logger = logging.getLogger(__name__)
+
+_TMUX_PASSTHROUGH_PREFIX = "\x1bPtmux;"
+"""Device Control String that tells tmux to forward the payload verbatim."""
+
+_TMUX_PASSTHROUGH_SUFFIX = "\x1b\\"
+"""String Terminator closing the passthrough DCS."""
 
 _PROGRESS_MIN = 0
 """Lower clamp bound for determinate `OSC 9;4` progress percentages."""
@@ -119,8 +130,35 @@ def write_terminal_escape(sequence: str) -> bool:
     return False
 
 
+def wrap_for_multiplexer(sequence: str, env: Mapping[str, str] | None = None) -> str:
+    r"""Wrap `sequence` so tmux forwards it to the terminal it is hosted in.
+
+    tmux swallows operating-system commands from its panes: an unwrapped
+    `OSC 9;4` or `OSC 52` never reaches the outer terminal. Wrapping in tmux's
+    passthrough DCS forwards the payload verbatim — provided the user has
+    turned on `allow-passthrough`, which `dcode doctor` reports. Every escape
+    inside the payload has to be doubled or tmux ends the DCS early.
+
+    Args:
+        sequence: Raw escape sequence intended for the outer terminal.
+        env: Environment mapping to read. Defaults to the process environment.
+
+    Returns:
+        The wrapped sequence inside tmux, otherwise `sequence` unchanged.
+    """
+    from deepagents_code.multiplexer import inside_tmux
+
+    if not sequence or not inside_tmux(env):
+        return sequence
+    doubled = sequence.replace("\x1b", "\x1b\x1b")
+    return f"{_TMUX_PASSTHROUGH_PREFIX}{doubled}{_TMUX_PASSTHROUGH_SUFFIX}"
+
+
 def write_osc(command: str, payload: str = "", *, st: bool = False) -> bool:
     r"""Write an `OSC <command>;<payload>` sequence.
+
+    Every OSC the app emits addresses the terminal the user is looking at, so
+    the sequence is wrapped for a multiplexer when one is in the way.
 
     Args:
         command: The numeric OSC command (e.g. `"9;4"` for taskbar progress).
@@ -136,7 +174,7 @@ def write_osc(command: str, payload: str = "", *, st: bool = False) -> bool:
     """
     body = f"{command};{payload}" if payload else command
     terminator = "\x1b\\" if st else "\a"
-    return write_terminal_escape(f"\x1b]{body}{terminator}")
+    return write_terminal_escape(wrap_for_multiplexer(f"\x1b]{body}{terminator}"))
 
 
 _progress_active = False

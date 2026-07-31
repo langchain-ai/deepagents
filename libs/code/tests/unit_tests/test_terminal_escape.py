@@ -20,6 +20,7 @@ from deepagents_code.terminal_escape import (
     reset_terminal_background,
     set_terminal_background,
     set_terminal_progress,
+    wrap_for_multiplexer,
     write_osc,
     write_terminal_escape,
 )
@@ -32,6 +33,9 @@ def _reset_active_state(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(terminal_escape, "_terminal_background_active", False)
     monkeypatch.setattr(terminal_escape, "_atexit_registered", False)
     monkeypatch.delenv(terminal_escape.NO_TERMINAL_ESCAPE, raising=False)
+    # `write_osc` now wraps for tmux, so a developer running the suite from
+    # inside a pane would otherwise see every expected sequence gain a DCS.
+    monkeypatch.delenv("TMUX", raising=False)
 
 
 class _FakeTTY(io.StringIO):
@@ -140,8 +144,38 @@ class TestWriteTerminalEscape:
         assert fake.getvalue() == "\x1b]9;4;テスト\a"
 
 
+class TestWrapForMultiplexer:
+    """Tests for the tmux passthrough envelope."""
+
+    def test_no_op_outside_tmux(self) -> None:
+        """A sequence reaches the terminal directly when nothing is in the way."""
+        assert wrap_for_multiplexer("\x1b]9;4;3;0\a", {}) == "\x1b]9;4;3;0\a"
+
+    def test_wraps_and_doubles_escapes_inside_tmux(self) -> None:
+        """Tmux ends the DCS at the first raw escape, so payload escapes double."""
+        wrapped = wrap_for_multiplexer("\x1b]9;4;3;0\a", {"TMUX": "/tmp/s,1,0"})
+        assert wrapped == "\x1bPtmux;\x1b\x1b]9;4;3;0\a\x1b\\"
+
+    def test_doubles_every_escape_in_the_payload(self) -> None:
+        """An ST-terminated sequence carries a second escape that also doubles."""
+        wrapped = wrap_for_multiplexer("\x1b]11;#112233\x1b\\", {"TMUX": "/tmp/s,1,0"})
+        assert wrapped == "\x1bPtmux;\x1b\x1b]11;#112233\x1b\x1b\\\x1b\\"
+
+    def test_empty_sequence_is_returned_unchanged(self) -> None:
+        """Wrapping nothing would emit a stray DCS."""
+        assert wrap_for_multiplexer("", {"TMUX": "/tmp/s,1,0"}) == ""
+
+
 class TestWriteOsc:
     """Tests for `write_osc`."""
+
+    def test_wraps_for_tmux(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Inside a pane the sequence must go out wrapped or tmux drops it."""
+        fake = _FakeTTY()
+        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
+        monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1234,0")
+        write_osc("9;4", "3;0")
+        assert fake.getvalue() == "\x1bPtmux;\x1b\x1b]9;4;3;0\a\x1b\\"
 
     def test_default_terminator_is_bel(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = _FakeTTY()

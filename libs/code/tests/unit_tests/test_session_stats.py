@@ -5,6 +5,7 @@ from __future__ import annotations
 from io import StringIO
 
 import pytest
+from langchain_core.messages import AIMessage
 from rich.console import Console
 
 from deepagents_code._session_stats import (
@@ -14,6 +15,7 @@ from deepagents_code._session_stats import (
     format_cost,
     format_token_count,
     print_usage_table,
+    record_message_usage,
 )
 
 
@@ -250,6 +252,91 @@ class TestSessionStats:
         assert stats.per_kind["assistant"].cost_usd == pytest.approx(0.01)
         assert stats.per_kind["offload"].cost_usd == pytest.approx(0.02)
         assert stats.per_kind["offload"].request_count == 1
+
+    def test_side_call_keeps_explicit_provider_over_parent_fallback(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A cross-provider subagent must not inherit the main provider."""
+        from deepagents_code import cost_tracking
+
+        monkeypatch.setattr(cost_tracking, "estimate_cost", lambda *_args: 0.25)
+        stats = SessionStats()
+        message = AIMessage(
+            content="done",
+            usage_metadata={
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "total_tokens": 1_100,
+            },
+            response_metadata={
+                "model_name": "side-model",
+                "model_provider": "anthropic",
+            },
+        )
+
+        recorded = record_message_usage(
+            stats,
+            message,
+            fallback_model="parent-model",
+            fallback_provider="openai_codex",
+            kind="subagent",
+        )
+
+        assert recorded is not None
+        assert recorded.cost_usd is not None
+        assert ("anthropic", "side-model") in stats.per_model
+
+    @pytest.mark.parametrize("configured_provider", ["azure_openai", "openai_codex"])
+    def test_side_call_uses_its_request_provider_alias(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        configured_provider: str,
+    ) -> None:
+        """An inherited side model keeps its actual configured provider."""
+        from deepagents_code import cost_tracking
+
+        priced_providers: list[str] = []
+
+        def price(
+            usage_metadata: object,
+            model_name: str,
+            provider: str = "",
+        ) -> float:
+            assert usage_metadata
+            assert model_name == "side-model"
+            priced_providers.append(provider)
+            return 0.25
+
+        monkeypatch.setattr(cost_tracking, "estimate_cost", price)
+        stats = SessionStats()
+        message = AIMessage(
+            content="done",
+            usage_metadata={
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "total_tokens": 1_100,
+            },
+            response_metadata={
+                "model_name": "side-model",
+                "model_provider": "openai",
+            },
+        )
+
+        recorded = record_message_usage(
+            stats,
+            message,
+            fallback_model="parent-model",
+            fallback_provider=configured_provider,
+            request_metadata={
+                cost_tracking._CONFIGURED_PROVIDER_METADATA_KEY: configured_provider
+            },
+            kind="subagent",
+        )
+
+        assert recorded is not None
+        assert priced_providers == [configured_provider]
+        assert (configured_provider, "side-model") in stats.per_model
 
     def test_merge_combines_kinds(self) -> None:
         first = SessionStats()

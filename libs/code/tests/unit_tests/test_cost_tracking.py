@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -9,20 +10,26 @@ from typing import TYPE_CHECKING, Any, cast, get_type_hints
 from uuid import uuid4
 
 import pytest
+from deepagents.backends import StateBackend
+from deepagents.middleware import SubAgentMiddleware
 from langchain.agents import create_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware
+from langchain.agents.middleware.human_in_the_loop import ApproveDecision
 from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ModelRequest,
     ModelResponse,
+    OmitFromInput,
     PrivateStateAttr,
 )
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult, LLMResult
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import Overwrite
+from langgraph.prebuilt import ToolRuntime  # noqa: TC002  # Runtime tool injection.
+from langgraph.types import Command, Overwrite
 
 from deepagents_code._fake_models import _ToolBindingFakeModel
 from deepagents_code.cost_tracking import (
@@ -107,6 +114,7 @@ def _message(
 def _runtime(
     *,
     thread_id: str | None = None,
+    checkpoint_ns: str = "",
     events: list[dict[str, Any]] | None = None,
 ) -> Runtime[Any]:
     """Build the runtime shape required by the middleware hooks.
@@ -114,13 +122,17 @@ def _runtime(
     Args:
         thread_id: Thread the run belongs to, or `None` for an unthreaded run
             whose recorded calls cannot be drained.
+        checkpoint_ns: Namespace of the middleware node being executed.
         events: List that collects emitted custom-stream events, when given.
     """
     return cast(
         "Runtime[Any]",
         SimpleNamespace(
             context=None,
-            execution_info=SimpleNamespace(thread_id=thread_id),
+            execution_info=SimpleNamespace(
+                thread_id=thread_id,
+                checkpoint_ns=checkpoint_ns,
+            ),
             stream_writer=events.append if events is not None else None,
         ),
     )
@@ -132,6 +144,7 @@ def _record(
     model: str = KNOWN_MODEL,
     provider: str = KNOWN_PROVIDER,
     usage: dict[str, Any] | None = None,
+    scope: str = "",
 ) -> _ModelCallRecord:
     """Build a recorded completed model request."""
     return _ModelCallRecord(
@@ -139,6 +152,7 @@ def _record(
         usage_metadata=usage if usage is not None else _usage(),
         model_name=model,
         provider=provider,
+        scope=scope,
     )
 
 
@@ -148,12 +162,15 @@ def _collect(
     *,
     thread_id: str = THREAD_ID,
     configured_provider: str = "",
+    checkpoint_ns: str = "",
 ) -> None:
     """Put one already-built record into a recorder's pending queue."""
     run_id = uuid4()
     metadata = {"thread_id": thread_id}
     if configured_provider:
         metadata[_CONFIGURED_PROVIDER_METADATA_KEY] = configured_provider
+    if checkpoint_ns:
+        metadata["langgraph_checkpoint_ns"] = checkpoint_ns
     recorder.on_chat_model_start(
         {},
         [],
@@ -176,6 +193,21 @@ def _collect(
             ]
         ),
         run_id=run_id,
+    )
+
+
+def _subagent_command(result: dict[str, Any], runtime: ToolRuntime) -> Command[Any]:
+    """Return a subagent result while preserving its parent cost transfers."""
+    return Command(
+        update={
+            "_session_cost_transfers": result.get("_session_cost_transfers", {}),
+            "messages": [
+                ToolMessage(
+                    result["messages"][-1].text,
+                    tool_call_id=runtime.tool_call_id,
+                )
+            ],
+        }
     )
 
 
@@ -353,6 +385,13 @@ class TestCostTrackingMiddleware:
         last = metadata[-1]
         assert getattr(last, "__name__", None) == "add"
 
+        transfer_metadata = tuple(
+            getattr(hints["_session_cost_transfers"], "__metadata__", ())
+        )
+        assert OmitFromInput in transfer_metadata
+        assert PrivateStateAttr not in transfer_metadata
+        assert getattr(transfer_metadata[-1], "__name__", None) == "or_"
+
     def test_returns_request_cost_as_delta(self) -> None:
         middleware = CostTrackingMiddleware()
         state: CostState = {
@@ -521,19 +560,137 @@ class TestCostTrackingMiddleware:
         assert isinstance(result["_session_cost_usd"], Overwrite)
         assert result["_session_cost_usd"].value == pytest.approx(0.0)
 
-    def test_nested_agent_records_nothing(self, recorder: _SessionCostRecorder) -> None:
-        """Only the thread's main agent writes the channel."""
-        _collect(recorder, _record(message_id="nested-1"))
+    def test_nested_agent_checkpoints_and_transfers_cost(
+        self, recorder: _SessionCostRecorder
+    ) -> None:
+        """Nested spend is durable locally before the parent receives it."""
+        _collect(
+            recorder,
+            _record(message_id="nested-1"),
+            checkpoint_ns="tools:a|1|model:a",
+        )
         middleware = CostTrackingMiddleware(nested=True)
         state: CostState = {
             "messages": [_message(_usage(), message_id="nested-1")],
         }
-        runtime = _runtime(thread_id=THREAD_ID)
+        runtime = _runtime(
+            thread_id=THREAD_ID,
+            checkpoint_ns="tools:a|1|CostTrackingMiddleware.after_model:a",
+        )
 
-        assert middleware.after_model(state, runtime) is None
-        assert middleware.after_agent(state, runtime) is None
-        # The records stay for the main agent's next drain.
-        assert len(recorder.drain(THREAD_ID)) == 1
+        update = middleware.after_model(state, runtime)
+
+        assert update is not None
+        nested_cost = update["_session_cost_usd"]
+        assert nested_cost > 0
+        assert recorder.drain(THREAD_ID) == []
+
+        completed_state = cast(
+            "CostState",
+            {**state, "_session_cost_usd": nested_cost},
+        )
+        transfer = middleware.after_agent(completed_state, runtime)
+        assert transfer is not None
+
+        parent_update = CostTrackingMiddleware().after_agent(
+            cast(
+                "CostState",
+                {
+                    "messages": [],
+                    "_session_cost_transfers": transfer[
+                        "_session_cost_transfers"
+                    ].value,
+                },
+            ),
+            _runtime(
+                thread_id=THREAD_ID,
+                checkpoint_ns="CostTrackingMiddleware.after_agent:root",
+            ),
+        )
+        assert parent_update is not None
+        assert parent_update["_session_cost_usd"] == pytest.approx(nested_cost)
+
+    def test_sibling_nested_agents_claim_only_their_own_records(
+        self,
+        recorder: _SessionCostRecorder,
+    ) -> None:
+        """Parallel subagents must not drain and then re-price one sibling."""
+        _collect(
+            recorder,
+            _record(message_id="nested-a"),
+            checkpoint_ns="tools:a|model:a",
+        )
+        _collect(
+            recorder,
+            _record(message_id="nested-b"),
+            checkpoint_ns="tools:b|model:b",
+        )
+        nested = CostTrackingMiddleware(nested=True)
+
+        first = nested.after_model(
+            cast(
+                "CostState",
+                {"messages": [_message(_usage(), message_id="nested-a")]},
+            ),
+            _runtime(
+                thread_id=THREAD_ID,
+                checkpoint_ns="tools:a|CostTrackingMiddleware.after_model:a",
+            ),
+        )
+        second = nested.after_model(
+            cast(
+                "CostState",
+                {"messages": [_message(_usage(), message_id="nested-b")]},
+            ),
+            _runtime(
+                thread_id=THREAD_ID,
+                checkpoint_ns="tools:b|CostTrackingMiddleware.after_model:b",
+            ),
+        )
+
+        one_call = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
+        assert one_call is not None
+        assert first == {"_session_cost_usd": pytest.approx(one_call)}
+        assert second == {"_session_cost_usd": pytest.approx(one_call)}
+        assert recorder.drain(THREAD_ID) == []
+
+    def test_nested_agent_claims_only_transfers_owned_by_its_graph(self) -> None:
+        """A nested parent checkpoints child costs without stealing a cousin's."""
+        state = cast(
+            "CostState",
+            {
+                "messages": [],
+                "_session_cost_transfers": {
+                    "tools:parent|tools:child": {
+                        "owner_scope": "tools:parent",
+                        "cost_usd": 0.25,
+                    },
+                    "tools:other|tools:cousin": {
+                        "owner_scope": "tools:other",
+                        "cost_usd": 0.75,
+                    },
+                },
+            },
+        )
+
+        update = CostTrackingMiddleware(nested=True).after_model(
+            state,
+            _runtime(
+                thread_id=THREAD_ID,
+                checkpoint_ns="tools:parent|CostTrackingMiddleware.after_model:a",
+            ),
+        )
+
+        assert update is not None
+        assert update["_session_cost_usd"] == pytest.approx(0.25)
+        pending = update["_session_cost_transfers"]
+        assert isinstance(pending, Overwrite)
+        assert pending.value == {
+            "tools:other|tools:cousin": {
+                "owner_scope": "tools:other",
+                "cost_usd": 0.75,
+            }
+        }
 
     def test_main_agent_does_not_reset_cost_on_start(self) -> None:
         middleware = CostTrackingMiddleware()
@@ -975,6 +1132,54 @@ class _SideInvokeMiddleware(AgentMiddleware):
         return await handler(request)
 
 
+class _AfterModelBarrier(AgentMiddleware):
+    """Hold parallel agents after callbacks fire but before cost is drained."""
+
+    def __init__(self, barrier: asyncio.Barrier) -> None:
+        super().__init__()
+        self._barrier = barrier
+
+    async def aafter_model(
+        self,
+        state: object,  # noqa: ARG002  # Middleware interface.
+        runtime: Runtime[Any],  # noqa: ARG002  # Middleware interface.
+    ) -> None:
+        """Release both nested cost hooks only after both records exist."""
+        await self._barrier.wait()
+
+
+class _SignalAfterAgent(AgentMiddleware):
+    """Signal only after preceding reverse-order completion hooks finish."""
+
+    def __init__(self, event: asyncio.Event) -> None:
+        super().__init__()
+        self._event = event
+
+    async def aafter_agent(
+        self,
+        state: object,  # noqa: ARG002  # Middleware interface.
+        runtime: Runtime[Any],  # noqa: ARG002  # Middleware interface.
+    ) -> None:
+        """Release a sibling after this agent has checkpointed its transfer."""
+        self._event.set()
+
+
+class _WaitBeforeAgent(AgentMiddleware):
+    """Hold one agent until its sibling has completed."""
+
+    def __init__(self, event: asyncio.Event) -> None:
+        super().__init__()
+        self._event = event
+
+    async def abefore_agent(
+        self,
+        state: object,  # noqa: ARG002  # Middleware interface.
+        runtime: Runtime[Any],  # noqa: ARG002  # Middleware interface.
+    ) -> None:
+        """Wait until the completed sibling has persisted its transfer."""
+        await self._event.wait()
+
+
 class TestGraphCostOwnership:
     """Verify the graph alone produces a complete cumulative thread total.
 
@@ -1135,10 +1340,10 @@ class TestGraphCostOwnership:
         )
 
         @tool
-        async def task(query: str) -> str:
+        async def task(query: str, runtime: ToolRuntime) -> Command[Any]:
             """Run a nested agent."""
             result = await child.ainvoke({"messages": [HumanMessage(query)]})
-            return result["messages"][-1].text
+            return _subagent_command(result, runtime)
 
         agent = self._agent(
             model=_fake_model(
@@ -1162,6 +1367,307 @@ class TestGraphCostOwnership:
         # Two parent steps and the one nested call, each counted exactly once.
         assert total_usd == pytest.approx(3 * self._one_call_usd())
 
+    async def test_parallel_subagents_are_each_charged_once(self) -> None:
+        """Sibling nested graphs claim records from their own checkpoint scope."""
+        barrier = asyncio.Barrier(2)
+
+        def child(message_id: str) -> _CompiledAgent:
+            middleware: list[AgentMiddleware[Any, Any, Any]] = [
+                CostTrackingMiddleware(nested=True),
+                _AfterModelBarrier(barrier),
+            ]
+            return create_agent(
+                model=_fake_model(_message(_usage(), message_id=message_id)),
+                tools=[],
+                middleware=middleware,
+            )
+
+        child_a = child("child-a")
+        child_b = child("child-b")
+
+        @tool
+        async def task_a(query: str, runtime: ToolRuntime) -> Command[Any]:
+            """Run the first nested agent."""
+            result = await child_a.ainvoke({"messages": [HumanMessage(query)]})
+            return _subagent_command(result, runtime)
+
+        @tool
+        async def task_b(query: str, runtime: ToolRuntime) -> Command[Any]:
+            """Run the second nested agent."""
+            result = await child_b.ainvoke({"messages": [HumanMessage(query)]})
+            return _subagent_command(result, runtime)
+
+        agent = self._agent(
+            model=_fake_model(
+                AIMessage(
+                    content="",
+                    id="parent-1",
+                    usage_metadata=_usage(),  # ty: ignore[invalid-argument-type]
+                    response_metadata={
+                        "model_name": KNOWN_MODEL,
+                        "model_provider": KNOWN_PROVIDER,
+                    },
+                    tool_calls=[
+                        {"name": "task_a", "args": {"query": "a"}, "id": "t1"},
+                        {"name": "task_b", "args": {"query": "b"}, "id": "t2"},
+                    ],
+                ),
+                _message(_usage(), message_id="parent-2"),
+            ),
+            tools=[task_a, task_b],
+        )
+
+        total_usd, _totals = await self._run(agent)
+
+        # Two parent calls plus one call from each parallel child.
+        assert total_usd == pytest.approx(4 * self._one_call_usd())
+
+    async def test_subagent_spend_survives_restart_during_tool_approval(
+        self,
+    ) -> None:
+        """A nested model checkpoint survives loss of the process recorder."""
+
+        @tool
+        def write_file(path: str) -> str:
+            """Pretend to write a file."""
+            return path
+
+        child_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+            HumanInTheLoopMiddleware({"write_file": True}),
+            CostTrackingMiddleware(nested=True),
+        ]
+        child = create_agent(
+            model=_fake_model(
+                AIMessage(
+                    content="",
+                    id="child-1",
+                    usage_metadata=_usage(),  # ty: ignore[invalid-argument-type]
+                    response_metadata={
+                        "model_name": KNOWN_MODEL,
+                        "model_provider": KNOWN_PROVIDER,
+                    },
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"path": "notes.txt"},
+                            "id": "write-1",
+                        }
+                    ],
+                ),
+                _message(_usage(), message_id="child-2"),
+            ),
+            tools=[write_file],
+            middleware=child_middleware,
+        )
+
+        @tool
+        async def task(query: str, runtime: ToolRuntime) -> Command[Any]:
+            """Run a nested agent."""
+            result = await child.ainvoke({"messages": [HumanMessage(query)]})
+            return _subagent_command(result, runtime)
+
+        agent = self._agent(
+            model=_fake_model(
+                AIMessage(
+                    content="",
+                    id="parent-1",
+                    usage_metadata=_usage(),  # ty: ignore[invalid-argument-type]
+                    response_metadata={
+                        "model_name": KNOWN_MODEL,
+                        "model_provider": KNOWN_PROVIDER,
+                    },
+                    tool_calls=[{"name": "task", "args": {"query": "go"}, "id": "t1"}],
+                ),
+                _message(_usage(), message_id="parent-2"),
+            ),
+            tools=[task],
+        )
+        config: RunnableConfig = {"configurable": {"thread_id": THREAD_ID}}
+        interrupts: list[Any] = []
+        async for _namespace, mode, data in agent.astream(
+            {"messages": [HumanMessage("hello")]},
+            stream_mode=["updates"],
+            subgraphs=True,
+            config=config,
+        ):
+            if mode == "updates" and isinstance(data, dict):
+                interrupts.extend(data.get("__interrupt__") or [])
+
+        interrupts_by_id = {interrupt.id: interrupt for interrupt in interrupts}
+        assert len(interrupts_by_id) == 1
+        (pending_interrupt,) = interrupts_by_id.values()
+
+        # Replacing the recorder simulates a server process restart while the
+        # checkpointer and its nested graph state remain durable.
+        token = _RECORDER_VAR.set(_SessionCostRecorder())
+        try:
+            async for _chunk in agent.astream(
+                Command(
+                    resume={
+                        pending_interrupt.id: {
+                            "decisions": [ApproveDecision(type="approve")]
+                        }
+                    }
+                ),
+                stream_mode=["updates"],
+                subgraphs=True,
+                config=config,
+            ):
+                pass
+        finally:
+            _RECORDER_VAR.reset(token)
+
+        state = await agent.aget_state(config)
+        assert state.values.get("_session_cost_usd", 0.0) == pytest.approx(
+            4 * self._one_call_usd()
+        )
+
+    async def test_completed_sibling_spend_survives_restart_during_approval(
+        self,
+    ) -> None:
+        """A completed sibling is checkpointed before another one interrupts."""
+        sibling_completed = asyncio.Event()
+
+        completed_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+            _SignalAfterAgent(sibling_completed),
+            CostTrackingMiddleware(nested=True),
+        ]
+        completed_child = create_agent(
+            model=_fake_model(_message(_usage(), message_id="completed-child")),
+            tools=[],
+            middleware=completed_middleware,
+        )
+
+        @tool
+        def write_file(path: str) -> str:
+            """Pretend to write a file."""
+            return path
+
+        interrupted_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+            _WaitBeforeAgent(sibling_completed),
+            HumanInTheLoopMiddleware({"write_file": True}),
+            CostTrackingMiddleware(nested=True),
+        ]
+        interrupted_child = create_agent(
+            model=_fake_model(
+                AIMessage(
+                    content="",
+                    id="interrupted-child-1",
+                    usage_metadata=_usage(),  # ty: ignore[invalid-argument-type]
+                    response_metadata={
+                        "model_name": KNOWN_MODEL,
+                        "model_provider": KNOWN_PROVIDER,
+                    },
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"path": "notes.txt"},
+                            "id": "write-1",
+                        }
+                    ],
+                ),
+                _message(_usage(), message_id="interrupted-child-2"),
+            ),
+            tools=[write_file],
+            middleware=interrupted_middleware,
+        )
+
+        subagents = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "completed",
+                    "description": "Complete before the other agent interrupts.",
+                    "runnable": completed_child,
+                },
+                {
+                    "name": "interrupted",
+                    "description": "Request approval after the sibling completes.",
+                    "runnable": interrupted_child,
+                },
+            ],
+            private_state_keys=frozenset({"_session_cost_usd"}),
+        )
+
+        agent = self._agent(
+            model=_fake_model(
+                AIMessage(
+                    content="",
+                    id="parent-1",
+                    usage_metadata=_usage(),  # ty: ignore[invalid-argument-type]
+                    response_metadata={
+                        "model_name": KNOWN_MODEL,
+                        "model_provider": KNOWN_PROVIDER,
+                    },
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {
+                                "description": "complete",
+                                "subagent_type": "completed",
+                            },
+                            "id": "t1",
+                        },
+                        {
+                            "name": "task",
+                            "args": {
+                                "description": "interrupt",
+                                "subagent_type": "interrupted",
+                            },
+                            "id": "t2",
+                        },
+                    ],
+                ),
+                _message(_usage(), message_id="parent-2"),
+            ),
+            middleware=[subagents],
+        )
+        config: RunnableConfig = {"configurable": {"thread_id": THREAD_ID}}
+        interrupts: list[Any] = []
+        async for _namespace, mode, data in agent.astream(
+            {"messages": [HumanMessage("hello")]},
+            stream_mode=["updates"],
+            subgraphs=True,
+            config=config,
+        ):
+            if mode == "updates" and isinstance(data, dict):
+                interrupts.extend(data.get("__interrupt__") or [])
+
+        interrupts_by_id = {interrupt.id: interrupt for interrupt in interrupts}
+        assert len(interrupts_by_id) == 1
+        (pending_interrupt,) = interrupts_by_id.values()
+
+        paused = await agent.aget_state(config)
+        transfers = paused.values.get("_session_cost_transfers")
+        assert isinstance(transfers, dict)
+        assert len(transfers) == 1
+        assert sum(transfer["cost_usd"] for transfer in transfers.values()) == (
+            pytest.approx(self._one_call_usd())
+        )
+
+        token = _RECORDER_VAR.set(_SessionCostRecorder())
+        try:
+            async for _chunk in agent.astream(
+                Command(
+                    resume={
+                        pending_interrupt.id: {
+                            "decisions": [ApproveDecision(type="approve")]
+                        }
+                    }
+                ),
+                stream_mode=["updates"],
+                subgraphs=True,
+                config=config,
+            ):
+                pass
+        finally:
+            _RECORDER_VAR.reset(token)
+
+        state = await agent.aget_state(config)
+        assert state.values.get("_session_cost_usd", 0.0) == pytest.approx(
+            5 * self._one_call_usd()
+        )
+
     async def test_every_source_in_one_turn_is_charged_once_and_accumulates(
         self,
     ) -> None:
@@ -1177,10 +1683,10 @@ class TestGraphCostOwnership:
         )
 
         @tool
-        async def task(query: str) -> str:
+        async def task(query: str, runtime: ToolRuntime) -> Command[Any]:
             """Run a nested agent."""
             result = await child.ainvoke({"messages": [HumanMessage(query)]})
-            return result["messages"][-1].text
+            return _subagent_command(result, runtime)
 
         agent = self._agent(
             model=_fake_model(

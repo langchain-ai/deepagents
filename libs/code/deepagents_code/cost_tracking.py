@@ -20,12 +20,12 @@ already charge that message ID, so a request is never counted twice. That
 fallback keeps main-agent cost correct even for a model that never fires
 callbacks.
 
-Nested agents contribute through the same thread-keyed drain rather than a
-returned total: the subagent tool strips `PrivateStateAttr` channels in both
-directions, so `_session_cost_usd` neither seeds a subagent nor merges back.
-Nested instances install `CostTrackingMiddleware(nested=True)`, which records
-nothing and only zeroes the channel — a guard that keeps an inherited parent
-total from ever being added twice if that exclusion changes.
+Nested agents first checkpoint their own spend on the same private channel.
+That makes a completed model call durable before a later tool approval can
+interrupt the subgraph. When the subagent finishes, its middleware transfers
+the accumulated delta through an owner-scoped state entry. The subagent tool
+checkpoints that entry on the parent graph even when a sibling interrupts, while
+the private total itself remains isolated between graphs.
 
 Every caller uses `estimate_cost`, the only function that imports or calls
 `genai-prices`. The import is lazy so the package and its bundled pricing data
@@ -43,11 +43,12 @@ from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired
+from typing import TYPE_CHECKING, Annotated, Any, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ContextT,
+    OmitFromInput,
     PrivateStateAttr,
 )
 from langchain_core.callbacks import BaseCallbackHandler
@@ -90,6 +91,9 @@ _UNPRICEABLE_PROVIDERS: frozenset[str] = frozenset({"openai_codex"})
 _CONFIGURED_PROVIDER_METADATA_KEY = "deepagents_code_configured_provider"
 """Model metadata key preserving the provider selected by `create_model`."""
 
+_CHECKPOINT_NAMESPACE_METADATA_KEY = "langgraph_checkpoint_ns"
+"""Callback metadata key identifying the graph node that made a request."""
+
 
 def _set_configured_provider_metadata(model: object, provider: str) -> None:
     """Attach the configured provider to every request made by a model.
@@ -121,19 +125,28 @@ def _set_configured_provider_metadata(model: object, provider: str) -> None:
         )
 
 
-def _resolve_pricing_provider(provider: object, fallback_provider: str) -> str:
+def _resolve_pricing_provider(
+    provider: object,
+    fallback_provider: str,
+    *,
+    prefer_fallback_provider: bool = True,
+) -> str:
     """Resolve response metadata without losing a configured provider alias.
 
     Args:
         provider: Provider named by the response, if any.
         fallback_provider: Provider configured for the completed request.
+        prefer_fallback_provider: Whether a configured alias or non-API provider
+            should replace response metadata. Disable this when the fallback
+            belongs to a parent request rather than this specific model call.
 
     Returns:
         The provider identifier to use for pricing.
     """
-    resolved_provider = (
-        provider if isinstance(provider, str) and provider else fallback_provider
-    )
+    explicit_provider = provider if isinstance(provider, str) and provider else ""
+    resolved_provider = explicit_provider or fallback_provider
+    if explicit_provider and not prefer_fallback_provider:
+        return explicit_provider
     fallback_provider_key = fallback_provider.strip().lower()
     if fallback_provider_key in _PROVIDER_ALIASES or (
         fallback_provider_key in _UNPRICEABLE_PROVIDERS
@@ -256,6 +269,7 @@ def resolve_message_model(
     *,
     fallback_model: str = "",
     fallback_provider: str = "",
+    prefer_fallback_provider: bool = True,
 ) -> tuple[str, str]:
     """Resolve the model and provider attached to a streamed model message.
 
@@ -265,6 +279,9 @@ def resolve_message_model(
         fallback_provider: Provider to use when message metadata does not name one.
             Known provider aliases and non-API providers override generic
             response metadata.
+        prefer_fallback_provider: Whether those configured providers should
+            replace response metadata. Disable this when the fallback describes
+            a parent request rather than the message itself.
 
     Returns:
         The `(model_name, provider)` pair used for pricing.
@@ -275,7 +292,11 @@ def resolve_message_model(
     model_name = metadata.get("model_name") or metadata.get("model") or fallback_model
     resolved_model = model_name if isinstance(model_name, str) else fallback_model
     provider = metadata.get("model_provider") or metadata.get("provider")
-    resolved_provider = _resolve_pricing_provider(provider, fallback_provider)
+    resolved_provider = _resolve_pricing_provider(
+        provider,
+        fallback_provider,
+        prefer_fallback_provider=prefer_fallback_provider,
+    )
     return resolved_model, resolved_provider
 
 
@@ -311,6 +332,9 @@ class _ModelCallRecord:
     provider: str
     """Provider named by the response, or `""` when it named none."""
 
+    scope: str = ""
+    """Checkpoint namespace of the graph that owns this request."""
+
 
 @dataclass(frozen=True, slots=True)
 class _ModelCallContext:
@@ -321,6 +345,34 @@ class _ModelCallContext:
 
     configured_provider: str
     """Provider selected for this request, or `""` when unavailable."""
+
+    scope: str
+    """Checkpoint namespace of the graph that owns this request."""
+
+
+def _parent_checkpoint_scope(namespace: object) -> str:
+    """Return the graph namespace containing a checkpointed node.
+
+    LangGraph appends the current node and task ID to the graph's checkpoint
+    namespace. Removing that final segment gives every model and middleware
+    node in one graph invocation the same scope, while parallel subagents keep
+    the distinct tool-task prefixes LangGraph assigns them.
+    """
+    if not isinstance(namespace, str) or not namespace:
+        return ""
+    return namespace.rpartition("|")[0]
+
+
+def _owning_checkpoint_scope(scope: str) -> str:
+    """Return the parent graph that owns a completed nested transfer."""
+    parts = scope.split("|") if scope else []
+    while parts and parts[-1].isdigit():
+        parts.pop()
+    if parts:
+        parts.pop()
+    while parts and parts[-1].isdigit():
+        parts.pop()
+    return "|".join(parts)
 
 
 class _SessionCostRecorder(BaseCallbackHandler):
@@ -348,12 +400,12 @@ class _SessionCostRecorder(BaseCallbackHandler):
         self._records: OrderedDict[str, list[_ModelCallRecord]] = OrderedDict()
 
     def _start(self, run_id: UUID, metadata: Mapping[str, Any] | None) -> None:
+        configurable = ensure_config().get("configurable") or {}
         thread_id = metadata.get("thread_id") if metadata is not None else None
         if not isinstance(thread_id, str) or not thread_id:
             # A caller that passes its own `metadata` can replace the ambient
             # metadata LangGraph populated, dropping `thread_id`. The ambient
             # config survives that merge, so read the thread from there.
-            configurable = ensure_config().get("configurable") or {}
             thread_id = configurable.get("thread_id")
         if not isinstance(thread_id, str) or not thread_id:
             # Without a thread there is nothing to attribute the cost to. The
@@ -365,10 +417,18 @@ class _SessionCostRecorder(BaseCallbackHandler):
             else None
         )
         configured_provider = provider if isinstance(provider, str) and provider else ""
+        namespace = (
+            metadata.get(_CHECKPOINT_NAMESPACE_METADATA_KEY)
+            if metadata is not None
+            else None
+        )
+        if not isinstance(namespace, str) or not namespace:
+            namespace = configurable.get("checkpoint_ns")
         with self._lock:
             self._run_contexts[run_id] = _ModelCallContext(
                 thread_id=thread_id,
                 configured_provider=configured_provider,
+                scope=_parent_checkpoint_scope(namespace),
             )
             # A request that neither completes nor errors (a cancelled turn)
             # leaves its entry behind, so evict the oldest rather than growing.
@@ -415,6 +475,7 @@ class _SessionCostRecorder(BaseCallbackHandler):
             record = _record_from_response(
                 response,
                 configured_provider=context.configured_provider,
+                scope=context.scope,
             )
         except Exception:
             logger.debug("Could not read usage from a model response", exc_info=True)
@@ -445,29 +506,46 @@ class _SessionCostRecorder(BaseCallbackHandler):
         with self._lock:
             self._run_contexts.pop(run_id, None)
 
-    def drain(self, thread_id: str) -> list[_ModelCallRecord]:
+    def drain(
+        self,
+        thread_id: str,
+        *,
+        scope: str | None = None,
+    ) -> list[_ModelCallRecord]:
         """Remove and return the records collected for one thread.
 
         Args:
             thread_id: Thread whose completed requests should be priced.
+            scope: When provided, claim only requests from this graph invocation.
 
         Returns:
             Records for every request completed since the previous drain.
         """
         with self._lock:
-            return self._records.pop(thread_id, [])
+            records = self._records.get(thread_id, [])
+            if scope is None:
+                return self._records.pop(thread_id, [])
+            claimed = [record for record in records if record.scope == scope]
+            remaining = [record for record in records if record.scope != scope]
+            if remaining:
+                self._records[thread_id] = remaining
+            else:
+                self._records.pop(thread_id, None)
+            return claimed
 
 
 def _record_from_response(
     response: LLMResult,
     *,
     configured_provider: str = "",
+    scope: str = "",
 ) -> _ModelCallRecord | None:
     """Build a pricing record from a completed model response.
 
     Args:
         response: Completed LangChain model response containing usage metadata.
         configured_provider: Provider selected for this specific request.
+        scope: Checkpoint namespace of the graph that made the request.
 
     Returns:
         The record, or `None` when the response carries no usage to price.
@@ -495,6 +573,7 @@ def _record_from_response(
         usage_metadata=dict(usage_metadata),
         model_name=model_name,
         provider=provider,
+        scope=scope,
     )
 
 
@@ -530,11 +609,16 @@ def _install_recorder() -> None:
 _install_recorder()
 
 
-def _drain_recorded_costs(thread_id: str | None) -> list[_ModelCallRecord]:
+def _drain_recorded_costs(
+    thread_id: str | None,
+    *,
+    scope: str | None = None,
+) -> list[_ModelCallRecord]:
     """Return the active recorder's pending records for a thread.
 
     Args:
         thread_id: Thread being priced, or `None` when the run has no thread.
+        scope: When provided, claim only records owned by this graph invocation.
 
     Returns:
         Records to price, or an empty list when there is nothing to drain.
@@ -542,7 +626,14 @@ def _drain_recorded_costs(thread_id: str | None) -> list[_ModelCallRecord]:
     recorder = _RECORDER_VAR.get()
     if recorder is None or not thread_id:
         return []
-    return recorder.drain(thread_id)
+    return recorder.drain(thread_id, scope=scope)
+
+
+class _CostTransfer(TypedDict):
+    """One completed nested total addressed to its owning parent graph."""
+
+    owner_scope: str
+    cost_usd: float
 
 
 class CostState(ResumeState):
@@ -555,6 +646,20 @@ class CostState(ResumeState):
     still using an additive reducer so each drain contributes only the spend it
     priced and no write has to read-modify-write the running total.
     `operator.add` is last so LangGraph still detects the reducer.
+    """
+
+    _session_cost_transfers: Annotated[
+        NotRequired[dict[str, _CostTransfer]],
+        OmitFromInput,
+        operator.or_,
+    ]
+    """Completed nested totals waiting for their owning parent graph.
+
+    Each entry maps the completed graph's checkpoint scope to its parent scope
+    and total. The map reducer lets parallel subagents hand off independently.
+    `OmitFromInput` prevents a parent's pending entries from seeding a child,
+    while leaving them in subagent output so the task tool can checkpoint the
+    transfer on the owning parent graph.
     """
 
 
@@ -615,6 +720,12 @@ def _thread_id(runtime: Runtime[ContextT]) -> str | None:
     return thread_id if isinstance(thread_id, str) and thread_id else None
 
 
+def _checkpoint_scope(runtime: Runtime[ContextT]) -> str:
+    """Return the checkpoint scope shared by this graph's middleware nodes."""
+    execution_info = getattr(runtime, "execution_info", None)
+    return _parent_checkpoint_scope(getattr(execution_info, "checkpoint_ns", None))
+
+
 def _latest_ai_message(messages: Sequence[Any]) -> AIMessage | None:
     """Return the most recent AI message, if any.
 
@@ -630,10 +741,9 @@ def _latest_ai_message(messages: Sequence[Any]) -> AIMessage | None:
 class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
     """Own the thread's cumulative `_session_cost_usd` checkpoint value.
 
-    The main agent's instance is the only writer of the channel: it prices every
-    model request recorded for the thread — its own, its subagents',
-    offload/summarization, and the Auto classifier — plus its own latest response
-    when the recorder did not already charge it.
+    The main agent owns the thread total. Nested instances checkpoint local
+    deltas before an interrupt can pause their graph, then transfer the completed
+    subagent total through state for its owning parent graph to checkpoint.
     """
 
     state_schema = CostState
@@ -642,10 +752,9 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         """Initialize cost tracking.
 
         Args:
-            nested: When `True`, this instance belongs to a subagent: it records
-                nothing (the thread's main agent prices nested spend from the
-                shared recorder) and only zeroes the channel before the agent
-                runs, so an inherited parent total can never be added twice.
+            nested: When `True`, this instance belongs to a subagent. It
+                checkpoints local spend and transfers the completed delta to the
+                owning parent graph through state.
         """
         super().__init__()
         self._nested = nested
@@ -707,7 +816,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         agent, and `after_agent` hooks run in reverse stack order, so this one
         drains after it. Anything that still spends later is charged on the next
         turn's first step rather than lost, but draining here keeps the turn's
-        own checkpoint complete.
+        own checkpoint complete. A nested instance also transfers its cumulative
+        local delta after the subagent completes.
 
         Args:
             state: Final state for the completed agent run.
@@ -715,9 +825,31 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 the new total to the client.
 
         Returns:
-            The additive cost delta, or `None` when nothing was left to charge.
+            The additive cost delta and/or a nested transfer update, or `None`
+            when nothing was left to charge or transfer.
         """
-        return self._charge(state, runtime, price_latest_message=False)
+        update = self._charge(state, runtime, price_latest_message=False)
+        if self._nested:
+            prior_usd = state.get("_session_cost_usd")
+            if not isinstance(prior_usd, int | float) or not math.isfinite(prior_usd):
+                prior_usd = 0.0
+            delta_usd = update.get("_session_cost_usd", 0.0) if update else 0.0
+            total_usd = max(float(prior_usd), 0.0) + delta_usd
+            scope = _checkpoint_scope(runtime)
+            if scope and total_usd > 0:
+                transfers = dict(state.get("_session_cost_transfers") or {})
+                if update:
+                    pending = update.get("_session_cost_transfers")
+                    if isinstance(pending, Overwrite):
+                        transfers = dict(pending.value)
+                transfers[scope] = {
+                    "owner_scope": _owning_checkpoint_scope(scope),
+                    "cost_usd": total_usd,
+                }
+                if update is None:
+                    update = {}
+                update["_session_cost_transfers"] = Overwrite(transfers)
+        return update
 
     def _charge(
         self,
@@ -737,11 +869,10 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 re-price a message an earlier drain already charged.
 
         Returns:
-            The delta to add to `_session_cost_usd`, or `None` when it is zero.
+            Updates for the cost delta and claimed transfers, or `None` when
+            neither changed.
         """
-        if self._nested:
-            return None
-
+        thread_id = _thread_id(runtime)
         fallback = _checkpointed_model_spec(state)
         message = (
             _latest_ai_message(state.get("messages") or [])
@@ -750,9 +881,26 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         )
         main_message_id = message.id if message is not None else None
         delta_usd = 0.0
+        transfers = state.get("_session_cost_transfers") or {}
+        remaining_transfers = dict(transfers)
+        owner_scope = _checkpoint_scope(runtime)
+        claimed_transfer = False
+        for source_scope, transfer in transfers.items():
+            if (
+                isinstance(source_scope, str)
+                and isinstance(transfer, Mapping)
+                and transfer.get("owner_scope") == owner_scope
+                and isinstance(transfer.get("cost_usd"), int | float)
+                and math.isfinite(transfer["cost_usd"])
+                and transfer["cost_usd"] > 0
+            ):
+                delta_usd += float(transfer["cost_usd"])
+                remaining_transfers.pop(source_scope, None)
+                claimed_transfer = True
         charged_message_ids: set[str] = set()
         charged_count = 0
-        for record in _drain_recorded_costs(_thread_id(runtime)):
+        scope = _checkpoint_scope(runtime) if self._nested else None
+        for record in _drain_recorded_costs(thread_id, scope=scope):
             # `_model_spec` describes the main response, while the recorder also
             # contains subagent and side-model calls. Correct generic provider
             # metadata only for the record that joins to that main response.
@@ -798,10 +946,16 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 if cost_usd is not None:
                     delta_usd += cost_usd
 
-        if delta_usd <= 0:
+        if delta_usd <= 0 and not claimed_transfer:
             return None
-        self._emit_total(state, runtime, delta_usd)
-        return {"_session_cost_usd": delta_usd}
+        if not self._nested and delta_usd > 0:
+            self._emit_total(state, runtime, delta_usd)
+        update: dict[str, Any] = {}
+        if claimed_transfer:
+            update["_session_cost_transfers"] = Overwrite(remaining_transfers)
+        if delta_usd > 0:
+            update["_session_cost_usd"] = delta_usd
+        return update
 
     @staticmethod
     def _emit_total(

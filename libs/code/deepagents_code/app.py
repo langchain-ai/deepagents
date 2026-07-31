@@ -14849,6 +14849,11 @@ class DeepAgentsApp(App):
                         msg,
                         fallback_model=fallback_model,
                         fallback_provider=fallback_provider,
+                        request_metadata=(
+                            data[1]
+                            if len(data) > 1 and isinstance(data[1], dict)
+                            else None
+                        ),
                         kind="offload",
                         seen_message_ids=seen_usage_message_ids,
                     )

@@ -587,6 +587,7 @@ def _record_usage_from_message(
         message_obj,
         fallback_model=settings.model_name or "",
         fallback_provider=settings.model_provider or "",
+        request_metadata=metadata,
         kind=usage_kind,
         seen_message_ids=state.seen_usage_message_ids,
     )

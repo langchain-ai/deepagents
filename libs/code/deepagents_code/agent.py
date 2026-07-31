@@ -2449,9 +2449,9 @@ def create_cli_agent(
             middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
         if not has_explicit_model:
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
-        # Nested model spend is priced by the main agent from the shared
-        # thread-keyed cost recorder, so this instance only zeroes the channel:
-        # a guard in case a parent total ever starts seeding subagent state.
+        # Checkpoint nested spend before HITL can pause the subgraph, then hand
+        # the completed delta back through owner-scoped state for the parent
+        # graph to add to its durable total.
         middleware.append(CostTrackingMiddleware(nested=True))
         # Interactive turns may legitimately be tool-free, so terminal-stall
         # recovery is installed only on headless stacks. The middleware itself

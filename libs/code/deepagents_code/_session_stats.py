@@ -276,6 +276,7 @@ def record_message_usage(
     *,
     fallback_model: str = "",
     fallback_provider: str = "",
+    request_metadata: Mapping[str, Any] | None = None,
     kind: UsageKind = "assistant",
     seen_message_ids: set[str] | None = None,
 ) -> RecordedUsage | None:
@@ -291,6 +292,8 @@ def record_message_usage(
         message: Streamed model message or chunk.
         fallback_model: Model to use when response metadata does not name one.
         fallback_provider: Provider to use when response metadata omits it.
+        request_metadata: Stream metadata identifying the provider configured for
+            this specific request, when available.
         kind: Request class used by the type breakdown.
         seen_message_ids: Request IDs already recorded by this stream consumer.
 
@@ -340,12 +343,31 @@ def record_message_usage(
             return None
         input_count = total_count
 
-    from deepagents_code.cost_tracking import estimate_cost, resolve_message_model
+    from deepagents_code.cost_tracking import (
+        _CONFIGURED_PROVIDER_METADATA_KEY,
+        estimate_cost,
+        resolve_message_model,
+    )
 
+    configured_provider = (
+        request_metadata.get(_CONFIGURED_PROVIDER_METADATA_KEY)
+        if request_metadata is not None
+        else None
+    )
+    has_request_provider = isinstance(configured_provider, str) and bool(
+        configured_provider
+    )
+    provider_fallback = (
+        configured_provider if has_request_provider else fallback_provider
+    )
     model_name, provider = resolve_message_model(
         message,
         fallback_model=fallback_model,
-        fallback_provider=fallback_provider,
+        fallback_provider=provider_fallback,
+        # Request-specific metadata safely corrects generic provider responses.
+        # Without it, only the main request may use the parent fallback; hidden
+        # calls can be cross-provider and must keep their explicit response value.
+        prefer_fallback_provider=has_request_provider or kind == "assistant",
     )
     cost_usd = estimate_cost(usage, model_name, provider)
     stats.record_request(

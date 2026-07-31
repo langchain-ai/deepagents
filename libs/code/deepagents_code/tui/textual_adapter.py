@@ -1696,6 +1696,9 @@ async def execute_task_textual(
                             message,
                             fallback_model=settings.model_name or "",
                             fallback_provider=settings.model_provider or "",
+                            request_metadata=(
+                                metadata if isinstance(metadata, dict) else None
+                            ),
                             kind=classify_usage_kind(
                                 is_main_agent=is_main_agent,
                                 metadata=(

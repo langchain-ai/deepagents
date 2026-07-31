@@ -53,7 +53,8 @@ Screen {
  * at once, and releasing one must not reveal it while the other still applies.
  */
 .message-timestamp-footer.-tool-group-collapsed-accessory,
-.message-timestamp-footer.-tool-awaiting-approval-accessory {
+.message-timestamp-footer.-tool-awaiting-approval-accessory,
+.message-timestamp-footer.-tool-superseded-accessory {
     display: none;
 }
 

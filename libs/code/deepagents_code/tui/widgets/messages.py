@@ -1381,6 +1381,14 @@ footer against the user's `/timestamps` preference forever. Styled in
 preference's own class.
 """
 
+_TOOL_SUPERSEDED_ACCESSORY_CLASS = "-tool-superseded-accessory"
+"""Marker class hiding the accessories of a row replaced by its `DiffMessage`.
+
+A third hide reason alongside the two above, for the same reason they are
+distinct from each other. Unlike those, this one never lifts: a successful
+`TOOLS_SUPERSEDED_BY_DIFF` row stays hidden for the rest of the transcript.
+"""
+
 
 class ToolCallMessage(Vertical):
     """Widget displaying a tool call with collapsible output.
@@ -1989,11 +1997,13 @@ class ToolCallMessage(Vertical):
         if self._status_widget is None:
             return
         self._status_widget.remove_class("pending")
-        if self._tool_name in TOOLS_SUPERSEDED_BY_DIFF:
+        if self._superseded_by_diff:
             # The `DiffMessage` mounted alongside this call already conveys the
-            # outcome, so hide the row entirely. Errors and rejections re-show it
-            # via `set_error`/`set_rejected`.
+            # outcome, so hide the row entirely — along with any decoration that
+            # would otherwise strand over it, such as a timestamp footer. Errors
+            # and rejections never reach here, so the row stays visible for them.
             self.display = False
+            self._sync_own_hide_accessories()
             return
         if self._format_output(self._output, is_preview=False).content.plain.strip():
             self._status_widget.remove_class("success")
@@ -2122,7 +2132,7 @@ class ToolCallMessage(Vertical):
         """
         self._awaiting_approval = True
         self.display = False
-        self._sync_approval_accessories()
+        self._sync_own_hide_accessories()
 
     def clear_awaiting_approval(self) -> None:
         """Restore the tool call after `set_awaiting_approval`.
@@ -2134,9 +2144,9 @@ class ToolCallMessage(Vertical):
             return
         self._awaiting_approval = False
         self.display = True
-        self._sync_approval_accessories()
+        self._sync_own_hide_accessories()
 
-    def _register_visibility_accessories(self, *accessories: Widget) -> None:
+    def register_visibility_accessories(self, *accessories: Widget) -> None:
         """Link transcript decorations whose visibility follows this tool.
 
         Idempotent: `Widget` uses identity equality, so re-registering the same
@@ -2145,20 +2155,25 @@ class ToolCallMessage(Vertical):
         for accessory in accessories:
             if accessory not in self._visibility_accessories:
                 self._visibility_accessories.append(accessory)
-        self._sync_approval_accessories()
+        self._sync_own_hide_accessories()
 
-    def _sync_approval_accessories(self) -> None:
-        """Mirror this row's approval hiding onto its linked decorations.
+    def _sync_own_hide_accessories(self) -> None:
+        """Mirror this row's own hide reasons onto its linked decorations.
 
-        Drives both directions, so it is safe to call unconditionally from
-        `set_awaiting_approval` and `clear_awaiting_approval`. Uses `set_class`
-        rather than `display` so an accessory keeps its own visibility class
-        (e.g. the `/timestamps` preference) and returns to it afterwards.
+        Drives every reason in both directions, so it is safe to call
+        unconditionally from `set_awaiting_approval`, `clear_awaiting_approval`,
+        and `_show_success_status`. Uses `set_class` rather than `display` so an
+        accessory keeps its own visibility class (e.g. the `/timestamps`
+        preference) and returns to it afterwards.
         """
         for accessory in self._visibility_accessories:
             accessory.set_class(
                 self._awaiting_approval,
                 _TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS,
+            )
+            accessory.set_class(
+                self._superseded_by_diff,
+                _TOOL_SUPERSEDED_ACCESSORY_CLASS,
             )
 
     def toggle_output(self) -> None:
@@ -3493,6 +3508,11 @@ class ToolCallMessage(Vertical):
         return self._status == "success"
 
     @property
+    def _superseded_by_diff(self) -> bool:
+        """Whether this row hides because its `DiffMessage` says it all."""
+        return self.is_success and self._tool_name in TOOLS_SUPERSEDED_BY_DIFF
+
+    @property
     def is_failed(self) -> bool:
         """Whether the tool did not succeed and should stay visible.
 
@@ -3967,7 +3987,7 @@ class ToolGroupSummary(Static):
             return
         self._accessories.setdefault(owner, []).extend(linked)
         if isinstance(owner, ToolCallMessage):
-            owner._register_visibility_accessories(*linked)
+            owner.register_visibility_accessories(*linked)
 
     def add_member(self, tool: ToolCallMessage, *accessories: Widget) -> None:
         """Add a tool to a live group and link its accessories.

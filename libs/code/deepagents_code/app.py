@@ -16371,6 +16371,12 @@ class DeepAgentsApp(App):
             await self._mount_before_queued(messages, widget)
             if footer is not None:
                 await self._mount_before_queued(messages, footer)
+                if isinstance(widget, ToolCallMessage):
+                    # A row can hide itself without ever joining a group — an
+                    # approval prompt replacing it, or its `DiffMessage`
+                    # superseding it — so link the footer to the row here rather
+                    # than only on the grouping paths below.
+                    widget.register_visibility_accessories(footer)
 
             # Fold the freshly-mounted tool/diff into the open group so it hides
             # immediately (must run after mount so display toggles take effect).

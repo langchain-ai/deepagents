@@ -33793,6 +33793,31 @@ class TestToolGroupCollapse:
             assert pending.display is True
             assert pending_footer.display is True
 
+    async def test_diff_superseded_row_hides_its_timestamp_footer(self) -> None:
+        """A row hidden by its own diff takes its footer with it.
+
+        `edit_file` is excluded from grouping, so this row never joins a group
+        and its footer is only linked to it at mount. Without that linkage the
+        timestamp strands over an invisible row, right above the diff.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-diff-footer")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            tool = ToolCallMessage("edit_file", {"file_path": "a.py"})
+            await app._mount_message(tool)
+            await pilot.pause()
+            footer = app.query_one(f"#{tool.id}-timestamp-footer", Static)
+            assert footer.display is True
+
+            tool.set_success("Updated file")
+            await pilot.pause()
+            assert tool.display is False
+            assert footer.display is False
+
     async def test_timestamps_toggle_respects_collapsed_group(self) -> None:
         """Turning `/timestamps` on must not surface a collapsed run's footers.
 

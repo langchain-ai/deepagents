@@ -2511,7 +2511,7 @@ class TestExecuteTaskTextualFileOpDiffs:
             user_input="edit the file",
             agent=_FakeAgent(chunks),
             assistant_id="assistant",
-            session_state=SimpleNamespace(thread_id="thread-1", auto_approve=True),
+            session_state=_session_state(auto_approve=True),
             adapter=adapter,
         )
 

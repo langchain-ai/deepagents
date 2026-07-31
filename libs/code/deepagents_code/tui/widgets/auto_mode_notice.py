@@ -37,6 +37,27 @@ AUTO_MODE_NOTICE_BODY = (
 )
 """Default Markdown body shown on first successful Auto enable."""
 
+_MARKDOWN_ESCAPES = str.maketrans({char: f"\\{char}" for char in "\\&`*_[]<>|~"})
+"""Markdown escapes for the externally configurable model label."""
+
+
+def build_auto_mode_notice_body(model_label: str) -> str:
+    """Add the effective classifier model to the Auto notice body.
+
+    Args:
+        model_label: Effective Auto classifier model shown to the user.
+
+    Returns:
+        Markdown notice body containing the safely escaped model label.
+    """
+    normalized = model_label.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    escaped = normalized.translate(_MARKDOWN_ESCAPES)
+    return AUTO_MODE_NOTICE_BODY.replace(
+        "**active model**",
+        f"**active model** ({escaped})",
+        1,
+    )
+
 
 class AutoModeNoticeScreen(ModalScreen[bool]):
     """In-TUI first-run notice describing what Auto mode does.
@@ -100,15 +121,27 @@ class AutoModeNoticeScreen(ModalScreen[bool]):
     # bindings to fire (see `on_mount`); without this the keys reach no handler.
     can_focus = True
 
-    def __init__(self, body: str | None = None) -> None:
+    def __init__(
+        self,
+        body: str | None = None,
+        *,
+        model_label: str | None = None,
+    ) -> None:
         """Initialize the notice.
 
         Args:
             body: Optional Markdown body under the title. Defaults to
                 `AUTO_MODE_NOTICE_BODY`. Links open in a browser.
+            model_label: Effective classifier model to add to the default body.
+                Ignored when `body` is supplied.
         """
         super().__init__()
-        self._body = AUTO_MODE_NOTICE_BODY if body is None else body
+        if body is not None:
+            self._body = body
+        elif model_label is not None:
+            self._body = build_auto_mode_notice_body(model_label)
+        else:
+            self._body = AUTO_MODE_NOTICE_BODY
 
     def on_mount(self) -> None:
         """Take focus so priority bindings receive Enter/Esc."""

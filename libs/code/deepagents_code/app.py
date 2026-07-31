@@ -8168,7 +8168,9 @@ class DeepAgentsApp(App):
 
         try:
             self.push_screen(
-                AutoModeNoticeScreen(),
+                AutoModeNoticeScreen(
+                    model_label=self._auto_classifier_model_label(),
+                ),
                 handle_result,
             )
         except Exception:
@@ -18224,7 +18226,7 @@ class DeepAgentsApp(App):
         """Return how the Auto classifier model should be described to the user."""
         if self._auto_classifier_model:
             return self._auto_classifier_model
-        return "the main agent model"
+        return self._effective_model_spec() or "the main agent model"
 
     def _notify_auto_classifier_active(self) -> None:
         """Disclose the effective authorization classifier on Auto activation."""
@@ -18492,7 +18494,7 @@ class DeepAgentsApp(App):
         if self._approval_mode is target:
             message = f"Already in {target.value.capitalize()} mode."
             if target is ApprovalMode.AUTO:
-                message += " Use /auto model to switch classifier models."
+                message += "\nUse /auto model to switch classifier models."
             self.notify(
                 message,
                 severity="information",

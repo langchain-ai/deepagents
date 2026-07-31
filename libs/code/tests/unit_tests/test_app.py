@@ -17642,7 +17642,7 @@ class TestApprovalModeSlashCommands:
 
         set_mode.assert_not_awaited()
         notify.assert_called_once_with(
-            "Already in Auto mode. Use /auto model to switch classifier models.",
+            "Already in Auto mode.\nUse /auto model to switch classifier models.",
             severity="information",
             markup=False,
         )
@@ -27635,11 +27635,13 @@ class TestLiveApprovalModeWrites:
         """First successful Auto toggle shows the education modal once."""
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.tui.widgets.auto_mode_notice import (
-            AUTO_MODE_NOTICE_BODY,
             AutoModeNoticeScreen,
+            build_auto_mode_notice_body,
         )
 
+        classifier = "anthropic:claude-haiku-4-5"
         app = DeepAgentsApp()
+        app._auto_classifier_model = classifier
         app._auto_mode_eligible = True
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -27668,7 +27670,8 @@ class TestLiveApprovalModeWrites:
                 await pilot.pause()
                 assert app._approval_mode is ApprovalMode.AUTO
                 assert isinstance(app.screen, AutoModeNoticeScreen)
-                assert app.screen._body == AUTO_MODE_NOTICE_BODY
+                assert app.screen._body == build_auto_mode_notice_body(classifier)
+                assert f"**active model** ({classifier})" in app.screen._body
                 save_notice.assert_not_called()
                 await pilot.press("enter")
                 await pilot.pause()
@@ -28144,6 +28147,13 @@ class TestLiveApprovalModeWrites:
             markup=False,
         )
 
+    def test_auto_classifier_label_inherits_effective_main_model(self) -> None:
+        """The notice names the main model when no classifier override exists."""
+        app = DeepAgentsApp()
+        app._model_override = "openai:gpt-5.5"
+
+        assert app._auto_classifier_model_label() == "openai:gpt-5.5"
+
     async def test_toggle_warns_when_auto_ineligible_and_switcher_disabled(
         self,
     ) -> None:
@@ -28173,11 +28183,13 @@ class TestLiveApprovalModeWrites:
     async def test_on_auto_approve_enabled_first_modal_and_save(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.tui.widgets.auto_mode_notice import (
-            AUTO_MODE_NOTICE_BODY,
             AutoModeNoticeScreen,
+            build_auto_mode_notice_body,
         )
 
+        classifier = "openai:gpt-5.5-mini"
         app = DeepAgentsApp(auto_approve=False)
+        app._auto_classifier_model = classifier
         app._auto_mode_eligible = True
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -28209,7 +28221,7 @@ class TestLiveApprovalModeWrites:
                 await pilot.pause()
                 assert app._approval_mode is ApprovalMode.AUTO
                 assert isinstance(app.screen, AutoModeNoticeScreen)
-                assert app.screen._body == AUTO_MODE_NOTICE_BODY
+                assert app.screen._body == build_auto_mode_notice_body(classifier)
                 save_notice.assert_not_called()
                 await pilot.press("enter")
                 await pilot.pause()
@@ -28257,10 +28269,11 @@ class TestLiveApprovalModeWrites:
         from deepagents_code.approval_mode import ApprovalMode
         from deepagents_code.tui.widgets.auto_mode_notice import (
             AUTO_MODE_DOCS_URL,
-            AUTO_MODE_NOTICE_BODY,
             AutoModeNoticeScreen,
+            build_auto_mode_notice_body,
         )
 
+        classifier = "anthropic:claude-haiku-4-5"
         with (
             patch(
                 "deepagents_code.approval_mode.has_auto_mode_notice",
@@ -28272,10 +28285,11 @@ class TestLiveApprovalModeWrites:
             ) as save_notice,
         ):
             app = DeepAgentsApp(approval_mode=ApprovalMode.AUTO)
+            app._auto_classifier_model = classifier
             async with app.run_test() as pilot:
                 await pilot.pause()
                 assert isinstance(app.screen, AutoModeNoticeScreen)
-                assert app.screen._body == AUTO_MODE_NOTICE_BODY
+                assert app.screen._body == build_auto_mode_notice_body(classifier)
                 assert AUTO_MODE_DOCS_URL in app.screen._body
                 save_notice.assert_not_called()
                 await pilot.press("enter")

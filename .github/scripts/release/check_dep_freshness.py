@@ -2,25 +2,22 @@
 
 from __future__ import annotations
 
-import json
 import os
-import time
 import tomllib
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from enum import StrEnum
-from http.client import HTTPException
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, Self
-from urllib.error import HTTPError, URLError
-from urllib.parse import quote
-from urllib.request import Request, urlopen
+from typing import TYPE_CHECKING, Self
 
 from check_release_deps import (
+    FetchPyPI,
+    PyPIRequestError,
     _write_output,
     _write_step_summary,
     changed_manifests,
+    fetch_pypi_json,
     load_release_packages,
 )
 from packaging.requirements import InvalidRequirement, Requirement
@@ -34,13 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 BYPASS_LABEL = "release-deps: acknowledged"
 COMMENT_MARKER = "<!-- dep-freshness-check -->"
 PRERELEASE_POLICY_ENV = "DEP_FRESHNESS_PRERELEASE_POLICY"
-DEFAULT_REQUEST_TIMEOUT = 5.0
-DEFAULT_REQUEST_ATTEMPTS = 3
 MAX_FETCH_WORKERS = 8
-MAX_RETRY_DELAY = 5.0
-SERVER_ERROR_MIN = 500
-SERVER_ERROR_MAX = 600
-TRANSIENT_HTTP_STATUSES = frozenset({408, 425, 429})
 LOWER_BOUND_OPERATORS = frozenset({">=", "~=", "=="})
 UPPER_BOUND_OPERATORS = frozenset({"<", "<=", "~=", "=="})
 
@@ -51,35 +42,6 @@ class PrereleasePolicy(StrEnum):
     BOUND = "bound"
     ALWAYS = "always"
     NEVER = "never"
-
-
-class HTTPResponse(Protocol):
-    """Subset of an urllib response used by the PyPI client."""
-
-    def __enter__(self) -> Self:
-        """Enter the response context."""
-
-    def __exit__(
-        self,
-        exc_type: object,
-        exc_value: object,
-        traceback: object,
-    ) -> bool | None:
-        """Exit the response context."""
-
-    def read(self) -> bytes:
-        """Read the response body."""
-
-
-class OpenUrl(Protocol):
-    """A urllib-compatible opener that accepts a per-request timeout."""
-
-    def __call__(self, request: Request, *, timeout: float) -> HTTPResponse:
-        """Open a request and return a context-managed response."""
-
-
-FetchPyPI = Callable[[str], Mapping[str, object]]
-Sleep = Callable[[float], None]
 
 
 @dataclass(frozen=True)
@@ -150,25 +112,6 @@ class StaleDependency:
                 f"got {self.latest} <= {self.minimum}"
             )
             raise ValueError(msg)
-
-
-class PyPIRequestError(RuntimeError):
-    """A known failure while querying or decoding a PyPI response."""
-
-    def __init__(self, message: str, *, transient: bool) -> None:
-        """Initialize a PyPI request failure.
-
-        Args:
-            message: Human-readable failure detail.
-            transient: Whether retrying later could reasonably succeed.
-
-        """
-        super().__init__(message)
-        self.transient = transient
-
-
-class _InvalidPyPIResponseError(ValueError):
-    """Raised when PyPI returns a response that cannot be decoded safely."""
 
 
 def _notice(message: str) -> None:
@@ -297,101 +240,6 @@ def latest_pypi_version(
             continue
         candidates.append(version)
     return max(candidates, default=None)
-
-
-def _decode_pypi_response(raw: bytes) -> Mapping[str, object]:
-    try:
-        payload: object = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as err:
-        msg = f"invalid JSON response: {err}"
-        raise _InvalidPyPIResponseError(msg) from err
-    if not isinstance(payload, dict) or not isinstance(payload.get("releases"), dict):
-        msg = "JSON response does not contain a releases object"
-        raise _InvalidPyPIResponseError(msg)
-    return payload
-
-
-def _retry_delay(error: HTTPError | None, attempt: int) -> float:
-    retry_after = error.headers.get("Retry-After") if error and error.headers else None
-    if retry_after:
-        try:
-            return min(MAX_RETRY_DELAY, max(0.0, float(retry_after)))
-        except ValueError:
-            pass
-    return min(MAX_RETRY_DELAY, 0.25 * (2**attempt))
-
-
-def _is_transient_status(status: int) -> bool:
-    return (
-        status in TRANSIENT_HTTP_STATUSES
-        or SERVER_ERROR_MIN <= status < SERVER_ERROR_MAX
-    )
-
-
-def fetch_pypi_json(
-    name: str,
-    *,
-    attempts: int = DEFAULT_REQUEST_ATTEMPTS,
-    timeout: float = DEFAULT_REQUEST_TIMEOUT,
-    opener: OpenUrl | None = None,
-    sleep: Sleep = time.sleep,
-) -> Mapping[str, object]:
-    """Fetch one project's PyPI JSON with bounded retries.
-
-    Args:
-        name: Distribution name, which is canonicalized before querying.
-        attempts: Maximum number of HTTP attempts.
-        timeout: Timeout in seconds for each attempt.
-        opener: Injectable urllib-compatible opener for tests.
-        sleep: Injectable delay function for tests.
-
-    Returns:
-        Decoded PyPI JSON response.
-
-    Raises:
-        ValueError: If `attempts` is less than one.
-        PyPIRequestError: If PyPI cannot provide a usable response.
-
-    """
-    if attempts < 1:
-        msg = "attempts must be at least 1"
-        raise ValueError(msg)
-
-    canonical_name = canonicalize_name(name)
-    url = f"https://pypi.org/pypi/{quote(canonical_name, safe='')}/json"
-    request = Request(  # noqa: S310  # URL is fixed to the HTTPS PyPI origin.
-        url,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "langchain-ai/deepagents-dependency-freshness-check",
-        },
-    )
-    open_url = opener or urlopen
-
-    for attempt in range(attempts):
-        try:
-            with open_url(request, timeout=timeout) as response:
-                return _decode_pypi_response(response.read())
-        except HTTPError as err:
-            transient = _is_transient_status(err.code)
-            if not transient or attempt == attempts - 1:
-                msg = f"PyPI returned HTTP {err.code} for {canonical_name}"
-                raise PyPIRequestError(msg, transient=transient) from err
-            sleep(_retry_delay(err, attempt))
-        except (
-            URLError,
-            TimeoutError,
-            OSError,
-            HTTPException,
-            _InvalidPyPIResponseError,
-        ) as err:
-            if attempt == attempts - 1:
-                msg = f"PyPI request failed for {canonical_name}: {err}"
-                raise PyPIRequestError(msg, transient=True) from err
-            sleep(_retry_delay(None, attempt))
-
-    msg = f"PyPI request exhausted retries for {canonical_name}"
-    raise PyPIRequestError(msg, transient=True)
 
 
 def _source_is_local(source: object) -> bool:

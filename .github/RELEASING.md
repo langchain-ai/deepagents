@@ -701,6 +701,32 @@ When a `feat`/`fix` (etc.) also edits non-lockfile files under other managed pac
 
 `release_please_scope_check.yml` blocks bump-worthy multi-component real-file PRs the same way it blocks lockfile-only fan-out (same sticky / `allow-lockfile-release` bypass). `pr_scope_file_check.yml` sticky copy also states this release-please consequence when title scope and package dirs disagree. See also [Lockfile churn fan-out](#lockfile-churn-fan-out).
 
+### Releasing a new line ahead of its dependents
+
+Local development installs sibling packages as editable path dependencies via `[tool.uv.sources]`, which hides whether published dependency ranges would resolve for real users installing from PyPI. The `📦 Check Release Dependencies` workflow closes that gap on `release(...)` PRs: it strips local sources and runs `uv pip compile --no-sources --universal --prerelease allow --all-extras` against PyPI for each changed release manifest, failing when the public install graph is unsatisfiable.
+
+When cutting a new major/minor line of a core package, it is normal for the release PR to be red on this check even with correct metadata: the branch already opens sibling upper bounds and floors in-tree, but **already-published** dependents on PyPI still reject the new line until they cut their own releases. In that case:
+
+1. **Lift sibling bounds in-tree first** (partner upper bounds, downstream floors, exact consumer pins) so follow-up releases are ready to cut.
+2. **Publish the core package**, acknowledging the check with the `release-deps: acknowledged` label. The label soft-runs the check: resolution still executes and the PR keeps a sticky listing the follow-up releases the public graph needs — the label does **not** mean "deps resolved."
+3. **Publish dependents immediately after**, in dependency order: partners whose published metadata caps the new line (these gate extras like `deepagents-code[daytona]`) → exact-pinned primary consumers (e.g. `deepagents-code`) → packages with floors on those consumers.
+
+Use `release-deps: acknowledged` only for this coordinated release order. If the pins on the branch are wrong (not merely ahead of what siblings have published), fix the dependency metadata instead of acknowledging. The follow-up list on the sticky is generated from live PyPI metadata, so treat "green under ack" as "the listed packages still owe releases," never as an all-clear.
+
+The follow-up sticky is independent of the label: a release PR that resolves cleanly still gets one whenever a sibling's *published* metadata caps the new line, because resolution only proves the changed package installs — not that its reverse-dependents still do. The sticky clears itself once nothing is outstanding. Packages listed under a "could not be determined" warning are neither confirmed clean nor confirmed to owe a release; re-run the job before treating that list as exhaustive.
+
+#### What `release-deps: acknowledged` does to each check
+
+The label means "the release dependencies were reviewed," never "they are resolved." It no longer skips any job — every check still runs and still reports, so the outstanding work stays on the PR:
+
+| Check | Effect of the label |
+| --- | --- |
+| [`📦 Check Release Dependencies`](#releasing-a-new-line-ahead-of-its-dependents) | Resolves in report-only mode: the check goes green, and the sticky still lists the follow-up releases the public install graph needs. |
+| `📦 Check Dependency Freshness` | No effect on whether it runs. It is advisory in all cases, and its comment stays on the PR. |
+| `🔗 Check SDK Pin` | Clears the hard failure on a **prerelease** pin, recording that the pin was reviewed. Stale-pin behaviour is unchanged (advisory; `release.yml` enforces it at publish). |
+
+Because the label stops the release-dependency check from *blocking* without stopping it from *reporting*, treat everything still on the PR after applying it as a to-do list for the release sequence.
+
 ### Overriding a Merged Commit's Changelog Entry
 
 Append a `BEGIN_COMMIT_OVERRIDE` block (shown below) to the **merged PR's body** when release-please needs to use a different message than the actual squash-merge commit. release-please reads merged PR bodies on every run within its lookback window and uses the override in place of the original commit message — no history rewrite, no force-push.
@@ -819,6 +845,59 @@ gh pr edit <PR_NUMBER> --remove-label "autorelease: pending" --add-label "autore
 On the normal mainline publish path, a failed label swap fails `mark-release`
 after the tag and GitHub release already exist. Treat the package release as
 done and fix only the stuck label so later release-please maintenance can run.
+
+### Release Notes Job Failed or GitHub Release Body Is Empty
+
+The `release-notes` job builds the published GitHub release body from the package `CHANGELOG.md`, contributor shoutouts, and a collapsible package-scoped git log. It is intentionally fail-open: if the job fails or produces an empty body, the publish to PyPI and the GitHub tag still succeed. The release is real — do **not** re-dispatch the full publish workflow for the same version.
+
+A failed notes job is surfaced in the `mark-release` job of the same workflow run: look for an `::error::` annotation ("Release notes job failed") and a job summary with a paste-ready rebuild command. Degraded bodies (built with warnings) are instead summarized by the `release-notes` job itself under "⚠️ Release notes built with warnings."
+
+To rebuild and apply the release body manually:
+
+1. **Check out the release commit locally.** Use the same SHA that was used for the release (visible in the workflow run's "Resolved release target" summary, or via `gh pr view <pr-number> --json mergeCommit --jq .mergeCommit.oid`).
+
+   The clone must have **full history and all tags** — the script resolves the predecessor tag that bounds the git log, and CI does this with `fetch-depth: 0` and `fetch-tags: true`. On a tag-less clone, run `git fetch --tags` first; if the clone is also shallow (`git rev-parse --is-shallow-repository` reports `true`), additionally run `git fetch --unshallow`.
+
+2. **Rebuild the body** with the shared script. Run it **from the repository root** (or pass `--repo-root`):
+
+   ```bash
+   python .github/scripts/release/build_release_notes.py \
+     --package <PACKAGE> \
+     --version <VERSION> \
+     --sha <RELEASE_SHA> \
+     --repo langchain-ai/deepagents \
+     --actor <YOUR_GITHUB_USERNAME> \
+     --base-branch <BRANCH_RELEASED_FROM> \
+     --out /tmp/release-body.md
+   ```
+
+   `--actor` supplies the `Released by:` line when the release commit has no merged PR to read the merger from. `--base-branch` is required to reproduce the `Released from <branch> at commit ...` provenance line — omit it and that line is silently absent, which matters most for the `vX.Y` and `alpha/*` releases this recovery path usually serves. Pass `--default-branch` too if the repository default is not `main`.
+
+   Add `--offline` to skip GitHub API calls entirely (contributors *and* the releaser). The body will still include the changelog section and git log scaffolding. Note that a missing `gh` CLI is **not** equivalent: contributor collection yields nothing either way, but the releaser still falls back to `--actor`, so the `Released by:` line survives.
+
+   Review the generated file before applying it. The script exits non-zero and prints an `::error::` line if the SHA does not resolve, the package directory is missing, or an unexpected git command fails. Most git failures are deliberately tolerated and downgraded to warnings so a degraded body still gets built, so a zero exit status is **not** by itself evidence the body is complete — read the warnings. They are printed as `::warning::` lines on stderr; any warning containing `INCOMPLETE` is listed first.
+
+   The script detects the most common recovery mistake for you: if it finds no predecessor tag but the package `CHANGELOG.md` documents earlier releases, it warns that **the clone is probably missing tags**. Re-fetch and rebuild rather than publishing that body. `<summary>Git log for initial release</summary>` on a package that has shipped before is the same symptom seen from the other side.
+
+3. **Apply the body** to the existing GitHub release:
+
+   ```bash
+   gh release edit "<PACKAGE>==<VERSION>" \
+     --repo langchain-ai/deepagents \
+     --notes-file /tmp/release-body.md
+   ```
+
+   Pass **only** `--notes-file`. Flags such as `--tag`, `--target`, `--prerelease`, or `--latest` can change release metadata and are not part of note recovery. See [Enrich the published pre-release notes](#enrich-the-published-pre-release-notes) for the same `gh release edit` pattern used in pre-release workflows.
+
+4. **Verify** the result:
+
+   ```bash
+   gh release view "<PACKAGE>==<VERSION>" \
+     --repo langchain-ai/deepagents \
+     --json url,isPrerelease,targetCommitish,body
+   ```
+
+The source of truth for release notes is the merged package `CHANGELOG.md`. For `deepagents-code`, the curated release-notes workflow should already have applied the notes to `CHANGELOG.md` before the release PR merged; recovery here is about reconstructing the published GitHub body scaffolding (contributors, git log, size limits) when the CI notes job failed.
 
 ### Release Failed: Pre-release Checks
 

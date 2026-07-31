@@ -18,6 +18,8 @@ from rich.console import Console
 if TYPE_CHECKING:
     from prompt_toolkit.layout import Layout
 
+from deepagents_code._env_vars import INVOKED_AS
+from deepagents_code._invocation import invoked_name
 from deepagents_code.app import AppResult, DeepAgentsApp, run_textual_app
 from deepagents_code.config import build_langsmith_thread_url, reset_langsmith_url_cache
 from deepagents_code.main import (
@@ -310,6 +312,22 @@ class TestStartupAutoUpdate:
             "/tool/bin/python",
             ["/tool/bin/python", "-m", "deepagents_code", "--model", "openai:gpt-5.5"],
         )
+
+    def test_restart_carries_launch_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The `-m` re-exec drops argv[0], so the launch name goes via the env."""
+        invoked_name.cache_clear()
+        # Empty is treated as absent, and registering the key with monkeypatch
+        # means the value the restart writes is cleaned up after the test.
+        monkeypatch.setenv(INVOKED_AS, "")
+        monkeypatch.setattr(sys, "executable", "/tool/bin/python")
+        monkeypatch.setattr(sys, "argv", ["/home/user/.local/bin/abc"])
+        with (
+            patch("os.execv", side_effect=SystemExit(0)),
+            pytest.raises(SystemExit),
+        ):
+            _restart_current_process()
+
+        assert os.environ[INVOKED_AS] == "abc"
 
     def test_failed_update_does_not_restart_and_continues(self) -> None:
         """A failed upgrade must not restart; it surfaces the error and returns."""
@@ -1395,16 +1413,20 @@ class TestRenderTeardownThreadHints:
         thread_exists_mock: AsyncMock,
         thread_url: str | None,
         return_code: int = 0,
+        launch_name: str = "dcode",
     ) -> str:
         """Render the hints with patched dependencies, returning the output."""
         buffer = StringIO()
         console = Console(file=buffer, width=200)
+        # `launch_name` is resolved (and cached) inside the renderer.
+        invoked_name.cache_clear()
         with (
             patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
             patch(
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=thread_url,
             ),
+            patch.dict(os.environ, {INVOKED_AS: launch_name}),
         ):
             _render_teardown_thread_hints(console, "test123", return_code=return_code)
         return buffer.getvalue()
@@ -1423,6 +1445,19 @@ class TestRenderTeardownThreadHints:
         thread_exists_mock.assert_awaited_once()
         assert "Resume this thread with:" in output
         assert "dcode -r test123" in output
+
+    def test_resume_hint_echoes_launch_command(self) -> None:
+        """The hint names the shim the user launched, not a hardcoded `dcode`."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            launch_name="abc",
+        )
+
+        assert "abc -r test123" in output
+        assert "dcode" not in output
 
     def test_prints_langsmith_link_when_available(self) -> None:
         """A configured LangSmith URL is shown alongside the resume hint."""

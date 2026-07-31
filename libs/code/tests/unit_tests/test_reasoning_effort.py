@@ -387,6 +387,7 @@ def test_openai_integration_translates_standard_effort_without_summary() -> None
             api_key="test",
             reasoning_effort="high",
             use_responses_api=True,
+            http_socket_options=[],
         )
     payload = model._get_request_payload([HumanMessage("hello")])
 

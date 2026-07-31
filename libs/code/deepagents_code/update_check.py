@@ -349,6 +349,26 @@ def get_last_update_check_time() -> float | None:
     return _coerce_checked_at(checked_at)
 
 
+def is_update_cache_fresh(checked_at: float | None) -> bool:
+    """Return whether a recorded check stamp is still within `CACHE_TTL`.
+
+    Lets status surfaces tell "the cache expired" apart from "the cache is
+    current but holds no usable answer for this install" — states that
+    `get_cached_update_available` collapses into the same `(False, None)`
+    result. Takes the stamp instead of reading it so a caller that already
+    called `get_last_update_check_time` does not read `CACHE_FILE` twice and
+    risk straddling a concurrent refresh.
+
+    Args:
+        checked_at: Epoch time of the last recorded check, as returned by
+            `get_last_update_check_time`.
+
+    Returns:
+        `True` when `checked_at` is set and younger than `CACHE_TTL`.
+    """
+    return checked_at is not None and time.time() - checked_at < CACHE_TTL
+
+
 def _canonical_prerelease_pin(raw: object) -> str | None:
     """Return the canonical targeted pre-release pin for `raw`, or `None`.
 

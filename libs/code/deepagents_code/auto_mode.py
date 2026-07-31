@@ -2711,6 +2711,46 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             return None
         return cast("AutoDecisionPlan", dict(raw))
 
+    def _seeded_offload_compaction_ids(
+        self, runtime: Runtime[Any], ai_message: AIMessage
+    ) -> set[str]:
+        """Return the tool-call IDs authorized by the current `/offload` run.
+
+        `/offload` compacts server-side by injecting a synthetic assistant message
+        that already carries a forced `compact_conversation` call, so no model call
+        — and therefore no decision plan — exists for it. Rather than interrupting
+        for an action the user just requested, recognize that seed from trust
+        signals the model cannot forge: `offload_tool_call_id` is set by the client
+        on the run context (never graph state), and the seed's message ID is the
+        deterministic ID the compaction tool's own execution guard requires.
+
+        Args:
+            runtime: LangGraph runtime carrying the per-run client context.
+            ai_message: Assistant message whose tool calls are being routed.
+
+        Returns:
+            The seeded tool-call IDs, or an empty set outside an `/offload` run.
+        """
+        from deepagents_code.offload_middleware import _offload_seed_message_id
+
+        seeded_id = _context_value(_runtime_context(runtime), "offload_tool_call_id")
+        if (
+            not isinstance(seeded_id, str)
+            or not seeded_id
+            # The middleware is only wired with the canonical compaction tool the
+            # graph executes; without it there is nothing trusted to bypass for.
+            or self._trusted_compaction_tool is None
+            or ai_message.id != _offload_seed_message_id(seeded_id)
+        ):
+            return set()
+        seeded = any(
+            call["name"] == "compact_conversation"
+            and call.get("id") == seeded_id
+            and call.get("args") == {"force": True}
+            for call in ai_message.tool_calls
+        )
+        return {seeded_id} if seeded else set()
+
     async def aafter_model(
         self, state: AgentState[Any], runtime: Runtime[Any]
     ) -> dict[str, Any] | None:
@@ -2756,6 +2796,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         if plan is None:
             if not manual_ids:
                 return {"_auto_decision_plan": None}
+            seeded_ids = self._seeded_offload_compaction_ids(runtime, ai_message)
+            if seeded_ids and manual_ids <= seeded_ids:
+                logger.debug(
+                    "Auto decision bypassed for the /offload seeded compaction call"
+                )
+                return {"messages": [ai_message], "_auto_decision_plan": None}
             logger.warning(
                 "Auto decision plan was missing or invalid; routing to Manual"
             )

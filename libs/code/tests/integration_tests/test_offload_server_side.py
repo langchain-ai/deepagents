@@ -136,6 +136,7 @@ async def test_offload_runs_server_side_and_is_agent_readable(
     enough content, runs `/offload`, and asserts:
 
     - no `ErrorMessage` and an "Offloaded " success message,
+    - no HITL interrupt is surfaced for the seeded compaction call,
     - a persisted `_summarization_event` with `cutoff > 0` and
       `file_path == /conversation_history/<thread>.md`,
     - the archive is readable THROUGH THE AGENT (via its own `read_file` tool),
@@ -198,6 +199,18 @@ async def test_offload_runs_server_side_and_is_agent_readable(
                 thread_id=thread_id,
             )
 
+            offload_interrupts: list[object] = []
+            plain_astream = agent.astream
+
+            async def _recording_astream(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                """Record every interrupt the server surfaces to the client."""
+                async for chunk in plain_astream(*args, **kwargs):
+                    if isinstance(chunk, tuple) and len(chunk) == 3:
+                        _ns, mode, data = chunk
+                        if mode == "updates" and isinstance(data, dict):
+                            offload_interrupts.extend(data.get("__interrupt__") or [])
+                    yield chunk
+
             async with app.run_test() as pilot:
                 for _ in range(120):
                     await pilot.pause(0.1)
@@ -206,15 +219,23 @@ async def test_offload_runs_server_side_and_is_agent_readable(
 
                 assert app._message_store.total_count > 0
 
-                await app._handle_offload()
+                agent.astream = _recording_astream  # ty: ignore
+                try:
+                    await app._handle_offload()
 
-                for _ in range(120):
-                    await pilot.pause(0.1)
-                    if any(
-                        "Offloaded " in str(widget._content)
-                        for widget in app.query(AppMessage)
-                    ):
-                        break
+                    for _ in range(120):
+                        await pilot.pause(0.1)
+                        if any(
+                            "Offloaded " in str(widget._content)
+                            for widget in app.query(AppMessage)
+                        ):
+                            break
+                finally:
+                    agent.astream = plain_astream  # ty: ignore
+
+                # The seeded compaction is authorized by the per-run context, so
+                # Auto must execute it without a human-approval round trip.
+                assert offload_interrupts == []
 
                 app_messages = [
                     str(widget._content) for widget in app.query(AppMessage)

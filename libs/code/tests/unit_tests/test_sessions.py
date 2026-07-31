@@ -1,12 +1,15 @@
 """Tests for session/thread management."""
 
 import asyncio
+import gc
 import json
 import sqlite3
+import threading
 import uuid
+import warnings
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -471,6 +474,60 @@ class TestConnectHelper:
         assert not worker.is_alive(), (
             "aiosqlite worker thread should be joined after _connect exit"
         )
+
+    def test_cancelled_open_closes_the_sqlite_handle(self, tmp_path, monkeypatch):
+        """A connect cancelled mid-open still closes the sqlite handle.
+
+        Background workers are routinely cancelled at app exit, and aiosqlite
+        opens the database on a worker thread. Without the handle being
+        recorded as soon as it exists, a cancel landing in that window strands
+        it for the garbage collector to report as an unclosed database.
+        """
+        db_path = tmp_path / "cancelled.db"
+        opening = threading.Event()
+        finish_open = threading.Event()
+        handles: list[sqlite3.Connection] = []
+        connections: list[aiosqlite.Connection] = []
+        real_sqlite_connect = sqlite3.connect
+        real_new_connection = sessions._new_connection
+
+        def blocking_connect(database: str, **kwargs: Any) -> sqlite3.Connection:
+            opening.set()
+            finish_open.wait(10)
+            handle = real_sqlite_connect(database, **kwargs)
+            handles.append(handle)
+            return handle
+
+        def capturing_new_connection(timeout: float) -> "aiosqlite.Connection":
+            conn = real_new_connection(timeout)
+            connections.append(conn)
+            return conn
+
+        async def _test() -> None:
+            async def use_connection() -> None:
+                async with sessions._connect():
+                    pass
+
+            task = asyncio.create_task(use_connection())
+            await asyncio.to_thread(opening.wait, 10)
+            task.cancel()
+            finish_open.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        monkeypatch.setattr(sessions, "get_db_path", lambda: db_path)
+        monkeypatch.setattr(sessions, "_new_connection", capturing_new_connection)
+        monkeypatch.setattr(sqlite3, "connect", blocking_connect)
+        asyncio.run(_test())
+
+        assert handles, "the worker thread should have opened a handle"
+        assert not connections[0]._thread.is_alive()
+        handles.clear()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            gc.collect()
+        unclosed = [w for w in caught if "unclosed database" in str(w.message)]
+        assert not unclosed, [str(w.message) for w in unclosed]
 
 
 class TestFormatTimestamp:

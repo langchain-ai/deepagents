@@ -32,6 +32,8 @@ _initial_prompt_cache: dict[str, tuple[str | None, str | None]] = {}
 _MAX_INITIAL_PROMPT_CACHE = 4096
 _recent_threads_cache: dict[tuple[str | None, int], list[ThreadInfo]] = {}
 _MAX_RECENT_THREADS_CACHE_KEYS = 16
+_DEFAULT_SQLITE_TIMEOUT = 5.0
+"""Seconds to wait out a locked database; matches the `sqlite3` default."""
 
 
 def _patch_aiosqlite() -> None:
@@ -93,6 +95,59 @@ async def _drain_aiosqlite_worker(conn: aiosqlite.Connection) -> None:
         await asyncio.to_thread(worker.join, 5.0)
 
 
+def _record_handle_on_open(conn: aiosqlite.Connection) -> None:
+    """Record the sqlite handle on `conn` the moment its worker opens it.
+
+    `aiosqlite` opens the database on its worker thread and delivers the raw
+    `sqlite3.Connection` back through a future, so the handle only reaches the
+    `Connection` when the awaiting coroutine resumes. A task cancelled in that
+    window — background workers are routinely cancelled at app exit — leaves
+    the handle reachable from nothing but the worker thread: the library's own
+    cancellation cleanup finds no connection to close, and the garbage
+    collector reports `ResourceWarning: unclosed database` instead.
+
+    Storing the handle from the worker thread, ahead of the cleanup that
+    cancellation queues behind it, closes that window so an interrupted connect
+    is torn down like any other.
+
+    Args:
+        conn: A connection that has not been opened yet.
+    """
+    # No public hook for the connector, so tolerate it moving: the leak this
+    # avoids is a warning at teardown, not something worth failing a query for.
+    connector = getattr(conn, "_connector", None)
+    if connector is None:
+        logger.debug("aiosqlite connector is unavailable; cannot guard the handle")
+        return
+
+    def open_and_record() -> sqlite3.Connection:
+        handle = connector()
+        # The same assignment aiosqlite makes once the awaiting coroutine
+        # resumes, made early enough that a cancel cannot get in front of it.
+        conn._connection = handle
+        return handle
+
+    conn._connector = open_and_record
+
+
+def _new_connection(timeout: float = _DEFAULT_SQLITE_TIMEOUT) -> aiosqlite.Connection:
+    """Build an unopened connection to the sessions database.
+
+    Args:
+        timeout: Seconds to wait out a locked database before giving up.
+
+    Returns:
+        A connection that closes its sqlite handle even when interrupted.
+    """
+    import aiosqlite as _aiosqlite
+
+    _patch_aiosqlite()
+
+    conn = _aiosqlite.connect(str(get_db_path()), timeout=timeout)
+    _record_handle_on_open(conn)
+    return conn
+
+
 @asynccontextmanager
 async def _connect() -> AsyncIterator[aiosqlite.Connection]:
     """Import aiosqlite, apply the compatibility patch, and connect.
@@ -103,18 +158,12 @@ async def _connect() -> AsyncIterator[aiosqlite.Connection]:
     Yields:
         An open aiosqlite connection to the sessions database.
     """
-    import aiosqlite as _aiosqlite
-
-    _patch_aiosqlite()
-
-    conn: aiosqlite.Connection | None = None
+    conn = _new_connection(timeout=30.0)
     try:
-        async with _aiosqlite.connect(str(get_db_path()), timeout=30.0) as opened:
-            conn = opened
+        async with conn as opened:
             yield opened
     finally:
-        if conn is not None:
-            await _drain_aiosqlite_worker(conn)
+        await _drain_aiosqlite_worker(conn)
 
 
 class ThreadInfo(TypedDict):
@@ -1468,20 +1517,15 @@ async def get_checkpointer() -> AsyncIterator[AsyncSqliteSaver]:
     """
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-    _patch_aiosqlite()
-
-    saver: AsyncSqliteSaver | None = None
+    # Built here rather than through `AsyncSqliteSaver.from_conn_string` so the
+    # connection is one this module owns and can clean up after an interrupted
+    # connect; see `_record_handle_on_open`.
+    conn = _new_connection()
     try:
-        async with AsyncSqliteSaver.from_conn_string(
-            str(get_db_path())
-        ) as checkpointer:
-            saver = checkpointer
-            yield checkpointer
+        async with conn as opened:
+            yield AsyncSqliteSaver(opened)
     finally:
-        if saver is not None:
-            conn = getattr(saver, "conn", None)
-            if conn is not None:
-                await _drain_aiosqlite_worker(conn)
+        await _drain_aiosqlite_worker(conn)
 
 
 _DEFAULT_THREAD_LIMIT = 20

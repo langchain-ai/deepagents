@@ -255,11 +255,11 @@ class TestRecursiveDeletePermissions:
         assert (tmp_path / "work" / "a.txt").exists()
 
     def test_empty_directory_delete_still_uses_conservative_ancestor_check(self, tmp_path):
-        """Only plain files get first-match-wins ordering -- an empty directory
-        still goes through the conservative check, so a narrower allow further
-        down in declaration order doesn't override a catch-all deny.
+        """Only plain files get first-match-wins ordering.
 
-        Unlike `test_exact_file_delete_allowed_under_workspace_isolation`,
+        An empty directory still goes through the conservative check, so a
+        narrower allow further down in declaration order doesn't override a
+        catch-all deny. Unlike `test_exact_file_delete_allowed_under_workspace_isolation`,
         `/work/empty` is a directory (albeit with no children), so it's
         resolved the same way a directory with children would be.
         """

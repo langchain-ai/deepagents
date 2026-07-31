@@ -42,6 +42,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command, interrupt
+from pydantic import ValidationError
 from typing_extensions import TypedDict
 
 from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
@@ -55,6 +56,7 @@ from deepagents_code.hooks.models.domain import (
     CompactTrigger,
     HookContext,
     HookDecision,
+    HookDiagnostic,
     HookEvent,
     HookInvocation,
     PermissionEffect,
@@ -73,6 +75,7 @@ from deepagents_code.hooks.models.domain import (
     ToolCallData,
 )
 from deepagents_code.hooks.models.transport import HookInvocationRequest
+from deepagents_code.hooks.reducer import reduce_hook_results
 from deepagents_code.hooks.tools import to_wire_tool_name
 
 if TYPE_CHECKING:
@@ -680,11 +683,24 @@ def _invoke_hook(
         deadline=datetime.now(UTC) + deadline,
     )
     raw = interrupt(build_hook_interrupt_payload(request))
-    response = parse_hook_resume_value(
-        raw,
-        invocation_id=request.invocation_id,
-        snapshot_id=request.snapshot_id,
-    )
+    try:
+        response = parse_hook_resume_value(
+            raw,
+            invocation_id=request.invocation_id,
+            snapshot_id=request.snapshot_id,
+        )
+    except (ValidationError, ValueError):
+        return reduce_hook_results(
+            HookInvocation(context=context, event=event),
+            (),
+            diagnostics=(
+                HookDiagnostic(
+                    code="invalid_resume",
+                    severity="warning",
+                    message="Malformed hook resume value; treating it as no decision",
+                ),
+            ),
+        )
     return response.decision
 
 

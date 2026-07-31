@@ -466,6 +466,35 @@ def test_hook_resume_value_validates_identity() -> None:
         )
 
 
+def test_malformed_hook_resume_fails_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request()
+    gate = _session_gate(
+        {
+            "hooks_snapshot_id": request.snapshot_id,
+            "hooks_server_events": [HookEvent.PRE_TOOL_USE.value],
+        }
+    )
+    assert gate is not None
+    monkeypatch.setattr(
+        "deepagents_code.hooks.server_middleware.interrupt",
+        lambda _payload: {"invalid": True},
+    )
+
+    decision = _invoke_hook(
+        request.invocation.context,
+        request.invocation.event,
+        gate=gate,
+        config={"configurable": {"thread_id": request.invocation.context.thread_id}},
+        deadline=timedelta(seconds=1),
+    )
+
+    assert isinstance(decision, PreToolUseDecision)
+    assert decision.permission.behavior == "none"
+    assert [item.code for item in decision.diagnostics] == ["invalid_resume"]
+
+
 def test_real_checkpointer_resume_replays_stable_hook_identity() -> None:
     context = HookContext(
         thread_id="thread-1",

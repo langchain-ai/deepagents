@@ -630,6 +630,7 @@ if TYPE_CHECKING:
         GoalReviewResult,
         GoalReviewTextArea,
     )
+    from deepagents_code.tui.widgets.mcp_reconnect import ReconnectChoice
     from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.tui.widgets.notification_center import (
         NotificationActionRequested,
@@ -3162,6 +3163,15 @@ class DeepAgentsApp(App):
         self._active_mcp_viewer: Any = None
         """Handle to the `/mcp` modal so server-ready events can refresh it."""
 
+        self._mcp_viewer_disable_toggled = False
+        """Whether the current/last `/mcp` viewer session toggled a disable state.
+
+        Scoped to one viewer session — cleared when the viewer opens, when
+        the close prompt fires, and on `ServerReady` — so closing the
+        viewer only offers a reconnect when the user actually changed
+        something while it was open.
+        """
+
         self._restart_respawn_task: asyncio.Task[None] | None = None
         """Strong reference to the detached `/restart` respawn task.
 
@@ -5178,6 +5188,7 @@ class DeepAgentsApp(App):
         self._mcp_optimistic_original_server_info.clear()
         self._pending_mcp_login_reconnect = False
         self._pending_mcp_disable_reconnect_servers.clear()
+        self._mcp_viewer_disable_toggled = False
         self._sync_pending_mcp_reconnect()
 
         # Drop transient failure-state widgets — banner state and the agent
@@ -21428,7 +21439,9 @@ class DeepAgentsApp(App):
 
         The viewer may dismiss with a server name (when the user activates
         an `unauthenticated` header row to start in-TUI OAuth login) or
-        with `None` (close without action).
+        with `None` (close without action). A plain close after `F2`
+        disable/enable toggles offers a reconnect so the changes are not
+        left silently unapplied.
         """
         from deepagents_code.tui.widgets.mcp_viewer import (
             MCP_VIEWER_RECONNECT_REQUEST,
@@ -21440,8 +21453,10 @@ class DeepAgentsApp(App):
             connecting=self._connecting,
             pending_reconnect=self._pending_mcp_reconnect,
             on_toggle_disable=self._toggle_mcp_server_disabled,
+            on_close=self._replace_mcp_viewer_with_disable_reconnect_prompt,
         )
         self._active_mcp_viewer = screen
+        self._mcp_viewer_disable_toggled = False
 
         def handle_result(result: str | None) -> None:
             self._active_mcp_viewer = None
@@ -21463,26 +21478,193 @@ class DeepAgentsApp(App):
                 self._track_server_restart_task(task)
                 task.add_done_callback(_log_task_exception)
                 return
-            if result:
-                # User picked an unauthenticated server — start login.
-                self._start_mcp_login(result)
-            elif self._chat_input:
+            if result and self._start_mcp_login(result):
+                # User picked an unauthenticated server and login started.
+                # Any pending disable toggle rides along on the post-login
+                # reconnect prompt, so this path never prompts twice.
+                return
+            # Normal Escape is intercepted by the viewer's `on_close` callback
+            # and atomically switches to the prompt. This is the fallback for
+            # a rejected login (MCP off, remote server, agent switching) or a
+            # programmatic dismiss: without it, a toggle made in the same
+            # session would sit unapplied with no further nudge until the next
+            # `/mcp` open reset the flag.
+            if (
+                self._mcp_viewer_disable_toggled
+                and self._pending_mcp_disable_reconnect_servers
+            ):
+                # Disable/enable toggles only take effect after a restart,
+                # and the user closed the viewer without pressing Ctrl+R.
+                # Offer the reconnect instead of leaving the change
+                # unapplied. The follow-up modal is scheduled (not pushed
+                # here) so this dismiss fully unwinds first.
+                if not self.call_after_refresh(self._prompt_mcp_disable_reconnect):
+                    # Pump is closing, so the prompt will never run. The
+                    # toggle is already on disk and applies on next launch;
+                    # log rather than leaving no trace of the dropped prompt.
+                    logger.warning(
+                        "Could not schedule MCP disable-reconnect prompt; "
+                        "message pump is closing"
+                    )
+                return
+            if self._chat_input:
                 self._chat_input.focus_input()
 
         self.push_screen(screen, handle_result)
+
+    def _replace_mcp_viewer_with_disable_reconnect_prompt(self) -> bool:
+        """Atomically replace a closing MCP viewer with its apply prompt.
+
+        `MCPViewerScreen.action_cancel` calls this before dismissing. Using
+        `switch_screen` keeps a modal screen active throughout the transition;
+        dismissing the viewer and pushing after a refresh exposes the chat
+        screen for one frame.
+
+        Returns:
+            `True` when the viewer was replaced and must not dismiss itself,
+            otherwise `False` so the viewer closes normally.
+        """
+        if not (
+            self._mcp_viewer_disable_toggled
+            and self._pending_mcp_disable_reconnect_servers
+        ):
+            return False
+
+        from deepagents_code.tui.widgets.mcp_reconnect import (
+            MCPDisableReconnectPromptScreen,
+        )
+
+        prompt = MCPDisableReconnectPromptScreen(
+            sorted(self._pending_mcp_disable_reconnect_servers),
+            on_choice=self._handle_mcp_disable_reconnect_choice,
+        )
+        try:
+            self.switch_screen(prompt)
+        except Exception:
+            # Leave the viewer's normal dismiss path intact. Its result
+            # callback will schedule the existing recovery prompt after the
+            # stack unwinds, so an unexpected switch failure remains usable.
+            logger.exception(
+                "Failed to replace MCP viewer with disable-reconnect prompt"
+            )
+            return False
+
+        self._active_mcp_viewer = None
+        self._mcp_viewer_disable_toggled = False
+        return True
+
+    def _prompt_mcp_disable_reconnect(self) -> None:
+        """Offer a reconnect for `/mcp` disable toggles left unapplied.
+
+        Fallback scheduled from `_show_mcp_viewer`'s dismiss callback when a
+        rejected login or programmatic dismiss bypasses the atomic Escape
+        transition. Re-checks pending disable changes so a reconnect that
+        landed between the dismiss and this callback skips the prompt.
+
+        Runs a refresh after the viewer's dismiss, so an unrelated modal
+        (tool approval, `/auth`) can own the screen by now. `push_screen`
+        would happily stack on top of it and steal Enter/Esc, so defer to
+        the toast instead — same trade-off as `_open_update_available_modal`.
+        """
+        self._mcp_viewer_disable_toggled = False
+        if not self._pending_mcp_disable_reconnect_servers:
+            if self._chat_input:
+                self._chat_input.focus_input()
+            return
+
+        if isinstance(self.screen, ModalScreen):
+            self._notify_mcp_disable_reconnect_recovery()
+            return
+
+        from deepagents_code.tui.widgets.mcp_reconnect import (
+            MCPDisableReconnectPromptScreen,
+        )
+
+        try:
+            self.push_screen(
+                MCPDisableReconnectPromptScreen(
+                    sorted(self._pending_mcp_disable_reconnect_servers),
+                ),
+                self._handle_mcp_disable_reconnect_choice,
+            )
+        except Exception:
+            # Last-resort net for an unexpected fault while building or
+            # pushing the screen — a stacking conflict is handled above,
+            # since `push_screen` stacks rather than raising. The toggle is
+            # already persisted, so surface the recovery path rather than
+            # silently dropping the prompt.
+            logger.exception("Failed to mount MCP disable-reconnect prompt")
+            self._notify_mcp_disable_reconnect_recovery()
+
+    def _handle_mcp_disable_reconnect_choice(
+        self, choice: ReconnectChoice | None
+    ) -> None:
+        """Apply an explicit choice from either disable-reconnect prompt path.
+
+        Args:
+            choice: Reconnect now, defer, or `None` for a programmatic dismiss.
+        """
+        if choice == "reconnect":
+            # Detached task, not `call_later`: the restart takes seconds and
+            # awaiting it on the message pump freezes the chat input (same
+            # rationale as the Ctrl+R path in `_show_mcp_viewer`).
+            task = asyncio.create_task(self._reconnect_from_viewer_safe())
+            self._track_server_restart_task(task)
+            task.add_done_callback(_log_task_exception)
+            return
+        # `later` (explicit defer) and `None` (programmatic dismiss) both keep
+        # the current server. Only an explicit `later` emits the pending-change
+        # toast; `None` stays quiet so we don't narrate an action the user did
+        # not take.
+        if choice == "later":
+            self.notify(
+                "MCP server changes are still pending. Run `/mcp reconnect` "
+                "when ready to apply them.",
+                severity="information",
+                timeout=8,
+                markup=False,
+            )
+        self._focus_chat_input_after_refresh()
+
+    def _notify_mcp_disable_reconnect_recovery(self) -> None:
+        """Point the user at `/mcp reconnect` when the prompt can't open.
+
+        Shared by the modal-already-open guard and the mount-failure
+        fallback in `_prompt_mcp_disable_reconnect`. The toggle is already
+        persisted either way, so the change is not lost — it just needs a
+        reconnect the user now has to trigger themselves.
+        """
+        self.notify(
+            "Couldn't open the reconnect prompt. Run `/mcp reconnect` to "
+            "apply the MCP server changes.",
+            severity="warning",
+            markup=False,
+        )
+        if self._chat_input:
+            self._chat_input.focus_input()
 
     async def _reconnect_from_viewer_safe(self) -> None:
         """Run the post-viewer reconnect and surface unexpected failures.
 
         Scheduled via `asyncio.create_task` from `_show_mcp_viewer`'s
-        dismiss callback so the reconnect runs detached from the message
-        pump; `_log_task_exception` logs any escaped error, and this
+        dismiss callback and from `_prompt_mcp_disable_reconnect` so the
+        reconnect runs detached from the message pump;
+        `_log_task_exception` logs any escaped error, and this
         wrapper additionally catches failures to display an `ErrorMessage`.
-        Re-checks pending state so a flip between the viewer dismiss and
+        Re-checks pending state so a flip between the caller's dismiss and
         this task starting silently no-ops instead of degrading to the
-        CLI no-op notice.
+        CLI no-op notice. Via `_prompt_mcp_disable_reconnect` that window
+        is much wider than the Ctrl+R path's — it spans the modal mount
+        and however long the user leaves the prompt open.
         """
         if not self._pending_mcp_reconnect:
+            # Almost always a `ServerReady` that already loaded the new
+            # config from disk, so the user's intent is satisfied and a
+            # toast would be noise. Log so an unexpected clear is traceable.
+            logger.debug(
+                "Skipping post-viewer MCP reconnect; nothing pending by the "
+                "time the task started"
+            )
             return
         try:
             await self._handle_mcp_reconnect_command()
@@ -21553,6 +21735,7 @@ class DeepAgentsApp(App):
             return
 
         had_original = server_name in self._mcp_optimistic_original_server_info
+        self._mcp_viewer_disable_toggled = True
         verb = "disabled" if new_state else "enabled"
         self._apply_optimistic_disabled_state(server_name, disabled=new_state)
         if new_state:
@@ -21769,7 +21952,7 @@ class DeepAgentsApp(App):
                 ),
             )
 
-    def _start_mcp_login(self, server_name: str) -> None:
+    def _start_mcp_login(self, server_name: str) -> bool:
         """Begin in-TUI OAuth login for `server_name`.
 
         Rejects when MCP is disabled, in remote-server mode (no owned server
@@ -21784,6 +21967,12 @@ class DeepAgentsApp(App):
 
         Args:
             server_name: MCP server name from `mcpServers`.
+
+        Returns:
+            `True` when the login started or was queued, `False` when it was
+            rejected outright (already reported to the user via a toast).
+            Callers that dismissed a screen to get here use this to decide
+            whether a follow-up prompt of their own still needs to run.
         """
         if self._mcp_preload_kwargs is None:
             self.notify(
@@ -21791,7 +21980,7 @@ class DeepAgentsApp(App):
                 severity="warning",
                 markup=False,
             )
-            return
+            return False
 
         if self._server_kwargs is None:
             # Remote-server mode: we cannot restart the server, so the new
@@ -21802,7 +21991,7 @@ class DeepAgentsApp(App):
                 severity="warning",
                 markup=False,
             )
-            return
+            return False
 
         if self._agent_switching:
             self.notify(
@@ -21810,7 +21999,7 @@ class DeepAgentsApp(App):
                 severity="warning",
                 markup=False,
             )
-            return
+            return False
 
         if self._connecting or self._server_proc is None:
             # The server is still coming up (initial connect, a reconnect,
@@ -21830,7 +22019,7 @@ class DeepAgentsApp(App):
                     execute=lambda: self._run_mcp_login_worker(server_name),
                 ),
             )
-            return
+            return True
 
         # An active agent/shell run is intentionally not a defer gate: the
         # OAuth handshake and on-disk token write are independent of the
@@ -21841,6 +22030,7 @@ class DeepAgentsApp(App):
             exclusive=False,
             group=f"mcp-login-{server_name}",
         )
+        return True
 
     async def _run_mcp_login_worker(self, server_name: str) -> None:
         """Resolve config, run the login modal, and refresh on success.
@@ -22002,7 +22192,6 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.tui.widgets.mcp_reconnect import (
             MCPReconnectPromptScreen,
-            ReconnectChoice,
         )
 
         choice_future: asyncio.Future[ReconnectChoice | None] = (

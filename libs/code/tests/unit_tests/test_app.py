@@ -82,7 +82,7 @@ from deepagents_code.goal_state_notice import (
 )
 from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.media_utils import ImageData, VideoData
-from deepagents_code.tui.textual_adapter import RubricEvaluationEnd
+from deepagents_code.tui.textual_adapter import RubricEvaluationEnd, TextualUIAdapter
 from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
 from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.goal_review import (
@@ -7004,6 +7004,15 @@ class TestClearCommand:
             await pilot.pause()
             app._session_state = TextualSessionState(thread_id="old-thread")
             app._lc_thread_id = "old-thread"
+            app._set_session_cost(1.25)
+            app._add_provisional_cost(0.5)
+            app._thread_stats.record_request(
+                "gpt-5.5",
+                100,
+                10,
+                provider="openai",
+                cost_usd=1.25,
+            )
 
             with (
                 patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
@@ -7014,6 +7023,12 @@ class TestClearCommand:
 
             assert app._session_state.thread_id == "new-thread"
             assert app._lc_thread_id == "new-thread"
+            assert app._session_cost_usd == pytest.approx(0.0)
+            assert app._thread_restored_cost_usd == pytest.approx(0.0)
+            # A stale provisional estimate must not follow the user to the new
+            # thread, where nothing would ever supersede it.
+            assert app._displayed_cost_usd == pytest.approx(0.0)
+            assert app._thread_stats.request_count == 0
 
             app_msgs = list(app.query(AppMessage))
             assert any(
@@ -7283,6 +7298,32 @@ class TestCopyCommand:
 
 class TestRunAgentTaskMediaTracker:
     """Tests image tracker wiring from app into textual execution."""
+
+    async def test_completed_turn_marks_unreported_usage(self) -> None:
+        """A completed turn remains distinguishable when usage metadata is absent."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            def execute(**kwargs: object) -> SessionStats:
+                adapter = cast("TextualUIAdapter", kwargs["adapter"])
+                callback = adapter._on_stream_complete
+                assert callable(callback)
+                callback()
+                return SessionStats()
+
+            with patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
+                side_effect=execute,
+            ):
+                await app._run_agent_task("hello")
+
+            assert app._thread_stats.request_count == 0
+            assert app._format_cost_summary() == (
+                "We couldn't track the requests so far because the provider didn't "
+                "report token usage. Requests from providers that report usage will "
+                "appear here."
+            )
 
     async def test_run_agent_task_passes_image_tracker(self) -> None:
         """`_run_agent_task` should forward the shared image tracker."""
@@ -25921,14 +25962,43 @@ class TestToastAnchoring:
         app = DeepAgentsApp()
         async with app.run_test(notifications=True) as pilot:
             await pilot.pause()
+            expected_messages = {"first", "second"}
             app.notify("first", timeout=60)
             app.notify("second", timeout=60)
-            await pilot.pause()
+
+            def painted_toast_bottoms(toasts: list[_Toast]) -> list[int]:
+                """Return bottom rows of toast regions the compositor will paint."""
+                bottoms: list[int] = []
+                for toast in toasts:
+                    geometry = app.screen.find_widget(toast)
+                    painted = geometry.region.intersection(geometry.clip)
+                    if painted:
+                        bottoms.append(painted.bottom)
+                return bottoms
+
+            async def wait_for_anchored_toasts() -> None:
+                while True:
+                    toasts = list(app.screen.query(_Toast))
+                    messages = {toast._notification.message for toast in toasts}
+                    bottoms = painted_toast_bottoms(toasts)
+                    chrome_top = self._chrome(app).region.y
+                    if (
+                        expected_messages <= messages
+                        and bottoms
+                        and max(bottoms) == chrome_top
+                    ):
+                        return
+                    await pilot.pause()
+
+            await asyncio.wait_for(wait_for_anchored_toasts(), timeout=5)
 
             toasts = list(app.screen.query(_Toast))
-            assert toasts
+            messages = {toast._notification.message for toast in toasts}
+            assert expected_messages <= messages
+            bottoms = painted_toast_bottoms(toasts)
+            assert bottoms
             chrome_top = self._chrome(app).region.y
-            assert max(toast.region.bottom for toast in toasts) == chrome_top
+            assert max(bottoms) == chrome_top
 
     async def test_growing_chat_input_lifts_the_rack(self) -> None:
         """A taller chat input pushes toasts further up the screen."""

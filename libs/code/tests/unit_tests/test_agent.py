@@ -2794,6 +2794,11 @@ class TestMiddlewareStackConformance:
         """
         from langchain.agents.middleware.types import AgentMiddleware
 
+        from deepagents_code.cost_tracking import CostTrackingMiddleware
+        from deepagents_code.goal_tools import GoalToolsMiddleware
+        from deepagents_code.reliable_rubric import ReliableRubricMiddleware
+        from deepagents_code.resume_state import ResumeStateMiddleware
+
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
         skills_dir = tmp_path / "skills"
@@ -2852,6 +2857,28 @@ class TestMiddlewareStackConformance:
             assert isinstance(mw, AgentMiddleware), (
                 f"{type(mw).__name__} does not inherit from AgentMiddleware"
             )
+
+        middleware_types = [type(middleware) for middleware in middleware_list]
+        assert middleware_types.count(CostTrackingMiddleware) == 1
+        assert (
+            middleware_types.index(ResumeStateMiddleware)
+            < middleware_types.index(CostTrackingMiddleware)
+            < middleware_types.index(GoalToolsMiddleware)
+        )
+        # `after_agent` hooks run in reverse list order, so cost tracking must
+        # stay *before* the rubric middleware. Reversed, the grading agent's
+        # spend lands in the next turn's checkpoint or is lost outright on a
+        # session's final turn. The two are registered ~460 lines apart in
+        # different functions, so nothing but this assertion pins the order.
+        assert middleware_types.index(CostTrackingMiddleware) < middleware_types.index(
+            ReliableRubricMiddleware
+        )
+        # The main agent owns the thread's cumulative cost; only nested
+        # instances opt out of writing it.
+        cost_middleware = next(
+            mw for mw in middleware_list if isinstance(mw, CostTrackingMiddleware)
+        )
+        assert cost_middleware._nested is False
 
 
 class TestEnableAskUser:
@@ -3516,18 +3543,19 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 isinstance(mw, ShellAllowListMiddleware) for mw in middleware
             ), f"Unexpected shell middleware on subagent {name!r}"
 
-    def test_subagent_middleware_combines_shell_and_configurable_model(
+    def test_subagent_middleware_combines_shell_configurable_model_and_cost(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Restrictive shell + implicit model should yield both middlewares.
+        """Restrictive shell + implicit model should yield shell, model, and cost.
 
-        Explicitly pinned subagents keep shell restriction but must not gain
-        `ConfigurableModelMiddleware`, which would let a runtime `/model` switch
-        clobber the pinned model.
+        Explicitly pinned subagents keep shell restriction and cost tracking but
+        must not gain `ConfigurableModelMiddleware`, which would let a runtime
+        `/model` switch clobber the pinned model.
         """
         from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.agent import ShellAllowListMiddleware
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
+        from deepagents_code.cost_tracking import CostTrackingMiddleware
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
         monkeypatch.setenv(EXPERIMENTAL, "1")
@@ -3588,10 +3616,18 @@ class TestCreateCliAgentShellMiddlewareWiring:
             ]
             assert middleware_types == [
                 ConfigurableModelMiddleware,
+                CostTrackingMiddleware,
                 ShellAllowListMiddleware,
                 ServerHooksMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
             assert subagents_by_name[name]["middleware"][-1]._emit_stop is False
+            # Nested spend is priced once by the main agent, so a subagent's
+            # instance must not also write the shared cost channel.
+            assert all(
+                mw._nested
+                for mw in subagents_by_name[name]["middleware"]
+                if isinstance(mw, CostTrackingMiddleware)
+            ), f"Subagent {name!r} must install cost tracking in nested mode"
 
         pinned = subagents_by_name["pinned"]
         assert pinned["model"] == "anthropic:claude-haiku-4-5"
@@ -3599,6 +3635,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
         assert any(
             isinstance(mw, ShellAllowListMiddleware) for mw in pinned_middleware
         ), "Pinned subagent should retain shell middleware"
+        assert any(
+            isinstance(mw, CostTrackingMiddleware) and mw._nested
+            for mw in pinned_middleware
+        ), "Pinned subagent should retain nested cost tracking"
         assert not any(
             isinstance(mw, ConfigurableModelMiddleware) for mw in pinned_middleware
         ), "Pinned subagent must not gain configurable model middleware"

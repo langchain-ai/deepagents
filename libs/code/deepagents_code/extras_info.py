@@ -798,6 +798,27 @@ def _display_sdk_version(
     return _with_editable_local_version(version)
 
 
+def _trace_sdk_version(
+    cli: DistributionVersion, sdk: DistributionVersion, requirement: Requirement | None
+) -> str | None:
+    """Return the SDK version string for LangSmith trace metadata.
+
+    Every editable SDK install gets the `editable` local segment, not just the
+    sibling workspace HEAD case that `_display_sdk_version` marks. A trace
+    carries the version string alone, with no room for the `(editable)`
+    annotation the human-facing surfaces render alongside it, and the SDK stamps
+    `lc_versions["deepagents"]` for any editable install — so suffixing only the
+    workspace HEAD case left the two entries in a single trace disagreeing.
+
+    Returns:
+        The version string, or `None` when it cannot be resolved.
+    """
+    version = _effective_sdk_version(cli, sdk, requirement)
+    if version is None or not sdk.editable:
+        return version
+    return _with_editable_local_version(version)
+
+
 def _sdk_requirement_comparison_version(
     cli: DistributionVersion, sdk: DistributionVersion, requirement: Requirement | None
 ) -> str | None:
@@ -951,9 +972,10 @@ def resolve_sdk_version() -> tuple[str | None, DistributionMetadataStatus]:
     """Resolve the diagnostic `deepagents` SDK version.
 
     Compatibility wrapper for callers that only need one SDK version string and
-    lookup status. For sibling monorepo packages whose stable source marker trails
-    dcode's exact SDK pin, the pin identifies the nearest published baseline and
-    an `+editable` local segment identifies the running workspace HEAD.
+    lookup status. Every editable install carries an `+editable` local segment,
+    matching how the SDK stamps `lc_versions["deepagents"]`. For sibling monorepo
+    packages whose stable source marker trails dcode's exact SDK pin, the pin
+    identifies the nearest published baseline the workspace HEAD represents.
 
     Returns:
         `(version, status)`. `version` is the resolved version string when
@@ -964,7 +986,7 @@ def resolve_sdk_version() -> tuple[str | None, DistributionMetadataStatus]:
     if sdk.status != "resolved":
         return None, sdk.status
     requirement = _sdk_requirement_for_cli(cli)
-    return _display_sdk_version(cli, sdk, requirement), "resolved"
+    return _trace_sdk_version(cli, sdk, requirement), "resolved"
 
 
 _EXTRA_MARKER_RE = re.compile(r"""extra\s*==\s*["']([^"']+)["']""")

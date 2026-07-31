@@ -16,6 +16,7 @@ from textual.widgets import Static
 
 from deepagents_code._constants import FIREWORKS_MODEL_ID_PREFIXES
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH, is_env_truthy
+from deepagents_code._session_stats import format_cost
 from deepagents_code.config import get_glyphs
 from deepagents_code.tui.widgets.loading import Spinner
 
@@ -185,7 +186,7 @@ class BranchLabel(Widget):
 
 
 class StatusBar(Horizontal):
-    """Status bar showing mode, auto-approve, cwd, git branch, tokens, and model."""
+    """Status bar showing mode, cwd, tokens with cost, and the active model."""
 
     DEFAULT_CSS = """
     StatusBar {
@@ -332,6 +333,7 @@ class StatusBar(Horizontal):
     cwd: reactive[str] = reactive("", init=False)
     branch: reactive[str] = reactive("", init=False)
     tokens: reactive[int] = reactive(0, init=False)
+    cost_usd: reactive[float] = reactive(0.0, init=False)
     rubric_label: reactive[str] = reactive("", init=False)
 
     def __init__(self, cwd: str | Path | None = None, **kwargs: Any) -> None:
@@ -730,9 +732,22 @@ class StatusBar(Horizontal):
     _has_token_count: bool = False
     """Whether the status bar has displayed a real token count this session."""
 
+    _tokens_pending: bool = False
+    """Whether the accurate token count for the current turn is still pending.
+
+    A cost update can arrive mid-turn, and it re-renders the shared token/cost
+    slot. Without this flag that re-render would replace the `... tokens`
+    placeholder with the *previous* turn's count -- the stale value the
+    placeholder exists to hide.
+    """
+
     def watch_tokens(self, new_value: int) -> None:
-        """Update token display when count changes."""
+        """Update the combined token and cost display when tokens change."""
         self._render_tokens(new_value, approximate=self._approximate)
+
+    def watch_cost_usd(self, _new_value: float) -> None:
+        """Update the combined token and cost display when cost changes."""
+        self._render_tokens(self.tokens, approximate=self._approximate)
 
     def watch_rubric_label(self, new_value: str) -> None:
         """Update rubric display when active rubric state changes."""
@@ -743,8 +758,30 @@ class StatusBar(Horizontal):
         display.display = bool(new_value)
         display.update(new_value)
 
+    @staticmethod
+    def _token_text(count: int, *, approximate: bool = False) -> str:
+        """Format the token portion of the shared status-bar slot.
+
+        Returns:
+            Formatted token count, or an empty string when no count is known.
+        """
+        if count <= 0:
+            return ""
+        suffix = "+" if approximate else ""
+        if count >= 1000:  # noqa: PLR2004  # Count formatting threshold
+            return f"{count / 1000:.1f}K{suffix} tokens"
+        return f"{count}{suffix} tokens"
+
+    def _cost_text(self) -> str:
+        """Format positive cost, hiding zero and unknown estimates.
+
+        Returns:
+            Formatted cost, or an empty string when no positive estimate exists.
+        """
+        return format_cost(self.cost_usd) if self.cost_usd > 0 else ""
+
     def _render_tokens(self, count: int, *, approximate: bool = False) -> None:
-        """Render the token count into the display widget.
+        """Render context tokens and cumulative cost in one compact slot.
 
         Args:
             count: Total context token count.
@@ -756,17 +793,15 @@ class StatusBar(Horizontal):
         except NoMatches:
             return
 
-        # Hide when empty so the widget's padding doesn't reserve a blank gap.
-        display.display = count > 0
-        if count > 0:
-            suffix = "+" if approximate else ""
-            # Format with K suffix for thousands
-            if count >= 1000:  # noqa: PLR2004  # Count formatting threshold
-                display.update(f"{count / 1000:.1f}K{suffix} tokens")
-            else:
-                display.update(f"{count}{suffix} tokens")
-        else:
-            display.update("")
+        token_text = (
+            "... tokens"
+            if self._tokens_pending
+            else self._token_text(count, approximate=approximate)
+        )
+        parts = [part for part in (token_text, self._cost_text()) if part]
+        display.display = bool(parts)
+        separator = f" {get_glyphs().bullet} "
+        display.update(separator.join(parts))
 
     def set_rubric_label(self, label: str) -> None:
         """Set the rubric status label.
@@ -790,6 +825,8 @@ class StatusBar(Horizontal):
         """
         self._approximate = approximate
         self._has_token_count = count > 0
+        # The accurate count has arrived, so stop suppressing it.
+        self._tokens_pending = False
         if self.tokens == count:
             # Reactive dedup would skip the watcher — call render directly.
             self._render_tokens(count, approximate=approximate)
@@ -798,14 +835,31 @@ class StatusBar(Horizontal):
             # self._approximate for the suffix.
             self.tokens = count
 
+    def set_cost(self, cost_usd: float) -> None:
+        """Set the cumulative thread cost shown beside context tokens.
+
+        Args:
+            cost_usd: Cumulative estimated cost in US dollars.
+        """
+        if self.cost_usd == cost_usd:
+            self._render_tokens(self.tokens, approximate=self._approximate)
+        else:
+            self.cost_usd = cost_usd
+
     def show_pending_tokens(self) -> None:
-        """Show an unknown token count placeholder during streaming."""
+        """Show pending tokens while preserving the cumulative cost."""
         if not self._has_token_count:
             return
+        # Latch the placeholder so a mid-turn cost refresh keeps it instead of
+        # re-rendering the previous turn's count.
+        self._tokens_pending = True
         try:
-            self.query_one("#tokens-display", Static).update("... tokens")
+            display = self.query_one("#tokens-display", Static)
         except NoMatches:
             return
+        parts = [part for part in ("... tokens", self._cost_text()) if part]
+        separator = f" {get_glyphs().bullet} "
+        display.update(separator.join(parts))
 
     def set_model(self, *, provider: str, model: str, effort: str = "") -> None:
         """Update the model display text.

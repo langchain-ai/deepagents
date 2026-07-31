@@ -2,6 +2,27 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.51](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.50...deepagents-code==0.1.51) (2026-07-31)
+
+
+### Features
+
+* **code:** `dcode config get` accepts sections ([#5134](https://github.com/langchain-ai/deepagents/issues/5134)) ([874a137](https://github.com/langchain-ai/deepagents/commit/874a137f7bf694f647f6f1dcbcf563eae5589ef2))
+* **code:** drop redundant `shell` and `web_search` prompt guidance ([#5213](https://github.com/langchain-ai/deepagents/issues/5213)) ([6305fdb](https://github.com/langchain-ai/deepagents/commit/6305fdbf8d94d061193a908715f2c629893b47ff))
+* **code:** point back to the previous thread after a switch ([#5172](https://github.com/langchain-ai/deepagents/issues/5172)) ([4507f9f](https://github.com/langchain-ai/deepagents/commit/4507f9f1985f29e9d4af7577293da64ec12b131c))
+* **code:** prompt to reconnect when leaving `/mcp` with pending toggles ([#5211](https://github.com/langchain-ai/deepagents/issues/5211)) ([53d1fb8](https://github.com/langchain-ai/deepagents/commit/53d1fb80cbd43f983782975d540fac34a11c4ccc))
+* **code:** running session cost in status bar and usage ([#5036](https://github.com/langchain-ai/deepagents/issues/5036)) ([539d4a0](https://github.com/langchain-ai/deepagents/commit/539d4a04380182438ca63ba6b902eb921dc8a600))
+
+
+### Bug Fixes
+
+* **code:** correct editable SDK detection to scan and correlate ([#5199](https://github.com/langchain-ai/deepagents/issues/5199)) ([4693ee7](https://github.com/langchain-ai/deepagents/commit/4693ee774771c5936ffa1783396aa4e2126211b1))
+* **code:** explain why `doctor` has no latest-version answer ([#5209](https://github.com/langchain-ai/deepagents/issues/5209)) ([ef3e078](https://github.com/langchain-ai/deepagents/commit/ef3e078795e01b8334151081d026d6a88268d5a9))
+* **code:** hide timestamp footers with the rows they belong to ([#5167](https://github.com/langchain-ai/deepagents/issues/5167)) ([a3e3798](https://github.com/langchain-ai/deepagents/commit/a3e3798599705afd2d0a3fce8116df61f22a551d))
+* **code:** keep the `/goal` criteria prompt responsive ([#5142](https://github.com/langchain-ai/deepagents/issues/5142)) ([6f9ea6a](https://github.com/langchain-ai/deepagents/commit/6f9ea6a943dabe6c055766a43a204db6f4d95c98))
+* **code:** release the turn when an interrupted worker never starts ([#5196](https://github.com/langchain-ai/deepagents/issues/5196)) ([42e01a9](https://github.com/langchain-ai/deepagents/commit/42e01a9585be8847aff6b97e520d7b84de922767))
+* **code:** resolve underspecified goal objectives from conversation context ([#5201](https://github.com/langchain-ai/deepagents/issues/5201)) ([8fdb9c3](https://github.com/langchain-ai/deepagents/commit/8fdb9c306fd9a5b5368eb065b100cbfe8c8cbc58))
+
 ## [0.1.50](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.49...deepagents-code==0.1.50) (2026-07-30)
 
 ### Highlights

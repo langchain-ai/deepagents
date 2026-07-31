@@ -3124,7 +3124,7 @@ async def test_classifier_model_spec_is_resolved_once_and_cached(
 async def test_classifier_model_construction_respects_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A timed-out constructor stays shared while batches fail closed promptly."""
+    """A timed-out constructor stays shared for its spec while batches fail closed."""
     started = threading.Event()
     release = threading.Event()
     specs: list[str] = []
@@ -3157,7 +3157,9 @@ async def test_classifier_model_construction_respects_deadline(
             tool_name="delete",
             args={"file_path": "old.py"},
         )
-        construction = middleware._classifier_model_construction
+        construction = middleware._classifier_model_constructions.get(
+            "openai:gpt-5.5-mini"
+        )
         assert construction is not None
 
         # Cancelling another waiter must not cancel the constructor or start a
@@ -3173,11 +3175,81 @@ async def test_classifier_model_construction_respects_deadline(
     assert middleware._classifier_model_lock.locked() is False
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
     assert plan["decisions"][0]["reason"] == ("classifier did not respond within 0.01s")
-    model = await construction[1]
-    assert middleware._classifier_model_construction is None
+    model = await construction
+    assert middleware._classifier_model_constructions == {}
     resolved, spec = await middleware._classifier_model(request)
     assert resolved is model
     assert spec == "openai:gpt-5.5-mini"
+
+
+async def test_classifier_model_switch_bypasses_timed_out_construction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new spec can resolve while the previous constructor remains blocked."""
+    blocked_spec = "openai:blocked"
+    replacement_spec = "openai:replacement"
+    blocked_started = threading.Event()
+    release_blocked = threading.Event()
+    replacement = _StructuredModel(_allow_result())
+    specs: list[str] = []
+
+    def create_model(spec: str) -> SimpleNamespace:
+        specs.append(spec)
+        if spec == blocked_spec:
+            blocked_started.set()
+            release_blocked.wait()
+            return SimpleNamespace(model=_StructuredModel(_allow_result()))
+        return SimpleNamespace(model=replacement)
+
+    import deepagents_code.config as config_module
+
+    monkeypatch.setattr(config_module, "create_model", create_model)
+    middleware = _middleware(tmp_path, classifier_timeout_seconds=0.1)
+    blocked_request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        classifier_model=blocked_spec,
+    )
+    replacement_request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        classifier_model=replacement_spec,
+    )
+
+    try:
+        blocked_plan_task = asyncio.create_task(
+            _plan(
+                middleware,
+                blocked_request,
+                tool_name="delete",
+                args={"file_path": "old.py"},
+            )
+        )
+        assert await asyncio.to_thread(blocked_started.wait, 1)
+        blocked_plan = await blocked_plan_task
+        blocked_task = middleware._classifier_model_constructions.get(blocked_spec)
+        assert blocked_task is not None
+
+        replacement_plan = await _plan(
+            middleware,
+            replacement_request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+    finally:
+        release_blocked.set()
+
+    assert blocked_started.is_set()
+    assert blocked_plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    assert replacement_plan["decisions"][0]["disposition"] == "classifier_allow"
+    assert specs == [blocked_spec, replacement_spec]
+    assert len(replacement.calls) == 1
+    await blocked_task
+    assert middleware._classifier_model_constructions == {}
 
 
 async def test_context_classifier_model_overrides_construction_value(

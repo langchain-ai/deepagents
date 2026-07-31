@@ -1787,9 +1787,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         self._configured_classifier_model = classifier_model
         self._classifier_model_cache: OrderedDict[str, BaseChatModel] = OrderedDict()
         self._classifier_model_lock = asyncio.Lock()
-        self._classifier_model_construction: (
-            tuple[str, asyncio.Task[BaseChatModel]] | None
-        ) = None
+        self._classifier_model_constructions: dict[
+            str, asyncio.Task[BaseChatModel]
+        ] = {}
         self._known_secrets = _known_credential_values()
         self._trusted_ask_user_tool = trusted_ask_user_tool
         self._trusted_compaction_tool = trusted_compaction_tool
@@ -2150,9 +2150,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             return result.model
         finally:
             async with self._classifier_model_lock:
-                active = self._classifier_model_construction
-                if active is not None and active[1] is task:
-                    self._classifier_model_construction = None
+                active = self._classifier_model_constructions.get(selected)
+                if active is task:
+                    del self._classifier_model_constructions[selected]
 
     async def _classifier_model(
         self, request: ModelRequest
@@ -2174,30 +2174,18 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         if not isinstance(selected, str):
             return selected, _extract_model_name(selected)
 
-        while True:
-            async with self._classifier_model_lock:
-                cached = self._classifier_model_cache.get(selected)
-                if cached is not None:
-                    self._classifier_model_cache.move_to_end(selected)
-                    return cached, selected
-                active = self._classifier_model_construction
-                if active is None:
-                    task = asyncio.create_task(
-                        self._construct_classifier_model(selected)
-                    )
-                    task.add_done_callback(_consume_classifier_task_exception)
-                    active = (selected, task)
-                    self._classifier_model_construction = active
+        async with self._classifier_model_lock:
+            cached = self._classifier_model_cache.get(selected)
+            if cached is not None:
+                self._classifier_model_cache.move_to_end(selected)
+                return cached, selected
+            task = self._classifier_model_constructions.get(selected)
+            if task is None:
+                task = asyncio.create_task(self._construct_classifier_model(selected))
+                task.add_done_callback(_consume_classifier_task_exception)
+                self._classifier_model_constructions[selected] = task
 
-            active_spec, task = active
-            try:
-                model = await asyncio.shield(task)
-            except Exception:
-                if active_spec == selected:
-                    raise
-                continue
-            if active_spec == selected:
-                return model, selected
+        return await asyncio.shield(task), selected
 
     async def _classify(
         self,
@@ -2209,8 +2197,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
     ) -> AutoDecisionBatch:
         # The deadline bounds how long this batch waits for lazy construction
         # and inference. Constructor threads cannot be cancelled, so resolution
-        # retains one shielded task that later batches reuse instead of spawning
-        # more work after the first wait expires.
+        # retains one shielded task per spec that later batches reuse instead of
+        # spawning more work for that spec after the first wait expires.
         timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
         try:
             async with timeout_cm:

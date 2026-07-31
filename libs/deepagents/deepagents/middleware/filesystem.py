@@ -1297,7 +1297,11 @@ def _build_truncated_human_message(message: HumanMessage, file_path: str) -> Hum
     preview = _create_content_preview(content_str)
     replacement_text = TOO_LARGE_HUMAN_MSG.format(
         file_path=file_path,
-        preview_note=_preview_note(lines_omitted=preview.lines_omitted, subject="content"),
+        preview_note=_preview_note(
+            lines_omitted=preview.lines_omitted,
+            lines_clipped=preview.lines_clipped,
+            subject="content",
+        ),
         content_sample=preview.text,
     )
     evicted = _build_evicted_human_content(message, replacement_text)
@@ -2549,7 +2553,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         return TOO_LARGE_TOOL_MSG.format(
             tool_call_id=tool_call_id,
             file_path=capture_path,
-            preview_note=_preview_note(lines_omitted=offload.preview_lines_omitted),
+            # The wrapper clips whole bytes, never individual lines, and says so
+            # in-band when it does -- so only the marker caveat can apply here.
+            preview_note=_preview_note(lines_omitted=offload.preview_has_truncation_marker),
             content_sample=content_sample,
         )
 

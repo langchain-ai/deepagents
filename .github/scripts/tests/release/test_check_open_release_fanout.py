@@ -1,9 +1,12 @@
 """Tests for check_open_release_fanout (post-merge lockfile release safety net)."""
 
 import json
+import subprocess
 from pathlib import Path
 
+import pytest
 from check_open_release_fanout import (
+    _ref_exists,
     find_lockfile_only_components,
     is_lockfile_only,
     main,
@@ -27,6 +30,47 @@ def test_release_tag_matches_repo_convention() -> None:
     assert release_tag("deepagents", "0.6.12", separator="==") == "deepagents==0.6.12"
     assert tag_separator({"tag-separator": "=="}) == "=="
     assert tag_separator({}) == "=="
+
+
+def test_ref_exists_returns_false_for_missing_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Git return code 1 means the requested ref does not exist."""
+    completed = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="")
+    monkeypatch.setattr(
+        "check_open_release_fanout.subprocess.run", lambda *_args, **_kwargs: completed
+    )
+    assert not _ref_exists("deepagents-code==0.1.51", repo_root=tmp_path)
+
+
+def test_main_ref_lookup_failure_fails_closed(
+    capsys, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operational git failures propagate through `main` as exit code 2."""
+    config_path = tmp_path / "release-please-config.json"
+    manifest_path = tmp_path / ".release-please-manifest.json"
+    config_path.write_text(
+        json.dumps({"packages": {"libs/code": {"component": "deepagents-code"}}}),
+        encoding="utf-8",
+    )
+    manifest_path.write_text(json.dumps({"libs/code": "0.1.51"}), encoding="utf-8")
+    completed = subprocess.CompletedProcess(
+        args=[],
+        returncode=128,
+        stdout="",
+        stderr="fatal: not a git repository",
+    )
+    monkeypatch.setattr(
+        "check_open_release_fanout.subprocess.run", lambda *_args, **_kwargs: completed
+    )
+
+    rc = main(config_path=config_path, manifest_path=manifest_path, repo_root=tmp_path)
+
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert captured.out == ""
+    assert "rc=128" in captured.err
+    assert "not a git repository" in captured.err
 
 
 def test_find_lockfile_only_components_resolves_version_to_tag(

@@ -87,6 +87,16 @@ def _ref_exists(ref: str, *, repo_root: Path) -> bool:
     Uses `rev-parse --verify` so a missing release tag is distinguishable from
     a `git diff` that failed for some other reason (see the caller in
     `find_lockfile_only_components`).
+
+    Args:
+        ref: Git ref to resolve.
+        repo_root: Repository root used as the git cwd.
+
+    Returns:
+        `True` when the ref resolves and `False` when it is absent.
+
+    Raises:
+        RuntimeError: If git fails for a reason other than an absent ref.
     """
     completed = subprocess.run(  # fixed argv, no shell
         ["git", "rev-parse", "--verify", "--quiet", ref],
@@ -95,7 +105,16 @@ def _ref_exists(ref: str, *, repo_root: Path) -> bool:
         capture_output=True,
         text=True,
     )
-    return completed.returncode == 0
+    if completed.returncode == 0:
+        return True
+    if completed.returncode == 1:
+        return False
+    msg = (
+        f"git 'rev-parse --verify --quiet {ref}' failed "
+        f"(rc={completed.returncode}): "
+        f"{completed.stderr.strip() or completed.stdout.strip()}"
+    )
+    raise RuntimeError(msg)
 
 
 def package_unreleased_files(

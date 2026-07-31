@@ -29,11 +29,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_HUNK_RE = re.compile(r"@@ -(\d+)(?:,\d+)? \+(\d+)")
-"""Matches a unified-diff hunk header, capturing the old and new start lines."""
-
-_HUNK_COUNTS_RE = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))?")
-"""Matches a hunk header, capturing its optional old and new line counts."""
+_HUNK_RE = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))?")
+"""Matches a hunk header, capturing each side's start line and optional count."""
 
 _TOKEN_RE = re.compile(r"\w+|\s+|.")
 """Splits a line into words, whitespace runs, and single other characters."""
@@ -80,19 +77,12 @@ class because the diff body is one widget: a widget has a single background,
 so a per-row tint has to travel with the row's own content.
 """
 
-_TRUNCATED_NOTE = "... diff truncated"
-"""Body text of a `truncated` row."""
-
-_NO_CHANGES_NOTE = "No changes detected"
-"""Body text shown in place of an empty diff."""
-
-_ContentPart = str | tuple[str, str] | Content
 _Range = tuple[int, int]
 _RowKind = Literal["context", "added", "removed", "separator", "truncated", "note"]
 """Closed set of row kinds, so a typo is a type error rather than a `KeyError`.
 
 `_GUTTERS`, `_MARKERS`, and `_EMPHASIS` are keyed by a subset of these, and a
-new kind must be handled in `_compose_diff_content` before it reaches them.
+new kind must be handled in `_row_plain` and `_row_body` before it reaches them.
 """
 
 
@@ -150,9 +140,9 @@ def _file_header_indexes(lines: list[str]) -> set[int]:
     old_remaining = new_remaining = 0
     inside_hunk = False
     for index, line in enumerate(lines):
-        if match := _HUNK_COUNTS_RE.match(line):
-            old_remaining = int(match.group(1) or 1)
-            new_remaining = int(match.group(2) or 1)
+        if match := _HUNK_RE.match(line):
+            old_remaining = int(match.group(2) or 1)
+            new_remaining = int(match.group(4) or 1)
             inside_hunk = bool(old_remaining or new_remaining)
             continue
         if inside_hunk:
@@ -187,7 +177,7 @@ def diff_stats_content(additions: int, deletions: int) -> Content:
         `Content` with the non-zero sides colored, empty when both are zero.
     """
     colors = theme.get_theme_colors()
-    parts: list[_ContentPart] = []
+    parts: list[str | tuple[str, str] | Content] = []
     if additions:
         parts.append((f"+{additions}", colors.success))
     if deletions:
@@ -287,9 +277,10 @@ class DiffBody(Widget):
         self._emphasis = _emphasis_by_row(rows)
         self._highlighted = _highlighted_rows(rows, path, before, after)
         if hidden:
-            rows = [*rows, _Row("note", "", 0), _Row("note", _more_note(hidden), 0)]
+            note = _Row("note", f"... ({hidden} more lines)", 0)
+            rows = [*rows, _Row("note", "", 0), note]
         elif not rows:
-            rows = [_Row("note", _NO_CHANGES_NOTE, 0)]
+            rows = [_Row("note", "No changes detected", 0)]
         self._rows = rows
         self._number_width = max(
             2, len(str(max((row.number for row in rows), default=0)))
@@ -299,11 +290,6 @@ class DiffBody(Widget):
         self._spans: list[list[_Range]] = []
         self._starts: list[int] = []
         self._strips: dict[int, list[Strip]] = {}
-
-    @property
-    def rows(self) -> list[_Row]:
-        """The rows this widget renders, including any footer row."""
-        return self._rows
 
     def notify_style_update(self) -> None:
         """Drop rendered strips so a theme change repaints in the new colors.
@@ -433,7 +419,7 @@ class DiffBody(Widget):
         if row.kind == "separator":
             return get_glyphs().hunk_break
         if row.kind == "truncated":
-            return _TRUNCATED_NOTE
+            return "... diff truncated"
         return row.text
 
     def _row_body(self, index: int) -> Content:
@@ -577,18 +563,6 @@ class DiffBody(Widget):
         return index, cursor
 
 
-def _more_note(hidden: int) -> str:
-    """Build the footer text for a diff cut short by `max_lines`.
-
-    Args:
-        hidden: Number of rows not rendered.
-
-    Returns:
-        The footer text.
-    """
-    return f"... ({hidden} more lines)"
-
-
 def _highlighted_rows(
     rows: list[_Row], path: str, before: str, after: str
 ) -> dict[int, Content]:
@@ -683,7 +657,7 @@ def _parse_rows(lines: list[str]) -> list[_Row]:
         if index in header_indexes:
             continue
         if match := _HUNK_RE.match(line):
-            old, new = int(match.group(1)), int(match.group(2))
+            old, new = int(match.group(1)), int(match.group(3))
             if seen_hunk:
                 rows.append(_Row("separator", "", 0))
             seen_hunk = True
@@ -813,9 +787,8 @@ def _emphasis_ranges(old: str, new: str) -> tuple[list[_Range], list[_Range]]:
 class EnhancedDiff(Vertical):
     """Widget for displaying a unified diff in a titled, bordered box.
 
-    Unused as of this writing — `DiffMessage` is what the transcript mounts.
-    Note it composes without a `path`, so its rows are never syntax
-    highlighted.
+    Unused as of this writing — the transcript mounts `DiffMessage` instead —
+    and it composes without a `path`, so its rows are never highlighted.
     """
 
     DEFAULT_CSS = """

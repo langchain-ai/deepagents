@@ -2947,7 +2947,50 @@ class TestExecuteTaskTextualAutoModeClassifier:
 
 
 class TestExecuteTaskTextualFileOpDiffs:
-    """Every successful edit mounts a diff, even when nothing changed."""
+    """An `edit_file` row hides itself, so its diff must always take over."""
+
+    @staticmethod
+    async def _run_edit(target: Path, new_string: str) -> list[object]:
+        """Stream one successful `edit_file` call and collect what it mounts.
+
+        Args:
+            target: File the edit targets.
+            new_string: Replacement for the file's single line.
+
+        Returns:
+            The widgets mounted during the turn, in order.
+        """
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        args = {
+            "file_path": str(target),
+            "old_string": "value = 1",
+            "new_string": new_string,
+        }
+        chunks = [
+            ((), "messages", (_tool_call_message("edit_file", args, "tool-1"), {})),
+            (
+                (),
+                "messages",
+                (ToolMessage(content="Updated file", tool_call_id="tool-1"), {}),
+            ),
+        ]
+        await execute_task_textual(
+            user_input="edit the file",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=TextualUIAdapter(
+                mount_message=mount_message,
+                update_status=_noop_status,
+                request_approval=_mock_approval,
+            ),
+        )
+        return mounted
 
     async def test_noop_edit_still_mounts_a_diff_message(self, tmp_path: Path) -> None:
         """An edit whose replacement matches the original leaves a trace.
@@ -2960,49 +3003,7 @@ class TestExecuteTaskTextualFileOpDiffs:
         target = tmp_path / "a.py"
         target.write_text("value = 1\n", encoding="utf-8")
 
-        mounted: list[object] = []
-
-        async def mount_message(widget: object) -> None:
-            await asyncio.sleep(0)
-            mounted.append(widget)
-
-        chunks = [
-            (
-                (),
-                "messages",
-                (
-                    _tool_call_message(
-                        "edit_file",
-                        {
-                            "file_path": str(target),
-                            "old_string": "value = 1",
-                            "new_string": "value = 1",
-                        },
-                        "tool-1",
-                    ),
-                    {},
-                ),
-            ),
-            (
-                (),
-                "messages",
-                (ToolMessage(content="Updated file", tool_call_id="tool-1"), {}),
-            ),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        await execute_task_textual(
-            user_input="edit the file",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=True),
-            adapter=adapter,
-        )
+        mounted = await self._run_edit(target, "value = 1")
 
         diffs = [m for m in mounted if isinstance(m, DiffMessage)]
         assert len(diffs) == 1
@@ -3015,55 +3016,9 @@ class TestExecuteTaskTextualFileOpDiffs:
         """A successful edit reports when its diff cannot be reconstructed."""
         target = tmp_path / "a.py"
         target.write_text("value = 1\n", encoding="utf-8")
-        mounted: list[object] = []
-
-        async def mount_message(widget: object) -> None:
-            await asyncio.sleep(0)
-            mounted.append(widget)
-
-        chunks = [
-            (
-                (),
-                "messages",
-                (
-                    _tool_call_message(
-                        "edit_file",
-                        {
-                            "file_path": str(target),
-                            "old_string": "value = 1",
-                            "new_string": "value = 2",
-                        },
-                        "tool-readback",
-                    ),
-                    {},
-                ),
-            ),
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(
-                        content="Updated file",
-                        tool_call_id="tool-readback",
-                    ),
-                    {},
-                ),
-            ),
-        ]
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
 
         with patch("deepagents_code.file_ops.FileOpTracker._populate_after_content"):
-            await execute_task_textual(
-                user_input="edit the file",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=True),
-                adapter=adapter,
-            )
+            mounted = await self._run_edit(target, "value = 2")
 
         tool = next(widget for widget in mounted if isinstance(widget, ToolCallMessage))
         assert tool._status == "error"

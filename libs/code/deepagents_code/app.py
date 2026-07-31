@@ -189,11 +189,9 @@ interactive prompt (`ask_user`), a diff (`edit_file`), or a todo list
 adjacent tool groups. Add a tool here only when its collapsed one-line
 summary would hide something the user needs to see.
 
-`edit_file` is the odd one: its *row* hides itself on success (see
-`TOOLS_SUPERSEDED_BY_DIFF`), and what stays visible is the separate
-`DiffMessage`, excluded from grouping in its own right below. Excluding the
-row too keeps the pair out of the group machinery that would otherwise fight
-the row's own hiding.
+`edit_file` earns its place indirectly: its row hides itself on success (see
+`TOOLS_SUPERSEDED_BY_DIFF`) and the separate `DiffMessage` is what stays
+visible, so excluding the row keeps group folding from fighting that hiding.
 """
 
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"

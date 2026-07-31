@@ -171,8 +171,7 @@ _COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
 
 # Past-tense verbs for the `DiffMessage` header, keyed by producing tool. Tools
 # absent here render the header without a leading verb — the path and the
-# change counts still appear. `write_file` has a verb but is deliberately not
-# in `TOOLS_SUPERSEDED_BY_DIFF`: creating a file is worth its own visible row.
+# change counts still appear.
 _DIFF_VERBS: dict[str, str] = {
     "edit_file": "Edited",
     "write_file": "Wrote",
@@ -180,20 +179,14 @@ _DIFF_VERBS: dict[str, str] = {
 
 
 # Tools whose successful row is hidden because the `DiffMessage` mounted for the
-# same call says everything the row would. This is a two-sided contract: the
-# streaming layer must mount a diff for *every* successful call to these tools —
-# including no-op edits that produce an empty diff — or the call would vanish
-# from the transcript entirely. See `_show_success_status` and `textual_adapter`,
-# which also downgrades the row to an error when the tracker could not build a
-# diff, rather than hiding a row nothing replaces.
+# same call says everything the row would. Two-sided contract: `textual_adapter`
+# must mount a diff for *every* successful call to these tools — including no-op
+# edits that produce an empty diff — or the call vanishes from the transcript.
 #
-# Three further obligations a member of this set must satisfy:
-#   - be in `app._TOOL_GROUP_EXCLUSIONS`, so group expansion can't un-hide the
-#     row while `_TOOL_SUPERSEDED_ACCESSORY_CLASS` keeps its footer hidden;
-#   - stay out of `_TIMED_SUCCESS_TOOLS`, whose `_show_timed_success_status`
-#     branch bypasses the hide entirely;
-#   - persist its diff through `message_store`, since rehydration recreates the
-#     row and the `DiffMessage` independently.
+# A member must also be in `app._TOOL_GROUP_EXCLUSIONS` (so group expansion
+# can't un-hide the row), stay out of `_TIMED_SUCCESS_TOOLS` (whose branch
+# bypasses the hide), and persist its diff through `message_store` (rehydration
+# recreates the row and the `DiffMessage` independently).
 TOOLS_SUPERSEDED_BY_DIFF: frozenset[str] = frozenset({"edit_file"})
 
 

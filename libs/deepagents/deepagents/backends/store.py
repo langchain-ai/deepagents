@@ -620,7 +620,12 @@ class StoreBackend(BackendProtocol):
                 files[item.key] = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
-        result = _glob_search_files(files, pattern, path)
+        try:
+            result = _glob_search_files(files, pattern, path)
+        except ValueError as exc:
+            # `glob` is a tool boundary: report a refused pattern as a result
+            # rather than raising, matching FilesystemBackend and SandboxBackend.
+            return GlobResult(error=f"Invalid glob pattern: {exc}")
         if result == "No files found":
             return GlobResult(matches=[])
         paths = result.split("\n")

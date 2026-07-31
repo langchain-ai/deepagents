@@ -287,7 +287,12 @@ class StateBackend(BackendProtocol):
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Get `FileInfo` for files matching glob pattern."""
         files = self._read_files()
-        result = _glob_search_files(files, pattern, path)
+        try:
+            result = _glob_search_files(files, pattern, path)
+        except ValueError as exc:
+            # `glob` is a tool boundary: report a refused pattern as a result
+            # rather than raising, matching FilesystemBackend and SandboxBackend.
+            return GlobResult(error=f"Invalid glob pattern: {exc}")
         if result == "No files found":
             return GlobResult(matches=[])
         paths = result.split("\n")

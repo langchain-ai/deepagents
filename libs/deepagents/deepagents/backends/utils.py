@@ -110,6 +110,11 @@ def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
     Returns:
         Predicate accepting a search-root-relative POSIX path; returns True when
         the path is included by `pattern`.
+
+    Raises:
+        ValueError: If `wcmatch` refuses the pattern (e.g. brace expansion past
+            its limit). Note most malformed patterns (`*.{py`, `[a-`) do not
+            raise -- they compile and simply match nothing.
     """
     flags = wcglob.BRACE | wcglob.GLOBSTAR
     # A leading `/` anchors to the search root: strip it so it matches against
@@ -117,7 +122,14 @@ def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
     # pattern so `/*.py` stays root-anchored instead of collapsing to a
     # basename-at-any-depth match.
     anchored = "/" in pattern
-    compiled = wcglob.compile(pattern.lstrip("/"), flags=flags)
+    try:
+        compiled = wcglob.compile(pattern.lstrip("/"), flags=flags)
+    except Exception as exc:
+        # `wcmatch` only raises private types (`wcmatch._wcparse.PatternLimitException`),
+        # so catch broadly and re-raise as ValueError: every backend can then catch
+        # one public type instead of importing from a private module.
+        msg = f"Invalid glob pattern {pattern!r}: {exc}"
+        raise ValueError(msg) from exc
 
     if anchored:
 
@@ -132,52 +144,18 @@ def compile_grep_include_glob(pattern: str) -> Callable[[str], bool]:
 
 
 def compile_recursive_glob(pattern: str) -> Callable[[str], bool]:
-    """Compile a `glob` pattern into a per-entry matcher for a recursive walk.
+    """Alias for `compile_grep_include_glob`, named for the `glob()` call site.
 
-    Shared with `compile_grep_include_glob` so backend `glob()` and grep
-    include-filters agree:
-
-    - Patterns without `/` match the basename at any depth (`*.py` matches
-      `src/app/main.py`).
-    - Patterns containing `/` match the path relative to the search root, with
-      `**` support (`src/**/*.py` matches `src/app/main.py`).
-    - A leading `/` anchors to the search root (`/*.py` matches `top.py` but not
-      `src/app/main.py`).
-
-    Callers walk every entry (e.g. `Path.rglob("*")`) and apply this matcher so
-    deadlines can be checked per entry rather than only on matches.
+    Backend `glob()` and grep include-filters share one contract; see
+    `compile_grep_include_glob` for the rules and the `Raises` behavior.
 
     Args:
         pattern: Glob pattern.
 
     Returns:
-        Predicate accepting a search-root-relative POSIX path; returns True when
-        the path matches `pattern` under the shared backend glob contract.
+        Predicate accepting a search-root-relative POSIX path.
     """
     return compile_grep_include_glob(pattern)
-
-
-def expand_glob_pattern(pattern: str) -> str:
-    """Expand a user glob pattern for path-relative recursive matching.
-
-    Produces a pattern suitable for stdlib `glob.glob(..., recursive=True)` (and
-    equivalent walkers) that mirrors `compile_grep_include_glob`:
-
-    - Patterns without `/` are rewritten to `**/pattern` so the basename matches
-      at any depth (`*.py` → `**/*.py`).
-    - Patterns containing `/` are left path-relative; a leading `/` is stripped so
-      it anchors to the search root rather than the host filesystem
-      (`/*.py` → `*.py`, `src/**/*.py` unchanged).
-
-    Args:
-        pattern: User-supplied glob pattern.
-
-    Returns:
-        Search-root-relative pattern with bare basename globs expanded.
-    """
-    if "/" not in pattern:
-        return f"**/{pattern}"
-    return pattern.lstrip("/")
 
 
 def _normalize_content(file_data: FileData) -> str:

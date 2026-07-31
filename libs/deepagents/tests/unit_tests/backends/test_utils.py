@@ -15,7 +15,6 @@ from deepagents.backends.utils import (
     _looks_like_regex,
     compile_grep_include_glob,
     compile_recursive_glob,
-    expand_glob_pattern,
     grep_matches_from_files,
     perform_string_replacement,
     regex_literal_hint,
@@ -292,20 +291,6 @@ class TestGlobSearchFiles:
         assert "/foo/b.txt" not in result
 
 
-class TestExpandGlobPattern:
-    """Host-side pattern expansion for stdlib-based walkers (sandbox)."""
-
-    def test_slashless_becomes_globstar(self) -> None:
-        assert expand_glob_pattern("*.py") == "**/*.py"
-        assert expand_glob_pattern("*.{py,md}") == "**/*.{py,md}"
-
-    def test_path_relative_unchanged_aside_from_leading_slash(self) -> None:
-        assert expand_glob_pattern("src/**/*.py") == "src/**/*.py"
-        assert expand_glob_pattern("**/*.py") == "**/*.py"
-        assert expand_glob_pattern("/*.py") == "*.py"
-        assert expand_glob_pattern("/src/**/*.py") == "src/**/*.py"
-
-
 class TestCompileRecursiveGlobSharesIncludeContract:
     """`compile_recursive_glob` is the walk entry-point for the shared contract."""
 
@@ -315,6 +300,16 @@ class TestCompileRecursiveGlobSharesIncludeContract:
             expected = [p for p in paths if compile_grep_include_glob(pattern)(p)]
             actual = [p for p in paths if compile_recursive_glob(pattern)(p)]
             assert actual == expected, pattern
+
+    def test_pattern_wcmatch_refuses_raises_value_error(self) -> None:
+        """Backends catch `ValueError`; wcmatch's own type is private."""
+        with pytest.raises(ValueError, match="Invalid glob pattern"):
+            compile_recursive_glob("{a,b}" * 40 + "*.py")
+
+    def test_malformed_but_compilable_patterns_do_not_raise(self) -> None:
+        """`*.{py` and `[a-` compile fine and simply match nothing."""
+        for pattern in ("*.{py", "[a-", "a{b,c"):
+            assert compile_recursive_glob(pattern)("a.py") is False
 
 
 class TestGrepIncludeGlob:

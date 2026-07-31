@@ -1279,6 +1279,9 @@ class FilesystemBackend(BackendProtocol):
           (e.g. `'*.py'` matches nested files).
         - Patterns containing `/` match paths relative to `path`, with `**`
           support. A leading `/` anchors to the search root.
+        - Leading-dot names need an explicit leading `.` in the pattern segment.
+          `**` does not descend into dot-directories, so `'*.yml'` matches
+          `.github/workflows/ci.yml` while `'**/*.yml'` does not.
 
         Args:
             pattern: Glob pattern to match files against (e.g., `'*.py'`,
@@ -1316,11 +1319,15 @@ class FilesystemBackend(BackendProtocol):
         # than `rglob(pattern)`: `rglob(pattern)` only surfaces matches, so a
         # sparse or zero-match search over a huge tree traverses the whole tree
         # without ever checking the deadline. `rglob("*")` yields on every entry,
-        # letting us honour the deadline while matching with `rglob` semantics.
+        # letting us honour the deadline while applying the shared glob contract
+        # ourselves -- which is deliberately *not* `rglob` semantics: bare
+        # patterns are basename-scoped and dotfiles need an explicit leading `.`.
         try:
-            # Compiled inside the try so a malformed pattern (e.g. an unbalanced
-            # brace, now that brace expansion is enabled) returns a
-            # `GlobResult(error=...)` instead of raising to a direct caller.
+            # Compiled inside the try so a pattern `wcmatch` refuses (e.g. brace
+            # expansion past its limit, which raises `PatternLimitException`)
+            # returns a `GlobResult(error=...)` instead of raising to a direct
+            # caller. Most malformed patterns (`*.{py`, `[a-`) do not raise at
+            # all -- they compile and simply match nothing.
             matches_pattern = compile_recursive_glob(pattern)
             for matched_path in search_path.rglob("*"):
                 if time.monotonic() > deadline:

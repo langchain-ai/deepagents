@@ -1112,6 +1112,21 @@ async def test_composite_aglob_targeting_specific_route_async() -> None:
     assert result_paths == ["/memories/test.py"]
 
 
+async def test_composite_root_aglob_preserves_route_pattern_anchoring_async() -> None:
+    """Async route globbing must preserve the stripped pattern's root anchor."""
+    mem_store = InMemoryStore()
+    routed = StoreBackend(store=mem_store, namespace=lambda _rt: ("routed",))
+    default = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    comp = CompositeBackend(default=default, routes={"/memories/": routed})
+
+    await comp.awrite("/memories/top.py", "top")
+    await comp.awrite("/memories/nested/file.py", "nested")
+
+    matches = (await comp.aglob("/memories/*.py", path="/")).matches
+
+    assert [match["path"] for match in matches] == ["/memories/top.py"]
+
+
 async def test_composite_aglob_nested_path_in_route_async() -> None:
     """Test async glob with nested path within route."""
     mem_store = InMemoryStore()

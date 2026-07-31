@@ -393,6 +393,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         cli_profile_override: dict[str, Any] | None = None,
         *,
         curated: bool = False,
+        recommended_models: Mapping[str, str] | None = None,
+        include_recent_models: bool = True,
         title: str | None = None,
         description: str | Content | None = None,
         result_callback: Callable[[tuple[str, str] | None], None] | None = None,
@@ -410,6 +412,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 Merged on top of upstream + config.toml profiles so that app
                 overrides appear with `*` markers in the detail footer.
             curated: Whether to show a short, profile-ranked model subset.
+            recommended_models: Optional `provider:model` to display-name mapping
+                that replaces the standard recommendation set for this selector.
+            include_recent_models: Whether recent main-model picks should be
+                included in the recommended view.
             title: Optional title override for the selector.
             description: Optional description shown below the title.
             result_callback: Optional callback for selector results when the
@@ -420,6 +426,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._current_provider = current_provider
         self._cli_profile_override = cli_profile_override
         self._curated = curated
+        self._recommended_models = (
+            _RECOMMENDED_MODELS
+            if recommended_models is None
+            else dict(recommended_models)
+        )
+        self._include_recent_models = include_recent_models
         self._title = title
         self._description = description
         self._result_callback = result_callback
@@ -579,6 +591,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         *,
         include_uninstalled: bool = True,
         include_recent: bool = True,
+        recommended_models: Mapping[str, str] | None = None,
     ) -> _ModelData:
         """Gather model discovery data synchronously.
 
@@ -599,6 +612,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 startup default-fallback resolution writes its auto-detected
                 pick into the MRU, which would otherwise surface as a bogus
                 "Recent" entry the user never chose.
+            recommended_models: Recommendation set whose missing provider models
+                should be surfaced. `None` uses the standard model shortlist.
 
         Returns:
             A `_ModelData` bundle of the discovered models, default spec,
@@ -626,7 +641,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             existing_specs = {spec for spec, _ in all_models}
             installed_recommended: list[tuple[str, str]] = []
             uninstalled_recommended: list[tuple[str, str]] = []
-            for spec in sorted(_RECOMMENDED_MODELS):
+            recommendations = (
+                _RECOMMENDED_MODELS
+                if recommended_models is None
+                else recommended_models
+            )
+            for spec in sorted(recommendations):
                 if spec in existing_specs:
                     continue
                 provider = spec.split(":", 1)[0]
@@ -693,40 +713,55 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 models are installed so the screen is never empty.
         """
         if self._curated:
-            return self._curate_models(all_models)
+            return self._curate_models(
+                all_models,
+                recommended_models=self._recommended_models,
+            )
         if self._recommended_only:
-            curated = self._curate_models(all_models)
+            curated = self._curate_models(
+                all_models,
+                recommended_models=self._recommended_models,
+            )
             curated_specs = {spec for spec, _ in curated}
             # Order follows all_models (insertion), not MRU; _update_display
             # rebuilds visual order by iterating self._recent_specs directly.
-            recent_extra = [
-                (spec, provider)
-                for spec, provider in all_models
-                if spec in self._recent_specs and spec not in curated_specs
-            ]
+            recent_extra = (
+                [
+                    (spec, provider)
+                    for spec, provider in all_models
+                    if spec in self._recent_specs and spec not in curated_specs
+                ]
+                if self._include_recent_models
+                else []
+            )
             return [*recent_extra, *curated]
         return list(all_models)
 
     @staticmethod
     def _curate_models(
         all_models: list[tuple[str, str]],
+        *,
+        recommended_models: Mapping[str, str] | None = None,
     ) -> list[tuple[str, str]]:
-        """Return the curated onboarding list in the model switcher's order.
+        """Return the active recommendation list in model-switcher order.
 
-        Returns the eval-backed frontier subset when any of those models are
-        available. When none are, returns the full switcher list so onboarding
-        still surfaces every installed provider rather than a truncated slice.
+        When none of the recommendations are available, returns the full
+        switcher list so the selector never becomes empty.
 
         Args:
             all_models: Full list of `(provider:model, provider)` pairs.
+            recommended_models: Recommendation set to filter against. `None`
+                uses the standard model shortlist.
 
         Returns:
-            Curated model list for onboarding setup.
+            Models from the active recommendation set, or `all_models` when no
+            recommendation is available.
         """
+        recommendations = (
+            _RECOMMENDED_MODELS if recommended_models is None else recommended_models
+        )
         frontier = [
-            (spec, provider)
-            for spec, provider in all_models
-            if spec in _RECOMMENDED_MODELS
+            (spec, provider) for spec, provider in all_models if spec in recommendations
         ]
         return frontier or all_models
 
@@ -753,7 +788,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 self._load_model_data,
                 self._cli_profile_override,
                 include_uninstalled=True,
-                include_recent=not self._curated,
+                include_recent=self._include_recent_models and not self._curated,
+                recommended_models=self._recommended_models,
             )
         except Exception:
             logger.exception("Failed to load model data for /model selector")
@@ -1556,8 +1592,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         human-readable `name` (e.g. `'Claude Sonnet 5'`), which reads better
         than the raw model id. When no profile is loaded — the case for
         uninstalled recommendations and onboarding — falls back to the
-        hardcoded name in `_RECOMMENDED_MODELS`, then the model portion of the
-        spec, then the spec itself.
+        hardcoded name in the selector's active recommendation set, then the
+        model portion of the spec, then the spec itself.
 
         Args:
             model_spec: The `provider:model` string.
@@ -1574,7 +1610,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 name = profile.get("name")
                 if isinstance(name, str) and name:
                     return name
-        recommended = _RECOMMENDED_MODELS.get(model_spec)
+        recommendations = getattr(self, "_recommended_models", _RECOMMENDED_MODELS)
+        recommended = recommendations.get(model_spec)
         if recommended:
             return recommended
         parsed = ModelSpec.try_parse(model_spec)

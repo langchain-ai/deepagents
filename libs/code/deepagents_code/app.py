@@ -134,6 +134,13 @@ _DEFERRED_START_NOTICE = (
     "Deep Agents will ask for credentials for the selected provider."
 )
 
+_AUTO_CLASSIFIER_RECOMMENDED_MODELS = {
+    "anthropic:claude-haiku-4-5": "Claude Haiku 4.5",
+    "google_genai:gemini-3.6-flash": "Gemini 3.6 Flash",
+    "openai:gpt-5.6-luna": "GPT-5.6 Luna",
+}
+"""Lower-latency models recommended for repeated Auto action reviews."""
+
 
 def _parse_rubric_max_iterations(raw: str) -> tuple[int | None, str | None]:
     """Parse a grader `max-iterations` argument shared by `/rubric` and `/goal`.
@@ -18285,7 +18292,7 @@ class DeepAgentsApp(App):
 
     async def _show_auto_classifier_model_selector(self) -> None:
         """Open the model selector for choosing the Auto classifier model."""
-        from deepagents_code.config import settings
+        from deepagents_code.config import detect_provider, settings
         from deepagents_code.model_config import ModelSpec
         from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
@@ -18296,6 +18303,17 @@ class DeepAgentsApp(App):
             if parsed:
                 current_provider = parsed.provider
                 current_model = parsed.model
+            else:
+                provider = detect_provider(self._auto_classifier_model)
+                if provider:
+                    current_provider = provider
+                    current_model = self._auto_classifier_model
+
+        current_spec = (
+            f"{current_provider}:{current_model}"
+            if current_provider and current_model
+            else self._auto_classifier_model_label()
+        )
 
         def handle_result(result: tuple[str, str] | None) -> None:
             model_spec = result[0] if result is not None else None
@@ -18303,7 +18321,11 @@ class DeepAgentsApp(App):
 
             async def apply_selection() -> None:
                 if model_spec is None:
-                    await self._mount_message(AppMessage("Model not changed."))
+                    await self._mount_message(
+                        AppMessage(
+                            f"Model not changed. Continuing to use {current_spec}"
+                        )
+                    )
                     return
                 if extra and not await self._install_extra(extra, auto_restart=True):
                     return
@@ -18330,12 +18352,14 @@ class DeepAgentsApp(App):
             current_model=current_model,
             current_provider=current_provider,
             cli_profile_override=self._profile_override,
+            recommended_models=_AUTO_CLASSIFIER_RECOMMENDED_MODELS,
+            include_recent_models=False,
             title="Choose the Auto classifier model",
             description=(
-                "Pick the model that reviews gated actions in Auto mode. A "
-                "faster, cheaper model costs less per action but reviews them "
-                "less carefully. Clear it with `/auto model clear` to reuse the "
-                "main agent model."
+                "Recommended models favor lower latency and cost for repeated "
+                "reviews. A faster, cheaper model may review actions less "
+                "carefully. Clear it with `/auto model clear` to reuse the main "
+                "agent model."
             ),
         )
         self.push_screen(screen, handle_result)
@@ -18466,8 +18490,11 @@ class DeepAgentsApp(App):
         from deepagents_code.config import is_yolo_switcher_enabled
 
         if self._approval_mode is target:
+            message = f"Already in {target.value.capitalize()} mode."
+            if target is ApprovalMode.AUTO:
+                message += " Use /auto model to switch classifier models."
             self.notify(
-                f"Already in {target.value.capitalize()} mode.",
+                message,
                 severity="information",
                 markup=False,
             )

@@ -13022,6 +13022,18 @@ class TestAutoClassifierModelCommand:
             show_selector.assert_awaited_once()
             assert any("/auto model" in str(w._content) for w in app.query(UserMessage))
 
+    async def test_auto_model_selector_uses_auto_recommendations(self) -> None:
+        """The classifier picker should not reuse main-model recommendations."""
+        from deepagents_code.app import _AUTO_CLASSIFIER_RECOMMENDED_MODELS
+
+        app = DeepAgentsApp(agent=MagicMock())
+        with patch.object(app, "push_screen") as push:
+            await app._show_auto_classifier_model_selector()
+
+        screen = push.call_args.args[0]
+        assert screen._recommended_models == _AUTO_CLASSIFIER_RECOMMENDED_MODELS
+        assert screen._include_recent_models is False
+
     async def test_bare_auto_still_switches_approval_mode(self) -> None:
         """`/auto` without arguments keeps switching approval mode."""
         from deepagents_code.approval_mode import ApprovalMode
@@ -13257,6 +13269,39 @@ class TestAutoClassifierModelCommand:
                 await run_worker.call_args.args[0]
 
             set_model.assert_awaited_once_with("openai:gpt-5.5-mini")
+
+    async def test_cancelled_selector_names_unchanged_classifier(self) -> None:
+        """Cancelling the picker should name the classifier that stays active."""
+        classifier = "anthropic:claude-haiku-4-5"
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._auto_classifier_model = classifier
+            deferred: list[Callable[[], None]] = []
+            handlers: list[Callable[[tuple[str, str] | None], None]] = []
+            run_worker = MagicMock()
+            mount_message = AsyncMock()
+
+            def capture_push(screen: object, callback: object = None) -> None:
+                del screen
+                handlers.append(cast("Any", callback))
+
+            with (
+                patch.object(app, "call_after_refresh", side_effect=deferred.append),
+                patch.object(app, "run_worker", run_worker),
+                patch.object(app, "push_screen", side_effect=capture_push),
+                patch.object(app, "_mount_message", mount_message),
+            ):
+                await app._show_auto_classifier_model_selector()
+                handlers[0](None)
+                deferred[0]()
+                await run_worker.call_args.args[0]
+
+            assert mount_message.await_args is not None
+            message = mount_message.await_args.args[0]
+            assert str(message._content) == (
+                f"Model not changed. Continuing to use {classifier}"
+            )
 
     async def test_set_auto_classifier_model_rejects_unresolvable_spec(self) -> None:
         """An unusable spec is refused outright, keeping the previous value."""
@@ -17581,6 +17626,26 @@ class TestApprovalModeSlashCommands:
         set_mode.assert_not_awaited()
         notify.assert_called_once()
         assert "Already in Manual mode" in str(notify.call_args.args[0])
+
+    async def test_already_in_auto_points_to_classifier_switcher(self) -> None:
+        """A redundant `/auto` command should advertise its model subcommand."""
+        from deepagents_code.approval_mode import ApprovalMode
+
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_mode_eligible = True
+        app._approval_mode = ApprovalMode.AUTO
+        with (
+            patch.object(app, "_set_approval_mode", new_callable=AsyncMock) as set_mode,
+            patch.object(app, "notify") as notify,
+        ):
+            await app._handle_command("/auto")
+
+        set_mode.assert_not_awaited()
+        notify.assert_called_once_with(
+            "Already in Auto mode. Use /auto model to switch classifier models.",
+            severity="information",
+            markup=False,
+        )
 
     async def test_yolo_command_sets_yolo_when_acknowledged(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode

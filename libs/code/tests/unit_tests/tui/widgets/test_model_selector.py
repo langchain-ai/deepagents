@@ -1,6 +1,6 @@
 """Tests for ModelSelectorScreen."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import MagicMock
@@ -364,6 +364,27 @@ class TestModelSelectorChrome:
 
 class TestRecommendedToggle:
     """Tests for the Ctrl+R recommended-only toggle in `/model`."""
+
+    def test_custom_recommendations_replace_standard_list(self) -> None:
+        """Specialized pickers should be able to supply their own shortlist."""
+        recommendations = {
+            "anthropic:claude-haiku-4-5": "Claude Haiku 4.5",
+        }
+        screen = ModelSelectorScreen(
+            recommended_models=recommendations,
+            include_recent_models=False,
+        )
+        screen._recent_specs = ["openai:gpt-5.5"]
+        models = [
+            ("anthropic:claude-haiku-4-5", "anthropic"),
+            ("openai:gpt-5.5", "openai"),
+        ]
+
+        assert screen._apply_subset(models) == models[:1]
+        assert (
+            screen._get_model_display_name("anthropic:claude-haiku-4-5")
+            == "Claude Haiku 4.5"
+        )
 
     async def test_default_view_is_recommended(self) -> None:
         """Opening `/model` should land on the curated recommended subset."""
@@ -2795,7 +2816,9 @@ class TestModelSelectorInstallRouting:
             *,
             include_uninstalled: bool = True,
             include_recent: bool = True,
+            recommended_models: Mapping[str, str] | None = None,
         ) -> model_selector._ModelData:
+            del recommended_models
             captured["include_uninstalled"] = include_uninstalled
             captured["include_recent"] = include_recent
             return model_selector._ModelData(

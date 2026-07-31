@@ -4,9 +4,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from textual.app import App, ComposeResult
 from textual.content import Content
 from textual.style import Style as TStyle
 
+from deepagents_code import clipboard as clipboard_module
 from deepagents_code._env_vars import (
     DEBUG,
     EXPERIMENTAL,
@@ -18,6 +20,8 @@ from deepagents_code._env_vars import (
     SPLASH_SHOW_MODEL,
 )
 from deepagents_code._version import __version__
+from deepagents_code.tui.widgets import welcome as welcome_module
+from deepagents_code.tui.widgets._copy_spans import copy_span_target
 from deepagents_code.tui.widgets.welcome import (
     WelcomeBanner,
     _debug_tag_style,
@@ -255,7 +259,7 @@ class TestDebugTagStyle:
 
 
 class TestExperimentalTagStyle:
-    """Tests for the `(experimental mode)` tag style."""
+    """Tests for the `(experimental)` tag style."""
 
     def test_ansi_uses_bold_magenta_markup(self) -> None:
         """Under ANSI themes the tag stays visible via bold magenta terminal text."""
@@ -364,10 +368,10 @@ class TestTitle:
         assert "(local)" not in plain
 
     def test_no_experimental_tag_by_default(self) -> None:
-        """No `(experimental mode)` tag when `DEEPAGENTS_CODE_EXPERIMENTAL` is unset."""
+        """No `(experimental)` tag when `DEEPAGENTS_CODE_EXPERIMENTAL` is unset."""
         with patch(_EDITABLE, return_value=False):
             plain = _make_banner()._build_banner().plain
-        assert "(experimental mode)" not in plain
+        assert "(experimental)" not in plain
 
     def test_no_experimental_tag_when_env_falsy(self) -> None:
         """A present-but-falsy `DEEPAGENTS_CODE_EXPERIMENTAL` shows no tag.
@@ -378,27 +382,27 @@ class TestTitle:
         """
         with patch(_EDITABLE, return_value=False):
             plain = _make_banner(env={EXPERIMENTAL: "0"})._build_banner().plain
-        assert "(experimental mode)" not in plain
+        assert "(experimental)" not in plain
 
     def test_marks_experimental_when_env_set(self) -> None:
-        """`DEEPAGENTS_CODE_EXPERIMENTAL` shows an `(experimental mode)` tag."""
+        """`DEEPAGENTS_CODE_EXPERIMENTAL` shows an `(experimental)` tag."""
         with patch(_EDITABLE, return_value=False):
             plain = _make_banner(env={EXPERIMENTAL: "1"})._build_banner().plain
         assert f"v{__version__}" in plain
         # Leading space guards the separator from the preceding segment.
-        assert " (experimental mode)" in plain
+        assert " (experimental)" in plain
         assert "(local)" not in plain
-        assert plain.index(f"v{__version__}") < plain.index("(experimental mode)")
+        assert plain.index(f"v{__version__}") < plain.index("(experimental)")
 
     def test_experimental_tag_follows_debug_precedes_local(self) -> None:
-        """`(experimental mode)` renders after `(debug enabled)`, before `(local)`."""
+        """`(experimental)` renders after `(debug enabled)`, before `(local)`."""
         with patch(_EDITABLE, return_value=True):
             plain = (
                 _make_banner(env={DEBUG: "1", EXPERIMENTAL: "1"})._build_banner().plain
             )
         assert (
             plain.index("(debug enabled)")
-            < plain.index("(experimental mode)")
+            < plain.index("(experimental)")
             < plain.index("(local)")
         )
 
@@ -411,7 +415,7 @@ class TestTitle:
                 .plain
             )
         assert f"v{__version__}" not in plain
-        assert "(experimental mode)" in plain
+        assert "(experimental)" in plain
         assert "(local)" not in plain
 
     def test_experimental_tag_carries_its_own_style(self) -> None:
@@ -424,9 +428,9 @@ class TestTitle:
             patch(_EXPERIMENTAL_STYLE, return_value=experimental_style),
         ):
             content = _make_banner(env={EXPERIMENTAL: "1"})._build_banner()
-        assert _style_covering(
-            content, "(experimental mode)"
-        ).foreground == TColor.parse("#070809")
+        assert _style_covering(content, "(experimental)").foreground == TColor.parse(
+            "#070809"
+        )
 
     def test_experimental_tag_uses_ansi_markup_under_ansi_theme(self) -> None:
         """Under an ANSI theme the experimental span carries bold-magenta markup."""
@@ -440,7 +444,7 @@ class TestTitle:
                 content = _make_banner(env={EXPERIMENTAL: "1"})._build_banner()
         finally:
             app.theme = previous_theme
-        assert _raw_style_covering(content, "(experimental mode)") == "bold magenta"
+        assert _raw_style_covering(content, "(experimental)") == "bold magenta"
 
     def test_title_tags_carry_their_own_styles(self) -> None:
         """Each title tag's span carries its own style helper's output.
@@ -789,6 +793,156 @@ class TestThreadLine:
         """No thread row in debug mode when the thread ID is unset."""
         plain = _make_banner(thread_id=None, env={DEBUG: "1"})._build_banner().plain
         assert "thread:" not in plain
+
+    def test_thread_id_span_is_marked_copyable(self) -> None:
+        """The thread ID span carries the click-to-copy metadata."""
+        content = _make_banner(thread_id="abc-123", env={DEBUG: "1"})._build_banner()
+        style = _style_covering(content, "abc-123")
+        assert copy_span_target(style) == ("abc-123", "Thread ID")
+        assert style.dim is True
+
+    def test_langsmith_link_appended_once_project_url_resolves(self) -> None:
+        """A resolved project URL adds a thread trace link to the row."""
+        content = _make_banner(
+            thread_id="abc-123",
+            project_name="proj",
+            project_urls={"proj": "https://smith.langchain.com/o/org/projects/p/p1"},
+            env={DEBUG: "1"},
+        )._build_banner()
+        assert "(open in langsmith)" in content.plain
+        link = _style_covering(content, "(open in langsmith)").link
+        assert link == (
+            "https://smith.langchain.com/o/org/projects/p/p1/t/abc-123"
+            "?utm_source=deepagents-code"
+        )
+
+    def test_no_langsmith_link_before_project_url_resolves(self) -> None:
+        """The row stays link-free while the project URL is unresolved."""
+        plain = (
+            _make_banner(thread_id="abc-123", project_name="proj", env={DEBUG: "1"})
+            ._build_banner()
+            .plain
+        )
+        assert "(open in langsmith)" not in plain
+
+    def test_no_langsmith_link_without_tracing(self) -> None:
+        """No trace link when LangSmith tracing is not configured."""
+        plain = (
+            _make_banner(thread_id="abc-123", env={DEBUG: "1"})._build_banner().plain
+        )
+        assert "(open in langsmith)" not in plain
+
+
+class _BannerApp(App[None]):
+    """Minimal app that mounts a prebuilt `WelcomeBanner` for click tests."""
+
+    def __init__(self, banner: WelcomeBanner) -> None:
+        super().__init__()
+        self._banner = banner
+
+    def compose(self) -> ComposeResult:
+        yield self._banner
+
+
+def _click_offset(banner: WelcomeBanner, needle: str) -> tuple[int, int]:
+    """Return a click offset inside the rendered span containing `needle`.
+
+    Derives the offset from the rendered text instead of hardcoding columns, then
+    shifts it by the banner's border (1 column, 1 row) and horizontal padding
+    (2 columns) so it addresses the widget's own coordinate space.
+
+    Args:
+        banner: The banner whose content is measured.
+        needle: Substring identifying the target span.
+
+    Returns:
+        The `(x, y)` offset to click.
+    """
+    border_x, border_y, padding_x = 1, 1, 2
+    for y, line in enumerate(banner._build_banner().plain.split("\n")):
+        column = line.find(needle)
+        if column != -1:
+            return border_x + padding_x + column, border_y + y
+    msg = f"{needle!r} not found in the rendered banner"
+    raise AssertionError(msg)
+
+
+class TestThreadIdClickToCopy:
+    """Clicking the thread ID copies it; the trace link still opens."""
+
+    async def test_click_copies_thread_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Clicking the thread ID copies it and reports success."""
+        copied: list[str] = []
+
+        def fake_copy(_app: App[None], text: str) -> tuple[bool, str | None]:
+            copied.append(text)
+            return True, None
+
+        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
+        banner = _make_banner(thread_id="abc-123", show_model=False, env={DEBUG: "1"})
+        app = _BannerApp(banner)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.click(banner, offset=_click_offset(banner, "abc-123"))
+            await pilot.pause()
+
+            assert copied == ["abc-123"]
+            latest = list(app._notifications)[-1]
+            assert latest.message == "Thread ID copied"
+
+    async def test_copy_failure_notifies_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A clipboard failure surfaces the backend error in a warning toast."""
+
+        def fake_copy(_app: App[None], _text: str) -> tuple[bool, str | None]:
+            return False, "clipboard unavailable"
+
+        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
+        banner = _make_banner(thread_id="abc-123", show_model=False, env={DEBUG: "1"})
+        app = _BannerApp(banner)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.click(banner, offset=_click_offset(banner, "abc-123"))
+            await pilot.pause()
+
+            latest = list(app._notifications)[-1]
+            assert latest.severity == "warning"
+            assert "clipboard unavailable" in latest.message
+
+    async def test_clicking_trace_link_opens_it_without_copying(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The trace link opens in the browser and never copies."""
+        copied: list[str] = []
+
+        def fake_copy(_app: App[None], text: str) -> tuple[bool, str | None]:
+            copied.append(text)
+            return True, None
+
+        monkeypatch.setattr(clipboard_module, "copy_text_to_clipboard", fake_copy)
+        opened: list[object] = []
+        monkeypatch.setattr(
+            welcome_module, "open_style_link", lambda event: opened.append(event)
+        )
+        banner = _make_banner(
+            thread_id="abc-123", show_model=False, project_name="proj", env={DEBUG: "1"}
+        )
+        app = _BannerApp(banner)
+        project_url = "https://smith.langchain.com/o/org/projects/p/p1"
+        # The mounted banner renders the link only after its startup worker
+        # resolves the project URL, so patch the fetch and let the worker run.
+        with patch(_FETCH_URL, return_value=project_url):
+            async with app.run_test(size=(80, 24)) as pilot:
+                await pilot.pause()
+                assert banner._project_urls == {"proj": project_url}
+                await pilot.click(
+                    banner, offset=_click_offset(banner, "(open in langsmith)")
+                )
+                await pilot.pause()
+
+                assert len(opened) == 1
+                assert copied == []
 
 
 class TestMcpToolLine:

@@ -6,25 +6,25 @@ from enum import StrEnum
 from pathlib import (
     Path,  # ruff:ignore[typing-only-standard-library-import] - Pydantic resolves model annotations at runtime.
 )
-from typing import Annotated, Literal, TypeAlias
+from typing import TYPE_CHECKING, Annotated, Any, Literal, TypeAlias
 from uuid import (
     UUID,  # ruff:ignore[typing-only-standard-library-import] - Pydantic resolves model annotations at runtime.
 )
 
-from langchain_core.messages import (  # ruff:ignore[typing-only-third-party-import] - Pydantic runtime annotation.
-    ToolMessage,
-)
-from langgraph.types import (
-    Command,  # ruff:ignore[typing-only-third-party-import] - Pydantic runtime annotation.
-)
+from langchain_core.messages import ToolMessage
 from pydantic import BaseModel, ConfigDict, Field
 
 from deepagents_code.approval_mode import (  # ruff:ignore[typing-only-first-party-import] - Pydantic runtime annotation.
     ApprovalMode,
 )
-from deepagents_code.json_types import (  # ruff:ignore[typing-only-first-party-import] - Pydantic runtime annotation.
+from deepagents_code.json_types import (
+    JSON_VALUE_ADAPTER,
     JsonObject,
+    JsonValue,
 )
+
+if TYPE_CHECKING:
+    from langgraph.types import Command
 
 
 class _DomainModel(BaseModel):
@@ -37,11 +37,13 @@ class HookEvent(StrEnum):
     """Supported hook lifecycle events."""
 
     SESSION_START = "SessionStart"
+    USER_PROMPT_SUBMIT = "UserPromptSubmit"
     SESSION_END = "SessionEnd"
     PERMISSION_REQUEST = "PermissionRequest"
     NOTIFICATION = "Notification"
     PRE_TOOL_USE = "PreToolUse"
     POST_TOOL_USE = "PostToolUse"
+    PRE_COMPACT = "PreCompact"
     STOP = "Stop"
     SUBAGENT_START = "SubagentStart"
     SUBAGENT_STOP = "SubagentStop"
@@ -72,6 +74,21 @@ class SessionEndCause(StrEnum):
     PROMPT_INPUT_EXIT = "prompt_input_exit"
     BYPASS_PERMISSIONS_DISABLED = "bypass_permissions_disabled"
     OTHER = "other"
+
+
+class DcodeNotificationKind(StrEnum):
+    """dcode lifecycle notifications with compatible wire mappings."""
+
+    PERMISSION_REQUIRED = "permission_required"
+    AGENT_NEEDS_INPUT = "agent_needs_input"
+    AGENT_COMPLETED = "agent_completed"
+
+
+class CompactTrigger(StrEnum):
+    """Reason context compaction was requested."""
+
+    MANUAL = "manual"
+    AUTO = "auto"
 
 
 EffortLevel: TypeAlias = Literal["none", "low", "medium", "high", "xhigh", "max"]
@@ -152,6 +169,13 @@ class SessionStartEvent(_DomainModel):
     model: str | None = None
 
 
+class UserPromptSubmitEvent(_DomainModel):
+    """Domain payload for `UserPromptSubmit`."""
+
+    event: Literal[HookEvent.USER_PROMPT_SUBMIT]
+    prompt: str
+
+
 class SessionEndEvent(_DomainModel):
     """Domain payload for `SessionEnd`."""
 
@@ -181,12 +205,60 @@ class PreToolUseEvent(_DomainModel):
 
 
 class PostToolUseEvent(_DomainModel):
-    """Domain payload for `PostToolUse`."""
+    """Domain payload for `PostToolUse`.
+
+    `result` is the JSON projection of the native tool return value, not a
+    live `Command` / `ToolMessage`. The live value stays in the tool wrapper
+    for decision application; only JSON crosses the interrupt boundary to the
+    client.
+    """
 
     event: Literal[HookEvent.POST_TOOL_USE]
     call: ToolCallData
-    result: ToolMessage | Command[str]
+    result: JsonValue
     duration_ms: int | None = None
+
+    @classmethod
+    def from_tool_result(
+        cls,
+        result: ToolMessage | Command[Any],
+        *,
+        call: ToolCallData,
+        duration_ms: int | None = None,
+    ) -> PostToolUseEvent:
+        """Build a `PostToolUseEvent` from a native tool return value.
+
+        `PostToolUse` crosses a LangGraph interrupt boundary, so the domain
+        event must carry JSON — not a live `Command` / `ToolMessage`.
+        Re-validating a dumped `Command` as `ToolMessage` raises
+        `KeyError: 'tool_call_id'` in LangChain's message coercion.
+
+        Args:
+            result: Native tool return value from the tool wrapper.
+            call: Tool-call data for the hook payload.
+            duration_ms: Tool execution duration in milliseconds.
+
+        Returns:
+            A `PostToolUseEvent` with a JSON-projected `result`.
+        """
+        if isinstance(result, ToolMessage):
+            value: object = result.model_dump(mode="json")
+        else:
+            value = JSON_VALUE_ADAPTER.dump_python(result, mode="json", warnings=False)
+        return cls(
+            event=HookEvent.POST_TOOL_USE,
+            call=call,
+            result=JSON_VALUE_ADAPTER.validate_python(value),
+            duration_ms=duration_ms,
+        )
+
+
+class PreCompactEvent(_DomainModel):
+    """Domain payload for `PreCompact`."""
+
+    event: Literal[HookEvent.PRE_COMPACT]
+    trigger: CompactTrigger
+    custom_instructions: str = ""
 
 
 class StopEvent(_DomainModel):
@@ -228,11 +300,13 @@ class SubagentStopEvent(_DomainModel):
 
 HookDomainEvent: TypeAlias = Annotated[
     SessionStartEvent
+    | UserPromptSubmitEvent
     | SessionEndEvent
     | PermissionRequestEvent
     | NotificationEvent
     | PreToolUseEvent
     | PostToolUseEvent
+    | PreCompactEvent
     | StopEvent
     | SubagentStartEvent
     | SubagentStopEvent,
@@ -282,6 +356,14 @@ class SessionStartDecision(BaseHookDecision):
     context: list[str] = Field(default_factory=list)
 
 
+class UserPromptSubmitDecision(BaseHookDecision):
+    """Decision returned for `UserPromptSubmit`."""
+
+    event: Literal[HookEvent.USER_PROMPT_SUBMIT]
+    context: list[str] = Field(default_factory=list)
+    suppress_original_prompt: bool = False
+
+
 class SessionEndDecision(BaseHookDecision):
     """Decision returned for `SessionEnd`."""
 
@@ -317,6 +399,12 @@ class PostToolUseDecision(BaseHookDecision):
     context: list[str] = Field(default_factory=list)
 
 
+class PreCompactDecision(BaseHookDecision):
+    """Decision returned for `PreCompact`."""
+
+    event: Literal[HookEvent.PRE_COMPACT]
+
+
 class StopDecision(BaseHookDecision):
     """Decision returned for `Stop`."""
 
@@ -341,11 +429,13 @@ class SubagentStopDecision(BaseHookDecision):
 
 HookDecision: TypeAlias = Annotated[
     SessionStartDecision
+    | UserPromptSubmitDecision
     | SessionEndDecision
     | PermissionRequestDecision
     | NotificationDecision
     | PreToolUseDecision
     | PostToolUseDecision
+    | PreCompactDecision
     | StopDecision
     | SubagentStartDecision
     | SubagentStopDecision,

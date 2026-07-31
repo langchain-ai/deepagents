@@ -49,6 +49,13 @@ class LoadedHooksConfig:
     diagnostics: tuple[HookDiagnostic, ...]
     sources: tuple[Path, ...]
     snapshot_id: str
+    project_source_loaded: bool = False
+    """Whether the project-scoped source was selected and successfully loaded.
+
+    Set only when workspace trust allowed the project source and that file
+    contributed configuration. Never inferred from path membership after
+    canonical deduplication (symlinks / shared config dirs can alias paths).
+    """
 
 
 def project_hooks_path(project_root: Path) -> Path:
@@ -93,34 +100,42 @@ def load_hooks_config(
             followed by user hooks.
 
     Returns:
-        Frozen load result with canonical `snapshot_id`.
+        Frozen load result with canonical `snapshot_id` and explicit project
+        source provenance.
     """
-    configured_sources = (
-        tuple(paths)
-        if paths is not None
-        else (
-            (project_hooks_path(project_root), user_hooks_path(config_dir))
-            if workspace_trusted
-            else (user_hooks_path(config_dir),)
-        )
-    )
-    sources = tuple(
-        dict.fromkeys(
-            path.expanduser().resolve(strict=False) for path in configured_sources
-        )
-    )
     diagnostics: list[HookDiagnostic] = []
     merged: dict[HookEvent, list[MatcherGroup]] = {}
     loaded_paths: list[Path] = []
+    project_source_loaded = False
 
-    for path in sources:
-        document, file_diagnostics = _read_hooks_document(path)
+    def _ingest(path: Path, *, as_project: bool) -> None:
+        nonlocal project_source_loaded
+        resolved = path.expanduser().resolve(strict=False)
+        document, file_diagnostics = _read_hooks_document(resolved)
         diagnostics.extend(file_diagnostics)
         if document is None:
-            continue
-        loaded_paths.append(path)
+            return
+        if as_project:
+            project_source_loaded = True
+        loaded_paths.append(resolved)
         for event, groups in document.hooks.items():
             merged.setdefault(event, []).extend(groups)
+
+    if paths is not None:
+        for path in dict.fromkeys(
+            path.expanduser().resolve(strict=False) for path in paths
+        ):
+            _ingest(path, as_project=False)
+    elif workspace_trusted:
+        project_path = (
+            project_hooks_path(project_root).expanduser().resolve(strict=False)
+        )
+        user_path = user_hooks_path(config_dir).expanduser().resolve(strict=False)
+        _ingest(project_path, as_project=True)
+        if user_path != project_path:
+            _ingest(user_path, as_project=False)
+    else:
+        _ingest(user_hooks_path(config_dir), as_project=False)
 
     config = HooksConfig(hooks=merged)
     return LoadedHooksConfig(
@@ -128,6 +143,7 @@ def load_hooks_config(
         diagnostics=tuple(diagnostics),
         sources=tuple(loaded_paths),
         snapshot_id=compute_snapshot_id(config),
+        project_source_loaded=project_source_loaded,
     )
 
 
@@ -172,7 +188,9 @@ def canonical_hooks_bytes(config: HooksConfig) -> bytes:
 
 
 def _canonical_group(group: MatcherGroup) -> dict[str, object]:
-    raw = group.model_dump(mode="json", by_alias=True, exclude_none=True)
+    raw = group.model_dump(
+        mode="json", by_alias=True, exclude_none=True, exclude_defaults=True
+    )
     handlers: list[dict[str, object]] = []
     hooks_raw = raw.get("hooks")
     if isinstance(hooks_raw, list):
@@ -226,8 +244,8 @@ def _read_hooks_document(
         ]
         migrated = migrate_legacy_hooks(legacy_entries)
         migration_message = (
-            f"Migrated semantically equivalent session.end hooks from {path}; "
-            "all other legacy events remain unmapped"
+            f"Migrated semantically equivalent legacy hooks from {path}; "
+            "unsupported legacy events remain unmapped"
             if migrated.hooks
             else (
                 f"Legacy hooks at {path} contained no events that are safe to "

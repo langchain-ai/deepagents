@@ -157,6 +157,19 @@ class TestGoalPrompts:
         assert "never use search to invent additional requirements" in normalized
         assert "configured MCP tools" in normalized
 
+    def test_system_prompt_resolves_underspecified_objectives(self) -> None:
+        """A deictic objective is resolved from context, never restated."""
+        normalized = " ".join(GOAL_RUBRIC_SYSTEM_PROMPT.split())
+
+        assert (
+            "Resolving what the objective refers to is not inventing requirements"
+            in normalized
+        )
+        assert 'a bare "do it", "fix it"' in normalized
+        assert "naming the files, commands, behavior, or deliverables" in normalized
+        assert "the requested work is completed as specified" in normalized
+        assert "is never acceptable" in normalized
+
 
 class TestConversationContext:
     """Parent context is recent, text-only, bounded, and safely serialized."""
@@ -280,6 +293,19 @@ class TestConversationContext:
         assert _prompt_with_conversation_context(request, []) == (
             _goal_rubric_human_prompt("ship the explicit goal")
         )
+
+    def test_context_resolves_referents_without_adding_requirements(self) -> None:
+        """Context may disambiguate the objective but never extend its scope."""
+        prompt = _prompt_with_conversation_context(
+            self._request(),
+            [HumanMessage(content="rewrite the optimizer starter prompt")],
+        )
+
+        assert "resolve what an underspecified objective refers to" in prompt
+        assert "Do not treat the context as a source of additional requirements" in (
+            prompt
+        )
+        assert "do not infer additional requirements" not in prompt
 
 
 class TestGoalContextFallbackMiddleware:

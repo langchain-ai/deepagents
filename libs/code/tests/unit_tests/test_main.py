@@ -18,6 +18,8 @@ from rich.console import Console
 if TYPE_CHECKING:
     from prompt_toolkit.layout import Layout
 
+from deepagents_code._env_vars import INVOKED_AS
+from deepagents_code._invocation import invoked_name
 from deepagents_code.app import AppResult, DeepAgentsApp, run_textual_app
 from deepagents_code.config import build_langsmith_thread_url, reset_langsmith_url_cache
 from deepagents_code.main import (
@@ -310,6 +312,22 @@ class TestStartupAutoUpdate:
             "/tool/bin/python",
             ["/tool/bin/python", "-m", "deepagents_code", "--model", "openai:gpt-5.5"],
         )
+
+    def test_restart_carries_launch_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The `-m` re-exec drops argv[0], so the launch name goes via the env."""
+        invoked_name.cache_clear()
+        # Empty is treated as absent, and registering the key with monkeypatch
+        # means the value the restart writes is cleaned up after the test.
+        monkeypatch.setenv(INVOKED_AS, "")
+        monkeypatch.setattr(sys, "executable", "/tool/bin/python")
+        monkeypatch.setattr(sys, "argv", ["/home/user/.local/bin/abc"])
+        with (
+            patch("os.execv", side_effect=SystemExit(0)),
+            pytest.raises(SystemExit),
+        ):
+            _restart_current_process()
+
+        assert os.environ[INVOKED_AS] == "abc"
 
     def test_failed_update_does_not_restart_and_continues(self) -> None:
         """A failed upgrade must not restart; it surfaces the error and returns."""
@@ -976,7 +994,7 @@ class TestStartupAutoUpdate:
 
     def test_project_mcp_prompt_interrupt_aborts_before_tui(self) -> None:
         """Ctrl+C at the project MCP prompt exits before launching Textual."""
-        from deepagents_code.main import _ProjectMcpTrustPromptOutcome
+        from deepagents_code.main import _TrustPromptOutcome
 
         launch = AsyncMock(return_value=AppResult(return_code=0, thread_id="thread"))
         with (
@@ -989,7 +1007,7 @@ class TestStartupAutoUpdate:
             ),
             patch(
                 "deepagents_code.main._check_mcp_project_trust",
-                return_value=_ProjectMcpTrustPromptOutcome.INTERRUPTED,
+                return_value=_TrustPromptOutcome.INTERRUPTED,
             ),
             patch("deepagents_code.main.run_textual_cli_async", launch),
             pytest.raises(SystemExit) as exc_info,
@@ -1037,7 +1055,7 @@ class TestStartupAutoUpdate:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """Esc in the server selector cancels launch before Textual starts."""
-        from deepagents_code.main import _ProjectMcpTrustPromptOutcome
+        from deepagents_code.main import _TrustPromptOutcome
 
         launch = AsyncMock(return_value=AppResult(return_code=0, thread_id="thread"))
         with (
@@ -1050,7 +1068,7 @@ class TestStartupAutoUpdate:
             ),
             patch(
                 "deepagents_code.main._check_mcp_project_trust",
-                return_value=_ProjectMcpTrustPromptOutcome.CANCELLED,
+                return_value=_TrustPromptOutcome.CANCELLED,
             ),
             patch("deepagents_code.main.run_textual_cli_async", launch),
         ):
@@ -1395,16 +1413,20 @@ class TestRenderTeardownThreadHints:
         thread_exists_mock: AsyncMock,
         thread_url: str | None,
         return_code: int = 0,
+        launch_name: str = "dcode",
     ) -> str:
         """Render the hints with patched dependencies, returning the output."""
         buffer = StringIO()
         console = Console(file=buffer, width=200)
+        # `launch_name` is resolved (and cached) inside the renderer.
+        invoked_name.cache_clear()
         with (
             patch("deepagents_code.sessions.thread_exists", thread_exists_mock),
             patch(
                 "deepagents_code.config.build_langsmith_thread_url",
                 return_value=thread_url,
             ),
+            patch.dict(os.environ, {INVOKED_AS: launch_name}),
         ):
             _render_teardown_thread_hints(console, "test123", return_code=return_code)
         return buffer.getvalue()
@@ -1423,6 +1445,19 @@ class TestRenderTeardownThreadHints:
         thread_exists_mock.assert_awaited_once()
         assert "Resume this thread with:" in output
         assert "dcode -r test123" in output
+
+    def test_resume_hint_echoes_launch_command(self) -> None:
+        """The hint names the shim the user launched, not a hardcoded `dcode`."""
+        thread_exists_mock = AsyncMock(return_value=True)
+
+        output = self._render(
+            thread_exists_mock=thread_exists_mock,
+            thread_url=None,
+            launch_name="abc",
+        )
+
+        assert "abc -r test123" in output
+        assert "dcode" not in output
 
     def test_prints_langsmith_link_when_available(self) -> None:
         """A configured LangSmith URL is shown alongside the resume hint."""
@@ -2631,7 +2666,7 @@ class TestCheckMcpProjectTrustPrompt:
         from deepagents_code._env_vars import DEBUG_MCP_PROJECT_TRUST
         from deepagents_code.main import (
             _check_mcp_project_trust,
-            _ProjectMcpTrustPromptOutcome,
+            _TrustPromptOutcome,
         )
 
         project_context = SimpleNamespace(project_root=tmp_path, user_cwd=tmp_path)
@@ -2653,13 +2688,13 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], []),
             ),
             patch(
-                "deepagents_code.main._select_project_mcp_trust_action",
-                return_value=_ProjectMcpTrustPromptOutcome.CANCELLED,
+                "deepagents_code.main._select_trust_action",
+                return_value=_TrustPromptOutcome.CANCELLED,
             ),
         ):
             decision = _check_mcp_project_trust(trust_flag=False)
 
-        assert decision is _ProjectMcpTrustPromptOutcome.CANCELLED
+        assert decision is _TrustPromptOutcome.CANCELLED
         assert "denied" not in capsys.readouterr().err.lower()
         assert not user_config.exists()
 
@@ -2677,7 +2712,7 @@ class TestCheckMcpProjectTrustPrompt:
         from deepagents_code._env_vars import DEBUG_MCP_PROJECT_TRUST
         from deepagents_code.main import (
             _check_mcp_project_trust,
-            _ProjectMcpTrustAction,
+            _TrustAction,
         )
 
         project_context = SimpleNamespace(project_root=tmp_path, user_cwd=tmp_path)
@@ -2697,8 +2732,8 @@ class TestCheckMcpProjectTrustPrompt:
                 return_value=([], []),
             ),
             patch(
-                "deepagents_code.main._select_project_mcp_trust_action",
-                return_value=_ProjectMcpTrustAction.DENY,
+                "deepagents_code.main._select_trust_action",
+                return_value=_TrustAction.DENY,
             ),
         ):
             decision = _check_mcp_project_trust(trust_flag=False)
@@ -3170,7 +3205,7 @@ class TestCheckMcpProjectTrustPrompt:
         from deepagents_code import model_config
         from deepagents_code.main import (
             _check_mcp_project_trust,
-            _ProjectMcpTrustPromptOutcome,
+            _TrustPromptOutcome,
         )
 
         project_root = tmp_path / "proj"
@@ -3216,12 +3251,12 @@ class TestCheckMcpProjectTrustPrompt:
             patch("builtins.input", return_value="a"),
             patch(
                 "deepagents_code.main._run_project_mcp_server_checkbox_picker",
-                return_value=_ProjectMcpTrustPromptOutcome.CANCELLED,
+                return_value=_TrustPromptOutcome.CANCELLED,
             ),
         ):
             decision = _check_mcp_project_trust(trust_flag=False)
 
-        assert decision is _ProjectMcpTrustPromptOutcome.CANCELLED
+        assert decision is _TrustPromptOutcome.CANCELLED
         assert not user_config.exists()
         assert "denied" not in capsys.readouterr().err.lower()
 
@@ -3555,7 +3590,7 @@ class TestCheckMcpProjectTrustPrompt:
         """Ctrl+C at the approval prompt cancels launch instead of denying MCP."""
         from deepagents_code.main import (
             _check_mcp_project_trust,
-            _ProjectMcpTrustPromptOutcome,
+            _TrustPromptOutcome,
         )
 
         project_root = tmp_path / "proj"
@@ -3591,7 +3626,7 @@ class TestCheckMcpProjectTrustPrompt:
         ):
             decision = _check_mcp_project_trust(trust_flag=False)
 
-        assert decision is _ProjectMcpTrustPromptOutcome.INTERRUPTED
+        assert decision is _TrustPromptOutcome.INTERRUPTED
 
     def test_eof_at_prompt_denies(self, tmp_path: Path) -> None:
         """EOF (closed stdin) at the approval prompt fails safe to deny.
@@ -3822,7 +3857,7 @@ class TestSelectProjectServersToPersist:
     def _interactive_picker_terminal(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Allow picker tests to run independently of pytest's captured streams."""
         monkeypatch.setattr(
-            "deepagents_code.main._project_mcp_picker_has_terminal",
+            "deepagents_code.main._trust_picker_has_terminal",
             lambda: True,
         )
 
@@ -3897,8 +3932,8 @@ class TestSelectProjectServersToPersist:
         from rich.console import Console
 
         from deepagents_code.main import (
-            _ProjectMcpTrustAction,
-            _run_project_mcp_trust_action_picker,
+            _run_trust_action_picker,
+            _TrustAction,
         )
 
         captured: dict[str, Any] = {}
@@ -3910,9 +3945,9 @@ class TestSelectProjectServersToPersist:
             def __init__(self, **kwargs: Any) -> None:
                 captured.update(kwargs)
 
-            def run(self) -> _ProjectMcpTrustAction:
+            def run(self) -> _TrustAction:
                 bindings = captured["key_bindings"].bindings
-                holder: dict[str, _ProjectMcpTrustAction] = {}
+                holder: dict[str, _TrustAction] = {}
                 event = SimpleNamespace(
                     app=SimpleNamespace(
                         exit=lambda *, result: holder.update(value=result)
@@ -3927,9 +3962,9 @@ class TestSelectProjectServersToPersist:
                 return holder["value"]
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
-        result = _run_project_mcp_trust_action_picker(Console(stderr=True))
+        result = _run_trust_action_picker(Console(stderr=True))
 
-        assert result is _ProjectMcpTrustAction.DENY
+        assert result is _TrustAction.DENY
         assert captured["full_screen"] is False
         rendered = "".join(
             text for _style, text in captured["layout"].container.content.text()
@@ -3948,8 +3983,8 @@ class TestSelectProjectServersToPersist:
         from rich.console import Console
 
         from deepagents_code.main import (
-            _ProjectMcpTrustAction,
-            _run_project_mcp_trust_action_picker,
+            _run_trust_action_picker,
+            _TrustAction,
         )
 
         captured: dict[str, Any] = {}
@@ -3961,11 +3996,11 @@ class TestSelectProjectServersToPersist:
             def __init__(self, **kwargs: Any) -> None:
                 captured.update(kwargs)
 
-            def run(self) -> _ProjectMcpTrustAction:
-                return _ProjectMcpTrustAction.DENY
+            def run(self) -> _TrustAction:
+                return _TrustAction.DENY
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
-        _run_project_mcp_trust_action_picker(Console(stderr=True))
+        _run_trust_action_picker(Console(stderr=True))
 
         _assert_all_controls_hide_cursor(captured["layout"])
 
@@ -3980,8 +4015,8 @@ class TestSelectProjectServersToPersist:
         from rich.console import Console
 
         from deepagents_code.main import (
-            _ProjectMcpTrustPromptOutcome,
-            _run_project_mcp_trust_action_picker,
+            _run_trust_action_picker,
+            _TrustPromptOutcome,
         )
 
         captured: dict[str, Any] = {}
@@ -3993,9 +4028,9 @@ class TestSelectProjectServersToPersist:
             def __init__(self, **kwargs: Any) -> None:
                 captured.update(kwargs)
 
-            def run(self) -> _ProjectMcpTrustPromptOutcome:
+            def run(self) -> _TrustPromptOutcome:
                 bindings = captured["key_bindings"].bindings
-                holder: dict[str, _ProjectMcpTrustPromptOutcome] = {}
+                holder: dict[str, _TrustPromptOutcome] = {}
                 event = SimpleNamespace(
                     app=SimpleNamespace(
                         exit=lambda *, result: holder.update(value=result)
@@ -4013,9 +4048,9 @@ class TestSelectProjectServersToPersist:
                 return holder["value"]
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
-        result = _run_project_mcp_trust_action_picker(Console(stderr=True))
+        result = _run_trust_action_picker(Console(stderr=True))
 
-        assert result is _ProjectMcpTrustPromptOutcome.CANCELLED
+        assert result is _TrustPromptOutcome.CANCELLED
         rendered = "".join(
             text for _style, text in captured["layout"].container.content.text()
         )
@@ -4030,18 +4065,18 @@ class TestSelectProjectServersToPersist:
         from rich.console import Console
 
         from deepagents_code.main import (
-            _ProjectMcpTrustPromptOutcome,
-            _select_project_mcp_trust_action,
+            _select_trust_action,
+            _TrustPromptOutcome,
         )
 
         monkeypatch.setattr(
-            "deepagents_code.main._run_project_mcp_trust_action_picker",
-            lambda _console: _ProjectMcpTrustPromptOutcome.CANCELLED,
+            "deepagents_code.main._run_trust_action_picker",
+            lambda _console, **_kwargs: _TrustPromptOutcome.CANCELLED,
         )
 
-        result = _select_project_mcp_trust_action(Console(stderr=True))
+        result = _select_trust_action(Console(stderr=True))
 
-        assert result is _ProjectMcpTrustPromptOutcome.CANCELLED
+        assert result is _TrustPromptOutcome.CANCELLED
 
     def test_action_picker_falls_back_when_stderr_is_redirected(
         self, monkeypatch: pytest.MonkeyPatch
@@ -4049,7 +4084,7 @@ class TestSelectProjectServersToPersist:
         """A hidden selector is not launched when stderr is not a terminal."""
         from rich.console import Console
 
-        from deepagents_code.main import _run_project_mcp_trust_action_picker
+        from deepagents_code.main import _run_trust_action_picker
 
         monkeypatch.setattr(
             "deepagents_code.main.sys.stdin", SimpleNamespace(isatty=lambda: True)
@@ -4058,7 +4093,7 @@ class TestSelectProjectServersToPersist:
             "deepagents_code.main.sys.stderr", SimpleNamespace(isatty=lambda: False)
         )
 
-        result = _run_project_mcp_trust_action_picker(Console(stderr=True))
+        result = _run_trust_action_picker(Console(stderr=True))
 
         assert result is None
 
@@ -4371,8 +4406,8 @@ class TestSelectProjectServersToPersist:
         from rich.console import Console
 
         from deepagents_code.main import (
-            _ProjectMcpTrustPromptOutcome,
             _run_project_mcp_server_checkbox_picker,
+            _TrustPromptOutcome,
         )
 
         captured: dict[str, Any] = {}
@@ -4410,7 +4445,7 @@ class TestSelectProjectServersToPersist:
         ]
         result = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
 
-        assert result is _ProjectMcpTrustPromptOutcome.CANCELLED
+        assert result is _TrustPromptOutcome.CANCELLED
         help_control = captured["layout"].container.children[0].content
         rendered = "".join(text for _style, text in help_control.text())
         assert "Esc abort" in rendered
@@ -4425,8 +4460,8 @@ class TestSelectProjectServersToPersist:
         from rich.console import Console
 
         from deepagents_code.main import (
-            _ProjectMcpTrustPromptOutcome,
             _run_project_mcp_server_checkbox_picker,
+            _TrustPromptOutcome,
         )
 
         captured: dict[str, Any] = {}
@@ -4438,9 +4473,9 @@ class TestSelectProjectServersToPersist:
             def __init__(self, **kwargs: Any) -> None:
                 captured.update(kwargs)
 
-            def run(self) -> _ProjectMcpTrustPromptOutcome:
+            def run(self) -> _TrustPromptOutcome:
                 bindings = captured["key_bindings"].bindings
-                holder: dict[str, _ProjectMcpTrustPromptOutcome] = {}
+                holder: dict[str, _TrustPromptOutcome] = {}
                 event = SimpleNamespace(
                     app=SimpleNamespace(
                         exit=lambda *, result: holder.update(value=result)
@@ -4462,7 +4497,7 @@ class TestSelectProjectServersToPersist:
         ]
         result = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
 
-        assert result is _ProjectMcpTrustPromptOutcome.INTERRUPTED
+        assert result is _TrustPromptOutcome.INTERRUPTED
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_checkbox_picker_eof_cancels(
@@ -4473,8 +4508,8 @@ class TestSelectProjectServersToPersist:
         from rich.console import Console
 
         from deepagents_code.main import (
-            _ProjectMcpTrustPromptOutcome,
             _run_project_mcp_server_checkbox_picker,
+            _TrustPromptOutcome,
         )
 
         class _FakeApplication:
@@ -4495,7 +4530,7 @@ class TestSelectProjectServersToPersist:
         ]
         result = _run_project_mcp_server_checkbox_picker(servers, Console(stderr=True))
 
-        assert result is _ProjectMcpTrustPromptOutcome.CANCELLED
+        assert result is _TrustPromptOutcome.CANCELLED
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
     def test_checkbox_picker_falls_back_when_app_run_fails(
@@ -4538,7 +4573,7 @@ class TestSelectProjectServersToPersist:
         """A runtime failure launching the action picker falls back to text input."""
         from rich.console import Console
 
-        from deepagents_code.main import _run_project_mcp_trust_action_picker
+        from deepagents_code.main import _run_trust_action_picker
 
         class _FakeApplication:
             def __class_getitem__(cls, _item: object) -> type["_FakeApplication"]:
@@ -4552,7 +4587,7 @@ class TestSelectProjectServersToPersist:
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
 
-        result = _run_project_mcp_trust_action_picker(Console(stderr=True))
+        result = _run_trust_action_picker(Console(stderr=True))
 
         assert result is None
 
@@ -4639,8 +4674,8 @@ class TestSelectProjectServersToPersist:
         from rich.console import Console
 
         from deepagents_code.main import (
-            _ProjectMcpTrustPromptOutcome,
             _select_project_servers_to_persist,
+            _TrustPromptOutcome,
         )
 
         servers = [
@@ -4656,15 +4691,15 @@ class TestSelectProjectServersToPersist:
         ):
             names = _select_project_servers_to_persist(servers, Console(stderr=True))
 
-        assert names is _ProjectMcpTrustPromptOutcome.INTERRUPTED
+        assert names is _TrustPromptOutcome.INTERRUPTED
 
     def test_fallback_blank_cancels(self) -> None:
         """Blank fallback input cancels (deny) rather than confirming nothing."""
         from rich.console import Console
 
         from deepagents_code.main import (
-            _ProjectMcpTrustPromptOutcome,
             _select_project_servers_to_persist,
+            _TrustPromptOutcome,
         )
 
         servers = [
@@ -4680,15 +4715,15 @@ class TestSelectProjectServersToPersist:
         ):
             names = _select_project_servers_to_persist(servers, Console(stderr=True))
 
-        assert names is _ProjectMcpTrustPromptOutcome.CANCELLED
+        assert names is _TrustPromptOutcome.CANCELLED
 
     def test_fallback_eof_cancels(self) -> None:
         """EOF (Ctrl+D) at the fallback prompt cancels, not an empty confirm."""
         from rich.console import Console
 
         from deepagents_code.main import (
-            _ProjectMcpTrustPromptOutcome,
             _select_project_servers_to_persist,
+            _TrustPromptOutcome,
         )
 
         servers = [
@@ -4704,7 +4739,7 @@ class TestSelectProjectServersToPersist:
         ):
             names = _select_project_servers_to_persist(servers, Console(stderr=True))
 
-        assert names is _ProjectMcpTrustPromptOutcome.CANCELLED
+        assert names is _TrustPromptOutcome.CANCELLED
 
 
 class TestSelectProjectMcpTrustAction:
@@ -4735,20 +4770,20 @@ class TestSelectProjectMcpTrustAction:
         from rich.console import Console
 
         from deepagents_code.main import (
-            _ProjectMcpTrustAction,
-            _select_project_mcp_trust_action,
+            _select_trust_action,
+            _TrustAction,
         )
 
         # Force the inline picker to defer to the text prompt.
         monkeypatch.setattr(
-            "deepagents_code.main._run_project_mcp_trust_action_picker",
+            "deepagents_code.main._run_trust_action_picker",
             lambda *_args, **_kwargs: None,
         )
         monkeypatch.setattr("builtins.input", lambda _prompt="": token)
 
-        result = _select_project_mcp_trust_action(Console(stderr=True))
+        result = _select_trust_action(Console(stderr=True))
 
-        assert result is _ProjectMcpTrustAction[expected_name]
+        assert result is _TrustAction[expected_name]
 
 
 class TestCheckMcpProjectTrustDedupe:

@@ -726,6 +726,10 @@ def test_install_script_interactive_decline_keeps_current(tmp_path: Path) -> Non
     assert code == 0
     assert not args_path.exists()
     assert "0.1.0 → 0.2.0" in output
+    assert (
+        "What's new: https://github.com/langchain-ai/deepagents/releases/tag/"
+        "deepagents-code%3D%3D0.2.0" in output
+    )
     assert "Keeping deepagents-code 0.1.0" in output
 
 
@@ -740,6 +744,10 @@ def test_install_script_interactive_accept_updates(tmp_path: Path) -> None:
     # paths, so assert the "Updating ..." line to prove the prompt was shown and
     # answered yes rather than bypassed.
     assert "Updating deepagents-code 0.1.0 → 0.2.0" in output
+    assert (
+        "What's new: https://github.com/langchain-ai/deepagents/releases/tag/"
+        "deepagents-code%3D%3D0.2.0" in output
+    )
     args = args_path.read_text().splitlines()
     assert args[:3] == ["tool", "install", "-U"]
     assert args[-1] == "deepagents-code"
@@ -764,6 +772,7 @@ def test_install_script_pinned_version_skips_prompt_over_existing_install(
 
     assert code == 0
     assert "→" not in output
+    assert "What's new:" not in output
     assert "Keeping deepagents-code" not in output
     args = args_path.read_text().splitlines()
     assert args[:3] == ["tool", "install", "-U"]

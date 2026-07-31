@@ -20,12 +20,20 @@ from deepagents.backends.sandbox import (
     TRUNCATION_MSG,
     BaseSandbox,
 )
-from deepagents.backends.utils import _get_backend_read_file_type
+from deepagents.backends.utils import _get_backend_read_file_type, normalize_read_bounds
 
 if TYPE_CHECKING:
-    from langsmith.sandbox import Sandbox
+    from langsmith.sandbox import AsyncSandbox, AsyncSandboxClient, ExecutionResult, Sandbox
 
 logger = logging.getLogger(__name__)
+
+
+def _execute_response(result: ExecutionResult) -> ExecuteResponse:
+    """Build an `ExecuteResponse` from a LangSmith SDK execution result."""
+    output = result.stdout or ""
+    if result.stderr:
+        output += "\n" + result.stderr if output else result.stderr
+    return ExecuteResponse(output=output, exit_code=result.exit_code, truncated=False)
 
 
 def _binary_read_result(file_path: str, raw: bytes) -> ReadResult:
@@ -60,6 +68,8 @@ class LangSmithSandbox(BaseSandbox):
         """
         self._sandbox = sandbox
         self._default_timeout: int = 30 * 60
+        self._async_sandbox: AsyncSandbox | None = None
+        self._async_client: AsyncSandboxClient | None = None
 
     @property
     def id(self) -> str:
@@ -82,17 +92,51 @@ class LangSmithSandbox(BaseSandbox):
             `ExecuteResponse` containing output, exit code, and truncation flag.
         """
         effective_timeout = timeout if timeout is not None else self._default_timeout
-        result = self._sandbox.run(command, timeout=effective_timeout)
+        return _execute_response(self._sandbox.run(command, timeout=effective_timeout))
 
-        output = result.stdout or ""
-        if result.stderr:
-            output += "\n" + result.stderr if output else result.stderr
+    def _aget_sandbox(self) -> AsyncSandbox:
+        """Return the cached `AsyncSandbox`, creating it on first async use.
 
-        return ExecuteResponse(
-            output=output,
-            exit_code=result.exit_code,
-            truncated=False,
-        )
+        `Sandbox.to_async()` builds a fresh client with its own connection pool
+        on every call, so it is cached: rebuilding per command would add a TCP
+        and TLS handshake to each one. The client belongs to the event loop that
+        created it, as does this backend — reusing one instance across loops is
+        not supported.
+        """
+        if self._async_sandbox is None:
+            # The SDK exposes no public accessor for a sandbox's client, and
+            # the async client is held here so `aclose()` can reach its pool.
+            self._async_client = self._sandbox._client.to_async()
+            self._async_sandbox = self._sandbox.to_async(client=self._async_client)
+        return self._async_sandbox
+
+    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
+        """Execute a shell command inside the sandbox.
+
+        Overrides the protocol default, which offloads the blocking `execute()`
+        to a worker thread. `BaseSandbox` routes every async filesystem
+        operation through `aexecute`, so using the SDK's async client here keeps
+        all of them off the sync transport.
+
+        Args:
+            command: Shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to complete.
+
+                If `None`, uses the backend's default timeout.
+
+        Returns:
+            `ExecuteResponse` containing output, exit code, and truncation flag.
+        """
+        effective_timeout = timeout if timeout is not None else self._default_timeout
+        sandbox = self._aget_sandbox()
+        return _execute_response(await sandbox.run(command, timeout=effective_timeout))
+
+    async def aclose(self) -> None:
+        """Close the cached async client's connection pool, if one was created."""
+        client = self._async_client
+        self._async_sandbox = self._async_client = None
+        if client is not None:
+            await client.aclose()
 
     def write(self, file_path: str, content: str) -> WriteResult:
         """Write content using the LangSmith SDK to avoid ARG_MAX.
@@ -142,6 +186,9 @@ class LangSmithSandbox(BaseSandbox):
             `\r` collapse to `\n`), split on `\n`, paginated by `offset` /
             `limit`, joined back with `\n`, and capped at `MAX_OUTPUT_BYTES`
             with `TRUNCATION_MSG` appended on overflow.
+        - A negative `offset` is clamped to the start of the file, and a
+            non-positive `limit` returns empty content with no pagination
+            metadata.
 
         Args:
             file_path: Absolute path to the file to read.
@@ -197,8 +244,15 @@ class LangSmithSandbox(BaseSandbox):
         if lines and lines[-1] == "":
             lines.pop()
 
-        offset = int(offset)
-        limit = int(limit)
+        offset, limit = normalize_read_bounds(offset, limit)
+
+        # Nothing was requested: no line range to describe, and nothing for the
+        # byte cap below to shorten. Guarded at `<= 0` so this holds even if the
+        # clamp above is ever bypassed or removed. `no_lines_requested` flags
+        # the window as never inspected so the middleware can tell it apart
+        # from a genuinely empty file.
+        if limit <= 0:
+            return ReadResult(file_data=FileData(content="", encoding="utf-8"), no_lines_requested=True)
 
         total_lines = len(lines)
         if not lines or offset >= total_lines:

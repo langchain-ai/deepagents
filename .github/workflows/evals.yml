@@ -265,7 +265,7 @@ jobs:
       other_has_models: ${{ steps.set-matrix.outputs.other_has_models }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "📝 Log dispatch inputs"
         continue-on-error: true
@@ -483,7 +483,7 @@ jobs:
         # like `siliconflow/fp8`) so it uses the looser provider CSV pattern
         # that also permits `/` and `.`; `repl` is single-valued so it stays
         # on SLUG. Models are validated downstream by
-        # `_SAFE_SPEC_RE` in `.github/scripts/models.py`.
+        # `_SAFE_SPEC_RE` in `.github/scripts/evals/models.py`.
         # Keep in parity with the equivalent block in `evals_trials.yml`.
         env:
           EVAL_CATEGORIES: ${{ inputs.eval_categories }}
@@ -518,7 +518,7 @@ jobs:
 
       - name: "🐍 Compute eval matrix"
         id: set-matrix
-        run: python .github/scripts/models.py eval
+        run: python .github/scripts/evals/models.py eval
         env:
           EVAL_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
 
@@ -558,7 +558,7 @@ jobs:
   # (avoids rate-limit failures). Different providers run in parallel.
   # GHA has no built-in "queue per matrix value", so the partition is encoded
   # as separate jobs whose matrices come from `prep`'s per-provider outputs;
-  # see _EVAL_PROVIDER_OUTPUTS in .github/scripts/models.py for the source set.
+  # see _EVAL_PROVIDER_OUTPUTS in .github/scripts/evals/models.py for the source set.
   #
   # Each per-provider `name:` below is intentionally a static string. GHA does
   # not evaluate `name:` expressions for jobs skipped via `if:`, so any
@@ -853,7 +853,7 @@ jobs:
     if: always()
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "📥 Download eval artifacts"
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -868,7 +868,7 @@ jobs:
           working-directory: libs/evals
 
       - name: "🧾 Write summary"
-        run: uv run --with tabulate python .github/scripts/aggregate_evals.py
+        run: uv run --with tabulate python .github/scripts/evals/aggregate_evals.py
 
       - name: "📦 Install evals package"
         id: install-evals

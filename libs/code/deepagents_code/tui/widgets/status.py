@@ -42,6 +42,9 @@ CONNECTION_STATES = frozenset(get_args(ConnectionState))
 
 Derived from the `Literal` so the two can never drift."""
 
+StatusMessageSource = Literal["agent", "hooks"]
+"""Owners that may write the shared status-message slot."""
+
 
 class ModelLabel(Widget):
     """A label that displays a model name, right-aligned with smart truncation.
@@ -346,6 +349,10 @@ class StatusBar(Horizontal):
         self._spinner = Spinner()
         self._spinner_timer: Timer | None = None
         self._busy_message = ""
+        self._status_by_source: dict[StatusMessageSource, str] = {
+            "agent": "",
+            "hooks": "",
+        }
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301 — Textual widget method
         """Compose the status bar layout.
@@ -506,7 +513,8 @@ class StatusBar(Horizontal):
         # in the footer (mirrors the connection indicator).
         msg_widget.display = bool(new_value)
         if new_value:
-            msg_widget.update(new_value)
+            # Plain Content: hook-configured statusMessage may contain brackets.
+            msg_widget.update(Content(new_value))
             if "thinking" in new_value.lower() or "executing" in new_value.lower():
                 msg_widget.add_class("thinking")
         else:
@@ -691,13 +699,27 @@ class StatusBar(Horizontal):
         """
         self.set_approval_mode("yolo" if enabled else "manual")
 
-    def set_status_message(self, message: str) -> None:
-        """Set the status message.
+    def set_status_message(
+        self,
+        message: str,
+        *,
+        source: StatusMessageSource = "agent",
+    ) -> None:
+        """Set the status message with explicit source ownership.
+
+        Each source stores its own message. Hooks take display priority while
+        they have a non-empty message; clearing hooks restores any stored agent
+        message instead of blanking the slot. Agent writes never erase an active
+        hook status, and hook completion never erases a stored agent status.
 
         Args:
-            message: Status message to display (empty string to clear)
+            message: Status message to display (empty string to clear).
+            source: Subsystem that owns this write (`agent` or `hooks`).
         """
-        self.status_message = message
+        self._status_by_source[source] = message
+        self.status_message = (
+            self._status_by_source["hooks"] or self._status_by_source["agent"]
+        )
 
     _approximate: bool = False
     """Append "+" to the token count to signal that the displayed value is stale.

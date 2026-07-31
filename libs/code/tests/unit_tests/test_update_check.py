@@ -40,6 +40,7 @@ from deepagents_code.update_check import (
     _run_install_subprocess,
     _terminate_install_process,
     _uv_tool_bin_dir,
+    _write_release_prerelease_pins,
     cleanup_update_logs,
     clear_resume_auto_update_deferral,
     clear_startup_auto_update_failure,
@@ -78,6 +79,7 @@ from deepagents_code.update_check import (
     is_installation_stale,
     is_installed_version_at_least,
     is_update_available,
+    is_update_cache_fresh,
     is_valid_extra_name,
     is_valid_package_name,
     mark_auto_update_default_acknowledged,
@@ -93,6 +95,7 @@ from deepagents_code.update_check import (
     prerelease_upgrade_supported,
     release_prerelease_pins,
     release_requires_prereleases,
+    safe_install_extra_recovery_command,
     set_auto_update,
     should_announce_auto_update_default,
     should_defer_startup_auto_update_for_resume,
@@ -354,6 +357,36 @@ class TestGetLastUpdateCheckTime:
         """Invalid numeric `checked_at` values are ignored."""
         cache_file.write_text(json.dumps({"checked_at": checked_at}), encoding="utf-8")
         assert get_last_update_check_time() is None
+
+
+class TestIsUpdateCacheFresh:
+    """Unit tests for `is_update_cache_fresh`."""
+
+    def test_recent_stamp_is_fresh(self) -> None:
+        """A stamp inside the TTL window is fresh."""
+        assert is_update_cache_fresh(time.time() - 60) is True
+
+    def test_expired_stamp_is_not_fresh(self) -> None:
+        """A stamp at or past the TTL boundary is not fresh."""
+        assert is_update_cache_fresh(time.time() - CACHE_TTL) is False
+        assert is_update_cache_fresh(time.time() - CACHE_TTL - 1) is False
+
+    def test_missing_stamp_is_not_fresh(self) -> None:
+        """No recorded check cannot be fresh."""
+        assert is_update_cache_fresh(None) is False
+
+    def test_separates_fresh_cache_from_missing_answer(self, cache_file) -> None:
+        """A pins-only cache is fresh yet yields no cached version answer.
+
+        `_write_release_prerelease_pins` seeds `checked_at` without any version
+        keys, so freshness and "has an answer" genuinely differ and callers
+        cannot infer staleness from a `None` answer.
+        """
+        _write_release_prerelease_pins("1.1.0", ["deepagents==0.7.0a2"])
+
+        assert get_cached_update_available() == (False, None)
+        assert is_update_cache_fresh(get_last_update_check_time()) is True
+        assert cache_file.exists()
 
 
 class TestGetLatestVersion:
@@ -3641,6 +3674,51 @@ class TestInstallExtraCommand:
             install_extra_command("quickjs']; touch /tmp/pwned; '")
         with pytest.raises(ValueError, match="Invalid extra name"):
             install_extras_command(["quickjs", "bad;name"])
+
+
+class TestSafeInstallExtraRecoveryCommand:
+    """`safe_install_extra_recovery_command` guards recovery-hint call sites."""
+
+    def test_returns_recovery_command_on_success(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.update_check.install_extra_recovery_command",
+            lambda _extra: "uv tool install recovery",
+        )
+        assert (
+            safe_install_extra_recovery_command("quickjs", fallback="fallback cmd")
+            == "uv tool install recovery"
+        )
+
+    def test_falls_back_on_value_error(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.update_check.install_extra_recovery_command",
+            MagicMock(side_effect=ValueError("bad extra")),
+        )
+        assert (
+            safe_install_extra_recovery_command("quickjs", fallback="fallback cmd")
+            == "fallback cmd"
+        )
+
+    def test_falls_back_on_introspection_error(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.update_check.install_extra_recovery_command",
+            MagicMock(side_effect=ExtrasIntrospectionError("metadata unreadable")),
+        )
+        assert (
+            safe_install_extra_recovery_command("quickjs", fallback="fallback cmd")
+            == "fallback cmd"
+        )
+
+    def test_falls_back_on_unexpected_error(self, monkeypatch) -> None:
+        """Unexpected recovery errors must not escape the helper."""
+        monkeypatch.setattr(
+            "deepagents_code.update_check.install_extra_recovery_command",
+            MagicMock(side_effect=RuntimeError("metadata broken")),
+        )
+        assert (
+            safe_install_extra_recovery_command("quickjs", fallback="fallback cmd")
+            == "fallback cmd"
+        )
 
 
 class TestEditableExtraHint:

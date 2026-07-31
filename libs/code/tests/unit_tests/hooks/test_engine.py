@@ -15,11 +15,15 @@ from langgraph.types import Command
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks import dispatch_hook
 from deepagents_code.hooks.engine import HookEngine
+from deepagents_code.hooks.envelope import HookEnvelopeAdapter
+from deepagents_code.hooks.migration import migrate_legacy_hooks
 from deepagents_code.hooks.models.adapters import HOOK_WIRE_INPUT_ADAPTER
 from deepagents_code.hooks.models.config import HooksConfig
 from deepagents_code.hooks.models.domain import (
     AgentIdentity,
+    CompactTrigger,
     DcodeNotification,
+    DcodeNotificationKind,
     HookContext,
     HookDiagnostic,
     HookEvent,
@@ -29,6 +33,8 @@ from deepagents_code.hooks.models.domain import (
     PermissionRequestEvent,
     PostToolUseDecision,
     PostToolUseEvent,
+    PreCompactDecision,
+    PreCompactEvent,
     PreToolUseDecision,
     PreToolUseEvent,
     SessionEndCause,
@@ -43,6 +49,8 @@ from deepagents_code.hooks.models.domain import (
     SubagentStopDecision,
     SubagentStopEvent,
     ToolCallData,
+    UserPromptSubmitDecision,
+    UserPromptSubmitEvent,
 )
 from deepagents_code.hooks.models.wire import HookWireOutput
 from deepagents_code.hooks.projection import project_hook_input, serialize_hook_input
@@ -55,6 +63,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from deepagents_code.hooks.models.domain import HookDomainEvent
+    from deepagents_code.hooks.presenter import HookProgress
     from deepagents_code.json_types import JsonObject
 
 
@@ -75,6 +84,42 @@ def _transcript_path(tmp_path: Path) -> Path:
 
 def _agent_transcript_path(tmp_path: Path) -> Path:
     return tmp_path / "agent.jsonl"
+
+
+def test_envelope_adapter_matches_projection_and_reduction(tmp_path: Path) -> None:
+    invocation = _invocation(
+        tmp_path,
+        UserPromptSubmitEvent(
+            event=HookEvent.USER_PROMPT_SUBMIT,
+            prompt="Keep compatibility",
+        ),
+    )
+    transcript_path = _transcript_path(tmp_path)
+    adapter = HookEnvelopeAdapter()
+    result = HandlerResult(
+        handler_id="handler-1",
+        output=HookWireOutput.model_validate(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": "legacy context",
+                }
+            }
+        ),
+    )
+
+    assert adapter.to_wire_input(
+        invocation,
+        transcript_path=transcript_path,
+    ) == project_hook_input(invocation, transcript_path=transcript_path)
+    assert adapter.serialize_input(
+        invocation,
+        transcript_path=transcript_path,
+    ) == serialize_hook_input(invocation, transcript_path=transcript_path)
+    assert adapter.to_domain_decision(invocation, [result]) == reduce_hook_results(
+        invocation,
+        [result],
+    )
 
 
 def _invocation(tmp_path: Path, event: HookDomainEvent) -> HookInvocation:
@@ -165,7 +210,7 @@ def test_snapshot_matches_notification_and_skips_tool_mismatch(tmp_path: Path) -
             {
                 "Notification": [
                     {
-                        "matcher": "permission_.*",
+                        "matcher": "permission_prompt",
                         "hooks": [{"type": "command", "command": "notify"}],
                     }
                 ],
@@ -183,7 +228,7 @@ def test_snapshot_matches_notification_and_skips_tool_mismatch(tmp_path: Path) -
         NotificationEvent(
             event=HookEvent.NOTIFICATION,
             notification=DcodeNotification(
-                type="permission_prompt",
+                type=DcodeNotificationKind.PERMISSION_REQUIRED,
                 message="Approve",
             ),
         ),
@@ -200,6 +245,34 @@ def test_snapshot_matches_notification_and_skips_tool_mismatch(tmp_path: Path) -
         "notify"
     ]
     assert snapshot.match(permission).handlers == ()
+
+
+def test_snapshot_matches_compaction_trigger(tmp_path: Path) -> None:
+    snapshot = HooksSnapshot.from_config(
+        _config(
+            {
+                "PreCompact": [
+                    {
+                        "matcher": "manual",
+                        "hooks": [{"type": "command", "command": "manual"}],
+                    },
+                    {"hooks": [{"type": "command", "command": "all"}]},
+                ]
+            }
+        )
+    )
+    invocation = _invocation(
+        tmp_path,
+        PreCompactEvent(
+            event=HookEvent.PRE_COMPACT,
+            trigger=CompactTrigger.MANUAL,
+        ),
+    )
+
+    assert [item.command for item in snapshot.match(invocation).handlers] == [
+        "manual",
+        "all",
+    ]
 
 
 def test_snapshot_matches_native_tool_names_via_wire_adapter(tmp_path: Path) -> None:
@@ -332,6 +405,16 @@ def test_snapshot_rejects_matcher_for_unmatchable_event() -> None:
             {"hook_event_name": "SessionStart", "source": "resume"},
         ),
         (
+            UserPromptSubmitEvent(
+                event=HookEvent.USER_PROMPT_SUBMIT,
+                prompt="Review this change",
+            ),
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": "Review this change",
+            },
+        ),
+        (
             SessionEndEvent(event=HookEvent.SESSION_END, cause=SessionEndCause.LOGOUT),
             {"hook_event_name": "SessionEnd", "reason": "logout"},
         ),
@@ -346,7 +429,7 @@ def test_snapshot_rejects_matcher_for_unmatchable_event() -> None:
             NotificationEvent(
                 event=HookEvent.NOTIFICATION,
                 notification=DcodeNotification(
-                    type="permission_prompt",
+                    type=DcodeNotificationKind.PERMISSION_REQUIRED,
                     message="Approve",
                 ),
             ),
@@ -363,12 +446,23 @@ def test_snapshot_rejects_matcher_for_unmatchable_event() -> None:
             {"hook_event_name": "PreToolUse", "tool_use_id": "call-1"},
         ),
         (
-            PostToolUseEvent(
-                event=HookEvent.POST_TOOL_USE,
+            PostToolUseEvent.from_tool_result(
+                ToolMessage(content="done", tool_call_id="call-2"),
                 call=ToolCallData(id="call-2", name="Bash", args={}),
-                result=ToolMessage(content="done", tool_call_id="call-2"),
             ),
             {"hook_event_name": "PostToolUse", "tool_use_id": "call-2"},
+        ),
+        (
+            PreCompactEvent(
+                event=HookEvent.PRE_COMPACT,
+                trigger=CompactTrigger.MANUAL,
+                custom_instructions="Keep the plan",
+            ),
+            {
+                "hook_event_name": "PreCompact",
+                "trigger": "manual",
+                "custom_instructions": "Keep the plan",
+            },
         ),
         (
             StopEvent(
@@ -473,10 +567,9 @@ def test_projects_native_tool_names_to_wire(tmp_path: Path) -> None:
 
     invocation = _invocation(
         tmp_path,
-        PostToolUseEvent.model_construct(
-            event=HookEvent.POST_TOOL_USE,
+        PostToolUseEvent.from_tool_result(
+            Command(update={"result": "done"}),
             call=ToolCallData(id="call-1", name="Bash", args={}),
-            result=Command(update={"result": "done"}),
         ),
     )
 
@@ -639,13 +732,12 @@ def test_adapts_native_tool_calls_to_wire(
 def test_serializes_native_tool_message_as_json(tmp_path: Path) -> None:
     invocation = _invocation(
         tmp_path,
-        PostToolUseEvent(
-            event=HookEvent.POST_TOOL_USE,
-            call=ToolCallData(id="call-1", name="Bash", args={}),
-            result=ToolMessage(
+        PostToolUseEvent.from_tool_result(
+            ToolMessage(
                 content=[{"type": "text", "text": "done"}],
                 tool_call_id="call-1",
             ),
+            call=ToolCallData(id="call-1", name="Bash", args={}),
         ),
     )
 
@@ -850,6 +942,184 @@ def test_reducer_merges_session_context_and_common_fields(tmp_path: Path) -> Non
     assert decision.stop_reason == "stop"
 
 
+def test_reducer_blocks_prompt_and_compaction(tmp_path: Path) -> None:
+    prompt = reduce_hook_results(
+        _invocation(
+            tmp_path,
+            UserPromptSubmitEvent(
+                event=HookEvent.USER_PROMPT_SUBMIT,
+                prompt="Deploy",
+            ),
+        ),
+        [
+            HandlerResult(
+                handler_id="prompt-policy",
+                plain_output="Use staging",
+                output=HookWireOutput.model_validate(
+                    {
+                        "decision": "block",
+                        "reason": "Production deploys require approval",
+                        "hookSpecificOutput": {
+                            "hookEventName": "UserPromptSubmit",
+                            "additionalContext": "Check the release checklist",
+                            "suppressOriginalPrompt": True,
+                        },
+                    }
+                ),
+            )
+        ],
+    )
+    compact = reduce_hook_results(
+        _invocation(
+            tmp_path,
+            PreCompactEvent(
+                event=HookEvent.PRE_COMPACT,
+                trigger=CompactTrigger.MANUAL,
+            ),
+        ),
+        [
+            HandlerResult(
+                handler_id="compact-policy",
+                output=HookWireOutput(
+                    decision="block",
+                    reason="Preserve the current context",
+                ),
+            )
+        ],
+    )
+
+    assert isinstance(prompt, UserPromptSubmitDecision)
+    assert prompt.continue_processing is False
+    assert prompt.stop_reason == "Production deploys require approval"
+    assert prompt.context == ["Use staging", "Check the release checklist"]
+    assert prompt.suppress_original_prompt is True
+    assert isinstance(compact, PreCompactDecision)
+    assert compact.continue_processing is False
+    assert compact.stop_reason == "Preserve the current context"
+
+
+def test_reducer_keeps_prompt_suppression_across_handlers(tmp_path: Path) -> None:
+    invocation = _invocation(
+        tmp_path,
+        UserPromptSubmitEvent(
+            event=HookEvent.USER_PROMPT_SUBMIT,
+            prompt="Deploy",
+        ),
+    )
+    outputs = [
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "suppressOriginalPrompt": True,
+            }
+        },
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": "Use staging",
+            }
+        },
+    ]
+
+    decision = reduce_hook_results(
+        invocation,
+        [
+            HandlerResult(
+                handler_id=str(index),
+                output=HookWireOutput.model_validate(output),
+            )
+            for index, output in enumerate(outputs)
+        ],
+    )
+
+    assert isinstance(decision, UserPromptSubmitDecision)
+    assert decision.suppress_original_prompt is True
+    assert decision.context == ["Use staging"]
+
+
+async def test_migrated_legacy_handler_remains_side_effect_only(
+    tmp_path: Path,
+) -> None:
+    payload_path = tmp_path / "legacy payload.json"
+    script = (
+        "import json,pathlib,sys;"
+        "pathlib.Path(sys.argv[1]).write_text(json.dumps(json.load(sys.stdin)));"
+        "print(json.dumps({'decision':'block','reason':'legacy'}));"
+        "sys.exit(2)"
+    )
+    config = migrate_legacy_hooks(
+        [
+            {
+                "command": [sys.executable, "-c", script, str(payload_path)],
+                "events": ["session.start"],
+            }
+        ]
+    )
+    invocation = _invocation(
+        tmp_path,
+        UserPromptSubmitEvent(
+            event=HookEvent.USER_PROMPT_SUBMIT,
+            prompt="Continue",
+        ),
+    )
+
+    decision = await HookEngine(HooksSnapshot.from_config(config)).run(
+        invocation,
+        transcript_path=_transcript_path(tmp_path),
+    )
+
+    assert isinstance(decision, UserPromptSubmitDecision)
+    assert decision.continue_processing is True
+    assert decision.context == []
+    assert json.loads(payload_path.read_text()) == {
+        "event": "session.start",
+        "thread_id": "thread-1",
+    }
+
+
+async def test_migrated_dual_legacy_events_reconstruct_each_payload(
+    tmp_path: Path,
+) -> None:
+    payload_dir = tmp_path / "payloads"
+    payload_dir.mkdir()
+    script = (
+        "import json,pathlib,sys;"
+        "data=json.load(sys.stdin);"
+        "pathlib.Path(sys.argv[1], data['event']+'.json')"
+        ".write_text(json.dumps(data))"
+    )
+    config = migrate_legacy_hooks(
+        [
+            {
+                "command": [sys.executable, "-c", script, str(payload_dir)],
+                "events": ["session.start", "user.prompt"],
+            }
+        ]
+    )
+    invocation = _invocation(
+        tmp_path,
+        UserPromptSubmitEvent(
+            event=HookEvent.USER_PROMPT_SUBMIT,
+            prompt="Continue",
+        ),
+    )
+
+    decision = await HookEngine(HooksSnapshot.from_config(config)).run(
+        invocation,
+        transcript_path=_transcript_path(tmp_path),
+    )
+
+    assert isinstance(decision, UserPromptSubmitDecision)
+    assert decision.continue_processing is True
+    assert json.loads((payload_dir / "session.start.json").read_text()) == {
+        "event": "session.start",
+        "thread_id": "thread-1",
+    }
+    assert json.loads((payload_dir / "user.prompt.json").read_text()) == {
+        "event": "user.prompt",
+    }
+
+
 def test_reducer_permission_precedence_is_deny_ask_allow(tmp_path: Path) -> None:
     invocation = _invocation(
         tmp_path,
@@ -921,10 +1191,9 @@ def test_reducer_covers_event_decision_shapes_and_loop_guards(tmp_path: Path) ->
             },
         ),
         (
-            PostToolUseEvent(
-                event=HookEvent.POST_TOOL_USE,
+            PostToolUseEvent.from_tool_result(
+                ToolMessage(content="done", tool_call_id="call"),
                 call=ToolCallData(id="call", name="Bash", args={}),
-                result=ToolMessage(content="done", tool_call_id="call"),
             ),
             {
                 "decision": "block",
@@ -1293,19 +1562,22 @@ def test_permission_request_diagnoses_all_deferred_fields(tmp_path: Path) -> Non
     }
 
 
-async def test_engine_runs_handlers_concurrently(tmp_path: Path) -> None:
+async def test_engine_reduces_in_config_order_when_completion_is_reversed(
+    tmp_path: Path,
+) -> None:
     first = tmp_path / "first.txt"
     second = tmp_path / "second.txt"
     first_cmd = (
         "import json,pathlib,time; "
-        "time.sleep(0.05); "
+        "time.sleep(0.08); "
         f"pathlib.Path({str(first)!r}).write_text('first'); "
         "print(json.dumps({'continue': False, 'stopReason': 'stop'}))"
     )
     second_cmd = (
-        "import pathlib,time; "
-        "time.sleep(0.05); "
-        f"pathlib.Path({str(second)!r}).write_text('second')"
+        "import json,pathlib,time; "
+        "time.sleep(0.01); "
+        f"pathlib.Path({str(second)!r}).write_text('second'); "
+        "print(json.dumps({'continue': False, 'stopReason': 'later'}))"
     )
     snapshot = HooksSnapshot.from_config(
         _config(
@@ -1347,6 +1619,45 @@ async def test_engine_runs_handlers_concurrently(tmp_path: Path) -> None:
     assert decision.stop_reason == "stop"
     assert first.read_text() == "first"
     assert second.read_text() == "second"
+
+
+async def test_engine_reports_configured_handler_status(tmp_path: Path) -> None:
+    snapshot = HooksSnapshot.from_config(
+        _config(
+            {
+                "SessionStart": [
+                    {
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": "unused",
+                                "argv": [sys.executable, "-c", "pass"],
+                                "statusMessage": "Loading project context",
+                            }
+                        ]
+                    }
+                ]
+            }
+        )
+    )
+    progress: list[HookProgress] = []
+
+    await HookEngine(snapshot).run(
+        _invocation(
+            tmp_path,
+            SessionStartEvent(
+                event=HookEvent.SESSION_START,
+                cause=SessionStartCause.STARTUP,
+            ),
+        ),
+        transcript_path=_transcript_path(tmp_path),
+        on_progress=progress.append,
+    )
+
+    assert [(update.active, update.message) for update in progress] == [
+        (True, "Loading project context"),
+        (False, "Loading project context"),
+    ]
 
 
 async def test_engine_uses_captured_snapshot(tmp_path: Path) -> None:

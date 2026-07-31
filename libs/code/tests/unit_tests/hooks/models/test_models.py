@@ -49,6 +49,11 @@ _WIRE_INPUTS = [
     },
     {
         **_COMMON_WIRE_INPUT,
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "Review this change",
+    },
+    {
+        **_COMMON_WIRE_INPUT,
         "hook_event_name": "SessionEnd",
         "reason": "other",
     },
@@ -79,6 +84,12 @@ _WIRE_INPUTS = [
         "tool_response": {"stdout": "/workspace"},
         "tool_use_id": "call-2",
         "duration_ms": 12,
+    },
+    {
+        **_COMMON_WIRE_INPUT,
+        "hook_event_name": "PreCompact",
+        "trigger": "manual",
+        "custom_instructions": "Keep the implementation plan",
     },
     {
         **_COMMON_WIRE_INPUT,
@@ -143,6 +154,11 @@ _SPECIFIC_OUTPUTS = [
         "hookEventName": "SessionStart",
         "additionalContext": "Use the project environment",
         "watchPaths": ["/workspace/src"],
+    },
+    {
+        "hookEventName": "UserPromptSubmit",
+        "additionalContext": "Apply the repository conventions",
+        "suppressOriginalPrompt": True,
     },
     {
         "hookEventName": "PreToolUse",
@@ -271,16 +287,14 @@ def test_domain_event_union_selects_event_model() -> None:
     assert event.event is HookEvent.NOTIFICATION
 
 
-def test_post_tool_use_accepts_native_tool_message() -> None:
-    result = ToolMessage(content="done", tool_call_id="call-1")
-
-    event = PostToolUseEvent(
-        event=HookEvent.POST_TOOL_USE,
+def test_post_tool_use_accepts_json_tool_result() -> None:
+    event = PostToolUseEvent.from_tool_result(
+        ToolMessage(content="done", tool_call_id="call-1"),
         call=ToolCallData(id="call-1", name="write_file", args={}),
-        result=result,
     )
 
-    assert event.result is result
+    assert isinstance(event.result, dict)
+    assert event.result.get("content") == "done"
 
 
 def test_domain_models_reject_unknown_fields() -> None:
@@ -347,6 +361,7 @@ def test_hooks_config_validates_event_keys_and_aliases() -> None:
             mode="json",
             by_alias=True,
             exclude_none=True,
+            exclude_defaults=True,
         )
         == payload
     )

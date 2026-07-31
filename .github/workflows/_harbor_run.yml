@@ -123,7 +123,7 @@ jobs:
       aggregate_matrix: ${{ steps.agg-matrix.outputs.aggregate_matrix }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🔀 Expand matrix by shard"
         id: shard-matrix
@@ -141,7 +141,7 @@ jobs:
           MODEL_MATRIX: '{"include":[{"model":"${{ inputs.model }}"}]}'
           N_SHARDS: ${{ inputs.n_shards || '1' }}
           N_TASKS: ${{ inputs.n_tasks }}
-        run: python .github/scripts/shard_matrix.py
+        run: python .github/scripts/evals/shard_matrix.py
 
       - name: "🧮 Resolve matrix + parallel pool"
         id: resolve-matrix
@@ -361,7 +361,7 @@ jobs:
           echo "All required credentials present for $HARBOR_SANDBOX_ENV/$HARBOR_MODEL"
 
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -450,11 +450,11 @@ jobs:
         # provider (for local `langgraph dev`); a single job needs just one, so
         # drop the rest before Harbor builds the agent env. In-place edit of the
         # ephemeral checkout only — the committed file is untouched. Pure stdlib,
-        # unit-tested in .github/scripts/test_prune_agent_deps.py. Both paths are
+        # unit-tested in .github/scripts/tests/evals/test_prune_agent_deps.py. Both paths are
         # absolute ($GITHUB_WORKSPACE) so this step doesn't depend on the job's
         # `working-directory: libs/evals` default.
         run: |
-          python3 "$GITHUB_WORKSPACE/.github/scripts/prune_agent_deps.py" \
+          python3 "$GITHUB_WORKSPACE/.github/scripts/evals/prune_agent_deps.py" \
             "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
 
       - name: "🗂️ Populate local dataset corpus"
@@ -660,7 +660,7 @@ jobs:
             # match fails loudly); select_shard_tasks then applies the n_tasks cap
             # and the i % n_shards partition of Harbor's _filter_task_ids subset.
             # task_display_name mirrors each task id's get_name() (see
-            # .github/scripts/shard_matrix.py + tests).
+            # .github/scripts/evals/shard_matrix.py + tests).
             if ! [[ "$HARBOR_SHARD_INDEX" =~ ^[0-9]+$ ]] || [ "$HARBOR_SHARD_INDEX" -ge "$HARBOR_N_SHARDS" ]; then
               echo "::error::Invalid shard index '$HARBOR_SHARD_INDEX' for $HARBOR_N_SHARDS shards"; exit 1
             fi
@@ -672,7 +672,9 @@ jobs:
           from harbor.registry.client.package import PackageDatasetClient
 
           # shard_matrix.py is pure stdlib; import it from the checkout (repo root).
-          sys.path.insert(0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts"))
+          sys.path.insert(
+              0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts", "evals")
+          )
           from shard_matrix import select_shard_tasks, task_display_name
 
           ds = os.environ["HARBOR_DATASET"]
@@ -773,27 +775,22 @@ jobs:
           # graph=...`. Callers already validate, so this is defense-in-depth;
           # AGENT_IMPL is passed via env, never interpolated into the validator.
           AGENT_IMPL="$HARBOR_AGENT_IMPL" python3 \
-            "$GITHUB_WORKSPACE/.github/scripts/validate_agent_graph.py" \
+            "$GITHUB_WORKSPACE/.github/scripts/evals/validate_agent_graph.py" \
             "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
           HARBOR_AGENT_GRAPH="$HARBOR_AGENT_IMPL"
-          experiment_model=$(printf '%s' "$HARBOR_MODEL" | tr '/:' '--' | tr -c '[:alnum:]._-' '-')
-          experiment_agent=$(printf '%s' "$HARBOR_AGENT_IMPL" | tr -c '[:alnum:]._-' '-')
-          experiment_branch=$(printf '%s' "$HARBOR_BRANCH" | tr -c '[:alnum:]._-' '-')
-          experiment_branch="${experiment_branch}-$(printf '%s' "$HARBOR_BRANCH" | sha256sum | cut -c1-8)"
-          experiment_category=$(printf '%s' "$HARBOR_CATEGORY" | tr -c '[:alnum:]._-' '-')
           # Precedence: explicit override > tau3-subset name hook > the value
           # resolved above (local-path-aware `local/...` or the registry ref).
           # The override uses a dedicated var the tau3 step never writes, so it
           # can't be clobbered.
           HARBOR_LANGSMITH_DATASET="${HARBOR_LS_DATASET_OVERRIDE:-${HARBOR_LANGSMITH_DATASET_NAME:-$HARBOR_LANGSMITH_DATASET}}"
-          # Scope the experiment name by category so each category's dataset gets
-          # its own experiment: one model spans three datasets, and a single
-          # experiment name shared across them double-counts runs in LangSmith.
-          # Shards within a category still share this name, so Harbor's LangSmith
-          # plugin reuses one session per category and converges them; the run id +
-          # attempt keep a later dispatch or re-run separate. HARBOR_LANGSMITH_DATASET
-          # is already set (local-path-aware) in the dataset-resolution block above.
-          HARBOR_LANGSMITH_EXPERIMENT="deepagents-harbor-${experiment_branch}-${experiment_agent}-${experiment_model}${experiment_category:+-$experiment_category}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          # Experiment (LangSmith project) name from the shared helper — the single
+          # source of truth. prep computes the same names to hand the usage collector,
+          # and combine recomputes them to map usage back, so they can't drift. Scoped
+          # by category (one model spans three datasets) and by run id/attempt (keep
+          # re-runs separate); shards of a category share it, so harbor's stock plugin
+          # (>=harbor-langsmith 0.3.0) converges them into one experiment. Reads
+          # HARBOR_MODEL/BRANCH/AGENT_IMPL/CATEGORY + GITHUB_RUN_ID/ATTEMPT from the env.
+          HARBOR_LANGSMITH_EXPERIMENT="$(python3 "$GITHUB_WORKSPACE/.github/scripts/evals/experiment_name.py")"
           echo "HARBOR_AGENT_GRAPH=$HARBOR_AGENT_GRAPH" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_DATASET=$HARBOR_LANGSMITH_DATASET" >> "$GITHUB_ENV"
           echo "HARBOR_LANGSMITH_EXPERIMENT=$HARBOR_LANGSMITH_EXPERIMENT" >> "$GITHUB_ENV"
@@ -884,6 +881,20 @@ jobs:
           PY
           )
           echo "job_dir=$latest_job" >> "$GITHUB_OUTPUT"
+          actual_retries=$(python - "$latest_job/result.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          try:
+              result = json.loads(Path(sys.argv[1]).read_text())
+              retries = (result.get("stats") or {}).get("n_retries")
+          except (OSError, ValueError, AttributeError):
+              retries = None
+          print(retries if type(retries) is int and retries >= 0 else "unknown")
+          PY
+          )
+          echo "actual_retries=$actual_retries" >> "$GITHUB_OUTPUT"
 
       - name: "📝 Write workflow summary"
         if: always()
@@ -892,6 +903,7 @@ jobs:
           HARBOR_AGENT_GRAPH: ${{ env.HARBOR_AGENT_GRAPH }}
           HARBOR_LANGSMITH_DATASET: ${{ env.HARBOR_LANGSMITH_DATASET }}
           HARBOR_LANGSMITH_EXPERIMENT: ${{ env.HARBOR_LANGSMITH_EXPERIMENT }}
+          ACTUAL_RETRIES: ${{ steps.latest-job.outputs.actual_retries }}
           LATEST_JOB_OUTCOME: ${{ steps.latest-job.outcome }}
           SHARD_EMPTY: ${{ env.SHARD_EMPTY }}
         run: |
@@ -916,6 +928,13 @@ jobs:
               echo "- Included tasks: all"
             fi
             echo "- Rollouts per task: ${HARBOR_ROLLOUTS_PER_TASK}"
+            echo "- Configured retries per failed trial (--max-retries): ${HARBOR_N_RETRIES}"
+            echo "- Agent timeout multiplier: ${HARBOR_AGENT_TIMEOUT_MULTIPLIER}"
+            if [ "$SHARD_EMPTY" = "true" ]; then
+              echo "- Actual retries: 0"
+            else
+              echo "- Actual retries: ${ACTUAL_RETRIES:-unknown}"
+            fi
             echo "- Agent: Harbor LangGraph ${HARBOR_AGENT_GRAPH}"
             echo "- LangSmith dataset: ${HARBOR_LANGSMITH_DATASET}"
             echo "- LangSmith experiment: ${HARBOR_LANGSMITH_EXPERIMENT}"
@@ -1015,7 +1034,7 @@ jobs:
       HARBOR_RESULT: ${{ needs.harbor.result }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🔖 Compute leaf slug"
         id: slug
@@ -1160,7 +1179,7 @@ jobs:
           fi
           # --model/--category are recorded authoritatively in summary.json
           # (model is otherwise null when every trial errored).
-          python3 .github/scripts/aggregate_shards.py _shards \
+          python3 .github/scripts/evals/aggregate_shards.py _shards \
             --rollouts "$ROLLOUTS" \
             "${expected_shards_args[@]}" \
             --dataset "$DATASET" \

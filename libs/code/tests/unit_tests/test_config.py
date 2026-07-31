@@ -5013,6 +5013,28 @@ max_tokens = 1024
         # Config kwarg preserved when not overridden
         assert call_kwargs["max_tokens"] == 1024
 
+    @pytest.mark.parametrize(
+        ("extra_kwargs", "expected"),
+        [(None, 128000), ({"max_tokens": 64000}, 64000)],
+    )
+    def test_opus_5_profile_sets_max_tokens_and_preserves_override(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        extra_kwargs: dict[str, int] | None,
+        expected: int,
+    ) -> None:
+        """Opus 5 uses its upstream output limit unless the user overrides it."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+        model_config.clear_caches()
+
+        with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
+            result = create_model("anthropic:claude-opus-5", extra_kwargs=extra_kwargs)
+
+        assert result.model.model_dump()["max_tokens"] == expected
+
     @patch("langchain.chat_models.init_chat_model")
     def test_none_extra_kwargs_is_noop(self, mock_init_chat_model: Mock) -> None:
         """extra_kwargs=None does not affect behavior."""
@@ -5217,7 +5239,9 @@ class TestCreateModelViaInitImportError:
             ) as exc_info,
         ):
             _create_model_via_init("claude-sonnet-4-5", "google_vertexai", {})
-        mock_extra_for_package.assert_called_once_with("langchain-google-vertexai")
+        mock_extra_for_package.assert_called_once_with(
+            "langchain-google-vertexai", "deepagents-code"
+        )
         assert exc_info.value.provider == "google_vertexai"
         assert exc_info.value.package == "langchain-google-vertexai"
 

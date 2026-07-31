@@ -902,6 +902,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
         connecting: bool = False,
         pending_reconnect: bool = False,
         on_toggle_disable: Callable[[str], Awaitable[None]] | None = None,
+        on_close: Callable[[], bool] | None = None,
     ) -> None:
         """Initialize the MCP viewer screen.
 
@@ -921,12 +922,17 @@ class MCPViewerScreen(ModalScreen[str | None]):
                 expected to call `refresh_server_info` on this screen so
                 the user sees the updated status without a screen swap.
                 When `None`, `F2` is a no-op.
+            on_close: Callback invoked before Escape dismisses the viewer.
+                Return `True` when the callback replaced the viewer with a
+                follow-up screen and dismissal should be skipped. `None`
+                keeps the normal close behavior.
         """
         super().__init__()
         self._server_info = server_info
         self._connecting = connecting
         self._pending_reconnect = pending_reconnect
         self._on_toggle_disable = on_toggle_disable
+        self._on_close = on_close
         # All cursor-navigable rows in render order: server headers + tool
         # items intermixed. `_selected_index` indexes into this list.
         self._row_widgets: list[MCPToolItem | MCPServerHeaderItem] = []
@@ -1603,6 +1609,8 @@ class MCPViewerScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         """Close the viewer without selecting a server to log into."""
+        if self._on_close is not None and self._on_close():
+            return
         self.dismiss(None)
 
     def action_reconnect(self) -> None:

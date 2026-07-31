@@ -7,12 +7,22 @@ this module focuses on the in-app slash dispatch in `DeepAgentsApp`.
 from __future__ import annotations
 
 import sys
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    # `conftest`'s fixture protocols cannot be imported here: `tool.ty`
+    # `extra-paths` puts `libs/deepagents` on the path too, so
+    # `tests.unit_tests.conftest` is ambiguous across packages.
+    DrainModalCommands = Callable[..., Awaitable[None]]
+    WaitForModal = Callable[..., Awaitable[None]]
 
 MANUAL_EXTRA_COMMAND = (
     "curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_EXTRAS=quickjs bash"
@@ -486,7 +496,9 @@ async def test_install_slash_editable_install_refuses() -> None:
         assert any("Editable install detected" in str(m._content) for m in app_msgs)
 
 
-async def test_install_slash_package_confirm_runs() -> None:
+async def test_install_slash_package_confirm_runs(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
     """`--package` without `--force` prompts; confirming runs the install."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -503,6 +515,7 @@ async def test_install_slash_package_confirm_runs() -> None:
             ) as prompt,
         ):
             await app._handle_command("/install langchain-custom --package")
+            await drain_modal_commands(app)
             await pilot.pause()
         prompt.assert_awaited_once()
         perform_mock.assert_awaited_once()
@@ -512,7 +525,9 @@ async def test_install_slash_package_confirm_runs() -> None:
         )
 
 
-async def test_install_slash_package_cancel_aborts() -> None:
+async def test_install_slash_package_cancel_aborts(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
     """Cancelling the prompt must not call `perform_install_package`."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -528,6 +543,7 @@ async def test_install_slash_package_cancel_aborts() -> None:
             ) as prompt,
         ):
             await app._handle_command("/install langchain-custom --package")
+            await drain_modal_commands(app)
             await pilot.pause()
         prompt.assert_awaited_once()
         perform_mock.assert_not_awaited()
@@ -538,7 +554,9 @@ async def test_install_slash_package_cancel_aborts() -> None:
         assert "uv tool" not in joined
 
 
-async def test_install_slash_package_prompt_timeout_aborts() -> None:
+async def test_install_slash_package_prompt_timeout_aborts(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
     """A timed-out prompt aborts the install and reports the timeout."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -556,6 +574,7 @@ async def test_install_slash_package_prompt_timeout_aborts() -> None:
             ) as prompt,
         ):
             await app._handle_command("/install langchain-custom --package")
+            await drain_modal_commands(app)
             await pilot.pause()
         prompt.assert_awaited_once()
         perform_mock.assert_not_awaited()
@@ -566,7 +585,9 @@ async def test_install_slash_package_prompt_timeout_aborts() -> None:
         assert "Cancelled install" not in joined
 
 
-async def test_install_slash_package_prompt_mount_failure_aborts() -> None:
+async def test_install_slash_package_prompt_mount_failure_aborts(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
     """A modal that fails to mount aborts the install and surfaces an error."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -584,12 +605,73 @@ async def test_install_slash_package_prompt_mount_failure_aborts() -> None:
             ) as prompt,
         ):
             await app._handle_command("/install langchain-custom --package")
+            await drain_modal_commands(app)
             await pilot.pause()
         prompt.assert_awaited_once()
         perform_mock.assert_not_awaited()
         err_msgs = [str(m._content) for m in app.query(ErrorMessage)]
         joined = "\n".join(err_msgs)
         assert "Could not show the install confirmation" in joined
+
+
+async def test_install_package_prompt_responsive_through_message_pump(
+    drain_modal_commands: DrainModalCommands,
+    wait_for_modal: WaitForModal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The `--package` confirmation must accept keys via the real submit path.
+
+    Regression test: `/install <pkg> --package` is dispatched from the App's
+    `on_chat_input_submitted` handler, which is awaited inline on the App message
+    pump. Previously the confirmation was `await`ed in that chain, so the pump
+    stayed blocked while the modal was open and the modal never received the
+    Enter/Esc key events it needs to resolve — it appeared frozen until the
+    confirmation helper's watchdog fired. The confirmation now runs off the pump
+    (`_schedule_off_message_pump`), so submitting through the real
+    `ChatInput.Submitted` path and pressing Enter must resolve the modal and run
+    the install rather than wedging the UI.
+
+    The watchdog is shortened here so a regression fails on a real assertion in
+    seconds. At its production length the blocked pump also stalls `run_test()`
+    teardown, and the failure surfaces as a bare pytest-timeout that says
+    nothing about the cause.
+    """
+    from deepagents_code import app as app_module
+    from deepagents_code.tui.widgets.chat_input import ChatInput
+    from deepagents_code.tui.widgets.install_confirm import InstallPackageConfirmScreen
+
+    monkeypatch.setattr(app_module, "_MODAL_WATCHDOG_TIMEOUT_SECONDS", 2.0)
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Idle session so the submission is processed instead of queued.
+        app._agent_running = False
+        app._connecting = False
+        app._startup_sequence_running = False
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as perform_mock,
+        ):
+            # Submit through the message pump, exactly as the ChatInput widget
+            # would, rather than awaiting `_handle_command` directly (which would
+            # not exercise the pump-blocking path).
+            assert app._chat_input is not None
+            app._chat_input.post_message(
+                ChatInput.Submitted("/install langchain-custom --package", "command"),
+            )
+            await wait_for_modal(pilot, InstallPackageConfirmScreen, present=True)
+
+            # With the pump free, Enter must reach the modal and resolve it.
+            await pilot.press("enter")
+            await wait_for_modal(pilot, InstallPackageConfirmScreen, present=False)
+            await drain_modal_commands(app)
+
+        perform_mock.assert_awaited_once()
 
 
 async def test_install_slash_package_force_skips_prompt() -> None:
@@ -655,6 +737,63 @@ async def test_install_slash_package_with_force_runs() -> None:
             if "Installed package 'langchain-custom'" in str(m._content)
         )
         assert "/restart" in str(success._content)
+
+
+async def test_install_package_continuation_surfaces_unexpected_error(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
+    """A non-`OSError` raise in the detached install still reaches the user.
+
+    The confirmation and the install run in a task detached from
+    `_handle_install_package`, so nothing in the command's call chain catches an
+    exception from them. Without the continuation's own handler the failure would
+    reach only `_log_task_exception` — a `logger.warning` the interactive user
+    never sees — leaving the mounted "Installing package..." line as the last
+    thing shown and the install apparently still running.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch.object(
+                app, "_confirm_install_package", new=AsyncMock(return_value=True)
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_package",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("subprocess machinery exploded"),
+            ),
+        ):
+            await app._handle_command("/install langchain-custom --package")
+            await drain_modal_commands(app)
+            await pilot.pause()
+
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "Install failed: RuntimeError" in joined
+        assert "subprocess machinery exploded" in joined
+
+
+async def test_perform_package_install_import_failure_surfaces_error() -> None:
+    """A lazy-import failure inside the install is reported, not raised.
+
+    `/install --package` rewrites dcode's own package tree, so this import can
+    hit a half-written module on a second install in the same session. It is
+    exercised directly rather than through `/install`, because breaking
+    `update_check` in `sys.modules` also breaks the earlier import in
+    `_handle_install_package`, whose own handler would return before this code
+    ran. Without the guard here the raise would reach `_fatal_error` on the
+    `--force` path and `_log_task_exception` on the detached path.
+    """
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch.dict(sys.modules, {"deepagents_code.update_check": None}):
+            await app._perform_package_install("langchain-custom")
+            await pilot.pause()
+
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "Install failed" in joined
 
 
 async def test_install_slash_package_failure_renders_log() -> None:
@@ -1103,6 +1242,64 @@ async def test_offer_restart_survives_missing_restart_prompt_module() -> None:
         # The modal was never mounted and no restart was attempted.
         push.assert_not_awaited()
         restart.assert_not_awaited()
+
+
+async def test_install_restart_prompt_responsive_through_message_pump() -> None:
+    """The post-install restart modal must accept keys via the real submit path.
+
+    Regression test: `/install <extra>` is dispatched from the App's
+    `on_chat_input_submitted` handler, which is awaited inline on the App
+    message pump. Previously the restart offer was `await`ed in that chain, so
+    the pump stayed blocked while the modal was open and the modal never
+    received the Enter/Esc key events it needs to resolve — it appeared frozen.
+    The offer now runs off the pump (`_schedule_restart_offer`), so submitting
+    through the real `ChatInput.Submitted` path and pressing Enter must resolve
+    the modal and trigger the restart rather than wedging the UI.
+    """
+    from deepagents_code.tui.widgets.chat_input import ChatInput
+    from deepagents_code.tui.widgets.restart_prompt import RestartPromptScreen
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Pretend dcode owns an idle server so the one-keypress prompt is offered.
+        app._server_proc = MagicMock()
+        app._server_kwargs = {"model_name": "fireworks:fake"}
+        app._agent_running = False
+        app._connecting = False
+        restart = AsyncMock(return_value=True)
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ),
+            patch.object(app, "_restart_after_install", new=restart),
+        ):
+            # Submit through the message pump, exactly as the ChatInput widget
+            # would, rather than awaiting `_handle_command` directly (which would
+            # not exercise the pump-blocking path).
+            assert app._chat_input is not None
+            app._chat_input.post_message(
+                ChatInput.Submitted("/install fireworks", "command")
+            )
+            # Wait for the detached offer to mount the modal.
+            for _ in range(50):
+                await pilot.pause()
+                if isinstance(app.screen, RestartPromptScreen):
+                    break
+            assert isinstance(app.screen, RestartPromptScreen)
+
+            # With the pump free, Enter must reach the modal and resolve it.
+            # Before the fix this raised `WaitForScreenTimeout`.
+            await pilot.press("enter")
+            for _ in range(50):
+                await pilot.pause()
+                if not isinstance(app.screen, RestartPromptScreen):
+                    break
+        assert not isinstance(app.screen, RestartPromptScreen)
+        restart.assert_awaited_once_with("fireworks")
 
 
 def test_ensure_restart_prompt_loaded_caches_module() -> None:

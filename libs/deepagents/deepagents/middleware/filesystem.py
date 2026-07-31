@@ -47,6 +47,7 @@ from deepagents.backends.protocol import (
     GlobResult,
     GrepMatch,
     GrepResult,
+    LsResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -342,15 +343,109 @@ def _wildcard_delete_overlap(pattern: str, anchor: str, target: str) -> bool:
     )
 
 
-def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -> list[str]:
+def _delete_target_may_have_descendants(backend: BackendProtocol, target: str, *, permissions_configured: bool) -> bool:
+    """Return whether `_find_delete_deny_patterns` should use the conservative recursive check for `target`.
+
+    Skips the `ls` probe entirely when no permission rules are configured
+    (nothing to resolve either way) or when the backend doesn't implement
+    `ls` (falls back to the pre-existing conservative behavior).
+
+    Args:
+        backend: Backend the delete will run against.
+        target: Absolute, validated path being deleted.
+        permissions_configured: Whether any `FilesystemPermission` rules exist.
+
+    Returns:
+        `True` unless permissions are configured and the backend confirms
+            `target` is a leaf with nothing beneath it.
+    """
+    if not permissions_configured:
+        return False
+    try:
+        return _delete_target_has_descendants(backend.ls(target))
+    except NotImplementedError:
+        return True
+
+
+async def _adelete_target_may_have_descendants(backend: BackendProtocol, target: str, *, permissions_configured: bool) -> bool:
+    """Async counterpart to `_delete_target_may_have_descendants`."""
+    if not permissions_configured:
+        return False
+    try:
+        return _delete_target_has_descendants(await backend.als(target))
+    except NotImplementedError:
+        return True
+
+
+def _delete_target_has_descendants(ls_result: LsResult) -> bool:
+    """Return whether a delete target could have entries nested under it.
+
+    A confirmed leaf -- a plain file (`ls` reporting `not_a_directory`) or an
+    existing location with no children -- can't have anything recursively
+    swept out from under a denied sibling, so `_find_delete_deny_patterns` can
+    resolve it with plain first-match-wins ordering instead of the
+    conservative recursive-overlap check. Any other outcome (a real
+    directory with children, or an error that doesn't confirm a leaf, e.g.
+    `path_not_found` or a backend being unavailable) is treated as "may have
+    descendants" so the conservative check still applies.
+
+    Args:
+        ls_result: Result of listing the delete target.
+
+    Returns:
+        `True` unless the target is a confirmed leaf with nothing beneath it.
+    """
+    if ls_result.entries:
+        return True
+    if ls_result.error is None:
+        return False
+    return "not_a_directory" not in ls_result.error
+
+
+def _find_delete_deny_patterns_for_leaf(rules: list[FilesystemPermission], target: str) -> list[str]:
+    """Resolve delete permission for a confirmed leaf using first-match-wins ordering.
+
+    Mirrors `_check_fs_permission`'s ordering, but also reports which
+    pattern(s) matched so the delete tool's error message can cite them.
+
+    Args:
+        rules: Filesystem permission rules.
+        target: Absolute, validated path being deleted.
+
+    Returns:
+        The matched deny patterns from the first matching rule, or an empty
+            list if the first matching rule allows the delete (or nothing matches).
+    """
+    for rule in rules:
+        if "write" not in rule.operations:
+            continue
+        matched = [pattern for pattern in rule.paths if wcglob.globmatch(target, pattern, flags=_FS_WCMATCH_FLAGS)]
+        if not matched:
+            continue
+        return matched if rule.mode == "deny" else []
+    return []
+
+
+def _find_delete_deny_patterns(
+    rules: list[FilesystemPermission],
+    target: str,
+    *,
+    has_descendants: bool = True,
+) -> list[str]:
     """Return deny-write patterns that block deleting `target`.
 
-    A recursive delete removes `target` and all descendants, so a deny-write
-    pattern blocks the operation when it could match `target` or anything in
-    its subtree. Sibling file globs that cannot match anything inside the
-    deleted subtree (e.g. deny `/work/*.log` when deleting `/work/notes.txt`)
-    do not block. The check is based only on permission rules and returns all
-    matching patterns.
+    A recursive delete removes `target` and all descendants, so when
+    `has_descendants` is `True` a deny-write pattern blocks the operation
+    when it could match `target` or anything in its subtree, regardless of
+    rule order -- an earlier allow rule can't guarantee every descendant is
+    safe, since a later, more specific deny could still apply to one of them.
+    Sibling file globs that cannot match anything inside the deleted subtree
+    (e.g. deny `/work/*.log` when deleting `/work/notes.txt`) do not block.
+
+    When `has_descendants` is `False` (a confirmed leaf, see
+    `_delete_target_has_descendants`), there's no subtree to protect, so
+    `target` is resolved the same way `write_file`/`edit_file` resolve
+    permissions: the first rule (in declaration order) that matches wins.
 
     Literal (wildcard-free) deny patterns use a subtree-overlap check: a deny
     on a directory blocks deleting anything inside it and blocks deleting an
@@ -363,10 +458,15 @@ def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -
     Args:
         rules: Filesystem permission rules.
         target: Absolute, validated path being deleted.
+        has_descendants: Whether `target` may have entries nested under it.
+            Pass `False` only once the backend has confirmed it's a leaf.
 
     Returns:
         Matching deny-write patterns, or an empty list if the delete is allowed.
     """
+    if not has_descendants:
+        return _find_delete_deny_patterns_for_leaf(rules, target)
+
     denying: list[str] = []
     seen: set[str] = set()
     for rule in rules:
@@ -1965,7 +2065,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path)
+            has_descendants = _delete_target_may_have_descendants(resolved_backend, validated_path, permissions_configured=bool(self._permissions))
+            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path, has_descendants=has_descendants)
             if denying_patterns:
                 return ToolMessage(
                     content=f"Error: permission denied for write on {validated_path} (matches deny rule(s): {', '.join(denying_patterns)})",
@@ -2004,7 +2105,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path)
+            has_descendants = await _adelete_target_may_have_descendants(
+                resolved_backend, validated_path, permissions_configured=bool(self._permissions)
+            )
+            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path, has_descendants=has_descendants)
             if denying_patterns:
                 return ToolMessage(
                     content=f"Error: permission denied for write on {validated_path} (matches deny rule(s): {', '.join(denying_patterns)})",

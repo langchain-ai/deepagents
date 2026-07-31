@@ -148,6 +148,7 @@ class AskUserMenu(Container):
             InlinePromptCompletion()
         )
         self._question_widgets: list[_QuestionWidget] = []
+        self._help_widget: Static | None = None
 
     def set_future(self, future: asyncio.Future[AskUserWidgetResult]) -> None:
         """Set the future to resolve when user answers."""
@@ -173,18 +174,60 @@ class AskUserMenu(Container):
                 yield qw
 
         yield Static("")
+        self._help_widget = Static(
+            self._render_help(),
+            classes="inline-prompt-help ask-user-help",
+        )
+        yield self._help_widget
+
+    def _render_help(self) -> str:
+        """Build the footer hint text for the current menu state.
+
+        The `Ctrl+X external editor` hint is included only while one of this
+        menu's text areas holds focus, matching the routing in
+        `App.action_open_editor`.
+
+        Returns:
+            The bullet-joined footer hint string.
+        """
+        glyphs = get_glyphs()
         parts = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} Select",
             "Enter to continue",
             newline_hint(),
         ]
+        if self._show_editor_hint():
+            parts.append("Ctrl+X external editor")
         if len(self._questions) > 1:
             parts.append("Tab/Shift+Tab switch question")
         parts.append("Esc to cancel")
-        yield Static(
-            f" {glyphs.bullet} ".join(parts),
-            classes="inline-prompt-help ask-user-help",
+        return f" {glyphs.bullet} ".join(parts)
+
+    def _show_editor_hint(self) -> bool:
+        """Whether `ctrl+x` would currently open one of this menu's text areas.
+
+        `App.action_open_editor` routes `ctrl+x` to an ask-user text area only
+        when one is focused, and otherwise falls through to the chat input.
+        A visible-but-unfocused field therefore must not advertise the
+        shortcut: pressing it would open the user's chat draft instead. The
+        conditions here mirror `App._focused_ask_user_editor`.
+
+        Returns:
+            `True` if a text area belonging to this menu holds focus.
+        """
+        focused = self.app.focused
+        return (
+            isinstance(focused, AskUserTextArea)
+            and self in focused.ancestors
+            and focused.is_attached
+            and focused.display
+            and focused.visible
         )
+
+    def _update_help(self) -> None:
+        """Refresh the footer hint after a focus or field-visibility change."""
+        if self._help_widget is not None:
+            self._help_widget.update(self._render_help())
 
     async def on_mount(self) -> None:  # noqa: D102
         apply_inline_prompt_border(self)
@@ -295,6 +338,15 @@ class AskUserMenu(Container):
             node = node.parent
         if node is not None and node._index != self._current_question:
             self._highlight_question(node._index)
+        # Every focus change inside the menu can flip whether ctrl+x routes
+        # here, including clicks that land on a question container rather than
+        # its text area, so refresh regardless of which question is active.
+        self._update_help()
+
+    def on_descendant_blur(self, event: events.DescendantBlur) -> None:
+        """Retract the `Ctrl+X` hint when focus leaves a text area."""
+        del event  # Unused: the hint is recomputed from current focus.
+        self._update_help()
 
     def on_blur(self, event: events.Blur) -> None:  # noqa: PLR6301  # Textual event handler
         """Prevent blur from propagating and dismissing the menu."""

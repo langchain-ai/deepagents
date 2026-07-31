@@ -29967,10 +29967,17 @@ class TestMCPLoginCommand:
                 await pilot.pause()
                 assert app._pending_mcp_reconnect is True
 
+                screen_changes: list[object] = []
+                app.screen_change_signal.subscribe(
+                    app,
+                    screen_changes.append,
+                    immediate=True,
+                )
                 await pilot.press("escape")
                 for _ in range(3):
                     await pilot.pause()
                 assert isinstance(app.screen, MCPDisableReconnectPromptScreen)
+                assert screen_changes == [app.screen]
 
                 await pilot.press("enter")
                 for _ in range(3):

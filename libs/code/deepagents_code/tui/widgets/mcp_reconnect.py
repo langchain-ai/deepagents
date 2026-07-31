@@ -24,7 +24,7 @@ from textual.widgets import Static
 from deepagents_code.config import get_glyphs
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from textual.app import ComposeResult
 
@@ -178,7 +178,12 @@ class MCPDisableReconnectPromptScreen(_ReconnectPromptScreen):
     treated as "later".
     """
 
-    def __init__(self, server_names: Sequence[str]) -> None:
+    def __init__(
+        self,
+        server_names: Sequence[str],
+        *,
+        on_choice: Callable[[ReconnectChoice], None] | None = None,
+    ) -> None:
         """Initialize the prompt.
 
         Args:
@@ -186,6 +191,10 @@ class MCPDisableReconnectPromptScreen(_ReconnectPromptScreen):
                 waiting on a reconnect. Must be non-empty — the caller
                 only opens this modal when at least one toggle is
                 pending, and the body would otherwise name no server.
+            on_choice: Optional callback invoked for an explicit reconnect
+                or defer choice before the screen dismisses. This supports
+                an atomic `switch_screen` transition from the MCP viewer,
+                whose original result callback is removed by the switch.
         """
         super().__init__(
             title="Apply MCP server changes?",
@@ -194,6 +203,19 @@ class MCPDisableReconnectPromptScreen(_ReconnectPromptScreen):
                 names=", ".join(server_names),
             ),
         )
+        self._on_choice = on_choice
+
+    def action_reconnect(self) -> None:
+        """Report and dismiss with `"reconnect"`."""
+        if self._on_choice is not None:
+            self._on_choice("reconnect")
+        super().action_reconnect()
+
+    def action_later(self) -> None:
+        """Report and dismiss with `"later"`."""
+        if self._on_choice is not None:
+            self._on_choice("later")
+        super().action_later()
 
 
 class MCPReconnectForceConfirmScreen(ModalScreen[bool]):

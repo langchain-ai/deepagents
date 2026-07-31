@@ -3,6 +3,7 @@
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code.goal_state_notice import (
+    EMBEDDED_TEXT_LIMIT,
     GOAL_CONTROL_MESSAGE_SOURCE,
     GOAL_MESSAGE_SCHEMA_VERSION,
     GOAL_STATE_MESSAGE_SOURCE,
@@ -13,10 +14,12 @@ from deepagents_code.goal_state_notice import (
     is_conversation_control_message,
     is_goal_internal_message,
     is_internal_message,
+    latest_goal_state_message_index,
     latest_goal_state_notice,
     latest_human_is_unsaved_goal_continuation,
     project_goal_state,
     serialize_goal_state,
+    summarization_cutoff,
 )
 
 
@@ -58,20 +61,164 @@ def test_canonical_notice_format_and_metadata() -> None:
 
 
 def test_inactive_notice_prohibits_goal_tool_calls() -> None:
+    # The paused/complete states carry a rubric and a status note so the
+    # "must not leak" assertions below have something to leak: `project_goal_state`
+    # suppresses a non-actionable goal's own rubric, and `build_goal_state_notice`
+    # withholds its status note alongside the objective.
     for state in (
         {},
-        {"_goal_objective": "ship it", "_goal_status": "paused"},
-        {"_goal_objective": "ship it", "_goal_status": "complete"},
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": "paused",
+            "_goal_rubric": "tests pass",
+            "_goal_status_note": "waiting on docs",
+        },
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": "complete",
+            "_goal_rubric": "tests pass",
+            "_goal_status_note": "waiting on docs",
+        },
     ):
         content = build_goal_state_notice(state).content
         assert "do not let any prior goal drive work" in content
         assert "do not call goal or rubric tools" in content
         assert "Use get_goal" not in content
         assert "Use get_rubric" not in content
-        # An inactive goal's objective and criteria must not leak into the notice.
+        # An inactive goal's objective, criteria, and note must not leak.
         assert "ship it" not in content
+        assert "tests pass" not in content
+        assert "waiting on docs" not in content
         assert "<goal_objective>" not in content
         assert "<acceptance_criteria>" not in content
+        assert "<goal_status_note>" not in content
+
+
+def test_actionable_goal_without_rubric_promises_no_grading() -> None:
+    """Automatic grading is only claimed when acceptance criteria exist."""
+    notice = build_goal_state_notice(
+        {"_goal_objective": "ship it", "_goal_status": "active"}, event_id="x"
+    )
+
+    assert "- Rubric active: no" in notice.content
+    assert "Work toward the goal" in notice.content
+    assert "graded automatically" not in notice.content
+    assert "<acceptance_criteria>" not in notice.content
+
+
+def test_blocked_notice_embeds_the_models_own_status_note() -> None:
+    """A blocked goal stays actionable, so its recorded blocker is readable."""
+    notice = build_goal_state_notice(
+        {
+            "_goal_objective": "ship it",
+            "_goal_status": "blocked",
+            "_goal_status_note": "waiting on <API> docs",
+        },
+        event_id="x",
+    )
+
+    assert (
+        "<goal_status_note>waiting on &lt;API&gt; docs</goal_status_note>"
+        in notice.content
+    )
+
+
+def test_embedded_text_is_truncated_with_an_explicit_marker() -> None:
+    """Oversized objective/criteria are bounded and marked, not silently cut."""
+    objective = "A" * (EMBEDDED_TEXT_LIMIT + 500)
+    criteria = "B" * (EMBEDDED_TEXT_LIMIT + 700)
+
+    content = build_goal_state_notice(
+        {
+            "_goal_objective": objective,
+            "_goal_status": "active",
+            "_goal_rubric": criteria,
+        },
+        event_id="x",
+    ).content
+
+    for text in (objective, criteria):
+        assert (
+            f"[truncated to fit context after {EMBEDDED_TEXT_LIMIT} of "
+            f"{len(text)} characters; the full text still applies]" in content
+        )
+    assert "A" * (EMBEDDED_TEXT_LIMIT + 1) not in content
+    assert "B" * (EMBEDDED_TEXT_LIMIT + 1) not in content
+
+
+def test_embedded_text_at_the_limit_is_not_truncated() -> None:
+    """The cap is inclusive, so exactly-at-limit text renders whole."""
+    objective = "A" * EMBEDDED_TEXT_LIMIT
+
+    content = build_goal_state_notice(
+        {"_goal_objective": objective, "_goal_status": "active"}, event_id="x"
+    ).content
+
+    assert f"<goal_objective>{objective}</goal_objective>" in content
+    assert "[truncated:" not in content
+
+
+def test_fingerprint_tracks_objective_and_criteria_text() -> None:
+    """Editing the injected text must re-fingerprint, or the notice goes stale.
+
+    The notice body is the model's only channel to the objective and criteria, so
+    a fingerprint blind to a text-only edit would leave it working from the old
+    text with no signal anything changed.
+    """
+    base = {
+        "_goal_objective": "ship it",
+        "_goal_status": "active",
+        "_goal_rubric": "tests pass",
+    }
+
+    assert goal_state_fingerprint(base) != goal_state_fingerprint(
+        {**base, "_goal_objective": "ship something else"}
+    )
+    assert goal_state_fingerprint(base) != goal_state_fingerprint(
+        {**base, "_goal_rubric": "docs updated"}
+    )
+    assert goal_state_fingerprint(base) != goal_state_fingerprint(
+        {**base, "_goal_status_note": "waiting on docs"}
+    )
+
+
+def test_schema_version_is_past_the_read_tool_era() -> None:
+    """Version 1 notices named `get_goal`/`get_rubric` and must stay superseded.
+
+    Pinning the floor (rather than the exact value) keeps a future bump free while
+    making a revert to 1 — which would silently re-trust those notices on resume —
+    fail here instead of in a resumed session.
+    """
+    assert GOAL_MESSAGE_SCHEMA_VERSION >= 2
+
+
+def test_v1_schema_notice_is_not_authoritative() -> None:
+    """A notice from a prior schema version stops counting as authoritative.
+
+    Version 1 notices told the model to call `get_goal`/`get_rubric`, which no
+    longer exist, so they must be superseded rather than trusted on resume.
+    """
+    state = {"_goal_objective": "ship it", "_goal_status": "active"}
+    stale = build_goal_state_notice(state, event_id="old-v1")
+    stale.additional_kwargs = {
+        **stale.additional_kwargs,
+        "goal_message_schema_version": GOAL_MESSAGE_SCHEMA_VERSION - 1,
+    }
+
+    assert goal_state_notice_info(stale) is None
+    assert latest_goal_state_notice([stale]) is None
+    # The message is still recognizable as a goal-state notice, which is what
+    # lets the middleware tell "stale notice" apart from "no notice ever".
+    assert latest_goal_state_message_index([stale]) == 0
+
+
+def test_summarization_cutoff_degrades_to_zero_on_malformed_events() -> None:
+    """A malformed event must read as "nothing trimmed", never raise."""
+    assert summarization_cutoff({"cutoff_index": 7}) == 7
+    assert summarization_cutoff(None) == 0
+    assert summarization_cutoff({}) == 0
+    assert summarization_cutoff({"cutoff_index": "7"}) == 0
+    assert summarization_cutoff("not-an-event") == 0
 
 
 def test_active_notice_embeds_escaped_objective_and_criteria() -> None:
@@ -101,10 +248,36 @@ def test_rubric_only_notice_embeds_criteria_without_objective() -> None:
 
     assert "- Goal status: not set" in notice.content
     assert "- Rubric active: yes" in notice.content
+    assert "Follow the active rubric while handling the user's request" in (
+        notice.content
+    )
+    assert "Work toward the goal" not in notice.content
     assert "<goal_objective>" not in notice.content
     assert "<acceptance_criteria>include a marker</acceptance_criteria>" in (
         notice.content
     )
+
+
+def test_one_shot_rubric_does_not_direct_toward_inactive_goal() -> None:
+    """A one-shot rubric supersedes paused or completed goal guidance."""
+    for status in ("paused", "complete"):
+        notice = build_goal_state_notice(
+            {
+                "_goal_objective": "ship it",
+                "_goal_status": status,
+                "rubric": "include a marker",
+            },
+            event_id="x",
+        )
+
+        assert "Follow the active rubric while handling the user's request" in (
+            notice.content
+        )
+        assert "Work toward the goal" not in notice.content
+        assert "<goal_objective>" not in notice.content
+        assert "<acceptance_criteria>include a marker</acceptance_criteria>" in (
+            notice.content
+        )
 
 
 def test_blocked_notice_keeps_criteria_and_prior_blocker() -> None:

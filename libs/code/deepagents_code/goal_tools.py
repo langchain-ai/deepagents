@@ -26,10 +26,6 @@ from langgraph.types import Command
 from pydantic import Field
 from typing_extensions import override
 
-# Runtime (not TYPE_CHECKING) imports. `GoalRubricChannels` supplies the shared
-# `PrivateStateAttr`-marked goal/rubric channels that `GoalToolState` extends, so
-# the markers are declared once (see that class). `coerce_goal_status` is used at
-# runtime by `_update_goal_command` to reject writes against a paused/complete goal.
 from deepagents_code.goal_state_notice import (
     build_goal_state_notice,
     goal_state_fingerprint,
@@ -37,7 +33,12 @@ from deepagents_code.goal_state_notice import (
     latest_goal_state_message_index,
     latest_goal_state_notice,
     latest_human_is_unsaved_goal_continuation,
+    summarization_cutoff,
 )
+
+# Runtime (not TYPE_CHECKING) import. `GoalRubricChannels` looks type-only but is
+# a base class of `GoalToolState`, supplying the shared `PrivateStateAttr`-marked
+# goal/rubric channels so the markers are declared once (see that class).
 from deepagents_code.resume_state import (
     GoalRubricChannels,
     coerce_goal_status,
@@ -51,16 +52,33 @@ if TYPE_CHECKING:
 GOAL_TOOL_NAMES = frozenset({"update_goal"})
 """Tool names used by behavioral absence gates and middleware contract tests."""
 
+REMOVED_GOAL_TOOL_NAMES = frozenset({"get_goal", "get_rubric"})
+"""Goal/rubric read tools that were removed from the agent tool surface.
+
+Kept named on purpose. A resumed thread can still hold a schema-version-1
+goal-state notice whose text tells the model to call these, so the behavioral
+evals assert it does not, and the middleware contract test asserts they are never
+re-registered. Without this set, shrinking `GOAL_TOOL_NAMES` to just
+`update_goal` would have left neither check in place.
+"""
+
 
 def _goal_state_notice_for(
     state: dict[str, Any],
     messages: Sequence[object],
+    *,
+    cutoff: int = 0,
 ) -> HumanMessage | None:
     """Build a notice when effective history lacks current goal/rubric state.
 
     Args:
         state: Authoritative middleware state.
         messages: Messages visible at the next model boundary.
+        cutoff: Summarization cutoff index that `messages` is measured against.
+            Pass this only when `messages` is the full persisted list, where a
+            notice below the cutoff is present but invisible to the model. The
+            default of `0` suits an already-trimmed request window, whose indices
+            are relative to that window rather than to persisted history.
 
     Returns:
         Current notice to append, or `None` when history is already authoritative.
@@ -74,6 +92,7 @@ def _goal_state_notice_for(
         latest is not None
         and latest[0] == latest_candidate
         and latest[1]["state_fingerprint"] == fingerprint
+        and latest[0] >= cutoff
     ):
         return None
     if latest_candidate is None and not has_goal_or_rubric_state(state):
@@ -123,13 +142,16 @@ def _update_goal_command(
             the TUI to resolve once the rubric verdict lands, rather than
             committing the status directly; `blocked` commits immediately.
 
-            When no goal is set or `note` is empty, nothing is committed
-            and the `ToolMessage` explains what the model must do instead.
+            Nothing is committed in three cases, and the `ToolMessage` explains
+            what the model must do instead: no goal is set, the goal is paused or
+            already complete, or `note` is empty.
     """
-    # Enforced preconditions here are only: an active goal exists and `note` is
-    # non-empty. Completion is staged because `RubricMiddleware` records its
-    # final verdict after the model stops making tool calls; the TUI resolves
-    # the staged request during post-turn checkpoint sync.
+    # Enforced preconditions here are: an objective exists, its status is neither
+    # paused nor complete, and `note` is non-empty. Note the objective check alone
+    # does not imply actionability — a paused goal has an objective too, so the
+    # status check is separate. Completion is staged because `RubricMiddleware`
+    # records its final verdict after the model stops making tool calls; the TUI
+    # resolves the staged request during post-turn checkpoint sync.
     objective = state.get("_goal_objective")
     if not isinstance(objective, str) or not objective:
         return Command(
@@ -211,11 +233,12 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
 
     The model reads goal awareness from the injected goal-state notice rather
     than a read tool: `before_model` persists a fresh notice into checkpointed
-    history when the latest one no longer matches authoritative state, and
-    `wrap_model_call` re-pins the notice into the (post-summarization) request
-    when the persisted one is out of view. The notice carries the objective and
-    acceptance criteria when actionable, so no `get_goal`/`get_rubric` lookup is
-    needed. Only the write-side `update_goal` tool is registered.
+    history when the latest one no longer matches authoritative state (or has
+    scrolled below the summarization cutoff), and `wrap_model_call` re-pins the
+    notice into the (post-summarization) request when the persisted one is out of
+    view. The notice carries the objective and status note for an actionable goal
+    and the acceptance criteria for an active rubric, so no `get_goal`/`get_rubric`
+    lookup is needed. Only the write-side `update_goal` tool is registered.
     """
 
     state_schema = GoalToolState
@@ -249,12 +272,14 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         ) -> Command[Any]:
             """Update a goal only when the latest state notice says it is actionable.
 
-            Read the current objective and acceptance criteria from the latest
-            goal/rubric state notice in context; there is no read tool for them.
-            Use `blocked` when you cannot proceed without user input. Goals complete
-            automatically after a satisfied goal-backed grading turn, so `complete`
-            is optional and only stages its evidence for that result. Do not create,
-            pause, resume, clear, or replace goals — those are user-controlled.
+            Read the current objective and any acceptance criteria from the latest
+            goal/rubric state notice in context, or — right after a goal whose save
+            failed — from the objective quoted in the accompanying goal continuation
+            message. There is no read tool for them. Use `blocked` when you cannot
+            proceed without user input. Goals complete automatically after a
+            satisfied goal-backed grading turn, so `complete` is optional and only
+            stages its evidence for that result. Do not create, pause, resume,
+            clear, or replace goals — those are user-controlled.
 
             Returns:
                 Command that updates goal status and returns a tool message.
@@ -279,7 +304,16 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
         values = cast("dict[str, Any]", state)
         raw_messages = values.get("messages", [])
         messages = list(raw_messages) if isinstance(raw_messages, list) else []
-        notice = _goal_state_notice_for(values, messages)
+        # `state["messages"]` is the full persisted list, so a notice summarization
+        # has already scrolled past is still found here. Discount it against the
+        # cutoff, matching the client-side predicate in `app.py`, so the durable
+        # write happens instead of leaving the transient re-pin in `wrap_model_call`
+        # to carry the objective on every subsequent turn.
+        notice = _goal_state_notice_for(
+            values,
+            messages,
+            cutoff=summarization_cutoff(values.get("_summarization_event")),
+        )
         return {"messages": [notice]} if notice is not None else None
 
     @override

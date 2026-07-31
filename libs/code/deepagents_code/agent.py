@@ -2555,9 +2555,9 @@ def create_cli_agent(
     # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata
     # is written by `ConfigurableModelMiddleware` from the actual completed model
     # request. The CLI reads them back from `state_values` on thread resume.
-    # Goal tools: exposes the constrained write-only `update_goal` tool and
+    # Goal tools: exposes the constrained write-side `update_goal` tool and
     # maintains goal-state notices that carry the objective and acceptance
-    # criteria, so the model needs no goal/rubric read tool.
+    # criteria while they are live, so the model needs no goal/rubric read tool.
     from deepagents_code.goal_tools import GoalToolsMiddleware
     from deepagents_code.resume_state import ResumeStateMiddleware
 

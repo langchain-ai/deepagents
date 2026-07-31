@@ -12,7 +12,7 @@ from langgraph.store.memory import InMemoryStore
 from deepagents.backends import StateBackend, StoreBackend
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import EditResult, ExecuteResponse, GlobResult, LsResult, ReadResult, SandboxBackendProtocol, WriteResult
+from deepagents.backends.protocol import EditResult, ExecuteResponse, GlobResult, ReadResult, SandboxBackendProtocol, WriteResult
 from deepagents.backends.utils import _glob_anchor, _paths_overlap
 from deepagents.graph import create_deep_agent
 from deepagents.middleware import filesystem as filesystem_module
@@ -22,7 +22,6 @@ from deepagents.middleware.filesystem import (
     FilesystemPermission,
     _all_paths_scoped_to_routes,
     _check_fs_permission,
-    _delete_target_has_descendants,
     _filter_paths_by_permission,
     _find_delete_deny_patterns,
 )
@@ -255,6 +254,28 @@ class TestRecursiveDeletePermissions:
         assert "permission denied for write" in result
         assert (tmp_path / "work" / "a.txt").exists()
 
+    def test_empty_directory_delete_still_uses_conservative_ancestor_check(self, tmp_path):
+        """Only plain files get first-match-wins ordering -- an empty directory
+        still goes through the conservative check, so a narrower allow further
+        down in declaration order doesn't override a catch-all deny.
+
+        Unlike `test_exact_file_delete_allowed_under_workspace_isolation`,
+        `/work/empty` is a directory (albeit with no children), so it's
+        resolved the same way a directory with children would be.
+        """
+        backend = self._fs_backend(tmp_path)
+        (tmp_path / "work" / "empty").mkdir()
+        rules = [
+            FilesystemPermission(operations=["read", "write"], paths=["/work/**"], mode="allow"),
+            FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),
+        ]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work/empty"}, rules, backend=backend)
+
+        assert "permission denied for write" in result
+        assert (tmp_path / "work" / "empty").exists()
+
     async def test_exact_file_delete_allowed_under_workspace_isolation_async(self, tmp_path):
         backend = self._fs_backend(tmp_path)
         rules = [
@@ -438,25 +459,6 @@ class TestFindDeleteDenyPatternsExactFile:
     def test_interrupt_rule_is_not_a_denial(self):
         rules = [FilesystemPermission(operations=["write"], paths=["/work/**"], mode="interrupt")]
         assert _find_delete_deny_patterns(rules, "/work/a.txt", has_descendants=False) == []
-
-
-class TestDeleteTargetHasDescendants:
-    """`_delete_target_has_descendants` gates which delete permission check applies."""
-
-    def test_confirmed_leaf_file_has_no_descendants(self):
-        ls_result = LsResult(entries=None, error="Path '/work/a.txt': not_a_directory")
-        assert _delete_target_has_descendants(ls_result) is False
-
-    def test_empty_location_has_no_descendants(self):
-        assert _delete_target_has_descendants(LsResult(entries=[])) is False
-
-    def test_directory_with_children_has_descendants(self):
-        ls_result = LsResult(entries=[{"path": "/work/a.txt", "is_dir": False}])
-        assert _delete_target_has_descendants(ls_result) is True
-
-    def test_unresolved_error_is_treated_conservatively(self):
-        ls_result = LsResult(entries=None, error="Path '/work': path_not_found")
-        assert _delete_target_has_descendants(ls_result) is True
 
 
 class TestFilesystemPermission:

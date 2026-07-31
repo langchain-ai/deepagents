@@ -160,6 +160,9 @@ class TestOffloadGuards:
 
             before = _state_values(_make_dict_messages(3))
             after = _state_values(_make_dict_messages(3))
+            after["_session_cost_usd"] = 0.75
+            app._set_session_cost(0.5)
+            app._add_provisional_cost(0.75)
 
             with (
                 patch.object(
@@ -182,6 +185,10 @@ class TestOffloadGuards:
             assert any(
                 "the conversation is already compact" in str(w._content) for w in msgs
             )
+            # The graph prices the compaction run's own model call, so the
+            # committed total replaces the client's provisional estimate.
+            assert app._session_cost_usd == pytest.approx(0.75)
+            assert app._displayed_cost_usd == pytest.approx(0.75)
 
     async def test_empty_state_shows_error(self) -> None:
         """Should show error when state has no values."""
@@ -1713,6 +1720,262 @@ class TestDriveServerSideCompaction:
                 assert isinstance(context, dict)
                 normalized = {str(key): value for key, value in context.items()}
                 assert {key: normalized[key] for key in expected} == expected
+
+    async def test_records_summary_and_trailing_usage_in_cost_breakdown(self) -> None:
+        """Manual offload usage reconciles by type and serving model."""
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        from deepagents_code.client.remote_client import RemoteAgent
+
+        class _Interrupt:
+            id = "interrupt-1"
+            value = {  # noqa: RUF012  # test stub; immutability irrelevant
+                "action_requests": [
+                    {"name": "compact_conversation", "args": {"force": True}}
+                ]
+            }
+
+        summary = AIMessage(
+            content="summary",
+            id="summary-request",
+            usage_metadata={
+                "input_tokens": 200,
+                "output_tokens": 20,
+                "total_tokens": 220,
+            },
+            response_metadata={
+                "model_name": "summary-model",
+                "model_provider": "anthropic",
+            },
+        )
+        trailing = AIMessage(
+            content="done",
+            id="trailing-request",
+            usage_metadata={
+                "input_tokens": 100,
+                "output_tokens": 10,
+                "total_tokens": 110,
+            },
+            response_metadata={
+                "model_name": "active-model",
+                "model_provider": "openai",
+            },
+        )
+
+        async def _astream(  # noqa: ANN202, RUF029
+            stream_input: object, **_kwargs: object
+        ):
+            if stream_input is None:
+                yield ((), "updates", {"__interrupt__": [_Interrupt()]})
+                return
+            yield (
+                (),
+                "messages",
+                (summary, {"lc_source": "summarization"}),
+            )
+            yield (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="Conversation compacted. Summarized 2 messages.",
+                        tool_call_id="compact-call",
+                    ),
+                    {},
+                ),
+            )
+            yield ((), "messages", (trailing, {}))
+
+        agent = MagicMock(spec=RemoteAgent)
+        agent.aensure_thread = AsyncMock()
+        agent.aupdate_state = AsyncMock()
+        agent.astream = _astream
+        app = DeepAgentsApp()
+        app._model_override = "openai:active-model"
+        app._set_session_cost(0.50)
+        for stats in (app._thread_stats, app._session_stats):
+            stats.record_request(
+                "active-model",
+                1_000,
+                100,
+                provider="openai",
+                cost_usd=0.50,
+            )
+
+        def _cost(
+            _usage: object,
+            model_name: str,
+            _provider: str = "",
+        ) -> float:
+            return {"summary-model": 0.20, "active-model": 0.05}[model_name]
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = agent
+            app._lc_thread_id = "test-thread"
+            with patch(
+                "deepagents_code.cost_tracking.estimate_cost", side_effect=_cost
+            ):
+                result = await app._drive_server_side_compaction(
+                    {"configurable": {"thread_id": "test-thread"}}
+                )
+            await pilot.pause()
+
+        assert result is None
+        assert app._thread_stats.request_count == 3
+        assert app._session_stats.request_count == 3
+        assert app._thread_stats.per_kind["assistant"].cost_usd == pytest.approx(0.50)
+        assert app._thread_stats.per_kind["offload"].request_count == 2
+        assert app._thread_stats.per_kind["offload"].input_tokens == 300
+        assert app._thread_stats.per_kind["offload"].output_tokens == 30
+        assert app._thread_stats.per_kind["offload"].cost_usd == pytest.approx(0.25)
+        assert app._thread_stats.per_model[
+            "anthropic", "summary-model"
+        ].cost_usd == pytest.approx(0.20)
+        assert app._thread_stats.per_model[
+            "openai", "active-model"
+        ].cost_usd == pytest.approx(0.55)
+
+        # The estimates keep the running total aligned until the graph-owned
+        # checkpoint total arrives and clears the provisional amount.
+        assert app._session_cost_usd == pytest.approx(0.50)
+        assert app._displayed_cost_usd == pytest.approx(0.75)
+        app._set_session_cost(0.75)
+        assert app._displayed_cost_usd == pytest.approx(0.75)
+        summary_text = app._format_cost_summary()
+        assert "Estimated thread cost: $0.75" in summary_text
+        assert "Assistant: $0.50" in summary_text
+        assert "Offload: $0.25" in summary_text
+        assert "anthropic:summary-model: $0.20" in summary_text
+        assert "openai:active-model: $0.55" in summary_text
+        assert "detailed usage metadata was unavailable" not in summary_text
+
+    async def test_resume_replay_records_usage_once(self) -> None:
+        """A usage message replayed after an interrupt is not double-counted."""
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        from deepagents_code.client.remote_client import RemoteAgent
+
+        class _Interrupt:
+            id = "interrupt-1"
+            value = {  # noqa: RUF012  # test stub; immutability irrelevant
+                "action_requests": [
+                    {"name": "compact_conversation", "args": {"force": True}}
+                ]
+            }
+
+        usage_message = AIMessage(
+            content="summary",
+            id="replayed-request",
+            usage_metadata={
+                "input_tokens": 200,
+                "output_tokens": 20,
+                "total_tokens": 220,
+            },
+            response_metadata={"model_name": "summary-model"},
+        )
+
+        async def _astream(  # noqa: ANN202, RUF029
+            stream_input: object, **_kwargs: object
+        ):
+            yield (
+                (),
+                "messages",
+                (usage_message, {"lc_source": "summarization"}),
+            )
+            if stream_input is None:
+                yield ((), "updates", {"__interrupt__": [_Interrupt()]})
+            else:
+                yield (
+                    (),
+                    "messages",
+                    (ToolMessage(content="Nothing to compact", tool_call_id="x"), {}),
+                )
+
+        agent = MagicMock(spec=RemoteAgent)
+        agent.aensure_thread = AsyncMock()
+        agent.aupdate_state = AsyncMock()
+        agent.astream = _astream
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = agent
+            app._lc_thread_id = "test-thread"
+            with patch(
+                "deepagents_code.cost_tracking.estimate_cost", return_value=0.20
+            ):
+                result = await app._drive_server_side_compaction(
+                    {"configurable": {"thread_id": "test-thread"}}
+                )
+            await pilot.pause()
+
+        assert result is None
+        assert app._thread_stats.request_count == 1
+        assert app._session_stats.request_count == 1
+        assert app._thread_stats.per_kind["offload"].cost_usd == pytest.approx(0.20)
+        assert app._session_cost_usd == pytest.approx(0.0)
+        assert app._displayed_cost_usd == pytest.approx(0.20)
+        summary = app._format_cost_summary()
+        assert "Estimated thread cost: $0.20" in summary
+        assert "Offload: $0.20" in summary
+
+    async def test_stream_failure_keeps_usage_recorded_once(self) -> None:
+        """Usage completed before a stream failure is still merged once."""
+        from langchain_core.messages import AIMessage
+
+        from deepagents_code.client.remote_client import RemoteAgent
+
+        usage_message = AIMessage(
+            content="summary",
+            id="failed-request",
+            usage_metadata={
+                "input_tokens": 200,
+                "output_tokens": 20,
+                "total_tokens": 220,
+            },
+            response_metadata={"model_name": "summary-model"},
+        )
+
+        async def _astream(  # noqa: ANN202, RUF029
+            _stream_input: object, **_kwargs: object
+        ):
+            for _ in range(2):
+                yield (
+                    (),
+                    "messages",
+                    (usage_message, {"lc_source": "summarization"}),
+                )
+            msg = "stream failed"
+            raise RuntimeError(msg)
+
+        agent = MagicMock(spec=RemoteAgent)
+        agent.aensure_thread = AsyncMock()
+        agent.aupdate_state = AsyncMock()
+        agent.astream = _astream
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = agent
+            app._lc_thread_id = "test-thread"
+            with (
+                patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.20),
+                pytest.raises(RuntimeError, match="stream failed"),
+            ):
+                await app._drive_server_side_compaction(
+                    {"configurable": {"thread_id": "test-thread"}}
+                )
+            await pilot.pause()
+
+        assert app._thread_stats.request_count == 1
+        assert app._session_stats.request_count == 1
+        assert app._thread_stats.per_kind["offload"].cost_usd == pytest.approx(0.20)
+        assert app._session_cost_usd == pytest.approx(0.0)
+        assert app._displayed_cost_usd == pytest.approx(0.20)
+        summary = app._format_cost_summary()
+        assert "Estimated thread cost: $0.20" in summary
+        assert "Offload: $0.20" in summary
 
     async def test_fulfills_precompact_before_manual_approval(self) -> None:
         """A precompact hook is fulfilled before the compaction approval."""

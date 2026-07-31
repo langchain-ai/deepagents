@@ -8571,11 +8571,6 @@ class DeepAgentsApp(App):
             value: The message text to process.
             mode: The input mode that determines message routing.
         """
-        if mode != "normal":
-            # Only the agent path consumes the draft's media (and clears the
-            # tracker once it has). Releasing here keeps a payload detached by
-            # this draft from re-attaching in a later, unrelated one.
-            self._image_tracker.release_detached()
         if mode == "shell_incognito":
             await self._handle_shell_command(
                 self._strip_mode_value(value, "!!", "!", mode),

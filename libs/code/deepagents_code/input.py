@@ -6,7 +6,7 @@ import shlex
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Literal, TypeVar
+from typing import Generic, Literal, TypeVar
 from urllib.parse import unquote, urlparse
 
 from rich.markup import escape as escape_markup
@@ -91,15 +91,19 @@ _WINDOWS_DRIVE_PATH_PATTERN = re.compile(r"^[A-Za-z]:[\\/]")
 _MediaItemT = TypeVar("_MediaItemT", ImageData, VideoData)
 """Media payload type for the tracker's partition helpers.
 
-Value-restricted rather than bound so `_partition_media` cannot mix images and
-videos in a single call.
+Value-restricted rather than bound so `_MediaItemT` can never solve to
+`ImageData | VideoData`: a single heterogeneous list is rejected outright. Note
+that a mismatched *pair* of lists (images passed alongside videos) is already
+rejected by `list` invariance, with or without the value restriction.
 """
 
 MAX_DETACHED_MEDIA = 10
 """Cap on the number of detached media items retained per kind for undo.
 
 Guards against many small pastes; `MAX_DETACHED_MEDIA_BYTES` is the binding
-limit for large ones. Both caps apply per kind and drop the oldest entries first.
+limit for large ones. Both caps apply per kind and drop the oldest entries first,
+stopping at the first payload that does not fit rather than best-fitting smaller
+ones around it.
 """
 
 MAX_DETACHED_MEDIA_BYTES = 32 * 1024 * 1024
@@ -112,6 +116,29 @@ drops oldest-first until it fits. The newest item is always retained even when
 it alone exceeds the budget, so undoing the most recent delete never loses its
 payload.
 """
+
+
+@dataclass(frozen=True)
+class _MediaPartition(Generic[_MediaItemT]):
+    """Result of re-splitting one kind's media against the current draft.
+
+    Named rather than a tuple because three of the four fields are same-typed
+    lists: positionally, `attached` and `detached` are interchangeable, and
+    swapping them would send the model the payloads the user deleted while
+    suppressing the ones they kept — a mistake no type checker can catch.
+    """
+
+    attached: list[_MediaItemT]
+    """Media bound to a placeholder present in the current text."""
+
+    detached: list[_MediaItemT]
+    """Media retained for undo after its placeholder left the text."""
+
+    evicted: list[_MediaItemT]
+    """Detached payloads dropped to stay within the pool caps."""
+
+    evicted_edits: dict[str, object]
+    """Detaching edit identity per evicted token, for stranded reporting."""
 
 
 @dataclass(frozen=True)
@@ -145,12 +172,20 @@ class MediaTracker:
         self.next_video_id: int = 1
         # Media whose placeholder was removed from the draft but whose payload is
         # retained so an undo (ctrl+z) of that edit re-attaches it. Whole-draft
-        # clears do not come through here — `ChatInput.discard_text` suppresses
-        # the sync entirely via `_skip_media_sync_events`.
+        # clears do not come through here: both `ChatInput.discard_text` and
+        # `_submit_value` bump `_skip_media_sync_events` so the sync is skipped.
+        # History recall (`set_text_from_history`) *does* reach this, because its
+        # `_skip_history_change_events` guard is checked after the media sync.
         self._detached_images: list[ImageData] = []
         self._detached_videos: list[VideoData] = []
-        # Tokens whose payload the pool caps dropped.
-        self._evicted_placeholders: set[str] = set()
+        # Identity markers for the concrete TextArea edit batches that detached
+        # each payload. The marker, rather than token text, proves that a later
+        # undo reverses the edit which removed this exact attachment occurrence.
+        self._detached_image_edits: dict[str, object] = {}
+        self._detached_video_edits: dict[str, object] = {}
+        # Identity markers whose payload the pool caps dropped, retained so
+        # undoing that exact batch can report its media is no longer available.
+        self._evicted_placeholder_edits: dict[str, object] = {}
         # Evicted tokens an undo has since restored as text. They look attached
         # but carry nothing, so they are reported to the user and then drained.
         self._stranded_placeholders: set[str] = set()
@@ -260,7 +295,9 @@ class MediaTracker:
         """
         self._detached_images.clear()
         self._detached_videos.clear()
-        self._evicted_placeholders.clear()
+        self._detached_image_edits.clear()
+        self._detached_video_edits.clear()
+        self._evicted_placeholder_edits.clear()
         self._stranded_placeholders.clear()
 
     def take_stranded_placeholders(self) -> list[str]:
@@ -271,16 +308,38 @@ class MediaTracker:
         typed is ordinary text and must not raise a warning.
 
         Returns:
-            Sorted stranded placeholder tokens, or an empty list if none.
+            Stranded placeholder tokens in ascending ID order, or an empty list
+            if none. Ordered numerically rather than lexicographically so a
+            warning listing `[image 2]` and `[image 10]` reads in draft order.
         """
-        stranded = sorted(self._stranded_placeholders)
+        stranded = sorted(
+            self._stranded_placeholders, key=self._placeholder_token_sort_key
+        )
         self._stranded_placeholders.clear()
         return stranded
 
+    @staticmethod
+    def _placeholder_token_sort_key(token: str) -> tuple[str, int]:
+        """Return a numeric ordering key for a placeholder token.
+
+        Args:
+            token: Placeholder token such as `[image 10]`.
+
+        Returns:
+            The token's kind and numeric ID, falling back to `(token, 0)` so
+            unparsable tokens still order deterministically.
+        """
+        for pattern in (IMAGE_PLACEHOLDER_PATTERN, VIDEO_PLACEHOLDER_PATTERN):
+            match = pattern.fullmatch(token)
+            if match is not None:
+                return (pattern.pattern, int(match.group("id")))
+        return (token, 0)
+
     def _record_stranded(
         self,
-        restored_spans: dict[str, list[tuple[int, int]]] | None,
+        restored_spans: dict[str, list[tuple[int, int]]],
         attached: list[ImageData] | list[VideoData],
+        undo_token: object | None,
     ) -> None:
         """Flag undo-restored tokens whose payload the pool had already evicted.
 
@@ -288,26 +347,37 @@ class MediaTracker:
             restored_spans: Token occurrences introduced by an actual undo.
             attached: Media bound after this sync, used to spot tokens that
                 came back as text without a payload behind them.
+            undo_token: Identity of the TextArea edit batch being undone.
         """
-        if not restored_spans or not self._evicted_placeholders:
+        if (
+            not restored_spans
+            or undo_token is None
+            or not self._evicted_placeholder_edits
+        ):
             return
         bound = {item.placeholder for item in attached}
         self._stranded_placeholders.update(
             token
             for token in restored_spans
-            if token not in bound and token in self._evicted_placeholders
+            if token not in bound
+            and self._evicted_placeholder_edits.get(token) is undo_token
         )
 
-    def _record_evicted(self, evicted: list[ImageData] | list[VideoData]) -> None:
+    def _record_evicted(
+        self,
+        evicted: list[ImageData] | list[VideoData],
+        edit_tokens: dict[str, object],
+    ) -> None:
         """Note payloads the pool caps dropped so their tokens can be reported.
 
         Args:
             evicted: Media items removed from the detached pool.
+            edit_tokens: Detaching edit identities keyed by evicted token.
         """
         if not evicted:
             return
         tokens = [item.placeholder for item in evicted]
-        self._evicted_placeholders.update(tokens)
+        self._evicted_placeholder_edits.update(edit_tokens)
         logger.warning(
             "Detached media pool full; dropped %d payload(s) %s. "
             "Undo can no longer restore the media behind these tokens.",
@@ -352,6 +422,8 @@ class MediaTracker:
         previous_text: str | None = None,
         cursor_offset: int | None = None,
         undo_previous_text: str | None = None,
+        edit_token: object | None = None,
+        undo_token: object | None = None,
     ) -> None:
         """Re-bind tracked media to the placeholder tokens in the current text.
 
@@ -370,24 +442,41 @@ class MediaTracker:
             undo_previous_text: Text immediately before an actual undo operation.
                 Supplying this marks only placeholder occurrences inserted by that
                 undo as eligible to reclaim detached payloads.
+            edit_token: Identity of the TextArea edit batch that produced `text`.
+                Media removed by the edit is bound to this identity for undo.
+            undo_token: Identity of the TextArea edit batch being reversed. A
+                detached payload returns only when this matches the identity
+                recorded when that payload was detached, so placeholder-shaped
+                text from any other source stays ordinary text.
         """
+        # Both kinds ask the same question of the same edit, so the diff is
+        # computed once here rather than per kind.
+        equal_spans = (
+            None
+            if undo_previous_text is None
+            else self._unchanged_spans(undo_previous_text, text)
+        )
         restored_images = self._restored_placeholder_spans(
-            undo_previous_text, text, IMAGE_PLACEHOLDER_PATTERN
+            equal_spans, text, IMAGE_PLACEHOLDER_PATTERN
         )
         restored_videos = self._restored_placeholder_spans(
-            undo_previous_text, text, VIDEO_PLACEHOLDER_PATTERN
+            equal_spans, text, VIDEO_PLACEHOLDER_PATTERN
         )
         self._sync_kind_images(
             text,
             previous_text=previous_text,
             cursor_offset=cursor_offset,
             restored_spans=restored_images,
+            edit_token=edit_token,
+            undo_token=undo_token,
         )
         self._sync_kind_videos(
             text,
             previous_text=previous_text,
             cursor_offset=cursor_offset,
             restored_spans=restored_videos,
+            edit_token=edit_token,
+            undo_token=undo_token,
         )
 
     def remap_spans_to_text(self, text: str, *, previous_text: str) -> None:
@@ -424,7 +513,9 @@ class MediaTracker:
         *,
         previous_text: str | None = None,
         cursor_offset: int | None = None,
-        restored_spans: dict[str, list[tuple[int, int]]] | None = None,
+        restored_spans: dict[str, list[tuple[int, int]]],
+        edit_token: object | None = None,
+        undo_token: object | None = None,
     ) -> None:
         """Sync image list to surviving placeholders in text.
 
@@ -436,18 +527,25 @@ class MediaTracker:
             previous_text: Previous input text, used to map existing spans.
             cursor_offset: Current cursor offset for duplicate disambiguation.
             restored_spans: Token occurrences introduced by an actual undo.
+            edit_token: Identity of the edit that produced `text`.
+            undo_token: Identity of the edit currently being undone.
         """
         matches = list(IMAGE_PLACEHOLDER_PATTERN.finditer(text))
         placeholders = {m.group(0) for m in matches}
-        self.images, self._detached_images, evicted = self._partition_media(
-            self.images,
-            self._detached_images,
-            placeholders,
-            IMAGE_PLACEHOLDER_PATTERN,
-            restored_spans,
+        partition = self._partition_media(
+            attached=self.images,
+            detached=self._detached_images,
+            detached_edits=self._detached_image_edits,
+            placeholders=placeholders,
+            pattern=IMAGE_PLACEHOLDER_PATTERN,
+            restored_spans=restored_spans,
+            edit_token=edit_token,
+            undo_token=undo_token,
         )
-        self._record_evicted(evicted)
-        self._record_stranded(restored_spans, self.images)
+        self.images = partition.attached
+        self._detached_images = partition.detached
+        self._record_evicted(partition.evicted, partition.evicted_edits)
+        self._record_stranded(restored_spans, self.images, undo_token)
         self._update_placeholder_spans(
             self.images,
             matches,
@@ -471,7 +569,9 @@ class MediaTracker:
         *,
         previous_text: str | None = None,
         cursor_offset: int | None = None,
-        restored_spans: dict[str, list[tuple[int, int]]] | None = None,
+        restored_spans: dict[str, list[tuple[int, int]]],
+        edit_token: object | None = None,
+        undo_token: object | None = None,
     ) -> None:
         """Sync video list to surviving placeholders in text.
 
@@ -483,18 +583,25 @@ class MediaTracker:
             previous_text: Previous input text, used to map existing spans.
             cursor_offset: Current cursor offset for duplicate disambiguation.
             restored_spans: Token occurrences introduced by an actual undo.
+            edit_token: Identity of the edit that produced `text`.
+            undo_token: Identity of the edit currently being undone.
         """
         matches = list(VIDEO_PLACEHOLDER_PATTERN.finditer(text))
         placeholders = {m.group(0) for m in matches}
-        self.videos, self._detached_videos, evicted = self._partition_media(
-            self.videos,
-            self._detached_videos,
-            placeholders,
-            VIDEO_PLACEHOLDER_PATTERN,
-            restored_spans,
+        partition = self._partition_media(
+            attached=self.videos,
+            detached=self._detached_videos,
+            detached_edits=self._detached_video_edits,
+            placeholders=placeholders,
+            pattern=VIDEO_PLACEHOLDER_PATTERN,
+            restored_spans=restored_spans,
+            edit_token=edit_token,
+            undo_token=undo_token,
         )
-        self._record_evicted(evicted)
-        self._record_stranded(restored_spans, self.videos)
+        self.videos = partition.attached
+        self._detached_videos = partition.detached
+        self._record_evicted(partition.evicted, partition.evicted_edits)
+        self._record_stranded(restored_spans, self.videos, undo_token)
         self._update_placeholder_spans(
             self.videos,
             matches,
@@ -512,15 +619,18 @@ class MediaTracker:
                 ),
             )
 
-    @classmethod
     def _partition_media(
-        cls,
+        self,
+        *,
         attached: list[_MediaItemT],
         detached: list[_MediaItemT],
+        detached_edits: dict[str, object],
         placeholders: set[str],
         pattern: re.Pattern[str],
-        restored_spans: dict[str, list[tuple[int, int]]] | None,
-    ) -> tuple[list[_MediaItemT], list[_MediaItemT], list[_MediaItemT]]:
+        restored_spans: dict[str, list[tuple[int, int]]],
+        edit_token: object | None,
+        undo_token: object | None,
+    ) -> _MediaPartition[_MediaItemT]:
         """Split media into what the current text references and what it does not.
 
         Attached items survive while their bound token remains. Detached items
@@ -530,24 +640,32 @@ class MediaTracker:
         Args:
             attached: Media currently bound to tokens in the draft.
             detached: Media retained for undo after its token was removed.
+            detached_edits: Detaching edit identities keyed by token.
             placeholders: Placeholder tokens present in the current text.
             pattern: Placeholder regex with an `id` group, used for ordering.
             restored_spans: Token occurrences introduced by an actual undo.
+            edit_token: Identity of the edit that produced the current text.
+            undo_token: Identity of the edit currently being undone.
 
         Returns:
-            The `(attached, detached, evicted)` lists for the current text.
-            Attached items are sorted by placeholder ID so a re-attached item
-            returns to its original position instead of appending after
-            higher-ID items. Evicted items are the detached payloads dropped to
-            stay within the pool caps; their tokens can no longer be restored by
-            undo.
+            The partition for the current text. Attached items are sorted by
+            placeholder ID so a re-attached item returns to its original
+            position instead of appending after higher-ID items. Evicted items
+            are the detached payloads dropped to stay within the pool caps;
+            their tokens can no longer be restored by undo.
         """
         attached_by_token: dict[str, _MediaItemT] = {}
         for item in attached:
             if item.placeholder in attached_by_token:
-                # Unreachable while `add_media` is the only writer of
-                # `.placeholder` (IDs are monotonic and detached tokens are
-                # reserved). Warn rather than drop a payload in silence.
+                # Reachable when a caller adds the same payload object twice:
+                # `add_media` assigns `data.placeholder` in place, so both list
+                # entries alias one object carrying the newer token. Distinct
+                # payloads cannot collide, because `next_image_id` only ever
+                # rises (the `max()` folds in `_sync_kind_images` /
+                # `_sync_kind_videos`) and `restore()` releases the detached
+                # pool alongside lowering it. A duplicate token is inherently
+                # unresolvable — two payloads cannot share one occurrence — so
+                # warn rather than drop a payload in silence.
                 logger.warning(
                     "Duplicate placeholder %r among attached media; "
                     "keeping only the most recent payload",
@@ -559,7 +677,11 @@ class MediaTracker:
             for item in detached
             if item.placeholder not in attached_by_token
         }
-        restored_tokens = set(restored_spans or {})
+        restored_tokens = {
+            token
+            for token in restored_spans
+            if undo_token is not None and detached_edits.get(token) is undo_token
+        }
         still_attached = [
             item
             for item in attached_by_token.values()
@@ -570,25 +692,53 @@ class MediaTracker:
             for item in detached_by_token.values()
             if item.placeholder in restored_tokens
         )
-        still_attached.sort(key=lambda item: cls._placeholder_sort_key(item, pattern))
+        still_attached.sort(key=lambda item: self._placeholder_sort_key(item, pattern))
         now_detached = [
             item
             for item in detached_by_token.values()
             if item.placeholder not in restored_tokens
         ]
-        now_detached.extend(
+        newly_detached = [
             item
             for item in attached_by_token.values()
             if item.placeholder not in placeholders
+        ]
+        now_detached.extend(newly_detached)
+
+        next_edits = {
+            item.placeholder: detached_edits[item.placeholder]
+            for item in now_detached
+            if item.placeholder in detached_edits
+        }
+        if edit_token is not None:
+            next_edits.update({item.placeholder: edit_token for item in newly_detached})
+
+        retained, evicted = self._trim_detached(now_detached)
+        evicted_edits = {
+            item.placeholder: next_edits[item.placeholder]
+            for item in evicted
+            if item.placeholder in next_edits
+        }
+        detached_edits.clear()
+        detached_edits.update(
+            {
+                item.placeholder: next_edits[item.placeholder]
+                for item in retained
+                if item.placeholder in next_edits
+            }
         )
-        retained, evicted = cls._trim_detached(now_detached)
-        return still_attached, retained, evicted
+        return _MediaPartition(
+            attached=still_attached,
+            detached=retained,
+            evicted=evicted,
+            evicted_edits=evicted_edits,
+        )
 
     @staticmethod
     def _trim_detached(
         detached: list[_MediaItemT],
     ) -> tuple[list[_MediaItemT], list[_MediaItemT]]:
-        """Drop oldest detached payloads until the pool fits both caps.
+        """Drop oldest detached payloads to fit the pool caps, keeping the newest.
 
         Args:
             detached: Detached pool in oldest-first order.
@@ -596,12 +746,19 @@ class MediaTracker:
         Returns:
             The `(retained, evicted)` split, both oldest-first. The newest entry
             is always retained so the most recent delete stays undoable even
-            when its payload alone exceeds `MAX_DETACHED_MEDIA_BYTES`.
+            when its payload alone exceeds `MAX_DETACHED_MEDIA_BYTES` — in that
+            case the pool deliberately does not fit the byte cap.
         """
         kept: list[_MediaItemT] = []
         budget = MAX_DETACHED_MEDIA_BYTES
         for index, item in enumerate(reversed(detached)):
             size = len(item.base64_data)
+            # `break`, not `continue`: retention stops at the first item that
+            # does not fit, so one oversized newer payload evicts every older
+            # entry even where a smaller one would still have fit the budget.
+            # The slice below depends on `kept` being a contiguous suffix, so
+            # relaxing this into a best-fit `continue` would also need to change
+            # how `evicted` is computed.
             if index and (len(kept) >= MAX_DETACHED_MEDIA or size > budget):
                 break
             budget -= size
@@ -610,30 +767,72 @@ class MediaTracker:
         return kept, detached[: len(detached) - len(kept)]
 
     @staticmethod
+    def _unchanged_spans(previous_text: str, text: str) -> list[tuple[int, int]]:
+        """Return the spans of `text` that an edit left untouched.
+
+        The shared prefix and suffix are unchanged by construction, so only the
+        differing middle needs a real diff. That keeps the cost proportional to
+        the size of the edit rather than the size of the draft: a character-level
+        `SequenceMatcher` over a whole draft is quadratic, which made a single
+        ctrl+z on a large draft block the UI for seconds.
+
+        Args:
+            previous_text: Text immediately before the edit.
+            text: Text produced by the edit.
+
+        Returns:
+            Ascending, non-overlapping spans of `text` carried over unchanged.
+        """
+        limit = min(len(previous_text), len(text))
+        prefix = 0
+        while prefix < limit and previous_text[prefix] == text[prefix]:
+            prefix += 1
+        suffix = 0
+        while (
+            suffix < limit - prefix
+            and previous_text[len(previous_text) - 1 - suffix]
+            == text[len(text) - 1 - suffix]
+        ):
+            suffix += 1
+
+        spans: list[tuple[int, int]] = []
+        if prefix:
+            spans.append((0, prefix))
+        old_middle = previous_text[prefix : len(previous_text) - suffix]
+        new_middle = text[prefix : len(text) - suffix]
+        if old_middle and new_middle:
+            matcher = SequenceMatcher(a=old_middle, b=new_middle, autojunk=False)
+            for tag, _old_start, _old_end, new_start, new_end in matcher.get_opcodes():
+                if tag == "equal":
+                    spans.append((prefix + new_start, prefix + new_end))
+        if suffix:
+            spans.append((len(text) - suffix, len(text)))
+        return spans
+
+    @staticmethod
     def _restored_placeholder_spans(
-        previous_text: str | None,
+        equal_spans: list[tuple[int, int]] | None,
         text: str,
         pattern: re.Pattern[str],
     ) -> dict[str, list[tuple[int, int]]]:
         """Return placeholder occurrences inserted by an undo operation.
 
+        A match lying wholly inside an unchanged span was already in the draft
+        before the edit; anything else was introduced by it. Containment rather
+        than overlap is required so a token merely abutting an unchanged region
+        is not mistaken for a survivor.
+
         Args:
-            previous_text: Text immediately before the undo, or `None` when the
-                current edit was not an undo.
+            equal_spans: Spans of `text` the edit left untouched, or `None` when
+                the current edit was not an undo.
             text: Text produced by the undo.
             pattern: Placeholder regex for the media kind being examined.
 
         Returns:
             Restored spans grouped by placeholder token.
         """
-        if previous_text is None:
+        if equal_spans is None:
             return {}
-
-        equal_spans: list[tuple[int, int]] = []
-        matcher = SequenceMatcher(a=previous_text, b=text, autojunk=False)
-        for tag, _old_start, _old_end, new_start, new_end in matcher.get_opcodes():
-            if tag == "equal":
-                equal_spans.append((new_start, new_end))
 
         restored: dict[str, list[tuple[int, int]]] = {}
         for match in pattern.finditer(text):
@@ -652,15 +851,29 @@ class MediaTracker:
     ) -> int:
         """Return the numeric placeholder ID used to order tracked media.
 
+        This ordering decides the order of the content blocks handed to the
+        model, so an unparsable placeholder is logged rather than quietly
+        sorted: `media_utils` builds every payload with the un-numbered sentinel
+        `[image]`/`[video]` and relies on `add_media` to replace it, so a missed
+        `add_media` would otherwise mis-pair images with their references.
+
         Args:
             item: Media item whose placeholder should be parsed.
             pattern: Placeholder regex with an `id` group.
 
         Returns:
-            The parsed ID, or `0` when the placeholder is not a numbered token.
+            The parsed ID, or `-1` when the placeholder is not a numbered token,
+            keeping such items ahead of every real ID deterministically.
         """
         match = pattern.fullmatch(item.placeholder)
-        return int(match.group("id")) if match is not None else 0
+        if match is None:
+            logger.warning(
+                "Media item has non-numbered placeholder %r; content block order "
+                "may not match placeholder order in the message",
+                item.placeholder,
+            )
+            return -1
+        return int(match.group("id"))
 
     def _update_placeholder_spans(
         self,
@@ -669,7 +882,7 @@ class MediaTracker:
         text: str,
         previous_text: str | None,
         cursor_offset: int | None,
-        restored_spans: dict[str, list[tuple[int, int]]] | None = None,
+        restored_spans: dict[str, list[tuple[int, int]]],
     ) -> None:
         """Refresh tracked placeholder spans for surviving media items.
 
@@ -686,8 +899,13 @@ class MediaTracker:
             spans_by_token.setdefault(match.group(0), []).append(match.span())
 
         for item in items:
-            if restored := (restored_spans or {}).get(item.placeholder):
-                item.placeholder_span = restored[0]
+            if restored := restored_spans.get(item.placeholder):
+                # Detached items retain the span of their originally bound token.
+                # When undo restores duplicate look-alikes, that exact occurrence
+                # must win over the first same-looking token in the text.
+                spans = spans_by_token.get(item.placeholder, [])
+                if item.placeholder_span not in spans:
+                    item.placeholder_span = restored[0]
                 continue
             spans = spans_by_token.get(item.placeholder, [])
             cursor_span = self._placeholder_span_after_cursor(spans, cursor_offset)

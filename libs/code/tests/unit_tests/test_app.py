@@ -15372,11 +15372,12 @@ class TestShellCommandInterrupt:
 
         handler.assert_awaited_once_with("echo secret", incognito=True)
 
-    async def test_process_message_releases_detached_media_for_commands(self) -> None:
-        """Slash and shell submits release undo payloads the agent never consumes.
+    async def test_late_command_processing_preserves_newer_draft_media(self) -> None:
+        """A queued slash or shell command cannot clean up a newer draft.
 
-        Only the agent path clears the tracker, so without this a payload
-        detached in this draft stays re-attachable in a later, unrelated one.
+        Command media cleanup belongs to the chat-input submission boundary.
+        `_process_message` may run much later after the user has edited another
+        draft, so it must not mutate the shared tracker's detached pool.
         """
         from deepagents_code.media_utils import ImageData
 
@@ -15386,18 +15387,23 @@ class TestShellCommandInterrupt:
             app._handle_shell_command = AsyncMock()  # ty: ignore
             tracker = app._image_tracker
             tracker.add_image(
-                ImageData(base64_data="stale", format="png", placeholder="")
+                ImageData(base64_data="newer", format="png", placeholder="")
             )
             tracker.sync_to_text("[image 1]")
-            tracker.sync_to_text("", previous_text="[image 1]")
+            edit_token = object()
+            tracker.sync_to_text("", previous_text="[image 1]", edit_token=edit_token)
             assert tracker._detached_images, mode
 
             await app._process_message(text, mode)
 
-            assert tracker._detached_images == [], mode
-            # A later draft cannot resurrect it, even via a genuine undo.
-            tracker.sync_to_text("[image 1]", previous_text="", undo_previous_text="")
-            assert tracker.get_images() == [], mode
+            assert tracker._detached_images, mode
+            tracker.sync_to_text(
+                "[image 1]",
+                previous_text="",
+                undo_previous_text="",
+                undo_token=edit_token,
+            )
+            assert [img.base64_data for img in tracker.get_images()] == ["newer"], mode
 
     async def test_process_message_keeps_detached_media_for_agent(self) -> None:
         """The agent path leaves undo payloads alone so ctrl+z still works."""
@@ -15410,11 +15416,17 @@ class TestShellCommandInterrupt:
             ImageData(base64_data="undoable", format="png", placeholder="")
         )
         tracker.sync_to_text("[image 1]")
-        tracker.sync_to_text("", previous_text="[image 1]")
+        edit_token = object()
+        tracker.sync_to_text("", previous_text="[image 1]", edit_token=edit_token)
 
         await app._process_message("hello", "normal")
 
-        tracker.sync_to_text("[image 1]", previous_text="", undo_previous_text="")
+        tracker.sync_to_text(
+            "[image 1]",
+            previous_text="",
+            undo_previous_text="",
+            undo_token=edit_token,
+        )
         assert [img.base64_data for img in tracker.get_images()] == ["undoable"]
 
     async def test_incognito_shell_command_does_not_mount_header(self) -> None:

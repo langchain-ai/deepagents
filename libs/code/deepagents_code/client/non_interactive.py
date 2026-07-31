@@ -40,7 +40,12 @@ from rich.style import Style
 from rich.text import Text
 
 from deepagents_code._cli_context import CLIContext
-from deepagents_code._session_stats import SessionStats, print_usage_table
+from deepagents_code._session_stats import (
+    SessionStats,
+    classify_usage_kind,
+    print_usage_table,
+    record_message_usage,
+)
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
@@ -464,6 +469,13 @@ class StreamState:
     stats: SessionStats = field(default_factory=SessionStats)
     """Accumulated model usage stats for this stream."""
 
+    seen_usage_message_ids: set[str] = field(default_factory=set)
+    """Completed request IDs already counted in this headless run.
+
+    Monotonic across HITL resume passes so a replayed message does not add its
+    request, tokens, or cost to `stats` again.
+    """
+
     spinner: _ConsoleSpinner | None = None
     """Optional animated spinner shown during agent work in verbose mode."""
 
@@ -566,44 +578,18 @@ def _record_usage_from_message(
     metadata: Mapping[str, Any] | None = None,
 ) -> None:
     """Record model usage and estimated cost from a streamed AI message."""
-    usage = getattr(message_obj, "usage_metadata", None)
-    if not usage:
-        return
-
-    input_toks = usage.get("input_tokens", 0)
-    output_toks = usage.get("output_tokens", 0)
-    total_toks = usage.get("total_tokens", 0)
-    from deepagents_code._session_stats import classify_usage_kind
-    from deepagents_code.cost_tracking import estimate_cost, resolve_message_model
-
-    active_model, active_provider = resolve_message_model(
-        message_obj,
-        fallback_model=settings.model_name or "",
-        fallback_provider=settings.model_provider or "",
-    )
-    cost_usd = estimate_cost(usage, active_model, active_provider)
     usage_kind = classify_usage_kind(
         is_main_agent=is_main_agent,
         metadata=metadata,
     )
-    if input_toks or output_toks:
-        state.stats.record_request(
-            active_model,
-            input_toks,
-            output_toks,
-            active_provider,
-            cost_usd=cost_usd,
-            kind=usage_kind,
-        )
-    elif total_toks:
-        state.stats.record_request(
-            active_model,
-            total_toks,
-            0,
-            active_provider,
-            cost_usd=cost_usd,
-            kind=usage_kind,
-        )
+    record_message_usage(
+        state.stats,
+        message_obj,
+        fallback_model=settings.model_name or "",
+        fallback_provider=settings.model_provider or "",
+        kind=usage_kind,
+        seen_message_ids=state.seen_usage_message_ids,
+    )
 
 
 def _process_ai_message(

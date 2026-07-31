@@ -88,6 +88,27 @@ _UNPRICEABLE_PROVIDERS: frozenset[str] = frozenset({"openai_codex"})
 """Providers whose access model is not equivalent to per-token API billing."""
 
 
+def _resolve_pricing_provider(provider: object, fallback_provider: str) -> str:
+    """Resolve response metadata without losing a configured provider alias.
+
+    Args:
+        provider: Provider named by the response, if any.
+        fallback_provider: Provider configured for the completed request.
+
+    Returns:
+        The provider identifier to use for pricing.
+    """
+    resolved_provider = (
+        provider if isinstance(provider, str) and provider else fallback_provider
+    )
+    fallback_provider_key = fallback_provider.strip().lower()
+    if fallback_provider_key in _PROVIDER_ALIASES or (
+        fallback_provider_key in _UNPRICEABLE_PROVIDERS
+    ):
+        return fallback_provider
+    return resolved_provider
+
+
 def _token_count(value: object) -> int:
     """Return a non-negative integer token count for a metadata value."""
     return (
@@ -219,16 +240,9 @@ def resolve_message_model(
     if not isinstance(metadata, Mapping):
         metadata = {}
     model_name = metadata.get("model_name") or metadata.get("model") or fallback_model
-    provider = (
-        metadata.get("model_provider") or metadata.get("provider") or fallback_provider
-    )
     resolved_model = model_name if isinstance(model_name, str) else fallback_model
-    resolved_provider = provider if isinstance(provider, str) else fallback_provider
-    fallback_provider_key = fallback_provider.strip().lower()
-    if fallback_provider_key in _PROVIDER_ALIASES or (
-        fallback_provider_key in _UNPRICEABLE_PROVIDERS
-    ):
-        resolved_provider = fallback_provider
+    provider = metadata.get("model_provider") or metadata.get("provider")
+    resolved_provider = _resolve_pricing_provider(provider, fallback_provider)
     return resolved_model, resolved_provider
 
 
@@ -662,13 +676,26 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
             return None
 
         fallback = _checkpointed_model_spec(state)
+        message = (
+            _latest_ai_message(state.get("messages") or [])
+            if price_latest_message
+            else None
+        )
+        main_message_id = message.id if message is not None else None
         delta_usd = 0.0
         charged_message_ids: set[str] = set()
         charged_count = 0
         for record in _drain_recorded_costs(_thread_id(runtime)):
+            # `_model_spec` describes the main response, while the recorder also
+            # contains subagent and side-model calls. Correct generic provider
+            # metadata only for the record that joins to that main response.
+            # Every other record keeps the provider it reported.
+            provider = record.provider
+            if main_message_id is not None and record.message_id == main_message_id:
+                provider = _resolve_pricing_provider(provider, fallback[1])
             cost_usd = estimate_cost(
                 record.usage_metadata,
-                *_pricing_target(record.model_name, record.provider, fallback),
+                *_pricing_target(record.model_name, provider, fallback),
             )
             if cost_usd is None:
                 continue
@@ -678,7 +705,6 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 charged_message_ids.add(record.message_id)
 
         if price_latest_message:
-            message = _latest_ai_message(state.get("messages") or [])
             # A model that never fires callbacks (or a request the recorder
             # could not attribute to this thread) leaves the agent's own
             # response uncharged, so price it from state. Joining on message ID

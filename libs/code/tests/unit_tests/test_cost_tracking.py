@@ -558,6 +558,118 @@ class TestCostTrackingMiddleware:
 
         assert middleware.after_model(state, _runtime()) is None
 
+    @pytest.mark.parametrize(
+        ("configured_provider", "expected_delta"),
+        [
+            pytest.param("azure_openai", 0.42, id="azure"),
+            pytest.param("openai_codex", None, id="codex-subscription"),
+        ],
+    )
+    def test_recorded_openai_response_uses_checkpointed_provider(
+        self,
+        recorder: _SessionCostRecorder,
+        monkeypatch: pytest.MonkeyPatch,
+        configured_provider: str,
+        expected_delta: float | None,
+    ) -> None:
+        """Generic callback metadata must not replace the configured provider."""
+        from deepagents_code import cost_tracking
+
+        priced_providers: list[str] = []
+
+        def price(
+            usage_metadata: object,
+            model_name: str,
+            provider: str = "",
+        ) -> float | None:
+            assert usage_metadata
+            assert model_name == "gpt-5.4"
+            priced_providers.append(provider)
+            return None if provider == "openai_codex" else 0.42
+
+        monkeypatch.setattr(cost_tracking, "estimate_cost", price)
+        _collect(
+            recorder,
+            _record(model="gpt-5.4", provider="openai"),
+        )
+        middleware = CostTrackingMiddleware()
+        state: CostState = {
+            "messages": [_message(_usage(), model="gpt-5.4", provider="openai")],
+            "_model_spec": f"{configured_provider}:gpt-5.4",
+        }
+
+        result = middleware.after_model(state, _runtime(thread_id=THREAD_ID))
+
+        assert priced_providers
+        assert set(priced_providers) == {configured_provider}
+        if expected_delta is None:
+            assert result is None
+        else:
+            assert result is not None
+            assert result["_session_cost_usd"] == pytest.approx(expected_delta)
+
+    @pytest.mark.parametrize(
+        ("configured_provider", "expected_delta"),
+        [
+            pytest.param("azure_openai", 0.67, id="azure"),
+            pytest.param("openai_codex", 0.25, id="codex-subscription"),
+        ],
+    )
+    def test_checkpointed_provider_does_not_replace_side_request_provider(
+        self,
+        recorder: _SessionCostRecorder,
+        monkeypatch: pytest.MonkeyPatch,
+        configured_provider: str,
+        expected_delta: float,
+    ) -> None:
+        """Only the main response inherits its provider from `_model_spec`."""
+        from deepagents_code import cost_tracking
+
+        pricing_targets: list[tuple[str, str]] = []
+
+        def price(
+            usage_metadata: object,
+            model_name: str,
+            provider: str = "",
+        ) -> float | None:
+            assert usage_metadata
+            pricing_targets.append((model_name, provider))
+            if provider == "anthropic":
+                return 0.25
+            if provider == "azure_openai":
+                return 0.42
+            return None
+
+        monkeypatch.setattr(cost_tracking, "estimate_cost", price)
+        _collect(
+            recorder,
+            _record(
+                message_id="side-1",
+                model=KNOWN_MODEL,
+                provider=KNOWN_PROVIDER,
+            ),
+        )
+        _collect(
+            recorder,
+            _record(
+                message_id="response-1",
+                model="gpt-5.4",
+                provider="openai",
+            ),
+        )
+        middleware = CostTrackingMiddleware()
+        state: CostState = {
+            "messages": [_message(_usage(), model="gpt-5.4", provider="openai")],
+            "_model_spec": f"{configured_provider}:gpt-5.4",
+        }
+
+        result = middleware.after_model(state, _runtime(thread_id=THREAD_ID))
+
+        assert result is not None
+        assert result["_session_cost_usd"] == pytest.approx(expected_delta)
+        assert (KNOWN_MODEL, KNOWN_PROVIDER) in pricing_targets
+        assert ("gpt-5.4", configured_provider) in pricing_targets
+
     def test_unpriceable_model_leaves_prior_total_unchanged(self) -> None:
         middleware = CostTrackingMiddleware()
         state: CostState = {

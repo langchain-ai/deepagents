@@ -25962,17 +25962,27 @@ class TestToastAnchoring:
         app = DeepAgentsApp()
         async with app.run_test(notifications=True) as pilot:
             await pilot.pause()
+            expected_messages = {"first", "second"}
             app.notify("first", timeout=60)
             app.notify("second", timeout=60)
-            # Two pauses: the first lets both toasts mount, the second lets the
-            # rack re-anchor to the chrome before we assert exact layout. A
-            # single pause races toast mount against `_anchor_toast_rack` under
-            # xdist load (the CI release run failed this assertion 29 != 19).
-            await pilot.pause()
-            await pilot.pause()
+
+            async def wait_for_anchored_toasts() -> None:
+                while True:
+                    toasts = list(app.screen.query(_Toast))
+                    messages = {toast._notification.message for toast in toasts}
+                    chrome_top = self._chrome(app).region.y
+                    if (
+                        expected_messages <= messages
+                        and max(toast.region.bottom for toast in toasts) == chrome_top
+                    ):
+                        return
+                    await pilot.pause()
+
+            await asyncio.wait_for(wait_for_anchored_toasts(), timeout=5)
 
             toasts = list(app.screen.query(_Toast))
-            assert toasts
+            messages = {toast._notification.message for toast in toasts}
+            assert expected_messages <= messages
             chrome_top = self._chrome(app).region.y
             assert max(toast.region.bottom for toast in toasts) == chrome_top
 

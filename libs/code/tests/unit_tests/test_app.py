@@ -25962,14 +25962,43 @@ class TestToastAnchoring:
         app = DeepAgentsApp()
         async with app.run_test(notifications=True) as pilot:
             await pilot.pause()
+            expected_messages = {"first", "second"}
             app.notify("first", timeout=60)
             app.notify("second", timeout=60)
-            await pilot.pause()
+
+            def painted_toast_bottoms(toasts: list[_Toast]) -> list[int]:
+                """Return bottom rows of toast regions the compositor will paint."""
+                bottoms: list[int] = []
+                for toast in toasts:
+                    geometry = app.screen.find_widget(toast)
+                    painted = geometry.region.intersection(geometry.clip)
+                    if painted:
+                        bottoms.append(painted.bottom)
+                return bottoms
+
+            async def wait_for_anchored_toasts() -> None:
+                while True:
+                    toasts = list(app.screen.query(_Toast))
+                    messages = {toast._notification.message for toast in toasts}
+                    bottoms = painted_toast_bottoms(toasts)
+                    chrome_top = self._chrome(app).region.y
+                    if (
+                        expected_messages <= messages
+                        and bottoms
+                        and max(bottoms) == chrome_top
+                    ):
+                        return
+                    await pilot.pause()
+
+            await asyncio.wait_for(wait_for_anchored_toasts(), timeout=5)
 
             toasts = list(app.screen.query(_Toast))
-            assert toasts
+            messages = {toast._notification.message for toast in toasts}
+            assert expected_messages <= messages
+            bottoms = painted_toast_bottoms(toasts)
+            assert bottoms
             chrome_top = self._chrome(app).region.y
-            assert max(toast.region.bottom for toast in toasts) == chrome_top
+            assert max(bottoms) == chrome_top
 
     async def test_growing_chat_input_lifts_the_rack(self) -> None:
         """A taller chat input pushes toasts further up the screen."""

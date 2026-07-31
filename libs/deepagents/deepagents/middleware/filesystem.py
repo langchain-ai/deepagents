@@ -47,6 +47,7 @@ from deepagents.backends.protocol import (
     GlobResult,
     GrepMatch,
     GrepResult,
+    LsResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -342,23 +343,45 @@ def _wildcard_delete_overlap(pattern: str, anchor: str, target: str) -> bool:
     )
 
 
+def _leaf_from_parent_listing(ls_result: LsResult, target: str) -> bool:
+    """Resolve the ambiguous "empty `ls(target)`, no error" case.
+
+    On flat/virtual backends, an exact file and an empty directory produce the
+    same `ls(target)` result. Use `target`'s `FileInfo.is_dir` from the parent
+    listing, which is consistent across backends.
+    """
+    if ls_result.error is not None:
+        return True
+    target_norm = target.rstrip("/")
+    matches = [entry for entry in ls_result.entries or [] if entry["path"].rstrip("/") == target_norm]
+    if not matches:
+        return True
+    return any(entry.get("is_dir") for entry in matches)
+
+
 def _delete_target_may_have_descendants(backend: BackendProtocol, target: str, *, permissions_configured: bool) -> bool:
     """Whether `delete` should use the conservative recursive permission check.
 
     Falls back to the conservative check when no permission rules are configured
-    or the backend doesn't implement `ls`. Uses `ls(parent)` + `FileInfo.is_dir`
-    instead of `ls(target)`, since only the former distinguishes files from
-    directories consistently across all backends.
+    or the backend doesn't implement `ls`. Non-empty `ls(target)` results indicate
+    descendants, and `not_a_directory` confirms a plain file. Only an empty result
+    with no error is ambiguous and requires `_leaf_from_parent_listing`.
     """
     if not permissions_configured:
         return False
     try:
-        ls_result = backend.ls(str(PurePosixPath(target).parent))
+        ls_result = backend.ls(target)
     except NotImplementedError:
         return True
     if ls_result.error is not None:
+        return "not_a_directory" not in ls_result.error
+    if ls_result.entries:
         return True
-    return not any(entry["path"] == target and not entry.get("is_dir") for entry in ls_result.entries or [])
+    try:
+        parent_result = backend.ls(str(PurePosixPath(target).parent))
+    except NotImplementedError:
+        return True
+    return _leaf_from_parent_listing(parent_result, target)
 
 
 async def _adelete_target_may_have_descendants(backend: BackendProtocol, target: str, *, permissions_configured: bool) -> bool:
@@ -366,12 +389,18 @@ async def _adelete_target_may_have_descendants(backend: BackendProtocol, target:
     if not permissions_configured:
         return False
     try:
-        ls_result = await backend.als(str(PurePosixPath(target).parent))
+        ls_result = await backend.als(target)
     except NotImplementedError:
         return True
     if ls_result.error is not None:
+        return "not_a_directory" not in ls_result.error
+    if ls_result.entries:
         return True
-    return not any(entry["path"] == target and not entry.get("is_dir") for entry in ls_result.entries or [])
+    try:
+        parent_result = await backend.als(str(PurePosixPath(target).parent))
+    except NotImplementedError:
+        return True
+    return _leaf_from_parent_listing(parent_result, target)
 
 
 def _find_delete_deny_patterns_for_leaf(rules: list[FilesystemPermission], target: str) -> list[str]:

@@ -294,6 +294,24 @@ class TestRecursiveDeletePermissions:
 
         assert "Deleted" in result
 
+    def test_flat_backend_exact_key_with_nested_descendant_still_blocked(self):
+        """Regression for flat backends with overlapping keys.
+
+        An exact-match key and nested keys can coexist, so an exact file at
+        `/work/item` must not be treated as a leaf if `ls("/work/item")` also reports
+        descendants.
+        """
+        backend = _make_backend({"/work/item": "a", "/work/item/secrets/key": "secret"})
+        rules = [
+            FilesystemPermission(operations=["read", "write"], paths=["/work/item"], mode="allow"),
+            FilesystemPermission(operations=["read", "write"], paths=["/work/item/secrets/**"], mode="deny"),
+        ]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work/item"}, rules, backend=backend)
+
+        assert "permission denied for write" in result
+
     async def test_exact_file_delete_allowed_under_workspace_isolation_async(self, tmp_path):
         backend = self._fs_backend(tmp_path)
         rules = [

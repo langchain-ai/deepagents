@@ -689,9 +689,12 @@ def _invoke_hook(
             invocation_id=request.invocation_id,
             snapshot_id=request.snapshot_id,
         )
-    except (ValidationError, ValueError):
+    except ValidationError:
+        # Only shape errors degrade to a neutral decision. `ValueError` from an
+        # invocation_id or snapshot_id mismatch means the client answered a
+        # different request, so it must stay fatal rather than fail open.
         return reduce_hook_results(
-            HookInvocation(context=context, event=event),
+            request.invocation,
             (),
             diagnostics=(
                 HookDiagnostic(

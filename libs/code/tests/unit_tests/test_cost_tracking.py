@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
+import logging
 import subprocess
 import sys
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -26,11 +29,14 @@ from langchain.agents.middleware.types import (
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult, LLMResult
 from langchain_core.tools import BaseTool, tool
+from langgraph.channels import BinaryOperatorAggregate
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolRuntime  # noqa: TC002  # Runtime tool injection.
 from langgraph.types import Command, Overwrite
 
+from deepagents_code import cost_tracking
 from deepagents_code._fake_models import _ToolBindingFakeModel
 from deepagents_code.cost_tracking import (
     _CONFIGURED_PROVIDER_METADATA_KEY,
@@ -275,6 +281,48 @@ class TestEstimateCost:
 
         assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is None
 
+    @pytest.mark.parametrize("bad_total", [float("inf"), float("nan"), -5.0])
+    def test_non_finite_or_negative_price_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, bad_total: float
+    ) -> None:
+        """A price that is not a usable dollar figure must not reach the total."""
+        import genai_prices
+
+        monkeypatch.setattr(
+            genai_prices,
+            "calc_price",
+            lambda *_args, **_kwargs: SimpleNamespace(total_price=bad_total),
+        )
+
+        assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is None
+
+    def test_unavailable_pricing_package_is_reported_once(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A broken install is a different problem from an unpriced model.
+
+        It makes every request unpriceable, so it is logged at WARNING once per
+        process and exposed through `pricing_data_available` -- otherwise the
+        user is told their models have no published rates.
+        """
+        monkeypatch.setattr(cost_tracking, "_PRICING_UNAVAILABLE", False)
+        real_import = builtins.__import__
+
+        def fail_genai_prices(name: str, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401  # __import__ passthrough
+            if name == "genai_prices":
+                msg = "no genai_prices"
+                raise ImportError(msg)
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fail_genai_prices)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is None
+            assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is None
+
+        assert caplog.text.count("Could not load genai-prices") == 1
+        assert not cost_tracking.pricing_data_available()
+
     def test_azure_fallback_overrides_generic_openai_metadata(self) -> None:
         message = _message(_usage(), model="gpt-5.5", provider="openai")
 
@@ -310,6 +358,53 @@ class TestEstimateCost:
         assert uncached is not None
         assert cached is not None
         assert cached > uncached
+
+    @pytest.mark.parametrize(
+        ("cache_read", "cache_write"),
+        [
+            (1_500, 0),
+            (0, 1_500),
+            (600, 900),
+        ],
+    )
+    def test_cache_buckets_over_the_input_total_still_price(
+        self,
+        cache_read: int,
+        cache_write: int,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Self-inconsistent provider counts must not drop the whole request.
+
+        `genai-prices` rejects a negative uncached-input count, and that raise
+        is swallowed into `None` -- which would silently remove the request
+        from the durable total rather than estimate it. Clamping keeps an
+        estimate, and the warning keeps the anomaly diagnosable.
+        """
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            cost = estimate_cost(
+                _usage(1_000, 100, cache_read=cache_read, cache_write=cache_write),
+                KNOWN_MODEL,
+                KNOWN_PROVIDER,
+            )
+
+        assert cost is not None
+        assert cost > 0
+        assert "exceed the inclusive input total" in caplog.text
+
+    def test_in_range_cache_buckets_do_not_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert (
+                estimate_cost(
+                    _usage(1_000, 100, cache_read=600, cache_write=100),
+                    KNOWN_MODEL,
+                    KNOWN_PROVIDER,
+                )
+                is not None
+            )
+
+        assert "exceed the inclusive input total" not in caplog.text
 
     def test_cache_write_alias_is_priced_separately(self) -> None:
         uncached = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
@@ -378,19 +473,39 @@ class TestCostTrackingMiddleware:
     """Tests for cumulative cost writes on the model checkpoint path."""
 
     def test_cost_channel_is_private_and_additive(self) -> None:
+        """The channel must compile to a summing reducer, not a `LastValue`.
+
+        LangGraph reads only the *last* entry of the `Annotated` metadata when
+        detecting a reducer. Reordering it so `PrivateStateAttr` comes last
+        degrades the channel to `LastValue`, at which point every delta
+        overwrites the total instead of adding to it and the thread's lifetime
+        cost silently collapses to whatever the final step spent. Assert the
+        compiled channel and its behavior, not just the annotation.
+        """
         hints = get_type_hints(CostState, include_extras=True)
         metadata = tuple(getattr(hints["_session_cost_usd"], "__metadata__", ()))
         assert PrivateStateAttr in metadata
         assert metadata
-        last = metadata[-1]
-        assert getattr(last, "__name__", None) == "add"
+
+        channels = StateGraph(cast("Any", CostState)).channels
+        cost_channel = channels["_session_cost_usd"]
+        assert isinstance(cost_channel, BinaryOperatorAggregate)
+        cost_channel.update([1.25, 0.02, 0.005])
+        assert cost_channel.get() == pytest.approx(1.275)
 
         transfer_metadata = tuple(
             getattr(hints["_session_cost_transfers"], "__metadata__", ())
         )
         assert OmitFromInput in transfer_metadata
         assert PrivateStateAttr not in transfer_metadata
-        assert getattr(transfer_metadata[-1], "__name__", None) == "or_"
+
+        transfer_channel = channels["_session_cost_transfers"]
+        assert isinstance(transfer_channel, BinaryOperatorAggregate)
+        transfer_channel.update([{"a": {"owner_scope": "", "cost_usd": 1.0}}])
+        transfer_channel.update([{"b": {"owner_scope": "", "cost_usd": 2.0}}])
+        # Parallel subagents hand off independently, so entries must merge
+        # rather than the later write replacing the earlier one.
+        assert set(cast("dict[str, Any]", transfer_channel.get())) == {"a", "b"}
 
     def test_returns_request_cost_as_delta(self) -> None:
         middleware = CostTrackingMiddleware()
@@ -511,15 +626,139 @@ class TestCostTrackingMiddleware:
             "_session_cost_usd": 1.25,
         }
 
-        result = middleware.after_model(state, _runtime(events=events))
+        result = middleware.after_model(
+            state, _runtime(thread_id="thread-1", events=events)
+        )
 
         assert result is not None
         assert events == [
             {
                 "type": "session_cost",
                 "total": pytest.approx(1.25 + result["_session_cost_usd"]),
+                # Tags the total so a client that has since switched threads
+                # can discard it instead of showing the old thread's spend.
+                "thread_id": "thread-1",
+                # Reported from where pricing runs: a remote client cannot see
+                # a broken price-data install in the server's process.
+                "pricing_ok": True,
             }
         ]
+
+    def test_streamed_event_reports_broken_pricing(self) -> None:
+        """The client cannot see a broken install in the server's process.
+
+        Hard-coding this to `True` would leave a remote user reading `/cost`
+        and blaming their model choice for a package fault they could fix.
+        """
+        events: list[dict[str, Any]] = []
+        middleware = CostTrackingMiddleware()
+        state: Any = {
+            "messages": [_message(_usage())],
+            "_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
+            "_session_cost_usd": 1.25,
+        }
+
+        with (
+            patch(
+                "deepagents_code.cost_tracking.estimate_cost",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.cost_tracking.pricing_data_available",
+                return_value=False,
+            ),
+        ):
+            result = middleware.after_model(
+                state,
+                _runtime(thread_id="thread-1", events=events),
+            )
+
+        assert result is None
+        assert events == [
+            {
+                "type": "session_cost",
+                "total": pytest.approx(1.25),
+                "thread_id": "thread-1",
+                "pricing_ok": False,
+            }
+        ]
+
+    def test_failed_pricing_returns_records_to_the_recorder(
+        self, recorder: _SessionCostRecorder
+    ) -> None:
+        """`drain` removes what it returns, so a failure must hand it back.
+
+        Without this the spend is destroyed: there is no second copy anywhere,
+        and the next drain finds an empty queue.
+        """
+        _collect(recorder, _record())
+        middleware = CostTrackingMiddleware()
+        state: Any = {"messages": []}
+
+        with (
+            patch(
+                "deepagents_code.cost_tracking.estimate_cost",
+                side_effect=RuntimeError("pricing exploded"),
+            ),
+            pytest.raises(RuntimeError),
+        ):
+            middleware._charge(
+                state,
+                _runtime(thread_id=THREAD_ID),
+                price_latest_message=False,
+            )
+
+        assert len(recorder.drain(THREAD_ID)) == 1
+
+    def test_cancelled_turn_does_not_destroy_drained_records(
+        self, recorder: _SessionCostRecorder
+    ) -> None:
+        """`CancelledError` is a `BaseException`, so `except Exception` misses it."""
+        _collect(recorder, _record())
+        middleware = CostTrackingMiddleware()
+        state: Any = {"messages": []}
+
+        with (
+            patch(
+                "deepagents_code.cost_tracking.estimate_cost",
+                side_effect=asyncio.CancelledError(),
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            middleware._charge(
+                state,
+                _runtime(thread_id=THREAD_ID),
+                price_latest_message=False,
+            )
+
+        assert len(recorder.drain(THREAD_ID)) == 1
+
+    def test_after_model_does_not_fail_the_turn_on_a_pricing_error(
+        self, recorder: _SessionCostRecorder
+    ) -> None:
+        """Each hook is its own graph node; raising here would fail the turn."""
+        _collect(recorder, _record())
+        middleware = CostTrackingMiddleware()
+        state: Any = {"messages": []}
+
+        with patch.object(
+            middleware, "_charge", side_effect=RuntimeError("boom")
+        ) as charge:
+            result = middleware.after_model(state, _runtime(thread_id=THREAD_ID))
+
+        assert result is None
+        assert charge.called
+
+    def test_after_agent_does_not_fail_the_turn_on_a_pricing_error(self) -> None:
+        middleware = CostTrackingMiddleware()
+        state: Any = {"messages": []}
+
+        with patch.object(
+            middleware, "_after_agent_update", side_effect=RuntimeError("boom")
+        ):
+            result = middleware.after_agent(state, _runtime(thread_id=THREAD_ID))
+
+        assert result is None
 
     def test_no_event_is_streamed_without_new_spend(self) -> None:
         events: list[dict[str, Any]] = []
@@ -987,6 +1226,7 @@ class TestSessionCostRecorder:
     ) -> None:
         run_id = uuid4()
         recorder.on_chat_model_start({}, [], run_id=run_id, metadata={})
+        assert recorder._run_contexts[run_id].scope == ""
         recorder.on_llm_end(
             LLMResult(generations=[[ChatGeneration(message=_message(_usage()))]]),
             run_id=run_id,
@@ -1047,6 +1287,33 @@ class TestSessionCostRecorder:
 
         assert len(drained) == _MAX_RECORDS_PER_THREAD
         assert drained[-1].message_id == f"m-{_MAX_RECORDS_PER_THREAD + 2}"
+
+    def test_restored_records_remain_bounded(
+        self, recorder: _SessionCostRecorder
+    ) -> None:
+        """A failed batch cannot bypass either recorder retention limit."""
+        from deepagents_code.cost_tracking import (
+            _MAX_RECORDS_PER_THREAD,
+            _MAX_TRACKED_THREADS,
+        )
+
+        for index in range(_MAX_RECORDS_PER_THREAD):
+            _collect(recorder, _record(message_id=f"new-{index}"))
+        recorder.restore(THREAD_ID, [_record(message_id="old")])
+
+        restored = recorder.drain(THREAD_ID)
+        assert len(restored) == _MAX_RECORDS_PER_THREAD
+        assert restored[0].message_id == "new-0"
+
+        for index in range(_MAX_TRACKED_THREADS):
+            _collect(recorder, _record(), thread_id=f"thread-{index}")
+        recorder.restore("restored-thread", [_record(message_id="restored")])
+
+        assert len(recorder._records) == _MAX_TRACKED_THREADS
+        assert recorder.drain("thread-0") == []
+        assert [record.message_id for record in recorder.drain("restored-thread")] == [
+            "restored"
+        ]
 
 
 _CompiledAgent = CompiledStateGraph[Any, Any, Any, Any]
@@ -1270,6 +1537,36 @@ class TestGraphCostOwnership:
         total_usd, totals = await self._run(agent)
 
         assert totals == [pytest.approx(total_usd)]
+
+    async def test_concurrent_threads_do_not_borrow_each_other_s_spend(
+        self,
+    ) -> None:
+        """The recorder is process-wide, so keying by thread is load-bearing.
+
+        A server process runs many threads against one recorder. If a request
+        were ever attributed to the ambient thread rather than its own, one
+        user would be billed for another's spend -- and every single-threaded
+        case in this class would still pass.
+        """
+        busy = self._agent(
+            model=_fake_model(_message(_usage(), message_id="a")),
+            middleware=[
+                _SideInvokeMiddleware(
+                    _fake_model(_message(_usage(), message_id="busy-side")),
+                    "summarization",
+                )
+            ],
+        )
+        quiet = self._agent(model=_fake_model(_message(_usage(), message_id="b")))
+
+        (busy_total, _), (quiet_total, _) = await asyncio.gather(
+            self._run(busy, thread_id="thread-busy"),
+            self._run(quiet, thread_id="thread-quiet"),
+        )
+
+        one_call = self._one_call_usd()
+        assert busy_total == pytest.approx(2 * one_call)
+        assert quiet_total == pytest.approx(one_call)
 
     async def test_offload_summarization_call_is_charged(self) -> None:
         agent = self._agent(

@@ -732,6 +732,15 @@ class StatusBar(Horizontal):
     _has_token_count: bool = False
     """Whether the status bar has displayed a real token count this session."""
 
+    _tokens_pending: bool = False
+    """Whether the accurate token count for the current turn is still pending.
+
+    A cost update can arrive mid-turn, and it re-renders the shared token/cost
+    slot. Without this flag that re-render would replace the `... tokens`
+    placeholder with the *previous* turn's count -- the stale value the
+    placeholder exists to hide.
+    """
+
     def watch_tokens(self, new_value: int) -> None:
         """Update the combined token and cost display when tokens change."""
         self._render_tokens(new_value, approximate=self._approximate)
@@ -784,14 +793,12 @@ class StatusBar(Horizontal):
         except NoMatches:
             return
 
-        parts = [
-            part
-            for part in (
-                self._token_text(count, approximate=approximate),
-                self._cost_text(),
-            )
-            if part
-        ]
+        token_text = (
+            "... tokens"
+            if self._tokens_pending
+            else self._token_text(count, approximate=approximate)
+        )
+        parts = [part for part in (token_text, self._cost_text()) if part]
         display.display = bool(parts)
         separator = f" {get_glyphs().bullet} "
         display.update(separator.join(parts))
@@ -818,6 +825,8 @@ class StatusBar(Horizontal):
         """
         self._approximate = approximate
         self._has_token_count = count > 0
+        # The accurate count has arrived, so stop suppressing it.
+        self._tokens_pending = False
         if self.tokens == count:
             # Reactive dedup would skip the watcher — call render directly.
             self._render_tokens(count, approximate=approximate)
@@ -841,6 +850,9 @@ class StatusBar(Horizontal):
         """Show pending tokens while preserving the cumulative cost."""
         if not self._has_token_count:
             return
+        # Latch the placeholder so a mid-turn cost refresh keeps it instead of
+        # re-rendering the previous turn's count.
+        self._tokens_pending = True
         try:
             display = self.query_one("#tokens-display", Static)
         except NoMatches:

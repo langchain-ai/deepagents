@@ -27,6 +27,7 @@ from deepagents_code._ask_user_types import (
     AskUserWidgetResult,
     Question,
 )
+from deepagents_code._session_stats import SessionStats
 from deepagents_code._tool_stream import (
     TOOL_OUTPUT_TRUNCATION_MARKER,
     UNRENDERABLE_TOOL_OUTPUT,
@@ -53,7 +54,6 @@ from deepagents_code.hooks.models.domain import (
 from deepagents_code.hooks.permissions import PermissionPlan, permission_hook_outcome
 from deepagents_code.tui.textual_adapter import (
     RubricEvaluationEnd,
-    SessionStats,
     TextualUIAdapter,
     _build_interrupted_ai_message,
     _dispatch_tool_result_hook,
@@ -64,6 +64,8 @@ from deepagents_code.tui.textual_adapter import (
     _is_auto_mode_classifier_chunk,
     _is_summarization_chunk,
     _read_mentioned_file,
+    _session_cost_pricing_ok,
+    _session_cost_thread_id,
     _session_cost_total,
     _set_running_unless_deferred,
     execute_task_textual,
@@ -2249,12 +2251,14 @@ def _usage_chunk(
     output_tokens: int,
     total_tokens: int | None = None,
     metadata: dict[str, Any] | None = None,
+    message_id: str | None = None,
 ) -> tuple[Any, ...]:
     """Build a `messages`-stream chunk carrying only `usage_metadata`."""
     from langchain_core.messages import AIMessageChunk
 
     message = AIMessageChunk(
         content="",
+        id=message_id,
         usage_metadata={
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
@@ -2316,6 +2320,57 @@ class TestExecuteTaskTextualUsageStats:
         assert model_stats.cost_usd == pytest.approx(0.42)
         assert turn_stats.total_cost_usd == pytest.approx(0.42)
         assert cost_updates == [0.42]
+
+    async def test_replayed_usage_after_hitl_resume_is_not_counted_twice(
+        self,
+    ) -> None:
+        """Each `astream` pass closes its ledger before the next resume."""
+        usage = _usage_chunk(
+            input_tokens=100,
+            output_tokens=50,
+            message_id="request-1",
+        )
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    usage,
+                    _ask_user_interrupt_chunk(
+                        {
+                            "type": "ask_user",
+                            "questions": [{"question": "Name?", "type": "text"}],
+                            "tool_call_id": "tool-1",
+                        }
+                    ),
+                ],
+                [usage],
+            ]
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            request_ask_user=None,
+        )
+
+        with (
+            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.42),
+        ):
+            mock_settings.model_name = "gpt-5.5"
+            mock_settings.model_provider = "openai"
+            stats = await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+            )
+
+        assert len(agent.stream_inputs) == 2
+        assert stats.request_count == 1
+        assert stats.input_tokens == 100
+        assert stats.output_tokens == 50
+        assert stats.total_cost_usd == pytest.approx(0.42)
 
     async def test_records_hidden_subagent_and_summarization_usage(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2465,6 +2520,62 @@ class TestExecuteTaskTextualUsageStats:
         assert cancellation_values["_context_tokens"] == 120
         assert token_updates == [(120, False)]
 
+    async def test_interrupt_persists_cumulative_incremental_usage(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Gemini chunk deltas produce one cumulative context-token total."""
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        token_updates: list[tuple[int, bool]] = []
+        adapter._on_tokens_update = lambda count, *, approximate=False: (
+            token_updates.append((count, approximate))
+        )
+        chunks = [
+            _usage_chunk(
+                input_tokens=1_000,
+                output_tokens=60,
+                message_id="run-1",
+            ),
+            _usage_chunk(
+                input_tokens=0,
+                output_tokens=40,
+                message_id="run-1",
+            ),
+        ]
+        agent = _RaisingAgent(chunks, asyncio.CancelledError())
+        update_state = AsyncMock()
+        monkeypatch.setattr(agent, "aupdate_state", update_state, raising=False)
+        turn_stats = SessionStats()
+
+        with (
+            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.1),
+        ):
+            mock_settings.model_name = "configured-model"
+            mock_settings.model_provider = "google_genai"
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+                turn_stats=turn_stats,
+            )
+
+        assert turn_stats.request_count == 1
+        assert turn_stats.input_tokens == 1_000
+        assert turn_stats.output_tokens == 100
+        assert update_state.await_count == 1
+        assert update_state.await_args is not None
+        cancellation_values = update_state.await_args.args[1]
+        assert cancellation_values["_context_tokens"] == 1_100
+        assert token_updates == [(1_100, False)]
+
 
 class TestSessionCostEvents:
     """The graph's absolute cost total drives the client display."""
@@ -2481,7 +2592,21 @@ class TestSessionCostEvents:
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
-        adapter._on_session_cost = totals.append
+
+        def record_total(
+            total_usd: float,
+            /,
+            *,
+            thread_id: str = "",
+            pricing_ok: bool | None = None,
+        ) -> None:
+            assert thread_id == ""
+            # The payload omits `pricing_ok`, which must read as "unknown"
+            # rather than as a report that pricing is broken.
+            assert pricing_ok is None
+            totals.append(total_usd)
+
+        adapter._on_session_cost = record_total
         adapter._on_provisional_cost = lambda cost_usd: pytest.fail(  # noqa: ARG005  # signature must match the callback protocol
             "a server total must not be routed to the provisional display"
         )
@@ -2535,6 +2660,84 @@ class TestSessionCostEvents:
             {"type": "session_cost", "total": 0},
             is_main_agent=True,
         ) == pytest.approx(0.0)
+
+    async def test_failing_cost_callback_does_not_kill_the_stream(self) -> None:
+        """A misbehaving display callback must not abort the user's turn."""
+
+        async def mount_message(_: object) -> None:
+            await asyncio.sleep(0)
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        def explode(*_args: object, **_kwargs: object) -> None:
+            msg = "status bar is gone"
+            raise RuntimeError(msg)
+
+        adapter._on_session_cost = explode
+        adapter._on_provisional_cost = explode
+
+        chunks = [
+            ((), "custom", {"type": "session_cost", "total": 1.25}),
+            ((), "messages", (_text_message("Done."), {})),
+        ]
+        turn_stats = SessionStats()
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+            turn_stats=turn_stats,
+        )
+
+    def test_thread_id_is_read_from_the_payload(self) -> None:
+        """The client needs the owning thread to reject a stale total."""
+        assert (
+            _session_cost_thread_id({"type": "session_cost", "thread_id": "thread-1"})
+            == "thread-1"
+        )
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"type": "session_cost"},
+            {"type": "session_cost", "thread_id": None},
+            {"type": "session_cost", "thread_id": 7},
+            "session_cost",
+        ],
+    )
+    def test_unusable_thread_id_reads_as_unattributed(self, payload: object) -> None:
+        """An unattributable total is applied, not dropped: `""` means unknown."""
+        assert _session_cost_thread_id(payload) == ""
+
+    def test_pricing_ok_is_read_from_the_payload(self) -> None:
+        """A remote client can only learn the server's pricing health here."""
+        assert (
+            _session_cost_pricing_ok({"type": "session_cost", "pricing_ok": False})
+            is False
+        )
+        assert (
+            _session_cost_pricing_ok({"type": "session_cost", "pricing_ok": True})
+            is True
+        )
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"type": "session_cost"},
+            {"type": "session_cost", "pricing_ok": "yes"},
+            {"type": "session_cost", "pricing_ok": 1},
+            "session_cost",
+        ],
+    )
+    def test_unusable_pricing_ok_reads_as_unknown(self, payload: object) -> None:
+        """`None` must not be confused with a report that pricing is broken."""
+        assert _session_cost_pricing_ok(payload) is None
 
 
 class TestExecuteTaskTextualAutoModeClassifier:

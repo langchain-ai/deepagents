@@ -2796,6 +2796,7 @@ class TestMiddlewareStackConformance:
 
         from deepagents_code.cost_tracking import CostTrackingMiddleware
         from deepagents_code.goal_tools import GoalToolsMiddleware
+        from deepagents_code.reliable_rubric import ReliableRubricMiddleware
         from deepagents_code.resume_state import ResumeStateMiddleware
 
         agent_dir = tmp_path / "agent"
@@ -2863,6 +2864,14 @@ class TestMiddlewareStackConformance:
             middleware_types.index(ResumeStateMiddleware)
             < middleware_types.index(CostTrackingMiddleware)
             < middleware_types.index(GoalToolsMiddleware)
+        )
+        # `after_agent` hooks run in reverse list order, so cost tracking must
+        # stay *before* the rubric middleware. Reversed, the grading agent's
+        # spend lands in the next turn's checkpoint or is lost outright on a
+        # session's final turn. The two are registered ~460 lines apart in
+        # different functions, so nothing but this assertion pins the order.
+        assert middleware_types.index(CostTrackingMiddleware) < middleware_types.index(
+            ReliableRubricMiddleware
         )
         # The main agent owns the thread's cumulative cost; only nested
         # instances opt out of writing it.

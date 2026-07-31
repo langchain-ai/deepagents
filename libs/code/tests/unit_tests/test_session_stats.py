@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from io import StringIO
+from types import SimpleNamespace
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
 from rich.console import Console
 
 from deepagents_code._session_stats import (
     ModelStats,
+    RecordedRequest,
     SessionStats,
     classify_usage_kind,
+    finalize_recorded_requests,
     format_cost,
     format_token_count,
     print_usage_table,
@@ -353,6 +356,445 @@ class TestSessionStats:
         a.merge(b)
         assert a.request_count == 5
         assert a.input_tokens == 500
+
+
+class TestRecordMessageUsage:
+    """Client-side accounting for usage arriving on the message stream."""
+
+    @staticmethod
+    def _chunk(
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        message_id: str | None = "run-1",
+        names_model: bool = True,
+    ) -> AIMessageChunk:
+        return AIMessageChunk(
+            content="",
+            id=message_id,
+            usage_metadata={
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            },
+            response_metadata=(
+                {"model_name": "gpt-5.5", "model_provider": "openai"}
+                if names_model
+                else {"model_provider": "openai"}
+            ),
+        )
+
+    def test_replayed_chunk_after_a_round_boundary_is_not_recounted(self) -> None:
+        """A HITL resume replays chunks; closing the round makes them idempotent.
+
+        Without the boundary the replayed chunk looks like a legitimate later
+        delta and merges again, doubling the request's tokens and cost.
+        """
+        stats = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+        record_message_usage(stats, self._chunk(1_000, 100), recorded_requests=ledger)
+
+        finalize_recorded_requests(ledger)
+        replayed = record_message_usage(
+            stats, self._chunk(1_000, 100), recorded_requests=ledger
+        )
+
+        assert replayed is None
+        assert stats.request_count == 1
+        assert stats.input_tokens == 1_000
+        assert stats.output_tokens == 100
+
+    def test_round_boundary_does_not_break_incremental_chunks(self) -> None:
+        """Chunks within one round must still revise, not start a new request."""
+        stats = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+
+        record_message_usage(stats, self._chunk(1_000, 60), recorded_requests=ledger)
+        record_message_usage(stats, self._chunk(0, 40), recorded_requests=ledger)
+
+        assert stats.request_count == 1
+        assert stats.input_tokens == 1_000
+        assert stats.output_tokens == 100
+
+    def test_reprice_to_an_unpriceable_model_retracts_the_estimate(self) -> None:
+        """The caller must be told to drop the estimate it already displayed.
+
+        Reporting `None` would leave the provisional display holding a cost the
+        accumulator no longer has, so the status bar and `/cost` disagree.
+        """
+        stats = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+        first = record_message_usage(
+            stats,
+            self._chunk(1_000, 60, names_model=False),
+            fallback_model="gpt-5.5",
+            fallback_provider="openai",
+            recorded_requests=ledger,
+        )
+        assert first is not None
+        assert first.cost_usd is not None
+
+        uncatalogued = AIMessageChunk(
+            content="",
+            id="run-1",
+            usage_metadata={
+                "input_tokens": 0,
+                "output_tokens": 40,
+                "total_tokens": 40,
+            },
+            response_metadata={
+                "model_name": "totally-made-up-model-zzz",
+                "model_provider": "nowhere",
+            },
+        )
+        second = record_message_usage(
+            stats,
+            uncatalogued,
+            fallback_model="gpt-5.5",
+            fallback_provider="openai",
+            recorded_requests=ledger,
+        )
+
+        assert second is not None
+        assert second.cost_usd == pytest.approx(-first.cost_usd)
+        assert stats.total_cost_usd == pytest.approx(0.0)
+        assert stats.priced_request_count == 0
+
+    def test_retracting_a_kind_s_only_request_drops_its_row(self) -> None:
+        """An all-zero kind row would show as an empty line in the breakdown."""
+        stats = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+        record_message_usage(
+            stats, self._chunk(1_000, 60), kind="subagent", recorded_requests=ledger
+        )
+
+        record_message_usage(
+            stats, self._chunk(0, 40), kind="subagent", recorded_requests=ledger
+        )
+
+        assert [entry.request_count for entry in stats.per_kind.values()] == [1]
+
+    def test_per_chunk_deltas_sum_into_one_request(self) -> None:
+        """Google reports an incremental delta on every chunk of one message.
+
+        Dropping chunks after the first would lose most of the request's output
+        tokens and cost; counting each chunk as its own request would inflate
+        the request and priced-request counts instead. Equal consecutive deltas
+        must survive too, so token counts cannot stand in for stream position.
+        """
+        stats = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+
+        for output_tokens in (34, 33, 33):
+            record_message_usage(
+                stats,
+                self._chunk(1_000, output_tokens),
+                recorded_requests=ledger,
+            )
+
+        assert stats.output_tokens == 100
+        assert stats.request_count == 1
+        assert stats.priced_request_count == 1
+        assert stats.per_kind["assistant"].request_count == 1
+        assert [entry.request_count for entry in stats.per_model.values()] == [1]
+
+    def test_model_named_only_on_the_final_chunk_owns_the_whole_request(
+        self,
+    ) -> None:
+        """Google attaches `model_name` only to the chunk with `finish_reason`.
+
+        Without carrying the model forward, one API call would straddle a
+        fallback-model row and a real-model row in the breakdown.
+        """
+        stats = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+
+        record_message_usage(
+            stats,
+            self._chunk(1_000, 60, names_model=False),
+            fallback_model="configured-model",
+            fallback_provider="openai",
+            recorded_requests=ledger,
+        )
+        record_message_usage(
+            stats,
+            self._chunk(0, 40, names_model=False),
+            fallback_model="configured-model",
+            fallback_provider="openai",
+            recorded_requests=ledger,
+        )
+        record_message_usage(
+            stats,
+            self._chunk(0, 0, names_model=True),
+            fallback_model="configured-model",
+            fallback_provider="openai",
+            recorded_requests=ledger,
+        )
+
+        assert list(stats.per_model) == [("openai", "gpt-5.5")]
+        entry = stats.per_model["openai", "gpt-5.5"]
+        assert entry.request_count == 1
+        assert entry.output_tokens == 100
+        assert stats.request_count == 1
+
+        # The cost must be re-derived under the model finally named. The early
+        # chunks were priced against an unpriceable fallback, so keeping their
+        # estimates would file a priceable request under `gpt-5.5` showing
+        # nothing spent.
+        reference = SessionStats()
+        record_message_usage(
+            reference,
+            self._chunk(1_000, 100, names_model=True),
+            fallback_model="configured-model",
+            fallback_provider="openai",
+            recorded_requests={},
+        )
+        assert stats.priced_request_count == 1
+        assert stats.total_cost_usd > 0
+        assert stats.total_cost_usd == pytest.approx(reference.total_cost_usd)
+        assert entry.cost_usd == pytest.approx(reference.total_cost_usd)
+
+    def test_split_stream_costs_the_same_as_an_unsplit_one(self) -> None:
+        """Chunking is a transport detail; it must not change the estimate."""
+        split = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+        for chunk in (
+            self._chunk(1_000, 60, names_model=False),
+            self._chunk(0, 40, names_model=True),
+        ):
+            record_message_usage(
+                split,
+                chunk,
+                fallback_model="totally-unknown-model",
+                fallback_provider="openai",
+                recorded_requests=ledger,
+            )
+
+        whole = SessionStats()
+        record_message_usage(
+            whole,
+            self._chunk(1_000, 100, names_model=True),
+            fallback_model="totally-unknown-model",
+            fallback_provider="openai",
+            recorded_requests={},
+        )
+
+        assert whole.total_cost_usd > 0
+        assert split.total_cost_usd == pytest.approx(whole.total_cost_usd)
+        assert split.priced_request_count == whole.priced_request_count == 1
+
+    def test_negative_input_correction_lowers_the_displayed_tokens(self) -> None:
+        """Gemini can revise its prompt count *down* on the final chunk.
+
+        `langchain-google-genai` emits a negative `input_tokens` delta to
+        compensate, treating the lower cumulative count as ground truth. Per
+        message that floors to zero, so displaying the summed per-chunk counts
+        would leave the token readout above the count the cost was based on.
+        """
+        stats = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+
+        record_message_usage(
+            stats,
+            self._chunk(1_000, 60, names_model=False),
+            recorded_requests=ledger,
+        )
+        record_message_usage(
+            stats,
+            self._chunk(-200, 40, names_model=True),
+            recorded_requests=ledger,
+        )
+
+        corrected = SessionStats()
+        record_message_usage(corrected, self._chunk(800, 100), recorded_requests={})
+
+        assert stats.input_tokens == 800
+        assert stats.output_tokens == 100
+        assert stats.request_count == 1
+        assert stats.total_cost_usd == pytest.approx(corrected.total_cost_usd)
+        entry = stats.per_model["openai", "gpt-5.5"]
+        assert entry.input_tokens == 800
+
+    def test_correction_only_chunk_still_revises_the_request(self) -> None:
+        """A correction with no positive counts must not be discarded."""
+        stats = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+
+        record_message_usage(stats, self._chunk(1_000, 100), recorded_requests=ledger)
+        record_message_usage(stats, self._chunk(-200, 0), recorded_requests=ledger)
+
+        assert stats.input_tokens == 800
+        assert stats.output_tokens == 100
+        assert stats.request_count == 1
+
+    def test_cached_token_details_survive_the_merge(self) -> None:
+        """Cache buckets carry their own rates, so merging must keep them."""
+        stats = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+
+        for output_tokens in (60, 40):
+            message = AIMessageChunk(
+                content="",
+                id="run-1",
+                usage_metadata={
+                    "input_tokens": 1_000 if output_tokens == 60 else 0,
+                    "output_tokens": output_tokens,
+                    "total_tokens": (1_000 if output_tokens == 60 else 0)
+                    + output_tokens,
+                    "input_token_details": {
+                        "cache_read": 800 if output_tokens == 60 else 0
+                    },
+                },
+                response_metadata={
+                    "model_name": "gpt-5.5",
+                    "model_provider": "openai",
+                },
+            )
+            record_message_usage(stats, message, recorded_requests=ledger)
+
+        uncached = SessionStats()
+        record_message_usage(uncached, self._chunk(1_000, 100), recorded_requests={})
+
+        # Cache reads are cheaper than ordinary input, so losing the detail in
+        # the merge would silently overprice the request.
+        assert stats.total_cost_usd < uncached.total_cost_usd
+
+    def test_reports_message_delta_and_running_request_tokens(self) -> None:
+        """Pricing needs a delta while context display needs the running total."""
+        stats = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+
+        first = record_message_usage(
+            stats, self._chunk(1_000, 60), recorded_requests=ledger
+        )
+        second = record_message_usage(
+            stats, self._chunk(0, 40), recorded_requests=ledger
+        )
+
+        assert first is not None
+        assert second is not None
+        assert first.output_tokens == 60
+        assert second.output_tokens == 40
+        assert second.input_tokens == 0
+        assert first.request_tokens == 1_060
+        assert second.request_tokens == 1_100
+        assert first.cost_usd is not None
+        assert second.cost_usd is not None
+        assert first.cost_usd + second.cost_usd == pytest.approx(stats.total_cost_usd)
+
+    def test_completed_message_replay_is_recorded_once(self) -> None:
+        """A resumed stream replays a completed message; it must not re-count."""
+        stats = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+        message = AIMessage(
+            content="done",
+            id="run-1",
+            usage_metadata={
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "total_tokens": 1_100,
+            },
+        )
+
+        first = record_message_usage(stats, message, recorded_requests=ledger)
+        second = record_message_usage(stats, message, recorded_requests=ledger)
+
+        assert first is not None
+        assert second is None
+        assert stats.request_count == 1
+        assert stats.output_tokens == 100
+
+    def test_completed_replay_after_chunks_is_not_added_on_top(self) -> None:
+        """Chunks mark their ID so a later whole-message replay is skipped."""
+        stats = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+
+        record_message_usage(stats, self._chunk(1_000, 100), recorded_requests=ledger)
+        replay = record_message_usage(
+            stats,
+            AIMessage(
+                content="done",
+                id="run-1",
+                usage_metadata={
+                    "input_tokens": 1_000,
+                    "output_tokens": 100,
+                    "total_tokens": 1_100,
+                },
+            ),
+            recorded_requests=ledger,
+        )
+
+        assert replay is None
+        assert stats.request_count == 1
+        assert stats.output_tokens == 100
+
+    def test_usage_without_an_id_is_always_recorded(self) -> None:
+        """Anthropic's usage-bearing chunk carries no ID, so it cannot dedupe."""
+        stats = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+
+        for _ in range(2):
+            record_message_usage(
+                stats,
+                self._chunk(1_000, 100, message_id=None),
+                recorded_requests=ledger,
+            )
+
+        assert stats.request_count == 2
+        assert not ledger
+
+    def test_unusable_message_is_not_entered_in_the_ledger(self) -> None:
+        """An unusable first pass must not suppress the real usage later."""
+        stats = SessionStats()
+        ledger: dict[str, RecordedRequest] = {}
+        empty = AIMessage(
+            content="",
+            id="run-1",
+            usage_metadata={
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+            },
+        )
+        real = AIMessage(
+            content="done",
+            id="run-1",
+            usage_metadata={
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "total_tokens": 1_100,
+            },
+        )
+
+        assert record_message_usage(stats, empty, recorded_requests=ledger) is None
+        assert record_message_usage(stats, real, recorded_requests=ledger) is not None
+        assert stats.request_count == 1
+        assert stats.output_tokens == 100
+
+    def test_total_only_usage_falls_back_to_input(self) -> None:
+        stats = SessionStats()
+        message = AIMessageChunk(
+            content="",
+            id="run-1",
+            usage_metadata={
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 1_200,
+            },
+        )
+
+        recorded = record_message_usage(stats, message)
+
+        assert recorded is not None
+        assert recorded.input_tokens == 1_200
+        assert recorded.output_tokens == 0
+
+    def test_non_mapping_usage_is_ignored(self) -> None:
+        stats = SessionStats()
+
+        assert record_message_usage(stats, SimpleNamespace(usage_metadata=None)) is None
+        assert record_message_usage(stats, SimpleNamespace()) is None
+        assert stats.request_count == 0
 
 
 class TestClassifyUsageKind:

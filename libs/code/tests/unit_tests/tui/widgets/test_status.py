@@ -442,6 +442,46 @@ class TestTokenDisplay:
             display = pilot.app.query_one("#tokens-display")
             assert str(display.render()) == "... tokens"
 
+    async def test_cost_update_while_pending_keeps_the_placeholder(self) -> None:
+        """A mid-turn cost update must not resurrect the stale token count.
+
+        Cost and tokens share one display slot, so setting the cost re-renders
+        both. Without latching the pending state that re-render would show the
+        *previous* turn's count -- exactly what the placeholder hides.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            await pilot.pause()
+            bar.show_pending_tokens()
+            await pilot.pause()
+
+            bar.set_cost(1.25)
+            await pilot.pause()
+
+            display = str(pilot.app.query_one("#tokens-display").render())
+            assert "... tokens" in display
+            assert "5.0K" not in display
+            assert "$1.25" in display
+
+    async def test_accurate_count_replaces_the_placeholder_with_cost(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            await pilot.pause()
+            bar.show_pending_tokens()
+            await pilot.pause()
+            bar.set_cost(1.25)
+            await pilot.pause()
+
+            bar.set_tokens(7500)
+            await pilot.pause()
+
+            display = str(pilot.app.query_one("#tokens-display").render())
+            assert "7.5K" in display
+            assert "... tokens" not in display
+            assert "$1.25" in display
+
     def test_show_pending_tokens_without_mount_is_noop(self) -> None:
         bar = StatusBar()
         bar.show_pending_tokens()

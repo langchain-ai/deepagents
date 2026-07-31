@@ -41,8 +41,10 @@ from rich.text import Text
 
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._session_stats import (
+    RecordedRequest,
     SessionStats,
     classify_usage_kind,
+    finalize_recorded_requests,
     print_usage_table,
     record_message_usage,
 )
@@ -469,11 +471,14 @@ class StreamState:
     stats: SessionStats = field(default_factory=SessionStats)
     """Accumulated model usage stats for this stream."""
 
-    seen_usage_message_ids: set[str] = field(default_factory=set)
-    """Completed request IDs already counted in this headless run.
+    recorded_usage_requests: dict[str, RecordedRequest] = field(default_factory=dict)
+    """Requests already counted in this headless run, keyed by message ID.
 
     Monotonic across HITL resume passes so a replayed message does not add its
-    request, tokens, or cost to `stats` again.
+    request, tokens, or cost to `stats` again. Each pass closes its entries via
+    `finalize_recorded_requests`, which is what extends that guarantee to
+    replayed *chunks* -- an open chunked request accepts revisions, so without
+    the round boundary a replayed chunk would merge into it a second time.
     """
 
     spinner: _ConsoleSpinner | None = None
@@ -589,7 +594,7 @@ def _record_usage_from_message(
         fallback_provider=settings.model_provider or "",
         request_metadata=metadata,
         kind=usage_kind,
-        seen_message_ids=state.seen_usage_message_ids,
+        recorded_requests=state.recorded_usage_requests,
     )
 
 
@@ -1238,6 +1243,10 @@ async def _stream_agent(
             await _after_headless_compact(state)
             state.summarization_observed = False
     finally:
+        # Close the ledger at the round boundary, including on an aborted round:
+        # the next HITL pass replays these chunks, which would otherwise revise
+        # their requests a second time and double the run's tokens and cost.
+        finalize_recorded_requests(state.recorded_usage_requests)
         if state.spinner:
             state.spinner.stop()
 

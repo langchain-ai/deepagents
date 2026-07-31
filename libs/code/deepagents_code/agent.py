@@ -2563,7 +2563,11 @@ def create_cli_agent(
     # request. `CostTrackingMiddleware` is the sole writer of the cumulative
     # thread cost, pricing every model request recorded for this thread —
     # including subagent, offload, and Auto classifier calls that never reach
-    # `after_model` — so stack position does not affect what it covers.
+    # `after_model` — so thread-keyed draining makes that
+    # coverage independent of position within the model loop. `after_agent`
+    # hooks run in reverse list order, though, so this must stay *before*
+    # `ReliableRubricMiddleware`: otherwise the grading agent's spend lands in
+    # the next turn's checkpoint, or is lost on a session's final turn.
     # The CLI reads these channels back from `state_values` on thread resume.
     # Goal tools: exposes the read-only `get_goal`/`get_rubric` tools and the
     # constrained `update_goal` tool, and maintains goal-state notices.

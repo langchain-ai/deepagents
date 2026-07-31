@@ -69,8 +69,10 @@ from deepagents_code._invocation import invoked_name
 from deepagents_code._session_stats import (
     USAGE_KIND_LABELS,
     USAGE_KIND_ORDER,
+    RecordedRequest,
     SessionStats,
     SpinnerStatus,
+    finalize_recorded_requests,
     format_cost,
     format_token_count,
     record_message_usage,
@@ -242,16 +244,75 @@ def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
 def _coerce_session_cost_usd(value: object) -> float:
     """Coerce a persisted cost to a finite non-negative float.
 
+    A corrupted value reads as `$0.00`, which is indistinguishable from a thread
+    that genuinely spent nothing -- and `/cost` would then explain the zero with
+    the wrong reason. Log the discard for the same reason
+    `_warn_discarded_goal_channels` does, at WARNING because DEBUG is not
+    attached by default. The value itself is never logged, only its type.
+
     Returns:
         The valid persisted cost, or `0.0` for malformed values.
     """
     if not isinstance(value, (int, float)) or isinstance(value, bool):
+        if value is not None:
+            logger.warning(
+                "Discarding a malformed persisted session cost of type %s.",
+                type(value).__name__,
+            )
         return 0.0
     try:
         cost_usd = float(value)
     except (OverflowError, ValueError):
+        logger.warning("Discarding a persisted session cost that is out of range.")
         return 0.0
-    return cost_usd if math.isfinite(cost_usd) and cost_usd >= 0 else 0.0
+    if not math.isfinite(cost_usd) or cost_usd < 0:
+        logger.warning(
+            "Discarding a persisted session cost that is not finite and non-negative."
+        )
+        return 0.0
+    return cost_usd
+
+
+_PRICING_UNAVAILABLE_MESSAGE = (
+    "We couldn't calculate costs because the pricing data failed to load. "
+    "Reinstalling Deep Agents Code should restore cost estimates; see the debug "
+    "log for details. Untracked usage may still count toward subscription "
+    "limits or incur charges."
+)
+"""Shown when price data failed to load, rather than blaming the models used."""
+
+
+def _coerce_provisional_cost_delta_usd(value: object) -> float | None:
+    """Coerce one message's provisional cost contribution to a finite float.
+
+    Unlike `_coerce_session_cost_usd`, a *negative* value here is expected, not
+    corrupt: a request is re-priced downward whenever a later chunk names the
+    real model or corrects an over-counted prompt. Routing those through the
+    persisted-value coercer would discard the correction and log it as
+    corruption, leaving the display stuck at the pre-correction estimate.
+
+    Args:
+        value: Cost delta reported for one streamed message.
+
+    Returns:
+        The finite delta, or `None` when the value is unusable and should be
+            ignored rather than applied.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        logger.warning(
+            "Discarding a malformed provisional cost delta of type %s.",
+            type(value).__name__,
+        )
+        return None
+    try:
+        delta_usd = float(value)
+    except (OverflowError, ValueError):
+        logger.warning("Discarding a provisional cost delta that is out of range.")
+        return None
+    if not math.isfinite(delta_usd):
+        logger.warning("Discarding a provisional cost delta that is not finite.")
+        return None
+    return delta_usd
 
 
 def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
@@ -3792,6 +3853,14 @@ class DeepAgentsApp(App):
         reset whenever a server total arrives.
         """
 
+        self._server_pricing_ok: bool | None = None
+        """Whether price data loaded in the process that does the pricing.
+
+        `None` until a cost event reports it. Pricing runs server-side, which on
+        a remote deployment is a different process from this one, so the local
+        `pricing_data_available()` cannot see a broken install there.
+        """
+
         self._thread_restored_cost_usd: float = 0.0
         """Checkpoint cost without a local per-model breakdown."""
 
@@ -7329,7 +7398,14 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.show_pending_tokens()
 
-    def _set_session_cost(self, cost_usd: float) -> None:
+    def _set_session_cost(
+        self,
+        cost_usd: float,
+        /,
+        *,
+        thread_id: str = "",
+        pricing_ok: bool | None = None,
+    ) -> None:
         """Set the active thread's cumulative cost from a server-owned value.
 
         Used for both the restored checkpoint total and the totals the graph
@@ -7338,7 +7414,26 @@ class DeepAgentsApp(App):
 
         Args:
             cost_usd: Non-negative cumulative estimated cost in US dollars.
+            thread_id: Thread the total belongs to, when the source named one.
+                A streamed total can arrive after `/force-clear` or a thread
+                switch has already moved the display to another thread, so a
+                total for a thread that is no longer active is discarded. An
+                empty value means the source did not identify a thread (a
+                restored checkpoint read, say) and is always applied.
+            pricing_ok: Whether price data loaded in the pricing process, when
+                the source reported it. `None` leaves the last known value
+                alone, so a source that cannot speak to pricing health (a
+                restored checkpoint read) does not erase what a stream said.
         """
+        if thread_id and thread_id != self._lc_thread_id:
+            logger.debug(
+                "Ignoring a session cost total for thread %r; %r is active.",
+                thread_id,
+                self._lc_thread_id,
+            )
+            return
+        if pricing_ok is not None:
+            self._server_pricing_ok = pricing_ok
         self._session_cost_usd = _coerce_session_cost_usd(cost_usd)
         self._provisional_cost_usd = 0.0
         self._refresh_session_cost_display()
@@ -7378,7 +7473,7 @@ class DeepAgentsApp(App):
         if self._inflight_thread_id == self._lc_thread_id:
             self._thread_has_completed_turn = True
 
-    def _add_provisional_cost(self, cost_usd: float) -> None:
+    def _add_provisional_cost(self, cost_usd: float, /) -> None:
         """Show one streamed request's estimate ahead of the graph's total.
 
         The graph checkpoints this same request and streams the total that
@@ -7387,12 +7482,33 @@ class DeepAgentsApp(App):
         cannot survive into the thread's cost.
 
         Args:
-            cost_usd: Estimated request cost in US dollars.
+            cost_usd: Estimated cost this message contributed, in US dollars.
+                Negative when a later chunk re-prices its request downward.
         """
-        request_cost_usd = _coerce_session_cost_usd(cost_usd)
-        if request_cost_usd > 0:
-            self._provisional_cost_usd += request_cost_usd
-            self._refresh_session_cost_display()
+        delta_usd = _coerce_provisional_cost_delta_usd(cost_usd)
+        if delta_usd is None or delta_usd == 0:
+            return
+        # Clamp the running total, not the increment: dropping a negative delta
+        # would strand the display at the estimate the correction supersedes.
+        self._provisional_cost_usd = max(self._provisional_cost_usd + delta_usd, 0.0)
+        self._refresh_session_cost_display()
+
+    def _pricing_is_broken(self) -> bool:
+        """Report whether price data failed to load where pricing happens.
+
+        Prefers what the graph reported, because on a remote deployment the
+        pricing process is not this one and only it can see its own install.
+        Falls back to the local check for in-process runs and for threads that
+        have not received a cost event yet.
+
+        Returns:
+            `True` when the pricing process could not load its price data.
+        """
+        if self._server_pricing_ok is not None:
+            return not self._server_pricing_ok
+        from deepagents_code.cost_tracking import pricing_data_available
+
+        return not pricing_data_available()
 
     def _format_cost_summary(self) -> str:
         """Build the running total and type/model breakdown for `/cost`.
@@ -7424,7 +7540,13 @@ class DeepAgentsApp(App):
                     )
                 return "No model usage recorded for this thread yet."
             lines = [
-                (
+                # A failed `genai-prices` import makes *every* request
+                # unpriceable, which is a broken install rather than a gap in
+                # the price catalog -- and the only one of the two the user can
+                # act on. Blaming their models would send them the wrong way.
+                _PRICING_UNAVAILABLE_MESSAGE
+                if self._pricing_is_broken()
+                else (
                     "We couldn't calculate costs for the requests so far because "
                     "pricing isn't available for the models used. Unpriced usage "
                     "may still count toward subscription limits or incur charges."
@@ -7471,6 +7593,11 @@ class DeepAgentsApp(App):
                     ),
                 ]
             )
+        if has_unpriced_requests and self._pricing_is_broken():
+            # Reachable whenever pricing broke partway through a thread: earlier
+            # requests priced, later ones could not. Gating this on a zero total
+            # would leave those sessions blaming the models instead.
+            lines.extend(["", _PRICING_UNAVAILABLE_MESSAGE])
         if has_unpriced_requests or has_unknown_restored_usage:
             lines.append("The full thread cost may be higher.")
         priced_kinds = [
@@ -14699,7 +14826,7 @@ class DeepAgentsApp(App):
 
         offload_stats = SessionStats()
         offload_thread_id = self._lc_thread_id
-        seen_usage_message_ids: set[str] = set()
+        recorded_usage_requests: dict[str, RecordedRequest] = {}
         model_spec = self._effective_model_spec() or ""
         fallback_provider, separator, fallback_model = model_spec.partition(":")
         if not separator:
@@ -14855,15 +14982,15 @@ class DeepAgentsApp(App):
                             else None
                         ),
                         kind="offload",
-                        seen_message_ids=seen_usage_message_ids,
+                        recorded_requests=recorded_usage_requests,
                     )
                     if (
                         recorded_usage is not None
                         and recorded_usage.cost_usd is not None
                     ):
                         # Display-only until the graph's next absolute total
-                        # arrives. Request-ID deduplication above ensures a
-                        # replayed resume round cannot add this estimate twice.
+                        # arrives. The ledger is closed at each round boundary,
+                        # so a replayed resume round cannot add this twice.
                         self._add_provisional_cost(recorded_usage.cost_usd)
                     if _is_tool_message(msg):
                         text = _message_text(msg)
@@ -14883,6 +15010,10 @@ class DeepAgentsApp(App):
                             ):
                                 msg = "Compact continuation stopped by hook"
                                 raise ClientHookStopError(msg)
+            # Close the ledger at the round boundary: the next resume round
+            # replays these chunks, which would otherwise revise their requests
+            # a second time and double the offload's tokens and cost.
+            finalize_recorded_requests(recorded_usage_requests)
             return pending
 
         # Bound the resume loop: after compaction the model runs again, and a

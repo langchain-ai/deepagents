@@ -1,7 +1,7 @@
 """Tests for resume-state persistence and token display callbacks."""
 
 from types import SimpleNamespace
-from typing import Any, get_type_hints
+from typing import Any, cast, get_type_hints
 
 import pytest
 from langchain.agents.middleware.types import PrivateStateAttr
@@ -369,6 +369,81 @@ class TestCostDisplayCallbacks:
 
         assert app._displayed_cost_usd == pytest.approx(1.0)
 
+    def test_total_for_an_inactive_thread_is_discarded(self) -> None:
+        """A total in flight during `/force-clear` must not land on the new thread."""
+        app = DeepAgentsApp()
+        app._lc_thread_id = "thread-1"
+        app._set_session_cost(1.0, thread_id="thread-1")
+
+        app._set_session_cost(99.0, thread_id="thread-0")
+
+        assert app._displayed_cost_usd == pytest.approx(1.0)
+
+    def test_total_for_the_active_thread_is_applied(self) -> None:
+        app = DeepAgentsApp()
+        app._lc_thread_id = "thread-1"
+
+        app._set_session_cost(2.5, thread_id="thread-1")
+
+        assert app._displayed_cost_usd == pytest.approx(2.5)
+
+    def test_unattributed_total_is_applied(self) -> None:
+        """A restored checkpoint read names no thread and must still apply."""
+        app = DeepAgentsApp()
+        app._lc_thread_id = "thread-1"
+
+        app._set_session_cost(3.0)
+
+        assert app._displayed_cost_usd == pytest.approx(3.0)
+
+    def test_downward_reprice_lowers_the_provisional_display(self) -> None:
+        """A re-priced request must not strand the estimate it superseded."""
+        app = DeepAgentsApp()
+        app._set_session_cost(1.0)
+        app._add_provisional_cost(0.1545)
+
+        app._add_provisional_cost(-0.1512)
+
+        assert app._displayed_cost_usd == pytest.approx(1.0033)
+
+    def test_provisional_total_never_goes_below_the_server_total(self) -> None:
+        """Clamping the accumulator, not the increment, keeps retractions honest."""
+        app = DeepAgentsApp()
+        app._set_session_cost(1.0)
+        app._add_provisional_cost(0.25)
+
+        app._add_provisional_cost(-10.0)
+
+        assert app._displayed_cost_usd == pytest.approx(1.0)
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), "0.5", True, None])
+    def test_malformed_provisional_delta_is_ignored(self, value: object) -> None:
+        app = DeepAgentsApp()
+        app._set_session_cost(1.0)
+
+        app._add_provisional_cost(cast("float", value))
+
+        assert app._displayed_cost_usd == pytest.approx(1.0)
+
+    def test_streamed_pricing_health_is_remembered(self) -> None:
+        """Pricing runs server-side, so only the event can report it broken."""
+        app = DeepAgentsApp()
+        app._lc_thread_id = "thread-1"
+
+        app._set_session_cost(1.0, thread_id="thread-1", pricing_ok=False)
+
+        assert app._pricing_is_broken() is True
+
+    def test_unreported_pricing_health_leaves_the_last_value(self) -> None:
+        """A checkpoint read says nothing about pricing and must not erase it."""
+        app = DeepAgentsApp()
+        app._lc_thread_id = "thread-1"
+        app._set_session_cost(1.0, thread_id="thread-1", pricing_ok=False)
+
+        app._set_session_cost(2.0)
+
+        assert app._pricing_is_broken() is True
+
     def test_committed_state_lowers_an_optimistic_display(self) -> None:
         """The client defers to the checkpoint instead of pushing its own total."""
         app = DeepAgentsApp()
@@ -445,6 +520,28 @@ class TestCostDisplayCallbacks:
             "isn't available for the models used. Unpriced usage may still count "
             "toward subscription limits or incur charges."
         )
+
+    def test_cost_summary_blames_the_pricing_install_when_it_failed_to_load(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broken `genai-prices` makes every model unpriceable.
+
+        Reporting that as missing catalog coverage points the user at their
+        model choice instead of the one thing they can actually fix.
+        """
+        from deepagents_code import cost_tracking
+
+        monkeypatch.setattr(cost_tracking, "_PRICING_UNAVAILABLE", True)
+        stats = SessionStats()
+        stats.record_request("gpt-5.5", 100, 10, provider="openai")
+        app = DeepAgentsApp()
+        app._thread_stats = stats
+
+        summary = app._format_cost_summary()
+
+        assert "pricing data failed to load" in summary
+        assert "Reinstalling Deep Agents Code" in summary
+        assert "pricing isn't available for the models used" not in summary
 
     def test_cost_summary_includes_total_and_type_model_breakdown(self) -> None:
         stats = SessionStats()

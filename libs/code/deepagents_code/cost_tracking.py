@@ -70,9 +70,13 @@ SESSION_COST_EVENT_TYPE = "session_cost"
 """Custom-stream event type carrying the thread's absolute cumulative cost.
 
 Emitted by the durable writer so the status bar can track spend live without
-re-pricing anything. The payload is `{"type": ..., "total": <usd>}`; `total` is
-the full thread lifetime estimate, never a delta, so a client that misses an
-event still converges on the next one.
+re-pricing anything. The payload is `{"type": ..., "total": <usd>, "thread_id":
+<id>, "pricing_ok": <bool>}`; `total` is the full thread lifetime estimate,
+never a delta, so a client that misses an event still converges on the next one.
+`thread_id` lets a client that has since switched threads discard a total
+belonging to the previous one. `pricing_ok` reports whether price data loaded in
+the process that actually did the pricing, which is the only way a client can
+tell a broken remote install from models with no published rates.
 """
 
 _PROVIDER_ALIASES: dict[str, str] = {
@@ -183,6 +187,65 @@ def _cache_write_tokens(details: Mapping[str, Any]) -> int:
     return _token_count(details.get("cache_creation") or details.get("cache_write"))
 
 
+_PRICING_UNAVAILABLE = False
+"""Whether importing `genai-prices` failed on the most recent attempt.
+
+Cleared by a later success. Latching it would report a transient failure as a
+broken install for the rest of the process, telling the user to reinstall while
+costs compute normally.
+"""
+
+
+def pricing_data_available() -> bool:
+    """Report whether the last `genai-prices` load attempt succeeded.
+
+    Note that `True` also covers "not yet attempted", so callers must only
+    consult this after pricing has been tried -- otherwise a session that has
+    priced nothing reads as healthy.
+
+    Returns:
+        `False` when the most recent import attempt failed, so callers can
+            explain an empty cost figure as a broken pricing install rather
+            than as models that have no published rates.
+    """
+    return not _PRICING_UNAVAILABLE
+
+
+def _load_pricing() -> tuple[Any, Any] | None:
+    """Import `genai-prices` lazily, tracking whether it is currently loadable.
+
+    A failed import means no request can ever be priced, which is a different
+    problem from a model the catalog does not cover -- and one the user can act
+    on. Keeping it separate from the `calc_price` guard below stops a broken
+    install from being reported as a pricing-coverage gap.
+
+    The pair is deliberately re-imported rather than cached: `sys.modules` makes
+    that cheap, and holding a reference would pin the first-seen `calc_price`,
+    defeating any later patch of it.
+
+    Returns:
+        The `(Usage, calc_price)` pair, or `None` when the package is
+            unavailable.
+    """
+    global _PRICING_UNAVAILABLE  # noqa: PLW0603
+    try:
+        from genai_prices import Usage, calc_price
+    except Exception:
+        if not _PRICING_UNAVAILABLE:
+            # Once per process: this repeats on every request otherwise.
+            logger.warning(
+                "Could not load genai-prices; cost estimates are unavailable "
+                "for this session.",
+                exc_info=True,
+            )
+        _PRICING_UNAVAILABLE = True
+        return None
+    # A success clears the flag: the earlier failure was transient, and leaving
+    # it set would keep telling the user to reinstall a working package.
+    _PRICING_UNAVAILABLE = False
+    return Usage, calc_price
+
+
 def estimate_cost(
     usage_metadata: Mapping[str, Any] | None,
     model_name: str,
@@ -221,6 +284,12 @@ def estimate_cost(
     if not input_tokens and not output_tokens:
         # `total_tokens` combines input and output, which normally have different
         # rates. Without the split there is no defensible estimate.
+        logger.debug(
+            "Usage reports only a combined token total, which cannot be priced: "
+            "model=%r provider=%r",
+            model_ref,
+            provider,
+        )
         return None
 
     details = usage_metadata.get("input_token_details")
@@ -232,17 +301,34 @@ def estimate_cost(
         cache_write_tokens = 0
 
     # Provider metadata can occasionally report cache parts that exceed the
-    # inclusive input total. Clamp the parts so pricing still produces a safe
-    # estimate instead of failing the model turn with negative uncached input.
-    cache_read_tokens = min(cache_read_tokens, input_tokens)
-    cache_write_tokens = min(cache_write_tokens, input_tokens - cache_read_tokens)
+    # inclusive input total. `calc_price` rejects a negative uncached input, so
+    # without clamping the whole request would be dropped from the total rather
+    # than estimated. Clamping only ever fires on self-inconsistent provider
+    # numbers, so say so -- a silent clamp can materially undercount.
+    clamped_read = min(cache_read_tokens, input_tokens)
+    clamped_write = min(cache_write_tokens, input_tokens - clamped_read)
+    if clamped_read != cache_read_tokens or clamped_write != cache_write_tokens:
+        logger.warning(
+            "Cache token counts exceed the inclusive input total; clamping for "
+            "pricing. model=%r provider=%r input=%d cache_read=%d cache_write=%d",
+            model_ref,
+            provider,
+            input_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+        )
+    cache_read_tokens = clamped_read
+    cache_write_tokens = clamped_write
+
+    pricing = _load_pricing()
+    if pricing is None:
+        return None
+    usage_type, calc_price = pricing
 
     provider_id = _PROVIDER_ALIASES.get(provider_key, provider_key) or None
     try:
-        from genai_prices import Usage, calc_price
-
         price = calc_price(
-            Usage(
+            usage_type(
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cache_read_tokens=cache_read_tokens or None,
@@ -410,6 +496,17 @@ class _SessionCostRecorder(BaseCallbackHandler):
         if not isinstance(thread_id, str) or not thread_id:
             # Without a thread there is nothing to attribute the cost to. The
             # middleware still prices the agent's own response from state.
+            # Register a thread-less marker anyway: `on_llm_end` otherwise
+            # cannot tell this ordinary case from an entry the in-flight cap
+            # evicted, which is the one that really does lose spend.
+            with self._lock:
+                self._run_contexts[run_id] = _ModelCallContext(
+                    thread_id="",
+                    configured_provider="",
+                    scope="",
+                )
+                while len(self._run_contexts) > _MAX_INFLIGHT_REQUESTS:
+                    self._run_contexts.popitem(last=False)
             return
         provider = (
             metadata.get(_CONFIGURED_PROVIDER_METADATA_KEY)
@@ -470,6 +567,24 @@ class _SessionCostRecorder(BaseCallbackHandler):
         with self._lock:
             context = self._run_contexts.pop(run_id, None)
         if context is None:
+            # Every start registers a context, including thread-less ones, so
+            # a missing entry means `_MAX_INFLIGHT_REQUESTS` evicted it -- the
+            # request outlived that many newer starts -- and real spend is
+            # being dropped. Distinct from the thread-less case below, which is
+            # ordinary and costs nothing.
+            logger.warning(
+                "No start context for a completed request; it outlived %d newer "
+                "requests and its cost is dropped from the session total.",
+                _MAX_INFLIGHT_REQUESTS,
+            )
+            return
+        if not context.thread_id:
+            # Ordinary: an uncheckpointed invoke has no thread to attribute to.
+            # The middleware still prices the agent's own response from state.
+            logger.debug(
+                "Completed request has no thread to attribute its cost to; the "
+                "middleware prices the main response from state instead."
+            )
             return
         try:
             record = _record_from_response(
@@ -478,7 +593,13 @@ class _SessionCostRecorder(BaseCallbackHandler):
                 scope=context.scope,
             )
         except Exception:
-            logger.debug("Could not read usage from a model response", exc_info=True)
+            # This is the sole entry point for every priced request, so a
+            # systematic failure here silently zeroes the whole session.
+            logger.warning(
+                "Could not read usage from a model response; its cost is "
+                "dropped from the session total.",
+                exc_info=True,
+            )
             return
         if record is None:
             return
@@ -492,8 +613,15 @@ class _SessionCostRecorder(BaseCallbackHandler):
             self._records.move_to_end(context.thread_id)
             records.append(record)
             if len(records) > _MAX_RECORDS_PER_THREAD:
+                dropped = len(records) - _MAX_RECORDS_PER_THREAD
                 del records[:-_MAX_RECORDS_PER_THREAD]
-                logger.debug("Dropped the oldest undrained cost records for a thread")
+                # In a pricing process the middleware drains every model step,
+                # so reaching this cap means spend is being permanently lost.
+                logger.warning(
+                    "Dropped %d undrained cost record(s) for an active thread; "
+                    "their cost is missing from the session total.",
+                    dropped,
+                )
 
     def on_llm_error(
         self,
@@ -532,6 +660,41 @@ class _SessionCostRecorder(BaseCallbackHandler):
             else:
                 self._records.pop(thread_id, None)
             return claimed
+
+    def restore(self, thread_id: str, records: list[_ModelCallRecord]) -> None:
+        """Return drained records to the recorder after a failed pricing pass.
+
+        `drain` removes what it returns, so a caller that fails partway through
+        pricing would otherwise destroy real spend. Restoring puts the records
+        back ahead of anything recorded since, preserving completion order so
+        the retry prices them in the order they arrived.
+
+        Args:
+            thread_id: Thread the records were drained from.
+            records: Records to put back. An empty list is a no-op.
+        """
+        if not records:
+            return
+        with self._lock:
+            existing = self._records.get(thread_id)
+            if existing is None:
+                while len(self._records) >= _MAX_TRACKED_THREADS:
+                    self._records.popitem(last=False)
+                    logger.debug(
+                        "Dropped undrained cost records for an inactive thread"
+                    )
+                existing = []
+                self._records[thread_id] = existing
+            existing[:0] = records
+            if len(existing) > _MAX_RECORDS_PER_THREAD:
+                dropped = len(existing) - _MAX_RECORDS_PER_THREAD
+                del existing[:dropped]
+                logger.warning(
+                    "Dropped %d restored cost record(s) to keep the active "
+                    "thread bounded; their cost is missing from the session total.",
+                    dropped,
+                )
+            self._records.move_to_end(thread_id)
 
 
 def _record_from_response(
@@ -627,6 +790,29 @@ def _drain_recorded_costs(
     if recorder is None or not thread_id:
         return []
     return recorder.drain(thread_id, scope=scope)
+
+
+def _restore_recorded_costs(
+    thread_id: str | None,
+    records: list[_ModelCallRecord],
+) -> bool:
+    """Put drained records back after pricing failed.
+
+    Args:
+        thread_id: Thread the records were drained from.
+        records: Records to return to the recorder.
+
+    Returns:
+        `True` when the records were handed back, `False` when there is no
+            recorder to hand them to and the spend is therefore lost.
+    """
+    if not records:
+        return True
+    recorder = _RECORDER_VAR.get()
+    if recorder is None or not thread_id:
+        return False
+    recorder.restore(thread_id, records)
+    return True
 
 
 class _CostTransfer(TypedDict):
@@ -802,7 +988,15 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
             The additive cost delta, or `None` when there is nothing priceable
             to add. Returning `None` leaves the prior checkpoint value unchanged.
         """
-        return self._charge(state, runtime, price_latest_message=True)
+        # Each middleware hook is its own graph node, so an exception here would
+        # fail the user's turn. Cost tracking is never worth that. `_charge`
+        # returns its drained records to the recorder before propagating, so
+        # skipping this step's charge defers the spend rather than losing it.
+        try:
+            return self._charge(state, runtime, price_latest_message=True)
+        except Exception:
+            logger.warning("Cost tracking failed to charge a model step", exc_info=True)
+            return None
 
     def after_agent(  # ty: ignore[invalid-method-override]
         self,
@@ -823,6 +1017,33 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
             state: Final state for the completed agent run.
             runtime: LangGraph runtime used to identify the thread and to stream
                 the new total to the client.
+
+        Returns:
+            The additive cost delta and/or a nested transfer update, or `None`
+            when nothing was left to charge or transfer.
+        """
+        # See `after_model`: a raise here would fail the turn, and `_charge`
+        # has already handed its records back. A nested instance that cannot
+        # transfer loses only its own subagent total.
+        try:
+            return self._after_agent_update(state, runtime)
+        except Exception:
+            logger.warning(
+                "Cost tracking failed to charge the completed agent run",
+                exc_info=True,
+            )
+            return None
+
+    def _after_agent_update(
+        self,
+        state: CostState,
+        runtime: Runtime[ContextT],
+    ) -> dict[str, Any] | None:
+        """Drain late records and, for a nested run, stage the parent transfer.
+
+        Args:
+            state: Final state for the completed agent run.
+            runtime: LangGraph runtime used to identify the thread and scope.
 
         Returns:
             The additive cost delta and/or a nested transfer update, or `None`
@@ -899,62 +1120,117 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 claimed_transfer = True
         charged_message_ids: set[str] = set()
         charged_count = 0
+        pricing_attempted = False
         scope = _checkpoint_scope(runtime) if self._nested else None
-        for record in _drain_recorded_costs(thread_id, scope=scope):
-            # `_model_spec` describes the main response, while the recorder also
-            # contains subagent and side-model calls. Correct generic provider
-            # metadata only for the record that joins to that main response.
-            # Every other record keeps the provider it reported.
-            provider = record.provider
-            if main_message_id is not None and record.message_id == main_message_id:
-                provider = _resolve_pricing_provider(provider, fallback[1])
-            cost_usd = estimate_cost(
-                record.usage_metadata,
-                *_pricing_target(record.model_name, provider, fallback),
-            )
-            if cost_usd is None:
-                continue
-            delta_usd += cost_usd
-            charged_count += 1
-            if record.message_id is not None:
-                charged_message_ids.add(record.message_id)
-
-        if price_latest_message:
-            # A model that never fires callbacks (or a request the recorder
-            # could not attribute to this thread) leaves the agent's own
-            # response uncharged, so price it from state. Joining on message ID
-            # keeps a request the recorder already charged from being added
-            # twice; only successfully priced records are in the charged set.
-            # An unidentified response cannot be joined, so treat any charged
-            # request as covering it: undercounting one request beats charging
-            # the same one twice.
-            already_charged = (
-                message.id in charged_message_ids
-                if message is not None and message.id is not None
-                else charged_count > 0
-            )
-            if message is not None and not already_charged:
-                model_name, provider = resolve_message_model(
-                    message,
-                    fallback_model=fallback[0],
-                    fallback_provider=fallback[1],
-                )
+        # `drain` removes what it returns, so anything that raises below would
+        # destroy real spend. Hold the records and hand them back on failure so
+        # the next drain genuinely can re-price them.
+        drained = _drain_recorded_costs(thread_id, scope=scope)
+        try:
+            for record in drained:
+                # `_model_spec` describes the main response, while the recorder
+                # also contains subagent and side-model calls. Correct generic
+                # provider metadata only for the record that joins to that main
+                # response. Every other record keeps the provider it reported.
+                provider = record.provider
+                if main_message_id is not None and record.message_id == main_message_id:
+                    provider = _resolve_pricing_provider(provider, fallback[1])
+                pricing_attempted = True
                 cost_usd = estimate_cost(
-                    getattr(message, "usage_metadata", None),
-                    *_pricing_target(model_name, provider, fallback),
+                    record.usage_metadata,
+                    *_pricing_target(record.model_name, provider, fallback),
                 )
-                if cost_usd is not None:
-                    delta_usd += cost_usd
+                if cost_usd is None:
+                    # Silently omitting this leaves the total quietly short, so
+                    # leave a breadcrumb naming what could not be priced.
+                    logger.debug(
+                        "Dropping an unpriceable request from the session total: "
+                        "model=%r provider=%r",
+                        record.model_name,
+                        provider,
+                    )
+                    continue
+                delta_usd += cost_usd
+                charged_count += 1
+                if record.message_id is not None:
+                    charged_message_ids.add(record.message_id)
+            if price_latest_message:
+                # A model that never fires callbacks (or a request the recorder
+                # could not attribute to this thread) leaves the agent's own
+                # response uncharged, so price it from state. Joining on message
+                # ID keeps a request the recorder already charged from being
+                # added twice; only successfully priced records are in the
+                # charged set. An unidentified response cannot be joined, so
+                # treat any charged request as covering it: undercounting one
+                # request beats charging the same one twice.
+                already_charged = (
+                    message.id in charged_message_ids
+                    if message is not None and message.id is not None
+                    else charged_count > 0
+                )
+                if (
+                    message is not None
+                    and message.id is None
+                    and already_charged
+                    and logger.isEnabledFor(logging.DEBUG)
+                ):
+                    logger.debug(
+                        "Not pricing an unidentified main response from state; a "
+                        "drained record may already cover it."
+                    )
+                if message is not None and not already_charged:
+                    model_name, provider = resolve_message_model(
+                        message,
+                        fallback_model=fallback[0],
+                        fallback_provider=fallback[1],
+                    )
+                    pricing_attempted = True
+                    cost_usd = estimate_cost(
+                        getattr(message, "usage_metadata", None),
+                        *_pricing_target(model_name, provider, fallback),
+                    )
+                    if cost_usd is not None:
+                        delta_usd += cost_usd
 
-        if delta_usd <= 0 and not claimed_transfer:
-            return None
-        if not self._nested and delta_usd > 0:
-            self._emit_total(state, runtime, delta_usd)
-        update: dict[str, Any] = {}
-        if claimed_transfer:
-            update["_session_cost_transfers"] = Overwrite(remaining_transfers)
-        if delta_usd > 0:
-            update["_session_cost_usd"] = delta_usd
+            if not self._nested and (delta_usd > 0 or pricing_attempted):
+                pricing_ok = pricing_data_available()
+                if delta_usd > 0 or not pricing_ok:
+                    self._emit_total(
+                        state,
+                        runtime,
+                        delta_usd,
+                        pricing_ok=pricing_ok,
+                    )
+            if delta_usd <= 0 and not claimed_transfer:
+                return None
+            update: dict[str, Any] = {}
+            if claimed_transfer:
+                update["_session_cost_transfers"] = Overwrite(remaining_transfers)
+            if delta_usd > 0:
+                update["_session_cost_usd"] = delta_usd
+        except BaseException:
+            # `BaseException`, not `Exception`: a cancelled turn raises
+            # `CancelledError`, which would otherwise discard the records
+            # silently -- the hook wrappers below do not catch it either.
+            # Everything from the drain to the return is covered, because a
+            # failure anywhere in it means the delta never reaches the
+            # checkpoint, so the records must survive to be re-priced.
+            if _restore_recorded_costs(thread_id, drained):
+                logger.warning(
+                    "Pricing a drained batch failed; returned %d record(s) to "
+                    "the recorder to be re-priced on the next drain.",
+                    len(drained),
+                    exc_info=True,
+                )
+            else:
+                logger.warning(
+                    "Pricing a drained batch failed and there is no recorder to "
+                    "return %d record(s) to; their cost is lost from the "
+                    "session total.",
+                    len(drained),
+                    exc_info=True,
+                )
+            raise
         return update
 
     @staticmethod
@@ -962,6 +1238,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         state: CostState,
         runtime: Runtime[ContextT],
         delta_usd: float,
+        *,
+        pricing_ok: bool,
     ) -> None:
         """Stream the thread's new absolute total for the live status bar.
 
@@ -974,6 +1252,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
             state: State carrying the total this delta applies to.
             runtime: LangGraph runtime providing the custom stream writer.
             delta_usd: Cost just charged to the channel.
+            pricing_ok: Whether price data loaded in the pricing process.
         """
         writer = getattr(runtime, "stream_writer", None)
         if not callable(writer):
@@ -986,6 +1265,12 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 {
                     "type": SESSION_COST_EVENT_TYPE,
                     "total": max(float(prior_usd), 0.0) + delta_usd,
+                    "thread_id": _thread_id(runtime) or "",
+                    # Pricing runs here, which in a remote deployment is not the
+                    # client's process. Without this the client can only inspect
+                    # its own install and would blame the user's model choice
+                    # for a broken package on the server.
+                    "pricing_ok": pricing_ok,
                 }
             )
         except Exception:

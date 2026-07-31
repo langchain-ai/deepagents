@@ -14,7 +14,14 @@ from typing import TYPE_CHECKING, Any, NamedTuple, cast
 import httpx
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+    from collections.abc import (
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Iterable,
+        Mapping,
+        Sequence,
+    )
     from pathlib import Path
     from typing import Protocol
 
@@ -52,17 +59,30 @@ if TYPE_CHECKING:
 
         Positional-only: the total is always passed positionally, so a consumer
         is free to name the parameter for its own domain (a restored checkpoint
-        total, say) rather than matching this one.
+        total, say) rather than matching this one. `thread_id` is keyword-only
+        and may be `""` when the event did not name a thread. `pricing_ok` is
+        `None` when the event did not report pricing health.
         """
 
-        def __call__(self, total_usd: float, /) -> None: ...
+        def __call__(
+            self,
+            total_usd: float,
+            /,
+            *,
+            thread_id: str = "",
+            pricing_ok: bool | None = None,
+        ) -> None: ...
 
     class _ProvisionalCostCallback(Protocol):
-        """Callback signature for `_on_provisional_cost`."""
+        """Callback signature for `_on_provisional_cost`.
 
-        def __call__(self, cost_usd: float) -> None: ...
+        Positional-only for the same reason as `_SessionCostCallback`.
+        """
+
+        def __call__(self, cost_usd: float, /) -> None: ...
 
 
+from deepagents_code import _session_stats
 from deepagents_code._ask_user_types import (
     ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
     ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY,
@@ -74,16 +94,6 @@ from deepagents_code._ask_user_types import (
 )
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
-from deepagents_code._session_stats import (
-    ModelStats as ModelStats,
-    ModelStatsKey as ModelStatsKey,
-    SessionStats as SessionStats,
-    SpinnerStatus as SpinnerStatus,
-    classify_usage_kind as classify_usage_kind,
-    format_token_count as format_token_count,
-    print_usage_table as print_usage_table,
-    record_message_usage as record_message_usage,
-)
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
@@ -633,7 +643,8 @@ class TextualUIAdapter:
         on_auto_approve_enabled: Callable[[], Awaitable[bool] | bool | None]
         | None = None,
         on_switch_to_manual: Callable[[], Awaitable[bool] | bool] | None = None,
-        set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
+        set_spinner: Callable[[_session_stats.SpinnerStatus], Awaitable[None]]
+        | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         on_user_visible_output_started: Callable[[], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
@@ -999,6 +1010,41 @@ def _session_cost_total(data: Any, *, is_main_agent: bool) -> float | None:  # n
     return total_usd
 
 
+def _session_cost_thread_id(data: Any) -> str:  # noqa: ANN401  # custom-stream payload is dynamic
+    """Return the thread a session-cost event belongs to.
+
+    Args:
+        data: The `custom` stream payload, already validated as a cost event.
+
+    Returns:
+        The event's thread ID, or `""` when the payload omits one. An empty
+            result means the total cannot be attributed, so the client applies
+            it rather than discarding a legitimate update.
+    """
+    if not isinstance(data, dict):
+        return ""
+    thread_id = data.get("thread_id")
+    return thread_id if isinstance(thread_id, str) else ""
+
+
+def _session_cost_pricing_ok(data: Any) -> bool | None:  # noqa: ANN401  # custom-stream payload is dynamic
+    """Return whether the pricing process reported healthy price data.
+
+    Args:
+        data: The `custom` stream payload, already validated as a cost event.
+
+    Returns:
+        The event's `pricing_ok` flag, or `None` when the payload omits it or
+            states a non-boolean. `None` means "unknown", which leaves the
+            client's own view of pricing health untouched rather than
+            overriding it with a guess.
+    """
+    if not isinstance(data, dict):
+        return None
+    pricing_ok = data.get("pricing_ok")
+    return pricing_ok if isinstance(pricing_ok, bool) else None
+
+
 def _require_approval_mode_key(value: str | None) -> str:
     """Return a written Store key for fail-closed startup.
 
@@ -1029,6 +1075,26 @@ def _is_renderable_auto_mode_event(data: Any, *, is_main_agent: bool) -> bool:  
     )
 
 
+async def _finalize_usage_round(
+    stream: AsyncIterator[Any],
+    recorded_requests: dict[str, _session_stats.RecordedRequest],
+) -> AsyncIterator[Any]:
+    """Close streamed usage records when one graph stream pass ends.
+
+    Args:
+        stream: One invocation of the graph's event stream.
+        recorded_requests: Turn ledger shared across resume passes.
+
+    Yields:
+        Each graph event from the wrapped stream.
+    """
+    try:
+        async for chunk in stream:
+            yield chunk
+    finally:
+        _session_stats.finalize_recorded_requests(recorded_requests)
+
+
 async def execute_task_textual(
     user_input: str,
     agent: Any,  # noqa: ANN401  # Dynamic agent graph type
@@ -1045,8 +1111,8 @@ async def execute_task_textual(
     rubric: str | None = None,
     goal_active: bool = False,
     on_rubric_evaluation_end: Callable[[RubricEvaluationEnd], None] | None = None,
-    turn_stats: SessionStats | None = None,
-) -> SessionStats:
+    turn_stats: _session_stats.SessionStats | None = None,
+) -> _session_stats.SessionStats:
     """Execute a task with output directed to Textual UI.
 
     This is the Textual-compatible version of execute_task() that uses
@@ -1173,9 +1239,9 @@ async def execute_task_textual(
 
     captured_input_tokens = 0
     captured_output_tokens = 0
-    seen_usage_message_ids: set[str] = set()
+    recorded_usage_requests: dict[str, _session_stats.RecordedRequest] = {}
     if turn_stats is None:
-        turn_stats = SessionStats()
+        turn_stats = _session_stats.SessionStats()
     start_time = time.monotonic()
 
     # Warn if token display callbacks are only partially wired — all three
@@ -1415,13 +1481,17 @@ async def execute_task_textual(
             if adapter._set_spinner and not adapter._current_tool_messages:
                 await adapter._set_spinner("Thinking")
 
-            async for chunk in agent.astream(
+            stream = agent.astream(
                 stream_input,
                 stream_mode=["messages", "updates", "custom"],
                 subgraphs=True,
                 config=config,
                 context=context,
                 durability="exit",
+            )
+            async for chunk in _finalize_usage_round(
+                stream,
+                recorded_usage_requests,
             ):
                 if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # stream chunk is a 3-tuple (namespace, mode, data)
                     logger.debug("Skipping non-3-tuple chunk: %s", type(chunk).__name__)
@@ -1452,7 +1522,16 @@ async def execute_task_textual(
                     )
                     if session_cost_total is not None:
                         if adapter._on_session_cost is not None:
-                            adapter._on_session_cost(session_cost_total)
+                            try:
+                                adapter._on_session_cost(
+                                    session_cost_total,
+                                    thread_id=_session_cost_thread_id(data),
+                                    pricing_ok=_session_cost_pricing_ok(data),
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "on_session_cost callback failed", exc_info=True
+                                )
                         continue
 
                     rubric_message = data if isinstance(data, dict) else None
@@ -1676,7 +1755,6 @@ async def execute_task_textual(
                             metadata if isinstance(metadata, dict) else None,
                             main_agent=is_main_agent,
                         )
-                    # Skip subagent outputs - only render main agent content in chat
                     logger.debug(
                         "Processing message: type=%s id=%s has_content_blocks=%s",
                         type(message).__name__,
@@ -1691,7 +1769,7 @@ async def execute_task_textual(
                     if getattr(message, "usage_metadata", None):
                         from deepagents_code.config import settings
 
-                        recorded_usage = record_message_usage(
+                        recorded_usage = _session_stats.record_message_usage(
                             turn_stats,
                             message,
                             fallback_model=settings.model_name or "",
@@ -1699,13 +1777,13 @@ async def execute_task_textual(
                             request_metadata=(
                                 metadata if isinstance(metadata, dict) else None
                             ),
-                            kind=classify_usage_kind(
+                            kind=_session_stats.classify_usage_kind(
                                 is_main_agent=is_main_agent,
                                 metadata=(
                                     metadata if isinstance(metadata, dict) else None
                                 ),
                             ),
-                            seen_message_ids=seen_usage_message_ids,
+                            recorded_requests=recorded_usage_requests,
                         )
                     if recorded_usage is not None and (
                         recorded_usage.cost_usd is not None
@@ -1714,7 +1792,12 @@ async def execute_task_textual(
                         # Display-only: the graph checkpoints the same spend
                         # and streams the authoritative total, which
                         # supersedes this estimate.
-                        adapter._on_provisional_cost(recorded_usage.cost_usd)
+                        try:
+                            adapter._on_provisional_cost(recorded_usage.cost_usd)
+                        except Exception:
+                            logger.warning(
+                                "on_provisional_cost callback failed", exc_info=True
+                            )
 
                     # Skip subagent outputs - only render main agent content in chat
                     if not is_main_agent:
@@ -1744,7 +1827,7 @@ async def execute_task_textual(
                     if recorded_usage is not None:
                         captured_input_tokens = max(
                             captured_input_tokens,
-                            recorded_usage.input_tokens + recorded_usage.output_tokens,
+                            recorded_usage.request_tokens,
                         )
 
                     # Regular (non-summarization) chunks resumed — summarization
@@ -3081,7 +3164,7 @@ async def _handle_interrupt_cleanup(
     assistant_message_by_namespace: dict[tuple, Any] | None = None,
     captured_input_tokens: int,
     captured_output_tokens: int,
-    turn_stats: SessionStats,
+    turn_stats: _session_stats.SessionStats,
     start_time: float,
     recover_interrupted_turn: bool = True,
 ) -> None:

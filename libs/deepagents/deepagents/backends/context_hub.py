@@ -321,7 +321,10 @@ class ContextHubBackend(BackendProtocol):
         except LangSmithError as exc:
             logger.exception("Hub pull failed for %r", self._identifier)
             return GlobResult(error=f"Hub unavailable: {exc}")
-        matcher = compile_grep_include_glob(pattern)
+        try:
+            matcher = compile_grep_include_glob(pattern)
+        except ValueError as exc:
+            return GlobResult(error=f"Invalid glob pattern: {exc}")
         results: list[FileInfo] = [FileInfo(path=f"/{file_path}", is_dir=False) for file_path in cache if matcher(file_path)]
         return GlobResult(matches=results)
 

@@ -178,12 +178,20 @@ class TestFilesystemBackendGlobMatrix:
         assert _paths_from_infos(be.glob(pattern, path=path).matches) == expected
 
 
-def _run_glob_script(path: Path, pattern: str, *, allow_error: bool = False) -> list[dict[str, Any]]:
+def _run_glob_script(
+    path: Path,
+    pattern: str,
+    *,
+    allow_error: bool = False,
+    time_budget: float | None = None,
+) -> list[dict[str, Any]]:
     """Run the sandbox remote glob script the same way `_build_glob_cmd` does."""
     cmd = _build_glob_cmd(pattern, str(path))
     _, _, tail = cmd.partition('python3 -c "')
     script, _, _ = tail.partition('" 2>&1')
     assert script, "failed to extract remote glob script from template"
+    if time_budget is not None:
+        script = script.replace("TIME_BUDGET = 5.0", f"TIME_BUDGET = {time_budget!r}", 1)
     proc = subprocess.run(  # noqa: S603
         [sys.executable, "-c", script],
         capture_output=True,
@@ -316,6 +324,15 @@ def test_glob_command_template_uses_walk_not_stdlib_glob() -> None:
     assert "os.walk" in _GLOB_COMMAND_TEMPLATE
     assert "fnmatch" in _GLOB_COMMAND_TEMPLATE
     assert "glob.glob" not in _GLOB_COMMAND_TEMPLATE
+
+
+def test_glob_directory_only_walk_honors_time_budget(tmp_path: Path) -> None:
+    """An expired budget stops a walk even when no directory contains files."""
+    (tmp_path / "one" / "two" / "three").mkdir(parents=True)
+
+    rows = _run_glob_script(tmp_path, "*", time_budget=-1.0)
+
+    assert rows == [{"warning": "truncated"}]
 
 
 def test_glob_script_body_is_shell_safe() -> None:

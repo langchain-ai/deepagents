@@ -3517,7 +3517,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
             ), f"Unexpected shell middleware on subagent {name!r}"
 
     def test_subagent_middleware_combines_shell_and_configurable_model(
-        self, tmp_path: Path
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Restrictive shell + implicit model should yield both middlewares.
 
@@ -3525,9 +3525,12 @@ class TestCreateCliAgentShellMiddlewareWiring:
         `ConfigurableModelMiddleware`, which would let a runtime `/model` switch
         clobber the pinned model.
         """
+        from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.agent import ShellAllowListMiddleware
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
+        from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
+        monkeypatch.setenv(EXPERIMENTAL, "1")
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
@@ -3586,7 +3589,9 @@ class TestCreateCliAgentShellMiddlewareWiring:
             assert middleware_types == [
                 ConfigurableModelMiddleware,
                 ShellAllowListMiddleware,
+                ServerHooksMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
+            assert subagents_by_name[name]["middleware"][-1]._emit_stop is False
 
         pinned = subagents_by_name["pinned"]
         assert pinned["model"] == "anthropic:claude-haiku-4-5"
@@ -3597,6 +3602,13 @@ class TestCreateCliAgentShellMiddlewareWiring:
         assert not any(
             isinstance(mw, ConfigurableModelMiddleware) for mw in pinned_middleware
         ), "Pinned subagent must not gain configurable model middleware"
+        assert any(isinstance(mw, ServerHooksMiddleware) for mw in pinned_middleware), (
+            "Pinned subagent should wrap tools with server hooks"
+        )
+        hooks_mw = next(
+            mw for mw in pinned_middleware if isinstance(mw, ServerHooksMiddleware)
+        )
+        assert hooks_mw._emit_stop is False
 
     def test_subagents_get_managed_memory_guard_when_memory_enabled(
         self, tmp_path: Path
@@ -4831,6 +4843,53 @@ class TestCreateCliAgentInterpreterWiring:
         assert middleware.index(auto_middleware) < middleware.index(
             compaction_middleware
         )
+
+    @pytest.mark.parametrize("auto_mode_enabled", [True, False])
+    def test_single_hitl_slot_precedes_server_hooks(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        auto_mode_enabled: bool,
+    ) -> None:
+        """One HITL middleware is installed, ahead of the server hook middleware.
+
+        `AutoModeHITLMiddleware` reports the stock `HumanInTheLoopMiddleware`
+        name, so pairing it with the standalone approval middleware would trip
+        `create_agent`'s duplicate-name assertion. `ServerHooksMiddleware` must
+        stay behind whichever one is installed so its `after_model` `PreToolUse`
+        pass resolves before approval routing.
+        """
+        from deepagents_code._env_vars import EXPERIMENTAL
+        from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
+
+        monkeypatch.setenv(EXPERIMENTAL, "1")
+        middleware = self._capture_middleware(
+            tmp_path, auto_mode_enabled=auto_mode_enabled
+        )
+
+        hitl = [item for item in middleware if item.name == "HumanInTheLoopMiddleware"]
+        hooks = next(
+            item for item in middleware if isinstance(item, ServerHooksMiddleware)
+        )
+
+        assert len(hitl) == 1
+        assert middleware.index(hitl[0]) < middleware.index(hooks)
+
+    def test_auto_mode_agent_builds(self, tmp_path: Path) -> None:
+        """Auto mode compiles a real graph rather than aborting on duplicates."""
+        agent, _backend = create_cli_agent(
+            model=_make_fake_chat_model(),
+            assistant_id="test-agent",
+            enable_memory=False,
+            enable_skills=False,
+            enable_shell=False,
+            system_prompt="test prompt",
+            cwd=tmp_path,
+            auto_mode_enabled=True,
+        )
+
+        assert agent is not None
 
     def test_auto_mode_omitted_outside_interactive(self, tmp_path: Path) -> None:
         """Auto is refused (no middleware) in a non-interactive session."""

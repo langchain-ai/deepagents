@@ -34,7 +34,7 @@ on:
         type: string
         default: "3"
       n_retries:
-        description: "Maximum additional attempts per trial after a Harbor-retryable exception when the recorded reward is below 1.0 or missing. AgentTimeoutError remains excluded."
+        description: "Maximum additional attempts per trial after a Harbor-retryable exception (harbor's standard --max-retries). AgentTimeoutError remains excluded."
         type: string
         default: "0"
       agent_timeout_multiplier:
@@ -85,9 +85,10 @@ jobs:
       expected_leaves: ${{ steps.p.outputs.expected_leaves }}
       branches: ${{ steps.p.outputs.branches }}
       sources: ${{ steps.p.outputs.sources }}
+      experiments: ${{ steps.p.outputs.experiments }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🐍 Set up Python + UV"
         if: ${{ inputs.profile == 'full' }}
@@ -125,7 +126,7 @@ jobs:
           # a single source of truth for category -> dataset and a version
           # bump there can't silently drift out of sync with enumeration.
           sys.path.insert(
-              0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts")
+              0, os.path.join(os.environ["GITHUB_WORKSPACE"], ".github", "scripts", "evals")
           )
           from unified_prep import CATEGORY_MAP
 
@@ -140,7 +141,7 @@ jobs:
               sys.exit("::error::No categories selected to enumerate for the full profile")
 
           enumerate_script = os.path.join(
-              os.environ["GITHUB_WORKSPACE"], ".github", "scripts", "enumerate_tasks.py"
+              os.environ["GITHUB_WORKSPACE"], ".github", "scripts", "evals", "enumerate_tasks.py"
           )
           tasks_by_cat: dict[str, list[str]] = {}
           for category in categories:
@@ -200,7 +201,7 @@ jobs:
           # Set by the enumerate step above for the full profile only; empty
           # (unset) for lite, which unified_prep.py never reads in that case.
           UNIFIED_TASKS_JSON: ${{ env.UNIFIED_TASKS_JSON }}
-        run: python .github/scripts/unified_prep.py
+        run: python .github/scripts/evals/unified_prep.py
 
       # A single place to see exactly what a dispatch ran with — the raw inputs
       # plus the values prep derived from them (resolved model list, and the
@@ -265,7 +266,7 @@ jobs:
             echo "| profile | \`${IN_PROFILE}\` |"
             echo "| include_tasks | \`${IN_INCLUDE_TASKS:-(profile default)}\` |"
             echo "| rollouts | \`${IN_ROLLOUTS}\` |"
-            echo "| retries per eligible failed trial | \`${IN_N_RETRIES}\` |"
+            echo "| retries per failed trial (--max-retries) | \`${IN_N_RETRIES}\` |"
             echo "| agent timeout multiplier | \`${IN_AGENT_TIMEOUT_MULTIPLIER}\` |"
             echo "| concurrency | \`${IN_CONCURRENCY}\` |"
             echo "| shard pool (max_parallel / model_parallel) | \`${MAX_PARALLEL:-?}\` / \`${MODEL_PARALLEL:-?}\` |"
@@ -310,11 +311,73 @@ jobs:
       harbor_package_override: ${{ inputs.harbor_package_override }}
       judge_models: ${{ inputs.judge_models }}
 
+  usage:
+    name: "💰 Collect LangSmith usage"
+    needs:
+      - prep
+      - eval
+    if: ${{ always() }}
+    # Token/cost data lives only in LangSmith, so this is the one job granted the
+    # API key. It is deliberately separate from combine (which publishes with
+    # write access): the key never reaches a job that can push to the repo.
+    # Best-effort — a usage failure must not fail the experiment workflow.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    # Same Environment as the trace-writing harbor jobs, so the read here and the
+    # writes there use the one `evals` LANGSMITH_API_KEY (which must carry both
+    # write and runs:read) rather than a stray repo/org key.
+    environment: evals
+    # Only checkout needs a token scope; the collector reads LangSmith over its own
+    # API key, not the GitHub API. (Declaring any permission zeroes the rest.)
+    permissions:
+      contents: read
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: unified-usage
+          working-directory: libs/evals
+
+      - name: "🗂️ Prepare UV cache directory"
+        run: |
+          mkdir -p "$UV_CACHE_DIR"
+
+      - name: "💰 Query rollout usage"
+        id: query-usage
+        continue-on-error: true
+        env:
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          # prep computed {experiment: expected_trials} up front; no need to scan
+          # shard artifacts to learn which projects to query.
+          EXPERIMENTS_JSON: ${{ needs.prep.outputs.experiments }}
+        run: |
+          mkdir -p _usage
+          # Passed via env (not interpolated into the shell) for injection safety.
+          printf '%s' "$EXPERIMENTS_JSON" > _usage/experiments.json
+          uv run --project libs/evals python \
+            .github/scripts/evals/collect_langsmith_usage.py \
+            --experiments-json _usage/experiments.json \
+            --out _usage/langsmith_usage.json
+
+      - name: "📤 Upload LangSmith usage"
+        if: ${{ always() && hashFiles('_usage/langsmith_usage.json') != '' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unified-langsmith-usage
+          path: _usage/langsmith_usage.json
+          if-no-files-found: error
+
   combine:
     name: "📊 Combine cross-model results"
     needs:
       - prep
       - eval
+      - usage
     if: ${{ always() }}
     # Aggregation and reporting happen after the paid eval work. Preserve their
     # diagnostics without letting analysis failures fail the experiment workflow.
@@ -335,7 +398,7 @@ jobs:
       ROLLOUTS: ${{ inputs.rollouts }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -378,6 +441,20 @@ jobs:
             sleep $((attempt * 5))
           done
 
+      - name: "⬇️ Download LangSmith usage"
+        id: download-usage
+        continue-on-error: true
+        # Best-effort: the usage job holds the API key, not this one. A missing
+        # or failed usage artifact just drops the cost columns; the leaderboard
+        # still renders.
+        run: |
+          if gh run download "$RUN_ID" --repo "$REPO" --pattern 'unified-langsmith-usage' --dir _usage_dl >usage_dl.log 2>&1; then
+            find _usage_dl -name langsmith_usage.json -exec cp {} _usage_langsmith_usage.json \; 2>/dev/null || true
+          else
+            echo "::warning::No unified-langsmith-usage artifact; cost columns omitted."
+            cat usage_dl.log || true
+          fi
+
       - name: "📊 Combine"
         id: combine-results
         if: ${{ always() }}
@@ -389,7 +466,11 @@ jobs:
           EXPECTED_CATEGORIES: ${{ needs.prep.outputs.categories }}
         run: |
           mkdir -p _leaves
-          python3 .github/scripts/aggregate_unified.py _leaves --rollouts "$ROLLOUTS" --out-dir _combined
+          usage_args=()
+          if [ -f _usage_langsmith_usage.json ]; then
+            usage_args=(--usage-json _usage_langsmith_usage.json)
+          fi
+          python3 .github/scripts/evals/aggregate_unified.py _leaves --rollouts "$ROLLOUTS" --out-dir _combined "${usage_args[@]}"
 
       - name: "📊 Generate radar chart"
         id: radar-chart
@@ -536,7 +617,7 @@ jobs:
           EXPECTED_LEAVES: ${{ needs.prep.outputs.expected_leaves }}
           EXPECTED_CATEGORIES: ${{ needs.prep.outputs.categories }}
         run: |
-          python3 .github/scripts/aggregate_unified_compare.py _leaves \
+          python3 .github/scripts/evals/aggregate_unified_compare.py _leaves \
             --sources-json "$SOURCES" \
             --expected-leaves-json "$EXPECTED_LEAVES" \
             --categories-json "$EXPECTED_CATEGORIES" \

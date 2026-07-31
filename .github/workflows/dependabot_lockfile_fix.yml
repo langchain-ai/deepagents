@@ -47,7 +47,7 @@ jobs:
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
       - name: Checkout trusted base code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.BASE_SHA }}
           path: trusted-source
@@ -63,7 +63,7 @@ jobs:
           enable-cache: "false"
 
       - name: Checkout PR head read-only for preflight
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.HEAD_SHA }}
           path: pr-preflight
@@ -178,7 +178,7 @@ jobs:
 
           repo = Path.cwd()
           runner_temp = Path(os.environ["RUNNER_TEMP"])
-          script = repo.parent / "trusted-source" / ".github" / "scripts" / "check_lockfiles_pre_commit.py"
+          script = repo.parent / "trusted-source" / ".github" / "scripts" / "checks" / "check_lockfiles_pre_commit.py"
           spec = importlib.util.spec_from_file_location("lockfile_check", script)
           if spec is None or spec.loader is None:
               raise RuntimeError(f"Unable to load {script}")
@@ -212,7 +212,7 @@ jobs:
           PY
 
       - name: Checkout PR head for commit
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.HEAD_REF }}
           path: pr

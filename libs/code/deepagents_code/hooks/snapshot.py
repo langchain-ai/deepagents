@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from deepagents_code.hooks.capabilities import get_event_spec
+from deepagents_code.hooks.capabilities import HookOwner, get_event_spec
 from deepagents_code.hooks.loading import compute_snapshot_id
 from deepagents_code.hooks.models.domain import (
     HookDiagnostic,
@@ -23,6 +23,7 @@ from deepagents_code.hooks.models.domain import (
     SubagentStartEvent,
     SubagentStopEvent,
 )
+from deepagents_code.hooks.projection import to_wire_notification_type
 from deepagents_code.hooks.tools import to_wire_tool_name
 
 if TYPE_CHECKING:
@@ -173,6 +174,18 @@ class HooksSnapshot:
         )
         return HookMatch(handlers=matched)
 
+    def configured_events(self) -> frozenset[HookEvent]:
+        """Return events that have at least one compiled handler."""
+        return frozenset(event for event, handlers in self.handlers.items() if handlers)
+
+    def configured_server_events(self) -> frozenset[HookEvent]:
+        """Return server-owned events that have at least one compiled handler."""
+        return frozenset(
+            event
+            for event in self.configured_events()
+            if get_event_spec(event).owner is HookOwner.SERVER
+        )
+
 
 def _compile_matcher(
     value: str | None,
@@ -229,7 +242,7 @@ def _match_target(
     ):
         return to_wire_tool_name(event.call.name, mcp_server=event.call.mcp_server)
     if matcher_field == "notification_type" and isinstance(event, NotificationEvent):
-        return event.notification.type
+        return to_wire_notification_type(event.notification.type).value
     if matcher_field == "cause" and isinstance(
         event, SessionStartEvent | SessionEndEvent
     ):

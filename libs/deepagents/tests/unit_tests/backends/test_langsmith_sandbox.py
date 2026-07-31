@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import base64
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from langsmith.sandbox import ResourceNotFoundError, SandboxClientError
 
 from deepagents.backends import sandbox as base_sandbox
@@ -317,6 +318,43 @@ def test_read_offset_exceeds_length() -> None:
     assert "offset" in result.error.lower()
 
 
+@pytest.mark.parametrize("limit", [0, -3])
+def test_read_non_positive_limit_returns_empty_read(limit: int) -> None:
+    """A degenerate `limit` reads nothing instead of raising on the line range.
+
+    A negative `limit` is covered separately from `0`: the guard in `read()` is
+    what makes this hold, and a clamp-dependent `== 0` check would pass the
+    zero case while raising on the negative one.
+    """
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line1\nline2\nline3"
+
+    result = sb.read("/app/test.txt", limit=limit)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+    assert result.total_lines is None
+    assert result.start_line is None
+    assert result.end_line is None
+    assert result.next_offset is None
+
+
+def test_read_negative_offset_starts_at_first_line() -> None:
+    """A negative offset is clamped to the start of the file instead of erroring."""
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.return_value = b"line1\nline2\nline3"
+
+    result = sb.read("/app/test.txt", offset=-1, limit=2)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "line1\nline2"
+    assert result.start_line == 1
+    assert result.end_line == 2
+    assert result.next_offset == 2
+
+
 def test_read_normalizes_crlf_to_lf() -> None:
     r"""CRLF and bare-CR line endings collapse to LF, matching `BaseSandbox.read()`.
 
@@ -517,3 +555,67 @@ def test_max_binary_bytes_constant_matches_template() -> None:
 def test_max_output_bytes_constant_matches_template() -> None:
     assert "MAX_OUTPUT_BYTES = 500 * 1024" in base_sandbox._READ_COMMAND_TEMPLATE
     assert MAX_OUTPUT_BYTES == 500 * 1024
+
+
+def _make_async_sandbox() -> tuple[LangSmithSandbox, MagicMock, MagicMock]:
+    sb, mock_sdk = _make_sandbox()
+    async_sdk = MagicMock()
+    async_sdk.run = AsyncMock(return_value=SimpleNamespace(stdout="out", stderr="", exit_code=0))
+    async_client = MagicMock()
+    async_client.aclose = AsyncMock()
+    mock_sdk._client.to_async.return_value = async_client
+    mock_sdk.to_async.return_value = async_sdk
+    return sb, async_sdk, async_client
+
+
+async def test_aexecute_uses_async_client_not_sync_run() -> None:
+    """`aexecute` must not fall through to the protocol's `to_thread(execute)`."""
+    sb, async_sdk, _ = _make_async_sandbox()
+
+    result = await sb.aexecute("echo hi", timeout=30)
+
+    assert result.output == "out"
+    assert result.exit_code == 0
+    async_sdk.run.assert_awaited_once_with("echo hi", timeout=30)
+    sb._sandbox.run.assert_not_called()
+
+
+async def test_aexecute_combines_stdout_and_stderr() -> None:
+    sb, async_sdk, _ = _make_async_sandbox()
+    async_sdk.run.return_value = SimpleNamespace(stdout="out", stderr="err", exit_code=1)
+
+    result = await sb.aexecute("failing-cmd")
+
+    assert result.output == "out\nerr"
+    assert result.exit_code == 1
+    async_sdk.run.assert_awaited_once_with("failing-cmd", timeout=30 * 60)
+
+
+async def test_aexecute_reuses_one_async_client() -> None:
+    """A client per command would add a TCP + TLS handshake to every call."""
+    sb, _, _ = _make_async_sandbox()
+
+    await sb.aexecute("true")
+    await sb.aexecute("true")
+    await sb.aexecute("true")
+
+    assert sb._sandbox.to_async.call_count == 1
+
+
+async def test_aclose_closes_pool_and_allows_rebuild() -> None:
+    sb, _, async_client = _make_async_sandbox()
+    await sb.aexecute("true")
+
+    await sb.aclose()
+    async_client.aclose.assert_awaited_once()
+
+    await sb.aexecute("true")
+    assert sb._sandbox.to_async.call_count == 2
+
+
+async def test_aclose_without_async_use_is_a_noop() -> None:
+    sb, _, async_client = _make_async_sandbox()
+
+    await sb.aclose()
+
+    async_client.aclose.assert_not_awaited()

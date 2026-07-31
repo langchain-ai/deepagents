@@ -32,7 +32,7 @@ IMPORTANT: `Content` requires **Textual's** `Style` (`textual.style.Style`) for 
 
 ### Markdown messages take a different escape path
 
-The above applies to Rich **markup**. A message mounted as markdown — `AppMessage(source, markdown=True)`, used by `/version` and `/tools` — is parsed as markdown instead, so `from_markup`/`$var` does not apply and offers no protection there. Build the source with the helpers in `app.py`:
+The above applies to Rich **markup**. A message mounted as markdown — `AppMessage(source, markdown=True)`, used by `/version`, `/tools`, `/cost`, and `/tokens` — is parsed as markdown instead, so `from_markup`/`$var` does not apply and offers no protection there. Build the source with the helpers in `app.py`:
 
 - `_escape_markdown(text)` — backslash-escapes markdown punctuation **and** collapses line breaks to spaces. Both matter: unescaped punctuation is parsed (`<b>x</b>` is swallowed as HTML, `[d](u)` collapses to its link text), and an embedded newline ends the current block, so external text could otherwise inject its own headings, lists, and tables.
 - `_markdown_table(headers, rows)` — builds a pipe table, escaping every header and cell, so a `|` cannot forge an extra column.

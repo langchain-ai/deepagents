@@ -657,6 +657,74 @@ class TestMediaTracker:
         ]
         assert tracker.take_stranded_placeholders() == []
 
+    def test_kind_state_keeps_attached_and_detached_disjoint(self) -> None:
+        """The per-kind state never lists one token as both attached and detached.
+
+        `_rebind` is the single writer of that invariant, so a partition that
+        violated it must be corrected there rather than reaching the model as a
+        payload that is simultaneously live and held for undo.
+        """
+        from deepagents_code.input import (
+            IMAGE_PLACEHOLDER_PATTERN,
+            _MediaKindState,
+            _MediaPartition,
+        )
+
+        state: _MediaKindState[ImageData] = _MediaKindState(
+            IMAGE_PLACEHOLDER_PATTERN, "image"
+        )
+        live = ImageData(base64_data="live", format="png", placeholder="[image 1]")
+        stale = ImageData(base64_data="stale", format="png", placeholder="[image 1]")
+
+        state._rebind(
+            _MediaPartition(
+                attached=[live],
+                detached=[stale],
+                evicted=[],
+                detached_edits={"[image 1]": object()},
+                evicted_edits={},
+            )
+        )
+
+        assert [img.base64_data for img in state.attached] == ["live"]
+        assert state.detached == []
+        assert state.detached_edits == {}
+        # The counter still reserves the token that was handed out.
+        assert state.next_id == 2
+
+    def test_kind_state_ids_never_go_backwards(self) -> None:
+        """A kind's next ID keeps rising while a payload holds its token.
+
+        This is what stops a later paste from reusing an ID that an undo could
+        still restore, which would bind a restored token to a different payload.
+        """
+        from deepagents_code.input import (
+            IMAGE_PLACEHOLDER_PATTERN,
+            _MediaKindState,
+        )
+
+        state: _MediaKindState[ImageData] = _MediaKindState(
+            IMAGE_PLACEHOLDER_PATTERN, "image"
+        )
+        first = ImageData(base64_data="one", format="png")
+        assert state.bind(first, "") == "[image 1]"
+        assert state.next_id == 2
+
+        marker = object()
+        state.sync(
+            "",
+            equal_spans=None,
+            previous_text="[image 1]",
+            cursor_offset=None,
+            edit_token=marker,
+            undo_token=None,
+        )
+        assert [img.placeholder for img in state.detached] == ["[image 1]"]
+        assert state.next_id == 2
+
+        second = ImageData(base64_data="two", format="png")
+        assert state.bind(second, "") == "[image 2]"
+
     def test_unchanged_spans_matches_a_full_diff(self) -> None:
         """Prefix/suffix trimming agrees with diffing the whole draft.
 
@@ -1144,7 +1212,8 @@ class TestGetImageFromPath:
 
         assert result is not None
         assert result.format == "png"
-        assert result.placeholder == "[image]"
+        # Loaders return unbound payloads; only `add_media` assigns a token.
+        assert result.placeholder == ""
         assert base64.b64decode(result.base64_data)
 
     def test_get_image_from_path_non_image_returns_none(self, tmp_path: Path) -> None:
@@ -1262,7 +1331,8 @@ class TestGetVideoFromPath:
 
         assert result is not None
         assert result.format == "mp4"
-        assert result.placeholder == "[video]"
+        # Loaders return unbound payloads; only `add_media` assigns a token.
+        assert result.placeholder == ""
         assert base64.b64decode(result.base64_data) == mp4_content
 
     def test_get_video_from_path_jpg_returns_none(self, tmp_path: Path) -> None:

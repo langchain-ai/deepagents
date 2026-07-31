@@ -610,6 +610,62 @@ def parse_pasted_path_payload(
     return ParsedPastedPathPayload(paths=[path], token_end=token_end)
 
 
+def looks_like_dropped_payload(text: str) -> bool:
+    """Return whether a payload has the shape a terminal uses for a file drop.
+
+    Terminals deliver a dragged file as an absolute path (POSIX or Windows
+    drive/UNC), a `~/` path, or a `file://` URL, so requiring that shape keeps a
+    payload that *begins* with a hand-typed relative path (`assets/logo.png`)
+    from being mistaken for a drop. Without this guard `parse_pasted_path_payload`
+    would resolve such a token against the working directory, and a caller that
+    rejects drops would swallow ordinary text. The check is leading-token only:
+    once the first token passes, later relative tokens still resolve against the
+    working directory.
+
+    Pure string inspection, so callers can apply it on the event loop to decide
+    whether the filesystem-touching parse is worth a thread hop at all.
+
+    Args:
+        text: Raw pasted/dropped text payload.
+
+    Returns:
+        `True` when the payload begins like a dropped path.
+    """
+    value = text.strip().lstrip("<'\"")
+    return bool(
+        value.startswith(("/", "~/", "file://", "\\\\"))
+        or _WINDOWS_DRIVE_PATH_PATTERN.match(value)
+    )
+
+
+def dropped_payload_paths(text: str) -> list[Path]:
+    """Return resolved file paths from a payload that looks like a file drop.
+
+    Applies `parse_pasted_path_payload` — the same parser the chat input's drop
+    handling uses, which only resolves paths that exist on disk — behind a shape
+    guard that requires the drop form terminals actually emit (see
+    `looks_like_dropped_payload`). Text-only inputs use this to detect a
+    dragged file so it can be rejected instead of inserted as a path.
+
+    Leading-path-plus-trailing-text payloads (`<path> what is this?`) are
+    deliberately out of scope: `allow_leading_path` stays off, matching the
+    chat input's own drop-time calls, which handle that shape later at submit
+    time instead.
+
+    Args:
+        text: Raw pasted/dropped text payload.
+
+    Returns:
+        Resolved file paths found in the payload, or an empty list.
+    """
+    if not looks_like_dropped_payload(text):
+        return []
+    parsed = parse_pasted_path_payload(text)
+    if parsed is None:
+        return []
+    return list(parsed.paths)
+
+
 def parse_single_pasted_file_path(text: str) -> Path | None:
     """Parse and resolve a single pasted path payload.
 
@@ -752,7 +808,13 @@ def _token_to_path(token: str) -> Path | None:
             return None
 
     if value.startswith("file://"):
-        parsed = urlparse(value)
+        try:
+            parsed = urlparse(value)
+        except ValueError as e:
+            # Malformed authority (e.g. `file://[::1/x.png`) raises rather than
+            # returning a partial result; treat it as ordinary text.
+            logger.debug("file:// URL parsing failed for %r: %s", value, e)
+            return None
         path_text = unquote(parsed.path or "")
         if parsed.netloc and parsed.netloc != "localhost":
             path_text = f"//{parsed.netloc}{path_text}"
@@ -890,6 +952,11 @@ def _safe_exists(path: Path) -> bool:
     uniform behavior. Callers here only care whether the path is usable, so a
     failed probe is equivalent to "not there".
 
+    `ValueError` needs no guard here: every supported interpreter already
+    absorbs an embedded NUL inside these three probes (3.11-3.13 catch it in
+    `pathlib`, 3.14 delegates to `os.path.*`, which catches it). Only
+    `resolve()` propagates it — see `_resolve_existing_pasted_path`.
+
     Args:
         path: Path candidate to probe.
 
@@ -952,7 +1019,8 @@ def _resolve_existing_pasted_path(path: Path) -> Path | None:
     """
     try:
         resolved = path.expanduser().resolve()
-    except (OSError, RuntimeError) as e:
+    except (OSError, RuntimeError, ValueError) as e:
+        # ValueError covers an embedded NUL, which `resolve()` rejects outright.
         logger.debug("Path resolution failed for %r: %s", path, e)
         return None
     if _safe_is_file(resolved):
@@ -963,7 +1031,7 @@ def _resolve_existing_pasted_path(path: Path) -> Path | None:
         return None
     try:
         resolved_fuzzy = fuzzy.resolve()
-    except (OSError, RuntimeError) as e:
+    except (OSError, RuntimeError, ValueError) as e:
         logger.debug("Unicode-space resolution failed for %r: %s", fuzzy, e)
         return None
     if _safe_is_file(resolved_fuzzy):

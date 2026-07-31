@@ -21,6 +21,34 @@ def test_upload_files_raises_outside_graph_context():
         be.upload_files([("/hello.txt", b"hello")])
 
 
+@pytest.mark.parametrize(("offset", "limit"), [(0, 0), (0, -3), (-1, 0)])
+def test_state_backend_read_non_positive_limit_returns_empty_read(monkeypatch: pytest.MonkeyPatch, offset: int, limit: int) -> None:
+    """`StateBackend.read` inherits the shared clamp rather than raising."""
+    backend = StateBackend()
+    files = {"/notes.txt": {"content": "one\ntwo\nthree", "encoding": "utf-8"}}
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+
+    result = backend.read("/notes.txt", offset=offset, limit=limit)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+    assert result.start_line is None
+
+
+def test_state_backend_read_negative_offset_starts_at_first_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A negative offset is clamped to the start of the file instead of erroring."""
+    backend = StateBackend()
+    files = {"/notes.txt": {"content": "one\ntwo\nthree", "encoding": "utf-8"}}
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+
+    result = backend.read("/notes.txt", offset=-1, limit=2)
+
+    assert result.error is None
+    assert result.start_line == 1
+    assert result.end_line == 2
+
+
 def test_state_backend_reads_legacy_list_content(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = StateBackend()
     legacy_content = ["hello", "world", ""]

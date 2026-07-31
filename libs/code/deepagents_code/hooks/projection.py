@@ -5,21 +5,22 @@ from __future__ import annotations
 from functools import singledispatch
 from typing import TYPE_CHECKING, NotRequired, TypedDict
 
-from langchain_core.messages import ToolMessage
-
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.models.adapters import HOOK_WIRE_INPUT_ADAPTER
 from deepagents_code.hooks.models.domain import (
+    DcodeNotificationKind,
     HookEvent,
     NotificationEvent,
     PermissionRequestEvent,
     PostToolUseEvent,
+    PreCompactEvent,
     PreToolUseEvent,
     SessionEndEvent,
     SessionStartEvent,
     StopEvent,
     SubagentStartEvent,
     SubagentStopEvent,
+    UserPromptSubmitEvent,
 )
 from deepagents_code.hooks.models.wire import (
     BackgroundTaskWire,
@@ -27,6 +28,7 @@ from deepagents_code.hooks.models.wire import (
     NotificationWireInput,
     PermissionRequestWireInput,
     PostToolUseWireInput,
+    PreCompactWireInput,
     PreToolUseWireInput,
     SessionCronWire,
     SessionEndWireInput,
@@ -34,17 +36,15 @@ from deepagents_code.hooks.models.wire import (
     StopWireInput,
     SubagentStartWireInput,
     SubagentStopWireInput,
+    UserPromptSubmitWireInput,
     WireNotificationType,
     WirePermissionMode,
 )
 from deepagents_code.hooks.tools import to_wire_call
-from deepagents_code.json_types import JSON_VALUE_ADAPTER, JsonValue
 
 if TYPE_CHECKING:
     from pathlib import Path
     from uuid import UUID
-
-    from langgraph.types import Command
 
     from deepagents_code.hooks.models.domain import (
         AgentIdentity,
@@ -123,6 +123,20 @@ def _project_session_start(
     )
 
 
+@_project_event.register(UserPromptSubmitEvent)
+def _project_user_prompt_submit(
+    event: UserPromptSubmitEvent,
+    invocation: HookInvocation,
+    transcript_path: Path,
+    _agent_transcript_path: Path | None,
+) -> HookWireInput:
+    return UserPromptSubmitWireInput(
+        **_base_fields(invocation, transcript_path),
+        hook_event_name=HookEvent.USER_PROMPT_SUBMIT,
+        prompt=event.prompt,
+    )
+
+
 @_project_event.register(SessionEndEvent)
 def _project_session_end(
     event: SessionEndEvent,
@@ -165,7 +179,7 @@ def _project_notification(
         hook_event_name=HookEvent.NOTIFICATION,
         message=event.notification.message,
         title=event.notification.title,
-        notification_type=_notification_type(event.notification.type),
+        notification_type=to_wire_notification_type(event.notification.type),
     )
 
 
@@ -199,9 +213,24 @@ def _project_post_tool_use(
         hook_event_name=HookEvent.POST_TOOL_USE,
         tool_name=tool_name,
         tool_input=tool_input,
-        tool_response=_tool_result(event.result),
+        tool_response=event.result,
         tool_use_id=event.call.id,
         duration_ms=event.duration_ms,
+    )
+
+
+@_project_event.register(PreCompactEvent)
+def _project_pre_compact(
+    event: PreCompactEvent,
+    invocation: HookInvocation,
+    transcript_path: Path,
+    _agent_transcript_path: Path | None,
+) -> HookWireInput:
+    return PreCompactWireInput(
+        **_base_fields(invocation, transcript_path),
+        hook_event_name=HookEvent.PRE_COMPACT,
+        trigger=event.trigger,
+        custom_instructions=event.custom_instructions,
     )
 
 
@@ -327,17 +356,28 @@ def _permission_mode(mode: ApprovalMode) -> WirePermissionMode:
     }[mode]
 
 
-def _notification_type(value: str) -> WireNotificationType:
+def to_wire_notification_type(value: str) -> WireNotificationType:
+    """Return the compatible notification matcher and wire value.
+
+    Args:
+        value: Domain or wire notification type.
+
+    Returns:
+        Canonical wire notification type.
+
+    Raises:
+        ValueError: If the notification type is unsupported.
+    """
+    mappings: dict[str, WireNotificationType] = {
+        DcodeNotificationKind.PERMISSION_REQUIRED: (
+            WireNotificationType.PERMISSION_PROMPT
+        ),
+        WireNotificationType.PERMISSION_PROMPT: WireNotificationType.PERMISSION_PROMPT,
+        DcodeNotificationKind.AGENT_NEEDS_INPUT: WireNotificationType.AGENT_NEEDS_INPUT,
+        DcodeNotificationKind.AGENT_COMPLETED: WireNotificationType.AGENT_COMPLETED,
+    }
     try:
-        return WireNotificationType(value)
-    except ValueError as exc:
+        return mappings[value]
+    except KeyError as exc:
         msg = f"Unsupported notification type: {value}"
         raise ValueError(msg) from exc
-
-
-def _tool_result(result: ToolMessage | Command[str]) -> JsonValue:
-    if isinstance(result, ToolMessage):
-        value: object = result.model_dump(mode="json")
-    else:
-        value = JSON_VALUE_ADAPTER.dump_python(result, mode="json", warnings=False)
-    return JSON_VALUE_ADAPTER.validate_python(value)

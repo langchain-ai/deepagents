@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from typing import Any
 
 import pytest
 
@@ -30,6 +31,7 @@ from deepagents_code.config_manifest import (
     get_option,
     is_provider_package_installed,
     option_keys,
+    options_with_key_prefix,
     provider_install_extra,
     resolve_interpreter_kwargs,
     resolve_scalar,
@@ -1311,14 +1313,6 @@ def test_get_option_unknown_returns_none() -> None:
     assert get_option("does.not.exist") is None
 
 
-def test_run_get_unknown_key_returns_error_code(capsys) -> None:
-    args = argparse.Namespace(config_command="get", key="nope", output_format="text")
-    assert run_config_command(args) == 1
-    err = capsys.readouterr().err
-    assert "Unknown config option" in err
-    assert "config --verbose" in err
-
-
 def test_run_get_missing_key_hints_available_keys(capsys) -> None:
     """Bare `config get` explains it needs a key and where to find one."""
     args = argparse.Namespace(config_command="get", key=None, output_format="text")
@@ -1634,6 +1628,31 @@ def test_config_parser_wires_default_and_verbose_flag(monkeypatch) -> None:
     assert ns.output_format == "json"
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["dcode", "config", "get", "credentials", "--verbose", "--json"],
+        ["dcode", "config", "--verbose", "--json", "get", "credentials"],
+    ],
+)
+def test_config_get_parser_accepts_verbose_on_either_side(monkeypatch, argv) -> None:
+    """`--verbose`/`--json` reach `config get` before or after the subcommand.
+
+    The `get` subparser suppresses its own defaults, so a flag set on the parent
+    `config` parser survives the subparser namespace merge.
+    """
+    import sys
+
+    from deepagents_code.main import parse_args
+
+    monkeypatch.setattr(sys, "argv", argv)
+    ns = parse_args()
+    assert ns.config_command == "get"
+    assert ns.key == "credentials"
+    assert ns.verbose is True
+    assert ns.output_format == "json"
+
+
 @pytest.mark.parametrize("removed_subcommand", ["show", "list", "ls"])
 def test_config_parser_rejects_removed_subcommands(
     monkeypatch, removed_subcommand
@@ -1655,6 +1674,325 @@ def test_run_get_text_returns_zero() -> None:
         config_command="get", key="interpreter.memory_limit_mb", output_format="text"
     )
     assert run_config_command(args) == 0
+
+
+# --- `config get` sections --------------------------------------------------
+
+
+def _get_args(
+    key: str, output_format: str = "text", *, verbose: bool = False
+) -> argparse.Namespace:
+    """Build a parsed `config get <key>` namespace."""
+    return argparse.Namespace(
+        config_command="get", key=key, output_format=output_format, verbose=verbose
+    )
+
+
+def _get_json_data(
+    key: str, capsys: pytest.CaptureFixture[str], *, verbose: bool = False
+) -> dict[str, Any] | list[dict[str, Any]]:
+    """Run `config get <key> --json` and return the decoded `data` payload."""
+    import json
+
+    assert run_config_command(_get_args(key, "json", verbose=verbose)) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "config get"
+    return payload["data"]
+
+
+def _get_json_object(
+    key: str, capsys: pytest.CaptureFixture[str], *, verbose: bool = False
+) -> dict[str, Any]:
+    """Return the single-option `config get --json` payload for `key`."""
+    data = _get_json_data(key, capsys, verbose=verbose)
+    assert isinstance(data, dict)
+    return data
+
+
+def _get_json_rows(
+    key: str, capsys: pytest.CaptureFixture[str], *, verbose: bool = False
+) -> list[dict[str, Any]]:
+    """Return the section `config get --json` rows for `key`."""
+    data = _get_json_data(key, capsys, verbose=verbose)
+    assert isinstance(data, list)
+    return data
+
+
+def test_options_with_key_prefix_matches_whole_segments_only() -> None:
+    """A key prefix matches on the dot boundary, never a truncated guess."""
+    matched = options_with_key_prefix("credentials")
+    assert len(matched) > 1
+    assert all(opt.key.startswith("credentials.") for opt in matched)
+    assert options_with_key_prefix("credential") == ()
+    assert options_with_key_prefix("") == ()
+    # No `tools.*` key exists, so the `Tools` heading has no prefix section.
+    assert options_with_key_prefix("tools") == ()
+
+
+def test_options_with_key_prefix_is_case_insensitive() -> None:
+    """Prefix matching casefolds, so capitalization cannot change the result."""
+    lower = options_with_key_prefix("models")
+    assert len(lower) > 1
+    assert options_with_key_prefix("Models") == lower
+    assert options_with_key_prefix("MODELS") == lower
+    # A truncated guess stays unmatched in every case.
+    assert options_with_key_prefix("Model") == ()
+
+
+def test_run_get_exact_key_keeps_single_line_text(capsys) -> None:
+    """An exact key still renders the compact `key = value (source)` line."""
+    assert run_config_command(_get_args("interpreter.memory_limit_mb")) == 0
+    rendered = " ".join(capsys.readouterr().out.split())
+    assert rendered.startswith("interpreter.memory_limit_mb = ")
+
+
+def test_run_get_exact_key_json_stays_single_object(capsys) -> None:
+    """Existing single-key JSON consumers keep their one-object payload."""
+    data = _get_json_object("interpreter.memory_limit_mb", capsys)
+    assert data["key"] == "interpreter.memory_limit_mb"
+    assert "group" not in data
+
+
+def test_run_get_credentials_section_lists_every_credential(
+    capsys, monkeypatch
+) -> None:
+    """`config get credentials` renders the grouped section, not one option."""
+    from deepagents_code.config import console
+
+    monkeypatch.setattr(console, "width", 200)
+    assert run_config_command(_get_args("credentials")) == 0
+    rendered = capsys.readouterr().out
+    assert "Credentials" in rendered
+    expected = options_with_key_prefix("credentials")
+    assert len(expected) > 1
+    assert all(opt.key in rendered for opt in expected)
+    # Credentials render a presence word, never a key value. Matches both
+    # "configured" and "not configured", so this does not depend on which
+    # providers the developer running the suite happens to have set.
+    assert "configured" in rendered
+
+
+@pytest.mark.parametrize("key", ["credentials", "credentials.", "CREDENTIALS"])
+def test_run_get_credentials_section_accepts_prefix_dot_and_case(key, capsys) -> None:
+    """Prefix, trailing dot, and any casing all select the same options."""
+    rows = _get_json_rows(key, capsys)
+    assert [row["key"] for row in rows] == [
+        opt.key for opt in options_with_key_prefix("credentials")
+    ]
+    # Secret-flagged rows report presence only, exactly as bare `config` does.
+    assert any(row["redacted"] for row in rows)
+    assert all(row["value"] is None for row in rows if row["redacted"])
+
+
+def test_run_get_section_json_matches_bare_config_row_shape(capsys) -> None:
+    """Section rows carry the same fields as each bare `config --json` row."""
+    rows = _get_json_rows("interpreter", capsys)
+    assert len(rows) > 1
+    assert all(
+        {"key", "group", "source", "set", "redacted", "value"} <= set(row)
+        for row in rows
+    )
+    assert all("type" not in row for row in rows)
+
+
+def test_run_get_section_verbose_json_folds_in_catalog(capsys) -> None:
+    """`config get <section> --verbose --json` adds the static catalog fields."""
+    rows = _get_json_rows("interpreter", capsys, verbose=True)
+    assert all(
+        {"summary", "type", "default", "env_var", "toml_path", "cli_flag"} <= set(row)
+        for row in rows
+    )
+    assert any(
+        row["key"] == "interpreter.memory_limit_mb" and row["default"] == 64
+        for row in rows
+    )
+
+
+def test_run_get_section_verbose_text_shows_descriptions(capsys) -> None:
+    """`config get <section> --verbose` matches the verbose bare-`config` view."""
+    opt = get_option("display.charset")
+    assert opt is not None
+    assert run_config_command(_get_args("display", verbose=True)) == 0
+    rendered = " ".join(capsys.readouterr().out.split())
+    assert " ".join(opt.summary.split()) in rendered
+    assert "set via" in rendered
+
+
+def test_run_get_section_selects_every_prefixed_key_across_headings(capsys) -> None:
+    """`models` resolves to every `models.*` key, even across group headings."""
+    rows = _get_json_rows("models", capsys)
+    keys = [row["key"] for row in rows]
+    assert keys == [opt.key for opt in options_with_key_prefix("models")]
+    # The `Models` heading covers only some of the `models.*` keys; the
+    # section is the full prefix set, regardless of display grouping.
+    assert len(keys) > sum(opt.group == "Models" for opt in get_config_options())
+
+
+@pytest.mark.parametrize("title", ["Tools", "Updates"])
+def test_run_get_group_title_is_not_a_section(title, capsys) -> None:
+    """Display group titles are rejected; only key prefixes name a section.
+
+    `Tools` has no matching key prefix at all, and `Updates` differs from the
+    `update` prefix by an English plural — matching is case-insensitive on the
+    prefix but never pluralized or fuzzy, so a heading word that isn't a
+    prefix stays an error.
+    """
+    assert run_config_command(_get_args(title)) == 1
+    assert "Unknown config option or section" in capsys.readouterr().err
+
+
+def test_run_get_single_option_section_still_renders_as_a_list(capsys) -> None:
+    """A one-option section stays list-shaped so responses are unambiguous.
+
+    This is what the `is_exact` flag on `_Selection` protects: a single-option
+    section and an exact key both yield one option, so a length check alone
+    would collapse this into the single-key object shape.
+    """
+    prefix = next(
+        segment
+        for segment in dict.fromkeys(
+            key.split(".")[0] for key in option_keys() if "." in key
+        )
+        if len(options_with_key_prefix(segment)) == 1
+    )
+    rows = _get_json_rows(prefix, capsys)
+    assert [row["key"] for row in rows] == [
+        opt.key for opt in options_with_key_prefix(prefix)
+    ]
+    assert len(rows) == 1
+
+
+def test_run_get_section_is_case_insensitive_end_to_end(capsys) -> None:
+    """A capitalized section selects the same options as the lowercase form.
+
+    `dcode config` prints `Models` as a heading; typing that word back must
+    resolve to the same `models.*` prefix section, not to the narrower heading
+    or to an error.
+    """
+    lower = _get_json_rows("models", capsys)
+    upper = _get_json_rows("Models", capsys)
+    assert [row["key"] for row in upper] == [row["key"] for row in lower]
+    # The `Models` heading covers only some of the `models.*` keys, so this
+    # equality holds only when both casings resolve via the prefix.
+    assert len(lower) > sum(opt.group == "Models" for opt in get_config_options())
+
+
+def test_run_get_exact_key_verbose_json_folds_in_catalog(capsys) -> None:
+    """`config get <key> --verbose --json` adds catalog fields but no `group`.
+
+    The absent `group` key is load-bearing: it is how a consumer tells the
+    single-key object from a section list, so `--verbose` must not introduce it.
+    """
+    data = _get_json_object("interpreter.memory_limit_mb", capsys, verbose=True)
+    assert {
+        "summary",
+        "type",
+        "default",
+        "env_var",
+        "toml_path",
+        "cli_flag",
+    } <= set(data)
+    assert data["default"] == 64
+    assert "group" not in data
+
+
+def test_run_get_exact_key_plain_json_omits_catalog(capsys) -> None:
+    """Without `--verbose`, the single-key payload keeps its original fields."""
+    data = _get_json_object("interpreter.memory_limit_mb", capsys)
+    assert set(data) == {"key", "source", "set", "redacted", "value"}
+
+
+def test_run_get_exact_key_verbose_text_shows_description(capsys) -> None:
+    """`config get <key> --verbose` appends the description and how-to-set."""
+    opt = get_option("interpreter.memory_limit_mb")
+    assert opt is not None
+    assert run_config_command(_get_args(opt.key, verbose=True)) == 0
+    rendered = " ".join(capsys.readouterr().out.split())
+    assert rendered.startswith(f"{opt.key} = ")
+    assert " ".join(opt.summary.split()) in rendered
+    assert "default 64" in rendered
+
+
+def test_run_get_section_json_flags_unreadable_store(stored_auth_dir, capsys) -> None:
+    """A corrupt store is reported in-band on every credential section row.
+
+    Without this a corrupt `auth.json` is indistinguishable from one holding no
+    keys — the silent failure `store_error` exists to prevent.
+    """
+    import json
+
+    stored_auth_dir.mkdir(parents=True, exist_ok=True)
+    (stored_auth_dir / "auth.json").write_text("{ not json", encoding="utf-8")
+    assert run_config_command(_get_args("credentials", "json")) == 0
+    rows = json.loads(capsys.readouterr().out)["data"]
+    assert rows
+    assert all("store_error" in row for row in rows)
+    # Redaction holds even when the store could not be read.
+    assert all(row["value"] is None for row in rows if row["redacted"])
+
+
+def test_run_get_section_text_warns_on_unreadable_store(
+    stored_auth_dir, capsys
+) -> None:
+    """Both section text renderers surface the unreadable-store banner."""
+    stored_auth_dir.mkdir(parents=True, exist_ok=True)
+    (stored_auth_dir / "auth.json").write_text("{ not json", encoding="utf-8")
+    for verbose in (False, True):
+        assert run_config_command(_get_args("credentials", verbose=verbose)) == 0
+        out = capsys.readouterr().out
+        assert "Warning" in out
+        assert "unreadable" in out
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_run_get_section_skips_store_when_no_credentials(monkeypatch) -> None:
+    """A credential-free section never reads the store, and reads it once if not.
+
+    Pins the documented skip in `_run_get_section`: always loading would emit a
+    spurious store warning for sections that cannot consult it, and the JSON
+    would look identical either way.
+    """
+    from deepagents_code import auth_store
+
+    calls = 0
+    real_load = auth_store.load_credentials
+
+    def _counting_load() -> dict:
+        nonlocal calls
+        calls += 1
+        return real_load()
+
+    monkeypatch.setattr(auth_store, "load_credentials", _counting_load)
+
+    assert run_config_command(_get_args("display", "json")) == 0
+    assert calls == 0
+
+    assert run_config_command(_get_args("credentials", "json")) == 0
+    assert calls == 1
+
+
+@pytest.mark.parametrize("key", ["credential", "credentials.open", "nope", "", "."])
+def test_run_get_rejects_partial_matches(key, capsys) -> None:
+    """Truncated keys, partial leaves, typos, and degenerate input stay errors."""
+    assert run_config_command(_get_args(key)) == 1
+    err = capsys.readouterr().err
+    assert "Unknown config option" in err
+    assert "`dcode config` to list keys" in err
+    assert "config get <section>" in err
+
+
+def test_run_get_unknown_key_json_names_sections_too(capsys) -> None:
+    """The JSON error string matches the text branch's wording.
+
+    A consumer surfacing `error` verbatim would otherwise tell a user who
+    mistyped a section that no such *option* exists, steering them away from the
+    section form.
+    """
+    import json
+
+    assert run_config_command(_get_args("nope", "json")) == 1
+    payload = json.loads(capsys.readouterr().out)["data"]
+    assert payload == {"key": "nope", "error": "unknown option or section"}
 
 
 def test_run_path_text_returns_zero() -> None:
@@ -1786,6 +2124,74 @@ def test_startup_mode_option_definition() -> None:
     assert opt.default == DEFAULT_STARTUP_MODE
     assert opt.toml_keys == ("startup", "mode")
     assert opt.env_var is None
+
+
+def test_startup_yolo_switcher_defaults_enabled(monkeypatch) -> None:
+    """`startup.yolo_switcher` resolves to enabled when nothing overrides it."""
+    option = get_option("startup.yolo_switcher")
+    assert option is not None
+    assert option.group == "Startup"
+    assert option.default is True
+    assert option.env_var == _env_vars.YOLO_SWITCHER
+    assert option.toml_keys == ("startup", "yolo_switcher")
+    monkeypatch.delenv(_env_vars.YOLO_SWITCHER, raising=False)
+    assert resolve_scalar(option, toml_data={}) == (True, "default")
+
+
+def test_startup_yolo_switcher_env_disables(monkeypatch) -> None:
+    """A falsy `DEEPAGENTS_CODE_YOLO_SWITCHER` removes YOLO from the switcher."""
+    option = get_option("startup.yolo_switcher")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.YOLO_SWITCHER, "0")
+    value, _ = resolve_scalar(option, toml_data={})
+    assert value is False
+
+
+def test_startup_yolo_switcher_empty_env_disables(monkeypatch) -> None:
+    """An explicitly empty env override disables the YOLO switcher entry."""
+    option = get_option("startup.yolo_switcher")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.YOLO_SWITCHER, "")
+    assert resolve_scalar(option, toml_data={}) == (
+        False,
+        f"env ({_env_vars.YOLO_SWITCHER})",
+    )
+
+
+def test_startup_yolo_switcher_toml_disables(monkeypatch) -> None:
+    """`[startup].yolo_switcher = false` disables the YOLO switcher entry."""
+    option = get_option("startup.yolo_switcher")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.YOLO_SWITCHER, raising=False)
+    value, _ = resolve_scalar(option, toml_data={"startup": {"yolo_switcher": False}})
+    assert value is False
+
+
+def test_is_yolo_switcher_enabled_reads_env(monkeypatch) -> None:
+    """The `config.is_yolo_switcher_enabled` helper honors the env override."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import is_yolo_switcher_enabled
+
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+    monkeypatch.delenv(_env_vars.YOLO_SWITCHER, raising=False)
+    assert is_yolo_switcher_enabled() is True
+
+    monkeypatch.setenv(_env_vars.YOLO_SWITCHER, "false")
+    assert is_yolo_switcher_enabled() is False
+
+
+def test_is_yolo_switcher_enabled_reads_toml(monkeypatch) -> None:
+    """The helper honors `[startup].yolo_switcher` when env is unset."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import is_yolo_switcher_enabled
+
+    monkeypatch.delenv(_env_vars.YOLO_SWITCHER, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"startup": {"yolo_switcher": False}},
+    )
+    assert is_yolo_switcher_enabled() is False
 
 
 def test_resolve_startup_mode_from_toml(caplog) -> None:

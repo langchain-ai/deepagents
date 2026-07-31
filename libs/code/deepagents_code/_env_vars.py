@@ -206,6 +206,17 @@ HIDE_SPLASH_TIPS = "DEEPAGENTS_CODE_HIDE_SPLASH_TIPS"
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
 
+INVOKED_AS = "DEEPAGENTS_CODE_INVOKED_AS"
+"""Internal sentinel carrying the command name the user launched with.
+
+Not user-facing. The launch name is normally derived from `sys.argv[0]`, but the
+startup auto-update re-execs the process as `python -m deepagents_code`, which
+discards it. `_restart_current_process` records the resolved name here so the
+re-exec'd process still echoes the command the user actually typed in its resume
+hints. Implausible values are ignored in favor of the `dcode` default; see
+`_invocation.invoked_name`.
+"""
+
 KITTY_KEYBOARD = "DEEPAGENTS_CODE_KITTY_KEYBOARD"
 """Override kitty-keyboard detection (`1` forces on, `0` forces off)."""
 
@@ -400,6 +411,17 @@ THEME = "DEEPAGENTS_CODE_THEME"
 
 USER_ID = "DEEPAGENTS_CODE_USER_ID"
 """Attach a user identifier to LangSmith trace metadata."""
+
+YOLO_SWITCHER = "DEEPAGENTS_CODE_YOLO_SWITCHER"
+"""Include YOLO in the Shift+Tab approval-mode cycle.
+
+Enabled by default so an interactive session can cycle Manual → Auto → YOLO
+without restarting with `--yolo`. Set to a falsy value (`0`, `false`, `no`,
+`off`, or empty) to leave Shift+Tab limited to Manual/Auto. Also settable via
+`[startup].yolo_switcher` in config.toml so orgs can distribute the opt-out.
+Parsed by `classify_env_bool` through the config resolver (unrecognized values
+fall through rather than forcing the default).
+"""
 
 _TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSY_VALUES = frozenset({"0", "false", "no", "off", ""})

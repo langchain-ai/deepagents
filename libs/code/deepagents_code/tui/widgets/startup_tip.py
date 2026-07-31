@@ -10,12 +10,19 @@ from textual.widgets import Static
 
 from deepagents_code._env_vars import HIDE_SPLASH_TIPS, is_env_truthy
 
+_TIP_SHIFT_TAB_WITH_YOLO = "Press Shift+Tab to cycle Manual, Auto, and YOLO modes"
+"""Tip used when `startup.yolo_switcher` keeps YOLO in the approval cycle."""
+
+_TIP_SHIFT_TAB_WITHOUT_YOLO = "Press Shift+Tab to toggle Manual and Auto modes"
+"""Tip used when orgs/users disable YOLO entry via the approval switcher."""
+
 _TIPS: dict[str, int] = {
     "Use @ to reference files and / for commands": 3,
     "Try /threads to resume a previous conversation": 2,
     "Use /offload when your conversation gets long": 2,
     "Use /copy to copy the latest message": 3,
     "Use /tools to list the tools available to the agent": 1,
+    "Use dcode install <name> for optional providers": 1,
     "Use /mcp login <server> to authenticate MCP servers": 1,
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
@@ -26,13 +33,18 @@ _TIPS: dict[str, int] = {
     "Use /skill-creator to build reusable agent skills": 1,
     "Ask for a workflow to fan work out to subagents in parallel": 3,
     "Use /timestamps to show or hide message timestamp footers": 1,
+    "Click a collapsed message or press Ctrl+O to expand it": 1,
     "Use /agents to browse and switch between your available agents": 2,
-    "Press Shift+Tab to toggle Manual and Auto modes": 2,
+    _TIP_SHIFT_TAB_WITH_YOLO: 2,
     "Use !! for incognito shell commands that stay out of model context": 1,
     "Deep Agents can explain its own features and look up its docs. Ask it how to use.": 3,  # noqa: E501
 }
 """Tips shown above the chat input. One is chosen at random per launch,
-weighted by these relative selection weights."""
+weighted by these relative selection weights.
+
+The Shift+Tab tip is varied at pick time via `_active_tips` so disabled-YOLO
+installs do not advertise a switcher path that policy has removed.
+"""
 
 # Fail fast at import if the registry is ever emptied or given a non-positive
 # weight: `random.choices` would otherwise raise a cryptic error at widget
@@ -46,15 +58,45 @@ if any(weight <= 0 for weight in _TIPS.values()):
     raise ValueError(msg)
 
 
-def _pick_tip() -> str:
-    """Pick one startup tip using the configured relative weights.
+def _active_tips(*, yolo_switcher_enabled: bool | None = None) -> dict[str, int]:
+    """Return the weighted tip registry for the current switcher policy.
+
+    Args:
+        yolo_switcher_enabled: Override for whether YOLO appears in the
+            Shift+Tab cycle. When omitted, resolves `startup.yolo_switcher`.
 
     Returns:
-        Tip text selected from `_TIPS`.
+        Weighted tip map appropriate for the active YOLO switcher setting.
     """
-    tips = list(_TIPS.keys())
-    weights = list(_TIPS.values())
-    return random.choices(tips, weights=weights, k=1)[0]  # noqa: S311
+    if yolo_switcher_enabled is None:
+        from deepagents_code.config import is_yolo_switcher_enabled
+
+        yolo_switcher_enabled = is_yolo_switcher_enabled()
+
+    tips = dict(_TIPS)
+    if yolo_switcher_enabled:
+        return tips
+
+    # Replace the YOLO cycle tip with the Manual/Auto-only wording so the
+    # splash never claims Shift+Tab can enter unrestricted mode when policy
+    # has removed that entry from the switcher.
+    weight = tips.pop(_TIP_SHIFT_TAB_WITH_YOLO, None)
+    if weight is not None:
+        tips[_TIP_SHIFT_TAB_WITHOUT_YOLO] = weight
+    return tips
+
+
+def _pick_tip(*, yolo_switcher_enabled: bool | None = None) -> str:
+    """Pick one startup tip using the configured relative weights.
+
+    Args:
+        yolo_switcher_enabled: Optional override forwarded to `_active_tips`.
+
+    Returns:
+        Tip text selected from the active tip registry.
+    """
+    tips = _active_tips(yolo_switcher_enabled=yolo_switcher_enabled)
+    return random.choices(list(tips.keys()), weights=list(tips.values()), k=1)[0]  # noqa: S311
 
 
 def show_startup_tip() -> bool:

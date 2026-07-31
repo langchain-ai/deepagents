@@ -8,12 +8,13 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (34)
+## Public (37)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
 | `/agents` |  | Browse and switch between available agents |
 | `/auth` | `/connect` | Connect and manage provider and service credentials |
+| `/auto` |  | Switch to Auto approval mode |
 | `/auto-update` |  | Turn automatic updates on or off |
 | `/changelog` |  | Open the changelog in a browser |
 | `/clear` |  | Clear the chat and start a new thread |
@@ -26,9 +27,10 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/goal` |  | Set and manage a persistent objective with acceptance criteria |
 | `/help` |  | Show help and available commands |
 | `/install` |  | Install an optional integration |
+| `/manual` |  | Switch to Manual approval mode |
 | `/mcp` |  | Manage MCP servers and authentication |
 | `/model` |  | Switch models or edit model settings |
-| `/notifications` |  | Configure startup warnings |
+| `/notifications` |  | Configure warning notifications |
 | `/offload` | `/compact` | Summarize and offload older messages to free context |
 | `/plugins` |  | Manage plugins |
 | `/quit` | `/q` | Exit app |
@@ -46,6 +48,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/trace` |  | Open this thread in LangSmith |
 | `/update` |  | Check for and install updates |
 | `/version` | `/about` | Show version information |
+| `/yolo` |  | Switch to YOLO approval mode (no review) |
 
 ## Hidden (2)
 

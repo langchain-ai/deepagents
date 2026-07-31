@@ -26,6 +26,17 @@ APPROVAL_MODE_NAMESPACE: tuple[str, str] = ("deepagents_code", "approval_mode")
 YOLO_ACKNOWLEDGEMENT_POLICY_VERSION = "2026-07-14"
 """Version of the unrestricted-mode warning that must be acknowledged."""
 
+YOLO_WARNING_KEY = "yolo"
+"""`[warnings].suppress` key that mutes the recurring "YOLO is active" toast.
+
+Suppression is cosmetic: YOLO still requires an explicit acknowledgement to
+enter (a modal in the TUI, a console prompt for `--yolo`), still honors the
+`startup.yolo_switcher` setting, and still shows a persistent `YOLO`
+status-bar indicator the whole time it is active. Because the acknowledgement
+is once per policy version, that indicator is the only remaining in-session
+signal for a returning user who has muted the toast.
+"""
+
 AUTO_NOTICE_VERSION = "2026-07-24"
 """Version of the first-run Auto mode education notice.
 
@@ -61,6 +72,46 @@ def coerce_approval_mode(value: object) -> ApprovalMode:
         return ApprovalMode(value) if isinstance(value, str) else ApprovalMode.MANUAL
     except ValueError:
         return ApprovalMode.MANUAL
+
+
+def next_approval_mode(
+    current: ApprovalMode | str | object,
+    *,
+    auto_eligible: bool,
+    yolo_switcher_enabled: bool,
+) -> ApprovalMode | None:
+    """Return the next Shift+Tab approval mode for the active session.
+
+    The cycle is Manual → Auto → YOLO → Manual when both Auto and the YOLO
+    switcher entry are available. Auto is omitted when `auto_eligible` is false
+    (for example a remote sandbox). YOLO is omitted when orgs/users disable
+    `startup.yolo_switcher`. Launching with `--yolo` still leaves unrestricted
+    mode when the switcher entry is disabled; Shift+Tab only exits YOLO then.
+
+    Args:
+        current: Active approval mode (mode enum or raw value).
+        auto_eligible: Whether classifier-backed Auto can be selected.
+        yolo_switcher_enabled: Whether unrestricted YOLO appears in the cycle.
+
+    Returns:
+        The next mode, or `None` when no alternate mode is available.
+    """
+    mode = (
+        current if isinstance(current, ApprovalMode) else coerce_approval_mode(current)
+    )
+    if mode is ApprovalMode.MANUAL:
+        if auto_eligible:
+            return ApprovalMode.AUTO
+        if yolo_switcher_enabled:
+            return ApprovalMode.YOLO
+        return None
+    if mode is ApprovalMode.AUTO:
+        if yolo_switcher_enabled:
+            return ApprovalMode.YOLO
+        return ApprovalMode.MANUAL
+    # Only genuine YOLO reaches here; unknown/invalid values were normalized to
+    # Manual above and took that branch. Exiting YOLO always returns to Manual.
+    return ApprovalMode.MANUAL
 
 
 def approval_mode_key(thread_id: str) -> str:

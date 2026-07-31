@@ -1342,7 +1342,10 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="warnings.suppress",
         group="Warnings",
-        summary="Warning keys to suppress (e.g. 'ripgrep').",
+        summary=(
+            "Warning keys to suppress (e.g. 'ripgrep', 'tavily', 'yolo'); "
+            "also editable from /notifications."
+        ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("warnings", "suppress"),
     ),
@@ -1464,6 +1467,19 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("startup", "mode"),
         cli_flag="--auto-approve",
     ),
+    ConfigOption(
+        key="startup.yolo_switcher",
+        group="Startup",
+        summary=(
+            "Include YOLO in the Shift+Tab approval-mode cycle "
+            "(Manual → Auto → YOLO); disable to keep the cycle Manual/Auto only."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.YOLO_SWITCHER,
+        empty_env_is_false=True,
+        toml_keys=("startup", "yolo_switcher"),
+    ),
     # --- Debug / Development -------------------------------------------
     ConfigOption(
         key="debug.enabled",
@@ -1545,6 +1561,9 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS,
         # Plugin cache root override; read directly by plugins.store
         _env_vars.PLUGIN_CACHE_DIR,
+        # Set by the self-update restart to carry the launched command name into
+        # the re-exec'd process; never user-configured.
+        _env_vars.INVOKED_AS,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""
@@ -1570,6 +1589,35 @@ def get_option(key: str) -> ConfigOption | None:
 def option_keys() -> tuple[str, ...]:
     """Return every manifest key in definition order."""
     return tuple(opt.key for opt in get_config_options())
+
+
+def options_with_key_prefix(prefix: str) -> tuple[ConfigOption, ...]:
+    """Return every option whose key sits under the dotted `prefix` section.
+
+    Matching is exact on segment boundaries: `credentials` matches
+    `credentials.openai` but `credential` matches nothing, so `config get` can
+    accept a section name without also accepting truncated guesses.
+
+    Matching is case-insensitive, and key prefixes are the only section
+    namespace: display group titles (`Credentials`, `Tools`) are not accepted,
+    since several headings (`Models`, `Tools`) name a different set of options
+    than the same word as a prefix — one namespace keeps a section unambiguous.
+
+    Args:
+        prefix: Dotted key prefix (e.g. `credentials`). A trailing dot is not
+            stripped here — `credentials.` matches nothing, since it would look
+            for keys under `credentials..`. Callers that accept user input
+            should strip it first.
+
+    Returns:
+        Matching options in manifest order; empty when no key uses `prefix`.
+    """
+    if not prefix:
+        return ()
+    section = f"{prefix.casefold()}."
+    return tuple(
+        opt for opt in get_config_options() if opt.key.casefold().startswith(section)
+    )
 
 
 @lru_cache(maxsize=1)

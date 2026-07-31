@@ -2,6 +2,90 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.50](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.49...deepagents-code==0.1.50) (2026-07-30)
+
+### Highlights
+
+- Added project hooks workspace trust and expanded Hooks v2 support with client and server lifecycle events plus runtime feedback ([#5105](https://github.com/langchain-ai/deepagents/issues/5105), [#5104](https://github.com/langchain-ai/deepagents/issues/5104), [#4997](https://github.com/langchain-ai/deepagents/issues/4997), [#5045](https://github.com/langchain-ai/deepagents/issues/5045)).
+- Added an option to mute the “YOLO is active” toast ([#5103](https://github.com/langchain-ai/deepagents/issues/5103)).
+- Made the splash screen `thread` ID clickable to copy it ([#5173](https://github.com/langchain-ai/deepagents/issues/5173)).
+- Show `ask_user` answers directly on the answered tool row ([#5100](https://github.com/langchain-ai/deepagents/issues/5100)).
+- Show a toast when submitting an empty required `ask_user` answer ([#5095](https://github.com/langchain-ai/deepagents/issues/5095)).
+- Added thread message counts to the Debug Console ([#5117](https://github.com/langchain-ai/deepagents/issues/5117)).
+
+### Fixes and improvements
+
+- Gated Hooks v2 behind `DEEPAGENTS_CODE_EXPERIMENTAL` and improved hook resume stability across identity and Command tool results ([#5146](https://github.com/langchain-ai/deepagents/issues/5146), [#5176](https://github.com/langchain-ai/deepagents/issues/5176)).
+- Kept server hook state out of task results ([#5164](https://github.com/langchain-ai/deepagents/issues/5164)).
+- Stopped duplicate Auto transcript events during interrupt replay ([#5157](https://github.com/langchain-ai/deepagents/issues/5157)).
+- Kept `/update` and `/install --package` prompts responsive ([#5127](https://github.com/langchain-ai/deepagents/issues/5127)).
+- Refreshed the `/threads` cache after each turn ([#5174](https://github.com/langchain-ai/deepagents/issues/5174)).
+- Anchored toasts above the chat input and added a toast when media is dropped into a free-text question ([#5101](https://github.com/langchain-ai/deepagents/issues/5101), [#5099](https://github.com/langchain-ai/deepagents/issues/5099)).
+- Improved thread status message styling and links ([#5118](https://github.com/langchain-ai/deepagents/issues/5118)).
+- Made resume hints echo the launched command name ([#5119](https://github.com/langchain-ai/deepagents/issues/5119)).
+- Scoped selection copy to the clicked screen ([#5140](https://github.com/langchain-ai/deepagents/issues/5140)).
+- Ignored mouse hits on detached widgets ([#5114](https://github.com/langchain-ai/deepagents/issues/5114)).
+
+## [0.1.49](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.48...deepagents-code==0.1.49) (2026-07-27)
+
+### Features
+
+- Added recognition for LangSmith Gateway credentials. ([#5042](https://github.com/langchain-ai/deepagents/issues/5042))
+- Added slash commands for mode changes and an option to escape to manual mode from the YOLO notice. ([#5092](https://github.com/langchain-ai/deepagents/issues/5092))
+- Added an `install` subcommand. ([#5080](https://github.com/langchain-ai/deepagents/issues/5080))
+
+### Bug Fixes
+
+- Kept the post-install restart modal responsive. ([#5086](https://github.com/langchain-ai/deepagents/issues/5086))
+- Moved server graph bootstrap `cwd` calls off the event loop. ([#5081](https://github.com/langchain-ai/deepagents/issues/5081))
+- Improved handling of long transcript user messages with toast notifications and expansion. ([#5073](https://github.com/langchain-ai/deepagents/issues/5073))
+- Show model no-op notices as toasts instead of inline messages. ([#5074](https://github.com/langchain-ai/deepagents/issues/5074))
+
+## [0.1.48](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.47...deepagents-code==0.1.48) (2026-07-27)
+
+### Features
+
+- Added Fireworks `kimi-k3`, GLM-5.2-Fast, and Kimi-K3 to model selection and recommended models. ([#5082](https://github.com/langchain-ai/deepagents/issues/5082), [#5072](https://github.com/langchain-ai/deepagents/issues/5072))
+- Migrated legacy hooks to v2 events. ([#4971](https://github.com/langchain-ai/deepagents/issues/4971))
+
+### Bug Fixes
+
+- Require an `AGENTS.md` marker for `/agent` discovery, resolving unintended discovery behavior. ([#5076](https://github.com/langchain-ai/deepagents/issues/5076), closes [#4991](https://github.com/langchain-ai/deepagents/issues/4991))
+- Removed the redundant `/restart` hint from the restart prompt. ([#5083](https://github.com/langchain-ai/deepagents/issues/5083))
+- Removed the caret flash in plugin type-to-search. ([#5078](https://github.com/langchain-ai/deepagents/issues/5078))
+
+## [0.1.47](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.46...deepagents-code==0.1.47) (2026-07-24)
+
+### Features
+
+- Added `yolo` mode to the `Shift+Tab` approval cycle ([#5035](https://github.com/langchain-ai/deepagents/issues/5035)).
+- Show the changelog link before prompting to update via the install script ([#5034](https://github.com/langchain-ai/deepagents/issues/5034)).
+
+## [0.1.46](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.45...deepagents-code==0.1.46) (2026-07-24)
+
+### Highlights
+
+- Auto mode is now generally available. [#4957](https://github.com/langchain-ai/deepagents/issues/4957)
+- Added configurable Auto goal-criteria acceptance. [#4940](https://github.com/langchain-ai/deepagents/issues/4940)
+- Improved Auto behavior by authorizing actions from active goal/rubric directives, avoiding redundant approval prompts, showing the enable notice only on first global enable, deduplicating classifier-unavailable transcript spam, logging underlying classifier failures, and reporting classifier timeout budgets. [#5017](https://github.com/langchain-ai/deepagents/issues/5017) [#4993](https://github.com/langchain-ai/deepagents/issues/4993) [#5012](https://github.com/langchain-ai/deepagents/issues/5012) [#5013](https://github.com/langchain-ai/deepagents/issues/5013) [#5011](https://github.com/langchain-ai/deepagents/issues/5011) [#5025](https://github.com/langchain-ai/deepagents/issues/5025)
+- Added Hooks v2 capability snapshots and session transcripts, and hardened Hooks v2 command execution. [#4916](https://github.com/langchain-ai/deepagents/issues/4916) [#4918](https://github.com/langchain-ai/deepagents/issues/4918) [#4917](https://github.com/langchain-ai/deepagents/issues/4917)
+- Raised the agent recursion limit to 2000 and made it configurable. [#4994](https://github.com/langchain-ai/deepagents/issues/4994)
+
+### Improvements and fixes
+
+- Let the rubric grader inspect working-directory files, show rubric grader defaults, and improved `/rubric` help and empty-state messaging. [#4835](https://github.com/langchain-ai/deepagents/issues/4835) [#4966](https://github.com/langchain-ai/deepagents/issues/4966) [#5015](https://github.com/langchain-ai/deepagents/issues/5015)
+- Unified goal activation signaling. [#4980](https://github.com/langchain-ai/deepagents/issues/4980)
+- Made Version, Model, and CWD copyable in the Debug Console. [#4975](https://github.com/langchain-ai/deepagents/issues/4975)
+- Improved `config get` output when a key is missing. [#4976](https://github.com/langchain-ai/deepagents/issues/4976)
+- Aborted YOLO launch on `Ctrl+C`/`Ctrl+D` and made the YOLO warning friendlier for new users. [#4953](https://github.com/langchain-ai/deepagents/issues/4953) [#4950](https://github.com/langchain-ai/deepagents/issues/4950)
+- Updated LangSmith handling: secret redaction is disabled by default, `/trace` now flags empty env overrides that shadow the LangSmith key, and the default US endpoint is no longer treated as a custom target. [#4970](https://github.com/langchain-ai/deepagents/issues/4970) [#4996](https://github.com/langchain-ai/deepagents/issues/4996) [#5022](https://github.com/langchain-ai/deepagents/issues/5022)
+- Injected OpenAI `prompt_cache_key` for any OpenAI-provider endpoint. [#4995](https://github.com/langchain-ai/deepagents/issues/4995)
+- Improved tool and schema presentation: finished calls stay on the live tool-group line, first-party tool schemas now include field descriptions, and `web_search`/`fetch_url` tool descriptions were trimmed. [#4927](https://github.com/langchain-ai/deepagents/issues/4927) [#5019](https://github.com/langchain-ai/deepagents/issues/5019) [#5016](https://github.com/langchain-ai/deepagents/issues/5016)
+- Omitted `plugins/` and `conversation_history/` from the `/agent` picker. [#4991](https://github.com/langchain-ai/deepagents/issues/4991)
+- Made selector modal backdrop dimming consistent. [#4990](https://github.com/langchain-ai/deepagents/issues/4990)
+- Restored the `"Server log preserved at:"` notice on exit. [#4999](https://github.com/langchain-ai/deepagents/issues/4999)
+- Used the SDK pin as the effective editable version. [#4949](https://github.com/langchain-ai/deepagents/issues/4949)
+
 ## [0.1.45](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.44...deepagents-code==0.1.45) (2026-07-22)
 
 ### Features

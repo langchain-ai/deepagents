@@ -8,6 +8,33 @@ from deepagents.backends.store import StoreBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
+async def test_store_backend_aread_non_positive_limit_returns_empty_read():
+    """`aread` is a separate method body from `read`, so it needs its own case."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/notes.txt", "one\ntwo\nthree")
+
+    result = await be.aread("/notes.txt", offset=0, limit=0)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+    assert result.start_line is None
+
+
+async def test_store_backend_aread_negative_offset_starts_at_first_line():
+    """A negative offset is clamped on the async path too."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/notes.txt", "one\ntwo\nthree")
+
+    result = await be.aread("/notes.txt", offset=-1, limit=2)
+
+    assert result.error is None
+    assert result.start_line == 1
+    assert result.end_line == 2
+
+
 async def test_store_backend_async_crud_and_search():
     """Test async CRUD and search operations."""
     mem_store = InMemoryStore()

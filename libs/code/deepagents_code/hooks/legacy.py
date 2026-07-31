@@ -82,6 +82,8 @@ import subprocess  # ruff:ignore[suspicious-subprocess-import]
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
+from deepagents_code.hooks.env import HOOK_SUBPROCESS_TIMEOUT
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -101,7 +103,6 @@ that act on the arguments (e.g. a linter reading a `write_file` `content`) see
 the exact value the tool received.
 """
 
-HOOK_SUBPROCESS_TIMEOUT = 5
 """Seconds a single hook subprocess may run before it is killed.
 
 Bounds how long one misbehaving hook can block the dispatch thread. Consumed in

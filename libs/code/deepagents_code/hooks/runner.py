@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import json
+import ntpath
 import os
 import signal
 from contextlib import suppress
@@ -67,21 +69,38 @@ async def run_command_handler(
     Raises:
         asyncio.CancelledError: If the caller cancels command execution.
     """
-    if not handler.command.strip():
+    if handler.argv is not None:
+        if not handler.argv or not handler.argv[0].strip():
+            return _failure(handler.id, "invalid_command", "Hook argv is empty")
+    elif not handler.command.strip():
         return _failure(handler.id, "invalid_command", "Hook command is empty")
 
+    launch_env = env if env is not None else sanitize_hook_environ()
+
     try:
-        # Shell form preserves pipes, redirects, globs, and $VAR expansion to
-        # match the compatible command-hook contract (no separate args field).
-        process = await asyncio.create_subprocess_shell(
-            handler.command,
-            cwd=cwd,
-            env=env if env is not None else sanitize_hook_environ(),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
+        # Prefer argv + exec when present so Windows metacharacters in paths are
+        # not reinterpreted by cmd.exe. Shell form preserves pipes, redirects,
+        # globs, and $VAR expansion for ordinary command hooks.
+        if handler.argv is not None:
+            process = await asyncio.create_subprocess_exec(
+                *handler.argv,
+                cwd=cwd,
+                env=launch_env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+        else:
+            process = await asyncio.create_subprocess_shell(
+                handler.command,
+                cwd=cwd,
+                env=launch_env,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
     except (OSError, ValueError) as exc:
         return _failure(handler.id, "launch_failed", f"Could not launch hook: {exc}")
 
@@ -227,7 +246,7 @@ async def _read_bounded(
 
 
 async def _terminate(process: Process) -> None:
-    """Kill the hook process group, then reap the direct child."""
+    """Kill the hook process tree, then reap the direct child."""
     if os.name == "posix" and process.pid is not None:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -236,11 +255,73 @@ async def _terminate(process: Process) -> None:
         except OSError:
             with suppress(OSError):
                 process.kill()
+    elif os.name == "nt":
+        await _terminate_windows_tree(process)
     elif process.returncode is None:
         with suppress(OSError):
             process.kill()
     with suppress(OSError, TimeoutError):
         await asyncio.wait_for(process.wait(), timeout=_TERMINATE_WAIT_TIMEOUT)
+
+
+async def _terminate_windows_tree(process: Process) -> None:
+    if process.pid is None:
+        return
+    taskkill_path = _windows_taskkill_path()
+    taskkill = None
+    if taskkill_path is not None:
+        with suppress(OSError):
+            taskkill = await asyncio.create_subprocess_exec(
+                taskkill_path,
+                "/PID",
+                str(process.pid),
+                "/T",
+                "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+    if taskkill is not None:
+        try:
+            returncode = await asyncio.wait_for(
+                taskkill.wait(),
+                timeout=_TERMINATE_WAIT_TIMEOUT,
+            )
+        except TimeoutError:
+            with suppress(OSError):
+                taskkill.kill()
+            with suppress(OSError, TimeoutError):
+                await asyncio.wait_for(
+                    taskkill.wait(),
+                    timeout=_TERMINATE_WAIT_TIMEOUT,
+                )
+        else:
+            if returncode == 0:
+                return
+    if process.returncode is None:
+        with suppress(OSError):
+            process.kill()
+
+
+def _windows_taskkill_path() -> str | None:
+    try:
+        win_dll = getattr(ctypes, "WinDLL", None)
+        if win_dll is None:
+            return None
+        kernel32 = win_dll("kernel32", use_last_error=True)
+        get_system_directory = kernel32.GetSystemDirectoryW
+        get_system_directory.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
+        get_system_directory.restype = ctypes.c_uint
+        size = 260
+        while True:
+            buffer = ctypes.create_unicode_buffer(size)
+            length = get_system_directory(buffer, size)
+            if length == 0:
+                return None
+            if length < size:
+                return ntpath.join(buffer.value, "taskkill.exe")
+            size = length + 1
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
 
 
 def _decode(value: bytes) -> str:

@@ -3700,8 +3700,12 @@ def _verify_interpreter_or_exit() -> None:
         sys.exit(1)
 
 
-def cli_main() -> None:
-    """Entry point for console script."""
+def cli_main() -> int | None:
+    """Run the command-line entry point.
+
+    Returns:
+        An explicit exit status when startup is interrupted, otherwise `None`.
+    """
     # Fix for gRPC fork issue on macOS
     # https://github.com/grpc/grpc/issues/37642
     if sys.platform == "darwin":
@@ -3740,7 +3744,7 @@ def cli_main() -> None:
         )
 
         if _show_bare_command_group_help(args):
-            return
+            return None
 
         # Keep self-contained commands that do not need global settings here, before
         # state migration and settings bootstrap. If a future command only reads
@@ -4613,13 +4617,13 @@ def cli_main() -> None:
                     "[dim]Aborted; no project MCP servers loaded.[/dim]",
                     highlight=False,
                 )
-                return
+                return None
 
             hook_trust = _check_project_hooks_trust(
                 trust_flag=getattr(args, "trust_project_hooks", False),
             )
             if hook_trust is _TrustPromptOutcome.INTERRUPTED:
-                sys.exit(130)
+                return 130
             if hook_trust is _TrustPromptOutcome.CANCELLED:
                 from rich.console import Console as _Console
 
@@ -4627,7 +4631,7 @@ def cli_main() -> None:
                     "[dim]Aborted; project hooks not loaded.[/dim]",
                     highlight=False,
                 )
-                return
+                return None
 
             # Run Textual TUI
             return_code = 0
@@ -4763,7 +4767,7 @@ def cli_main() -> None:
             console.print("\n\n[yellow]Interrupted[/yellow]")
         except NameError:
             sys.stderr.write("\n\nInterrupted\n")
-        sys.exit(130)
+        return 130
 
 
 if __name__ == "__main__":

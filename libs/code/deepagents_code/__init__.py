@@ -21,7 +21,7 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str) -> Callable[[], None]:
+def __getattr__(name: str) -> Callable[[], int | None]:
     """Lazy import for `cli_main` to avoid loading `main.py` at package import.
 
     `main.py` pulls in `argparse`, signal handling, and other startup machinery

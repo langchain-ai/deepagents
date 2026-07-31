@@ -3,4 +3,4 @@
 from deepagents_code.main import cli_main
 
 if __name__ == "__main__":
-    cli_main()
+    raise SystemExit(cli_main())

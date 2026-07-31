@@ -1017,6 +1017,33 @@ class TestStartupAutoUpdate:
         assert exc_info.value.code == 130
         launch.assert_not_called()
 
+    def test_project_hooks_prompt_interrupt_returns_exit_code(
+        self,
+    ) -> None:
+        """An interrupted project-hook prompt returns 130 to the console wrapper."""
+        from deepagents_code.main import _TrustPromptOutcome
+
+        launch = AsyncMock(return_value=AppResult(return_code=0, thread_id="thread"))
+        with (
+            patch("sys.argv", ["dcode"]),
+            patch("sys.stdin", SimpleNamespace(isatty=lambda: True)),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled", return_value=False
+            ),
+            patch("deepagents_code.main._check_mcp_project_trust", return_value=None),
+            patch(
+                "deepagents_code.main._check_project_hooks_trust",
+                return_value=_TrustPromptOutcome.INTERRUPTED,
+            ),
+            patch("deepagents_code.main.run_textual_cli_async", launch),
+        ):
+            result = cli_main()
+
+        assert result == 130
+        launch.assert_not_called()
+
     def test_yolo_acknowledgement_interrupt_aborts_before_tui(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -1042,11 +1069,10 @@ class TestStartupAutoUpdate:
                 side_effect=KeyboardInterrupt,
             ),
             patch("deepagents_code.main.run_textual_cli_async", launch),
-            pytest.raises(SystemExit) as exc_info,
         ):
-            cli_main()
+            result = cli_main()
 
-        assert exc_info.value.code == 130
+        assert result == 130
         launch.assert_not_called()
         captured = capsys.readouterr()
         assert "Interrupted" in captured.out + captured.err

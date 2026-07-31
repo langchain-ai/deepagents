@@ -346,17 +346,19 @@ def _delete_target_may_have_descendants(backend: BackendProtocol, target: str, *
     """Whether `delete` should use the conservative recursive permission check.
 
     Falls back to the conservative check when no permission rules are configured
-    or the backend doesn't implement `ls`. Only confirmed plain files (`ls`
-    returns `not_a_directory`) skip the recursive check; directories always use
-    it, even if empty.
+    or the backend doesn't implement `ls`. Uses `ls(parent)` + `FileInfo.is_dir`
+    instead of `ls(target)`, since only the former distinguishes files from
+    directories consistently across all backends.
     """
     if not permissions_configured:
         return False
     try:
-        ls_result = backend.ls(target)
+        ls_result = backend.ls(str(PurePosixPath(target).parent))
     except NotImplementedError:
         return True
-    return ls_result.error is None or "not_a_directory" not in ls_result.error
+    if ls_result.error is not None:
+        return True
+    return not any(entry["path"] == target and not entry.get("is_dir") for entry in ls_result.entries or [])
 
 
 async def _adelete_target_may_have_descendants(backend: BackendProtocol, target: str, *, permissions_configured: bool) -> bool:
@@ -364,10 +366,12 @@ async def _adelete_target_may_have_descendants(backend: BackendProtocol, target:
     if not permissions_configured:
         return False
     try:
-        ls_result = await backend.als(target)
+        ls_result = await backend.als(str(PurePosixPath(target).parent))
     except NotImplementedError:
         return True
-    return ls_result.error is None or "not_a_directory" not in ls_result.error
+    if ls_result.error is not None:
+        return True
+    return not any(entry["path"] == target and not entry.get("is_dir") for entry in ls_result.entries or [])
 
 
 def _find_delete_deny_patterns_for_leaf(rules: list[FilesystemPermission], target: str) -> list[str]:

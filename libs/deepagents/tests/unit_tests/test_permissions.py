@@ -276,6 +276,24 @@ class TestRecursiveDeletePermissions:
         assert "permission denied for write" in result
         assert (tmp_path / "work" / "empty").exists()
 
+    def test_exact_file_delete_allowed_under_workspace_isolation_on_flat_backend(self):
+        """Regression for flat/virtual backends.
+
+        `StoreBackend`, `StateBackend`, and `ContextHubBackend` return
+        `entries=[], error=None` for both exact files and empty directories, so the
+        leaf check must not rely on a `not_a_directory` error.
+        """
+        backend = _make_backend({"/work/a.txt": "a"})
+        rules = [
+            FilesystemPermission(operations=["read", "write"], paths=["/work/**"], mode="allow"),
+            FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),
+        ]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work/a.txt"}, rules, backend=backend)
+
+        assert "Deleted" in result
+
     async def test_exact_file_delete_allowed_under_workspace_isolation_async(self, tmp_path):
         backend = self._fs_backend(tmp_path)
         rules = [

@@ -2,6 +2,17 @@
 
 # Deep Agents Changelog
 
+## [0.7.1](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.0...deepagents==0.7.1) (2026-07-30)
+
+### Features
+
+- Mark editable installs in `lc_versions.deepagents` ([#5158](https://github.com/langchain-ai/deepagents/issues/5158))
+
+### Bug Fixes
+
+- Return an empty read for degenerate `read_file` windows ([#5184](https://github.com/langchain-ai/deepagents/issues/5184))
+- Warn instead of silently skipping unresolved state schemas ([#5166](https://github.com/langchain-ai/deepagents/issues/5166))
+
 ## [0.7.0](https://github.com/langchain-ai/deepagents/compare/deepagents==0.6.12...deepagents==0.7.0) (2026-07-29)
 
 See [the docs](https://docs.langchain.com/oss/python/releases/changelog#deepagents-v0-7-0) for curated release notes.

@@ -40,18 +40,43 @@ def _evaluate(
     the parentheses, or swapping `||` for `&&`, leaves every clause present while
     inverting the meaning. Only the boolean structure catches that, so evaluate it.
 
-    Supports just the subset the workflow uses — `!cancelled()`, `&&`, `||`,
-    parentheses, and `needs.<job>.result` / `needs.<job>.outputs.<name>` compared
-    against single-quoted literals.
+    Supports just the subset the workflow uses — `!cancelled()`, `always()`,
+    `&&`, `||`, parentheses, and `needs.<job>.result` /
+    `needs.<job>.outputs.<name>` compared against single-quoted literals.
     """
     expr = condition
     for ref, value in values.items():
         expr = expr.replace(ref, repr(value))
     expr = expr.replace("!cancelled()", repr(not cancelled))
+    # always() unconditionally disables the implicit success() gate; the
+    # hand-checked needs.*.result clauses beside it carry the fail-closed load.
+    expr = expr.replace("always()", repr(True))
     expr = expr.replace("&&", " and ").replace("||", " or ")
     leftover = re.findall(r"needs\.[\w.-]+", expr)
     assert not leftover, f"unsubstituted references (update the test): {leftover}"
     return bool(eval(expr))  # noqa: S307 - workflow-derived, no external input
+
+
+def test_condition_references_only_declared_needs() -> None:
+    """Every job referenced in a job-level `if:` must appear in its `needs:`.
+
+    The Actions `needs` context only contains declared dependencies: a
+    reference to an undeclared job evaluates to an empty string instead of
+    erroring, so a `result == 'success'` clause silently fails and the job
+    skips even when its real dependency succeeded. This is what let the
+    `update-lockfiles` fix reference the guard jobs without depending on
+    them. Checking for undeclared references in `env:`/`run:` steps is out of
+    scope — there it is a runtime bug, not an always-skip gate.
+    """
+    for job_name, job in _load_workflow()["jobs"].items():
+        condition = str(job.get("if", ""))
+        declared = _needs(job)
+        undeclared = {
+            ref.split(".")[1]
+            for ref in re.findall(r"needs\.[\w-]+(?=\.(?:result|outputs)\b)", condition)
+            if ref.split(".")[1] not in declared
+        }
+        assert not undeclared, f"{job_name} if: references undeclared needs: {undeclared}"
 
 
 def test_trigger_releases_can_comment_on_release_pr() -> None:
@@ -110,7 +135,49 @@ def test_release_dispatch_precedes_release_please_maintenance() -> None:
     assert "outputs.release-commit" not in release_please_if
     assert "needs.guard-pending-release.outputs.skip == 'false'" in release_please_if
 
-    assert "release-please" in _needs(jobs["update-lockfiles"])
+    update_lockfiles = jobs["update-lockfiles"]
+    assert "release-please" in _needs(update_lockfiles)
+    # The `needs` context only carries declared dependencies, so every
+    # ancestor whose result the `if:` hand-checks must be listed — an
+    # undeclared reference compares an empty string against 'success' and
+    # the job skips even when release-please opened PRs.
+    assert {
+        "guard-empty-commit",
+        "detect-release-commit",
+        "guard-pending-release",
+    } <= _needs(update_lockfiles)
+    # Same skip poison as on `release-please`: this job's needs chain also ends
+    # at a legitimately-skipped `trigger-releases`, so a bare outputs-only `if:`
+    # keeps the implicit success() gate and the job silently skips even when
+    # release-please produced PRs. It must override the gate and hand-check
+    # every dependency in the chain instead.
+    update_lockfiles_if = _condition(update_lockfiles)
+    assert "!cancelled()" in update_lockfiles_if
+    assert "needs.release-please.result == 'success'" in update_lockfiles_if
+    assert "needs.release-please.outputs.prs != '[]'" in update_lockfiles_if
+    # `release-please` succeeding already implies the guard saw the dispatch
+    # succeed on release commits, so re-checking the skipped job is unnecessary
+    # — and a `'skipped'` comparison would wrongly block this job on them.
+    assert "trigger-releases" not in update_lockfiles_if
+
+    # The notes-check dispatch sits behind the same chain (and `always()` alone
+    # would tolerate red ancestors), so it must pin the same hand-checked
+    # dependency results — except `update-lockfiles` itself, which is a
+    # sequencing-only need whose own failure must not block the check.
+    # Same declared-needs requirement as update-lockfiles: the hand-checked
+    # ancestors must be listed, while `update-lockfiles` itself stays a
+    # sequencing-only need whose result the `if:` does not check.
+    assert {
+        "guard-empty-commit",
+        "detect-release-commit",
+        "guard-pending-release",
+        "update-lockfiles",
+    } <= _needs(jobs["dispatch-release-notes-check"])
+    dispatch_if = _condition(jobs["dispatch-release-notes-check"])
+    assert "always()" in dispatch_if
+    assert "!cancelled()" in dispatch_if
+    assert "needs.release-please.result == 'success'" in dispatch_if
+    assert "update-lockfiles" not in dispatch_if
 
 
 def test_release_please_condition_fails_closed() -> None:
@@ -148,6 +215,105 @@ def test_release_please_condition_fails_closed() -> None:
     assert not runs("false", guard="failure")
     assert not runs("false", guard="skipped")
     assert not runs("false", cancelled=True)
+
+
+def test_update_lockfiles_condition_fails_closed() -> None:
+    """Pin lockfile regeneration's boolean structure after the #5161 skip-gate fix.
+
+    `update-lockfiles` needs `release-please`, which transitively needs a
+    legitimately-skipped `trigger-releases` on ordinary pushes — the same
+    implicit-success() poison #5169 fixed for `release-please`. Without
+    `!cancelled()` and hand-checked dependency results, this job silently
+    skipped on a green workflow and release PR lockfiles went stale.
+    """
+    update_lockfiles_if = _condition(
+        _load_workflow()["jobs"]["update-lockfiles"]
+    )
+
+    def runs(
+        prs: str,
+        *,
+        empty_commit: str = "success",
+        detect: str = "success",
+        guard: str = "success",
+        release_please: str = "success",
+        cancelled: bool = False,
+    ) -> bool:
+        return _evaluate(
+            update_lockfiles_if,
+            {
+                "needs.guard-empty-commit.result": empty_commit,
+                "needs.detect-release-commit.result": detect,
+                "needs.guard-pending-release.result": guard,
+                "needs.release-please.result": release_please,
+                "needs.release-please.outputs.prs": prs,
+            },
+            cancelled=cancelled,
+        )
+
+    # release-please opened/updated release PRs — the normal refresh path.
+    assert runs(
+        '[{"headBranchName": "release-please--branches--main--components--deepagents"}]'
+    )
+    # No PRs produced (empty output or the empty-array literal) — nothing to do.
+    assert not runs("[]")
+    # Unset/empty prs (release-please crashed before writing outputs) must not
+    # look like work to do.
+    assert not runs("")
+    # Direct deps: any red guardian job fails closed.
+    assert not runs("[1]", empty_commit="failure")
+    assert not runs("[1]", detect="failure")
+    assert not runs("[1]", guard="failure")
+    assert not runs("[1]", guard="skipped")
+    assert not runs("[1]", release_please="failure")
+    assert not runs("[1]", release_please="skipped")
+    assert not runs("[1]", cancelled=True)
+
+
+def test_dispatch_release_notes_check_condition_fails_closed() -> None:
+    """Pin the notes-check dispatch gate: `always()` plus hand-checked deps.
+
+    `update-lockfiles` is a sequencing-only need whose own failure must not
+    block the dispatch (its comment says so), but every other ancestor in the
+    chain must be checked by hand — bare `always()` would also tolerate red
+    guardians and a cancelled workflow.
+    """
+    dispatch_if = _condition(_load_workflow()["jobs"]["dispatch-release-notes-check"])
+
+    def runs(
+        prs: str,
+        *,
+        empty_commit: str = "success",
+        detect: str = "success",
+        guard: str = "success",
+        release_please: str = "success",
+        cancelled: bool = False,
+    ) -> bool:
+        return _evaluate(
+            dispatch_if,
+            {
+                "needs.guard-empty-commit.result": empty_commit,
+                "needs.detect-release-commit.result": detect,
+                "needs.guard-pending-release.result": guard,
+                "needs.release-please.result": release_please,
+                "needs.release-please.outputs.prs": prs,
+            },
+            cancelled=cancelled,
+        )
+
+    # Release PRs exist and every guardian succeeded — dispatch the check.
+    assert runs("[1]")
+    # No PRs / unset prs — nothing to validate.
+    assert not runs("[]")
+    assert not runs("")
+    # Red ancestors fail closed even though the condition starts with always().
+    assert not runs("[1]", empty_commit="failure")
+    assert not runs("[1]", detect="failure")
+    assert not runs("[1]", guard="failure")
+    assert not runs("[1]", guard="skipped")
+    assert not runs("[1]", release_please="failure")
+    assert not runs("[1]", release_please="skipped")
+    assert not runs("[1]", cancelled=True)
 
 
 def test_guard_condition_fails_closed() -> None:

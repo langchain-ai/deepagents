@@ -30,6 +30,7 @@ class _PluginRow:
     mcp_connected: bool | None = None
     mcp_server_names: tuple[str, ...] = ()
     mcp_login_servers: tuple[str, ...] = ()
+    hook_events: tuple[str, ...] = ()
     unsupported_components: tuple[UnsupportedComponent, ...] = ()
     session_loaded: bool = False
     load_error: str | None = None
@@ -44,6 +45,11 @@ class _PluginRow:
         if self.enabled:
             return "enabled"
         return "disabled"
+
+    @property
+    def has_supported_components(self) -> bool:
+        """Whether the plugin declares any component this client loads."""
+        return bool(self.skill_names or self.mcp_server_names or self.hook_events)
 
     @property
     def label(self) -> str:

@@ -81,6 +81,42 @@ def release_tag(component: str, version: str, *, separator: str = DEFAULT_TAG_SE
     return f"{component}{separator}{version}"
 
 
+def _ref_exists(ref: str, *, repo_root: Path) -> bool:
+    """Return whether `ref` resolves to a git object.
+
+    Uses `rev-parse --verify` so a missing release tag is distinguishable from
+    a `git diff` that failed for some other reason (see the caller in
+    `find_lockfile_only_components`).
+
+    Args:
+        ref: Git ref to resolve.
+        repo_root: Repository root used as the git cwd.
+
+    Returns:
+        `True` when the ref resolves and `False` when it is absent.
+
+    Raises:
+        RuntimeError: If git fails for a reason other than an absent ref.
+    """
+    completed = subprocess.run(  # fixed argv, no shell
+        ["git", "rev-parse", "--verify", "--quiet", ref],
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode == 0:
+        return True
+    if completed.returncode == 1:
+        return False
+    msg = (
+        f"git 'rev-parse --verify --quiet {ref}' failed "
+        f"(rc={completed.returncode}): "
+        f"{completed.stderr.strip() or completed.stdout.strip()}"
+    )
+    raise RuntimeError(msg)
+
+
 def package_unreleased_files(
     path: str,
     baseline_ref: str,
@@ -133,10 +169,12 @@ def find_lockfile_only_components(
 
     Returns:
         Sorted list of dicts with `component`, `path`, `version`, `baseline`
-        (resolved release tag), and `files`.
+        (resolved release tag), and `files`. Components whose manifest version
+        has no published release tag yet are skipped (with a stderr warning)
+        rather than treated as offenders.
 
     Raises:
-        RuntimeError: If a release tag cannot be resolved or git fails.
+        RuntimeError: If a git diff fails for an existing release tag.
     """
     packages = config.get("packages", {})
     sep = tag_separator(config)
@@ -151,8 +189,22 @@ def find_lockfile_only_components(
         if not isinstance(component, str) or not component:
             continue
         baseline = release_tag(component, version, separator=sep)
-        # Missing tags (never published, deleted, shallow-without-tags) raise so
-        # CI fails closed rather than silently skipping a package.
+        if not _ref_exists(baseline, repo_root=repo_root):
+            # The manifest was bumped (release PR merged) but the tag is not
+            # published yet — pre-release checks may still be running or have
+            # failed. There is no released baseline to diff against, so skip
+            # this component for this run instead of failing closed; the watch
+            # re-checks on the next release-please run / hourly cron, by which
+            # point the tag exists. A genuinely deleted tag still surfaces here
+            # on every run until restored.
+            print(
+                f"::warning::Skipping {component}: release tag '{baseline}' "
+                f"(manifest {version}) not found; release likely unpublished.",
+                file=sys.stderr,
+            )
+            continue
+        # A diff failure for an existing tag (shallow clone without history,
+        # corrupt ref) still raises so CI fails closed.
         files = package_unreleased_files(
             path, baseline, repo_root=repo_root, head=head
         )

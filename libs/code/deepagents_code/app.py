@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import shlex
 import signal
@@ -66,9 +67,15 @@ from deepagents_code._git import (
 )
 from deepagents_code._invocation import invoked_name
 from deepagents_code._session_stats import (
+    USAGE_KIND_LABELS,
+    USAGE_KIND_ORDER,
+    RecordedRequest,
     SessionStats,
     SpinnerStatus,
+    finalize_recorded_requests,
+    format_cost,
     format_token_count,
+    record_message_usage,
 )
 
 # All config imports — settings, create_model, detect_provider, is_ascii_mode,
@@ -232,6 +239,80 @@ def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
     """
     path = Path(path_arg).expanduser()
     return path, path.read_text(encoding="utf-8")
+
+
+def _coerce_session_cost_usd(value: object) -> float:
+    """Coerce a persisted cost to a finite non-negative float.
+
+    A corrupted value reads as `$0.00`, which is indistinguishable from a thread
+    that genuinely spent nothing -- and `/cost` would then explain the zero with
+    the wrong reason. Log the discard for the same reason
+    `_warn_discarded_goal_channels` does, at WARNING because DEBUG is not
+    attached by default. The value itself is never logged, only its type.
+
+    Returns:
+        The valid persisted cost, or `0.0` for malformed values.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        if value is not None:
+            logger.warning(
+                "Discarding a malformed persisted session cost of type %s.",
+                type(value).__name__,
+            )
+        return 0.0
+    try:
+        cost_usd = float(value)
+    except (OverflowError, ValueError):
+        logger.warning("Discarding a persisted session cost that is out of range.")
+        return 0.0
+    if not math.isfinite(cost_usd) or cost_usd < 0:
+        logger.warning(
+            "Discarding a persisted session cost that is not finite and non-negative."
+        )
+        return 0.0
+    return cost_usd
+
+
+_PRICING_UNAVAILABLE_MESSAGE = (
+    "We couldn't calculate costs because the pricing data failed to load. "
+    "Reinstalling Deep Agents Code should restore cost estimates; see the debug "
+    "log for details. Untracked usage may still count toward subscription "
+    "limits or incur charges."
+)
+"""Shown when price data failed to load, rather than blaming the models used."""
+
+
+def _coerce_provisional_cost_delta_usd(value: object) -> float | None:
+    """Coerce one message's provisional cost contribution to a finite float.
+
+    Unlike `_coerce_session_cost_usd`, a *negative* value here is expected, not
+    corrupt: a request is re-priced downward whenever a later chunk names the
+    real model or corrects an over-counted prompt. Routing those through the
+    persisted-value coercer would discard the correction and log it as
+    corruption, leaving the display stuck at the pre-correction estimate.
+
+    Args:
+        value: Cost delta reported for one streamed message.
+
+    Returns:
+        The finite delta, or `None` when the value is unusable and should be
+            ignored rather than applied.
+    """
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        logger.warning(
+            "Discarding a malformed provisional cost delta of type %s.",
+            type(value).__name__,
+        )
+        return None
+    try:
+        delta_usd = float(value)
+    except (OverflowError, ValueError):
+        logger.warning("Discarding a provisional cost delta that is out of range.")
+        return None
+    if not math.isfinite(delta_usd):
+        logger.warning("Discarding a provisional cost delta that is not finite.")
+        return None
+    return delta_usd
 
 
 def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
@@ -630,6 +711,7 @@ if TYPE_CHECKING:
         GoalReviewResult,
         GoalReviewTextArea,
     )
+    from deepagents_code.tui.widgets.mcp_reconnect import ReconnectChoice
     from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
     from deepagents_code.tui.widgets.notification_center import (
         NotificationActionRequested,
@@ -1839,6 +1921,9 @@ class _ThreadHistoryPayload:
     model_params: dict[str, Any] | None = None
     """Persisted `_model_params` from the checkpoint, if any."""
 
+    session_cost_usd: float = 0.0
+    """Persisted cumulative `_session_cost_usd` from the checkpoint."""
+
     transcript_messages: tuple[BaseMessage, ...] = ()
     """Validated checkpoint messages for Hooks transcript materialization."""
 
@@ -1896,6 +1981,32 @@ class _ThreadHistoryPayload:
 
     goal_criteria_request_active: bool = False
     """Whether a newer or unfinished criteria request remains in the checkpoint."""
+
+    @property
+    def has_model_usage(self) -> bool:
+        """Whether restored state contains evidence of model usage."""
+        if self.session_cost_usd > 0 or self.context_tokens > 0:
+            return True
+        if any(
+            message.type in {MessageType.ASSISTANT, MessageType.TOOL}
+            for message in self.messages
+        ):
+            return True
+        return any(
+            getattr(message, "type", None) == "ai"
+            for message in self.transcript_messages
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class _ThreadsResumeTarget:
+    """Concrete `/threads -r` target and its owning agent."""
+
+    thread_id: str
+    """Checkpointed thread to resume."""
+
+    agent_name: str
+    """Agent recorded as the thread owner."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -3151,6 +3262,15 @@ class DeepAgentsApp(App):
         self._active_mcp_viewer: Any = None
         """Handle to the `/mcp` modal so server-ready events can refresh it."""
 
+        self._mcp_viewer_disable_toggled = False
+        """Whether the current/last `/mcp` viewer session toggled a disable state.
+
+        Scoped to one viewer session — cleared when the viewer opens, when
+        the close prompt fires, and on `ServerReady` — so closing the
+        viewer only offers a reconnect when the user actually changed
+        something while it was open.
+        """
+
         self._restart_respawn_task: asyncio.Task[None] | None = None
         """Strong reference to the detached `/restart` respawn task.
 
@@ -3710,7 +3830,10 @@ class DeepAgentsApp(App):
 
         # Session stats & tokens
         self._session_stats: SessionStats = SessionStats()
-        """Cumulative usage stats across all turns in this session."""
+        """Cumulative usage stats across all turns in this process."""
+
+        self._thread_stats: SessionStats = SessionStats()
+        """Usage observed since the active thread was loaded or created."""
 
         self._inflight_turn_stats: SessionStats | None = None
         """Stats for the currently executing turn.
@@ -3722,6 +3845,9 @@ class DeepAgentsApp(App):
         self._inflight_turn_start: float = 0.0
         """Monotonic timestamp when the current turn started."""
 
+        self._inflight_thread_id: str | None = None
+        """Thread that owns `_inflight_turn_stats`, for switch-safe merging."""
+
         self._context_tokens: int = 0
         """Local cache of the last total-context token count.
 
@@ -3731,6 +3857,39 @@ class DeepAgentsApp(App):
 
         self._tokens_approximate: bool = False
         """Whether the cached token count is stale (interrupted generation)."""
+
+        self._session_cost_usd: float = 0.0
+        """The graph's cumulative estimated cost for the active thread.
+
+        Written only from server-owned values: the checkpoint on thread load and
+        the streamed absolute total during a turn. The client never adds its own
+        estimates here.
+        """
+
+        self._provisional_cost_usd: float = 0.0
+        """Streamed spend the graph has not reported a total for yet.
+
+        Added to the displayed figure so the status bar keeps moving during work
+        the checkpoint lags behind — nested subagent steps, most visibly — and
+        reset whenever a server total arrives.
+        """
+
+        self._server_pricing_ok: bool | None = None
+        """Whether price data loaded in the process that does the pricing.
+
+        `None` until a cost event reports it. Pricing runs server-side, which on
+        a remote deployment is a different process from this one, so the local
+        `pricing_data_available()` cannot see a broken install there.
+        """
+
+        self._thread_restored_cost_usd: float = 0.0
+        """Checkpoint cost without a local per-model breakdown."""
+
+        self._thread_has_restored_model_usage: bool = False
+        """Whether checkpoint history proves model usage predating local stats."""
+
+        self._thread_has_completed_turn: bool = False
+        """Whether a turn completed since the active thread was loaded."""
 
         # Session lazy state & startup
         self._session_state: TextualSessionState | None = None
@@ -4379,6 +4538,9 @@ class DeepAgentsApp(App):
         self._ui_adapter._on_tokens_update = self._on_tokens_update
         self._ui_adapter._on_tokens_pending = self._show_pending_tokens
         self._ui_adapter._on_tokens_show = self._show_tokens
+        self._ui_adapter._on_session_cost = self._set_session_cost
+        self._ui_adapter._on_provisional_cost = self._add_provisional_cost
+        self._ui_adapter._on_stream_complete = self._mark_thread_turn_completed
 
         if self._server_startup_deferred:
             await self._mount_deferred_start_notice()
@@ -5167,6 +5329,7 @@ class DeepAgentsApp(App):
         self._mcp_optimistic_original_server_info.clear()
         self._pending_mcp_login_reconnect = False
         self._pending_mcp_disable_reconnect_servers.clear()
+        self._mcp_viewer_disable_toggled = False
         self._sync_pending_mcp_reconnect()
 
         # Drop transient failure-state widgets — banner state and the agent
@@ -7256,6 +7419,345 @@ class DeepAgentsApp(App):
         """Show the unknown token count placeholder during streaming."""
         if self._status_bar:
             self._status_bar.show_pending_tokens()
+
+    def _set_session_cost(
+        self,
+        cost_usd: float,
+        /,
+        *,
+        thread_id: str = "",
+        pricing_ok: bool | None = None,
+    ) -> None:
+        """Set the active thread's cumulative cost from a server-owned value.
+
+        Used for both the restored checkpoint total and the totals the graph
+        streams during a turn. Either supersedes anything the message stream
+        contributed provisionally, so that add-on is dropped.
+
+        Args:
+            cost_usd: Non-negative cumulative estimated cost in US dollars.
+            thread_id: Thread the total belongs to, when the source named one.
+                A streamed total can arrive after `/force-clear` or a thread
+                switch has already moved the display to another thread, so a
+                total for a thread that is no longer active is discarded. An
+                empty value means the source did not identify a thread (a
+                restored checkpoint read, say) and is always applied.
+            pricing_ok: Whether price data loaded in the pricing process, when
+                the source reported it. `None` leaves the last known value
+                alone, so a source that cannot speak to pricing health (a
+                restored checkpoint read) does not erase what a stream said.
+        """
+        if thread_id and thread_id != self._lc_thread_id:
+            logger.debug(
+                "Ignoring a session cost total for thread %r; %r is active.",
+                thread_id,
+                self._lc_thread_id,
+            )
+            return
+        if pricing_ok is not None:
+            self._server_pricing_ok = pricing_ok
+        self._session_cost_usd = _coerce_session_cost_usd(cost_usd)
+        self._provisional_cost_usd = 0.0
+        self._refresh_session_cost_display()
+
+    @property
+    def _displayed_cost_usd(self) -> float:
+        """The cost shown to the user: the graph's total plus provisional spend."""
+        return self._session_cost_usd + self._provisional_cost_usd
+
+    def _refresh_session_cost_display(self) -> None:
+        """Show the server total plus any spend it has not accounted for yet."""
+        if self._status_bar:
+            self._status_bar.set_cost(self._displayed_cost_usd)
+
+    def _reset_thread_usage(
+        self,
+        cost_usd: float = 0.0,
+        *,
+        has_restored_model_usage: bool = False,
+    ) -> None:
+        """Start local usage details for a newly activated thread.
+
+        Args:
+            cost_usd: Cumulative cost restored from that thread's checkpoint.
+            has_restored_model_usage: Whether restored history contains model usage.
+        """
+        self._thread_stats = SessionStats()
+        self._thread_restored_cost_usd = _coerce_session_cost_usd(cost_usd)
+        self._thread_has_restored_model_usage = (
+            has_restored_model_usage or self._thread_restored_cost_usd > 0
+        )
+        self._thread_has_completed_turn = False
+        self._set_session_cost(self._thread_restored_cost_usd)
+
+    def _mark_thread_turn_completed(self) -> None:
+        """Record a clean stream end for the thread that owns the active turn."""
+        if self._inflight_thread_id == self._lc_thread_id:
+            self._thread_has_completed_turn = True
+
+    def _add_provisional_cost(self, cost_usd: float, /) -> None:
+        """Show one streamed request's estimate ahead of the graph's total.
+
+        The graph checkpoints this same request and streams the total that
+        includes it, which resets the provisional figure. Nothing here changes
+        the durable value, so an estimate that briefly counts twice on screen
+        cannot survive into the thread's cost.
+
+        Args:
+            cost_usd: Estimated cost this message contributed, in US dollars.
+                Negative when a later chunk re-prices its request downward.
+        """
+        delta_usd = _coerce_provisional_cost_delta_usd(cost_usd)
+        if delta_usd is None or delta_usd == 0:
+            return
+        # Clamp the running total, not the increment: dropping a negative delta
+        # would strand the display at the estimate the correction supersedes.
+        self._provisional_cost_usd = max(self._provisional_cost_usd + delta_usd, 0.0)
+        self._refresh_session_cost_display()
+
+    def _pricing_is_broken(self) -> bool:
+        """Report whether price data failed to load where pricing happens.
+
+        Prefers what the graph reported, because on a remote deployment the
+        pricing process is not this one and only it can see its own install.
+        Falls back to the local check for in-process runs and for threads that
+        have not received a cost event yet.
+
+        Returns:
+            `True` when the pricing process could not load its price data.
+        """
+        if self._server_pricing_ok is not None:
+            return not self._server_pricing_ok
+        from deepagents_code.cost_tracking import pricing_data_available
+
+        return not pricing_data_available()
+
+    def _format_cost_summary(self) -> str:
+        """Build the running total and type/model breakdown for `/cost`.
+
+        Returns:
+            User-facing estimated cost summary for the active thread.
+        """
+        displayed_cost_usd = self._displayed_cost_usd
+        request_count = self._thread_stats.request_count
+        priced_request_count = self._thread_stats.priced_request_count
+        has_unknown_restored_usage = (
+            self._thread_has_restored_model_usage
+            and self._thread_restored_cost_usd <= 0
+        )
+        if displayed_cost_usd <= 0 and not priced_request_count:
+            if not request_count:
+                if has_unknown_restored_usage:
+                    return (
+                        "Cost estimate unavailable\n\n"
+                        "Earlier model usage was restored for this thread, but its "
+                        "request and pricing details were not persisted. This does "
+                        "not mean the usage was free."
+                    )
+                if self._thread_has_completed_turn:
+                    return (
+                        "We couldn't track the requests so far because the provider "
+                        "didn't report token usage. Requests from providers that "
+                        "report usage will appear here."
+                    )
+                return "No model usage recorded for this thread yet."
+            lines = [
+                # A failed `genai-prices` import makes *every* request
+                # unpriceable, which is a broken install rather than a gap in
+                # the price catalog -- and the only one of the two the user can
+                # act on. Blaming their models would send them the wrong way.
+                _PRICING_UNAVAILABLE_MESSAGE
+                if self._pricing_is_broken()
+                else (
+                    "We couldn't calculate costs for the requests so far because "
+                    "pricing isn't available for the models used. Unpriced usage "
+                    "may still count toward subscription limits or incur charges."
+                )
+            ]
+            if has_unknown_restored_usage:
+                lines.extend(
+                    [
+                        "",
+                        (
+                            "Earlier restored model usage also has no persisted "
+                            "request or pricing details."
+                        ),
+                    ]
+                )
+            return "\n".join(lines)
+
+        has_unpriced_requests = priced_request_count < request_count
+        heading = (
+            "Estimated cost for priced requests"
+            if has_unpriced_requests or has_unknown_restored_usage
+            else "Estimated thread cost"
+        )
+        lines = [f"{heading}: {format_cost(displayed_cost_usd)}"]
+        if has_unpriced_requests:
+            included_verb = "is" if priced_request_count == 1 else "are"
+            lines.extend(
+                [
+                    "",
+                    (
+                        f"{priced_request_count} of {request_count} recorded requests "
+                        f"{included_verb} included."
+                    ),
+                    *self._unpriced_request_lines(),
+                ]
+            )
+        if has_unknown_restored_usage:
+            lines.extend(
+                [
+                    "",
+                    (
+                        "Earlier restored model usage has no persisted request or "
+                        "pricing details."
+                    ),
+                ]
+            )
+        if has_unpriced_requests and self._pricing_is_broken():
+            # Reachable whenever pricing broke partway through a thread: earlier
+            # requests priced, later ones could not. Gating this on a zero total
+            # would leave those sessions blaming the models instead.
+            lines.extend(["", _PRICING_UNAVAILABLE_MESSAGE])
+        if has_unpriced_requests or has_unknown_restored_usage:
+            lines.append("The full thread cost may be higher.")
+        priced_kinds = [
+            (kind, self._thread_stats.per_kind[kind])
+            for kind in USAGE_KIND_ORDER
+            if kind in self._thread_stats.per_kind
+            and self._thread_stats.per_kind[kind].priced_request_count
+        ]
+        if priced_kinds:
+            lines.append("By type since this thread was loaded:")
+            for kind, kind_stats in priced_kinds:
+                lines.append(
+                    f"- {USAGE_KIND_LABELS[kind]}: {format_cost(kind_stats.cost_usd)}"
+                )
+        priced_models = [
+            model
+            for model in self._thread_stats.per_model.values()
+            if model.priced_request_count
+        ]
+        if priced_models:
+            lines.append("By model since this thread was loaded:")
+            for model in priced_models:
+                label = (
+                    f"{model.provider}:{model.model_name}"
+                    if model.provider
+                    else model.model_name
+                )
+                lines.append(f"- {label}: {format_cost(model.cost_usd)}")
+        elif (
+            displayed_cost_usd > 0
+            and not priced_kinds
+            and self._thread_restored_cost_usd > 0
+        ):
+            lines.append(
+                "Per-type and per-model details are unavailable for restored usage."
+            )
+
+        if (priced_kinds or priced_models) and self._thread_restored_cost_usd > 0:
+            lines.append("Restored usage is included only in the total above.")
+        authoritative_current_cost_usd = max(
+            self._session_cost_usd - self._thread_restored_cost_usd,
+            0.0,
+        )
+        detail_gap_usd = (
+            authoritative_current_cost_usd - self._thread_stats.total_cost_usd
+        )
+        comparison_tolerance = max(authoritative_current_cost_usd * 1e-6, 1e-9)
+        if detail_gap_usd > comparison_tolerance:
+            lines.append(
+                "Some current-session usage is included only in the total because "
+                "detailed usage metadata was unavailable."
+            )
+        if (
+            displayed_cost_usd <= 0
+            and not has_unpriced_requests
+            and not has_unknown_restored_usage
+        ):
+            priced_summary = (
+                "The recorded request was priced at $0.00."
+                if priced_request_count == 1
+                else (
+                    f"All {priced_request_count} recorded requests were priced at "
+                    "$0.00."
+                )
+            )
+            lines.append(
+                f"{priced_summary} "
+                "Your provider's bill may still differ due to subscriptions, "
+                "credits, or fees not represented here."
+            )
+        return "\n".join(lines)
+
+    def _unpriced_request_lines(self) -> list[str]:
+        """Describe model requests omitted because no price was available.
+
+        Returns:
+            Lines naming each unpriced model and its omitted request count.
+        """
+        lines = ["Pricing was unavailable for:"]
+        named_request_count = 0
+        for model in self._thread_stats.per_model.values():
+            request_count = model.request_count - model.priced_request_count
+            if request_count <= 0:
+                continue
+            named_request_count += request_count
+            label = (
+                f"{model.provider}:{model.model_name}"
+                if model.provider
+                else model.model_name
+            )
+            request_noun = "request" if request_count == 1 else "requests"
+            lines.append(f"- {label} — {request_count} {request_noun}")
+
+        unknown_request_count = (
+            self._thread_stats.request_count
+            - self._thread_stats.priced_request_count
+            - named_request_count
+        )
+        if unknown_request_count > 0:
+            request_noun = "request" if unknown_request_count == 1 else "requests"
+            lines.append(f"- Unknown model — {unknown_request_count} {request_noun}")
+        return lines
+
+    def _sync_session_cost_from_state(self, state_values: Mapping[str, Any]) -> None:
+        """Adopt the checkpoint's cumulative cost as the displayed total.
+
+        The graph is the only writer, so a committed value always supersedes the
+        provisional figure the message stream produced. State that carries no
+        cost channel at all (a read that failed or a graph without the
+        middleware) is left alone rather than treated as zero spend.
+
+        Args:
+            state_values: Committed thread state values.
+        """
+        if "_session_cost_usd" not in state_values:
+            return
+        self._set_session_cost(
+            _coerce_session_cost_usd(state_values.get("_session_cost_usd"))
+        )
+
+    async def _sync_session_cost_from_checkpoint(self) -> None:
+        """Reconcile the displayed cost with the thread's committed total.
+
+        The streamed totals already track spend during a turn; this settles the
+        display at the end of one, and covers a turn whose final events were
+        missed (an aborted stream, say).
+        """
+        if not self._agent or not self._lc_thread_id:
+            return
+        try:
+            state_values = await self._get_thread_state_values(self._lc_thread_id)
+        except Exception:
+            logger.debug(
+                "Could not load thread state while reconciling cost",
+                exc_info=True,
+            )
+            return
+        self._sync_session_cost_from_state(state_values)
 
     def _notify_hydration_failure(self) -> None:
         """Surface transcript hydration failures to the user, once per session.
@@ -10963,6 +11465,10 @@ class DeepAgentsApp(App):
         def _as_nonblank_str(value: object) -> str | None:
             return value if isinstance(value, str) and value.strip() else None
 
+        session_cost_usd = _coerce_session_cost_usd(
+            state_values.get("_session_cost_usd")
+        )
+
         raw_pending_kind = state_values.get("_pending_goal_kind")
         pending_kind = coerce_goal_proposal_kind(raw_pending_kind)
         raw_pending_request_id = state_values.get("_pending_goal_request_id")
@@ -10990,6 +11496,7 @@ class DeepAgentsApp(App):
             context_tokens,
             model_spec,
             model_params,
+            session_cost_usd=session_cost_usd,
             rubric=_as_str(state_values.get("rubric")),
             sticky_rubric=_as_str(state_values.get("_sticky_rubric")),
             sticky_rubric_recorded="_sticky_rubric" in state_values,
@@ -13190,6 +13697,7 @@ class DeepAgentsApp(App):
             self._context_tokens = 0
             self._tokens_approximate = False
             self._update_tokens(0)
+            self._reset_thread_usage()
             self._clear_all_goal_rubric_state()
             self._sync_status_rubric()
             # Clear status message (e.g., "Interrupted" from previous session)
@@ -13216,47 +13724,9 @@ class DeepAgentsApp(App):
                     prefix="Started new thread",
                     thread_id=new_thread_id,
                 )
-                previous_thread_id = self._session_state.previous_thread_id
-                if previous_thread_id:
-                    import sqlite3
-
-                    from deepagents_code.sessions import thread_exists
-
-                    # Best-effort: on any failure just suppress the hint (never
-                    # crash `/clear`), but log unexpected errors loudly so a
-                    # real bug isn't silently read as "not resumable".
-                    try:
-                        previous_thread_is_resumable = await thread_exists(
-                            previous_thread_id
-                        )
-                    except (sqlite3.Error, OSError):
-                        logger.debug(
-                            "Could not check whether previous thread %s is resumable",
-                            previous_thread_id,
-                            exc_info=True,
-                        )
-                        previous_thread_is_resumable = False
-                    except Exception:
-                        logger.warning(
-                            "Unexpected error checking previous thread %s resumability",
-                            previous_thread_id,
-                            exc_info=True,
-                        )
-                        previous_thread_is_resumable = False
-                else:
-                    previous_thread_is_resumable = False
-                if previous_thread_id and previous_thread_is_resumable:
-                    resume_hint = " (Resume with /threads -r)"
-                    previous_msg_widget = AppMessage(
-                        f"Previous thread: {previous_thread_id}{resume_hint}"
-                    )
-                    await self._mount_message(previous_msg_widget)
-                    self._schedule_thread_message_link(
-                        previous_msg_widget,
-                        prefix="Previous thread",
-                        thread_id=previous_thread_id,
-                        suffix=resume_hint,
-                    )
+                await self._mount_previous_thread_hint(
+                    self._session_state.previous_thread_id
+                )
                 await self._reload_hooks()
                 if not await self._run_session_start_hook(SessionStartCause.CLEAR):
                     return
@@ -13368,6 +13838,8 @@ class DeepAgentsApp(App):
                         f"\n\u2514 Conversation: ~{conv_str}{conv_unit}"
                     )
 
+                if self._displayed_cost_usd > 0:
+                    msg += f"\n\n{self._format_cost_summary()}"
                 await self._mount_message(AppMessage(msg))
             else:
                 model_name = settings.model_name
@@ -13380,7 +13852,13 @@ class DeepAgentsApp(App):
                 if model_name:
                     parts.append(model_name)
 
-                await self._mount_message(AppMessage(" · ".join(parts)))
+                msg = " · ".join(parts)
+                if self._displayed_cost_usd > 0:
+                    msg += f"\n\n{self._format_cost_summary()}"
+                await self._mount_message(AppMessage(msg))
+        elif cmd == "/cost":
+            await self._mount_message(UserMessage(command))
+            await self._mount_message(AppMessage(self._format_cost_summary()))
         elif cmd == "/tools":
             await self._handle_tools_command(command)
         elif cmd == "/remember" or cmd.startswith("/remember "):
@@ -14140,6 +14618,10 @@ class DeepAgentsApp(App):
                     raise
             else:
                 if tool_error is not None:
+                    # Tool failure can follow completed summary/model requests.
+                    # Settle the display from the graph before returning the
+                    # failure; local detailed stats never write this total.
+                    await self._sync_session_cost_from_checkpoint()
                     await self._mount_message(ErrorMessage(tool_error))
                     return
 
@@ -14147,6 +14629,9 @@ class DeepAgentsApp(App):
                 # (the archive now lives in the agent's own backend, not a
                 # client-local directory the server can never read).
                 new_state = await self._get_thread_state_values(self._lc_thread_id)
+            # The compaction run's summary model spend is priced and committed by
+            # the graph, so the state just read is the complete total.
+            self._sync_session_cost_from_state(new_state)
             new_event = new_state.get("_summarization_event")
             new_cutoff = _summarization_cutoff(new_event)
 
@@ -14323,6 +14808,15 @@ class DeepAgentsApp(App):
         if agent is None:
             return None
 
+        offload_stats = SessionStats()
+        offload_thread_id = self._lc_thread_id
+        recorded_usage_requests: dict[str, RecordedRequest] = {}
+        model_spec = self._effective_model_spec() or ""
+        fallback_provider, separator, fallback_model = model_spec.partition(":")
+        if not separator:
+            fallback_model = fallback_provider
+            fallback_provider = ""
+
         tool_call_id = seed_tool_call_id or str(uuid.uuid4())
         # Stable message id so a failed run can address the seed for removal.
         seed = AIMessage(
@@ -14461,6 +14955,27 @@ class DeepAgentsApp(App):
                             pending.append((iid, {"decisions": decisions}))
                 elif mode == "messages" and isinstance(data, tuple):
                     msg = data[0]
+                    recorded_usage = record_message_usage(
+                        offload_stats,
+                        msg,
+                        fallback_model=fallback_model,
+                        fallback_provider=fallback_provider,
+                        request_metadata=(
+                            data[1]
+                            if len(data) > 1 and isinstance(data[1], dict)
+                            else None
+                        ),
+                        kind="offload",
+                        recorded_requests=recorded_usage_requests,
+                    )
+                    if (
+                        recorded_usage is not None
+                        and recorded_usage.cost_usd is not None
+                    ):
+                        # Display-only until the graph's next absolute total
+                        # arrives. The ledger is closed at each round boundary,
+                        # so a replayed resume round cannot add this twice.
+                        self._add_provisional_cost(recorded_usage.cost_usd)
                     if _is_tool_message(msg):
                         text = _message_text(msg)
                         if text.startswith(COMPACTION_FAILURE_PREFIX) or (
@@ -14479,43 +14994,55 @@ class DeepAgentsApp(App):
                             ):
                                 msg = "Compact continuation stopped by hook"
                                 raise ClientHookStopError(msg)
+            # Close the ledger at the round boundary: the next resume round
+            # replays these chunks, which would otherwise revise their requests
+            # a second time and double the offload's tokens and cost.
+            finalize_recorded_requests(recorded_usage_requests)
             return pending
 
         # Bound the resume loop: after compaction the model runs again, and a
         # rejected gated call could prompt another. The middleware blocks
         # execution even when HITL is disabled; this bound handles HITL retries.
-        max_resume_rounds = 10
-        pending = await _drain(None)
-        rounds = 0
-        while pending:
-            rounds += 1
-            if rounds > max_resume_rounds:
-                logger.warning(
-                    "Offload exceeded %d resume rounds; leaving %d interrupt(s) "
-                    "unresolved",
-                    max_resume_rounds,
-                    len(pending),
-                )
-                # Compaction itself already committed in round 1, so the caller
-                # still reports the offload. Surface the abandoned drain so the
-                # user knows the thread was left paused mid-run and may need a
-                # fresh message to reset. Skip this when a tool failure is
-                # already pending, so the caller shows that error instead of
-                # the user seeing two conflicting messages.
-                if tool_error is None:
-                    await self._mount_message(
-                        ErrorMessage(
-                            "Offload completed, but the agent kept requesting "
-                            "tools afterward and the run could not be fully "
-                            "drained. Send a new message to continue; the "
-                            "thread may need to reset."
-                        )
+        try:
+            max_resume_rounds = 10
+            pending = await _drain(None)
+            rounds = 0
+            while pending:
+                rounds += 1
+                if rounds > max_resume_rounds:
+                    logger.warning(
+                        "Offload exceeded %d resume rounds; leaving %d interrupt(s) "
+                        "unresolved",
+                        max_resume_rounds,
+                        len(pending),
                     )
-                break
-            resume_payload = dict(pending)
-            pending = await _drain(Command(resume=resume_payload))
+                    # Compaction itself already committed in round 1, so the caller
+                    # still reports the offload. Surface the abandoned drain so the
+                    # user knows the thread was left paused mid-run and may need a
+                    # fresh message to reset. Skip this when a tool failure is
+                    # already pending, so the caller shows that error instead of
+                    # the user seeing two conflicting messages.
+                    if tool_error is None:
+                        await self._mount_message(
+                            ErrorMessage(
+                                "Offload completed, but the agent kept requesting "
+                                "tools afterward and the run could not be fully "
+                                "drained. Send a new message to continue; the "
+                                "thread may need to reset."
+                            )
+                        )
+                    break
+                resume_payload = dict(pending)
+                pending = await _drain(Command(resume=resume_payload))
 
-        return tool_error
+            return tool_error
+        finally:
+            # Usage can be incurred even when compaction fails, does nothing, or
+            # raises after a completed model request. Keep the graph-owned cost
+            # total untouched; these merges supply only the local breakdown.
+            self._session_stats.merge(offload_stats)
+            if offload_thread_id == self._lc_thread_id:
+                self._thread_stats.merge(offload_stats)
 
     async def _remove_offload_artifacts(
         self,
@@ -15164,6 +15691,7 @@ class DeepAgentsApp(App):
                     criteria_request_id = raw_request_id
 
         turn_stats = SessionStats()
+
         latest_goal_grade: RubricEvaluationEnd | None = None
         turn_completed = False
         task_succeeded = False
@@ -15220,6 +15748,7 @@ class DeepAgentsApp(App):
             # Ctrl+D during HITL).
             self._inflight_turn_stats = turn_stats
             self._inflight_turn_start = time.monotonic()
+            self._inflight_thread_id = self._lc_thread_id
 
             # Arm the subagent fan-out panel for this turn, seeding the session
             # model that labels each row. The panel persists across turns and only
@@ -15409,7 +15938,16 @@ class DeepAgentsApp(App):
             # checking for None prevents double-counting.
             if self._inflight_turn_stats is not None:
                 self._session_stats.merge(turn_stats)
+                if self._inflight_thread_id == self._lc_thread_id:
+                    self._thread_stats.merge(turn_stats)
                 self._inflight_turn_stats = None
+                self._inflight_thread_id = None
+            # Settle the display on the committed total. Only a completed turn
+            # is read back: `durability="exit"` may drop an aborted turn's
+            # writes, and the streamed totals already seen are closer to what
+            # was actually spent than that turn's stale checkpoint.
+            if turn_completed and self._lc_thread_id is not None:
+                await self._sync_session_cost_from_checkpoint()
             # Finalize any subagent rows left "running" — an interrupt cancels
             # the worker before the bridge emits terminal events (a cancel is a
             # BaseException, which the bridge's `except Exception` skips), so the
@@ -15958,6 +16496,92 @@ class DeepAgentsApp(App):
             exclusive=False,
         )
 
+    async def _mount_previous_thread_hint(self, previous_thread_id: str | None) -> bool:
+        """Point the user back at the thread the session just left.
+
+        Shared by every path that moves the session off a thread: `/clear`,
+        `/force-clear`, a mid-session thread switch, and both agent swaps.
+
+        The hint is suppressed wherever `/threads -r` would dead-end: threads
+        with no checkpoint row (`-r` can't resume them), threads whose owning
+        agent can't be determined, and cross-agent threads on remote-server
+        sessions, which cannot perform the agent restart `-r` would need. The
+        return value lets callers fall back to a heavier remedy — the agent
+        swap offers a relaunch command — when `-r` can't reach the thread.
+
+        Args:
+            previous_thread_id: The thread the session left. Tolerates `None`
+                by mounting nothing, since the underlying field is nullable
+                before the first reset; all current callers pass a real id.
+
+        Returns:
+            `True` when a hint was mounted, `False` when it was suppressed or
+            could not be rendered.
+        """
+        if not previous_thread_id:
+            return False
+
+        import sqlite3
+
+        from deepagents_code.sessions import get_thread_agent, thread_exists
+
+        # Best-effort: on any failure just suppress the hint (never crash the
+        # caller), but log unexpected errors loudly so a real bug isn't
+        # silently read as "not resumable".
+        try:
+            resumable = await thread_exists(previous_thread_id)
+            owner = await get_thread_agent(previous_thread_id) if resumable else None
+        except (sqlite3.Error, OSError):
+            # `info`, not `debug`: the always-on ring buffer behind the Debug
+            # Console captures INFO and above, and a store failure here is
+            # suspicious — callers have usually just read the same store
+            # successfully. At `debug` a vanished hint leaves no trace.
+            logger.info(
+                "Could not check whether previous thread %s is resumable",
+                previous_thread_id,
+                exc_info=True,
+            )
+            return False
+        except Exception:
+            logger.warning(
+                "Unexpected error checking previous thread %s resumability",
+                previous_thread_id,
+                exc_info=True,
+            )
+            return False
+        if not resumable:
+            return False
+        active_agent = self._assistant_id or DEFAULT_ASSISTANT_ID
+        if not owner or (owner != active_agent and self._server_kwargs is None):
+            return False
+
+        resume_hint = " (Resume with /threads -r)"
+        previous_msg_widget = AppMessage(
+            f"Previous thread: {previous_thread_id}{resume_hint}"
+        )
+        # The hint is cosmetic, so a mount fault must not escape into the
+        # caller's error handling. Two callers wrap this in a rollback: a raise
+        # from `_resume_thread` would undo an already-completed switch and
+        # report "Failed to switch to thread ...", and one from the cross-agent
+        # resume would report "Could not switch to agent ..." after the new
+        # server came up healthy. Both would misreport success as failure.
+        try:
+            await self._mount_message(previous_msg_widget)
+            self._schedule_thread_message_link(
+                previous_msg_widget,
+                prefix="Previous thread",
+                thread_id=previous_thread_id,
+                suffix=resume_hint,
+            )
+        except Exception:
+            logger.warning(
+                "Could not mount previous-thread hint for %s",
+                previous_thread_id,
+                exc_info=True,
+            )
+            return False
+        return True
+
     async def _load_thread_history(
         self,
         *,
@@ -16020,12 +16644,18 @@ class DeepAgentsApp(App):
                 model_params=payload.model_params,
             )
 
-            if not payload.messages:
-                return
-
-            # Seed token cache from persisted state
+            # Restore checkpoint metadata even when a thread has no messages.
+            # Cost is cumulative thread state, while context tokens are the latest
+            # model context; neither depends on transcript rendering succeeding.
+            self._reset_thread_usage(
+                payload.session_cost_usd,
+                has_restored_model_usage=payload.has_model_usage,
+            )
             if payload.context_tokens > 0:
                 self._on_tokens_update(payload.context_tokens)
+
+            if not payload.messages:
+                return
 
             # 5. Cache container ref (single query). Queried before the store
             # load so history can be reconciled against widgets already in the
@@ -16378,10 +17008,11 @@ class DeepAgentsApp(App):
                 self._active_tool_group is not None
                 and self._active_tool_group.is_attached
             ):
+                accessories = (footer,) if footer is not None else ()
                 if is_groupable_tool:
-                    self._active_tool_group.add_member(widget)
+                    self._active_tool_group.add_member(widget, *accessories)
                 elif is_groupable_diff:
-                    self._active_tool_group.add_collapsible(widget)
+                    self._active_tool_group.add_collapsible(widget, *accessories)
 
         self._schedule_message_height_measurement(message_data.id)
         self._sync_transcript_spacers(messages)
@@ -16521,8 +17152,9 @@ class DeepAgentsApp(App):
         Scans the messages container for maximal runs of consecutive,
         successfully-completed tool calls (optionally interleaved with their
         diff previews) and inserts a `ToolGroupSummary` that collapses each run
-        into a single dim line. Footers stay transparent to the scan so a
-        timestamp row between two tools does not split a run.
+        into a single dim line. A timestamp footer does not split a run: it is
+        attributed as an accessory of the collapsible it trails, so it hides and
+        shows with that row instead of lingering over a hidden tool.
 
         Idempotent: tools already folded carry the `-grouped` class and are
         skipped, so it is safe to call on every stream boundary and on
@@ -16536,16 +17168,22 @@ class DeepAgentsApp(App):
 
         run_tools: list[ToolCallMessage] = []
         run_collapsible: list[Widget] = []
+        run_accessories: dict[Widget, list[Widget]] = {}
         run_anchor: Widget | None = None
 
         async def flush() -> None:
-            nonlocal run_tools, run_collapsible, run_anchor
+            nonlocal run_tools, run_collapsible, run_accessories, run_anchor
             if run_tools and run_anchor is not None:
                 await self._mount_tool_group_summary(
-                    messages, run_tools, run_collapsible, run_anchor
+                    messages,
+                    run_tools,
+                    run_collapsible,
+                    run_accessories,
+                    run_anchor,
                 )
             run_tools = []
             run_collapsible = []
+            run_accessories = {}
             run_anchor = None
 
         # One repaint for the whole regroup — a single hydration or boundary
@@ -16553,7 +17191,23 @@ class DeepAgentsApp(App):
         with self.batch_update():
             for child in list(messages.children):
                 if child.has_class(_MESSAGE_TIMESTAMP_FOOTER_CLASS):
-                    continue  # footers are transparent to grouping
+                    # A footer is always mounted directly after the message it
+                    # belongs to, so the most recent collapsible owns it. It is
+                    # recorded as an accessory, never appended to the run: a
+                    # member would take `-grouped` and a `display` flip, which
+                    # would clobber the footer's own `/timestamps` class. An
+                    # empty run means the preceding message is not being folded,
+                    # so the footer is left alone. Matching on the derived id
+                    # rather than position alone keeps an unanticipated DOM
+                    # shape degrading to "skip" instead of misattributing.
+                    owner = run_collapsible[-1] if run_collapsible else None
+                    if (
+                        owner is not None
+                        and owner.id
+                        and child.id == _message_timestamp_footer_id(owner.id)
+                    ):
+                        run_accessories.setdefault(owner, []).append(child)
+                    continue
                 if isinstance(child, ToolCallMessage):
                     groupable = (
                         child.tool_name not in _TOOL_GROUP_EXCLUSIONS
@@ -16587,20 +17241,40 @@ class DeepAgentsApp(App):
         messages: Container,
         tools: list[ToolCallMessage],
         collapsible: list[Widget],
+        accessories: dict[Widget, list[Widget]],
         anchor: Widget,
     ) -> None:
-        """Insert a `ToolGroupSummary` before `anchor` and collapse the run."""
+        """Insert a `ToolGroupSummary` before `anchor` and collapse the run.
+
+        Args:
+            messages: The transcript container to mount into.
+            tools: Successful tools the summary aggregates.
+            collapsible: Widgets folded with the group (tools plus diffs).
+            accessories: Footers keyed by the collapsible they trail. Wired for
+                collapse only, not for approval hiding: this path folds solely
+                succeeded tools, which never re-enter an approval prompt.
+            anchor: The widget to insert the summary before.
+        """
         if not anchor.is_attached:
             return
-        summary = ToolGroupSummary(tools=list(tools), collapsible=list(collapsible))
+        summary = ToolGroupSummary(
+            tools=list(tools),
+            collapsible=list(collapsible),
+            accessories=accessories,
+        )
         for widget in collapsible:
             widget.add_class("-grouped")
         try:
             await messages.mount(summary, before=anchor)
         except Exception:
             logger.warning("Failed to mount tool group summary", exc_info=True)
-            for widget in collapsible:
-                widget.remove_class("-grouped")
+            # `on_mount` may already have hidden the run and classed its
+            # footers, and a partially-mounted summary would leave a second
+            # stand-in behind on the next regroup. Undo everything the summary
+            # could have applied, not just `-grouped`.
+            if summary.is_attached:
+                summary.remove()
+            summary._release_all_collapsible()
 
     def _on_user_visible_output_started(self) -> None:
         """Record that the current turn has rendered model text or a tool call.
@@ -17473,13 +18147,17 @@ class DeepAgentsApp(App):
         # call), the worker's finally block will see _inflight_turn_stats is
         # already None and skip the merge.
         inflight = self._inflight_turn_stats
+        inflight_thread_id = self._inflight_thread_id
         if inflight is not None:
             self._inflight_turn_stats = None
+            self._inflight_thread_id = None
             if not inflight.wall_time_seconds:
                 inflight.wall_time_seconds = (
                     time.monotonic() - self._inflight_turn_start
                 )
             self._session_stats.merge(inflight)
+            if inflight_thread_id == self._lc_thread_id:
+                self._thread_stats.merge(inflight)
 
         # Discard queued messages so _cleanup_agent_task won't try to
         # process them after the event loop is torn down, and cancel
@@ -19361,27 +20039,53 @@ class DeepAgentsApp(App):
             group="agent-switch-restart",
         )
 
-    async def _restart_server_for_agent_swap(self, agent_name: str) -> None:
+    async def _restart_server_for_agent_swap(
+        self,
+        agent_name: str,
+        *,
+        resume_thread_id: str | None = None,
+        preloaded_payload: _ThreadHistoryPayload | None = None,
+        persist_default_agent: bool = True,
+    ) -> bool:
         """Restart the langgraph server with a new `assistant_id`.
 
         Runs in three phases so failures are attributable:
 
         1. **UI teardown** — flip banner to connecting, clear chat, reject
-            pending HITL widgets, reset the thread. Failures here notify the
-            user and return early; the previous server is still alive and
-            identity is untouched.
+            pending HITL widgets, then either reset or select the requested
+            thread. Failures here notify the user and return early; the
+            previous server is still alive and identity is untouched.
         2. **Server restart** — mutate `_assistant_id`, stage the new
             `DEEPAGENTS_CODE_SERVER_ASSISTANT_ID` env var, call
             `ServerProcess.restart()`, and rebuild the `RemoteAgent` against
             the (possibly new) server URL. A failure rolls back identity and
             posts `ServerStartFailed` because the old subprocess is dead.
-        3. **Confirmation** — show "Switched to X", optional resume hint,
-            persist the recent agent, and drain any messages queued during
-            the swap.
+        3. **Confirmation** — load a requested thread when present, show the
+            switch result and optional resume hint, optionally persist the
+            recent agent, and drain messages queued during the swap.
 
         Args:
             agent_name: The name of the agent to switch to.
+            resume_thread_id: Existing thread to resume under the new agent.
+                `None` starts a fresh thread, preserving normal agent-picker
+                behavior.
+            preloaded_payload: History fetched before a combined agent/thread
+                transition mutates the current session.
+            persist_default_agent: Whether the switch should become the saved
+                default agent. One-off thread resumes leave it unchanged.
+
+        Returns:
+            `True` when the new agent is running and the requested transition
+            completed, otherwise `False`.
+
+        Raises:
+            ValueError: If a preloaded history payload is supplied without a
+                thread to resume.
         """
+        if preloaded_payload is not None and resume_thread_id is None:
+            msg = "preloaded thread history requires resume_thread_id"
+            raise ValueError(msg)
+
         from deepagents_code._env_vars import SERVER_ENV_PREFIX
         from deepagents_code.client.remote_client import RemoteAgent as _RemoteAgent
 
@@ -19404,6 +20108,15 @@ class DeepAgentsApp(App):
         previous_agent = self._assistant_id
         previous_default_agent = self._default_assistant_id
         previous_thread_id = self._lc_thread_id
+        previous_session_thread_id = (
+            self._session_state.thread_id if self._session_state else None
+        )
+        previous_previous_thread_id = (
+            self._session_state.previous_thread_id if self._session_state else None
+        )
+        previous_approval_mode_key = (
+            self._session_state.approval_mode_key if self._session_state else None
+        )
         # Only offer a resume hint if the previous thread produced agent-side
         # output. `USER` alone is not enough: local-only flows (`/update`,
         # `!shell`, most slash commands) mount a `UserMessage` widget without
@@ -19424,7 +20137,13 @@ class DeepAgentsApp(App):
             # Guarded in _switch_agent, but the worker runs in the next tick
             # so re-check to keep the type narrow.
             self._agent_switching = False
-            return
+            return False
+
+        # Set once a resumed thread's goal review has been deferred past the
+        # transcript notes below, so the `finally` knows to remount it. Phase 1
+        # and 2 bail-outs leave it `False`: no history was loaded, so there is
+        # nothing deferred to restore.
+        deferred_goal_review = False
 
         try:
             # Phase 1: UI teardown. A failure here does NOT mean the server
@@ -19483,19 +20202,31 @@ class DeepAgentsApp(App):
                 self._context_tokens = 0
                 self._tokens_approximate = False
                 self._update_tokens(0)
+                self._reset_thread_usage()
                 self._update_status("")
 
                 if self._session_state:
                     from deepagents_code.hooks.models.domain import SessionEndCause
 
+                    end_cause = (
+                        SessionEndCause.RESUME
+                        if resume_thread_id is not None
+                        else SessionEndCause.OTHER
+                    )
                     await self._hooks.on_session_end(
-                        SessionEndCause.OTHER,
+                        end_cause,
                         thread_id=previous_thread_id,
                     )
-                    new_thread_id = self._session_state.reset_thread()
-                    self._lc_thread_id = new_thread_id
+                    if resume_thread_id is None:
+                        next_thread_id = self._session_state.reset_thread()
+                    else:
+                        self._session_state.previous_thread_id = previous_thread_id
+                        self._session_state.thread_id = resume_thread_id
+                        self._session_state.approval_mode_key = None
+                        next_thread_id = resume_thread_id
+                    self._lc_thread_id = next_thread_id
                     self._update_welcome_banner(
-                        new_thread_id,
+                        next_thread_id,
                         missing_message=(
                             "Welcome banner not found during agent switch to %s"
                         ),
@@ -19536,16 +20267,17 @@ class DeepAgentsApp(App):
                     severity="error",
                     markup=False,
                 )
-                return
+                return False
 
             # Phase 2: server restart. Identity is mutated BEFORE
             # `restart()` so the subprocess picks up the new assistant_id
             # from the staged env override; on failure, both are rolled
             # back and the old server is confirmed dead (ServerStartFailed).
-            # Picker switches are explicit user choice, so update both the
-            # session id and the persisted default.
+            # Picker switches are explicit user choice and update the saved
+            # default. A one-off cross-agent resume changes only this session.
             self._assistant_id = agent_name
-            self._default_assistant_id = agent_name
+            if persist_default_agent:
+                self._default_assistant_id = agent_name
             if self._server_kwargs is not None:
                 self._server_kwargs["assistant_id"] = agent_name
 
@@ -19563,6 +20295,20 @@ class DeepAgentsApp(App):
                 self._default_assistant_id = previous_default_agent
                 if self._server_kwargs is not None:
                     self._server_kwargs["assistant_id"] = previous_agent
+                if resume_thread_id is not None and self._session_state is not None:
+                    if previous_session_thread_id is not None:
+                        self._session_state.thread_id = previous_session_thread_id
+                        self._lc_thread_id = previous_session_thread_id
+                        self._update_welcome_banner(
+                            previous_session_thread_id,
+                            missing_message=(
+                                "Welcome banner not found rolling back failed "
+                                "cross-agent resume to %s"
+                            ),
+                            warn_if_missing=True,
+                        )
+                    self._session_state.previous_thread_id = previous_previous_thread_id
+                    self._session_state.approval_mode_key = previous_approval_mode_key
                 # A failed restart keeps `agent_name` staged in the server's
                 # one-shot env overrides (retained for retry). Re-stage the
                 # previous agent so a later restart cannot resurrect the swap
@@ -19579,7 +20325,7 @@ class DeepAgentsApp(App):
                     agent_name,
                 )
                 self.post_message(self.ServerStartFailed(error=exc))
-                return
+                return False
 
             # Phase 3: confirmation. Past here all failures are
             # cosmetic — the new server is healthy.
@@ -19603,8 +20349,29 @@ class DeepAgentsApp(App):
             from deepagents_code.hooks.models.domain import SessionStartCause
 
             await self._reload_hooks()
-            if not await self._run_session_start_hook(SessionStartCause.CLEAR):
-                return
+            if resume_thread_id is not None:
+                self._should_adopt_resumed_model = not self._model_explicitly_set
+                # Defer a restored goal review so the interactive prompt lands
+                # below the "Switched to ..." confirmation and resume hint
+                # rather than above them. Remounted in this method's `finally`,
+                # which also covers the session-start-hook early return below.
+                await self._load_thread_history(
+                    thread_id=resume_thread_id,
+                    preloaded_payload=preloaded_payload,
+                    resolve_pending_goal=False,
+                )
+                deferred_goal_review = True
+            start_cause = (
+                SessionStartCause.RESUME
+                if resume_thread_id is not None
+                else SessionStartCause.CLEAR
+            )
+            if not await self._run_session_start_hook(start_cause):
+                # The server and thread transition already completed. A start
+                # hook may deliberately stop follow-up work, but the caller
+                # must not mistake that for a failed restart and roll back cwd
+                # underneath the now-running server.
+                return True
 
             # Refresh skills so /skill: autocomplete reflects the new agent's
             # SKILL.md files.
@@ -19614,27 +20381,36 @@ class DeepAgentsApp(App):
                 group="agent-switch-skill-discovery",
             )
 
-            # Persist the swap so a bare `deepagents` relaunch brings the
-            # user back to this agent (same pattern as `save_recent_model`).
-            # Offloaded to a thread to avoid blocking the event loop on disk I/O.
-            from deepagents_code.model_config import save_recent_agent
+            # Persist explicit picker swaps so a bare `deepagents` relaunch
+            # returns to that agent. One-off thread resumes deliberately match
+            # launch-time `-r` and leave the saved default alone.
+            saved = True
+            if persist_default_agent:
+                from deepagents_code.model_config import save_recent_agent
 
-            saved = await asyncio.to_thread(save_recent_agent, agent_name)
-            if not saved:
-                logger.warning(
-                    "Could not persist recent agent %r to config; "
-                    "next bare launch will not return to it",
-                    agent_name,
-                )
+                saved = await asyncio.to_thread(save_recent_agent, agent_name)
+                if not saved:
+                    logger.warning(
+                        "Could not persist recent agent %r to config; "
+                        "next bare launch will not return to it",
+                        agent_name,
+                    )
 
             # Mount the "Switched to X" confirmation BEFORE surfacing any
             # save-failure toast. Otherwise the toast hovers next to a
             # success line that scrolls past, which makes the causality
             # confusing — the user reads success while the toast warns.
-            confirmation = Content.from_markup(
-                "Switched to $name. New thread started.",
-                name=agent_name,
-            )
+            if resume_thread_id is None:
+                confirmation = Content.from_markup(
+                    "Switched to $name. New thread started.",
+                    name=agent_name,
+                )
+            else:
+                confirmation = Content.from_markup(
+                    "Switched to $name and resumed thread $thread.",
+                    name=agent_name,
+                    thread=resume_thread_id,
+                )
             await self._mount_message(AppMessage(confirmation))
 
             if not saved:
@@ -19650,14 +20426,19 @@ class DeepAgentsApp(App):
                     markup=False,
                 )
 
-            # Surface a resume command for the previous session so the
-            # previous thread isn't stranded out of reach. `-r <thread>`
-            # alone is enough: `_resolve_resume_thread` infers the owning
-            # agent from persisted thread metadata via `get_thread_agent`.
-            # Build via `from_markup` so a thread ID with stray brackets
-            # can't corrupt rendering. See checkpoint-gating rationale on
+            # Surface a way back so the previous thread isn't stranded out of
+            # reach. Prefer the in-session hint: `/threads -r` now offers a
+            # cross-agent switch, so a swap no longer strands the outgoing
+            # thread behind a relaunch. Fall back to the relaunch command only
+            # where `-r` can't reach it — chiefly a remote server that cannot
+            # restart into the owning agent. `-r <thread>` alone is enough
+            # there: `_resolve_resume_thread` infers the owning agent from
+            # persisted thread metadata via `get_thread_agent`. Build via
+            # `from_markup` so a thread ID with stray brackets can't corrupt
+            # rendering. See checkpoint-gating rationale on
             # `previous_thread_has_agent_output` above.
-            if previous_thread_id and previous_thread_has_agent_output:
+            hinted = await self._mount_previous_thread_hint(previous_thread_id)
+            if not hinted and previous_thread_id and previous_thread_has_agent_output:
                 resume_hint = Content.from_markup(
                     "[dim]Relaunch with[/dim] $command -r $thread "
                     "[dim]to resume the previous thread.[/dim]",
@@ -19672,10 +20453,19 @@ class DeepAgentsApp(App):
                 self.call_after_refresh(
                     lambda: asyncio.create_task(self._process_next_from_queue()),
                 )
+            return True
         finally:
             self._agent_switching = False
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=not self._agent_running)
+            if deferred_goal_review:
+                # Guarded: this runs while an exception may be propagating, so
+                # an unguarded raise here would replace the original error with
+                # a cosmetic one.
+                try:
+                    await self._remount_pending_goal_rubric_review()
+                except Exception:
+                    logger.exception("Failed to restore pending goal review")
 
     async def _show_notification_settings(self) -> None:
         """Show notification settings modal."""
@@ -21214,7 +22004,9 @@ class DeepAgentsApp(App):
 
         The viewer may dismiss with a server name (when the user activates
         an `unauthenticated` header row to start in-TUI OAuth login) or
-        with `None` (close without action).
+        with `None` (close without action). A plain close after `F2`
+        disable/enable toggles offers a reconnect so the changes are not
+        left silently unapplied.
         """
         from deepagents_code.tui.widgets.mcp_viewer import (
             MCP_VIEWER_RECONNECT_REQUEST,
@@ -21226,8 +22018,10 @@ class DeepAgentsApp(App):
             connecting=self._connecting,
             pending_reconnect=self._pending_mcp_reconnect,
             on_toggle_disable=self._toggle_mcp_server_disabled,
+            on_close=self._replace_mcp_viewer_with_disable_reconnect_prompt,
         )
         self._active_mcp_viewer = screen
+        self._mcp_viewer_disable_toggled = False
 
         def handle_result(result: str | None) -> None:
             self._active_mcp_viewer = None
@@ -21249,26 +22043,193 @@ class DeepAgentsApp(App):
                 self._track_server_restart_task(task)
                 task.add_done_callback(_log_task_exception)
                 return
-            if result:
-                # User picked an unauthenticated server — start login.
-                self._start_mcp_login(result)
-            elif self._chat_input:
+            if result and self._start_mcp_login(result):
+                # User picked an unauthenticated server and login started.
+                # Any pending disable toggle rides along on the post-login
+                # reconnect prompt, so this path never prompts twice.
+                return
+            # Normal Escape is intercepted by the viewer's `on_close` callback
+            # and atomically switches to the prompt. This is the fallback for
+            # a rejected login (MCP off, remote server, agent switching) or a
+            # programmatic dismiss: without it, a toggle made in the same
+            # session would sit unapplied with no further nudge until the next
+            # `/mcp` open reset the flag.
+            if (
+                self._mcp_viewer_disable_toggled
+                and self._pending_mcp_disable_reconnect_servers
+            ):
+                # Disable/enable toggles only take effect after a restart,
+                # and the user closed the viewer without pressing Ctrl+R.
+                # Offer the reconnect instead of leaving the change
+                # unapplied. The follow-up modal is scheduled (not pushed
+                # here) so this dismiss fully unwinds first.
+                if not self.call_after_refresh(self._prompt_mcp_disable_reconnect):
+                    # Pump is closing, so the prompt will never run. The
+                    # toggle is already on disk and applies on next launch;
+                    # log rather than leaving no trace of the dropped prompt.
+                    logger.warning(
+                        "Could not schedule MCP disable-reconnect prompt; "
+                        "message pump is closing"
+                    )
+                return
+            if self._chat_input:
                 self._chat_input.focus_input()
 
         self.push_screen(screen, handle_result)
+
+    def _replace_mcp_viewer_with_disable_reconnect_prompt(self) -> bool:
+        """Atomically replace a closing MCP viewer with its apply prompt.
+
+        `MCPViewerScreen.action_cancel` calls this before dismissing. Using
+        `switch_screen` keeps a modal screen active throughout the transition;
+        dismissing the viewer and pushing after a refresh exposes the chat
+        screen for one frame.
+
+        Returns:
+            `True` when the viewer was replaced and must not dismiss itself,
+            otherwise `False` so the viewer closes normally.
+        """
+        if not (
+            self._mcp_viewer_disable_toggled
+            and self._pending_mcp_disable_reconnect_servers
+        ):
+            return False
+
+        from deepagents_code.tui.widgets.mcp_reconnect import (
+            MCPDisableReconnectPromptScreen,
+        )
+
+        prompt = MCPDisableReconnectPromptScreen(
+            sorted(self._pending_mcp_disable_reconnect_servers),
+            on_choice=self._handle_mcp_disable_reconnect_choice,
+        )
+        try:
+            self.switch_screen(prompt)
+        except Exception:
+            # Leave the viewer's normal dismiss path intact. Its result
+            # callback will schedule the existing recovery prompt after the
+            # stack unwinds, so an unexpected switch failure remains usable.
+            logger.exception(
+                "Failed to replace MCP viewer with disable-reconnect prompt"
+            )
+            return False
+
+        self._active_mcp_viewer = None
+        self._mcp_viewer_disable_toggled = False
+        return True
+
+    def _prompt_mcp_disable_reconnect(self) -> None:
+        """Offer a reconnect for `/mcp` disable toggles left unapplied.
+
+        Fallback scheduled from `_show_mcp_viewer`'s dismiss callback when a
+        rejected login or programmatic dismiss bypasses the atomic Escape
+        transition. Re-checks pending disable changes so a reconnect that
+        landed between the dismiss and this callback skips the prompt.
+
+        Runs a refresh after the viewer's dismiss, so an unrelated modal
+        (tool approval, `/auth`) can own the screen by now. `push_screen`
+        would happily stack on top of it and steal Enter/Esc, so defer to
+        the toast instead — same trade-off as `_open_update_available_modal`.
+        """
+        self._mcp_viewer_disable_toggled = False
+        if not self._pending_mcp_disable_reconnect_servers:
+            if self._chat_input:
+                self._chat_input.focus_input()
+            return
+
+        if isinstance(self.screen, ModalScreen):
+            self._notify_mcp_disable_reconnect_recovery()
+            return
+
+        from deepagents_code.tui.widgets.mcp_reconnect import (
+            MCPDisableReconnectPromptScreen,
+        )
+
+        try:
+            self.push_screen(
+                MCPDisableReconnectPromptScreen(
+                    sorted(self._pending_mcp_disable_reconnect_servers),
+                ),
+                self._handle_mcp_disable_reconnect_choice,
+            )
+        except Exception:
+            # Last-resort net for an unexpected fault while building or
+            # pushing the screen — a stacking conflict is handled above,
+            # since `push_screen` stacks rather than raising. The toggle is
+            # already persisted, so surface the recovery path rather than
+            # silently dropping the prompt.
+            logger.exception("Failed to mount MCP disable-reconnect prompt")
+            self._notify_mcp_disable_reconnect_recovery()
+
+    def _handle_mcp_disable_reconnect_choice(
+        self, choice: ReconnectChoice | None
+    ) -> None:
+        """Apply an explicit choice from either disable-reconnect prompt path.
+
+        Args:
+            choice: Reconnect now, defer, or `None` for a programmatic dismiss.
+        """
+        if choice == "reconnect":
+            # Detached task, not `call_later`: the restart takes seconds and
+            # awaiting it on the message pump freezes the chat input (same
+            # rationale as the Ctrl+R path in `_show_mcp_viewer`).
+            task = asyncio.create_task(self._reconnect_from_viewer_safe())
+            self._track_server_restart_task(task)
+            task.add_done_callback(_log_task_exception)
+            return
+        # `later` (explicit defer) and `None` (programmatic dismiss) both keep
+        # the current server. Only an explicit `later` emits the pending-change
+        # toast; `None` stays quiet so we don't narrate an action the user did
+        # not take.
+        if choice == "later":
+            self.notify(
+                "MCP server changes are still pending. Run `/mcp reconnect` "
+                "when ready to apply them.",
+                severity="information",
+                timeout=8,
+                markup=False,
+            )
+        self._focus_chat_input_after_refresh()
+
+    def _notify_mcp_disable_reconnect_recovery(self) -> None:
+        """Point the user at `/mcp reconnect` when the prompt can't open.
+
+        Shared by the modal-already-open guard and the mount-failure
+        fallback in `_prompt_mcp_disable_reconnect`. The toggle is already
+        persisted either way, so the change is not lost — it just needs a
+        reconnect the user now has to trigger themselves.
+        """
+        self.notify(
+            "Couldn't open the reconnect prompt. Run `/mcp reconnect` to "
+            "apply the MCP server changes.",
+            severity="warning",
+            markup=False,
+        )
+        if self._chat_input:
+            self._chat_input.focus_input()
 
     async def _reconnect_from_viewer_safe(self) -> None:
         """Run the post-viewer reconnect and surface unexpected failures.
 
         Scheduled via `asyncio.create_task` from `_show_mcp_viewer`'s
-        dismiss callback so the reconnect runs detached from the message
-        pump; `_log_task_exception` logs any escaped error, and this
+        dismiss callback and from `_prompt_mcp_disable_reconnect` so the
+        reconnect runs detached from the message pump;
+        `_log_task_exception` logs any escaped error, and this
         wrapper additionally catches failures to display an `ErrorMessage`.
-        Re-checks pending state so a flip between the viewer dismiss and
+        Re-checks pending state so a flip between the caller's dismiss and
         this task starting silently no-ops instead of degrading to the
-        CLI no-op notice.
+        CLI no-op notice. Via `_prompt_mcp_disable_reconnect` that window
+        is much wider than the Ctrl+R path's — it spans the modal mount
+        and however long the user leaves the prompt open.
         """
         if not self._pending_mcp_reconnect:
+            # Almost always a `ServerReady` that already loaded the new
+            # config from disk, so the user's intent is satisfied and a
+            # toast would be noise. Log so an unexpected clear is traceable.
+            logger.debug(
+                "Skipping post-viewer MCP reconnect; nothing pending by the "
+                "time the task started"
+            )
             return
         try:
             await self._handle_mcp_reconnect_command()
@@ -21339,6 +22300,7 @@ class DeepAgentsApp(App):
             return
 
         had_original = server_name in self._mcp_optimistic_original_server_info
+        self._mcp_viewer_disable_toggled = True
         verb = "disabled" if new_state else "enabled"
         self._apply_optimistic_disabled_state(server_name, disabled=new_state)
         if new_state:
@@ -21555,7 +22517,7 @@ class DeepAgentsApp(App):
                 ),
             )
 
-    def _start_mcp_login(self, server_name: str) -> None:
+    def _start_mcp_login(self, server_name: str) -> bool:
         """Begin in-TUI OAuth login for `server_name`.
 
         Rejects when MCP is disabled, in remote-server mode (no owned server
@@ -21570,6 +22532,12 @@ class DeepAgentsApp(App):
 
         Args:
             server_name: MCP server name from `mcpServers`.
+
+        Returns:
+            `True` when the login started or was queued, `False` when it was
+            rejected outright (already reported to the user via a toast).
+            Callers that dismissed a screen to get here use this to decide
+            whether a follow-up prompt of their own still needs to run.
         """
         if self._mcp_preload_kwargs is None:
             self.notify(
@@ -21577,7 +22545,7 @@ class DeepAgentsApp(App):
                 severity="warning",
                 markup=False,
             )
-            return
+            return False
 
         if self._server_kwargs is None:
             # Remote-server mode: we cannot restart the server, so the new
@@ -21588,7 +22556,7 @@ class DeepAgentsApp(App):
                 severity="warning",
                 markup=False,
             )
-            return
+            return False
 
         if self._agent_switching:
             self.notify(
@@ -21596,7 +22564,7 @@ class DeepAgentsApp(App):
                 severity="warning",
                 markup=False,
             )
-            return
+            return False
 
         if self._connecting or self._server_proc is None:
             # The server is still coming up (initial connect, a reconnect,
@@ -21616,7 +22584,7 @@ class DeepAgentsApp(App):
                     execute=lambda: self._run_mcp_login_worker(server_name),
                 ),
             )
-            return
+            return True
 
         # An active agent/shell run is intentionally not a defer gate: the
         # OAuth handshake and on-disk token write are independent of the
@@ -21627,6 +22595,7 @@ class DeepAgentsApp(App):
             exclusive=False,
             group=f"mcp-login-{server_name}",
         )
+        return True
 
     async def _run_mcp_login_worker(self, server_name: str) -> None:
         """Resolve config, run the login modal, and refresh on success.
@@ -21788,7 +22757,6 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.tui.widgets.mcp_reconnect import (
             MCPReconnectPromptScreen,
-            ReconnectChoice,
         )
 
         choice_future: asyncio.Future[ReconnectChoice | None] = (
@@ -22710,9 +23678,9 @@ class DeepAgentsApp(App):
         Bare `/threads` opens the interactive selector. `/threads -r [ID]`
         resumes in place: `-r` alone returns to the thread left by the most
         recent reset (e.g. `/clear`), falling back to the most recent thread
-        for the active agent; `-r <ID>` resumes a specific thread. Both forms
-        only resume threads owned by the active agent, mirroring the
-        launch-time `-r` flag.
+        for the active agent; `-r <ID>` resumes a specific thread. When the
+        target belongs to another agent, the user is offered an agent switch
+        before the resume proceeds.
 
         Args:
             command: The raw command text, e.g. `"/threads -r abc123"`.
@@ -22744,25 +23712,38 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(command))
         requested_id = args[1] if len(args) == max_resume_args else None
         target = await self._resolve_threads_resume_target(requested_id)
-        if target is not None:
-            await self._resume_thread(target)
+        if target is None:
+            return
+
+        active_agent = self._assistant_id or DEFAULT_ASSISTANT_ID
+        if target.agent_name == active_agent:
+            await self._resume_thread(target.thread_id)
+            return
+
+        # This command runs inline on Textual's message pump. Detach before
+        # awaiting the confirmation modal so Enter/Esc can reach it.
+        self._schedule_off_message_pump(
+            self._confirm_then_resume_cross_agent_thread(target),
+            context=f"threads-resume:{target.thread_id}",
+        )
 
     async def _resolve_threads_resume_target(
         self, requested_id: str | None
-    ) -> str | None:
+    ) -> _ThreadsResumeTarget | None:
         """Resolve a `/threads -r` argument to a concrete, resumable thread id.
 
-        Only threads owned by the active agent resolve: an explicit id owned by
-        another agent is refused, and the bare-`-r` fallback is filtered to the
-        active agent's most recent thread.
+        An existing previous or explicitly requested thread resolves with its
+        owner so the caller can confirm a cross-agent transition. The
+        most-recent fallback remains filtered to the active agent.
 
         Args:
             requested_id: Explicit thread id from `-r <ID>`, or `None` for a
                 bare `-r` (resume the previous or most-recent thread).
 
         Returns:
-            The thread id to resume, or `None` when nothing suitable exists;
-            in that case a user-facing message has already been mounted.
+            The thread and owning agent to resume, or `None` when nothing
+            suitable exists; in that case a user-facing message has already
+            been mounted.
         """
         import sqlite3
 
@@ -22778,18 +23759,15 @@ class DeepAgentsApp(App):
             if requested_id is not None:
                 if await thread_exists(requested_id):
                     owner = await get_thread_agent(requested_id)
-                    if owner == active_agent:
-                        return requested_id
                     if owner:
-                        msg = (
-                            f"Thread '{requested_id}' belongs to agent '{owner}', not "
-                            f"the active agent '{active_agent}'. Switch agents first."
+                        return _ThreadsResumeTarget(
+                            thread_id=requested_id,
+                            agent_name=owner,
                         )
-                    else:
-                        msg = (
-                            f"Could not verify which agent owns thread "
-                            f"'{requested_id}', so it was not resumed."
-                        )
+                    msg = (
+                        f"Could not verify which agent owns thread "
+                        f"'{requested_id}', so it was not resumed."
+                    )
                     await self._mount_message(AppMessage(msg))
                     return None
                 hint = f"Thread '{requested_id}' not found."
@@ -22806,8 +23784,11 @@ class DeepAgentsApp(App):
             )
             if previous and await thread_exists(previous):
                 owner = await get_thread_agent(previous)
-                if owner == active_agent:
-                    return previous
+                if owner:
+                    return _ThreadsResumeTarget(
+                        thread_id=previous,
+                        agent_name=owner,
+                    )
 
             current = self._session_state.thread_id if self._session_state else None
             candidate = await get_most_recent(
@@ -22815,7 +23796,10 @@ class DeepAgentsApp(App):
                 exclude_thread_id=current,
             )
             if candidate:
-                return candidate
+                return _ThreadsResumeTarget(
+                    thread_id=candidate,
+                    agent_name=active_agent,
+                )
 
             msg = f"No previous threads for '{active_agent}' to resume."
             await self._mount_message(AppMessage(msg))
@@ -22841,6 +23825,157 @@ class DeepAgentsApp(App):
                 AppMessage("Something went wrong resolving that thread.")
             )
         return None
+
+    async def _confirm_then_resume_cross_agent_thread(
+        self,
+        target: _ThreadsResumeTarget,
+    ) -> None:
+        """Confirm an agent change, then resume the exact requested thread.
+
+        This continuation must run through `_schedule_off_message_pump`; it
+        awaits both the agent confirmation and, when needed, the existing cwd
+        prompt. It catches its own failures because it runs outside the slash
+        command handler's exception boundary.
+
+        Args:
+            target: Thread and owning agent resolved from the checkpoint store.
+
+        Raises:
+            asyncio.CancelledError: If app shutdown cancels the detached flow.
+        """
+        active_agent = self._assistant_id or DEFAULT_ASSISTANT_ID
+        if self._server_kwargs is None:
+            command = f"{invoked_name()} -r {target.thread_id}"
+            await self._mount_message(
+                AppMessage(
+                    Content.from_markup(
+                        "This session cannot switch its remote server to agent "
+                        "$agent. Relaunch with [bold]$command[/bold] instead.",
+                        agent=target.agent_name,
+                        command=command,
+                    )
+                )
+            )
+            return
+        if self._server_proc is None:
+            await self._mount_message(
+                AppMessage(
+                    "Cannot switch agents until the local server is ready. "
+                    "Try /threads -r again after it connects."
+                )
+            )
+            return
+        if self._agent_running or self._shell_running:
+            await self._mount_message(
+                AppMessage(
+                    "Cannot switch agents while a task is running. "
+                    "Interrupt or wait for it to finish first."
+                )
+            )
+            return
+        if self._agent_switching:
+            await self._mount_message(AppMessage("Agent switch already in progress."))
+            return
+
+        from deepagents_code.config import settings
+
+        try:
+            agent_available = await asyncio.to_thread(
+                (settings.user_deepagents_dir / target.agent_name).is_dir
+            )
+        except OSError:
+            logger.warning(
+                "Could not stat agent directory for %r",
+                target.agent_name,
+                exc_info=True,
+            )
+            agent_available = False
+        if not agent_available:
+            await self._mount_message(
+                AppMessage(
+                    f"Agent {target.agent_name!r} is no longer available, so "
+                    f"thread {target.thread_id} was not resumed."
+                )
+            )
+            return
+
+        from deepagents_code.tui.widgets.thread_agent_switch import (
+            ThreadAgentSwitchPromptScreen,
+        )
+
+        try:
+            choice = await self._push_screen_wait(
+                ThreadAgentSwitchPromptScreen(
+                    thread_id=target.thread_id,
+                    current_agent=active_agent,
+                    thread_agent=target.agent_name,
+                )
+            )
+            if choice != "switch":
+                await self._mount_message(
+                    AppMessage("Agent switch canceled; staying on the current thread.")
+                )
+                return
+
+            # Fetch before mutating cwd, agent identity, or the transcript. A
+            # failed lookup therefore leaves the current session untouched.
+            try:
+                payload = await self._fetch_thread_history_data(target.thread_id)
+            except Exception as exc:
+                logger.exception(
+                    "Failed to prefetch cross-agent thread %s",
+                    target.thread_id,
+                )
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Could not load thread {target.thread_id}: {exc}. "
+                        "Staying on the current agent."
+                    )
+                )
+                return
+
+            previous_cwd = Path(self._cwd)
+            cwd_choice = await self._offer_thread_cwd_switch(
+                target.thread_id,
+                restart_server=False,
+                abort="thread_switch",
+            )
+            if cwd_choice == "abort":
+                await self._mount_message(
+                    AppMessage("Agent switch canceled; staying on the current thread.")
+                )
+                return
+
+            self._agent_switching = True
+            switched = await self._restart_server_for_agent_swap(
+                target.agent_name,
+                resume_thread_id=target.thread_id,
+                preloaded_payload=payload,
+                persist_default_agent=False,
+            )
+            if not switched and not await asyncio.to_thread(
+                self._cwd_paths_equal,
+                self._cwd,
+                previous_cwd,
+            ):
+                # The cwd prompt ran before the combined agent/thread restart
+                # so the new server would inherit the chosen project context.
+                # If the restart failed, put the surviving UI session back.
+                self._switch_process_cwd(previous_cwd)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Cross-agent resume failed for thread %s owned by %s",
+                target.thread_id,
+                target.agent_name,
+            )
+            await self._mount_message(
+                ErrorMessage(
+                    f"Could not switch to agent {target.agent_name!r} and resume "
+                    f"thread {target.thread_id}."
+                )
+            )
 
     async def _show_thread_selector(self) -> None:
         """Show interactive thread selector as a modal screen."""
@@ -23539,6 +24674,7 @@ class DeepAgentsApp(App):
             self._context_tokens = 0
             self._tokens_approximate = False
             self._update_tokens(0)
+            self._reset_thread_usage()
             self._update_status("")
 
             # Switch to the selected thread
@@ -23557,10 +24693,15 @@ class DeepAgentsApp(App):
             self._should_adopt_resumed_model = not self._model_explicitly_set
 
             await self._reload_hooks()
-            # Load thread history
+            # Load thread history. A restored goal review is deferred so it
+            # mounts *below* the previous-thread hint: it is an interactive
+            # prompt, and leaving an informational note beneath it reads as
+            # though the note were the pending question. Remounted a few lines
+            # down, mirroring how the startup sequence defers the same review.
             await self._load_thread_history(
                 thread_id=thread_id,
                 preloaded_payload=prefetched_payload,
+                resolve_pending_goal=False,
             )
 
             # The switch succeeded: record the thread we just left so a
@@ -23571,6 +24712,23 @@ class DeepAgentsApp(App):
             # below can still raise, so the rollback path restores this pointer
             # explicitly rather than relying on statement order.
             self._session_state.previous_thread_id = prev_session_thread
+
+            # Mount after the history load so the hint lands at the bottom of
+            # the fresh transcript, giving a one-step path back to the thread
+            # just left — the same affordance `/clear` offers. Deliberately not
+            # described as sitting under the "Resumed thread" note: that note is
+            # only mounted on `_load_thread_history`'s happy path, so an empty
+            # or failed load leaves the hint under something else.
+            await self._mount_previous_thread_hint(prev_session_thread)
+
+            # Deferred above so it lands last, keeping the interactive prompt
+            # at the bottom of the transcript. Guarded because this runs inside
+            # the rollback handler's `try`: failing to restore a review must
+            # not undo a switch that already completed.
+            try:
+                await self._remount_pending_goal_rubric_review()
+            except Exception:
+                logger.exception("Failed to restore pending goal review")
 
             # Landing on a new thread re-arms the same-thread toast, so stepping
             # back to a thread and re-selecting it announces itself again.

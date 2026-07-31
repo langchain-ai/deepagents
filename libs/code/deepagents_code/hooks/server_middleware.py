@@ -690,20 +690,14 @@ def _invoke_hook(
             snapshot_id=request.snapshot_id,
         )
     except ValidationError:
-        # Only shape errors degrade to a neutral decision. `ValueError` from an
-        # invocation_id or snapshot_id mismatch means the client answered a
-        # different request, so it must stay fatal rather than fail open.
-        return reduce_hook_results(
-            request.invocation,
-            (),
-            diagnostics=(
-                HookDiagnostic(
-                    code="invalid_resume",
-                    severity="warning",
-                    message="Malformed hook resume value; treating it as no decision",
-                ),
-            ),
+        # Only shape errors degrade to a neutral decision. A plain `ValueError`
+        # means the client answered a different request, so it stays fatal.
+        diagnostic = HookDiagnostic(
+            code="invalid_resume",
+            severity="warning",
+            message="Malformed hook resume value; treating it as no decision",
         )
+        return reduce_hook_results(request.invocation, (), diagnostics=(diagnostic,))
     return response.decision
 
 

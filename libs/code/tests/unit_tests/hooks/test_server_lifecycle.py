@@ -467,7 +467,14 @@ def test_hook_resume_value_validates_identity() -> None:
         )
 
 
-def _invoke_pre_tool_hook(request: HookInvocationRequest) -> HookDecision:
+def _invoke_pre_tool_hook(
+    monkeypatch: pytest.MonkeyPatch,
+    request: HookInvocationRequest,
+    resume: object,
+) -> HookDecision:
+    monkeypatch.setattr(
+        "deepagents_code.hooks.server_middleware.interrupt", lambda _payload: resume
+    )
     event = request.invocation.event
     assert isinstance(event, PreToolUseEvent)
     gate = _session_gate(
@@ -486,25 +493,15 @@ def _invoke_pre_tool_hook(request: HookInvocationRequest) -> HookDecision:
     )
 
 
-def test_malformed_hook_resume_fails_open(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    request = _request()
-    monkeypatch.setattr(
-        "deepagents_code.hooks.server_middleware.interrupt",
-        lambda _payload: {"invalid": True},
-    )
-
-    decision = _invoke_pre_tool_hook(request)
+def test_malformed_hook_resume_fails_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    decision = _invoke_pre_tool_hook(monkeypatch, _request(), {"invalid": True})
 
     assert isinstance(decision, PreToolUseDecision)
     assert decision.permission.behavior == "none"
     assert [item.code for item in decision.diagnostics] == ["invalid_resume"]
 
 
-def test_mismatched_hook_resume_stays_fatal(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_mismatched_hook_resume_stays_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
     """A well-formed response for another request must not fail open."""
     request = _request()
     resume = build_hook_resume_value(
@@ -518,13 +515,9 @@ def test_mismatched_hook_resume_stays_fatal(
             ),
         )
     )
-    monkeypatch.setattr(
-        "deepagents_code.hooks.server_middleware.interrupt",
-        lambda _payload: resume,
-    )
 
     with pytest.raises(ValueError, match="invocation_id mismatch"):
-        _invoke_pre_tool_hook(request)
+        _invoke_pre_tool_hook(monkeypatch, request, resume)
 
 
 def test_real_checkpointer_resume_replays_stable_hook_identity() -> None:

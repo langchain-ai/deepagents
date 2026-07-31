@@ -71,6 +71,41 @@ def compute_unified_diff(
     Returns:
         Unified diff string or None if no changes
     """
+    diff, _, _ = compute_unified_diff_with_counts(
+        before,
+        after,
+        display_path,
+        max_lines=max_lines,
+        context_lines=context_lines,
+    )
+    return diff
+
+
+def compute_unified_diff_with_counts(
+    before: str,
+    after: str,
+    display_path: str,
+    *,
+    max_lines: int | None = 800,
+    context_lines: int = 3,
+) -> tuple[str | None, int, int]:
+    """Compute a unified diff along with its true change counts.
+
+    The counts are taken before any truncation, so a diff cut off at
+    `max_lines` still reports the full size of the change. Counting the
+    returned string instead would undercount exactly the large edits where the
+    summary matters most.
+
+    Args:
+        before: Original content
+        after: New content
+        display_path: Path for display in diff headers
+        max_lines: Maximum number of diff lines (None for unlimited)
+        context_lines: Number of context lines around changes (default 3)
+
+    Returns:
+        Tuple of (diff string or None if no changes, additions, deletions).
+    """
     before_lines = before.splitlines()
     after_lines = after.splitlines()
     diff_lines = list(
@@ -84,12 +119,17 @@ def compute_unified_diff(
         )
     )
     if not diff_lines:
-        return None
+        return None, 0, 0
+    # The first two lines are the `---`/`+++` file headers this call just
+    # generated, so skipping them by position needs no prefix guessing.
+    body = diff_lines[2:]
+    additions = sum(1 for line in body if line.startswith("+"))
+    deletions = sum(1 for line in body if line.startswith("-"))
     if max_lines is not None and len(diff_lines) > max_lines:
         truncated = diff_lines[: max_lines - 1]
         truncated.append("...")
-        return "\n".join(truncated)
-    return "\n".join(diff_lines)
+        return "\n".join(truncated), additions, deletions
+    return "\n".join(diff_lines), additions, deletions
 
 
 @dataclass
@@ -486,7 +526,7 @@ class FileOpTracker:
                     return record
             record.metrics.lines_written = _count_lines(record.after_content)
             before_lines = _count_lines(record.before_content or "")
-            diff = compute_unified_diff(
+            diff, additions, deletions = compute_unified_diff_with_counts(
                 record.before_content or "",
                 record.after_content,
                 record.display_path,
@@ -494,16 +534,6 @@ class FileOpTracker:
             )
             record.diff = diff
             if diff:
-                additions = sum(
-                    1
-                    for line in diff.splitlines()
-                    if line.startswith("+") and not line.startswith("+++")
-                )
-                deletions = sum(
-                    1
-                    for line in diff.splitlines()
-                    if line.startswith("-") and not line.startswith("---")
-                )
                 record.metrics.lines_added = additions
                 record.metrics.lines_removed = deletions
             elif record.tool_name == "write_file" and not (record.before_content or ""):

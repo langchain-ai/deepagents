@@ -170,7 +170,9 @@ _COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
 
 
 # Past-tense verbs for the `DiffMessage` header, keyed by producing tool. Tools
-# absent here render a path-only header.
+# absent here render the header without a leading verb — the path and the
+# change counts still appear. `write_file` has a verb but is deliberately not
+# in `TOOLS_SUPERSEDED_BY_DIFF`: creating a file is worth its own visible row.
 _DIFF_VERBS: dict[str, str] = {
     "edit_file": "Edited",
     "write_file": "Wrote",
@@ -181,7 +183,17 @@ _DIFF_VERBS: dict[str, str] = {
 # same call says everything the row would. This is a two-sided contract: the
 # streaming layer must mount a diff for *every* successful call to these tools —
 # including no-op edits that produce an empty diff — or the call would vanish
-# from the transcript entirely. See `_show_success_status` and `textual_adapter`.
+# from the transcript entirely. See `_show_success_status` and `textual_adapter`,
+# which also downgrades the row to an error when the tracker could not build a
+# diff, rather than hiding a row nothing replaces.
+#
+# Three further obligations a member of this set must satisfy:
+#   - be in `app._TOOL_GROUP_EXCLUSIONS`, so group expansion can't un-hide the
+#     row while `_TOOL_SUPERSEDED_ACCESSORY_CLASS` keeps its footer hidden;
+#   - stay out of `_TIMED_SUCCESS_TOOLS`, whose `_show_timed_success_status`
+#     branch bypasses the hide entirely;
+#   - persist its diff through `message_store`, since rehydration recreates the
+#     row and the `DiffMessage` independently.
 TOOLS_SUPERSEDED_BY_DIFF: frozenset[str] = frozenset({"edit_file"})
 
 
@@ -1385,8 +1397,9 @@ _TOOL_SUPERSEDED_ACCESSORY_CLASS = "-tool-superseded-accessory"
 """Marker class hiding the accessories of a row replaced by its `DiffMessage`.
 
 A third hide reason alongside the two above, for the same reason they are
-distinct from each other. Unlike those, this one never lifts: a successful
-`TOOLS_SUPERSEDED_BY_DIFF` row stays hidden for the rest of the transcript.
+distinct from each other. It lifts only if the row stops being successful — a
+late `set_error` on an already-hidden row — which `_apply_own_visibility`
+handles by restoring the row and this class together.
 """
 
 
@@ -1598,6 +1611,10 @@ class ToolCallMessage(Vertical):
         # Transcript decorations that must follow approval visibility without
         # losing their independent user-controlled visibility state.
         self._visibility_accessories: list[Widget] = []
+        # Whether this row's own `display` was last driven by a self-hide
+        # reason, so `_apply_own_visibility` knows the row is its to restore
+        # (see that method for why group folding must not be disturbed).
+        self._self_hidden: bool = False
 
     def compose(self) -> ComposeResult:
         """Compose the tool call message layout.
@@ -2000,10 +2017,9 @@ class ToolCallMessage(Vertical):
         if self._superseded_by_diff:
             # The `DiffMessage` mounted alongside this call already conveys the
             # outcome, so hide the row entirely — along with any decoration that
-            # would otherwise strand over it, such as a timestamp footer. Errors
-            # and rejections never reach here, so the row stays visible for them.
-            self.display = False
-            self._sync_own_hide_accessories()
+            # would otherwise strand over it, such as a timestamp footer. A
+            # later `set_error` re-derives this and brings the row back.
+            self._apply_own_visibility()
             return
         if self._format_output(self._output, is_preview=False).content.plain.strip():
             self._status_widget.remove_class("success")
@@ -2046,6 +2062,10 @@ class ToolCallMessage(Vertical):
         self._stop_animation()
         self._status = "error"
         self._apply_status_class("error")
+        # `_superseded_by_diff` reads `_status`, so a row hidden while it was
+        # successful is no longer superseded once it errors — bring it (and its
+        # footer) back, or the failure would be invisible.
+        self._apply_own_visibility()
         # For shell commands, prepend the full command so users can see what failed
         command = self._args.get("command") if self._tool_name == "execute" else None
         if command and isinstance(command, str) and command.strip():
@@ -2131,8 +2151,7 @@ class ToolCallMessage(Vertical):
         is restored via `clear_awaiting_approval` once the user decides.
         """
         self._awaiting_approval = True
-        self.display = False
-        self._sync_own_hide_accessories()
+        self._apply_own_visibility()
 
     def clear_awaiting_approval(self) -> None:
         """Restore the tool call after `set_awaiting_approval`.
@@ -2143,8 +2162,7 @@ class ToolCallMessage(Vertical):
         if not self._awaiting_approval:
             return
         self._awaiting_approval = False
-        self.display = True
-        self._sync_own_hide_accessories()
+        self._apply_own_visibility()
 
     def register_visibility_accessories(self, *accessories: Widget) -> None:
         """Link transcript decorations whose visibility follows this tool.
@@ -2157,14 +2175,34 @@ class ToolCallMessage(Vertical):
                 self._visibility_accessories.append(accessory)
         self._sync_own_hide_accessories()
 
+    def _apply_own_visibility(self) -> None:
+        """Re-derive this row's `display` from its own hide reasons.
+
+        Sole writer of `display` for the self-hide axis, so the reasons OR
+        together instead of racing: a row hidden as superseded that later
+        errors comes back, rather than staying invisible because
+        `_show_success_status` won the last write.
+
+        Group folding drives `display` on a separate axis, so a row that has
+        never self-hidden is left alone — otherwise re-deriving here would
+        unfold a row the group had legitimately collapsed.
+        """
+        if self._awaiting_approval or self._superseded_by_diff:
+            self.display = False
+            self._self_hidden = True
+        elif self._self_hidden:
+            self.display = True
+            self._self_hidden = False
+        self._sync_own_hide_accessories()
+
     def _sync_own_hide_accessories(self) -> None:
         """Mirror this row's own hide reasons onto its linked decorations.
 
         Drives every reason in both directions, so it is safe to call
-        unconditionally from `set_awaiting_approval`, `clear_awaiting_approval`,
-        and `_show_success_status`. Uses `set_class` rather than `display` so an
-        accessory keeps its own visibility class (e.g. the `/timestamps`
-        preference) and returns to it afterwards.
+        unconditionally from `_apply_own_visibility` and on registration. Uses
+        `set_class` rather than `display` so an accessory keeps its own
+        visibility class (e.g. the `/timestamps` preference) and returns to it
+        afterwards.
         """
         for accessory in self._visibility_accessories:
             accessory.set_class(
@@ -4297,6 +4335,7 @@ class DiffMessage(Static):
         tool_name: str | None = None,
         before: str = "",
         after: str = "",
+        stats: tuple[int, int] | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize a diff message.
@@ -4307,6 +4346,10 @@ class DiffMessage(Static):
             tool_name: Name of the file tool that produced the diff
             before: Full file content the diff starts from, for highlighting
             after: Full file content the diff arrives at, for highlighting
+            stats: True `(additions, deletions)` for the whole change. Pass
+                this whenever the diff may be truncated — counting the
+                truncated text undercounts exactly the large edits whose
+                header matters most. Falls back to counting `diff_content`.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -4315,6 +4358,7 @@ class DiffMessage(Static):
         self._tool_name = tool_name
         self._before = before
         self._after = after
+        self._stats = stats
 
     def compose(self) -> ComposeResult:
         """Compose the diff message layout.
@@ -4322,11 +4366,13 @@ class DiffMessage(Static):
         Yields:
             Widgets displaying the diff header and formatted content.
         """
-        # Credential files reveal nothing here, not even how much changed.
+        # Credential files reveal nothing about their contents here, not even
+        # how much changed — the path stays, the counts and body do not.
         redacted = is_sensitive_file_path(self._file_path)
-        additions, deletions = (
-            (0, 0) if redacted else count_diff_changes(self._diff_content)
-        )
+        if redacted:
+            additions, deletions = 0, 0
+        else:
+            additions, deletions = self._stats or count_diff_changes(self._diff_content)
 
         parts: list[str | tuple[str, str] | Content] = []
         if verb := _DIFF_VERBS.get(self._tool_name or ""):
@@ -4334,7 +4380,7 @@ class DiffMessage(Static):
         parts.append(Content.from_markup("[dim]$path[/dim]", path=self._file_path))
         if additions or deletions:
             parts.extend(("  ", diff_stats_content(additions, deletions)))
-        elif not redacted:
+        elif not redacted and not self._diff_content:
             # A call that succeeded without changing anything still needs a trace:
             # the tool row is hidden for these tools, so this line is the only
             # evidence the edit ran. An empty diff body would say nothing.
@@ -4349,8 +4395,10 @@ class DiffMessage(Static):
             yield Static(
                 Content.styled("Diff hidden — file may contain credentials", "dim")
             )
-        elif additions or deletions:
-            # Render the diff with per-line Statics (CSS-driven backgrounds)
+        elif self._diff_content:
+            # Gated on the diff text, not the counts: a body we failed to
+            # classify must still render rather than silently disappear behind
+            # a "no changes" claim.
             yield from compose_diff_lines(
                 self._diff_content,
                 max_lines=100,

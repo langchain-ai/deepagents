@@ -1,6 +1,7 @@
 """Tests for message store and serialization."""
 
 import pytest
+from textual.content import Content
 from textual.widgets import Static
 
 from deepagents_code.tui.widgets.message_store import (
@@ -355,6 +356,34 @@ class TestMessageData:
         assert restored._args == "find quantum"
         assert restored._deferred_expanded is True
         assert restored.id == "test-skill-1"
+
+    def test_diff_message_roundtrip_preserves_syntax_highlighting(self) -> None:
+        """Virtualized diffs retain the whole-file lexer inputs."""
+        before = 'def f():\n    """Doc.\n\n    More.\n    """\n'
+        after = before + "    if ready:\n        return True\n"
+        diff = '@@ -5 +5,3 @@\n     """\n+    if ready:\n+        return True'
+        original = DiffMessage(
+            diff,
+            "example.py",
+            tool_name="edit_file",
+            before=before,
+            after=after,
+            id="test-diff-highlight",
+        )
+
+        data = MessageData.from_widget(original)
+        restored = data.to_widget()
+
+        assert data.diff_before_content == before
+        assert data.diff_after_content == after
+        assert isinstance(restored, DiffMessage)
+        rows = [
+            rendered
+            for child in restored.compose()
+            if isinstance((rendered := child.render()), Content)
+        ]
+        keyword = next(row for row in rows if "if ready:" in row.plain)
+        assert any(span.style == "$text-accent" for span in keyword.spans)
 
     def test_unknown_widget_serializes_as_app(self):
         """Test that unknown widget types fall back to APP MessageData."""

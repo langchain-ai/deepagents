@@ -174,13 +174,19 @@ deadlock detector when two threads cold-import overlapping modules.
 """
 
 _TOOL_GROUP_EXCLUSIONS = frozenset({"ask_user", "edit_file", "write_todos"})
-"""Tools that stay expanded instead of collapsing into step summaries.
+"""Tools kept out of the collapsing step summaries.
 
 Each surfaces user-facing content worth keeping visible on its own — an
 interactive prompt (`ask_user`), a diff (`edit_file`), or a todo list
 (`write_todos`) — so it renders standalone and acts as a boundary between
 adjacent tool groups. Add a tool here only when its collapsed one-line
 summary would hide something the user needs to see.
+
+`edit_file` is the odd one: its *row* hides itself on success (see
+`TOOLS_SUPERSEDED_BY_DIFF`), and what stays visible is the separate
+`DiffMessage`, excluded from grouping in its own right below. Excluding the
+row too keeps the pair out of the group machinery that would otherwise fight
+the row's own hiding.
 """
 
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
@@ -7377,6 +7383,7 @@ class DeepAgentsApp(App):
                 footer = self._build_message_timestamp_footer(
                     msg_data, visible=self._message_timestamps_visible
                 )
+                self._link_message_timestamp_footer(widget, footer)
                 nodes: list[Widget] = [widget]
                 if footer is not None:
                     nodes.append(footer)
@@ -7447,6 +7454,7 @@ class DeepAgentsApp(App):
                 footer = self._build_message_timestamp_footer(
                     msg_data, visible=self._message_timestamps_visible
                 )
+                self._link_message_timestamp_footer(widget, footer)
                 nodes = [widget]
                 if footer is not None:
                     nodes.append(footer)
@@ -16170,6 +16178,7 @@ class DeepAgentsApp(App):
                     msg_data, visible=self._message_timestamps_visible
                 )
                 if footer is not None:
+                    self._link_message_timestamp_footer(widget, footer)
                     nodes.append(footer)
             if nodes:
                 await self._mount_transcript_nodes(messages_container, nodes)
@@ -16257,6 +16266,20 @@ class DeepAgentsApp(App):
             id=_message_timestamp_footer_id(data.id),
             classes=classes,
         )
+
+    @staticmethod
+    def _link_message_timestamp_footer(widget: Widget, footer: Static | None) -> None:
+        """Make a tool footer follow visibility changes of its owning row.
+
+        Linking before mount lets deferred successful state hide both nodes
+        together when restored history is mounted.
+
+        Args:
+            widget: Message widget that owns the footer.
+            footer: Timestamp footer built for the message, if eligible.
+        """
+        if footer is not None and isinstance(widget, ToolCallMessage):
+            widget.register_visibility_accessories(footer)
 
     def _sync_message_timestamps_display(self) -> None:
         """Apply the current visibility to every mounted timestamp footer.
@@ -16418,6 +16441,7 @@ class DeepAgentsApp(App):
         footer = self._build_message_timestamp_footer(
             message_data, visible=self._message_timestamps_visible
         )
+        self._link_message_timestamp_footer(widget, footer)
 
         # Coalesce the whole mount-and-fold sequence into a single repaint.
         # Otherwise mounting a groupable tool paints it at full height, then
@@ -16441,12 +16465,6 @@ class DeepAgentsApp(App):
             await self._mount_before_queued(messages, widget)
             if footer is not None:
                 await self._mount_before_queued(messages, footer)
-                if isinstance(widget, ToolCallMessage):
-                    # A row can hide itself without ever joining a group — an
-                    # approval prompt replacing it, or its `DiffMessage`
-                    # superseding it — so link the footer to the row here rather
-                    # than only on the grouping paths below.
-                    widget.register_visibility_accessories(footer)
 
             # Fold the freshly-mounted tool/diff into the open group so it hides
             # immediately (must run after mount so display toggles take effect).

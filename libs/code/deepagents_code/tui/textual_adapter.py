@@ -1785,7 +1785,18 @@ async def execute_task_textual(
                             # set_error failure must not abort the turn and drop
                             # the remaining tools' hooks.
                             try:
-                                if tool_status == "success":
+                                if (
+                                    tool_status == "success"
+                                    and record is not None
+                                    and record.tool_name in TOOLS_SUPERSEDED_BY_DIFF
+                                    and record.status == "error"
+                                ):
+                                    detail = record.error or "Diff tracking failed."
+                                    tool_msg.set_error(
+                                        f"Edit succeeded, but its changes could not "
+                                        f"be displayed: {detail}"
+                                    )
+                                elif tool_status == "success":
                                     tool_msg.set_success(output_str)
                                 else:
                                     tool_msg.set_error(output_str or "Error")
@@ -1889,6 +1900,10 @@ async def execute_task_textual(
                                         tool_name=record.tool_name,
                                         before=record.before_content or "",
                                         after=record.after_content or "",
+                                        stats=(
+                                            record.metrics.lines_added,
+                                            record.metrics.lines_removed,
+                                        ),
                                     )
                                 )
 

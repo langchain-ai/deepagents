@@ -13615,6 +13615,39 @@ class TestMessageTimestampFooters:
             with pytest.raises(NoMatches):
                 app.query_one("#hist-app-timestamp-footer", Static)
 
+    async def test_restored_superseded_tool_hides_its_footer(self) -> None:
+        """Initial history links an `edit_file` footer before state restore."""
+        app = DeepAgentsApp()
+        app._message_timestamps_visible = True
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(
+                        type=MessageType.TOOL,
+                        content="",
+                        id="restored-edit",
+                        tool_name="edit_file",
+                        tool_args={"file_path": "a.py"},
+                        tool_status=ToolStatus.SUCCESS,
+                        tool_output="Updated file",
+                    )
+                ],
+                0,
+                "",
+            )
+
+            await app._load_thread_history(
+                thread_id="t-restored-edit", preloaded_payload=payload
+            )
+            await pilot.pause()
+
+            tool = app.query_one("#restored-edit", ToolCallMessage)
+            footer = app.query_one("#restored-edit-timestamp-footer", Static)
+            assert tool.display is False
+            assert footer.display is False
+
     async def test_resumed_history_populates_hook_transcript(self) -> None:
         from langchain_core.messages import HumanMessage
 
@@ -13903,6 +13936,88 @@ class TestMessageTimestampFooters:
             children = list(messages.children)
             anchor = app.query_one("#hist-0", UserMessage)
             assert children[children.index(anchor) + 1] is footer
+
+    async def test_hydrated_superseded_tool_above_hides_its_footer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Scroll-up hydration restores an `edit_file` row and footer together."""
+        app = DeepAgentsApp()
+        app._message_timestamps_visible = True
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app, "_check_hydration_below_needed", lambda: None)
+            monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 2)
+            payload = _ThreadHistoryPayload(
+                [
+                    MessageData(
+                        type=MessageType.TOOL,
+                        content="",
+                        id="older-edit",
+                        tool_name="edit_file",
+                        tool_args={"file_path": "a.py"},
+                        tool_status=ToolStatus.SUCCESS,
+                        tool_output="Updated file",
+                    ),
+                    MessageData(type=MessageType.USER, content="one", id="newer-1"),
+                    MessageData(type=MessageType.USER, content="two", id="newer-2"),
+                ],
+                0,
+                "",
+            )
+            with patch.object(app, "set_timer"):
+                await app._load_thread_history(
+                    thread_id="t-older-edit", preloaded_payload=payload
+                )
+            await pilot.pause()
+
+            await app._hydrate_messages_above()
+            await pilot.pause()
+
+            tool = app.query_one("#older-edit", ToolCallMessage)
+            footer = app.query_one("#older-edit-timestamp-footer", Static)
+            assert tool.display is False
+            assert footer.display is False
+
+    async def test_hydrated_superseded_tool_below_hides_its_footer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Scroll-down hydration restores an `edit_file` row and footer together."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-newer-edit")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
+
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+            monkeypatch.setattr(app, "_check_hydration_below_needed", lambda: None)
+            for index in range(4):
+                await app._mount_message(
+                    UserMessage(f"message {index}", id=f"before-edit-{index}")
+                )
+            tool = ToolCallMessage(
+                "edit_file",
+                {"file_path": "a.py"},
+                id="newer-edit",
+            )
+            await app._mount_message(tool)
+            tool.set_success("Updated file")
+            app._sync_tool_message_state(tool)
+            await pilot.pause()
+
+            monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 4)
+            await app._prune_messages_below_window(messages)
+            await pilot.pause()
+            with pytest.raises(NoMatches):
+                app.query_one("#newer-edit", ToolCallMessage)
+
+            await app._hydrate_messages_below()
+            await pilot.pause()
+
+            restored = app.query_one("#newer-edit", ToolCallMessage)
+            footer = app.query_one("#newer-edit-timestamp-footer", Static)
+            assert restored.display is False
+            assert footer.display is False
 
     async def test_restored_history_uses_top_spacer_for_archived_rows(
         self, monkeypatch: pytest.MonkeyPatch
@@ -34361,6 +34476,35 @@ class TestToolGroupCollapse:
             await pilot.pause()
             assert tool.display is False
             assert footer.display is False
+
+    async def test_superseded_row_comes_back_if_it_later_errors(self) -> None:
+        """A hidden row that stops being successful must become visible again.
+
+        `_superseded_by_diff` reads the live status, so a late error makes the
+        row no longer superseded. If hiding were a one-way write the failure
+        would stay invisible, and the footer's marker class would lift on its
+        own — stranding a timestamp over an invisible row.
+        """
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-diff-unhide")
+        app._load_thread_history = AsyncMock()  # ty: ignore
+        app._message_timestamps_visible = True
+        async with app.run_test() as pilot:
+            messages = app.query_one("#messages", Container)
+            await messages.remove_children()
+
+            tool = ToolCallMessage("edit_file", {"file_path": "a.py"})
+            await app._mount_message(tool)
+            await pilot.pause()
+            footer = app.query_one(f"#{tool.id}-timestamp-footer", Static)
+
+            tool.set_success("Updated file")
+            await pilot.pause()
+            assert tool.display is False
+
+            tool.set_error("Disk full")
+            await pilot.pause()
+            assert tool.display is True
+            assert footer.display is True
 
     async def test_timestamps_toggle_respects_collapsed_group(self) -> None:
         """Turning `/timestamps` on must not surface a collapsed run's footers.

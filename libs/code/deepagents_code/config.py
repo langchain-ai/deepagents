@@ -1159,7 +1159,7 @@ class Glyphs:
     box_double_horizontal: str  # ═ vs =
 
     # Diff-specific
-    gutter_bar: str  # ▌ vs |
+    gutter_bar: str  # ▌ vs | — no current caller; kept for compatibility
     hunk_break: str  # ⋮ vs :
 
     # Status bar

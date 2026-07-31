@@ -148,6 +148,20 @@ class _ClassifierModelUnavailableError(RuntimeError):
         super().__init__(f"could not create classifier model {spec!r}")
 
 
+def _consume_classifier_task_exception(task: asyncio.Task[BaseChatModel]) -> None:
+    """Retrieve a detached classifier-construction failure.
+
+    A batch deadline stops waiting for construction but deliberately leaves the
+    shared task running. Retrieving its exception prevents an unobserved-task
+    warning when no later batch arrives to await the task.
+
+    Args:
+        task: Completed classifier-construction task.
+    """
+    if not task.cancelled():
+        task.exception()
+
+
 class AutoDecisionCategory(StrEnum):
     """Classifier denial categories exposed to the agent and TUI."""
 
@@ -1773,6 +1787,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         self._configured_classifier_model = classifier_model
         self._classifier_model_cache: OrderedDict[str, BaseChatModel] = OrderedDict()
         self._classifier_model_lock = asyncio.Lock()
+        self._classifier_model_construction: (
+            tuple[str, asyncio.Task[BaseChatModel]] | None
+        ) = None
         self._known_secrets = _known_credential_values()
         self._trusted_ask_user_tool = trusted_ask_user_tool
         self._trusted_compaction_tool = trusted_compaction_tool
@@ -2097,6 +2114,46 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         """Return the log label for the classifier model of this request."""
         return self._distinct_classifier_label(request) or "inherited"
 
+    async def _construct_classifier_model(self, selected: str) -> BaseChatModel:
+        """Build and cache one classifier while retaining its task on timeout.
+
+        Args:
+            selected: Configured `provider:model` specification.
+
+        Returns:
+            Constructed chat model.
+
+        Raises:
+            asyncio.CancelledError: If process shutdown cancels construction.
+            _ClassifierModelUnavailableError: If the model cannot be built.
+        """
+        task = asyncio.current_task()
+        from deepagents_code.config import create_model
+
+        try:
+            try:
+                result = await asyncio.to_thread(create_model, selected)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Could not create Auto classifier model %s",
+                    selected,
+                    exc_info=True,
+                )
+                raise _ClassifierModelUnavailableError(selected) from exc
+
+            async with self._classifier_model_lock:
+                self._classifier_model_cache[selected] = result.model
+                while len(self._classifier_model_cache) > _MAX_CLASSIFIER_MODEL_CACHE:
+                    self._classifier_model_cache.popitem(last=False)
+            return result.model
+        finally:
+            async with self._classifier_model_lock:
+                active = self._classifier_model_construction
+                if active is not None and active[1] is task:
+                    self._classifier_model_construction = None
+
     async def _classifier_model(
         self, request: ModelRequest
     ) -> tuple[BaseChatModel, str | None]:
@@ -2110,13 +2167,6 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 model object from the primary one — its spec, or its model name
                 when a chat model instance was supplied. `None` when inheriting,
                 which is what gates forwarding the primary model's settings.
-
-        Raises:
-            asyncio.CancelledError: If model construction is cancelled.
-            _ClassifierModelUnavailableError: If a configured spec cannot be
-                built. Auto denies the batch rather than quietly reviewing with
-                the main agent model, and escalates to human approval only after
-                `_CONSECUTIVE_UNAVAILABLE_FALLBACK` consecutive failing batches.
         """
         selected = self._classifier_spec(request)
         if selected is None:
@@ -2124,26 +2174,30 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         if not isinstance(selected, str):
             return selected, _extract_model_name(selected)
 
-        async with self._classifier_model_lock:
-            cached = self._classifier_model_cache.get(selected)
-            if cached is not None:
-                self._classifier_model_cache.move_to_end(selected)
-                return cached, selected
-            from deepagents_code.config import create_model
+        while True:
+            async with self._classifier_model_lock:
+                cached = self._classifier_model_cache.get(selected)
+                if cached is not None:
+                    self._classifier_model_cache.move_to_end(selected)
+                    return cached, selected
+                active = self._classifier_model_construction
+                if active is None:
+                    task = asyncio.create_task(
+                        self._construct_classifier_model(selected)
+                    )
+                    task.add_done_callback(_consume_classifier_task_exception)
+                    active = (selected, task)
+                    self._classifier_model_construction = active
 
+            active_spec, task = active
             try:
-                result = await asyncio.to_thread(create_model, selected)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "Could not create Auto classifier model %s", selected, exc_info=True
-                )
-                raise _ClassifierModelUnavailableError(selected) from exc
-            self._classifier_model_cache[selected] = result.model
-            while len(self._classifier_model_cache) > _MAX_CLASSIFIER_MODEL_CACHE:
-                self._classifier_model_cache.popitem(last=False)
-            return result.model, selected
+                model = await asyncio.shield(task)
+            except Exception:
+                if active_spec == selected:
+                    raise
+                continue
+            if active_spec == selected:
+                return model, selected
 
     async def _classify(
         self,
@@ -2153,10 +2207,10 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         dispositions: Mapping[str, str],
         tools: Mapping[str, BaseTool],
     ) -> AutoDecisionBatch:
-        # The deadline covers lazy model construction as well as inference. An
-        # unavailable provider constructor must fail closed on the same bounded
-        # schedule as a provider call, even while classifier resolution holds
-        # its cache lock.
+        # The deadline bounds how long this batch waits for lazy construction
+        # and inference. Constructor threads cannot be cancelled, so resolution
+        # retains one shielded task that later batches reuse instead of spawning
+        # more work after the first wait expires.
         timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
         try:
             async with timeout_cm:

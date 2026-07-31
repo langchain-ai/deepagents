@@ -3124,11 +3124,13 @@ async def test_classifier_model_spec_is_resolved_once_and_cached(
 async def test_classifier_model_construction_respects_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A hung model constructor reaches fail-closed human fallback promptly."""
+    """A timed-out constructor stays shared while batches fail closed promptly."""
     started = threading.Event()
     release = threading.Event()
+    specs: list[str] = []
 
-    def create_model(_spec: str) -> SimpleNamespace:
+    def create_model(spec: str) -> SimpleNamespace:
+        specs.append(spec)
         started.set()
         release.wait()
         return SimpleNamespace(model=_StructuredModel(_allow_result()))
@@ -3155,6 +3157,15 @@ async def test_classifier_model_construction_respects_deadline(
             tool_name="delete",
             args={"file_path": "old.py"},
         )
+        construction = middleware._classifier_model_construction
+        assert construction is not None
+
+        # Cancelling another waiter must not cancel the constructor or start a
+        # replacement thread while the first one is still running.
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.01):
+                await middleware._classifier_model(request)
+        assert specs == ["openai:gpt-5.5-mini"]
     finally:
         release.set()
 
@@ -3162,6 +3173,11 @@ async def test_classifier_model_construction_respects_deadline(
     assert middleware._classifier_model_lock.locked() is False
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
     assert plan["decisions"][0]["reason"] == ("classifier did not respond within 0.01s")
+    model = await construction[1]
+    assert middleware._classifier_model_construction is None
+    resolved, spec = await middleware._classifier_model(request)
+    assert resolved is model
+    assert spec == "openai:gpt-5.5-mini"
 
 
 async def test_context_classifier_model_overrides_construction_value(

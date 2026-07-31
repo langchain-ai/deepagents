@@ -3302,9 +3302,12 @@ class TestResumeThread:
         _app_test_double(app)._fetch_thread_history_data.assert_awaited_once_with(
             "new-thread"
         )
+        # `resolve_pending_goal=False` defers a restored goal review so the
+        # interactive prompt mounts below the previous-thread hint.
         _app_test_double(app)._load_thread_history.assert_awaited_once_with(
             thread_id="new-thread",
             preloaded_payload=mock_payload,
+            resolve_pending_goal=False,
         )
 
     @staticmethod
@@ -3443,6 +3446,77 @@ class TestResumeThread:
         assert "history" in events
         assert hint in events
         assert events.index("history") < events.index(hint)
+
+    async def test_switch_mounts_goal_review_below_previous_thread_hint(self) -> None:
+        """A restored goal review stays the last thing in the transcript.
+
+        The review is an interactive prompt. Mounted above the hint — as it was
+        when `_load_thread_history` resolved it inline — an informational note
+        sits beneath the question the user is being asked to answer.
+        """
+        app = self._switch_app()
+        events: list[str] = []
+
+        def record_mount(widget: Static) -> None:
+            events.append(_get_widget_text(widget))
+
+        def record_review() -> None:
+            events.append("goal-review")
+
+        _app_test_double(app)._mount_message = AsyncMock(side_effect=record_mount)
+        remount = AsyncMock(side_effect=record_review)
+        _app_test_double(app)._remount_pending_goal_rubric_review = remount
+
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="agent"),
+            ),
+            patch.object(app, "_schedule_thread_message_link"),
+        ):
+            await app._resume_thread("new-thread")
+
+        hint = "Previous thread: old-thread (Resume with /threads -r)"
+        remount.assert_awaited_once()
+        assert hint in events
+        assert events.index(hint) < events.index("goal-review")
+
+    async def test_switch_survives_goal_review_restore_failure(self) -> None:
+        """A goal review that cannot be restored must not undo the switch.
+
+        The deferred remount runs inside the block whose handler rolls the
+        whole switch back.
+        """
+        app = self._switch_app()
+        mount_message = AsyncMock()
+        _app_test_double(app)._mount_message = mount_message
+        _app_test_double(app)._remount_pending_goal_rubric_review = AsyncMock(
+            side_effect=RuntimeError("rubric restore exploded")
+        )
+
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="agent"),
+            ),
+            patch.object(app, "_schedule_thread_message_link"),
+        ):
+            await app._resume_thread("new-thread")
+
+        contents = [
+            _get_widget_text(call.args[0]) for call in mount_message.call_args_list
+        ]
+        assert app._session_state is not None
+        assert app._session_state.thread_id == "new-thread"
+        assert not any("Failed to switch" in text for text in contents)
 
     async def test_switch_omits_previous_thread_without_checkpoint(self) -> None:
         """A switch away from a thread with no checkpoint row hints nothing.

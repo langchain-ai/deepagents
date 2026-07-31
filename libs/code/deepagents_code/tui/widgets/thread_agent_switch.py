@@ -64,7 +64,11 @@ class ThreadAgentSwitchPromptScreen(ModalScreen[ThreadAgentSwitchChoice]):
     }
 
     ThreadAgentSwitchPromptScreen .thread-agent-switch-help {
-        height: 1;
+        /* `auto`, not `1`: the help line is 38 cells, so it wraps once the
+           dialog is narrower than ~48 columns, and a fixed single row clips
+           the wrapped remainder -- which is the `Esc: cancel` half. The
+           cancel affordance must not disappear in narrow terminals. */
+        height: auto;
         color: $text-muted;
         text-style: italic;
         text-align: center;

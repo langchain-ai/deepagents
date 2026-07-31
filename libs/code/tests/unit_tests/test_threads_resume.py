@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from textual.widget import MountError
+
 from deepagents_code.app import (
     DeepAgentsApp,
     TextualSessionState,
@@ -465,10 +467,13 @@ class TestPreviousThreadHintOwnership:
             ),
             patch.object(app, "_schedule_thread_message_link") as schedule,
         ):
-            await app._mount_previous_thread_hint("research-thread")
+            hinted = await app._mount_previous_thread_hint("research-thread")
 
         app._mount_message.assert_awaited_once()  # ty: ignore
         schedule.assert_called_once()
+        # The agent swap keys its relaunch fallback off this, so a hint that
+        # mounts must report `True` or the user gets both hints at once.
+        assert hinted is True
 
     async def test_remote_cross_agent_hint_is_suppressed(self) -> None:
         """Remote sessions do not promise an agent restart they cannot do."""
@@ -487,7 +492,38 @@ class TestPreviousThreadHintOwnership:
             ),
             patch.object(app, "_schedule_thread_message_link") as schedule,
         ):
-            await app._mount_previous_thread_hint("research-thread")
+            hinted = await app._mount_previous_thread_hint("research-thread")
 
         app._mount_message.assert_not_awaited()  # ty: ignore
         schedule.assert_not_called()
+        # Reporting `False` is what lets the agent swap fall back to the
+        # relaunch command, so a remote session is not left with no way back.
+        assert hinted is False
+
+    async def test_unmountable_hint_reports_failure(self) -> None:
+        """A hint that raised while mounting has not been shown.
+
+        Reporting success here would suppress the agent swap's relaunch
+        fallback, leaving the user with no way back at all.
+        """
+        app = _make_app()
+        app._assistant_id = "coder"
+        app._server_kwargs = {"assistant_id": "coder"}
+        app._mount_message = AsyncMock(  # ty: ignore
+            side_effect=MountError("container is detached")
+        )
+
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="coder"),
+            ),
+            patch.object(app, "_schedule_thread_message_link"),
+        ):
+            hinted = await app._mount_previous_thread_hint("research-thread")
+
+        assert hinted is False

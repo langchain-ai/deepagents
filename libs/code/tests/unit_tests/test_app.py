@@ -22948,9 +22948,13 @@ class TestRestartServerForAgentSwap:
         assert app._session_state is not None
         assert app._session_state.thread_id == "research-thread"
         assert app._session_state.previous_thread_id == "old-thread"
+        # `resolve_pending_goal=False` defers a restored goal review to this
+        # method's `finally`, so the interactive prompt mounts below the
+        # "Switched to ..." confirmation and the resume hint.
         load_history.assert_awaited_once_with(
             thread_id="research-thread",
             preloaded_payload=payload,
+            resolve_pending_goal=False,
         )
         mount_previous.assert_awaited_once_with("old-thread")
         save_mock.assert_not_called()
@@ -23015,6 +23019,41 @@ class TestRestartServerForAgentSwap:
         plain = [str(getattr(m, "_content", m)) for m in mounted]
         assert any("Switched to researcher" in s for s in plain)
         assert not any("to resume" in s for s in plain)
+
+    async def test_picker_swap_prefers_in_session_hint_over_relaunch(self) -> None:
+        """A resumable previous thread gets the one-command hint, not a relaunch.
+
+        `/threads -r` now offers a cross-agent switch, so a picker swap no
+        longer strands the outgoing thread behind quitting and relaunching.
+        Telling the user to relaunch when a single command suffices sends them
+        the long way around.
+        """
+        app, _server_proc = self._make_app()
+
+        mounted: list[object] = []
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.model_config.save_recent_agent",
+                    return_value=True,
+                ),
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="coder"),
+                ),
+                patch.object(app, "_mount_message", side_effect=mounted.append),
+                patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+        plain = [str(getattr(m, "_content", m)) for m in mounted]
+        assert any("Previous thread: old-thread" in s for s in plain)
+        assert not any("Relaunch with" in s for s in plain)
 
     async def test_resume_hint_echoes_launch_command(
         self, monkeypatch: pytest.MonkeyPatch

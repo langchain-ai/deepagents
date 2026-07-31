@@ -15931,27 +15931,30 @@ class DeepAgentsApp(App):
             exclusive=False,
         )
 
-    async def _mount_previous_thread_hint(self, previous_thread_id: str | None) -> None:
+    async def _mount_previous_thread_hint(self, previous_thread_id: str | None) -> bool:
         """Point the user back at the thread the session just left.
 
-        Shared by the paths whose outgoing thread `/threads -r` can actually
-        reach: `/clear`, `/force-clear`, a mid-session thread switch, and a
-        cross-agent resume. A plain agent-picker swap also leaves a thread but
-        mounts its own relaunch hint instead.
+        Shared by every path that moves the session off a thread: `/clear`,
+        `/force-clear`, a mid-session thread switch, and both agent swaps.
 
-        The hint is suppressed rather than shown wherever `-r` would dead-end:
-        threads with no checkpoint row (`-r` can't resume them), threads whose
-        owning agent can't be determined, and cross-agent threads on
-        remote-server sessions, which cannot perform the agent restart `-r`
-        would need.
+        The hint is suppressed wherever `/threads -r` would dead-end: threads
+        with no checkpoint row (`-r` can't resume them), threads whose owning
+        agent can't be determined, and cross-agent threads on remote-server
+        sessions, which cannot perform the agent restart `-r` would need. The
+        return value lets callers fall back to a heavier remedy — the agent
+        swap offers a relaunch command — when `-r` can't reach the thread.
 
         Args:
             previous_thread_id: The thread the session left. Tolerates `None`
                 by mounting nothing, since the underlying field is nullable
                 before the first reset; all current callers pass a real id.
+
+        Returns:
+            `True` when a hint was mounted, `False` when it was suppressed or
+            could not be rendered.
         """
         if not previous_thread_id:
-            return
+            return False
 
         import sqlite3
 
@@ -15973,19 +15976,19 @@ class DeepAgentsApp(App):
                 previous_thread_id,
                 exc_info=True,
             )
-            return
+            return False
         except Exception:
             logger.warning(
                 "Unexpected error checking previous thread %s resumability",
                 previous_thread_id,
                 exc_info=True,
             )
-            return
+            return False
         if not resumable:
-            return
+            return False
         active_agent = self._assistant_id or DEFAULT_ASSISTANT_ID
         if not owner or (owner != active_agent and self._server_kwargs is None):
-            return
+            return False
 
         resume_hint = " (Resume with /threads -r)"
         previous_msg_widget = AppMessage(
@@ -16011,6 +16014,8 @@ class DeepAgentsApp(App):
                 previous_thread_id,
                 exc_info=True,
             )
+            return False
+        return True
 
     async def _load_thread_history(
         self,
@@ -19559,6 +19564,12 @@ class DeepAgentsApp(App):
             self._agent_switching = False
             return False
 
+        # Set once a resumed thread's goal review has been deferred past the
+        # transcript notes below, so the `finally` knows to remount it. Phase 1
+        # and 2 bail-outs leave it `False`: no history was loaded, so there is
+        # nothing deferred to restore.
+        deferred_goal_review = False
+
         try:
             # Phase 1: UI teardown. A failure here does NOT mean the server
             # is gone — we notify the user and bail out with the previous
@@ -19764,10 +19775,16 @@ class DeepAgentsApp(App):
             await self._reload_hooks()
             if resume_thread_id is not None:
                 self._should_adopt_resumed_model = not self._model_explicitly_set
+                # Defer a restored goal review so the interactive prompt lands
+                # below the "Switched to ..." confirmation and resume hint
+                # rather than above them. Remounted in this method's `finally`,
+                # which also covers the session-start-hook early return below.
                 await self._load_thread_history(
                     thread_id=resume_thread_id,
                     preloaded_payload=preloaded_payload,
+                    resolve_pending_goal=False,
                 )
+                deferred_goal_review = True
             start_cause = (
                 SessionStartCause.RESUME
                 if resume_thread_id is not None
@@ -19833,16 +19850,19 @@ class DeepAgentsApp(App):
                     markup=False,
                 )
 
-            # Surface a resume command for the previous session so the
-            # previous thread isn't stranded out of reach. `-r <thread>`
-            # alone is enough: `_resolve_resume_thread` infers the owning
-            # agent from persisted thread metadata via `get_thread_agent`.
-            # Build via `from_markup` so a thread ID with stray brackets
-            # can't corrupt rendering. See checkpoint-gating rationale on
+            # Surface a way back so the previous thread isn't stranded out of
+            # reach. Prefer the in-session hint: `/threads -r` now offers a
+            # cross-agent switch, so a swap no longer strands the outgoing
+            # thread behind a relaunch. Fall back to the relaunch command only
+            # where `-r` can't reach it — chiefly a remote server that cannot
+            # restart into the owning agent. `-r <thread>` alone is enough
+            # there: `_resolve_resume_thread` infers the owning agent from
+            # persisted thread metadata via `get_thread_agent`. Build via
+            # `from_markup` so a thread ID with stray brackets can't corrupt
+            # rendering. See checkpoint-gating rationale on
             # `previous_thread_has_agent_output` above.
-            if resume_thread_id is not None:
-                await self._mount_previous_thread_hint(previous_thread_id)
-            elif previous_thread_id and previous_thread_has_agent_output:
+            hinted = await self._mount_previous_thread_hint(previous_thread_id)
+            if not hinted and previous_thread_id and previous_thread_has_agent_output:
                 resume_hint = Content.from_markup(
                     "[dim]Relaunch with[/dim] $command -r $thread "
                     "[dim]to resume the previous thread.[/dim]",
@@ -19862,6 +19882,14 @@ class DeepAgentsApp(App):
             self._agent_switching = False
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=not self._agent_running)
+            if deferred_goal_review:
+                # Guarded: this runs while an exception may be propagating, so
+                # an unguarded raise here would replace the original error with
+                # a cosmetic one.
+                try:
+                    await self._remount_pending_goal_rubric_review()
+                except Exception:
+                    logger.exception("Failed to restore pending goal review")
 
     async def _show_notification_settings(self) -> None:
         """Show notification settings modal."""
@@ -23910,10 +23938,15 @@ class DeepAgentsApp(App):
             self._should_adopt_resumed_model = not self._model_explicitly_set
 
             await self._reload_hooks()
-            # Load thread history
+            # Load thread history. A restored goal review is deferred so it
+            # mounts *below* the previous-thread hint: it is an interactive
+            # prompt, and leaving an informational note beneath it reads as
+            # though the note were the pending question. Remounted a few lines
+            # down, mirroring how the startup sequence defers the same review.
             await self._load_thread_history(
                 thread_id=thread_id,
                 preloaded_payload=prefetched_payload,
+                resolve_pending_goal=False,
             )
 
             # The switch succeeded: record the thread we just left so a
@@ -23932,6 +23965,15 @@ class DeepAgentsApp(App):
             # only mounted on `_load_thread_history`'s happy path, so an empty
             # or failed load leaves the hint under something else.
             await self._mount_previous_thread_hint(prev_session_thread)
+
+            # Deferred above so it lands last, keeping the interactive prompt
+            # at the bottom of the transcript. Guarded because this runs inside
+            # the rollback handler's `try`: failing to restore a review must
+            # not undo a switch that already completed.
+            try:
+                await self._remount_pending_goal_rubric_review()
+            except Exception:
+                logger.exception("Failed to restore pending goal review")
 
             # Landing on a new thread re-arms the same-thread toast, so stepping
             # back to a thread and re-selecting it announces itself again.

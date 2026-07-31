@@ -114,3 +114,37 @@ class TestThreadAgentSwitchPromptScreen:
             await pilot.pause()
 
             assert outcomes == ["cancel"]
+
+    async def test_help_line_is_not_clipped_in_a_narrow_terminal(self) -> None:
+        """The `Esc: cancel` half of the help line must survive wrapping.
+
+        The help string is wider than the dialog once the terminal drops below
+        roughly 48 columns. A fixed one-row height silently truncated the
+        wrapped remainder, hiding how to back out of the switch precisely when
+        the dialog was hardest to read.
+        """
+        app = _ThreadAgentSwitchTestApp()
+        async with app.run_test(size=(40, 24)) as pilot:
+            app.push_screen(
+                ThreadAgentSwitchPromptScreen(
+                    thread_id="thread-123",
+                    current_agent="coder",
+                    thread_agent="researcher",
+                )
+            )
+            await pilot.pause()
+            await pilot.pause()
+
+            help_widget = app.screen.query_one(".thread-agent-switch-help")
+            viewport = app.screen.size
+            needed = help_widget.get_content_height(
+                viewport,
+                viewport,
+                help_widget.size.width,
+            )
+
+            assert help_widget.size.width < len(
+                "Enter: switch and resume · Esc: cancel"
+            )
+            assert needed > 1, "expected the help line to wrap at this width"
+            assert help_widget.size.height >= needed

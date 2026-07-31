@@ -50,6 +50,7 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Checkbox, Input, OptionList, Static
 
+from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
 from deepagents_code._constants import (
     SDK_DEFAULT_RUBRIC_MAX_ITERATIONS,
     SYSTEM_MESSAGE_PREFIX,
@@ -12805,6 +12806,115 @@ class TestAutoClassifierModelCommand:
             assert app._server_kwargs["auto_classifier_model"] is None
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Auto classifier model cleared" in rendered
+
+    async def test_clear_marks_the_run_context_to_inherit(self) -> None:
+        """Clearing must override a startup classifier, not just drop the override.
+
+        The server resolves its own classifier from `--auto-classifier-model`,
+        the env var, or `[models].auto_classifier`, so an absent per-run value
+        would leave that model authorizing actions after the UI said reviews
+        moved back to the main agent model.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._auto_classifier_model = "openai:gpt-5.5-mini"
+            app._server_kwargs = {"auto_classifier_model": "openai:gpt-5.5-mini"}
+            assert app._auto_classifier_context_value() == "openai:gpt-5.5-mini"
+
+            await app._handle_command("/auto model clear")
+            await pilot.pause()
+
+            assert app._auto_classifier_context_value() == INHERIT_CLASSIFIER_MODEL
+
+    async def test_clear_applies_even_when_no_client_side_spec_is_known(self) -> None:
+        """A first clear is honored; only a second one reports a no-op.
+
+        The client cannot see an env / `config.toml` classifier the server
+        resolved, so `None` here does not prove reviews already run on the main
+        agent model.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            assert app._auto_classifier_context_value() is None
+
+            await app._handle_command("/auto model clear")
+            await pilot.pause()
+
+            assert app._auto_classifier_context_value() == INHERIT_CLASSIFIER_MODEL
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "Auto classifier model cleared" in rendered
+
+            await app._handle_command("/auto model clear")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "already uses the main agent model" in rendered
+
+    async def test_setting_a_spec_after_clear_sends_that_spec(self) -> None:
+        """A new spec replaces the inherit marker on the run context."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {}
+            await app._set_auto_classifier_model(None)
+
+            with (
+                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=None,
+                ),
+            ):
+                await app._set_auto_classifier_model("openai:gpt-5.5-mini")
+            await pilot.pause()
+
+            assert app._auto_classifier_context_value() == "openai:gpt-5.5-mini"
+
+    async def test_selector_result_waits_for_the_modal_to_unwind(self) -> None:
+        """Selector follow-up work is scheduled, never run in the dismiss callback.
+
+        Mounting messages, starting the install worker, and refocusing the chat
+        input inside the callback all act against a modal stack that has not
+        unwound yet.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            deferred: list[Callable[[], None]] = []
+            handlers: list[Callable[[tuple[str, str] | None], None]] = []
+            run_worker = MagicMock()
+            set_model = AsyncMock()
+            focus_input = MagicMock()
+
+            def capture_push(screen: object, callback: object = None) -> None:
+                del screen
+                handlers.append(cast("Any", callback))
+
+            with (
+                patch.object(app, "call_after_refresh", side_effect=deferred.append),
+                patch.object(app, "run_worker", run_worker),
+                patch.object(app, "_set_auto_classifier_model", set_model),
+                patch.object(app, "push_screen", side_effect=capture_push),
+                patch.object(app._chat_input, "focus_input", focus_input),
+            ):
+                await app._show_auto_classifier_model_selector()
+                handlers[0](("openai:gpt-5.5-mini", "openai"))
+
+                # Nothing has run yet: the selector is still on the stack.
+                run_worker.assert_not_called()
+                focus_input.assert_not_called()
+                assert len(deferred) == 1
+
+                deferred[0]()
+                run_worker.assert_called_once()
+                focus_input.assert_called_once()
+                await run_worker.call_args.args[0]
+
+            set_model.assert_awaited_once_with("openai:gpt-5.5-mini")
 
     async def test_set_auto_classifier_model_rejects_unresolvable_spec(self) -> None:
         """An unusable spec is refused outright, keeping the previous value."""

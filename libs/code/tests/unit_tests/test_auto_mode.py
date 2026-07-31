@@ -44,7 +44,7 @@ from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
 )
-from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL, CLIContextSchema
 from deepagents_code._fake_models import _ToolBindingFakeModel
 from deepagents_code.approval_mode import (
     APPROVAL_MODE_NAMESPACE,
@@ -3132,6 +3132,69 @@ async def test_context_classifier_model_overrides_construction_value(
     assert factory.specs == ["anthropic:claude-haiku-4-5"]
     assert len(run_classifier.calls) == 1
     assert construction_classifier.calls == []
+
+
+async def test_inherit_context_marker_overrides_construction_classifier(
+    tmp_path: Path,
+) -> None:
+    """`/auto model clear` returns reviews to the primary model mid-session.
+
+    A session started with a separate classifier must stop authorizing with it
+    once the user clears the setting, so the inherit marker has to beat the
+    construction-time value the way any other per-run spec does.
+    """
+    construction_classifier = _StructuredModel(_allow_result())
+    primary = _StructuredModel(_allow_result())
+    middleware = _middleware(
+        tmp_path, classifier_model=cast("Any", construction_classifier)
+    )
+    request, _store, _key = _request(
+        tmp_path,
+        model=primary,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        classifier_model=INHERIT_CLASSIFIER_MODEL,
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+    assert len(primary.calls) == 1
+    assert construction_classifier.calls == []
+    metadata = cast("dict[str, Any]", primary.call_kwargs[0]["config"])["metadata"]
+    assert metadata["classifier_model"] == "inherited"
+
+
+async def test_absent_context_classifier_keeps_construction_classifier(
+    tmp_path: Path,
+) -> None:
+    """A run with no classifier preference leaves the startup choice alone."""
+    construction_classifier = _StructuredModel(_allow_result())
+    middleware = _middleware(
+        tmp_path, classifier_model=cast("Any", construction_classifier)
+    )
+    request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        classifier_model=None,
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+    assert len(construction_classifier.calls) == 1
 
 
 async def test_classifier_model_cache_is_bounded(

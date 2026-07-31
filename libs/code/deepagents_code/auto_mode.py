@@ -57,6 +57,7 @@ from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
 )
+from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
 from deepagents_code.approval_mode import (
     ApprovalMode,
     approval_mode_key,
@@ -2036,7 +2037,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         """Return the classifier model selected for this request.
 
         The per-run runtime context wins over the construction-time value so
-        `/auto model` takes effect without restarting the agent server.
+        `/auto model` takes effect without restarting the agent server. A run
+        that carries no `classifier_model` at all says nothing about the
+        classifier, so the construction-time value stands; `/auto model clear`
+        instead sends `INHERIT_CLASSIFIER_MODEL`, which does override a session
+        started with a separate classifier back to the main agent model.
 
         Returns:
             A `provider:model` spec, a chat model instance, or `None` to inherit
@@ -2045,8 +2050,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         context_spec = _context_value(
             _runtime_context(request.runtime), "classifier_model"
         )
-        if isinstance(context_spec, str) and context_spec.strip():
-            return context_spec.strip()
+        if isinstance(context_spec, str):
+            if context_spec == INHERIT_CLASSIFIER_MODEL:
+                return None
+            if context_spec.strip():
+                return context_spec.strip()
         return self._configured_classifier_model
 
     def _classifier_model_label(self, request: ModelRequest) -> str:

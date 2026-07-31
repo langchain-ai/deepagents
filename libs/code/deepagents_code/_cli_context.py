@@ -11,6 +11,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
+INHERIT_CLASSIFIER_MODEL = "\x00inherit"
+"""Per-run `classifier_model` value meaning "review with the main agent model".
+
+An absent (or `None`) `classifier_model` only says the run carries no
+preference, so the classifier keeps whatever the server resolved at startup
+(`--auto-classifier-model`, `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL`,
+`[models].auto_classifier`). `/auto model clear` needs the stronger statement
+that reviews go back to the main agent model, which this sentinel carries. The
+leading NUL keeps it from ever colliding with a real `provider:model` spec.
+"""
+
 
 @dataclass
 class CLIContextSchema:
@@ -86,9 +97,12 @@ class CLIContext(TypedDict, total=False):
     classifier_model: str | None
     """Model spec the Auto approval classifier should use for this run.
 
-    `None` (or absent) leaves the classifier on whatever the graph was built
-    with, which is normally the main agent model. Set by `/auto model` so the
-    switch takes effect without restarting the agent server.
+    `None` (or absent) expresses no per-run preference, so the classifier keeps
+    whatever the graph was built with — normally the main agent model, but a
+    separate model when the session was launched with one.
+    `INHERIT_CLASSIFIER_MODEL` overrides that startup value back to the main
+    agent model. Set by `/auto model` so the switch takes effect without
+    restarting the agent server.
     """
 
     approval_mode: str

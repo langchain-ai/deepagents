@@ -54,7 +54,10 @@ from deepagents_code import (
     _textual_patches,  # noqa: F401
     theme,
 )
-from deepagents_code._cli_context import CLIContext
+from deepagents_code._cli_context import (
+    INHERIT_CLASSIFIER_MODEL,
+    CLIContext,
+)
 from deepagents_code._constants import (
     DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID,
     MCP_REENABLED_PENDING_ERROR,
@@ -3369,6 +3372,14 @@ class DeepAgentsApp(App):
 
         `None` leaves the classifier on whatever the server resolved at startup
         (`[models].auto_classifier`, then the main agent model)."""
+
+        self._auto_classifier_model_cleared: bool = False
+        """Whether the user cleared the classifier back to the main agent model.
+
+        The server resolves its own startup classifier from env / `config.toml`,
+        which the client cannot see, so "no classifier set here" and "review with
+        the main agent model" are different statements. This flag distinguishes
+        them and is what puts `INHERIT_CLASSIFIER_MODEL` on the run context."""
 
         self._active_goal: str | None = None
         """Goal objective accepted by the user and backed by the active rubric."""
@@ -14341,7 +14352,7 @@ class DeepAgentsApp(App):
             model_params=self._model_params_override or {},
             profile_overrides=self._profile_override or {},
             model_context_limit=settings.model_context_limit,
-            classifier_model=self._auto_classifier_model,
+            classifier_model=self._auto_classifier_context_value(),
             thread_id=self._lc_thread_id,
             offload_tool_call_id=tool_call_id,
         )
@@ -15216,7 +15227,7 @@ class DeepAgentsApp(App):
                     model_params=self._model_params_override or {},
                     profile_overrides=self._profile_override or {},
                     model_context_limit=settings.model_context_limit,
-                    classifier_model=self._auto_classifier_model,
+                    classifier_model=self._auto_classifier_context_value(),
                 ),
                 turn_stats=turn_stats,
             )
@@ -17985,6 +17996,20 @@ class DeepAgentsApp(App):
             return self._auto_classifier_model
         return "the main agent model"
 
+    def _auto_classifier_context_value(self) -> str | None:
+        """Return the per-run `classifier_model` value for the graph context.
+
+        `None` leaves the classifier the server resolved at startup in place;
+        `INHERIT_CLASSIFIER_MODEL` is the explicit "review with the main agent
+        model" instruction `/auto model clear` needs, which a bare `None` cannot
+        express.
+        """
+        if self._auto_classifier_model:
+            return self._auto_classifier_model
+        if self._auto_classifier_model_cleared:
+            return INHERIT_CLASSIFIER_MODEL
+        return None
+
     def _auto_usage_text(self) -> str:
         """Return usage text for `/auto` and its `model` subcommand."""
         return (
@@ -18042,28 +18067,33 @@ class DeepAgentsApp(App):
                 current_model = parsed.model
 
         def handle_result(result: tuple[str, str] | None) -> None:
-            if result is None:
+            model_spec = result[0] if result is not None else None
+            extra = screen.pending_install_extra if result is not None else None
+
+            async def apply_selection() -> None:
+                if model_spec is None:
+                    await self._mount_message(AppMessage("Model not changed."))
+                    return
+                if extra and not await self._install_extra(extra, auto_restart=True):
+                    return
+                await self._set_auto_classifier_model(model_spec)
+
+            def start_selection_worker() -> None:
+                # The coroutine is built here, not above, so a callback dropped
+                # at app teardown cannot strand an un-awaited coroutine.
                 self.run_worker(
-                    self._mount_message(AppMessage("Model not changed.")),
+                    apply_selection(),
                     exclusive=False,
                     group="auto-classifier-model",
                 )
                 if self._chat_input:
                     self._chat_input.focus_input()
-                return
-            model_spec, _ = result
-            extra = screen.pending_install_extra
 
-            async def apply_selection() -> None:
-                if extra and not await self._install_extra(extra, auto_restart=True):
-                    return
-                await self._set_auto_classifier_model(model_spec)
-
-            self.run_worker(
-                apply_selection(), exclusive=False, group="auto-classifier-model"
-            )
-            if self._chat_input:
-                self._chat_input.focus_input()
+            # The selector has not unwound inside its own dismiss callback, so
+            # mounting messages, starting the worker (which may open the install
+            # flow), and refocusing the chat input all wait for the refresh that
+            # removes the modal.
+            self.call_after_refresh(start_selection_worker)
 
         screen = ModelSelectorScreen(
             current_model=current_model,
@@ -18145,13 +18175,19 @@ class DeepAgentsApp(App):
                         "reviews may fail and fall back to your approval."
                     )
                 )
-        elif self._auto_classifier_model is None:
+        elif (
+            self._auto_classifier_model is None and self._auto_classifier_model_cleared
+        ):
+            # Only a previous clear proves reviews already use the main agent
+            # model. Otherwise the server may still hold a startup classifier
+            # from env / `config.toml` that this clear has to override.
             await self._mount_message(
                 AppMessage("Auto classifier model already uses the main agent model.")
             )
             return
 
         self._auto_classifier_model = display
+        self._auto_classifier_model_cleared = display is None
         if self._server_kwargs is not None:
             self._server_kwargs["auto_classifier_model"] = display
 

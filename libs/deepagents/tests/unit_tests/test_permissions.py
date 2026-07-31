@@ -312,6 +312,32 @@ class TestRecursiveDeletePermissions:
 
         assert "permission denied for write" in result
 
+    async def test_exact_file_delete_allowed_under_workspace_isolation_on_flat_backend_async(self):
+        """Async counterpart of `test_exact_file_delete_allowed_under_workspace_isolation_on_flat_backend`."""
+        backend = _make_backend({"/work/a.txt": "a"})
+        rules = [
+            FilesystemPermission(operations=["read", "write"], paths=["/work/**"], mode="allow"),
+            FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),
+        ]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = await _ainvoke_with_permissions(tool, {"file_path": "/work/a.txt"}, rules, backend=backend)
+
+        assert "Deleted" in result
+
+    async def test_flat_backend_exact_key_with_nested_descendant_still_blocked_async(self):
+        """Async counterpart of `test_flat_backend_exact_key_with_nested_descendant_still_blocked`."""
+        backend = _make_backend({"/work/item": "a", "/work/item/secrets/key": "secret"})
+        rules = [
+            FilesystemPermission(operations=["read", "write"], paths=["/work/item"], mode="allow"),
+            FilesystemPermission(operations=["read", "write"], paths=["/work/item/secrets/**"], mode="deny"),
+        ]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = await _ainvoke_with_permissions(tool, {"file_path": "/work/item"}, rules, backend=backend)
+
+        assert "permission denied for write" in result
+
     async def test_exact_file_delete_allowed_under_workspace_isolation_async(self, tmp_path):
         backend = self._fs_backend(tmp_path)
         rules = [

@@ -168,23 +168,114 @@ def _token_count(value: object) -> int:
     )
 
 
-def _cache_write_tokens(details: Mapping[str, Any]) -> int:
-    """Return cache-write tokens from LangChain `input_token_details`.
+def _cache_write_counts(details: Mapping[str, Any]) -> tuple[int, int, int]:
+    """Return generic-only, five-minute, and one-hour cache-write counts.
 
     LangChain Anthropic zeroes the generic `cache_creation` field when the
-    response includes a TTL breakdown (`ephemeral_5m_input_tokens` /
-    `ephemeral_1h_input_tokens`). Sum those detailed fields when present so
-    tokens are priced as cache writes rather than ordinary input. Fall back to
-    `cache_creation` or the `cache_write` alias used by some other providers.
-    `genai-prices` exposes a single cache-write rate, so 5-minute and 1-hour
-    writes share that catalog price.
+    response includes a TTL breakdown, so preserve that breakdown. Only the
+    one-hour bucket earns anything by being split out: `genai-prices` publishes a
+    premium one-hour rate, while five-minute writes have no rate of their own and
+    fall back to the generic cache-write rate. Forwarding the five-minute count
+    is therefore inert today and kept for when a rate appears.
+
+    Falls back to `cache_creation`, then to a `cache_write` alias that no bundled
+    LangChain integration currently emits, kept only as a defensive spelling.
+
+    Returns:
+        The generic-only, five-minute, and one-hour counts. A TTL breakdown wins
+            outright, so the generic slot is mutually exclusive with the other
+            two -- `estimate_cost` depends on that when deriving the aggregate
+            it forwards.
     """
-    detailed = _token_count(details.get("ephemeral_5m_input_tokens")) + _token_count(
-        details.get("ephemeral_1h_input_tokens")
+    five_minute = _token_count(details.get("ephemeral_5m_input_tokens"))
+    one_hour = _token_count(details.get("ephemeral_1h_input_tokens"))
+    if five_minute or one_hour:
+        return 0, five_minute, one_hour
+    generic = _token_count(details.get("cache_creation")) or _token_count(
+        details.get("cache_write")
     )
-    if detailed:
-        return detailed
-    return _token_count(details.get("cache_creation") or details.get("cache_write"))
+    return generic, 0, 0
+
+
+def _clamp_cache_counts(
+    input_tokens: int,
+    cache_read: int,
+    cache_writes: tuple[int, int, int],
+) -> tuple[int, tuple[int, int, int]]:
+    """Clamp disjoint cache buckets to the inclusive input-token total.
+
+    "Disjoint" is a precondition owed by the caller, not something checked here:
+    `_cache_write_counts` guarantees the generic slot is mutually exclusive with
+    the TTL slots, so draining all three from one shared budget cannot
+    double-count. A non-exclusive tuple would over-consume the budget.
+
+    Buckets drain in tuple order, so the one-hour bucket -- the only one with a
+    premium rate -- is the first to be starved and the estimate is biased low.
+    That is a deliberate tie-break, not an accident: clamping only fires when the
+    provider's own numbers are self-inconsistent, so there is no way to know
+    which bucket was misreported, and undercounting is the safer error.
+
+    Args:
+        input_tokens: Inclusive input-token count, covering reads and writes.
+        cache_read: Cache-read token count.
+        cache_writes: Generic-only, five-minute, and one-hour write counts.
+
+    Returns:
+        The clamped read count and write-count tuple.
+    """
+    clamped_read = min(cache_read, input_tokens)
+    remaining = input_tokens - clamped_read
+    clamped_writes: list[int] = []
+    for count in cache_writes:
+        clamped = min(count, remaining)
+        clamped_writes.append(clamped)
+        remaining -= clamped
+    return clamped_read, (
+        clamped_writes[0],
+        clamped_writes[1],
+        clamped_writes[2],
+    )
+
+
+def _clamped_detail(
+    value: object,
+    total: int,
+    *,
+    field: str,
+    model_ref: str,
+    provider: str,
+) -> int:
+    """Return a detail token count clamped to the total that contains it.
+
+    `genai-prices` treats each detail bucket as a subset of its aggregate and
+    rejects one that exceeds it, which would drop the whole request from the
+    session estimate. Clamping keeps it priced. As with the cache buckets, this
+    only ever fires on self-inconsistent provider numbers and it changes what the
+    user is billed, so it is reported rather than applied silently.
+
+    Args:
+        value: Raw metadata value for the detail bucket.
+        total: Inclusive total the bucket has to fit inside.
+        field: Detail name, for the log message only.
+        model_ref: Model being priced, for the log message only.
+        provider: Provider being priced, for the log message only.
+
+    Returns:
+        The clamped count.
+    """
+    count = _token_count(value)
+    if count <= total:
+        return count
+    logger.warning(
+        "Detail token count exceeds the total containing it; clamping for "
+        "pricing. model=%r provider=%r field=%s reported=%d clamped=%d",
+        model_ref,
+        provider,
+        field,
+        count,
+        total,
+    )
+    return total
 
 
 _PRICING_UNAVAILABLE = False
@@ -195,20 +286,41 @@ broken install for the rest of the process, telling the user to reinstall while
 costs compute normally.
 """
 
+_PRICING_CONTRACT_BROKEN = False
+"""Whether `Usage` rejected the normalized fields supplied by this package.
+
+Construction only receives fixed keyword names and normalized non-negative
+counts, so a failure there indicates an incompatible pricing API and affects
+every request. Failures from `calc_price` itself can instead depend on the
+request's decomposition and must not poison process-wide health. Cleared by a
+later successful construction for the same reason `_PRICING_UNAVAILABLE` is.
+"""
+
+_AUDIO_CACHE_OVERLAP_REPORTED = False
+"""Whether the audio/cache overlap understatement has been reported.
+
+Not cleared: the condition is a property of the catalog and of what LangChain
+reports, so it holds for the rest of the process once seen. Reporting it per
+request would fire on every audio request for the models that price the
+intersection, which is noise rather than news.
+"""
+
 
 def pricing_data_available() -> bool:
-    """Report whether the last `genai-prices` load attempt succeeded.
+    """Report whether `genai-prices` is currently able to price a request.
 
     Note that `True` also covers "not yet attempted", so callers must only
     consult this after pricing has been tried -- otherwise a session that has
     priced nothing reads as healthy.
 
     Returns:
-        `False` when the most recent import attempt failed, so callers can
-            explain an empty cost figure as a broken pricing install rather
-            than as models that have no published rates.
+        `False` when the most recent import failed, or when the most recent
+            construction of `Usage` rejected this package's normalized field
+            schema. Either way callers can explain an empty cost figure as a
+            broken pricing install rather than as models that have no published
+            rates.
     """
-    return not _PRICING_UNAVAILABLE
+    return not (_PRICING_UNAVAILABLE or _PRICING_CONTRACT_BROKEN)
 
 
 def _load_pricing() -> tuple[Any, Any] | None:
@@ -216,7 +328,7 @@ def _load_pricing() -> tuple[Any, Any] | None:
 
     A failed import means no request can ever be priced, which is a different
     problem from a model the catalog does not cover -- and one the user can act
-    on. Keeping it separate from the `calc_price` guard below stops a broken
+    on. Keeping it separate from the usage-schema guard below stops a broken
     install from being reported as a pricing-coverage gap.
 
     The pair is deliberately re-imported rather than cached: `sys.modules` makes
@@ -254,9 +366,12 @@ def estimate_cost(
     """Estimate one model request's cost in USD from LangChain usage metadata.
 
     LangChain's `input_tokens` is the full input count, including cache reads and
-    writes. `genai-prices` receives that inclusive total plus the two cache
-    buckets; it subtracts the cache buckets before applying the ordinary input
-    rate, then prices reads and writes separately so tokens are not double-counted.
+    writes. `genai-prices` receives that inclusive total plus the cache, modality,
+    and reasoning details; it subtracts each detail bucket from the total that
+    contains it before applying rates, so tokens are not double-counted. Only
+    buckets the matched model actually publishes a rate for are broken out --
+    forwarding one the catalog does not price leaves those tokens in the ordinary
+    input or output total rather than pricing them separately.
 
     Args:
         usage_metadata: The request's LangChain `usage_metadata` mapping.
@@ -267,6 +382,7 @@ def estimate_cost(
     Returns:
         Estimated cost in USD, or `None` when usage or pricing is unavailable.
     """
+    global _AUDIO_CACHE_OVERLAP_REPORTED, _PRICING_CONTRACT_BROKEN  # noqa: PLW0603
     model_ref = model_name.strip()
     provider_key = provider.strip().lower()
     if not usage_metadata or not model_ref:
@@ -292,33 +408,119 @@ def estimate_cost(
         )
         return None
 
-    details = usage_metadata.get("input_token_details")
-    if isinstance(details, Mapping):
-        cache_read_tokens = _token_count(details.get("cache_read"))
-        cache_write_tokens = _cache_write_tokens(details)
+    input_details = usage_metadata.get("input_token_details")
+    if isinstance(input_details, Mapping):
+        cache_read_tokens = _token_count(input_details.get("cache_read"))
+        cache_writes = _cache_write_counts(input_details)
+        input_audio_tokens = _clamped_detail(
+            input_details.get("audio"),
+            input_tokens,
+            field="input audio",
+            model_ref=model_ref,
+            provider=provider,
+        )
     else:
         cache_read_tokens = 0
-        cache_write_tokens = 0
+        cache_writes = (0, 0, 0)
+        input_audio_tokens = 0
+
+    output_details = usage_metadata.get("output_token_details")
+    if isinstance(output_details, Mapping):
+        output_reasoning_tokens = _token_count(output_details.get("reasoning"))
+        # Unlike other integrations, langchain-perplexity reports completion
+        # tokens as the output total and exposes reasoning as an extra bucket.
+        # `genai-prices` expects the total to include every detailed bucket.
+        if provider_key == "perplexity":
+            output_tokens += output_reasoning_tokens
+        # Clamped against the output total independently, not against each
+        # other's remainder: audio and reasoning tokens overlap rather than
+        # partition the output, so their sum legitimately can exceed it.
+        output_audio_tokens = _clamped_detail(
+            output_details.get("audio"),
+            output_tokens,
+            field="output audio",
+            model_ref=model_ref,
+            provider=provider,
+        )
+        output_reasoning_tokens = _clamped_detail(
+            output_reasoning_tokens,
+            output_tokens,
+            field="output reasoning",
+            model_ref=model_ref,
+            provider=provider,
+        )
+    else:
+        output_audio_tokens = 0
+        output_reasoning_tokens = 0
 
     # Provider metadata can occasionally report cache parts that exceed the
     # inclusive input total. `calc_price` rejects a negative uncached input, so
     # without clamping the whole request would be dropped from the total rather
     # than estimated. Clamping only ever fires on self-inconsistent provider
     # numbers, so say so -- a silent clamp can materially undercount.
-    clamped_read = min(cache_read_tokens, input_tokens)
-    clamped_write = min(cache_write_tokens, input_tokens - clamped_read)
-    if clamped_read != cache_read_tokens or clamped_write != cache_write_tokens:
+    original_cache_read = cache_read_tokens
+    original_cache_writes = cache_writes
+    cache_read_tokens, cache_writes = _clamp_cache_counts(
+        input_tokens, cache_read_tokens, cache_writes
+    )
+    if (
+        cache_read_tokens != original_cache_read
+        or cache_writes != original_cache_writes
+    ):
         logger.warning(
             "Cache token counts exceed the inclusive input total; clamping for "
-            "pricing. model=%r provider=%r input=%d cache_read=%d cache_write=%d",
+            "pricing. model=%r provider=%r input=%d cache_read=%d->%d "
+            "cache_write generic=%d->%d 5m=%d->%d 1h=%d->%d",
             model_ref,
             provider,
             input_tokens,
+            original_cache_read,
             cache_read_tokens,
-            cache_write_tokens,
+            # Reported alongside the clamped values, and per bucket rather than
+            # summed: which bucket lost tokens decides how much cost was forgone,
+            # since only the one-hour rate carries a premium.
+            *(
+                count
+                for pair in zip(original_cache_writes, cache_writes, strict=True)
+                for count in pair
+            ),
         )
-    cache_read_tokens = clamped_read
-    cache_write_tokens = clamped_write
+    generic_cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens = (
+        cache_writes
+    )
+    # `genai-prices` treats the TTL buckets as descendants of the generic one and
+    # refuses a TTL count without its ancestor ("reported descendant usage keys
+    # ... require explicit cache_write_tokens"), so this aggregate is required
+    # rather than redundant. The `or` is safe only because `_cache_write_counts`
+    # returns the generic slot as mutually exclusive with the TTL slots; were
+    # both ever populated, this would forward the generic count alone and drop
+    # the TTL tokens.
+    cache_write_tokens = generic_cache_write_tokens or (
+        cache_write_5m_tokens + cache_write_1h_tokens
+    )
+
+    # LangChain does not expose the intersection of audio and cached tokens. For
+    # a model whose catalog entry prices an audio/cache-read or audio/cache-write
+    # intersection, reporting both aggregates makes `genai-prices` demand the
+    # missing intersection count and reject the request, dropping it from the
+    # total entirely. Forgoing the audio split keeps the request priced, at the
+    # cost of billing those tokens at the ordinary input rate.
+    if input_audio_tokens and (cache_read_tokens or any(cache_writes)):
+        if not _AUDIO_CACHE_OVERLAP_REPORTED:
+            # Once per process: for a model that prices the intersection this is
+            # structural rather than anomalous, so it would otherwise repeat on
+            # every request and train the reader to ignore the log.
+            _AUDIO_CACHE_OVERLAP_REPORTED = True
+            logger.warning(
+                "Pricing audio input at the ordinary input rate because the "
+                "catalog wants an audio/cache intersection, which "
+                "LangChain does not report. This understates requests that mix "
+                "audio with prompt caching. model=%r provider=%r audio=%d",
+                model_ref,
+                provider,
+                input_audio_tokens,
+            )
+        input_audio_tokens = 0
 
     pricing = _load_pricing()
     if pricing is None:
@@ -327,18 +529,56 @@ def estimate_cost(
 
     provider_id = _PROVIDER_ALIASES.get(provider_key, provider_key) or None
     try:
+        usage = usage_type(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens or None,
+            cache_write_tokens=cache_write_tokens or None,
+            cache_write_5m_tokens=cache_write_5m_tokens or None,
+            cache_write_1h_tokens=cache_write_1h_tokens or None,
+            input_audio_tokens=input_audio_tokens or None,
+            output_audio_tokens=output_audio_tokens or None,
+            output_reasoning_tokens=output_reasoning_tokens or None,
+        )
+    except Exception:
+        # These fixed fields and normalized counts are valid for every request.
+        # Their rejection therefore proves an installed API incompatibility,
+        # unlike request-specific decomposition failures from `calc_price`.
+        if not _PRICING_CONTRACT_BROKEN:
+            logger.warning(
+                "genai-prices rejected the usage schema, so no request can be "
+                "priced; cost estimates are unavailable for this session. "
+                "model=%r provider=%r",
+                model_ref,
+                provider,
+                exc_info=True,
+            )
+        _PRICING_CONTRACT_BROKEN = True
+        return None
+    _PRICING_CONTRACT_BROKEN = False
+
+    try:
         price = calc_price(
-            usage_type(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cache_read_tokens=cache_read_tokens or None,
-                cache_write_tokens=cache_write_tokens or None,
-            ),
+            usage,
             model_ref=model_ref,
             provider_id=provider_id,
         )
         cost_usd = float(price.total_price)
+    except LookupError:
+        # The catalog publishes no rates for this model or provider. Ordinary,
+        # not actionable, and specifically not a broken install -- so it must
+        # leave `_PRICING_CONTRACT_BROKEN` alone.
+        logger.debug(
+            "Cost estimate unavailable for model=%r provider=%r",
+            model_ref,
+            provider,
+            exc_info=True,
+        )
+        return None
     except Exception:
+        # Decomposition failures can depend on this request's overlapping detail
+        # totals. Other ordinary requests may still price successfully, so leave
+        # process-wide health alone.
         logger.debug(
             "Cost estimate unavailable for model=%r provider=%r",
             model_ref,

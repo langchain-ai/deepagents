@@ -7,6 +7,7 @@ import builtins
 import logging
 import subprocess
 import sys
+import warnings
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
 from unittest.mock import patch
@@ -416,26 +417,386 @@ class TestEstimateCost:
         assert cached is not None
         assert cached > uncached
 
-    def test_anthropic_detailed_cache_writes_are_priced_separately(self) -> None:
-        """Anthropic zeroes `cache_creation` when TTL breakdown fields are set."""
-        uncached = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
-        usage = _usage()
-        usage["input_token_details"] = {
-            "cache_creation": 0,
-            "ephemeral_5m_input_tokens": 600,
-            "ephemeral_1h_input_tokens": 300,
-        }
-        cached = estimate_cost(usage, KNOWN_MODEL, KNOWN_PROVIDER)
+    def test_only_one_hour_cache_writes_use_a_distinct_rate(self) -> None:
+        """One-hour writes cost more; five-minute writes price as generic ones.
 
-        assert uncached is not None
-        assert cached is not None
-        assert cached > uncached
-        # Same total as pricing the sum through the generic cache-write field.
-        assert cached == estimate_cost(
+        The catalog publishes no five-minute cache-write rate, so that bucket
+        falls back to the generic one and only the one-hour split changes the
+        price. Forwarding the five-minute count is inert but forward-compatible.
+        """
+        five_minute_usage = _usage()
+        five_minute_usage["input_token_details"] = {
+            "cache_creation": 0,
+            "ephemeral_5m_input_tokens": 900,
+        }
+        one_hour_usage = _usage()
+        one_hour_usage["input_token_details"] = {
+            "cache_creation": 0,
+            "ephemeral_1h_input_tokens": 900,
+        }
+
+        five_minute = estimate_cost(five_minute_usage, KNOWN_MODEL, KNOWN_PROVIDER)
+        one_hour = estimate_cost(one_hour_usage, KNOWN_MODEL, KNOWN_PROVIDER)
+        generic = estimate_cost(
             _usage(cache_write=900),
             KNOWN_MODEL,
             KNOWN_PROVIDER,
         )
+
+        assert five_minute is not None
+        assert one_hour is not None
+        assert generic is not None
+        assert five_minute == pytest.approx(generic)
+        assert one_hour > five_minute
+
+    def test_detailed_cache_writes_over_the_input_total_still_price(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        usage = _usage()
+        usage["input_token_details"] = {
+            "cache_read": 600,
+            "ephemeral_5m_input_tokens": 500,
+            "ephemeral_1h_input_tokens": 500,
+        }
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            cost = estimate_cost(usage, KNOWN_MODEL, KNOWN_PROVIDER)
+
+        assert cost is not None
+        assert cost > 0
+        assert "exceed the inclusive input total" in caplog.text
+        # Per bucket and with the clamped values, so the log says which bucket
+        # lost tokens -- only the one-hour rate carries a premium.
+        assert "5m=500->400" in caplog.text
+        assert "1h=500->0" in caplog.text
+
+    def test_clamping_starves_the_one_hour_bucket_first(self) -> None:
+        """Pin which bucket survives a clamp, because it moves the price.
+
+        Buckets drain in tuple order, so the pricier one-hour writes are zeroed
+        before the five-minute ones and the estimate is biased low. Reversing
+        that order would silently raise every clamped estimate.
+        """
+        over_total = _usage()
+        over_total["input_token_details"] = {
+            "cache_read": 600,
+            "ephemeral_5m_input_tokens": 500,
+            "ephemeral_1h_input_tokens": 500,
+        }
+        surviving_five_minute = _usage()
+        surviving_five_minute["input_token_details"] = {
+            "cache_read": 600,
+            "ephemeral_5m_input_tokens": 400,
+        }
+        surviving_one_hour = _usage()
+        surviving_one_hour["input_token_details"] = {
+            "cache_read": 600,
+            "ephemeral_1h_input_tokens": 400,
+        }
+
+        clamped = estimate_cost(over_total, KNOWN_MODEL, KNOWN_PROVIDER)
+        as_five_minute = estimate_cost(
+            surviving_five_minute, KNOWN_MODEL, KNOWN_PROVIDER
+        )
+        as_one_hour = estimate_cost(surviving_one_hour, KNOWN_MODEL, KNOWN_PROVIDER)
+
+        assert clamped is not None
+        assert as_five_minute is not None
+        assert as_one_hour is not None
+        assert clamped == pytest.approx(as_five_minute)
+        assert clamped < as_one_hour
+
+    def test_reasoning_and_audio_details_are_forwarded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, int | None] = {}
+
+        class CapturingUsage:
+            def __init__(self, **values: int | None) -> None:
+                captured.update(values)
+
+        def fake_calc_price(
+            usage: object,
+            model_ref: str,
+            *,
+            provider_id: str | None = None,
+        ) -> SimpleNamespace:
+            assert isinstance(usage, CapturingUsage)
+            assert model_ref == KNOWN_MODEL
+            assert provider_id == KNOWN_PROVIDER
+            return SimpleNamespace(total_price=0.42)
+
+        monkeypatch.setattr(
+            cost_tracking,
+            "_load_pricing",
+            lambda: (CapturingUsage, fake_calc_price),
+        )
+        usage = _usage()
+        usage["input_token_details"] = {"audio": 250}
+        usage["output_token_details"] = {"audio": 25, "reasoning": 50}
+
+        assert estimate_cost(usage, KNOWN_MODEL, KNOWN_PROVIDER) == pytest.approx(0.42)
+        assert captured["input_audio_tokens"] == 250
+        assert captured["output_audio_tokens"] == 25
+        assert captured["output_tokens"] == 100
+        assert captured["output_reasoning_tokens"] == 50
+
+    def test_perplexity_reasoning_is_added_to_output_total(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Perplexity reports reasoning outside its completion-token total."""
+        captured: dict[str, int | None] = {}
+
+        class CapturingUsage:
+            def __init__(self, **values: int | None) -> None:
+                captured.update(values)
+
+        def fake_calc_price(
+            usage: object,
+            model_ref: str,
+            *,
+            provider_id: str | None = None,
+        ) -> SimpleNamespace:
+            assert isinstance(usage, CapturingUsage)
+            assert model_ref == "sonar-deep-research"
+            assert provider_id == "perplexity"
+            return SimpleNamespace(total_price=0.42)
+
+        monkeypatch.setattr(
+            cost_tracking,
+            "_load_pricing",
+            lambda: (CapturingUsage, fake_calc_price),
+        )
+        usage = _usage(output_tokens=100)
+        usage["output_token_details"] = {"reasoning": 50}
+
+        assert estimate_cost(
+            usage, "sonar-deep-research", "perplexity"
+        ) == pytest.approx(0.42)
+        assert captured["output_tokens"] == 150
+        assert captured["output_reasoning_tokens"] == 50
+
+    def test_forwarded_usage_keys_are_recognized_by_genai_prices(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every key `estimate_cost` forwards must be one `Usage` recognizes.
+
+        `Usage` only warns for an unrecognized key and then drops it, so a rename
+        anywhere in the allowed dependency range would silently stop pricing that
+        bucket instead of failing. Feeding the real `Usage` exactly what the code
+        sent -- rather than a hand-copied list -- keeps this from drifting.
+        """
+        captured: dict[str, int] = {}
+
+        class CapturingUsage:
+            def __init__(self, **values: int | None) -> None:
+                # Accumulate only what was actually forwarded: a later request
+                # that omits a bucket passes `None` and would otherwise erase
+                # the key an earlier one contributed.
+                captured.update(
+                    {key: value for key, value in values.items() if value is not None}
+                )
+
+        monkeypatch.setattr(
+            cost_tracking,
+            "_load_pricing",
+            lambda: (
+                CapturingUsage,
+                lambda *_args, **_kwargs: SimpleNamespace(total_price=0.0),
+            ),
+        )
+        # Separate calls because the overlap guard drops input audio whenever
+        # cached tokens are present, so one request cannot forward every key.
+        audio = _usage()
+        audio["input_token_details"] = {"audio": 100}
+        audio["output_token_details"] = {"audio": 25, "reasoning": 50}
+        estimate_cost(audio, KNOWN_MODEL, KNOWN_PROVIDER)
+        writes = _usage()
+        writes["input_token_details"] = {
+            "ephemeral_5m_input_tokens": 200,
+            "ephemeral_1h_input_tokens": 200,
+        }
+        estimate_cost(writes, KNOWN_MODEL, KNOWN_PROVIDER)
+        estimate_cost(_usage(cache_read=300), KNOWN_MODEL, KNOWN_PROVIDER)
+
+        forwarded = captured
+        assert "cache_read_tokens" in forwarded
+        assert "cache_write_5m_tokens" in forwarded
+        assert "cache_write_1h_tokens" in forwarded
+        assert "input_audio_tokens" in forwarded
+        assert "output_audio_tokens" in forwarded
+        assert "output_reasoning_tokens" in forwarded
+
+        from genai_prices import Usage
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            Usage(**forwarded)
+
+    def test_audio_with_cache_reads_still_prices(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A model pricing the audio/cache intersection must stay priceable.
+
+        `gemini-2.5-flash` prices `cache_audio_read_mtok`, so reporting both audio
+        and cache reads makes `genai-prices` demand the intersection LangChain
+        never provides. Without the guard the whole request would be dropped from
+        the session total instead of priced at the ordinary input rate.
+        """
+        monkeypatch.setattr(cost_tracking, "_AUDIO_CACHE_OVERLAP_REPORTED", False)
+        usage = _usage()
+        usage["input_token_details"] = {"audio": 250, "cache_read": 400}
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            cost = estimate_cost(usage, "gemini-2.5-flash", "google")
+
+        assert cost is not None
+        assert cost > 0
+        assert "audio/cache intersection" in caplog.text
+
+    def test_audio_with_cache_writes_still_prices(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A model pricing audio cache writes must stay priceable.
+
+        `gemini-2.5-flash` prices `cache_audio_write_mtok`, but LangChain does not
+        provide that intersection. The audio split must be suppressed so
+        `genai-prices` does not reject and omit the entire request.
+        """
+        monkeypatch.setattr(cost_tracking, "_AUDIO_CACHE_OVERLAP_REPORTED", False)
+        audio_and_writes = _usage()
+        audio_and_writes["input_token_details"] = {
+            "audio": 250,
+            "ephemeral_5m_input_tokens": 300,
+        }
+        writes_only = _usage()
+        writes_only["input_token_details"] = {"ephemeral_5m_input_tokens": 300}
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            with_audio = estimate_cost(audio_and_writes, "gemini-2.5-flash", "google")
+        without_audio = estimate_cost(writes_only, "gemini-2.5-flash", "google")
+
+        assert with_audio is not None
+        assert without_audio is not None
+        assert with_audio == pytest.approx(without_audio)
+        assert "audio/cache intersection" in caplog.text
+
+    def test_audio_and_reasoning_details_change_the_price(self) -> None:
+        """Assert the new detail buckets bill, not merely that they are passed."""
+        input_audio = _usage()
+        input_audio["input_token_details"] = {"audio": 250}
+        output_audio = _usage()
+        output_audio["output_token_details"] = {"audio": 50}
+
+        assert (priced := estimate_cost(input_audio, "gpt-4o-transcribe", "openai"))
+        assert (plain := estimate_cost(_usage(), "gpt-4o-transcribe", "openai"))
+        assert priced > plain
+
+        assert (
+            audio_out := estimate_cost(output_audio, "gemini-live-2.5-flash", "google")
+        )
+        assert (plain_out := estimate_cost(_usage(), "gemini-live-2.5-flash", "google"))
+        assert audio_out > plain_out
+
+        # Perplexity reports reasoning outside its completion total, so this is
+        # 150 output tokens of which 50 bill at the cheaper reasoning rate --
+        # strictly less than 150 tokens all billed as ordinary output.
+        split_reasoning = _usage(output_tokens=100)
+        split_reasoning["output_token_details"] = {"reasoning": 50}
+        assert (
+            with_reasoning := estimate_cost(
+                split_reasoning, "sonar-deep-research", "perplexity"
+            )
+        )
+        assert (
+            all_output := estimate_cost(
+                _usage(output_tokens=150), "sonar-deep-research", "perplexity"
+            )
+        )
+        assert with_reasoning < all_output
+
+    def test_a_rejected_usage_schema_reports_broken_pricing(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A `Usage` constructor that refuses fixed fields is a broken install.
+
+        Left indistinguishable, a total pricing outage reaches the user as
+        "pricing isn't available for the models used", which sends them to change
+        models instead of repairing the install.
+        """
+        rejection = "unexpected keyword argument 'cache_write_5m_tokens'"
+
+        class RejectingUsage:
+            def __init__(self, **_values: int | None) -> None:
+                raise TypeError(rejection)
+
+        monkeypatch.setattr(cost_tracking, "_PRICING_CONTRACT_BROKEN", False)
+        monkeypatch.setattr(
+            cost_tracking,
+            "_load_pricing",
+            lambda: (
+                RejectingUsage,
+                lambda *_args, **_kwargs: SimpleNamespace(total_price=0.0),
+            ),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is None
+
+        assert not cost_tracking.pricing_data_available()
+        assert "rejected the usage schema" in caplog.text
+
+    def test_a_request_specific_value_error_keeps_pricing_healthy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One invalid decomposition must not look like a broken installation."""
+
+        def rejecting_calc_price(*_args: object, **_kwargs: object) -> object:
+            msg = "missing cache_audio_write_tokens overlap"
+            raise ValueError(msg)
+
+        monkeypatch.setattr(cost_tracking, "_PRICING_CONTRACT_BROKEN", False)
+        monkeypatch.setattr(
+            cost_tracking, "_load_pricing", lambda: (dict, rejecting_calc_price)
+        )
+
+        assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is None
+        assert cost_tracking.pricing_data_available()
+
+    def test_an_uncovered_model_does_not_report_broken_pricing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A model with no published rates must still read as a healthy install."""
+        monkeypatch.setattr(cost_tracking, "_PRICING_CONTRACT_BROKEN", False)
+
+        assert estimate_cost(_usage(), "no-such-model-in-the-catalog", "") is None
+        assert cost_tracking.pricing_data_available()
+
+    def test_a_successful_price_clears_an_earlier_contract_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """One rejected request must not condemn a session that prices fine."""
+        monkeypatch.setattr(cost_tracking, "_PRICING_CONTRACT_BROKEN", True)
+
+        assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is not None
+        assert cost_tracking.pricing_data_available()
+
+    def test_detail_over_its_total_is_clamped_and_reported(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A detail bucket larger than its total is clamped, not dropped.
+
+        Anthropic rather than Perplexity: the Perplexity path folds reasoning into
+        the output total first, so the clamp could never fire there.
+        """
+        usage = _usage(output_tokens=100)
+        usage["output_token_details"] = {"reasoning": 500}
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            cost = estimate_cost(usage, KNOWN_MODEL, KNOWN_PROVIDER)
+
+        assert cost is not None
+        assert "field=output reasoning reported=500 clamped=100" in caplog.text
 
     def test_cache_tokens_are_not_double_counted(self) -> None:
         uncached = estimate_cost(

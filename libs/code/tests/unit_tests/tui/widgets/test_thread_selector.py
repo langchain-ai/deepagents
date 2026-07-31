@@ -1,10 +1,11 @@
 """Tests for ThreadSelectorScreen."""
 
 import asyncio
+import sqlite3
 from collections.abc import Coroutine
 from pathlib import Path
 from typing import Any, ClassVar, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from rich.cells import cell_len
@@ -14,6 +15,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
+from textual.widget import MountError
 from textual.widgets import Checkbox, Input, Select, Static
 from textual.widgets._select import SelectCurrent
 
@@ -3366,8 +3368,9 @@ class TestResumeThread:
     async def test_successful_switch_points_back_to_previous_thread(self) -> None:
         """A switch surfaces the thread just left, like `/clear` does.
 
-        Without the hint, the outgoing thread's ID scrolls out of reach the
-        moment history is replaced.
+        Without the hint the outgoing thread's ID is gone for good: the
+        transcript is cleared and the banner is overwritten with the incoming
+        thread, so there is nothing left to scroll back to.
         """
         app = self._switch_app()
         mount_message = AsyncMock()
@@ -3378,23 +3381,71 @@ class TestResumeThread:
                 "deepagents_code.sessions.thread_exists",
                 AsyncMock(return_value=True),
             ),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="agent"),
+            ),
             patch.object(app, "_schedule_thread_message_link") as schedule,
         ):
             await app._resume_thread("new-thread")
 
-        contents = [
-            _get_widget_text(call.args[0]) for call in mount_message.call_args_list
-        ]
-        assert "Previous thread: old-thread (Resume with /threads -r)" in contents
-        schedule.assert_called_once()
-        assert schedule.call_args.kwargs == {
-            "prefix": "Previous thread",
-            "thread_id": "old-thread",
-            "suffix": " (Resume with /threads -r)",
-        }
+        hint = "Previous thread: old-thread (Resume with /threads -r)"
+        mounted = [call.args[0] for call in mount_message.call_args_list]
+        assert hint in [_get_widget_text(widget) for widget in mounted]
+        # `ANY` for the widget so an added optional kwarg can't break this, but
+        # assert identity below: linkifying a different widget than the one
+        # mounted would render the hint with a dead thread ID.
+        schedule.assert_called_once_with(
+            ANY,
+            prefix="Previous thread",
+            thread_id="old-thread",
+            suffix=" (Resume with /threads -r)",
+        )
+        linked = schedule.call_args.args[0]
+        assert _get_widget_text(linked) == hint
+        assert any(widget is linked for widget in mounted)
+
+    async def test_switch_mounts_previous_thread_hint_after_history(self) -> None:
+        """The hint lands below the restored transcript, not above it.
+
+        Position is the whole point of the hint: mounted before the history
+        load it would sit at the top of the transcript, where the restored
+        messages bury it.
+        """
+        app = self._switch_app()
+        events: list[str] = []
+
+        def record_history(**_kwargs: object) -> None:
+            events.append("history")
+
+        def record_mount(widget: Static) -> None:
+            events.append(_get_widget_text(widget))
+
+        _app_test_double(app)._load_thread_history = AsyncMock(
+            side_effect=record_history
+        )
+        _app_test_double(app)._mount_message = AsyncMock(side_effect=record_mount)
+
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="agent"),
+            ),
+            patch.object(app, "_schedule_thread_message_link"),
+        ):
+            await app._resume_thread("new-thread")
+
+        hint = "Previous thread: old-thread (Resume with /threads -r)"
+        assert "history" in events
+        assert hint in events
+        assert events.index("history") < events.index(hint)
 
     async def test_switch_omits_previous_thread_without_checkpoint(self) -> None:
-        """A switch away from an empty thread advertises nothing to resume.
+        """A switch away from a thread with no checkpoint row hints nothing.
 
         `-r` can only reach threads with a checkpoint row, so hinting at one
         without would be a dead end.
@@ -3402,12 +3453,10 @@ class TestResumeThread:
         app = self._switch_app()
         mount_message = AsyncMock()
         _app_test_double(app)._mount_message = mount_message
+        thread_exists = AsyncMock(return_value=False)
 
         with (
-            patch(
-                "deepagents_code.sessions.thread_exists",
-                AsyncMock(return_value=False),
-            ),
+            patch("deepagents_code.sessions.thread_exists", thread_exists),
             patch.object(app, "_schedule_thread_message_link") as schedule,
         ):
             await app._resume_thread("new-thread")
@@ -3417,6 +3466,80 @@ class TestResumeThread:
         ]
         assert not any(text.startswith("Previous thread:") for text in contents)
         schedule.assert_not_called()
+        # Anchors the two absence assertions above: without this the test also
+        # passes when the hint code is deleted outright, or when the
+        # resumability check is skipped and the hint suppressed unconditionally.
+        thread_exists.assert_awaited_once_with("old-thread")
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            sqlite3.OperationalError("database is locked"),
+            RuntimeError("unexpected"),
+        ],
+        ids=["store_error", "unexpected_error"],
+    )
+    async def test_switch_survives_previous_thread_lookup_failure(
+        self, error: Exception
+    ) -> None:
+        """A failed resumability check drops the hint, never the switch.
+
+        The check runs after the switch is materially complete, inside the
+        block whose handler rolls the whole switch back. An escaping error
+        would discard a completed switch and report `Failed to switch`.
+        """
+        app = self._switch_app()
+        mount_message = AsyncMock()
+        _app_test_double(app)._mount_message = mount_message
+
+        with patch(
+            "deepagents_code.sessions.thread_exists",
+            AsyncMock(side_effect=error),
+        ):
+            await app._resume_thread("new-thread")
+
+        contents = [
+            _get_widget_text(call.args[0]) for call in mount_message.call_args_list
+        ]
+        assert app._session_state is not None
+        assert app._session_state.thread_id == "new-thread"
+        assert not any(text.startswith("Previous thread:") for text in contents)
+        assert not any("Failed to switch" in text for text in contents)
+
+    async def test_switch_survives_previous_thread_hint_mount_failure(self) -> None:
+        """A hint that cannot be mounted must not fail the switch.
+
+        The mount is the half of the hint that is not covered by the
+        resumability guard, and a raise here reaches the same rollback handler.
+        """
+        app = self._switch_app()
+        mounted: list[str] = []
+
+        def mount(widget: Static) -> None:
+            text = _get_widget_text(widget)
+            if text.startswith("Previous thread:"):
+                msg = "container is detached"
+                raise MountError(msg)
+            mounted.append(text)
+
+        _app_test_double(app)._mount_message = AsyncMock(side_effect=mount)
+
+        with (
+            patch(
+                "deepagents_code.sessions.thread_exists",
+                AsyncMock(return_value=True),
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_agent",
+                AsyncMock(return_value="agent"),
+            ),
+            patch.object(app, "_schedule_thread_message_link"),
+        ):
+            await app._resume_thread("new-thread")
+
+        assert app._session_state is not None
+        assert app._session_state.thread_id == "new-thread"
+        assert not any("Failed to switch" in text for text in mounted)
 
     async def test_successful_switch_rearms_already_on_thread_toast(self) -> None:
         """A real switch clears suppression so the next no-op toasts again.

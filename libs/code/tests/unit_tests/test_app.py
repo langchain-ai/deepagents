@@ -7042,6 +7042,10 @@ class TestClearCommand:
                     "deepagents_code.sessions.thread_exists",
                     AsyncMock(return_value=True),
                 ),
+                patch(
+                    "deepagents_code.sessions.get_thread_agent",
+                    AsyncMock(return_value="agent"),
+                ),
                 patch.object(app, "_schedule_thread_message_link") as schedule,
             ):
                 await app._handle_command("/clear")
@@ -22903,6 +22907,85 @@ class TestRestartServerForAgentSwap:
             plain = [str(getattr(m, "_content", m)) for m in mounted]
             assert any("Switched to researcher" in s for s in plain)
             assert any("dcode -r old-thread" in s and "to resume" in s for s in plain)
+
+    async def test_cross_agent_resume_targets_thread_without_persisting_agent(
+        self,
+    ) -> None:
+        """A one-off resume restarts under the owner without a fresh thread."""
+        app, _server_proc = self._make_app()
+        payload = MagicMock()
+        load_history = AsyncMock()
+        mount_previous = AsyncMock()
+        mounted: list[object] = []
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.model_config.save_recent_agent",
+                    return_value=True,
+                ) as save_mock,
+                patch.object(app, "_load_thread_history", load_history),
+                patch.object(
+                    app,
+                    "_mount_previous_thread_hint",
+                    mount_previous,
+                ),
+                patch.object(app, "_mount_message", side_effect=mounted.append),
+                patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
+            ):
+                switched = await app._restart_server_for_agent_swap(
+                    "researcher",
+                    resume_thread_id="research-thread",
+                    preloaded_payload=payload,
+                    persist_default_agent=False,
+                )
+
+        assert switched is True
+        assert app._assistant_id == "researcher"
+        assert app._default_assistant_id == "coder"
+        assert app._lc_thread_id == "research-thread"
+        assert app._session_state is not None
+        assert app._session_state.thread_id == "research-thread"
+        assert app._session_state.previous_thread_id == "old-thread"
+        load_history.assert_awaited_once_with(
+            thread_id="research-thread",
+            preloaded_payload=payload,
+        )
+        mount_previous.assert_awaited_once_with("old-thread")
+        save_mock.assert_not_called()
+        plain = [str(getattr(message, "_content", message)) for message in mounted]
+        assert any(
+            "Switched to researcher and resumed thread research-thread" in text
+            for text in plain
+        )
+
+    async def test_cross_agent_restart_failure_restores_thread_pointer(self) -> None:
+        """A failed owner restart does not leave session state on its thread."""
+        app, server_proc = self._make_app()
+        server_proc.restart = AsyncMock(side_effect=RuntimeError("boom"))
+        posted: list[object] = []
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch.object(app, "post_message", side_effect=posted.append):
+                switched = await app._restart_server_for_agent_swap(
+                    "researcher",
+                    resume_thread_id="research-thread",
+                    preloaded_payload=MagicMock(),
+                    persist_default_agent=False,
+                )
+
+        assert switched is False
+        assert app._assistant_id == "coder"
+        assert app._default_assistant_id == "coder"
+        assert app._lc_thread_id == "old-thread"
+        assert app._session_state is not None
+        assert app._session_state.thread_id == "old-thread"
+        assert app._session_state.previous_thread_id is None
+        assert any(
+            isinstance(message, DeepAgentsApp.ServerStartFailed) for message in posted
+        )
 
     async def test_no_resume_hint_when_previous_thread_has_no_agent_output(
         self,

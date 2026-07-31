@@ -369,6 +369,17 @@ Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
 to hide replica tracing details from the splash while leaving tracing active.
 """
 
+SHOW_MESSAGE_TIMESTAMPS = "DEEPAGENTS_CODE_SHOW_MESSAGE_TIMESTAMPS"
+"""Show the timestamp footer under each chat message when enabled.
+
+Off by default; use the `/timestamps` slash command or
+`[ui].show_message_timestamps` in config.toml to toggle. Parsed by
+`classify_env_bool` (an unrecognized or empty value falls through to the config
+value rather than forcing the default). While this env var is set it outranks
+the persisted value, so a `/timestamps` toggle will not appear to "stick"
+across restarts.
+"""
+
 SHOW_SCROLLBAR = "DEEPAGENTS_CODE_SHOW_SCROLLBAR"
 """Show the vertical scrollbar in the chat area when enabled.
 

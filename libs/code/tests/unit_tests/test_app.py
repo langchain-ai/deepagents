@@ -14516,25 +14516,22 @@ class TestScrollbarToggle:
         config = tmp_path / "config.toml"
         config.write_text("this is = = not valid toml [[[\n")
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
+        with caplog.at_level("WARNING", logger="deepagents_code.config_manifest"):
             assert _load_show_scrollbar() is False
-        assert any("scrollbar" in record.getMessage() for record in caplog.records)
+        assert any("Could not read config" in r.getMessage() for r in caplog.records)
 
     def test_load_ignores_non_table_ui(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A scalar `[ui]` value is ignored with a warning on load."""
+        """A scalar `[ui]` value reads as unset rather than raising."""
         from deepagents_code.app import _load_show_scrollbar
 
         config = tmp_path / "config.toml"
         config.write_text('ui = "oops"\n')
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert _load_show_scrollbar() is False
-        assert any("ui" in record.getMessage() for record in caplog.records)
+        assert _load_show_scrollbar() is False
 
     def test_save_repairs_malformed_ui_table(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -14701,7 +14698,6 @@ class TestDebugConsoleClickToCopyPreference:
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """A `[ui]` value that is not a table degrades to the off default."""
         from deepagents_code.app import _load_debug_console_click_to_copy
@@ -14709,9 +14705,7 @@ class TestDebugConsoleClickToCopyPreference:
         config = tmp_path / "config.toml"
         config.write_text('ui = "not-a-table"\n')
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert _load_debug_console_click_to_copy() is False
-        assert any("[ui]" in record.getMessage() for record in caplog.records)
+        assert _load_debug_console_click_to_copy() is False
 
     def test_load_handles_unreadable_config(
         self,
@@ -14725,9 +14719,9 @@ class TestDebugConsoleClickToCopyPreference:
         config = tmp_path / "config.toml"
         config.write_text("[ui]\ndebug_console_click_to_copy = tru\n")  # invalid TOML
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
+        with caplog.at_level("WARNING", logger="deepagents_code.config_manifest"):
             assert _load_debug_console_click_to_copy() is False
-        assert any("click-to-copy" in record.getMessage() for record in caplog.records)
+        assert any("Could not read config" in r.getMessage() for r in caplog.records)
 
     def test_save_round_trips(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -26561,7 +26561,11 @@ class TestLiveApprovalModeWrites:
     async def test_session_init_builds_one_state_for_concurrent_callers(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The startup worker and inline fallback must share one initialization."""
+        """The startup worker and the inline startup fallback must not race.
+
+        Idempotency rests on construction staying free of `await`; reintroducing
+        one would let both callers pass the guard and build two states.
+        """
         from deepagents_code._env_vars import EXPERIMENTAL
 
         # `HooksRuntime.create` is the construction seam counted below, and it

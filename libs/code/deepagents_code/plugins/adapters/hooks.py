@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from deepagents_code.hooks.loading import HooksSource, read_hooks_json
+from deepagents_code.hooks.loading import PluginHooksSource, read_hooks_json
 from deepagents_code.hooks.models.domain import HookDiagnostic, HookEvent
 from deepagents_code.plugins.manifest import find_manifest_path
 from deepagents_code.plugins.substitution import plugin_environment
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 _KNOWN_EVENTS = frozenset(event.value for event in HookEvent)
 
-PluginHooksDocument = tuple[HooksSource, "JsonValue"]
+PluginHooksDocument = tuple[PluginHooksSource, "JsonValue"]
 PluginHookSources = tuple[tuple[PluginHooksDocument, ...], tuple[HookDiagnostic, ...]]
 
 
@@ -111,7 +111,7 @@ def discover_plugin_hook_sources(
             )
             sources = tuple(
                 (
-                    HooksSource(
+                    PluginHooksSource(
                         location=str(path), plugin_id=plugin.plugin_id, env=env
                     ),
                     document,

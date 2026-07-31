@@ -18,7 +18,7 @@ from deepagents_code.hooks.capabilities import (
 )
 from deepagents_code.hooks.env import HOOK_SUBPROCESS_TIMEOUT
 from deepagents_code.hooks.loading import (
-    HooksSource,
+    PluginHooksSource,
     canonical_hooks_bytes,
     compute_snapshot_id,
     load_hooks_config,
@@ -51,7 +51,7 @@ def test_registry_covers_all_hook_events() -> None:
 def test_plugin_source_uses_windows_environment_references(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = HooksSource(
+    source = PluginHooksSource(
         location="hooks.json", plugin_id="plugin@market", env={"PLUGIN_ROOT": "ignored"}
     )
     monkeypatch.setattr("deepagents_code.hooks.loading.os.name", "nt")

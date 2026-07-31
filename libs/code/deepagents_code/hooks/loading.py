@@ -20,6 +20,7 @@ import hashlib
 import json
 import logging
 import os
+from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +28,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Final
 
 from pydantic import ValidationError
+from typing_extensions import override
 
 from deepagents_code.hooks.migration import (
     is_legacy_hooks_document,
@@ -48,26 +50,53 @@ _LEGACY_HOOKS_REMOVAL_DATE = "September 1, 2026"
 
 
 @dataclass(frozen=True, slots=True)
-class HooksSource:
-    """Origin and environment for matcher groups from one hooks document."""
+class HooksSource(ABC):
+    """Origin of the matcher groups contributed by one hooks document."""
 
     location: str
-    plugin_id: str | None = None
+
+    @abstractmethod
+    def resolve_variables(self, value: str, *, shell_syntax: bool = False) -> str:
+        """Resolve the variable references this source defines.
+
+        Args:
+            value: One `argv` element, or a shell-form `command`.
+            shell_syntax: Whether a shell interprets `value`, in which case a
+                reference is rewritten for the shell instead of substituted.
+
+        Returns:
+            The resolved argument or command.
+        """
+
+
+@dataclass(frozen=True, slots=True)
+class FileHooksSource(HooksSource):
+    """A project or user hooks file, which defines no variables."""
+
+    @override
+    def resolve_variables(self, value: str, *, shell_syntax: bool = False) -> str:
+        """Return `value` as authored.
+
+        Returns:
+            The unchanged argument or command.
+        """
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class PluginHooksSource(HooksSource):
+    """Origin and environment for groups one enabled plugin contributed."""
+
+    plugin_id: str
     env: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        """Enforce the plugin-only environment invariant and freeze the overlay.
-
-        Raises:
-            ValueError: If an environment overlay is supplied without a plugin.
-        """
-        if self.env and self.plugin_id is None:
-            msg = "Only a plugin hooks source may carry an environment overlay"
-            raise ValueError(msg)
+        """Freeze the environment overlay so the snapshot cannot be mutated."""
         object.__setattr__(self, "env", MappingProxyType(dict(self.env)))
 
+    @override
     def resolve_variables(self, value: str, *, shell_syntax: bool = False) -> str:
-        """Resolve direct arguments, or adapt shell references for Windows.
+        """Substitute direct arguments, or adapt shell references for Windows.
 
         Returns:
             The resolved argument or command.
@@ -84,7 +113,7 @@ class HooksSource:
 SourcedGroup = tuple[HooksSource, MatcherGroup]
 
 
-UNSOURCED: Final = HooksSource(location="")
+UNSOURCED: Final = FileHooksSource(location="")
 """Provenance for groups handled without it, adding no origin or env overlay."""
 
 
@@ -179,7 +208,7 @@ def load_hooks_config(
         if as_project:
             project_source_loaded = True
         loaded_paths.append(resolved)
-        _merge(document, HooksSource(location=str(resolved)))
+        _merge(document, FileHooksSource(location=str(resolved)))
 
     if paths is not None:
         for path in dict.fromkeys(
@@ -296,7 +325,7 @@ def _canonical_group(group: MatcherGroup, *, source: HooksSource) -> dict[str, o
     matcher = raw.get("matcher")
     if matcher is not None:
         result["matcher"] = matcher
-    if source.plugin_id is not None:
+    if isinstance(source, PluginHooksSource):
         result["origin"] = source.plugin_id
         if source.env:
             result["env"] = dict(sorted(source.env.items()))

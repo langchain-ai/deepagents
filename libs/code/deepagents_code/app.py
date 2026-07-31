@@ -3717,7 +3717,6 @@ class DeepAgentsApp(App):
         the session-init worker, or inline if the start sequence gets there
         first.
         """
-        self._session_state_init_lock = asyncio.Lock()
 
         self._detached_hooks: HooksManager | None = None
         """Inert hooks coordinator used before session state exists.
@@ -4463,48 +4462,48 @@ class DeepAgentsApp(App):
     async def _init_session_state(self) -> None:
         """Create session state and load its Hooks v2 manager.
 
-        Idempotent: the startup worker and inline fallback share one lock so
-        plugin discovery can run off the event loop without building two states.
+        Idempotent: the startup worker and the inline fallback in
+        `_run_session_start_sequence` both call this, and the first one wins.
+        Everything between the guard below and the `_session_state` assignment
+        must stay free of `await` so the two callers cannot interleave and
+        build two states.
         """
         if self._session_state is not None:
             return
 
-        async with self._session_state_init_lock:
-            if self._session_state is not None:
-                return
+        from pathlib import Path
 
-            from pathlib import Path
+        from deepagents_code.hooks.manager import HooksManager
 
-            from deepagents_code.hooks.manager import HooksManager
-
-            try:
-                session_state = TextualSessionState(
-                    approval_mode=self._approval_mode,
-                    thread_id=self._lc_thread_id,
-                )
-            except Exception:
-                logger.exception("Failed to create session state")
-                self.notify(
-                    "Session initialization failed. Some features may be unavailable.",
-                    severity="error",
-                    timeout=10,
-                )
-                return
-            session_state.hooks = await asyncio.to_thread(
-                HooksManager.create,
-                cwd=Path(self._cwd),
-                identity=session_state.hook_identity,
-                trust=self._hook_trust,
+        try:
+            session_state = TextualSessionState(
+                approval_mode=self._approval_mode,
+                thread_id=self._lc_thread_id,
             )
-            session_state.hooks.attach_output(
-                notice=self._notify_hook_feedback,
-                status=self._update_hook_status,
+        except Exception:
+            logger.exception("Failed to create session state")
+            self.notify(
+                "Session initialization failed. Some features may be unavailable.",
+                severity="error",
+                timeout=10,
             )
-            # Re-read the app-owned selection last so a mode change during
-            # construction cannot be overwritten by the freshly built state.
-            session_state.approval_mode = self._approval_mode
-            self._session_state = session_state
-            await self._auto_accept_pending_goal_rubric()
+            return
+        # Loading stays on the event loop deliberately: it reads hook config and
+        # enabled-plugin state from disk, and `to_thread` both races server-ready
+        # startup tests that only yield a few event-loop turns and would need a
+        # lock to keep construction indivisible.
+        session_state.hooks = HooksManager.create(
+            cwd=Path(self._cwd),
+            identity=session_state.hook_identity,
+            notice=self._notify_hook_feedback,
+            status=self._update_hook_status,
+            trust=self._hook_trust,
+        )
+        # Re-read the app-owned selection last so a mode change during
+        # construction cannot be overwritten by the freshly built state.
+        session_state.approval_mode = self._approval_mode
+        self._session_state = session_state
+        await self._auto_accept_pending_goal_rubric()
 
     @property
     def _hooks(self) -> HooksManager:

@@ -271,6 +271,9 @@ try:
             for dirpath, dirnames, filenames in os.walk('.', onerror=_on_walk_error):
                 if truncated:
                     break
+                if time.monotonic() > deadline:
+                    truncated = True
+                    break
                 for name in filenames:
                     if time.monotonic() > deadline or len(matches) >= MAX_MATCHES:
                         truncated = True

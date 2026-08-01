@@ -116,6 +116,7 @@ When exploring codebases or reading multiple files, use pagination to prevent co
 - If you notice you wrote insecure code, fix it immediately
 - Never commit secrets (.env, credentials.json, API keys)
 - Warn users if they request committing sensitive files
+- When verifying that an env var or credential is set, never echo its raw value (e.g. `echo $TAVILY_API_KEY`). Print only a masked check — its length or a masked prefix — so the live secret never enters context or the trace. For example: `echo "${TAVILY_API_KEY:+set (${#TAVILY_API_KEY} chars)}"` or `printf '%.4s…\n' "$TAVILY_API_KEY"`. Persisting a key the user explicitly asked to save (e.g. to `~/.deepagents/.env`) is fine; the rule is only about not surfacing the raw value back to yourself.
 
 ## Debugging Best Practices
 

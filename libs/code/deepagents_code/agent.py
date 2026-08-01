@@ -55,6 +55,7 @@ from langchain.tools import (
     ToolRuntime,  # LangChain inspects this annotation for runtime injection.
 )
 from langchain_core.tools import StructuredTool, tool
+from typing_extensions import override
 
 from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
@@ -882,6 +883,101 @@ class ShellAllowListMiddleware(AgentMiddleware):
         if (rejection := self._validate_tool_call(request)) is not None:
             return rejection
         return await handler(request)
+
+
+_SECRET_REDACTION_TOOLS: frozenset[str] = frozenset({"execute", "write_file"})
+"""Tools whose results may echo a live credential value back into context."""
+
+
+def _redact_tool_message(message: object) -> object:
+    """Return `message` with credential values in its content masked."""
+    from langchain_core.messages import ToolMessage as LCToolMessage
+
+    from deepagents_code.secret_redaction import redact_secrets
+
+    if not isinstance(message, LCToolMessage):
+        return message
+    content = message.content
+    if isinstance(content, str):
+        redacted = redact_secrets(content)
+        if redacted == content:
+            return message
+        return message.model_copy(update={"content": redacted})
+    if isinstance(content, list):
+        new_content = [
+            {**block, "text": redact_secrets(block["text"])}
+            if isinstance(block, dict) and isinstance(block.get("text"), str)
+            else block
+            for block in content
+        ]
+        if new_content == content:
+            return message
+        return message.model_copy(update={"content": new_content})
+    return message
+
+
+def _redact_tool_result(
+    request: ToolCallRequest,
+    result: ToolMessage | Command[Any],
+) -> ToolMessage | Command[Any]:
+    """Mask credential values in an `execute` / `write_file` tool result.
+
+    Returns:
+        The tool result with any credential values masked.
+    """
+    from langchain_core.messages import ToolMessage as LCToolMessage
+    from langgraph.types import Command as LCCommand
+
+    if request.tool_call["name"] not in _SECRET_REDACTION_TOOLS:
+        return result
+    if isinstance(result, LCToolMessage):
+        return cast("ToolMessage", _redact_tool_message(result))
+    update = result.update
+    if not isinstance(update, dict):
+        return result
+    messages = update.get("messages")
+    if not isinstance(messages, list):
+        return result
+    new_messages = [_redact_tool_message(message) for message in messages]
+    if new_messages == messages:
+        return result
+    return LCCommand(update={**update, "messages": new_messages})
+
+
+class SecretRedactionMiddleware(AgentMiddleware):
+    """Mask live credential values in tool results before they reach the model.
+
+    An `execute` shell echo or a `write_file` preview can carry a live API key
+    or bearer token verbatim (e.g. verifying an env var by echoing it). This
+    middleware rewrites the model/trace-facing result content so the value is
+    masked, while the on-disk file the user asked to create is left untouched.
+    """
+
+    @override
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """Redact credential values from the result of a completed tool call.
+
+        Returns:
+            The tool result with any credential values masked.
+        """
+        return _redact_tool_result(request, handler(request))
+
+    @override
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Redact credential values from the result of a completed tool call.
+
+        Returns:
+            The tool result with any credential values masked.
+        """
+        return _redact_tool_result(request, await handler(request))
 
 
 _INTERPRETER_WRITE_TOOLS: frozenset[str] = frozenset(
@@ -2444,7 +2540,10 @@ def create_cli_agent(
     ) -> list[AgentMiddleware[Any, Any]]:
         from deepagents_code.cost_tracking import CostTrackingMiddleware
 
-        middleware: list[AgentMiddleware[Any, Any]] = []
+        # Redaction wraps subagent tools too so a credential echoed by an
+        # `execute` / `write_file` call inside a subagent is masked before it
+        # re-enters context.
+        middleware: list[AgentMiddleware[Any, Any]] = [SecretRedactionMiddleware()]
         if resolved_interrupt_on is not None:
             middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
         if not has_explicit_model:
@@ -2541,8 +2640,12 @@ def create_cli_agent(
             general_purpose_subagent["interrupt_on"] = {}
         custom_subagents.append(general_purpose_subagent)
 
-    # Build middleware stack based on enabled features
+    # Build middleware stack based on enabled features. `SecretRedactionMiddleware`
+    # is first so it is the outermost tool-call wrapper: it masks credential
+    # values in the final result of `execute` / `write_file` before that result
+    # re-enters the model context or the trace.
     agent_middleware: list[AgentMiddleware[Any, Any]] = [
+        SecretRedactionMiddleware(),
         ConfigurableModelMiddleware(),
     ]
     if not interactive:

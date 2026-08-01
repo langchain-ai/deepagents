@@ -3210,6 +3210,109 @@ class TestShellAllowListMiddleware:
             ShellAllowListMiddleware(allow_list=SHELL_ALLOW_ALL)
 
 
+class TestSecretRedaction:
+    """Tests for credential masking in tool results."""
+
+    def test_redacts_env_assignment(self) -> None:
+        """`<NAME>_API_KEY=<value>` masks the value, keeps the name."""
+        from deepagents_code.secret_redaction import (
+            REDACTION_PLACEHOLDER,
+            redact_secrets,
+        )
+
+        value = "tvly" + "-dev-" + "a" * 20
+        out = redact_secrets(f"TAVILY_API_KEY={value}")
+        assert value not in out
+        assert out == f"TAVILY_API_KEY={REDACTION_PLACEHOLDER}"
+
+    def test_redacts_bearer_token(self) -> None:
+        """`Authorization: Bearer <token>` masks the token, keeps the scheme."""
+        from deepagents_code.secret_redaction import redact_secrets
+
+        token = "h" * 40
+        out = redact_secrets(f"Authorization: Bearer {token}")
+        assert token not in out
+        assert out.startswith("Authorization: Bearer ")
+
+    def test_redacts_provider_prefixes(self) -> None:
+        """Provider key prefixes with an opaque body are masked."""
+        from deepagents_code.secret_redaction import redact_secrets
+
+        for value in ("sk" + "-ant-" + "x" * 20, "AKIA" + "Z" * 16):
+            assert value not in redact_secrets(value)
+
+    def test_leaves_benign_text_untouched(self) -> None:
+        """Non-credential text is returned unchanged."""
+        from deepagents_code.secret_redaction import redact_secrets
+
+        text = "the key is set and its length is 40 characters"
+        assert redact_secrets(text) == text
+
+
+class TestSecretRedactionMiddleware:
+    """Tests for masking credentials in `execute` / `write_file` results."""
+
+    def test_masks_execute_result_content(self) -> None:
+        """A credential echoed by `execute` is masked in the result content."""
+        from langchain_core.messages import ToolMessage
+
+        from deepagents_code.agent import SecretRedactionMiddleware
+        from deepagents_code.secret_redaction import REDACTION_PLACEHOLDER
+
+        value = "tvly" + "-dev-" + "b" * 20
+        middleware = SecretRedactionMiddleware()
+        request = Mock()
+        request.tool_call = {"name": "execute", "args": {}, "id": "tc-red-1"}
+        handler = Mock(
+            return_value=ToolMessage(
+                content=f"TAVILY_API_KEY={value}",
+                tool_call_id="tc-red-1",
+                name="execute",
+            )
+        )
+
+        result = middleware.wrap_tool_call(request, handler)
+        assert isinstance(result, ToolMessage)
+        assert value not in result.content
+        assert REDACTION_PLACEHOLDER in result.content
+
+    async def test_masks_write_file_result_content(self) -> None:
+        """A credential in a `write_file` preview is masked in the result."""
+        from unittest.mock import AsyncMock
+
+        from langchain_core.messages import ToolMessage
+
+        from deepagents_code.agent import SecretRedactionMiddleware
+
+        value = "sk" + "-ant-" + "c" * 20
+        middleware = SecretRedactionMiddleware()
+        request = Mock()
+        request.tool_call = {"name": "write_file", "args": {}, "id": "tc-red-2"}
+        handler = AsyncMock(
+            return_value=ToolMessage(
+                content=f"wrote .mcp.json with token {value}",
+                tool_call_id="tc-red-2",
+                name="write_file",
+            )
+        )
+
+        result = await middleware.awrap_tool_call(request, handler)
+        assert isinstance(result, ToolMessage)
+        assert value not in result.content
+
+    def test_passes_other_tools_through_unchanged(self) -> None:
+        """Non-target tools return the original result object."""
+        from deepagents_code.agent import SecretRedactionMiddleware
+
+        middleware = SecretRedactionMiddleware()
+        request = Mock()
+        request.tool_call = {"name": "read_file", "args": {}, "id": "tc-red-3"}
+        sentinel = Mock()
+        handler = Mock(return_value=sentinel)
+
+        assert middleware.wrap_tool_call(request, handler) is sentinel
+
+
 class TestCreateCliAgentShellMiddlewareWiring:
     """Verify `create_cli_agent` wires `ShellAllowListMiddleware` correctly."""
 
@@ -3553,7 +3656,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
         `/model` switch clobber the pinned model.
         """
         from deepagents_code._env_vars import EXPERIMENTAL
-        from deepagents_code.agent import ShellAllowListMiddleware
+        from deepagents_code.agent import (
+            SecretRedactionMiddleware,
+            ShellAllowListMiddleware,
+        )
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
         from deepagents_code.cost_tracking import CostTrackingMiddleware
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
@@ -3615,6 +3721,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 type(mw) for mw in subagents_by_name[name]["middleware"]
             ]
             assert middleware_types == [
+                SecretRedactionMiddleware,
                 ConfigurableModelMiddleware,
                 CostTrackingMiddleware,
                 ShellAllowListMiddleware,

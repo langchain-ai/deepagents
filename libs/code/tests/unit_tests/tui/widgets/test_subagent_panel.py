@@ -120,10 +120,13 @@ class TestLifecycle:
             await pilot.pause()
             assert panel._any_running() is True
             panel.on_subagent_event(_complete("a", "E1"))
+            await pilot.pause()
+            assert panel.expanded is True
             panel.on_subagent_event(_complete("b", "E1"))
             await pilot.pause()
             assert panel._any_running() is False
             assert panel._counts() == (2, 2)
+            assert panel.expanded is False
 
     async def test_missing_label_falls_back_to_short_description(self) -> None:
         async with PanelApp().run_test(size=(200, 24)) as pilot:
@@ -342,16 +345,26 @@ class TestHeaderToggle:
             await pilot.pause()
             assert panel.expanded is False
 
-    async def test_user_collapse_persists_across_turn_reset(self) -> None:
+    async def test_new_workflow_reopens_after_manual_collapse(self) -> None:
         async with PanelApp().run_test(size=(160, 24)) as pilot:
             panel = pilot.app.query_one("#panel", SubagentPanel)
             panel.on_subagent_event(_start("a", "E1"))
             await pilot.pause()
-            panel.toggle()  # user closes it
-            panel.reset()  # new user turn
+            panel.toggle()
+            panel.reset()
             panel.on_subagent_event(_start("b", "E2"))
             await pilot.pause()
-            assert panel.expanded is False  # preference persists
+            assert panel.expanded is True
+
+    async def test_manual_collapse_survives_concurrent_start(self) -> None:
+        async with PanelApp().run_test(size=(160, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            panel.on_subagent_event(_start("a", "E1"))
+            await pilot.pause()
+            panel.toggle()
+            panel.on_subagent_event(_start("b", "E1"))
+            await pilot.pause()
+            assert panel.expanded is False
 
     async def test_header_shows_turn_totals_and_failed(self) -> None:
         async with PanelApp().run_test(size=(200, 24)) as pilot:
@@ -400,6 +413,7 @@ class TestReset:
             panel.on_subagent_event(_complete("a", "E1"))
             await pilot.pause()
             assert panel.has_class("-visible")
+            assert panel.expanded is False
             # A new turn begins but spawns no subagents — results persist.
             panel.prepare_turn()
             await pilot.pause()
@@ -410,6 +424,7 @@ class TestReset:
             await pilot.pause()
             assert panel._phase_order == ["E2"]
             assert panel._find_record("a") is None
+            assert panel.expanded is True
 
     async def test_finalize_running_marks_cancelled(self) -> None:
         async with PanelApp().run_test(size=(200, 24)) as pilot:
@@ -428,6 +443,7 @@ class TestReset:
             assert rec_b is not None
             assert rec_a.status == "cancelled"
             assert rec_b.status == "cancelled"
+            assert panel.expanded is False
             header = _render(pilot.app.query_one("#subagent-header", Static))
             assert "2 cancelled" in header
 

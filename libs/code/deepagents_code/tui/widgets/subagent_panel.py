@@ -356,10 +356,11 @@ class SubagentPanel(Vertical):
         self._refresh()
 
     def _handle_start(self, sub_id: str, eval_key: str, event: dict[str, Any]) -> None:
-        """Create/replace a running record and (re-)show the panel."""
+        """Create/replace a running record and expand a newly active workflow."""
         if self._pending_reset:
             # A new workflow is starting — drop the previous turn's fan-out now.
             self._clear()
+        should_expand = not self._any_running()
         phase = self._ensure_phase(eval_key)
         self._active_eval_id = eval_key
 
@@ -368,6 +369,8 @@ class SubagentPanel(Vertical):
             label=_sanitize(self._row_label(event), max_chars=200),
         )
         phase.add(record)
+        if should_expand:
+            self.expanded = True
         self._show()
         self._apply_body_height()
         self._ensure_timer()
@@ -403,7 +406,7 @@ class SubagentPanel(Vertical):
     def _handle_finish(
         self, sub_id: str, eval_key: str, outcome: str, event: dict[str, Any]
     ) -> None:
-        """Mark a record done/error, recording duration and stopping the timer.
+        """Mark a record done/error and collapse once the workflow is idle.
 
         An error with no matching `start` is adopted as a fresh row (see
         `_adopt_orphan_finish`) so a dropped-start failure still surfaces.
@@ -437,6 +440,7 @@ class SubagentPanel(Vertical):
             )
         if not self._any_running():
             self._stop_timer()
+            self.expanded = False
 
     def _adopt_orphan_finish(
         self, sub_id: str, eval_key: str, event: dict[str, Any]
@@ -598,7 +602,7 @@ class SubagentPanel(Vertical):
         self.remove_class("-visible")
 
     def finalize_running(self) -> None:
-        """Mark any still-running subagents as cancelled and stop ticking.
+        """Cancel still-running subagents and collapse the completed workflow.
 
         Called when a turn is interrupted: the QuickJS bridge does not emit
         terminal events for `asyncio.CancelledError` (a BaseException, so it
@@ -616,6 +620,7 @@ class SubagentPanel(Vertical):
         if not changed:
             return
         self._stop_timer()
+        self.expanded = False
         self._refresh()
 
     def _show(self) -> None:
@@ -623,7 +628,7 @@ class SubagentPanel(Vertical):
         self.add_class("-visible")
 
     def toggle(self) -> None:
-        """Toggle the body open/closed. This is the only thing that changes it."""
+        """Toggle the body open or closed for manual inspection."""
         self.expanded = not self.expanded
 
     def watch_expanded(self, expanded: bool) -> None:
@@ -752,7 +757,7 @@ class SubagentPanel(Vertical):
         parts: list[Content] = [Content.styled(lead_text, tint)]
         left_len = len(lead_text)
 
-        if self.expanded and total:
+        if total:
             meta = self._header_meta_parts(done, total, failed, cancelled, colors)
             parts.extend(meta)
             left_len += sum(len(p.plain) for p in meta)
@@ -773,7 +778,7 @@ class SubagentPanel(Vertical):
         cancelled: int,
         colors: Any,  # noqa: ANN401 — ThemeColors
     ) -> list[Content]:
-        """Whole-turn totals (phase count, failures, cancellations) when expanded.
+        """Whole-turn totals, including phase count, failures, and cancellations.
 
         Returns:
             The styled `Content` pieces appended after the header label.

@@ -1,0 +1,15 @@
+{
+    "dr_question": "By the end of 2025, how can Elexion Automotive use data generated through its customer relationship management system to analyze customer behavior online and identify patterns that drive sales?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Sales",
+        "dr_question": "By the end of 2025, how can Elexion Automotive use data generated through its customer relationship management system to analyze customer behavior online and identify patterns that drive sales?",
+        "industry": "Automotive -- Electric Vehicles",
+        "url": "https://theweek.com/us/1024416/tesla-vs-car-dealerships"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0066",
+    "industry": "automotive -- electric vehicles",
+    "domain": "Sales",
+    "url": "https://theweek.com/us/1024416/tesla-vs-car-dealerships"
+}

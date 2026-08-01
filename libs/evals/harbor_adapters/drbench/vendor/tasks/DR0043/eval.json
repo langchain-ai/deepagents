@@ -1,0 +1,215 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How large was the Canadian telehealth market as of 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Canadian telehealth market was valued at $18 billion in October 2024.",
+            "supporting_file_paths": [
+                "shared/canadian-telehealth-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "When did the American telehealth company MediTouch Solution officially announce its entry into the British Columbia market in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediTouch Solutions announced its entry into the British Columbia market on May 23, 2024, after receiving provincial regulatory approval.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Market_Expansion_Analysis.xlsx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How many corporate clients is MediConn Solutions providing services to in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of September 2025, MediConn supports 46 corporate clients with wellness programs.",
+            "supporting_file_paths": [
+                "shared/corporate-client-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "In how many Canadian provinces does MediConn Solutions operate as of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of October 2025, MediConn Solutions only operates in three provinces in Canada: Manitoba, Newfoundland and Alberta.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_222636.jsonl"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How many telehealth providers operate in Canada as of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "There are 101 telehealth providers operating in Canada as of April 2025.",
+            "supporting_file_paths": [
+                "shared/canada-telehealth-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What percentage of MediConn Solutions' clients were senior citizens in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the patient demographic analysis report completed in 2024 by the marketing team, 33% of MediConn Solutions' clients were senior citizens.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_222746.jsonl"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "How many MediConn Solutions' clients are between the ages of 30 and 40 in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The patient demographic analysis report done in 2024 shows that the number of MediConn Solutions' clients between the ages of 30 and 40 is 1000.",
+            "supporting_file_paths": [
+                "shared/MediConnSolutions_Patient_Demographic_Analysis_Dat.xlsx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "What percentage of MediConn Solutions' patients are in their 20s as of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the patient demographic analysis report completed in 2024 by the marketing department, 100 MediConn Solutions patients are in their 20s.",
+            "supporting_file_paths": [
+                "shared/patient-demographics-overview-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "When did Emily Chen complete MediConn Solutions' quarterly consumer behavior survey in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Emily Chen completed data collection for MediConn Solutions' quarterly consumer behavior survey on February 20, 2025, with results compiled and distributed to leadership by the end of February 2025.",
+            "supporting_file_paths": [
+                "shared/consumer-survey-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "How many impressions did MediConn Solutions' LinkedIn advertising campaign generate between January 2024 and September 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' LinkedIn advertising campaign generated a total of 547,555 impressions and 2,300 clicks between January 2024 and September 2025.",
+            "supporting_file_paths": [
+                "shared/linkedin-campaign-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "What was the average response rate for MediConn Solutions' patient surveys in 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average response rate for MediConn Solutions' patient surveys is 14% across the first and third quarters of 2023.",
+            "supporting_file_paths": [
+                "shared/2023-survey-response-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "When did QuickCare Telehealth experience their platform outage in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "From Emily's competitor activity analysis report, QuickCare Telehealth experienced a significant platform outage in August 2025.",
+            "supporting_file_paths": [
+                "shared/quickcare-outage-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "What percentage of MediConn's marketing department employees tested the prescription delivery service in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In Q2 2024 30% of MediConns' marketing department employees participated in a test run of the integrated prescription delivery service.",
+            "supporting_file_paths": [
+                "shared/q2-2024-service-review.docx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "What was the change in MediConn Solutions' healthcare provider retention rate based on internal performance analysis completed in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Based on internal performance analysis done in June 2025, MediConn Solutions' healthcare provider retention rate increased by 10%.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_223036.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "As of 2025, what languages does MediConn Solutions currently offer beyond English?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of 2025, MediConn Solutions offers services only in English, despite Canada's increasingly diverse population requiring support in additional languages.",
+            "supporting_file_paths": [
+                "shared/telehealth-patient-experience.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What percentage of patients accessed MediConn Solutions' prescription delivery service in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In Q2 2024, only 23% of patients who received prescriptions during consultations utilized MediConn Solutions' integrated prescription delivery service, indicating a low adoption of this value-added integration.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_222351.jsonl"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "What was the change in MediConn Solutions' patient retention rate based on consumer behavior analysis completed in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Based on customer behavior analysis done in June of 2025, MediConn Solutions' patient retention rate increased by 10%.",
+            "supporting_file_paths": [
+                "shared/patient-experience-enhancement.docx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "What is the latest market research report about the health professionals at MediConn Solutions' partnering hospitals regarding discomfort with virtual patient visits?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The latest market research report in 2023 suggests that 25% of the health professionals from the partnering hospitals have reported that they are not tech-savvy and are uncomfortable seeing patients virtually. This leads to a 30% longer average setup time for virtual appointments.",
+            "supporting_file_paths": [
+                "shared/patient-experience-enhancement.pptx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "What percentage of first-time users on MediConn Solutions' platform completed their initial consultation in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In September 2024, 81% of first-time users who created an account on MediConn Solutions' platform completed their initial consultation, with 19% abandoning the process before connecting with a healthcare professional.",
+            "supporting_file_paths": [
+                "shared/patient-experience-strategy.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

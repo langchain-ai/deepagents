@@ -1,0 +1,84 @@
+{
+  "task_id": "DR0049",
+  "question": "A 2022 patient experience report found that six in 10 patients identified poor online booking tools and convoluted call centers as barriers to making appointments. When individual patients or corporate employees struggle to book appointments on MediConn Solutions' platform, how can I determine whether the root cause is poot booking tool design or convoluted customer support processes?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What proportion of failed bookings result in customer support contact versus complete abandonment?",
+      "answer": "Of the 16,500 failed booking attempts in Q4 2024, 60% resulted in a support contact, while 40% resulted in complete abandonment with no support interaction.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What percentage of booking-related support inquiries require staff to manually complete the booking process for customers?",
+      "answer": "Q4 2024 data reveal that 45% of booking-related inquiries are resolved by customer support staff manually completing the booking on behalf of the customer.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "What percentage of customers who contact support in Q4 2024 attempted to complete the booking independently before seeking assistance?",
+      "answer": "Post-call surveys conducted in Q4 2024 reveal that 67% of customers who contacted support stated they tried to book on their own first but couldn't figure it out.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "What percentage of booking-related support tickets in Q4 2024 require escalation beyond frontline representatives?",
+      "answer": "In Q4 2024, 31% of booking-related support tickets required escalation to technical support or product teams because frontline customer service representatives couldn't resolve the issue within the booking tool.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "What is the average and maximum wait time for customers trying to reach MediConn's customer service during peak hours in Q4 2024?",
+      "answer": "Average wait time to reach a customer service representative in Q4 2024 is 12 minutes during peak hours (9 AM - 12 PM EST), with some customers waiting up to 25 minutes.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0006",
+      "question": "What is MediConn's customer satisfaction score for support interactions in Q4 2024, and what is the most frequently cited complaint?",
+      "answer": "Customer satisfaction (CSAT) scores for support interactions in Q4 2024 are 3.2 out of 5, with the most common complaint being \"took too long to reach someone\" (cited in 58% of negative reviews).",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0007",
+      "question": "What percentage of email support requests in Q4 2024 receive responses within 24 hours, and what is the average email response time?",
+      "answer": "Only 40% of customers who email support in Q4 2024 receive a response within 24 hours, with the average response time being 36 hours.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0008",
+      "question": "In Q4 2024, what is MediConn's customer service team size and capacity utilization rate?",
+      "answer": "In Q4 2024, the customer service team consists of 12 full-time representatives, with current capacity maxed out at 95%, leaving little room to handle volume spikes.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0009",
+      "question": "What types of booking questions generate the highest call volume to the customer service team in Q4 2024?",
+      "answer": "Support ticket analysis from Q4 2024 shows that 42% of booking-related calls are about \"I can't find the right appointment type,\" 28% are \"the system won't accept my health card or coverage information,\" and 30% are general navigation confusion.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0010",
+      "question": "How many support interactions on average does it take for customers to successfully complete a booking with assistance in Q4 2024?",
+      "answer": "Q4 2024 data show that customers require an average of 1.7 support interactions to successfully complete a booking, with 58% resolved on first contact, 28% requiring a second interaction, and 14% requiring three or more contacts.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0011",
+      "question": "At what point in the booking process during Q4 2024 do users most frequently abandon their attempts without contacting support, and how many users does this affect?",
+      "answer": "Analytics from Q4 2024 show that 5,200 users (11% of total booking attempts) abandoned the booking process at the coverage verification step (provincial health card and supplemental insurance validation) without ever contacting support or reaching the final confirmation page.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0012",
+      "question": "What percentage of customer service representatives report they regularly need to talk customers through the booking process step-by-step in Q4 2024?",
+      "answer": "In a Q4 2024 internal survey, 78% of customer service representatives reported that they often or very often need to provide step-by-step guidance through the booking interface, with representatives spending an average of 5.5 minutes per call just on booking navigation.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0013",
+      "question": "What percentage of users attempt to access help or contact support while actively using the booking platform in Q4 2024?",
+      "answer": "In Q4 2024, heat map data reveal that 34% of users click the \"Help\" or \"Contact Support\" button during the booking process, indicating confusion with the platform interface.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

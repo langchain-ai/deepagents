@@ -1,0 +1,479 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "By what percentage did the new CRM system increase sales team productivity?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The new CRM system, introduced on February 8, 2024, has recorded an increase in the sales team's productivity by 23% compared to the same month of the previous year.",
+            "supporting_file_paths": [
+                "shared/crm-sales-productivity.pptx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "By how many days did Elexion Automotive's training program reduce time-to-proficiency for sales representatives?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In May 2023, Elexion Automotive launched a sales training program that reduced time-to-proficiency for new sales representatives by 14 days.",
+            "supporting_file_paths": [
+                "shared/sales-training-impact.pptx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How many employees were on Elexion Automotive's sales operations team as of December 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of December 2024, Elexion Automotive's sales operations team consisted of 47 employees, with an average of 3.2 years of tenure.",
+            "supporting_file_paths": [
+                "shared/sales-team-year-end-report.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What was the conversion rate from test drives to purchases for Elexion Automotive in January 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "During January 2025, Elexion Automotive's dealership test drive program resulted in a 41% conversion rate from test drive to purchase.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Conversion_Rate_Test_Drive_Anal.xlsx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "By what percentage did the May 2024 automated sales forecasting tools improve prediction accuracy?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "On May 14, 2024, the sales team introduced automated sales forecasting tools that improved prediction accuracy by 19%.",
+            "supporting_file_paths": [
+                "shared/forecasting-tool-review.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How many qualified leads and sales did Elexion's referral program generate in the second quarter of 2024, and what was the acquisition cost?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "During the second quarter of 2024, Elexion's referral program generated up to 2,340 qualified leads, which resulted in 612 vehicle sales with an average customer acquisition cost of $280.",
+            "supporting_file_paths": [
+                "shared/q2-referral-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "Which months in 2024 were peak sales periods for Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The 2024 annual financial reports show that peak sales were recorded in March and September.",
+            "supporting_file_paths": [
+                "shared/2024-sales-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "What percentage of dealers rated their relationship with Elexion Automotive positively?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of September 2024, Elexion Automotive's dealer satisfaction survey showed that 72% of franchise partners rated their relationship with Elexion Automotive as \"excellent\" or \"very good\".",
+            "supporting_file_paths": [
+                "shared/dealer-satisfaction-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "How much faster did trained salespeople at Elexion Automotive close deals than their peers who weren't formally trained by the company?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A November 2024 analysis showed that sales representatives who completed advanced product training provided by the company closed deals 28% faster than their untrained peers.",
+            "supporting_file_paths": [
+                "shared/sales-training-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "By how many days did the new sales dashboard shorten the monthly reporting cycle in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The sales team cut the monthly reporting cycle time from five days to one and a half days in March 2025 by integrating a sales dashboard.",
+            "supporting_file_paths": [
+                "shared/dashboard-efficiency-evaluation.pdf"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "What were the October 2024 conversion rates of leads from general advertising as opposed to leads from automobile review websites?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "An October 2024 sales analysis identified that leads from automotive review websites converted at 31%, compared to 19% from general advertising.",
+            "supporting_file_paths": [
+                "shared/october-2024-conversion-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "What was the Elexion Automotive sales team's customer data accuracy rate in the CRM system in 2022?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive's sales team achieved a 92% customer data accuracy and completeness rate in the CRM system in 2022.",
+            "supporting_file_paths": [
+                "shared/crm-data-review-2022.docx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "What portion of Elexion Automotive's Q1 2023 revenue was generated by sales of government fleets?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of December 2023, Elexion Automotive's fleet sales to provincial and municipal governments in Q1 accounted for 28% of total revenue.",
+            "supporting_file_paths": [
+                "shared/gov-fleet-sales-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "By how many days did the new April 2024 staff training program reduce the CRM analysts' time to full productivity?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Elexion Automotive's April 2024 training program for the CRM analysts was shown to cut the time to full productivity by 7 days.",
+            "supporting_file_paths": [
+                "shared/training-program-outcome.pptx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "",
+            "question": "How much money was the Elexion Automotive Sales Operations team able to save by renegotiating the CRM software license fees?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Through a series of contract renegotiation meetings in June 2024, the Elexion Automotive Sales Operations team was able to lower the monthly CRM license fee by $5,000.",
+            "supporting_file_paths": [
+                "shared/CRM-Negotiation-Report.docx"
+            ]
+        },
+        {
+            "id": "DI0016",
+            "justification": "",
+            "question": "How long on average did it take for an Elexion Automotive sales representative to update a lead's status in the CRM software in September 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In September 2024, the average time taken for a sales representative to update a lead's status in the CRM software was 45 seconds.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_CRM_LeadStatus_Update_Time_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0017",
+            "justification": "",
+            "question": "What percentage of vehicles sold by Elexion Automotive in North America complied with the Motor Vehicle Safety Oversight Program?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "All of Elexion Automotive's cars sold in North America comply with the Motor Vehicle Safety Oversight Program, according to an internal audit conducted on January 1, 2023.",
+            "supporting_file_paths": [
+                "shared/vehicle-safety-report.docx"
+            ]
+        },
+        {
+            "id": "DI0018",
+            "justification": "",
+            "question": "What percentage of legacy sales data had been migrated to the new 2024 CRM platform?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of February 15, 2024, the Sales Operations team of Elexion Automotive had migrated 100% of legacy sales data into the new CRM platform.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_012638.jsonl"
+            ]
+        },
+        {
+            "id": "DI0019",
+            "justification": "",
+            "question": "Based on the Sales Operations team director's recommendation, what was the average salary increase for top-performing sales representatives in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Sales Operations team director recommended that the average salary increase for top-performing sales representatives was 10% in 2025.",
+            "supporting_file_paths": [
+                "shared/2025-compensation-review.docx"
+            ]
+        },
+        {
+            "id": "DI0020",
+            "justification": "",
+            "question": "How much did the use of video conferencing for sales meetings grow from 2022 to 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Elexion Automotive sales department's use of video conferencing for client meetings increased by 300% between 2022 and 2024.",
+            "supporting_file_paths": [
+                "shared/remote-sales-evolution.docx"
+            ]
+        },
+        {
+            "id": "DI0021",
+            "justification": "",
+            "question": "At what point did Elexion finish moving its dealer network to a cloud-based CRM system?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive finished moving its whole dealer network to a cloud-based CRM platform on March 22, 2024.",
+            "supporting_file_paths": [
+                "shared/crm-transition-review.docx"
+            ]
+        },
+        {
+            "id": "DI0022",
+            "justification": "",
+            "question": "When was the major redesign of the vehicle ordering process at Elexion Automotive implemented?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Sales Operations director oversaw a multidisciplinary group that redesigned the car ordering procedure in August 2024 to simplify the paperwork for customers.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Business_Processes_Overview.xlsx"
+            ]
+        },
+        {
+            "id": "DI0023",
+            "justification": "",
+            "question": "When did the significant changes in sales compensation structures across the dealer network take place?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Comprehensive reviews of all dealer network sales compensation plans took place in October 2024.",
+            "supporting_file_paths": [
+                "shared/dealer-compensation-evolution.pdf"
+            ]
+        },
+        {
+            "id": "DI0024",
+            "justification": "",
+            "question": "Did Elexion Automotive implement an automated lead scoring system in the sales workflow in April 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, Elexion Automotive's IT staff collaborated with the sales team in April 2024 to integrate automated lead scoring algorithms into the sales workflow.",
+            "supporting_file_paths": [
+                "shared/sales-workflow-review.pdf"
+            ]
+        },
+        {
+            "id": "DI0025",
+            "justification": "",
+            "question": "When did Elexion Automotive decide to hold quarterly business meetings with top-performing dealers?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Sales Operations team started holding quarterly business review meetings with top-performing dealers in September 2023.",
+            "supporting_file_paths": [
+                "shared/dealer-engagement-strategy.docx"
+            ]
+        },
+        {
+            "id": "DI0026",
+            "justification": "",
+            "question": "When were the anonymous feedback forms aimed to encourage honest communication introduced to the sales team?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In July 2022, the company's Sales Operations management decided to introduce an anonymous feedback system for the sales team employees to facilitate open and honest communications.",
+            "supporting_file_paths": [
+                "shared/sales-team-enhancement.pdf"
+            ]
+        },
+        {
+            "id": "DI0027",
+            "justification": "",
+            "question": "What changes did the Sales Operations team implement in 2025 to improve the sales team's first impression on potential clients?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In June 2025, the Sales Operations team at Elexion Automotive partnered with a new vendor for sales presentation materials, significantly improving the presentation quality and, consequently, first impressions on potential clients.",
+            "supporting_file_paths": [
+                "shared/sales-improvement-strategies-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0028",
+            "justification": "",
+            "question": "When was the 2024 National Dealer Sales Conference held?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "On April 15, 2024, Elexion Automotive held its yearly National Dealer Sales Conference for dealership partners.",
+            "supporting_file_paths": [
+                "shared/2024-conference-recap.pptx"
+            ]
+        },
+        {
+            "id": "DI0029",
+            "justification": "",
+            "question": "How much would Elexion Automotive need to spend to increase sales in Canada?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In January 2025, Elexion Automotive's financial team calculated that a strategic plan to increase revenue in Canada would require an initial investment of $2.3 million.",
+            "supporting_file_paths": [
+                "shared/canadian-market-investment.pdf"
+            ]
+        },
+        {
+            "id": "DI0030",
+            "justification": "",
+            "question": "What were the average prices of Elexion Automotive's vehicle performance upgrade package in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, the average prices of Elexion Automotive's vehicle performance upgrade packages (e.g., mileage increase, suspension lifts, etc.) cost $7,000 across several packages.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_013103.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What is the average starting MSRP for each Elexion Automotive 2026 model car?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In a June 2025 press conference, Elexion Automotive revealed that starting from December 2025, its average starting MSRP is projected at $38,000.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Model_Pricing_Analysis.xlsx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What was the profit margin for each car sold by Elexion Automotive through dealerships in June 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of June 2024, Elexion Automotive's average profit margin per vehicle sold through its dealership network was $4,200.",
+            "supporting_file_paths": [
+                "shared/direct-sales-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "What were Elexion Automotive's average wholesale and retail prices per vehicle in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In 2024, Elexion Automotive's average wholesale price to dealers was $38,000, and the average retail price to customers was $44,275.",
+            "supporting_file_paths": [
+                "shared/direct-sales-transition.pptx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "How many franchised dealerships comprised Elexion Automotive's North American network in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Elexion Automotive operated through a network of 127 franchise dealerships in the U.S. and Canada as of November 2024.",
+            "supporting_file_paths": [
+                "shared/d2c-sales-transition.docx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "How much initial investment would Elexion Automotive need to set up the infrastructure for direct sales?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In January 2025, Elexion Automotive's financial team calculated that establishing a direct sales infrastructure would require an initial investment of $28 million.",
+            "supporting_file_paths": [
+                "shared/direct-customer-transition.pdf"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "",
+            "question": "What was Elexion Automotive's average production cost per vehicle in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In October 2024, Amanda Lee analyzed sales data, showing that Elexion Automotive's production cost averaged $31,200 per vehicle.",
+            "supporting_file_paths": [
+                "shared/direct-sales-impact.docx"
+            ]
+        },
+        {
+            "id": "IN0007",
+            "justification": "",
+            "question": "According to July 2024 customer survey results, what percentage of electric vehicle buyers preferred transparent, no-haggle pricing?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "A July 2024 market research report by Elexion Automotive indicated that 68% of potential electric vehicle buyers preferred transparent and haggle-free pricing.",
+            "supporting_file_paths": [
+                "shared/direct-sales-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0008",
+            "justification": "",
+            "question": "What was the average sales cycle duration through Elexion Automotive's dealership network as of January 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to the data from Elexion Automotive's CRM system, the average sales cycle through dealerships as of January 2025 was 42 days from the time of first contact to the conclusion of the purchase.",
+            "supporting_file_paths": [
+                "shared/direct-sales-transition.pptx"
+            ]
+        },
+        {
+            "id": "IN0009",
+            "justification": "",
+            "question": "According to customer sentiment studies, what was the annual growth rate of online car purchase inquiries in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Customer sentiment studies indicate a 47% annual increase in online car purchase inquiries in 2024.",
+            "supporting_file_paths": [
+                "shared/sales-transition-strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0010",
+            "justification": "",
+            "question": "What was the company's customer sentiment towards the traditional dealership negotiation process in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "A 2024 customer satisfaction survey carried out by Elexion Automotive customer care representatives showed that a sizeable portion of its target demographics expressed frustration with the traditional dealership negotiation process.",
+            "supporting_file_paths": [
+                "shared/direct-sales-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0011",
+            "justification": "",
+            "question": "Did any of Elexion Automotive's primary competitors that switched to a direct-to-customer sales model by Q1 2025 record increased sales?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to a market research report by the sales team at Elexion, the company's main competitors, who had switched to a direct-to-customer selling model by Q1 2025, did indeed record increased sales.",
+            "supporting_file_paths": [
+                "shared/d2c-sales-strategy.pptx"
+            ]
+        },
+        {
+            "id": "IN0012",
+            "justification": "",
+            "question": "What customer incentive could be tied to direct online purchases if Elexion were to switch by the end of 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "If Elexion Automotive were to switch to the direct sales model by the end of 2026, they could partner up with a national charging network provider to include complimentary charging for direct online purchases.",
+            "supporting_file_paths": [
+                "shared/sales-impact-analysis.pdf"
+            ]
+        },
+        {
+            "id": "IN0013",
+            "justification": "",
+            "question": "What did Elexion's 2024 market study reveal about the efficacy of online product engagement?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The March 2024 market study revealed a significant increase in lead conversion rates for customers who used an online configurator as opposed to those visiting a dealership when buying a car.",
+            "supporting_file_paths": [
+                "shared/direct-sales-shift.pptx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

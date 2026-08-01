@@ -1,0 +1,28 @@
+{
+    "dr_question": "Can we leverage AI-enhanced battery management to improve EV battery lifespan by 15%?",
+    "question_type": "ai_generated",
+    "question_source": {
+        "domain": "research",
+        "dr_question": "Can we leverage AI-enhanced battery management to improve EV battery lifespan by 15%?",
+        "industry": "Automotive -- Electric Vehicles",
+        "n_hops": 4,
+        "subquestions": [
+            "What is the current battery lifespan of our EV models?",
+            "How can we apply AI-enhanced battery management to predict and maintain State-of-Health?",
+            "What are the potential benefits of improved battery lifespan on our business?",
+            "How can we measure the effectiveness of this strategy?"
+        ],
+        "url": "https://www.here.com/learn/blog/how-ai-optimizes-electric-vehicles"
+    },
+    "timestamp": "2025-08-11 15:58",
+    "task_id": "DR0014",
+    "subquestions": [
+        "What is the current battery lifespan of our EV models?",
+        "How can we apply AI-enhanced battery management to predict and maintain State-of-Health?",
+        "What are the potential benefits of improved battery lifespan on our business?",
+        "How can we measure the effectiveness of this strategy?"
+    ],
+    "industry": "automobiles",
+    "domain": "research",
+    "url": "https://www.here.com/learn/blog/how-ai-optimizes-electric-vehicles"
+}

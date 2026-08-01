@@ -1,0 +1,15 @@
+{
+    "dr_question": "Given the CHG Healthcare article from June 2025, in which the firm of McKinsey and Company estimates that more than 50 million in-person visits could be converted to virtual visits, how could MediConn Solution's marketing department promote this virtual service to their current patients through Q4 2026?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Market Analysis",
+        "dr_question": "Given the CHG Healthcare article from June 2025, in which the firm of McKinsey and Company estimates that more than 50 million in-person visits could be converted to virtual visits, how could MediConn Solution's marketing department promote this virtual service to their current patients through Q4 2026?",
+        "industry": "Virtual/Remote Healthcare",
+        "url": "https://chghealthcare.com/blog/telehealth-the-future-of-virtual-care"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0045",
+    "industry": "virtual/remote healthcare",
+    "domain": "Market Analysis",
+    "url": "https://chghealthcare.com/blog/telehealth-the-future-of-virtual-care"
+}

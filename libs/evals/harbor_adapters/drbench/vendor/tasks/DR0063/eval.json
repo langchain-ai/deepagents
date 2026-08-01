@@ -1,0 +1,215 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What was the customer rate for Elexion Automotive's maintenance program subscribers in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In Q3 2024, Elexion Automotive's extended maintenance program increased its customer retention rate among subscribers from 81% in Q2 2024 to 87% in Q3.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Customer_Retention_Rate_Analysi.xlsx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "In January 2025, how did Elexion Automotive's customized email campaign affect customer engagement?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive's customized email campaign in January 2025 resulted in a 22% increase in customer engagement rate.",
+            "supporting_file_paths": [
+                "shared/email-campaign-impact.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How many customers participated in the customer satisfaction survey program offered by Elexion Automotive in the first half of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In the first half of 2025, 10,890 Elexion Automotive customers took part in satisfaction surveys, providing input on their vehicle performance and service experience, according to an internal report from the sales and marketing department.",
+            "supporting_file_paths": [
+                "shared/customer-satisfaction-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What was the average response time for customer service inquiries in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive's customer service team achieved an average response time of 2.2 hours for email inquiries in Q4 2024.",
+            "supporting_file_paths": [
+                "shared/q4-customer-service-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What percentage of customer complaints were resolved within 24 hours in September 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In September 2025, Elexion Automotive's customer service department resolved 82% of customer complaints within 24 hours, up from 71% in March 2025.",
+            "supporting_file_paths": [
+                "shared/september-complaints-evaluation.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How many customers attended Elexion Automotive's virtual Q&A sessions in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to an internal report completed by Elexion Automotive's sales and marketing department, 2456 customers participated in virtual Q&A sessions where they could ask questions directly to product specialists and quality engineers.",
+            "supporting_file_paths": [
+                "shared/q2-2024-qa-report.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "What percentage of customer service interactions came through Elexion Automotive's mobile app in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the sales and marketing department's report at Elexion Automotive, 40% of all customer service interactions came through the mobile app in Q4 2024.",
+            "supporting_file_paths": [
+                "shared/Q4-2024-Customer-Service-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "What was the Net Promoter Score for Elexion Automotive's customers surveyed in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Following a customer survey conducted in June 2025, Elexion Automotive obtained a Net Promoter Score of 69.",
+            "supporting_file_paths": [
+                "shared/customer-satisfaction-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "How many personalized vehicle recommendations did the Elexion Automotive CRM system generate in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the sales and marketing department, Elexion Automotive's CRM system produced 50,000 customized vehicle recommendations in 2024.",
+            "supporting_file_paths": [
+                "shared/crm-performance-analysis-2024.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "What was the average delivery time for Elexion Automotive vehicles ordered online in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The sales and marketing department in 2025 reported that vehicles ordered through the Elexion Automotive platform in Q2 2025 had an average delivery time of 27 days.",
+            "supporting_file_paths": [
+                "shared/Q2-2025-Delivery-Performance.pptx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "What was the impact of implementing the virtual showroom feature in 2024 on sales conversion rates?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "After launching the virtual showroom feature technology in May 2024, Elexion Automotive's sales conversion rate increased from 2.3% to 4.1% by October 2024.",
+            "supporting_file_paths": [
+                "shared/virtual-showroom-impact.docx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "In the first half of 2025, what was the upsell rate for home charging stations when buying a vehicle from Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the sales and marketing department of Elexion Automotive, during the first half of 2025, 60% of Elexion Automotive vehicle buyers also bought home charging stations at the time of vehicle purchase.",
+            "supporting_file_paths": [
+                "shared/H1-2025-Upsell-Analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "How is service history distributed across Elexion Automotive's dealer network, and what capability gaps exist in that knowledge sharing?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "By September 2024, Emily Lee, customer relationship manager for Elexion Automotive,  identified through annual service reports that service history was shared between 100%  of Elexion Automotive's American dealer networks and therefore there exists no gaps in that knowledge sharing, which could help improve relationships with American dealerships by early 2027.",
+            "supporting_file_paths": [
+                "shared/dealer-service-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "How many Elexion Automotive sales representatives have requested additional training support in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to a data report filed by Elexion Automotive's Human Resource Department, 22 of the 30 sales representatives at Elexion Automotive requested extra training support from January 2025 to October 2025.",
+            "supporting_file_paths": [
+                "shared/sales-training-report-2025.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What is the size and performance tracking challenge of Elexion Automotive current dealer network?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of January 2025, Elexion Automotive's dealer network consisted of 45 independent dealerships across the United States and Canada.",
+            "supporting_file_paths": [
+                "shared/dealer-network-strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "How is sales performance distributed across Elexion Automotive's dealer network, and what capability gaps exist in knowledge sharing?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "By September 2024, Elexion Automotive's customer relationship manager, Emily Lee, identified that Elexion Automotive's top-performing dealerships generated 67% of total dealer channel revenue, but Elexion Automotive lacked systematic tools to replicate best practices across 33 locations.",
+            "supporting_file_paths": [
+                "shared/dealer-relationship-enhancement.pptx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "How frequently does Elexion Automotive evaluate the performance of its dealers, and what problems with data quality influence these evaluations?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In February 2025, Elexion Automotive's dealer performance review occurred quarterly but relied on self-review data from dealerships, with Emily Lee estimating that 34% of performance metrics were incomplete or submitted late.",
+            "supporting_file_paths": [
+                "shared/dealer-relationship-enhancement.docx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "How long does it take Elexion Automotive to resolve dealer relationship issues, and what causes these delays?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In December 2024, Emily Lee found that resolving dealer disputes or performance issues at Elexion Automotive required an average of 6 weeks, due to fragmented documentation and a lack of standardized performance contracts across the dealer network.",
+            "supporting_file_paths": [
+                "shared/dealer-relations-optimization.pdf"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "How many dealers have requested additional training support in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "By July 2025, Emily Lee identifies that 19 of Elexion Automotive's 45 dealerships had requested additional training on EV technology and sustainability messaging.",
+            "supporting_file_paths": [
+                "shared/cloud-integration-strategy.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

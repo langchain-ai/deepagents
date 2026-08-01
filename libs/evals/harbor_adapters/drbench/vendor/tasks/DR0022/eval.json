@@ -1,0 +1,149 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "Which loyalty program feature generated the most IT support tickets due to access or login errors in September 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal analytics show that the \u201cFree Bubble Tea with $50 Purchase\u201d perk caused 42 support tickets related to login and access issues during September 2025.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Loyalty_Program_Support_Tickets_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "Which online payment integration experienced the most transaction errors on Lee\u2019s Market\u2019s website in August 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal tracking shows that PayPal transactions failed 1,275 times in August 2025 due to intermittent API connection issues affecting urban U.S. stores.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_004913.jsonl"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "Which store location logs the most IT help requests for scanner malfunctions in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT tracking shows that the Seattle store reported 42 scanner-related issues in Q2 2025, more than any other urban location in the U.S.",
+            "supporting_file_paths": [
+                "shared/scanner-malfunction-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "Which online feature experienced the most performance issues for mobile shoppers in August 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal app analytics indicate that the \u201cSaved Recipes\u201d feature had intermittent loading delays in August 2025, affecting 6% of mobile sessions despite being prominently promoted on the Lee\u2019s Market site.",
+            "supporting_file_paths": [
+                "shared/mobile-shopping-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "Which specialty product category generated the highest search system load on Lee\u2019s Market\u2019s website during September 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal system analytics show that imported kimchi varieties accounted for 18% of all search queries in September 2025, occasionally slowing the site\u2019s autocomplete response time for users in San Francisco and Toronto.",
+            "supporting_file_paths": [
+                "shared/search-load-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "Which Lee's Market app notification feature caused the highest number of error reports or crashes in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal app metrics indicate that the \u201cDaily FUN-FUN Promo Push\u201d notification triggered the most error reports and minor crashes among first-time users in Q2 2025.",
+            "supporting_file_paths": [
+                "shared/app-performance-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "Which product category caused the most search system errors or failed autocomplete suggestions on Lee's Market\u2019s site in August 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal search analytics show that bok choy snacks triggered the highest number of failed autocomplete suggestions in August 2025, resulting in multiple extra search attempts.",
+            "supporting_file_paths": [
+                "shared/website-search-error-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "Which online promotion caused the most website performance or server load issues in September 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal site performance logs show that the \u201cJocko's Pepper Hot Sauce Challenge\u201d banner generated the highest number of server requests in September 2025, causing occasional slowdowns in Vermont and New Hampshire.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_005155.jsonl"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "During the week of September 14\u201320, 2025, which demographic segment generated the most support tickets related to prepared food orders on the Lee\u2019s Market site?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal IT support logs show that millennials aged 25\u201334 in the U.S. submitted the highest number of service desk tickets for issues with prepared food orders during the week of September 14\u201320, 2025.",
+            "supporting_file_paths": [
+                "shared/weekly-support-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "Which catalog items generated the most praise from Lee\u2019s Market employees in Q3 2025 via internal emails?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee\u2019s Market internal tracking shows that shrimp crisp products received 47 positive mentions across stores during Q3 2025.",
+            "supporting_file_paths": [
+                "shared/employee-catalog-feedback.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "Which type of IT requests generates the most service desk emails monthly, across all of Lee Market stores in all regions?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to Lee\u2019s Market\u2019s internal IT tracking for Q3 2025, inventory system access requests make up 35% of monthly service desk emails. Knowing this highlights where catalog consolidation or workflow improvements could reduce repeated emails and speed resolution.",
+            "supporting_file_paths": [
+                "shared/service-desk-reduction.pptx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "Which catalog items cause the most confusion for Lee's Market employees in Q3 2025 via internal emails?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to internal tracking, shrimp crisp products generated 47 confusing emails in Q3 2025. Knowing this identifies catalog items where clearer organization or guidance could reduce service desk email volume.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_004647.jsonl"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "Are there specific days or times when Lee\u2019s Market service desk emails spike across all stores?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to Lee\u2019s Market IT tracking in October 2025, service desk emails peak Monday mornings and Friday afternoons, especially within two hours after system updates. Identifying these spikes helps plan workflow improvements to reduce overall email volume.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_004749.jsonl"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

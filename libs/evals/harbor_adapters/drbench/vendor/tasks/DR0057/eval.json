@@ -1,0 +1,94 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How does MediConn Solutions expand their services in new Canadian regions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In April 2023, MediConn Solutions launched region-specific telehealth pilots in Alberta and Manitoba, leveraging local provider partnerships and adapting service features to provincial health guidelines.",
+            "supporting_file_paths": [
+                "shared/mediconn-expansion-strategy.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What certificates does MediConn Solutions maintain to operate in Canada as of March 30, 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions upholds their PIPEDA, ISO 27001, and provisional regulatory approvals for security and legal operations.",
+            "supporting_file_paths": [
+                "shared/compliance-overview-mediconn.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How are prescription delivery services managed through MediConn Solutions platform?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of March 2023, the platform provides real-time order tracking and interfaces with over 200 Canadian pharmacies, with a 98% on-time delivery rate.",
+            "supporting_file_paths": [
+                "shared/prescription-delivery-management.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What makes MediConn Solution platform design distinct among Canadian virtual care providers?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Q2 2022 client surveys show 93%  satisfaction for platform ease of use and onboarding speed, outperforming most competitors.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_231758.jsonl"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How does Julian Lee apply analytics for optimizing service delivery?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2023, Julian Lee's team used dashboard metrics to reduce on-boarding time and increase appointment reminders by 20%, optimizing service workflows.",
+            "supporting_file_paths": [
+                "shared/service-optimization-analytics.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How does Julian Lee monitor customers to keep clients interested in the webinar after platform upgrades since December 2022?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Julian Lee tracks the rates for webinar invitations and segmented user lists based on login frequency and introduced gratification rewards for attendees, resulting in a 22% rise in webinar participation.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_231859.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What retention strategies does MediConn Solutions use to ensure clients continue using their virtual healthcare services long-term?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In September 2021, MediConn Solutions instituted a retention playbook that includes semi-annual account reviews, automated messaging for expiring users, and dedicated client success managers, reducing voluntary churn by 8% in the first half of 2022.",
+            "supporting_file_paths": [
+                "shared/client-retention-strategies.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "How does Julian Lee monitor customer satisfaction to keep clients loyal after conversion?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In Q1 2023 Julian Lee implemented quarterly Net Promoter Score (NPS) surveys for clients who converted to full-time users, tracked satisfaction trends, and created monthly action plans based on specific negative feedback, leading to a 10% improvement in renewal rates over 6 months.",
+            "supporting_file_paths": [
+                "shared/client-retention-strategies.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

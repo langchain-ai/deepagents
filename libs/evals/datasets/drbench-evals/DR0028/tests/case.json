@@ -1,0 +1,24 @@
+{
+  "task_id": "DR0028",
+  "question": "With the rapid increase in virtual consultations for healthcare visits reported since 2023, what marketing strategies can MediConn Solutions adopt to continue attracting new customers?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What market share does MediConn Solutions currently have in Canada?",
+      "answer": "MediConn Solutions currently has 19% of the Canadian virtual healthcare market as of our recent study on July 1, 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "Do in-person marketing events, such as university outreach tables or sales representatives at doctors' offices, increase customer conversion?",
+      "answer": "Based on a marketing department report from May 2024, potential customers are 60% more likely to start using MediConn services after encountering in-person marketing in comparison to encountering digital ads.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "How effective are social media campaigns at encouraging new patients to sign up for MediConn accounts?",
+      "answer": "During our last Facebook ad push, there was an increase of 10% in new patient sign-ups, 6% of which were referred directly to the MediConn site through Facebook ad links.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+{
+    "name": "DR0023",
+    "task_id": "DR0023",
+    "level": "",
+    "company_info": {
+        "name": "Lee's Market",
+        "industry": "Retail",
+        "size": "Enterprise",
+        "founded_year": 2003,
+        "headquarters": "Richmond, British Columbia, Canada",
+        "description": "Lee's Market is a regional Asian supermarket chain specializing in high-quality Asian groceries and household items. With a growing footprint in urban centers across the U.S. and Canada, Lee's Market blends traditional flavors with modern retail experiences, offering in-store, online, and delivery services.",
+        "key_products_services": [
+            "Fresh produce, meats, and seafood",
+            "Asian household items",
+            "Bakery and prepared foods",
+            "Online grocery shopping and delivery"
+        ],
+        "target_markets": [
+            "Asian communities in the U.S. and Canada",
+            "Urban centers with diverse populations"
+        ],
+        "annual_revenue": "$500M - $600M",
+        "employee_count": 5000,
+        "compliance_certifications": [
+            "FDA and CFIA Food Safety Compliance",
+            "HACCP Food Safety Compliance",
+            "USDA Import Inspection Regulations"
+        ],
+        "market_position": "Lee's Market is a rising regional player bridging cultural authenticity and modern retail innovation in the Asian grocery sector. It is carving a niche between mainstream retailers like Walmart and ethnic-focused giants like H-Mart."
+    },
+    "dr_question": "By Q3 2026, how can Lee\u2019s Market expand and optimize its IT self-service capabilities to reduce service desk dependency, accelerate resolution times, and improve both employee and customer experience across all stores?",
+    "date": "2025-10-30",
+    "persona": {
+        "role": "IT Service Manager",
+        "department": "Information Technology",
+        "name": "Kevin Wong",
+        "first_name": "Kevin",
+        "last_name": "Wong",
+        "email": "kevin.wong@leesmarket.com",
+        "seniority": "Senior",
+        "responsibilities": "Oversees IT service operations, including incident, problem, and change management processes. Ensures uptime and performance of retail systems, POS terminals, and e-commerce platforms across all store locations. Implements ITIL-based practices and coordinates with vendors for infrastructure support.",
+        "id": "ITM0001",
+        "domain": "itsm",
+        "justification": "As Lee\u2019s Market expands its retail and online operations, Kevin ensures consistent technology service delivery across all channels. His leadership in ITSM supports business continuity, minimizes downtime, and enhances employee productivity across the organization.",
+        "username": "kevin.wong"
+    },
+    "citation_format": {
+        "urls": [
+            "https://www.example.com/article",
+            "https://techcrunch.com/2023/report.html"
+        ],
+        "file_names": [
+            "quarterly_report.pdf",
+            "market_analysis.docx",
+            "shared/file-pdf"
+        ],
+        "mattermost_chats": [
+            "MatterMost-Channel-Team-User",
+            "Mattermost Message - Enterprise Chat (User: john.doe, Team: Compliance, Channel: General)"
+        ],
+        "email_messages": [
+            "RoundCube-fromdemail-todemails-Subject",
+            "Email from sarah.johnson@company.com on 20 Jan 2025"
+        ]
+    }
+}

@@ -1,0 +1,127 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What percentage of battery pack defects were identified during Elexion Automotive's quality inspection process in Q3 of 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In Q3 of 2024, Elexion Automotive quality inspection process identified battery pack defects in 4.2% of units during inspections before delivery.",
+            "supporting_file_paths": [
+                "shared/q3-battery-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "How many paint finish defects per vehicle were recorded during Elexion Automotive's final quality checks in September 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "During the September 2024 final quality checks, Elexion Automotive recorded an average of 2.3 paint finish defects per vehicle that included clear coat imperfections, color matching variations, and surface contamination.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_180200.jsonl"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What was the average battery charging efficiency rate achieved during Elexion Automotive's quality testing of 2025 model vehicles in October 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "During October 2024 quality testing, Elexion Automotive's 2025 model achieved an average battery charging efficiency rate of 94.7% from 10% to 80% state of charge.",
+            "supporting_file_paths": [
+                "shared/battery-efficiency-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "Did Elexion Automotive implement new brake system quality validation procedures?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, Elexion Automotive implemented new brake system quality validation procedures in July 2024 that aligned with the Motor Vehicle Safety Oversight program requirements.",
+            "supporting_file_paths": [
+                "shared/brake-system-update.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How many thermal management system defects were identified per 100 vehicles during Elexion Automotive quality audits in the fourth quarter of 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "During Q4 2024 quality audits, Elexion Automotive identified an average of 5.7 thermal management system defects per 100 vehicles, involving coolant irregularities and temperature sensor calibration issues that required corrective actions before delivery.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Audi_Quality_Analysis.xlsx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "Did Elexion Automotive implement enhanced quality control procedures for lithium-ion cell procurement from suppliers in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, Elexion Automotive implemented quality control procedures for lithium-ion procurement in May 2024.",
+            "supporting_file_paths": [
+                "shared/quality-control-review.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "How many suspension component failures were detected during Elexion Automotive's durability test of the 2025 model prototype in November 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "During the November 2024 durability test, Elexion Automotive detected 18 suspension components in 2025 model prototypes after an average of 127,000 simulated miles.",
+            "supporting_file_paths": [
+                "shared/durability-test-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "How many distinct charging station models and power delivery protocols does Elexion Automotive's quality assurance team test for compatibility as of December 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of December 2024, the Elexion Automotive's quality assurance team tests charging compatibility across 87 distinct charging station models, 15 CCS protocol versions and 22 Level 2 charger configurations, with plans to expand to 120 charging scenarios by 2025.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Charging_Company_Data.xlsx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What percentage of Elexion Automotive's customer satisfaction complaints were related to infotainment connectivity issues in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In Q3 2024, 30% of Elexion Automotive's customer satisfaction complaints were related to infotainment connectivity issues, making it the second-highest complaint category after charging speed concerns.",
+            "supporting_file_paths": [
+                "shared/QA-Smartphone-Integration.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "How many distinct smartphone models and iOS versions does the Elexion Automotive quality assurance team currently test for connectivity compatibility?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of December 2024, the Elexion Automotive quality assurance team tests connectivity compatibility across 87 distinct smartphone models, 15 iOS versions and 22 Android versions, with plans to expand to 120 devices by 2025.",
+            "supporting_file_paths": [
+                "shared/infotainment-connectivity-enhancement.docx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "What was the customer retention rate for Elexion Automotive owners who reported excellent infotainment system performance as opposed to those who reported connectivity problems?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "A 2023 owner satisfaction study conducted in September revealed a 94% retention rate among customers who reported excellent infotainment system performance, compared to only 71% retention among those who experienced repeated connectivity problems.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Customer_Retention_Analysis.xlsx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

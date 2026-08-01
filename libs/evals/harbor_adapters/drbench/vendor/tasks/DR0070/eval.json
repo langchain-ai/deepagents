@@ -1,0 +1,127 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How many cybersecurity attacks did Elexion Automotive's cybersecurity team handle throughout the fiscal year 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive's cybersecurity team handled two cybersecurity attacks throughout the fiscal year 2025.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-review-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "Of all the cybersecurity attacks faced by Elexion Automotive since its founding in 2010, what percentage of them were from physical access attacks?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Roughly 12% of all cybersecurity attacks faced by Elexion Automotive since its founding in 2010 were from physical access attacks. Namely, diagnostic ports (OBD-II) from various models were exploited to perform these attacks.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_020421.jsonl"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "When was the last time Elexion Automotive performed a major internal cybersecurity software update to protect its company data and systems?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The most recent major cybersecurity software update that Elexion Automotive performed on its internal data and systems was on September 15, 2025.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_020510.jsonl"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What percentage of Elexion Automotive's employees were found to have failed the internal email phishing simulation orchestrated by the cybersecurity team in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "It was determined that 24% of Elexion Automotive employees fell victim to the internally orchestrated email phishing simulation from the Elexion Automotive cybersecurity team in 2025.",
+            "supporting_file_paths": [
+                "shared/2025-phishing-simulation-report.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What was the total budget allocation afforded to the Elexion Automotive cybersecurity team for the fiscal year 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The cybersecurity team at Elexion Automotive was given a total budget allocation of $5.2 million for the fiscal year 2025.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_020616.jsonl"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What percentage of the cybersecurity attacks faced by Elexion Automotive in 2019 were considered 'avoidable'?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "It was determined by the Elexion Automotive cybersecurity team that about 88% of the cybersecurity attacks faced by Elexion Automotive in 2019 were deemed 'avoidable'.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_020717.jsonl"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "What cybersecurity measures has Elexion Automotive implemented before to help protect its vehicles and customers leading into the next year?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In October of 2013, Elexion Automotive's cybersecurity team conducted an audit of its mobile app and determined that 47% of its customers were at risk of a remote cybersecurity attack because the team had only required single-factor authentication rather than implementing two-factor authentication.",
+            "supporting_file_paths": [
+                "shared/elexion-cybersecurity-framework.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What communication measures has the cybersecurity team at Elexion Automotive used to help prevent their customers from remote cybersecurity attacks in 2025, and how will this change going into 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The cybersecurity team at Elexion Automotive has sent out a total of 12 cybersecurity education and awareness mass email memos to its customers throughout the fiscal year 2025. It plans to increase these communication measures by 25% in 2026.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-strategy-Q1-2026.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What cybersecurity measures is Elexion Automotive implementing to help protect its vehicles and customers leading into 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In October 2025, Elexion Automotive signed a contract with a team of researchers to perform penetration testing and red teaming efforts, which is set to kick off in Q1 2026. These efforts will be conducted in conjunction with the internal cybersecurity team to further ensure customer safety and expand on the team's ongoing work.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-strategies-q1-2026.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "What percentage of its efforts does the cybersecurity team at Elexion Automotive focus on over-the-air (OTA) updates, and how will that percentage change going into 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The cybersecurity team at Elexion Automotive currently allocates 23% of its efforts to OTA updates, but that number is planned to increase to 30% in 2026 as the robustness of OTA updates continues to grow in significance within the scope of cybersecurity and the automotive market.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-strategy-Q1-2026.pdf"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "What is Elexion Automotive's compliance rating with the ISO/SAE 21434 standard projected to be by Q1 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to an internal audit performed in August 2025, Elexion Automotive had already achieved a 96% compliance rating for the non-legally mandated ISO/SAE 21434 standard, but is on track to increase that rating to 98% by the start of Q1 2026.",
+            "supporting_file_paths": [
+                "shared/2026-cybersecurity-strategy.pptx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

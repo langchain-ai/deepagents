@@ -1,0 +1,17 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "IN001_pdf",
+            "justification": "Understanding current food waste reduction rates helps inform FSMA 204 implementation strategies.",
+            "question": "What is Lee's Market's current food waste reduction rate as of Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market reduced food waste by 8% in Q2 2024, saving $1.2M.",
+            "supporting_file_paths": [
+                "shared/food-safety-regulatory-compliance.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

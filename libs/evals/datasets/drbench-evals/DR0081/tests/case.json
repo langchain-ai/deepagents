@@ -1,0 +1,36 @@
+{
+  "task_id": "DR0081",
+  "question": "Given the evolving battery price trends, supply chain dynamics, and regional material availability highlighted in the 2024 IEA report \"Trends in Electric Cars\", how can Elexion Automotive optimize its battery sourcing and procurement strategy to maintain cost efficiency and production resilience by Q1 2026?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "By Q2 2025, had Elexion Automotive implemented a centralized database to track lithium-ion battery suppliers and critical mineral inventories?",
+      "answer": "Yes. As of June 30, 2025, Elexion Automotive operated a centralized database to track lithium-ion battery suppliers, lead times, and the availability of critical minerals, including lithium, nickel, and cobalt, across North America, Europe, and Asia.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "By how much has Elexion Automotive reduced its lithium-ion battery procurement costs between Q1 and Q3, 2025?",
+      "answer": "According to procurement data, Elexion Automotive reduced its EV battery procurement costs by 7% between January 1 and September 30, 2025, through long-term supplier contracts and improved EV battery material forecasting.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "How many active supplier partnerships does Elexion Automotive maintain for lithium-ion EV battery components as of November 1, 2025?",
+      "answer": "According to internal documentation, as of November 1, 2025, Elexion Automotive works with 18 certified suppliers for lithium-ion battery cells, casings, and cathodes across Europe, Asia, and North America.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "As of October 1, 2025, how many regional partnerships does Elexion Automotive maintain for second-life battery deployment or recycling?",
+      "answer": "As of October 1, 2025, Elexion maintains 5 regional partnerships (4 in the US, 1 in Canada) to repurpose or recycle end-of-life EV batteries, handling approximately 350 units annually.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "How many used Elexion EVs were sold or transferred into secondary markets by Q3 2025, and what percentage underwent battery refurbishment?",
+      "answer": "According to internal analytics, 1,148 used Elexion EVs were sold or leased into secondary markets in North America, with 35% receiving battery refurbishment prior to resale.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

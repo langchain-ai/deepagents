@@ -1,0 +1,30 @@
+{
+  "task_id": "DR0071",
+  "question": "Referencing the information shared in the April 2025 article from Help Net Security, what external cybersecurity market data involving the automotive industry should Elexion Automotive analyze by the end of Q4 2025 to protect consumer data and safety?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "Has Elexion Automotive already made any efforts in 2025 within its own organization to utilize available external market data to help protect consumer data security and safety concerns?",
+      "answer": "Yes, Elexion Automotive has already held a major company town hall meeting in September 2025 to discuss the latest external market data, with a significant portion of the meeting dedicated to consumer data security and safety.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What proportion of the cybersecurity team's time is dedicated to analyzing and learning from externally available cybersecurity market data within the automotive industry, and how will that change by the end of 2025?",
+      "answer": "The cybersecurity team at Elexion Automotive currently spends roughly just over half of their time on analyzing and learning from external cybersecurity market trends, also known as \"threat intelligence\". This proportion of the team's effort is planned to climb to roughly 60% by the end of 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "Has the Elexion Automotive cybersecurity team used any external market data from Q3 2025 to help them with engineering any models' software updates being released in Q4 2025?",
+      "answer": "Yes, the cybersecurity team at Elexion Automotive has leveraged external market data from Q3 to influence their Q4 software updates in 2025. Specifically, the team's planned software update in Q4 focuses primarily on preventing remote malware attacks that had been reported by similar automotive brands during Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "How much did Elexion Automotive spend on securing external market data for its cybersecurity team in Q3 2025, and how will that number change by the end of Q4 2025?",
+      "answer": "Elexion Automotive spent $25,000 on securing valuable external market data for its cybersecurity team in Q3 of 2025, with plans to increase spend by $4,000 in Q4 totaling $29,000.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

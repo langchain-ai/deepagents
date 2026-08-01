@@ -1,0 +1,171 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "EX0000",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Telehealth providers must choose between aligning with insurance, which requires full HIPAA compliance, or operating on a cash-only basis, thereby avoiding HIPAA but navigating a complex landscape of 50-state privacy laws.",
+            "supporting_urls": [
+                "https://www.healthcaredive.com/news/telehealth-providers-crossroads-regulations-paul-schmeltzer-clark-hill/727296/"
+            ]
+        },
+        {
+            "id": "EX0001",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Accepting insurance expands the patient base and ensures steady reimbursements, but necessitates significant investment in secure platforms to comply with HIPAA Privacy and Security standards, including data encryption, risk analyses, and comprehensive staff training.",
+            "supporting_urls": [
+                "https://www.healthcaredive.com/news/telehealth-providers-crossroads-regulations-paul-schmeltzer-clark-hill/727296/"
+            ]
+        },
+        {
+            "id": "EX0002",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Cash-only telehealth provides flexibility with provider-set rates and simpler billing but poses legal risks due to complex state-specific data privacy regulations. New state health data laws allow consumers to sue over privacy breaches, unlike HIPAA, which offers protections for providers.",
+            "supporting_urls": [
+                "https://www.healthcaredive.com/news/telehealth-providers-crossroads-regulations-paul-schmeltzer-clark-hill/727296/"
+            ]
+        },
+        {
+            "id": "qa_1755631867",
+            "justification": "Employee satisfaction does not influence insurance acceptance decisions.",
+            "question": "Average employee satisfaction score Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee satisfaction score averaged 82% in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/employee-engagement-satisfaction.pptx"
+            ]
+        },
+        {
+            "id": "qa_1756142597",
+            "justification": "IT costs are irrelevant to insurance and compliance decisions.",
+            "question": "What were IT infrastructure costs in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT infrastructure costs were $1.2M in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Quarterly_Financial_Insights.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1756142539",
+            "justification": "Assesses risks of state compliance, influencing insurance decisions.",
+            "question": "State-specific compliance violations Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "5 violations reported in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Compliance_Violations_Report_2023.xlsx"
+            ]
+        },
+        {
+            "id": "IN038",
+            "justification": "This cost insight is crucial for evaluating insurance acceptance decisions.",
+            "question": "What is the projected cost of HIPAA compliance in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Projected HIPAA compliance cost is $2.5M for Q2 2024.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_103342.jsonl"
+            ]
+        },
+        {
+            "id": "DI001",
+            "justification": "Training expenses do not impact the decision regarding insurance and compliance regulations.",
+            "question": "What were training expenses in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Training expenses amounted to $300,000, reflecting a 10% increase this quarter.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_103519.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1756142630",
+            "justification": "General training metrics don't impact insurance and compliance decisions.",
+            "question": "Total training hours spent in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Total training hours were 2,500 in Q4 2024.",
+            "supporting_file_paths": [
+                "shared/MediConn_Quarterly_Training_Hours_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1756142617",
+            "justification": "New hiring data does not relate to insurance acceptance factors.",
+            "question": "Number of new hires in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "There were 30 new hires in Q1 2024.",
+            "supporting_file_paths": [
+                "shared/MediConn_Quarterly_Hiring_Stats_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1756142505",
+            "justification": "Helps gauge insurance impact on provider decisions, addressing the DR Question.",
+            "question": "Insurance acceptance rate Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "60% of providers accept insurance by Q3 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Insurance_Acceptance_Analysis_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755631751",
+            "justification": "Training session counts are unrelated to insurance acceptance factors.",
+            "question": "How many training sessions were held in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "18 training sessions conducted in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/Q1-2025-Training.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755624646",
+            "justification": "Employee metrics are unrelated to the insurance acceptance and compliance focus.",
+            "question": "What are our employee turnover rates in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate was 12%, slightly down from 15% last quarter.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_133119.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1756142712",
+            "justification": "Marketing costs are unrelated to insurance acceptance and compliance issues.",
+            "question": "What were total marketing costs in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Total marketing costs were $500,000 in Q1 2024.",
+            "supporting_file_paths": [
+                "shared/MediConn_Quarterly_Financial_Overview.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755631679",
+            "justification": "Understanding training needs aids in assessing HIPAA compliance readiness.",
+            "question": "HIPAA-related staff training hours Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Staff training requires 1,200 hours.",
+            "supporting_file_paths": [
+                "shared/telehealth-compliance-strategy.pptx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

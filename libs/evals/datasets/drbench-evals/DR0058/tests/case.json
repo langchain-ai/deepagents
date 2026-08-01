@@ -1,0 +1,30 @@
+{
+  "task_id": "DR0058",
+  "question": "In 2026, since a ransomware attack would not be just an IT issue but a risk to every function of MediConn Solutions, what specific architectural and procedural controls would a cybersecurity specialist need to design and implement to minimize the blast radius and ensure MediConn’s clinical continuity during an extended loss of services from one of their third-party providers?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "In Q2 2025 did the cybersecurity specialist perform a vulnerability assessment of MediConn's dependencies on critical third-party providers?",
+      "answer": "Yes. According to data from the IT department between April 1 and June 30, 2025 the cybersecurity specialist perform a vulnerability assessment of MediConn's dependencies",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "How many penetration tests of MediConn’s virtual healthcare platform did the cybersecurity specialist complete in Q1 2024?",
+      "answer": "MediConn's cybersecurity specialist completed 5 full-scale penetration tests on the platform between January 1 and March 31, 2024, focusing on both internal systems and third-party integrations.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "During Q3 2024, how many hours did MediConn's cybersecurity specialist spend reviewing and updating the incident response plan for third-party outages and ransomware scenarios?",
+      "answer": "According to internal documentation, the cybersecurity specialist spent 36 hours between July 1 and September 30, 2024 reviewing and updating MediConn’s incident response plan to address extended outages from mission-critical third-party providers.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "In Q1 2025, how many proactive threat detection alerts did MediConn's cybersecurity specialist configure for third-party integrations with MediConn’s virtual healthcare platform?",
+      "answer": "Between January 1 and March 31, 2025, MediConn's cybersecurity specialist configured 25 proactive threat detection alerts across all critical third-party integrations connected to MediConn’s virtual healthcare platform.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

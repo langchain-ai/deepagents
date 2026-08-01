@@ -1,0 +1,66 @@
+{
+    "name": "DR0034",
+    "task_id": "DR0034",
+    "level": "",
+    "company_info": {
+        "name": "Lee's Market",
+        "industry": "Retail",
+        "size": "Enterprise",
+        "founded_year": 2003,
+        "headquarters": "Richmond, British Columbia, Canada",
+        "description": "Lee's Market is a regional Asian supermarket chain specializing in high-quality Asian groceries and household items. With a growing footprint in urban centers across the U.S. and Canada, Lee's Market blends traditional flavors with modern retail experiences, offering in-store, online, and delivery services.",
+        "key_products_services": [
+            "Fresh produce, meats, and seafood",
+            "Asian household items",
+            "Bakery and prepared foods",
+            "Online grocery shopping and delivery"
+        ],
+        "target_markets": [
+            "Asian communities in the U.S. and Canada",
+            "Urban centers with diverse populations"
+        ],
+        "annual_revenue": "$500M - $600M",
+        "employee_count": 5000,
+        "compliance_certifications": [
+            "FDA and CFIA Food Safety Compliance",
+            "HACCP Food Safety Compliance",
+            "USDA Import Inspection Regulations"
+        ],
+        "market_position": "Lee's Market is a rising regional player bridging cultural authenticity and modern retail innovation in the Asian grocery sector. It is carving a niche between mainstream retailers like Walmart and ethnic-focused giants like H-Mart."
+    },
+    "dr_question": "How can Jason Wong, given Lee's Markets' limited IT resources in 2025, strengthen employee cybersecurity training to reduce risk of retail cyberattacks that lead to operation disruptions and financial loss by Q3 2027?",
+    "date": "2025-10-30",
+    "persona": {
+        "role": "Information Security Manager",
+        "department": "IT & Security",
+        "name": "Jason Wong",
+        "first_name": "Jason",
+        "last_name": "Wong",
+        "email": "jason.wong@leesmarket.com",
+        "seniority": "Manager",
+        "responsibilities": "Lead the protection of Lee's Market's digital and operational infrastructure, including e-commerce platforms, POS systems, customer loyalty programs, and supplier portals. Jason manages cybersecurity policies, oversees incident detection and response, and ensures data protection compliance across Canadian and U.S. operations. He works closely with IT, Operations, and HR to maintain secure payment environments (PCI DSS), prevent data breaches, and train in-store and warehouse staff on cybersecurity best practices.",
+        "id": "MNG0006",
+        "domain": "cybersecurity",
+        "justification": "Lee's Market operates both online and physical retail channels that process large volumes of customer data and payment transactions daily. As cyber threats against retailers increase, particularly phishing, supply chain breaches, and ransomware, Jason's role is essential to safeguard sensitive information and maintain consumer trust. He monitors industry threat trends and benchmarks security readiness using sources like the VikingCloud retail cybersecurity report. Insights about untrained temporary staff, data breach frequencies, and attack vectors help him strengthen employee training programs, tighten vendor access controls, and justify security budget allocations to the executive team.",
+        "username": "jason.wong"
+    },
+    "citation_format": {
+        "urls": [
+            "https://www.example.com/article",
+            "https://techcrunch.com/2023/report.html"
+        ],
+        "file_names": [
+            "quarterly_report.pdf",
+            "market_analysis.docx",
+            "shared/file-pdf"
+        ],
+        "mattermost_chats": [
+            "MatterMost-Channel-Team-User",
+            "Mattermost Message - Enterprise Chat (User: john.doe, Team: Compliance, Channel: General)"
+        ],
+        "email_messages": [
+            "RoundCube-fromdemail-todemails-Subject",
+            "Email from sarah.johnson@company.com on 20 Jan 2025"
+        ]
+    }
+}

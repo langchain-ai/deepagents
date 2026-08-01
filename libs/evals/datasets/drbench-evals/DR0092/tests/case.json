@@ -1,0 +1,48 @@
+{
+  "task_id": "DR0092",
+  "question": "What additional compliance controls should be integrated into MediConn’s platform by Q2 2026 to ensure secure authentication and patient verification for Indigenous patients in low-connectivity environments?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What percentage of MediConn's virtual consultations in 2024 involved Indigenous patients from regions with limited digital infrastructure?",
+      "answer": "18% of MediConn's total consultations in 2024 originated from Indigenous communities located in areas with average connectivity speeds below 10 Mbps.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What was the authentication failure rate reported in MediConn's 2024 audit for remote or rural patient logins?",
+      "answer": "The 2024 internal compliance audit identified a 7.4% authentication failure rate in sessions initiated from low-connectivity regions.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "How many data access incidents were reported in MediConn's platform from Indigenous community users in 2024?",
+      "answer": "Four minor data access incidents were reported between Q2 and Q4 2024 involving delayed multi-factor authentication in areas with intermittent connectivity.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "What proportion of MediConn's compliance budget was allocated to authentication system improvements in FY2025?",
+      "answer": "9% of the FY2025 compliance and cybersecurity budget ($1.2M CAD total) was directed toward authentication infrastructure upgrades.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "What percentage of MediConn's Indigenous patient base uses mobile devices as their primary means of accessing care?",
+      "answer": "Internal analytics from Q3 2025 show that 82% of Indigenous patients connect to MediConn's platform primarily through mobile devices.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0006",
+      "question": "What is the expected increase in Indigenous patient enrollment between 2025 and 2027 based on MediConn's current growth projections?",
+      "answer": "Projections indicate a 35% increase in Indigenous patient enrollment by 2027, driven by regional telehealth expansion initiatives.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0007",
+      "question": "What internal compliance Key Performance Indicator (KPI) has MediConn introduced to measure readiness for Indigenous reporting by FY2026?",
+      "answer": "MediConn introduced an internal KPI called the \"Indigenous Reporting Readiness Index (IRRI)\", targeting 85% framework compliance and 100% staff retraining completion by Q4 2026.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

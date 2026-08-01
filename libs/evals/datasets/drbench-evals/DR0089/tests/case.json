@@ -1,0 +1,48 @@
+{
+  "task_id": "DR0089",
+  "question": "Given that one in seven new vehicles sold in Canada in 2024 were zero-emission, how can Elexion Automotive’s QA team enhance cold-weather testing protocols by Q4 2026 to improve EV battery endurance and reliability in the country’s key ZEV markets?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What are the temperatures at which Elexion Automotive's current weather testing protocols validate EV performance?",
+      "answer": "The temperatures at which Elexion Automotive's current weather testing protocols validate EV performance are 20°C and -7°C.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "According to Elexion's Annual Testing Report for 2024, what are the recommended temperatures at which cold-weather testing should be done for better endurance coverage?",
+      "answer": "According to Elexion's Annual Testing Report for 2024, cold-weather testing should be conducted at -20°C, -15°C, -10°C, -5°C, and 0°C to ensure better endurance coverage.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "What percentage of Elexion Automotive's manufacturing plants isolate EV battery pack tests from HVAC or cabin heating simulations?",
+      "answer": "70% of Elexion Automotive's manufacturing plants isolate EV battery pack tests from HVAC or cabin heating simulations.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "What is the percentage point gap between EV test cases that include preconditioning cycles and the real-world usage statistics of such cases in cold weather conditions at Elexion Automotive?",
+      "answer": "The percentage point gap between EV test cases that include preconditioning cycles and the real-world usage statistics of such cases in cold weather conditions is 20% at Elexion Automotive. \nOnly 40% of EV test cases include preconditioning cycles at Elexion Automotive, although real drivers use them in approximately 60% of cold starts.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "How many full-vehicle cold chambers operating from -30°C to +25°C are recommended to be added by Q4 2026 to enhance EV cold-weather testing capabilities at Elexion Automotive?",
+      "answer": "6-8 full-vehicle cold chambers are recommended to be added by Q4 2026 to expand testing capacity at Elexion Automotive.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0006",
+      "question": "By what percentage did the integrated protocol models at Elexion Automotive retain additional winter range over six months?",
+      "answer": "Integrated protocol models at Elexion Automotive retained 9 to 11 percent more winter range over six months.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0007",
+      "question": "How many phases are included in the EV cold-weather testing plan at Elexion Automotive from Q4 2025 to Q4 2026?",
+      "answer": "The EV cold-weather testing plan at Elexion Automotive from Q4 2025 to Q4 2026 includes three phases. Phase A, scheduled for Q4 2025, focuses on conducting a gap audit and initiating pilot testing. Phase B, spanning Q1 to Q2 2026, aims to expand both laboratory and system-level tests. Phase C, planned for Q3 to Q4 2026, focuses on production validation and ongoing reliability monitoring, ensuring a comprehensive evaluation of EV performance in cold weather conditions.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

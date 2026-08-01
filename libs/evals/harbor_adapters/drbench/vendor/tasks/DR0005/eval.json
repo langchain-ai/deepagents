@@ -1,0 +1,578 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "EX0000",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Retailers are increasingly using AI chatbots to cater to Gen Z and Millennial demands for instant, 24/7 service. While 86% of consumers preferred human agents in 2019, by 2023, 62% of shoppers favored chatbots for quick inquiries due to their ability to provide instant responses and save time.",
+            "supporting_urls": [
+                "https://www.grocerydoppio.com/articles/chatbots-improving-seamless-interactions-between-grocers-and-centennials"
+            ]
+        },
+        {
+            "id": "EX0001",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Chatbots can reduce customer service costs by about 30%, helping businesses save from the $1.3 trillion spent annually on customer queries. Additionally, 69% of shoppers appreciate chatbots for their quick responses, enhancing customer satisfaction and reducing frustration.",
+            "supporting_urls": [
+                "https://www.grocerydoppio.com/articles/chatbots-improving-seamless-interactions-between-grocers-and-centennials"
+            ]
+        },
+        {
+            "id": "EX0002",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Grocery retailers see conversational AI as crucial for future customer service, with 82% believing its adoption is necessary and 78% highlighting customer experience improvement as a top use-case for technologies like ChatGPT. By utilizing chatbots for personalized recommendations, instant issue resolution, and omnichannel engagement, retailers aim to reduce churn and enhance customer loyalty through proactive, always-available support.",
+            "supporting_urls": [
+                "https://www.grocerydoppio.com/articles/chatbots-improving-seamless-interactions-between-grocers-and-centennials"
+            ]
+        },
+        {
+            "id": "DI011_xlsx",
+            "justification": "Compliance training figures do not impact chatbot strategies for consumer experience.",
+            "question": "How many employees attended compliance training in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Around 300 employees completed compliance training in Q1 2024.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Employee_Training_Statistics.xlsx"
+            ]
+        },
+        {
+            "id": "DI010_xlsx",
+            "justification": "IT budget allocation doesn't directly relate to chatbot implementation for centennial shoppers.",
+            "question": "What was Lee's Market IT budget in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT budget was $2.5M, with $1M allocated to cybersecurity.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_IT_Budget_Allocation_2023.xlsx"
+            ]
+        },
+        {
+            "id": "DI008_roundcube",
+            "justification": "Workers' compensation claims are not relevant to chatbot adoption for customer experience.",
+            "question": "What was Lee's Market workers' compensation claims rate in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The workers' compensation claims rate decreased to 2.1% from 2.5%.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_142313.jsonl"
+            ]
+        },
+        {
+            "id": "DI004_pptx",
+            "justification": "Compliance training hours do not impact centennial experience with chatbots.",
+            "question": "What were compliance training hours in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Compliance training totaled 1,200 hours in Q1 2024.",
+            "supporting_file_paths": [
+                "shared/compliance-training-overview.pptx"
+            ]
+        },
+        {
+            "id": "IN009_roundcube",
+            "justification": "Understanding online shopping habits helps identify opportunities for chatbot integration to enhance the consumer experience.",
+            "question": "What percentage of Lee's Market customers have used online shopping services in Q3 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "45% of Lee's Market customers have used online shopping services, with a 10% increase from Q3 2022.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_135753.jsonl"
+            ]
+        },
+        {
+            "id": "IN010_roundcube",
+            "justification": "Understanding chat resolution rates helps assess chatbot effectiveness for centennial shoppers.",
+            "question": "What is the average resolution rate of Lee's Market customer inquiries via chat in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "85% of customer inquiries were resolved via chat within 30 minutes.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_140122.jsonl"
+            ]
+        },
+        {
+            "id": "IN005_xlsx",
+            "justification": "Understanding call volume helps assess chatbot demand and potential cost savings.",
+            "question": "What was Lee's Market customer service call volume in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Customer service call volume averaged 5,000 calls per month in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Cust_Service_Call_Volume_Q2.xlsx"
+            ]
+        },
+        {
+            "id": "IN002_pdf",
+            "justification": "Cost savings enable reinvestment into enhancing centennial consumer experiences.",
+            "question": "Projected chatbot cost savings in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Expect 25% cost reduction by Q2 2024.",
+            "supporting_file_paths": [
+                "shared/centennial-experience-enhancement.pdf"
+            ]
+        },
+        {
+            "id": "DI003_pptx",
+            "justification": "Facility costs do not impact chatbot strategies for centennials.",
+            "question": "Annual facility maintenance cost 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Total maintenance cost was $3.5 million in 2024.",
+            "supporting_file_paths": [
+                "shared/facility-operations-2024.pptx"
+            ]
+        },
+        {
+            "id": "DI009_docx",
+            "justification": "IT infrastructure upgrades do not address the core DR Question focus area on chatbots and customer experience",
+            "question": "How many IT infrastructure upgrades were completed in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Four IT infrastructure upgrades were completed in Q4 2024, with an average cost of $75,000 per upgrade.",
+            "supporting_file_paths": [
+                "shared/IT-Infrastructure-Review-2024.docx"
+            ]
+        },
+        {
+            "id": "DI001_pdf",
+            "justification": "Employee turnover metrics do not address chatbot consumer experience enhancement.",
+            "question": "What was Lee's Market employee turnover rate in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate averaged 12% with a 5% increase from Q1 2024.",
+            "supporting_file_paths": [
+                "shared/employee-retention-report.pdf"
+            ]
+        },
+        {
+            "id": "IN003_pdf",
+            "justification": "Improved satisfaction indicates successful chatbot integration for centennials.",
+            "question": "Centennial satisfaction increase from chatbots by Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Satisfaction rises by 15% by Q2 2024.",
+            "supporting_file_paths": [
+                "shared/chatbot-enhancement-report.pdf"
+            ]
+        },
+        {
+            "id": "IN001_pdf",
+            "justification": "Knowing adoption rates helps tailor chatbot features to centennial preferences.",
+            "question": "Chatbot adoption rate among centennials by Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "40% centennials prefer chatbots by Q2 2024.",
+            "supporting_file_paths": [
+                "shared/customer-experience-technology.pdf"
+            ]
+        },
+        {
+            "id": "DI003_pdf",
+            "justification": "IT security training metrics do not address chatbot consumer experience enhancement.",
+            "question": "How many Lee's Market employees completed IT security training in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "85% of employees completed IT security training with a 95% pass rate.",
+            "supporting_file_paths": [
+                "shared/it-security-report.pdf"
+            ]
+        },
+        {
+            "id": "DI001",
+            "justification": "New store locations do not address chatbot enhancement for centennial shoppers.",
+            "question": "How many new store locations did Lee's Market open in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market opened 12 new store locations across the US in Q3 2024.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250815_171206.jsonl"
+            ]
+        },
+        {
+            "id": "DI005_docx",
+            "justification": "Employee count does not address the DR Question's focus on enhancing the consumer experience with chatbots",
+            "question": "What was our employee headcount in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "We had 5,100 employees as of January 2025.",
+            "supporting_file_paths": [
+                "shared/HR-Q1-Employee-Headcount-Report.docx"
+            ]
+        },
+        {
+            "id": "IN001",
+            "justification": "Knowing the volume of customer queries informs chatbot scalability and implementation.",
+            "question": "How many customer queries does Lee's Market receive monthly in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market receives an average of 50,000 customer queries per month in 2024.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250815_170751.jsonl"
+            ]
+        },
+        {
+            "id": "DI002_pdf",
+            "justification": "Energy cost metrics are unrelated to chatbot consumer experience enhancement.",
+            "question": "What was Lee's Market average store energy cost in Q3 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average store energy cost was $3,500 per month with a 10% reduction.",
+            "supporting_file_paths": [
+                "shared/energy-cost-report.pdf"
+            ]
+        },
+        {
+            "id": "DI006_pdf",
+            "justification": "Store maintenance costs are not relevant to consumer experience enhancement",
+            "question": "What was Lee's Market average store maintenance cost in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average store maintenance cost was $2,000 per month with a 5% reduction.",
+            "supporting_file_paths": [
+                "shared/store-maintenance-review.pdf"
+            ]
+        },
+        {
+            "id": "IN004_pdf",
+            "justification": "Measures centennial interest, essential for enhancing their chatbot experience.",
+            "question": "Centennial chatbot engagement rate by Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "50% centennials engage weekly by Q3 2025.",
+            "supporting_file_paths": [
+                "shared/centennial-shopper-experience.pdf"
+            ]
+        },
+        {
+            "id": "IN001_pptx",
+            "justification": "Increased satisfaction shows chatbots meet centennial needs and improve experience.",
+            "question": "Centennial satisfaction improvement by Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Satisfaction improved by 30% with chatbot use by Q3 2025.",
+            "supporting_file_paths": [
+                "shared/enhancing-shopper-experience.pptx"
+            ]
+        },
+        {
+            "id": "DI009_roundcube",
+            "justification": "Employee training budgets do not directly impact chatbot implementation.",
+            "question": "What was Lee's Market employee training budget in Q3 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market allocated $450,000 for employee training, a 15% increase.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_142447.jsonl"
+            ]
+        },
+        {
+            "id": "DI007_pdf",
+            "justification": "Employee turnover metrics do not relate to chatbot consumer experience",
+            "question": "What was Lee's Market employee turnover rate in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate averaged 12% with a high of 15%.",
+            "supporting_file_paths": [
+                "shared/workforce-metrics-report.pdf"
+            ]
+        },
+        {
+            "id": "DI005_pdf",
+            "justification": "Leadership training metrics do not address chatbot implementation",
+            "question": "How many Lee's Market employees participated in leadership training in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "120 employees completed leadership training with a 90% satisfaction rate.",
+            "supporting_file_paths": [
+                "shared/leadership-report-q1.pdf"
+            ]
+        },
+        {
+            "id": "DI008_docx",
+            "justification": "Employee tenure metrics do not address the core DR Question focus area on customer experience and chatbots",
+            "question": "What is the average employee tenure in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average employee tenure was 2.5 years, with 35% of employees having 1-2 years of service.",
+            "supporting_file_paths": [
+                "shared/Workforce-Retention-Insights-2025.docx"
+            ]
+        },
+        {
+            "id": "DI002_pptx",
+            "justification": "Facility expenses are irrelevant to chatbot usage for centennials.",
+            "question": "Facility maintenance expenses Q4 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Maintenance expenses totaled $1.2 million in Q4 2023.",
+            "supporting_file_paths": [
+                "shared/facility-maintenance-overview.pptx"
+            ]
+        },
+        {
+            "id": "DI004_pdf",
+            "justification": "Warehouse capacity metrics are unrelated to enhancing consumer experience",
+            "question": "What was Lee's Market warehouse storage capacity in Q3 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Warehouse storage capacity was 80,000 sqft with 75% utilization.",
+            "supporting_file_paths": [
+                "shared/warehouse-capacity-review.pdf"
+            ]
+        },
+        {
+            "id": "DI009_pdf",
+            "justification": "Employee IT training metrics do not relate to consumer chatbot experience",
+            "question": "What percentage of Lee's Market employees completed IT training in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "About 85% of employees completed IT training with a 90% pass rate.",
+            "supporting_file_paths": [
+                "shared/it-training-report.pdf"
+            ]
+        },
+        {
+            "id": "DI015_xlsx",
+            "justification": "Employee turnover is not relevant to chatbot enhancement for centennials.",
+            "question": "What was employee turnover rate in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover was 10%, maintaining a stable workforce.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Employee_Turnover_Analysis.xlsx"
+            ]
+        },
+        {
+            "id": "IN004_docx",
+            "justification": "Knowing the volume of inquiries will help assess the feasibility of implementing chatbots to enhance the consumer experience.",
+            "question": "How many customer service inquiries do we receive from centennial shoppers on average per quarter?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "2,500 customer service inquiries from centennial shoppers are received on average per quarter.",
+            "supporting_file_paths": [
+                "shared/Chatbot-Integration-Strategy.docx"
+            ]
+        },
+        {
+            "id": "DI001_pptx",
+            "justification": "Employee training hours don't impact chatbot strategy for centennial shoppers.",
+            "question": "Employee training hours Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average training hours per employee were 15 in Q3 2024.",
+            "supporting_file_paths": [
+                "shared/training-strategy-review.pptx"
+            ]
+        },
+        {
+            "id": "DI008_pdf",
+            "justification": "Facility costs do not address the core DR Question on chatbots",
+            "question": "What were Lee's Market facility maintenance costs in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility maintenance costs totaled $1.2M with an average of $100,000 monthly.",
+            "supporting_file_paths": [
+                "shared/maintenance-cost-report.pdf"
+            ]
+        },
+        {
+            "id": "DI007_docx",
+            "justification": "IT infrastructure costs do not address the DR Question's focus on enhancing the consumer experience with chatbots",
+            "question": "What was our IT infrastructure cost in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT infrastructure costs were $8.5 million in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/it-infrastructure-cost-analysis.docx"
+            ]
+        },
+        {
+            "id": "IN002_pptx",
+            "justification": "Measures chatbot engagement, key for enhancing centennial experience.",
+            "question": "Chatbot adoption rate Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "55% adoption rate by centennials by Q1 2025.",
+            "supporting_file_paths": [
+                "shared/chatbot-strategy-insights.pptx"
+            ]
+        },
+        {
+            "id": "DI010_docx",
+            "justification": "HR-related issue resolution does not address the core DR Question focus area on chatbots and consumer experience",
+            "question": "What was the average time to resolve HR-related issues in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average time to resolve HR-related issues in Q1 2025 was 5.3 days.",
+            "supporting_file_paths": [
+                "shared/HR-Operations-Performance-Metrics-Report.docx"
+            ]
+        },
+        {
+            "id": "DI006_docx",
+            "justification": "Facility maintenance costs do not address the DR Question's focus on leveraging chatbots for the consumer experience",
+            "question": "What was our facility maintenance cost in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility maintenance costs totaled $1.8 million in Q4 2024.",
+            "supporting_file_paths": [
+                "shared/Facility-Maintenance-Review-2024.docx"
+            ]
+        },
+        {
+            "id": "DI007_roundcube",
+            "justification": "Store renovations are unrelated to enhancing the consumer experience via chatbots.",
+            "question": "How many Lee's Market stores underwent renovations in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Twenty-five stores were renovated, with an average cost of $200,000.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_142046.jsonl"
+            ]
+        },
+        {
+            "id": "IN005_docx",
+            "justification": "Understanding the current resolution timeframe will help identify potential benefits of chatbot implementation for centennial shoppers, such as faster issue resolution.",
+            "question": "What is the average time-to-resolve for customer service issues reported by centennial shoppers in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Average time-to-resolve for customer service issues reported by centennial shoppers in Q2 2025 was 2 hours and 15 minutes.",
+            "supporting_file_paths": [
+                "shared/Digital-Experience-Enhancement-Strategy.docx"
+            ]
+        },
+        {
+            "id": "DI014_xlsx",
+            "justification": "Safety training metrics do not impact chatbot strategies for centennials.",
+            "question": "How many employees completed safety training in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Around 250 employees completed the safety training program.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Employee_Training_Status_Report.xlsx"
+            ]
+        },
+        {
+            "id": "IN006_xlsx",
+            "justification": "Analyzing online shopping adoption informs chatbot integration and user experience strategies.",
+            "question": "How many Lee's Market customers used online shopping services in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "About 30% of customers used online shopping services, totaling 150,000 users in Q1 2024.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Online_Shopping_Adoption_Q1_2023.xlsx"
+            ]
+        },
+        {
+            "id": "DI004",
+            "justification": "Employee tenure metrics do not relate to chatbot implementation.",
+            "question": "What was our average employee tenure in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average employee tenure was 3.5 years with a 10% increase.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250815_171902.jsonl"
+            ]
+        },
+        {
+            "id": "DI003",
+            "justification": "Workers' compensation claims are unrelated to chatbot adoption for customer service.",
+            "question": "What was our workers' compensation claims rate in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Workers' compensation claims rate was 2.5% with a total payout of $120,000.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250815_171707.jsonl"
+            ]
+        },
+        {
+            "id": "IN002",
+            "justification": "Identifying the proportion of centennial shoppers helps tailor chatbot features to their needs.",
+            "question": "What percentage of Lee's Market customers are centennial shoppers in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "25% of Lee's Market customers are centennial shoppers as of Q3 2024.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250815_170927.jsonl"
+            ]
+        },
+        {
+            "id": "DI013_xlsx",
+            "justification": "IT costs are unrelated to chatbot implementation for centennial shoppers.",
+            "question": "What were Lee's Market IT costs in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT costs totaled $3.4M, with $1.2M on new hardware.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Quarterly_IT_Expenditures_Report.xlsx"
+            ]
+        },
+        {
+            "id": "DI002",
+            "justification": "Energy consumption costs are unrelated to chatbot implementation for customer experience.",
+            "question": "What was Lee's Market energy consumption cost in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market energy consumption cost totaled $850,000 in Q2 2024.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250815_171359.jsonl"
+            ]
+        },
+        {
+            "id": "IN003_docx",
+            "justification": "Understanding the current level of customer engagement will help inform the potential impact of chatbot implementation on the consumer experience.",
+            "question": "What percentage of our centennial shoppers have interacted with our customer service team in the past 6 months?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "45% of our centennial shoppers have contacted our customer service team in the past 6 months.",
+            "supporting_file_paths": [
+                "shared/Customer-Experience-Chats-Report.docx"
+            ]
+        },
+        {
+            "id": "DI012_xlsx",
+            "justification": "Marketing expenses are unrelated to chatbot usage for centennial engagement.",
+            "question": "What were Lee's Market marketing expenses in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Marketing expenses totaled $3M with digital ads accounting for $1.2M.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Marketing_Expenses_Q3_2024.xlsx"
+            ]
+        },
+        {
+            "id": "DI006_roundcube",
+            "justification": "Employee training budgets do not directly impact chatbot implementation.",
+            "question": "What was Lee's Market employee training budget in Q3 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market allocated $450,000 for employee training, a 15% increase.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_141921.jsonl"
+            ]
+        },
+        {
+            "id": "IN007_xlsx",
+            "justification": "Evaluating customer satisfaction with existing support channels justifies chatbot adoption.",
+            "question": "What was Lee's Market customer satisfaction rating for phone support in Q3 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Customer satisfaction rating for phone support averaged 80% with a 5% drop in Q3 2023.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Customer_Satisfaction_Analysis.xlsx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

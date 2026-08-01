@@ -1,0 +1,215 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What is MediConn Solutions' marketing department annual budget allocation?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Marketing department at MediConn Solutions has had an annual budget of $890,000 from 2023 to 2025.",
+            "supporting_file_paths": [
+                "shared/annual-marketing-budget.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "How has MediConn Solutions' social media presence grown in recent years?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn's LinkedIn followers increased from 2500 to 3098 from 2019 to 2021, respectively.",
+            "supporting_file_paths": [
+                "shared/social-media-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How much traffic does MediConn Solutions' website receive per month in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' website gets an average of 1300 unique visitors every month in 2025.",
+            "supporting_file_paths": [
+                "shared/website-traffic-2025.pptx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "How much do MediConn's Solutions' competitors spend on advertising?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to MediConn Solutions' competitor analysis done in 2024, the top three virtual healthcare providers in Canada spent an estimated $10.4million in 2023.",
+            "supporting_file_paths": [
+                "shared/competitor-ad-spend.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How many respondents did Emily Chen's recent market survey include?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In a market survey on general healthcare preferences conducted by Emily Chen in 2024, there were a total of 2284 respondents.",
+            "supporting_file_paths": [
+                "shared/emily-chen-survey-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What is the cost allocated to the market research software by the marketing department of MediConn Solutions in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The MediConn Solution marketing department allocated $10,200 for licenses to market research and analytics software platforms in 2025.",
+            "supporting_file_paths": [
+                "shared/2025-Marketing-Expense-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "How much does Emily Chen spend on market research web tools monthly?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Emily's schedule and calendar analysis from May 2025, she spends an average of $1000 monthly on market research web tools.",
+            "supporting_file_paths": [
+                "shared/market-research-expenditure.docx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "How many people attended the annual marketing and business solutions summit organized by MediConn Solutions marketing team in June 2022?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions\u2019 annual marketing and business solutions summit in June 2022 attracted 120 attendees from across different departments of the company.",
+            "supporting_file_paths": [
+                "shared/MediConn_Marketing_Business_Summit_Attendance_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "How many competitor ads has the MediConn Solutions marketing team recorded?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The marketing team of MediConn Solutions has recorded over 6350 competitor ads since 2020.",
+            "supporting_file_paths": [
+                "shared/competitor-ad-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "What was the length of the quarterly market analysis report submitted by Emily Chen to the senior management in 2022?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The length of the quarterly market analysis report submitted by Emily Chen to senior management in 2022 was 86 pages.",
+            "supporting_file_paths": [
+                "shared/q1-2022-report-overview.pptx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "How satisfied is the marketing team with their job?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' internal employee satisfaction survey conducted in 2024 reveals that 90% of the marketing team were satisfied with their jobs.",
+            "supporting_file_paths": [
+                "shared/marketing-satisfaction-report.docx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "What percentage of the readers who subscribe to MediConn Solutions' wellness blog since its launch in 2024 have been converted to in person clients?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Since the launch of MediConn Solutions' wellness blog in February 2024, 1200 subscribers have been converted to in person clients.",
+            "supporting_file_paths": [
+                "shared/blog-conversion-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "As of 2025, what was the competitor price advantage experience by MediConn Solutions during the initial website navigation phase?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of March 2025, MediConn Solutions experienced a 19% competitor price advantage during the initial website navigation phase.",
+            "supporting_file_paths": [
+                "shared/Competitor-Pricing-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "What year did MediConn Solutions conduct internal research to find out cybersecurity use cases in MediConn Solutions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions conducted internal research in the year 2024 to identify cybersecurity use cases in various departments at MediConn Solutions.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_222220.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "As of 2024, what was the percentage of MediConn Solutions' patient interactions that required human intervention within the first 10 minutes of initial contact?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of November 2024, 80% of MediConn Solutions' patient interactions required human intervention within the first 10 minutes of initial contact.",
+            "supporting_file_paths": [
+                "shared/AI-Integration-Strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What is MediConn Solutions' patient drop-off rate during the initial website navigation phase in the first quarter of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of March 2025, MediConn Solutions experienced a 19% patient drop-off rate during the initial website navigation phase.",
+            "supporting_file_paths": [
+                "shared/MediConn_Website_Navigation_Insights_Data.xlsx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "In a 2024 market survey done by the marketing department of MediConn, what percentage of Canadians agreed that 'AI-assisted consultation could build confidence' in telehealth?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In April 2024, 71% of Canadians agreed that AI-assisted consultation could boost their trust and confidence in telehealth.",
+            "supporting_file_paths": [
+                "shared/AI-Patient-Experience.pdf"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "What year did MediConn Solutions conduct internal research to identify AI use cases within the company?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn Solutions conducted internal research in the year 2024 to identify AI use cases in various departments at MediConn Solutions.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_AI_Research_Data.xlsx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "How many of MediConn Solutions' patients missed their follow-up appointments in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of December 31st, 2024, 560 MediConn Solutions' patients missed their follow-up appointments in 2024.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_221800.jsonl"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

@@ -1,0 +1,90 @@
+{
+  "task_id": "DR0034",
+  "question": "How can Jason Wong, given Lee's Markets' limited IT resources in 2025, strengthen employee cybersecurity training to reduce risk of retail cyberattacks that lead to operation disruptions and financial loss by Q3 2027?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "How does serving multiple urban centers increase Lee's Market's cybersecurity risk?",
+      "answer": "In Q4 2025, serving diverse urban centers exposes Lee's Market to higher transaction volumes and varied staff profiles, increasing potential cyberattack vectors. Urban retailers handle 40% more transactions than their rural counterparts, leading to a proportional rise in social engineering attempts.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "How does high staff turnover affect Lee's Market's vulnerability to cyber attacks in 2025?",
+      "answer": "In 2025, frequent hiring of temporary or seasonal workers who constitute 30% of the workforce during peak periods results in many employees lacking adequate cyber training, increasing exposure to cyberattacks.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "Why is dual-channel retail (in-store and online) a unique security challenge for Lee's Market moving into Q1 2026?",
+      "answer": "Moving into Q1 2026, employees of Lee's Market must manage security at both digital and physical checkout points because 65% of previous retail breaches involved compromised POS or e-commerce endpoints.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "What makes digital POS and e-commerce systems critical to training employees at Lee's Market in Q1-Q3 2026?",
+      "answer": "Digital POS and e-commerce platforms process thousands of transactions daily at Lee's Market and are the target of 65% of reported cyberattacks in retail. That is why it is critical to train employees at Lee's Market in Q1-Q3 2026.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "How does the handling of sensitive customer data at Lee's Market impact potential cyber risks in 2026?",
+      "answer": "With over 1,000,000 customer payment records handled annually, any lapse in employee vigilance could potentially cause widespread data breaches in 2026.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0006",
+      "question": "How did the Information Security Manager, Jason Wong, and the HR and Operations managers' collaborations enhance security training at Lee's Market in Q1 2025?",
+      "answer": "Jason Wong's cross-departmental leadership enabled targeted rollouts of training modules to new hires that are up to 25% faster in Q1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0007",
+      "question": "What is the link between compliance certifications and employee training at Lee's Market in 2025?",
+      "answer": "Compliance audits found that untrained employees accounted for 70% of minor noncompliance findings at Lee's Market in 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0008",
+      "question": "How did operational downtime from cyberattacks affect Lee's Market's business in Q1 2025?",
+      "answer": "Cyber disruption cost an average of $30,000 per hour in lost sales for Lee's Market in Q1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0009",
+      "question": "What percentage of past breaches in 2025 were contained by employees who had undergone incident response training at Lee's Market's in 2025?",
+      "answer": "Because of clear incident protocols, 30% of past breaches at Lee's Market retail locations were contained by employees within the first hour in 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0010",
+      "question": "How does a limited IT/security budget in Q1 2026 impact Lee's Market's cybersecurity priorities?",
+      "answer": "With only 1.8% of revenue budgeted for IT in Q1 2026, Lee's Market prioritizes scalable in-house training over expensive external solutions.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0011",
+      "question": "How did education on multi-factor authentication improve Lee's Market security in Q3 2025?",
+      "answer": "Retailers saw a 60% drop in unauthorized access after staff-wide MFA education and adoption in Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0012",
+      "question": "What is the relationship between reputation protection and staff training at Lee's Market?",
+      "answer": "In 2024, companies with zero major incidents cite 95% staff cyber training completion. Lee's Market relies on the same for the retaining of its diverse customer base.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0013",
+      "question": "How can industry certification improve the quality of Lee's Market's security training?",
+      "answer": "In 2025, the alignment of the PCI and DSS training has led to 40% fewer audit findings in the comparable enterprise.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0014",
+      "question": "How did promotions and online events affect Lee's Market's cyber risk profile in 2025?",
+      "answer": "In 2025, cyber threats spiked by 27% during promotional periods due to increased new hires and online activities.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

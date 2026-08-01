@@ -1,0 +1,26 @@
+{
+    "dr_question": "How can Elexion Automotive’s quality assurance processes be optimized to address the unique challenges of electric vehicle production, such as software and user experience issues, compared to gasoline cars?",
+    "question_type": "ai_generated",
+    "question_source": {
+        "domain": "quality_assurance",
+        "dr_question": "How can Elexion Automotive's quality assurance processes be optimized to address the unique challenges of electric vehicle production, such as software and user experience issues?",
+        "industry": "Automotive -- Electric Vehicles",
+        "n_hops": 3,
+        "subquestions": [
+            "What are the key components of Elexion Automotive's current quality assurance processes that need to be adapted for electric vehicle production?",
+            "How do competitors like Tesla and Ram prioritize simplicity and robust design in their quality assurance strategies?",
+            "What are potential strategies for Elexion Automotive to improve its quality assurance processes and address software and user experience issues in EV production?"
+        ],
+        "url": "https://www.greencars.com/expert-insights/do-evs-have-more-quality-problems"
+    },
+    "timestamp": "2025-08-10 19:19",
+    "task_id": "DR0012",
+    "subquestions": [
+        "What are the key components of Elexion Automotive's current quality assurance processes that need to be adapted for electric vehicle production?",
+        "How do competitors like Tesla and Ram prioritize simplicity and robust design in their quality assurance strategies?",
+        "What are potential strategies for Elexion Automotive to improve its quality assurance processes and address software and user experience issues in EV production?"
+    ],
+    "industry": "automobiles",
+    "domain": "quality_assurance",
+    "url": "https://www.greencars.com/expert-insights/do-evs-have-more-quality-problems"
+}

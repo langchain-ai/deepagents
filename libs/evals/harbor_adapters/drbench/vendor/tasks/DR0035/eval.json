@@ -1,0 +1,523 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What password policy review did Jason Wong run in January 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong required employees to update their passwords to a minimum length of 14 characters as of January 2025, resulting in 30% fewer weak credentials discovered during the spring audit.",
+            "supporting_file_paths": [
+                "shared/2025-security-policy-review.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "How did Jason Wong restrict unauthorized USB use in March 2025 at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In March 2025 all staff USB usage was logged, and unauthorized devices were blocked at 10 branches, reducing instances of unapproved transfers to zero at Lee's Market.",
+            "supporting_file_paths": [
+                "shared/usb-policy-review.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What internal survey did Jason Wong conduct on staff cyber comfort in April 2025 at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In April 2025, a survey found 76% of staff were confident with the company IT tools, which guided Jason Wong's new training schedule at Lee's Market.",
+            "supporting_file_paths": [
+                "shared/cyber-comfort-survey-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "How did Jason Wong orchestrate the annual license renewal audit in May 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong completed renewal of 94% of all IT software licenses before expiry in May 2025, preventing any app downtime for users.",
+            "supporting_file_paths": [
+                "shared/audit-overview-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What biometric enrollment upgrade did Jason Wong launch in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In March 2025, Jason Wong converted all staff logins from traditional PINs to fingerprints for systems at Lee's Market headquarters, cutting login reset requests by 80%.",
+            "supporting_file_paths": [
+                "shared/biometric-upgrade-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What digital room booking solution did Jason Wong roll out in January 2025 at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason introduced a calendar-integrated app for internal meeting room reservations, which cut scheduling conflicts by 50% after four weeks of use.",
+            "supporting_file_paths": [
+                "shared/room-booking-solution.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "How did Jason Wong address a physical security gap at HQ in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong installed real-time badge tracking, lowering unauthorized tailgates by 60% at the entrance.",
+            "supporting_file_paths": [
+                "shared/HQ-Security-Initiative.pptx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "Which audit log automation did Jason Wong complete in April 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "From April 2025 forward, all checkout and security terminal transaction logs were automatically archived for 6 months, reporting rapid audit retrieval.",
+            "supporting_file_paths": [
+                "shared/IT-audit-log-report.docx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "What browser update enforcement campaign did Jason Wong run in May 2025 for Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong initiated emergency auto policies; browser versions across the company reached 99% current in 48 hours.",
+            "supporting_file_paths": [
+                "shared/browser-update-campaign.pptx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "How did Jason Wong streamline the Lee's Market annual staff cyber policy review in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong deployed an e-learning policy review module to more than 700 employees, increasing confirmation rates from 82% to 97% by the end of Q1 2025.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Staff_Cyber_Policy_Review_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "What printer access controls did Jason Wong implement for Lee's Market in February 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "With access controls set in February, print jobs could only be triggered by staff at their device, reducing print waste by 45% and supporting confidentiality.",
+            "supporting_file_paths": [
+                "shared/printer-access-review.pdf"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "What phishing simulation awareness did Jason Wong set up in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason did a quarterly phishing test, which resulted in only a 10% failure rate among employees, guiding future awareness campaigns.",
+            "supporting_file_paths": [
+                "shared/march-2025-phishing-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "How did Jason Wong update Lee's Market cloud storage usage policy in April 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason moved older files to low-cost archival storage, cutting the cloud costs by 20%.",
+            "supporting_file_paths": [
+                "shared/cloud-policy-revision-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "How did Jason Wong conduct a removable media use review in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong discovered that 12% of the staff still used USB drives and delivered refresher training to correct it.",
+            "supporting_file_paths": [
+                "shared/removable-media-review.docx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "",
+            "question": "What remote desktop software did Jason Wong pilot in February 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Deploying SecureConnect, Jason recorded 50 resolved support tickets monthly via remote assistance, rather than in person.",
+            "supporting_file_paths": [
+                "shared/remote-software-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0016",
+            "justification": "",
+            "question": "Which shared password review did Jason Wong run in April 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason eliminated all the shared POS service logins, enforcing unique named logins for all new staff.",
+            "supporting_file_paths": [
+                "shared/password-review-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0017",
+            "justification": "",
+            "question": "How did Jason Wong roll out browser security training in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "He lowered Chrome security alerts company-wide by 40% after June staff training on risky pop-ups and phishing.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_135216.jsonl"
+            ]
+        },
+        {
+            "id": "DI0018",
+            "justification": "",
+            "question": "What privacy notice update did Jason Wong publish on Lee's Market app in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market's customer privacy policy update was acknowledged by 85% of active app users within three days of publication in March 2025.",
+            "supporting_file_paths": [
+                "shared/app-privacy-update.docx"
+            ]
+        },
+        {
+            "id": "DI0019",
+            "justification": "",
+            "question": "How did Jason Wong update privileged access group membership in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong reduced privileged admin users from 52 to 36 company wide, minimising over exposed credentials by March 2025.",
+            "supporting_file_paths": [
+                "shared/privileged-access-update.pptx"
+            ]
+        },
+        {
+            "id": "DI0020",
+            "justification": "",
+            "question": "What physical visitor log automation did Jason Wong implement in January 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A digital sign-in tablet, introduced in January 2025, now logs and time stamps all non-employee entries at Lee's Market HQ.",
+            "supporting_file_paths": [
+                "shared/Visitor-Log-Automation-Q1.docx"
+            ]
+        },
+        {
+            "id": "DI0021",
+            "justification": "",
+            "question": "What Office 365 conditional access policy did Jason Wong turn on in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason enabled policy blocks on mail access from unpatched personal devices, which blocked 17 unauthorized attempts in one week.",
+            "supporting_file_paths": [
+                "shared/office-security-review.pptx"
+            ]
+        },
+        {
+            "id": "DI0022",
+            "justification": "",
+            "question": "How did Jason Wong facilitate internal cyber competitions in May 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In May 2025, 35 staff competed in a phishing CTF event; 8 winners earned encrypted USBs, helping spot threats faster.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-competitions-impact.pptx"
+            ]
+        },
+        {
+            "id": "DI0023",
+            "justification": "",
+            "question": "What browser update cycle did Jason Wong enforce in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong enforced a weekly browser update set for Chrome and Edge, ensuring version uniformity, cutting helpdesk tickets by 20% in June 2025.",
+            "supporting_file_paths": [
+                "shared/q2-browser-update-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0024",
+            "justification": "",
+            "question": "How did Jason Wong handle biannual permission audits from February to August 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In August 2025, Jason Wong reviewed cycles every six months and adjusted more than 90 outdated permissions in each round, assuring the least privileged principle.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Biannual_Permission_Audits_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0025",
+            "justification": "",
+            "question": "What disaster recovery tabletop exercise did Jason Wong run in April 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong introduced a malware lockout drill in April that showed all priority systems recovered from cloud backup within 45 min company-wide.",
+            "supporting_file_paths": [
+                "shared/disaster-recovery-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0026",
+            "justification": "",
+            "question": "What ticketing system upgrade did Jason Wong implement in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong implemented the new ServiceNow workflow launched in March, bringing down unresolved cyber tickets from 94 to 63 in 2 months.",
+            "supporting_file_paths": [
+                "shared/ticketing-system-overview.docx"
+            ]
+        },
+        {
+            "id": "DI0027",
+            "justification": "",
+            "question": "What audit trail addition did Jason Wong introduce for finance in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Since January 2025, every invoice approval log, both user and timestamp, supports complete financial process audit trails.",
+            "supporting_file_paths": [
+                "shared/financial-audit-innovations.pptx"
+            ]
+        },
+        {
+            "id": "DI0028",
+            "justification": "",
+            "question": "Which SSH key rollout did Jason Wong complete in May 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "By May, Jason Wong had completed all admin server access using SSH keys only; password login was deactivated on every system.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_IT_Security_Update_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0029",
+            "justification": "",
+            "question": "What patch/critical update window did Jason Wong set in February 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong set Wednesdays as the official patch day, pushing update completion rates above 98% for all endpoints by March 2025.",
+            "supporting_file_paths": [
+                "shared/feb-2025-it-schedule.docx"
+            ]
+        },
+        {
+            "id": "DI0030",
+            "justification": "",
+            "question": "How did Jason Wong improve Lee's Market's app store presence in January 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "After Jason's security review, the updated customer app was approved and available in the app store by the end of January 2025.",
+            "supporting_file_paths": [
+                "shared/app-store-enhancement.docx"
+            ]
+        },
+        {
+            "id": "DI0031",
+            "justification": "",
+            "question": "What cybersecurity conferences did Jason Wong attend in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason attended the retail cybersecurity forum; he addressed Lee's Market team on current fraud tactics and sector best practices.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-conference-attendance.pdf"
+            ]
+        },
+        {
+            "id": "DI0032",
+            "justification": "",
+            "question": "How did Jason Wong respond to the simulated password-sharing incident in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In March 2025, Jason Wong coordinated with the IT help desk and quickly contained a simulated incident in which employees shared passwords, reducing the average response time to resolve policy violations to under 25 minutes.",
+            "supporting_file_paths": [
+                "shared/incident-review-march-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0033",
+            "justification": "",
+            "question": "What percentage of Lee's Market web traffic in June 2025 originated from internal employee devices?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In June 2025, 8% of Lee's Market web traffic originated from internal employee devices.",
+            "supporting_file_paths": [
+                "shared/web-traffic-analysis.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "How did Jason Wong respond to a simulated phishing incident in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In March 2025, Jason Wong coordinated with the IT helpdesk and quickly contained a simulated phishing attack, reducing average internal response time to under 25 minutes.",
+            "supporting_file_paths": [
+                "shared/mssp-adoption-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What audit findings pushed Lee's Market to improve compliance in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "A regulatory audit in May 2025 found three process gaps in vendor data sharing logs, prompting Jason Wong to review external compliance support options.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Audit_Findings_Report.xlsx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "How did Lee's Market's internal security resource constraints affect cybersecurity monitoring in April 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In April 2025, only two FTEs were available for cybersecurity monitoring across the company, leaving off hours unstaffed.",
+            "supporting_file_paths": [
+                "shared/mssp-cybersecurity-enhancement.pdf"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "What percentage of Lee's Market web traffic in June 2025 came from untrusted sources?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Security logs revealed that 17% of inbound web requests in June 2025 originated from flagged, potentially malicious IPs.",
+            "supporting_file_paths": [
+                "shared/MSSP-Cybersecurity-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "How many PCI DSS compliance alerts did Lee's Market face from its payment process in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Four PCI DSS alerts for unrecognized payment activity were received during Q1 2025.",
+            "supporting_file_paths": [
+                "shared/mssp-strategy-lees-market.docx"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "",
+            "question": "To what extent did a publicized minor cyber incident at Lee's Market in Q2 2025 affect online ordering?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In May 2025, a 6% dip in online ordering followed a minor breach notification.",
+            "supporting_file_paths": [
+                "shared/mssp-strategy-proposal.pdf"
+            ]
+        },
+        {
+            "id": "IN0007",
+            "justification": "",
+            "question": "How many new regulatory mandates did Jason Wong need to address between March and June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Three new data privacy mandates were introduced and tracked for Lee's Market between March and June 2025.",
+            "supporting_file_paths": [
+                "shared/mssp-cybersecurity-enhancement.pptx"
+            ]
+        },
+        {
+            "id": "IN0008",
+            "justification": "",
+            "question": "What was the internal team's patch management coverage by July 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Patch logs showed only 88% critical update coverage by July 2025, with delays due to after-hours staffing limits.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Patch_Management_Coverage_Report.xlsx"
+            ]
+        },
+        {
+            "id": "IN0009",
+            "justification": "",
+            "question": "How often did Jason Wong's team handle after-hours security incidents before the next workday in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Of the five after-hours alerts in May 2025, only two were investigated before the next workday.",
+            "supporting_file_paths": [
+                "shared/mssp-cybersecurity-enhancement.pptx"
+            ]
+        },
+        {
+            "id": "IN0010",
+            "justification": "",
+            "question": "How was external vendor access risk evaluated by Jason Wong in February 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Vendor risk reviews revealed two third-party vendors with expired security certifications in February 2025.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-mssp-adoption.pdf"
+            ]
+        },
+        {
+            "id": "IN0011",
+            "justification": "",
+            "question": "How many customer-facing IT systems required urgent attention in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Three major public-facing systems had critical vulnerabilities patched only after customers reported issues in March 2025.",
+            "supporting_file_paths": [
+                "shared/MSSPs-Adoption-Report.pdf"
+            ]
+        },
+        {
+            "id": "IN0012",
+            "justification": "",
+            "question": "What level of threat intelligence did Lee's Market's internal security team possess as of April 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Internal logs indicated that only 40% of new threats detected sector-wide in April 2025 were known to the internal team.",
+            "supporting_file_paths": [
+                "shared/MSSPs-Cybersecurity-Report.pdf"
+            ]
+        },
+        {
+            "id": "IN0013",
+            "justification": "",
+            "question": "What proportion of Lee's Market's systems had multi-factor authentication enabled by May 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "By May 2025, multi-factor authentication was active on just 65% of systems at Lee's Market.",
+            "supporting_file_paths": [
+                "shared/mssp-adoption-report.pdf"
+            ]
+        },
+        {
+            "id": "IN0014",
+            "justification": "",
+            "question": "What was the median number of hours from detection to resolution for internal security incidents in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Incident tickets showed a median of 16 hours from detection to resolution in June 2025.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_134609.jsonl"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

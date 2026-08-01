@@ -1,0 +1,114 @@
+{
+  "task_id": "DR0015",
+  "question": "How can Elexion Automotive increase customer trust through after-sales support while balancing the need for exceptional customer care with efficient and cost-effective service?",
+  "insights": [
+    {
+      "id": "EX0000",
+      "question": "",
+      "answer": "As EV sales growth slows, automakers are emphasizing after-sales service quality, with strong warranties and customer support as key differentiators. A survey revealed that 75% of global consumers prioritize warranties when purchasing vehicles, prompting EV brands like VinFast to offer 10-year comprehensive warranties, including battery coverage, to build trust with hesitant buyers.",
+      "type": "external_fact"
+    },
+    {
+      "id": "EX0001",
+      "question": "",
+      "answer": "EV companies are enhancing customer service by incorporating software updates as part of aftersales services, with VinFast using over-the-air updates to add features like entertainment apps to existing vehicles. Additionally, VinFast has partnered to secure access to over 90,000 charging stations in North America, addressing range anxiety and improving convenience for customers.",
+      "type": "external_fact"
+    },
+    {
+      "id": "EX0002",
+      "question": "",
+      "answer": "In the EV sector, companies are adopting future-oriented aftersales strategies like remote diagnostics and predictive maintenance to proactively address issues and offer personalized services. While technology plays a crucial role, executives emphasize that exceptional customer care, such as quick roadside assistance and attentive service staff, is vital for fostering customer loyalty and positive word-of-mouth during the shift to electric mobility.",
+      "type": "external_fact"
+    },
+    {
+      "id": "qa_1756144545",
+      "question": "What is roadside assistance wait time Q3 2025?",
+      "answer": "Average wait time is 25 minutes.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755629576",
+      "question": "What is the average resolution time for software updates in Q2 2024?",
+      "answer": "Software updates are typically resolved within 2 hours, with 95% of requests resolved within 4 hours.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755629599",
+      "question": "What is the total cost of providing after-sales support to our enterprise customers in the last quarter, broken down by region and service type?",
+      "answer": "The total cost of providing after-sales support to our enterprise customers in Q1 2025 was $375,000, with North America accounting for 60% of the total cost and software updates making up 30% of the total cost.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN001",
+      "question": "What is the average cost of a single service request from our enterprise customers, broken down by region and service type?",
+      "answer": "The average cost of a single service request from our enterprise customers in North America is $150, while in Europe it is $120, with software updates averaging $80 per request.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755636201",
+      "question": "What percentage of customers utilize our warranty services Q2 2024?",
+      "answer": "Approximately 60% of customers have utilized our warranty services this quarter.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755719703",
+      "question": "What is the average customer satisfaction score for our remote diagnostics services in Q3 2025?",
+      "answer": "The average customer satisfaction score is 88% with 90% resolution rate.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755630926",
+      "question": "How many Q3 2025 roadside assistance requests resolved within 30 minutes?",
+      "answer": "95% of roadside assistance requests resolved within 30 minutes in Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755636754",
+      "question": "What is our customer satisfaction score for after-sales support Q2 2024?",
+      "answer": "Our customer satisfaction score for after-sales support is 85% currently.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755630837",
+      "question": "What is Q3 2025 customer satisfaction rate post-service?",
+      "answer": "Customer satisfaction post-service is 85% in Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755636908",
+      "question": "What is the customer retention rate after warranty service Q2 2024?",
+      "answer": "The customer retention rate post-warranty service is 85% currently.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755636796",
+      "question": "What percentage of warranty claims are resolved within one week Q2 2024?",
+      "answer": "Approximately 75% of warranty claims are resolved within one week currently.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755719202",
+      "question": "What is the average resolution time for after-sales support requests in Q3 2025?",
+      "answer": "The average resolution time is 4 hours, with 90% resolved within 8 hours.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755719413",
+      "question": "What percentage of customers have utilized our remote diagnostics services in Q2 2024?",
+      "answer": "Approximately 40% of customers have utilized remote diagnostics, with a 25% increase.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755630958",
+      "question": "What is cost per service request in Q3 2025?",
+      "answer": "Cost per service request is $140 in Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756144531",
+      "question": "What is Q3 2025 warranty claim resolution rate?",
+      "answer": "70% of warranty claims resolved within one week.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

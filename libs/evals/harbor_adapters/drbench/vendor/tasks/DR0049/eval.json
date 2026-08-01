@@ -1,0 +1,479 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What is the average tenure of customer service representatives at MediConn Solutions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average tenure for customer service representatives at MediConn is 2.8 years, with the most senior representative having been with the company for 5 years.",
+            "supporting_file_paths": [
+                "shared/employee-tenure-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "In 2024, how many hours of training did new customer service representatives at MediConn Solutions receive before handling live customer interactions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, new customer service representatives complete 40 hours of training.",
+            "supporting_file_paths": [
+                "shared/2024-csr-training-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What percentage of customer support inquiries in 2025 are related to prescription refills and medication delivery?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2025, prescription refill and medication delivery inquiries account for 28% of total customer support volume.",
+            "supporting_file_paths": [
+                "shared/customer-support-analysis-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What was the employee satisfaction score for Rachel's customer service team in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The internal employee satisfaction surveys in 2025 show Rachel's customer service team had an average satisfaction score of 7.2 out of 10.",
+            "supporting_file_paths": [
+                "shared/team-performance-review-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "As of 2025, what percentage of customer service representatives on Rachel's team hold healthcare-related certifications or degrees?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "42% of Rachel's customer service team members held healthcare-related certifications or degrees as of 2025, including nursing diplomas, health administration certificates, or medical office assistant qualifications.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_162014.jsonl"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How does MediConn's 2025 customer service budget compare to the previous fiscal year?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn's customer service department budget for FY 2024-2025 is $1.2 million, representing a 15% increase from the previous fiscal year's $1.04 million.",
+            "supporting_file_paths": [
+                "shared/2025-budget-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "What is the resolution rate for technical account issues (password resets, login problems) handled by Rachel's team?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The customer service team achieves a 94% first-contact resolution rate for technical account issues such as password resets, login problems, and account verification issues.",
+            "supporting_file_paths": [
+                "shared/technical-issue-resolution.docx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "In 2025, what percentage of MediConn's customer base are corporate wellness program participants versus individual patients?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2025, corporate wellness program participants represent 35% of MediConn's active user base, while individual patients account for 65%.",
+            "supporting_file_paths": [
+                "shared/customer-composition-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "In 2025, how many languages does MediConn's customer service team support?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of 2025, Rachel's customer service team provides support in English and French, with 8 of the 12 representatives being fully bilingual.",
+            "supporting_file_paths": [
+                "shared/multilingual-support-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "What is the average customer satisfaction score for post-consultation follow-up support in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2025, the average customer satisfaction score for post-consultation follow-up is 4.1 out of 5, with patients praising the team's responsiveness and knowledge.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_162204.jsonl"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "What percentage of customer service interactions in 2025 result in successful de-escalation of frustrated or angry customers?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2025, Rachel's team successfully de-escalates 78% of interactions involving frustrated or angry customers without requiring supervisor intervention.",
+            "supporting_file_paths": [
+                "shared/customer-service-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "As of 2025, how many different communication channels does Rachel's customer service team monitor daily?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The customer service team currently monitors five communication channels: phone, email, live chat, SMS, and social media direct messages.",
+            "supporting_file_paths": [
+                "shared/service-channels-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "As of 2025, what is the average age of customer service representatives on Rachel's team?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of 2025, the average age of customer service representatives on Rachel's team is 32 years old, ranging from 24 to 51 years old.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_162318.jsonl"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "In 2025, what percentage of support interactions require Rachel or another supervisor to personally intervene?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2025, only 6% of customer support interactions require escalation to Rachel or another supervisor for resolution, indicating strong front-line capability.",
+            "supporting_file_paths": [
+                "shared/supervisor-intervention-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "",
+            "question": "How many corporate wellness clients has MediConn retained for consecutive contract renewals?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn has achieved an 89% retention rate for corporate wellness clients, with 24 of 27 corporate contracts renewed in 2024.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_162419.jsonl"
+            ]
+        },
+        {
+            "id": "DI0016",
+            "justification": "",
+            "question": "What is the average duration of a customer service call at MediConn in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2025, the average customer service call duration is 6.5 minutes, with booking-related calls averaging 8.2 minutes and prescription refill calls averaging 4.3 minutes.",
+            "supporting_file_paths": [
+                "shared/customer-service-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0017",
+            "justification": "",
+            "question": "In 2025, what percentage of customer service inquiries are resolved on the first contact without requiring follow-up?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2025, Rachel's team achieves a 71% first-contact resolution rate across all inquiry types, meaning only 29% of cases require follow-up interactions.",
+            "supporting_file_paths": [
+                "shared/service-efficiency-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0018",
+            "justification": "",
+            "question": "How many customer service representatives work during peak hours versus off-peak hours from January 2025 to September 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "From January to September 2025, 12 representatives are scheduled during peak hours, which is between 9:00 AM to 12:00 PM EST. In off-peak hours, between 1:00 PM to 5:00 PM EST, only 8 representatives are working. On evening shifts, from 5:00 PM to 9:00 PM EST, there are only 6 representatives on duty.",
+            "supporting_file_paths": [
+                "shared/workforce-allocation-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0019",
+            "justification": "",
+            "question": "In 2025, what is the monthly call volume handled by Rachel's customer service team?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Rachel's customer service team handles approximately 18,500 calls per month, with November and December seeing peak volumes of 22,000 calls due to seasonal flu-related consultations.",
+            "supporting_file_paths": [
+                "shared/2025-call-metrics.docx"
+            ]
+        },
+        {
+            "id": "DI0020",
+            "justification": "",
+            "question": "What percentage of customer service representatives have received conflict resolution certification as of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "75% of Rachel's customer service team (9 of 12 representatives) have completed formal conflict resolution or customer de-escalation certification programs.",
+            "supporting_file_paths": [
+                "shared/customer-service-enhancement.pptx"
+            ]
+        },
+        {
+            "id": "DI0021",
+            "justification": "",
+            "question": "How frequently does Rachel conduct performance reviews this year, 2025, with her customer service team?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Director for Customer Support conducts formal performance reviews quarterly for all team members, with informal check-ins scheduled bi-weekly for coaching and feedback.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Employee_Performance_Reviews_Da.xlsx"
+            ]
+        },
+        {
+            "id": "DI0022",
+            "justification": "",
+            "question": "What is the absenteeism rate for Rachel's customer service team for 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2025, the customer service team has an absenteeism rate of 3.2%, which is below the Canadian healthcare industry average of 4.5%.",
+            "supporting_file_paths": [
+                "shared/2025-absenteeism-report.docx"
+            ]
+        },
+        {
+            "id": "DI0023",
+            "justification": "",
+            "question": "What percentage of customer service inquiries come from repeat callers within the same month?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Approximately 23% of monthly callers contact customer service more than once within the same 30-day period, with an average of 2.3 contacts per repeat caller.",
+            "supporting_file_paths": [
+                "shared/customer-service-insights.pptx"
+            ]
+        },
+        {
+            "id": "DI0024",
+            "justification": "",
+            "question": "What is the average salary range for customer service representatives on Rachel's team in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of 2025, customer service representatives earn between $42,000 and $58,000 CAD annually, with the average salary being $49,500 CAD, which is competitive for the Vancouver market.",
+            "supporting_file_paths": [
+                "shared/salary-analysis-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0025",
+            "justification": "",
+            "question": "From 2023 to 2025, how many customer service representatives have been promoted internally within MediConn to other departments?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Over the past two years, 4 customer service representatives have been promoted to other departments, including operations, product management, and corporate account management.",
+            "supporting_file_paths": [
+                "shared/internal-promotions-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0026",
+            "justification": "",
+            "question": "In 2025, what is the error rate for customer service representatives when manually processing bookings for customers?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "When representatives manually complete bookings on behalf of customers, the error rate for 2025 is 2.1%, with errors primarily involving incorrect time zone selection or appointment type mismatches.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_162756.jsonl"
+            ]
+        },
+        {
+            "id": "DI0027",
+            "justification": "",
+            "question": "How many customer service quality assurance reviews does Rachel's team conduct monthly?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Rachel's quality assurance program reviews 120 customer interactions monthly. That is approximately 10 per representative.",
+            "supporting_file_paths": [
+                "shared/monthly-QA-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0028",
+            "justification": "",
+            "question": "What percentage of customer complaints escalated to Rachel are related to billing or payment issues in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Of the 6% of cases requiring Rachel's personal intervention in 2025, 38% involve billing disputes, payment processing errors, or insurance reimbursement questions.",
+            "supporting_file_paths": [
+                "shared/complaints-analysis-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0029",
+            "justification": "",
+            "question": "What proportion of all email queries result in customer service contact versus complete abandonment?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Of the 20,000 email queries in Q4 2024, 14,000 (70%) resulted in successful customer service contact, while 6,000 (30%) resulted in complete abandonment.",
+            "supporting_file_paths": [
+                "shared/email-customer-support-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0030",
+            "justification": "",
+            "question": "What percentage of post-consultation inquiries require staff to manually verify the consultation results for customers?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Q4 2024 data reveal that 45% of post-consultation inquiries are verified by support staff on the first contact with the customer.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_162939.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What proportion of failed bookings result in customer support contact versus complete abandonment?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Of the 16,500 failed booking attempts in Q4 2024, 60% resulted in a support contact, while 40% resulted in complete abandonment with no support interaction.",
+            "supporting_file_paths": [
+                "shared/patient-experience-analysis.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What percentage of booking-related support inquiries require staff to manually complete the booking process for customers?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Q4 2024 data reveal that 45% of booking-related inquiries are resolved by customer support staff manually completing the booking on behalf of the customer.",
+            "supporting_file_paths": [
+                "shared/patient-booking-review.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "What percentage of customers who contact support in Q4 2024 attempted to complete the booking independently before seeking assistance?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Post-call surveys conducted in Q4 2024 reveal that 67% of customers who contacted support stated they tried to book on their own first but couldn't figure it out.",
+            "supporting_file_paths": [
+                "shared/patient-booking-assessment.pdf"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "What percentage of booking-related support tickets in Q4 2024 require escalation beyond frontline representatives?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In Q4 2024, 31% of booking-related support tickets required escalation to technical support or product teams because frontline customer service representatives couldn't resolve the issue within the booking tool.",
+            "supporting_file_paths": [
+                "shared/patient-experience-improvement.pdf"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "What is the average and maximum wait time for customers trying to reach MediConn's customer service during peak hours in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Average wait time to reach a customer service representative in Q4 2024 is 12 minutes during peak hours (9 AM - 12 PM EST), with some customers waiting up to 25 minutes.",
+            "supporting_file_paths": [
+                "shared/patient-booking-optimization.pptx"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "",
+            "question": "What is MediConn's customer satisfaction score for support interactions in Q4 2024, and what is the most frequently cited complaint?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Customer satisfaction (CSAT) scores for support interactions in Q4 2024 are 3.2 out of 5, with the most common complaint being \"took too long to reach someone\" (cited in 58% of negative reviews).",
+            "supporting_file_paths": [
+                "shared/patient-appointment-enhancement.pptx"
+            ]
+        },
+        {
+            "id": "IN0007",
+            "justification": "",
+            "question": "What percentage of email support requests in Q4 2024 receive responses within 24 hours, and what is the average email response time?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Only 40% of customers who email support in Q4 2024 receive a response within 24 hours, with the average response time being 36 hours.",
+            "supporting_file_paths": [
+                "shared/patient-experience-analysis.pdf"
+            ]
+        },
+        {
+            "id": "IN0008",
+            "justification": "",
+            "question": "In Q4 2024, what is MediConn's customer service team size and capacity utilization rate?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In Q4 2024, the customer service team consists of 12 full-time representatives, with current capacity maxed out at 95%, leaving little room to handle volume spikes.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Customer_Service_Team_Capacity_.xlsx"
+            ]
+        },
+        {
+            "id": "IN0009",
+            "justification": "",
+            "question": "What types of booking questions generate the highest call volume to the customer service team in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Support ticket analysis from Q4 2024 shows that 42% of booking-related calls are about \"I can't find the right appointment type,\" 28% are \"the system won't accept my health card or coverage information,\" and 30% are general navigation confusion.",
+            "supporting_file_paths": [
+                "shared/patient-appointment-optimization.pptx"
+            ]
+        },
+        {
+            "id": "IN0010",
+            "justification": "",
+            "question": "How many support interactions on average does it take for customers to successfully complete a booking with assistance in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Q4 2024 data show that customers require an average of 1.7 support interactions to successfully complete a booking, with 58% resolved on first contact, 28% requiring a second interaction, and 14% requiring three or more contacts.",
+            "supporting_file_paths": [
+                "shared/patient-appointment-accessibility.docx"
+            ]
+        },
+        {
+            "id": "IN0011",
+            "justification": "",
+            "question": "At what point in the booking process during Q4 2024 do users most frequently abandon their attempts without contacting support, and how many users does this affect?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Analytics from Q4 2024 show that 5,200 users (11% of total booking attempts) abandoned the booking process at the coverage verification step (provincial health card and supplemental insurance validation) without ever contacting support or reaching the final confirmation page.",
+            "supporting_file_paths": [
+                "shared/patient-appointment-optimization.pptx"
+            ]
+        },
+        {
+            "id": "IN0012",
+            "justification": "",
+            "question": "What percentage of customer service representatives report they regularly need to talk customers through the booking process step-by-step in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In a Q4 2024 internal survey, 78% of customer service representatives reported that they often or very often need to provide step-by-step guidance through the booking interface, with representatives spending an average of 5.5 minutes per call just on booking navigation.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Customer_Service_Experience_Dat.xlsx"
+            ]
+        },
+        {
+            "id": "IN0013",
+            "justification": "",
+            "question": "What percentage of users attempt to access help or contact support while actively using the booking platform in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In Q4 2024, heat map data reveal that 34% of users click the \"Help\" or \"Contact Support\" button during the booking process, indicating confusion with the platform interface.",
+            "supporting_file_paths": [
+                "shared/patient-experience-analysis.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

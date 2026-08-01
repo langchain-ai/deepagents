@@ -1,0 +1,97 @@
+{
+  "industry": "healthcare",
+  "domain": "itsm",
+  "difficulty": "easy",
+  "files": [
+    {
+      "filetype": "pdf",
+      "type": "supporting",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "supporting",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "email",
+      "type": "supporting",
+      "app": "roundcube"
+    },
+    {
+      "filetype": "email",
+      "type": "distractor",
+      "app": "roundcube"
+    },
+    {
+      "filetype": "email",
+      "type": "distractor",
+      "app": "roundcube"
+    }
+  ]
+}

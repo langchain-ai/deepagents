@@ -1,0 +1,479 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What was the average tenure of MediConn Solutions' customer service representatives in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, customer service representatives had an average tenure of 2.8 years. This represented a slight increase from 2.6 years in 2023. The longest-tenured representative had been with MediConn for 6.2 years as of December 2024.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Customer_Service_Tenure_Statist.xlsx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "How many customer service training hours did the MediConn Solutions' customer service team complete in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The customer service team completed 1,240 total training hours in 2024, averaging 31 hours per representative. Training topics included de-escalation techniques (35%), PIPEDA compliance (25%), new platform features (20%), and soft skills development (20%).",
+            "supporting_file_paths": [
+                "shared/2024-customer-service-training.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What was MediConn's customer service department operating budget for 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn's customer service department operated with a budget of $1.8 million CAD in 2024. This represented 12% of the company's total operating expenses. Salaries accounted for 68% of the budget, technology tools for 18%, and training for 14%.",
+            "supporting_file_paths": [
+                "shared/customer-service-budget-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "How many languages did MediConn's customer service team support in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, MediConn's customer service team provided support in English, French, Mandarin, and Punjabi. English inquiries represented 72% of contacts, French 18%, Mandarin 7%, and Punjabi 3%. Translation services were available on-demand for other languages.",
+            "supporting_file_paths": [
+                "shared/multilingual-support-review.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What percentage of MediConn Solutions' customer service interactions resulted in escalations to senior management in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, 4.2% of customer service interactions required escalation to Rachel or senior management. The most common escalation reasons were billing disputes (38%), privacy concerns (27%), and complaints about physician quality (22%). Booking-related escalations represented only 13% of total escalations.",
+            "supporting_file_paths": [
+                "shared/escalation-report-2024.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What was the MediConn Solutions' customer service team's average response time to email inquiries in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The customer service team's average response time to email inquiries was 8.3 hours in 2024. This met MediConn's internal service level agreement of responding within 12 hours. The fastest response time was 2.1 hours, achieved during Q2 2024.",
+            "supporting_file_paths": [
+                "shared/customer-service-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "How many MediConn Solutions' customer service representatives did Rachel hire in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Rachel hired 7 new customer service representatives in 2024 to accommodate growing demand. Three were hired in Q1, two in Q3, and two in Q4. The hiring increased total team size from 33 to 40 representatives by year-end.",
+            "supporting_file_paths": [
+                "shared/service-expansion-review.pptx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "What was the average customer service representative salary at MediConn in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average customer service representative salary at MediConn was $52,400 CAD annually in 2024. Entry-level representatives earned $45,000 CAD, while senior representatives with 5+ years earned up to $62,000 CAD. Rachel's team also received performance bonuses averaging $3,200 CAD per person.",
+            "supporting_file_paths": [
+                "shared/salary-analysis-2024.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "What were the top three reasons patients contacted customer service for non-booking issues at MediConn Solutions' in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The top three non-booking customer service inquiries in 2024 were: billing questions (28% of inquiries), technical issues with video consultations (19%), and requests for medical record copies (15%). These three categories accounted for 62% of all non-booking contacts.",
+            "supporting_file_paths": [
+                "shared/customer-service-analysis-2024.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "What was the MediConn Solutions' customer service team's absenteeism rate in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The customer service team had an absenteeism rate of 3.8% in 2024, slightly below the Canadian healthcare industry average of 4.2%. Sick leave accounted for 71% of absences, personal days for 20%, and family emergencies for 9%.",
+            "supporting_file_paths": [
+                "shared/customer-service-absenteeism.pptx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "How many customer complaints about physician bedside manner did MediConn Solutions' team handle in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Rachel's team handled 312 complaints about physician bedside manner in 2024, representing 2.1% of all customer service interactions. These complaints resulted in 18 physicians receiving additional communication training. No physicians were terminated based on these complaints.",
+            "supporting_file_paths": [
+                "shared/physician-patient-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "What percentage of MediConn's customer service team worked remotely versus in-office in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, 75% of Rachel's customer service team worked remotely, 15% worked in-office, and 10% used a hybrid model. Remote workers were distributed across British Columbia (52%), Ontario (38%), and Alberta (10%).",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Customer_Service_Team_Work_Arra.xlsx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "How many customer service awards or recognitions did MediConn receive in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn received three customer service recognitions in 2024: a bronze medal in the Canadian Virtual Healthcare Customer Excellence Awards, a Top Employer designation for BC, and a Patient Safety Excellence certification. Rachel accepted the awards on behalf of her team.",
+            "supporting_file_paths": [
+                "shared/customer-service-report.docx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "What was the gender composition of MediConn Solutions' customer service team in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, MediConn Solutions' customer service team consisted of 62% women, 36% men, and 2% non-binary employees. This composition remained stable throughout the year with minimal variation across quarters.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Team_Gender_Composition_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "",
+            "question": "How many customer service policies did Rachel update or create in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Rachel updated 8 customer service policies and created 3 new policies in 2024. Updates included privacy handling procedures, complaint escalation protocols, and refund authorization guidelines. New policies addressed AI chatbot oversight, social media response standards, and crisis communication.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_225607.jsonl"
+            ]
+        },
+        {
+            "id": "DI0016",
+            "justification": "",
+            "question": "What was the average handle time for MediConn Solutions' customer service phone calls in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average handle time for customer service phone calls was 6.8 minutes in 2024. Billing inquiries averaged 8.2 minutes, technical support calls averaged 9.1 minutes, and general information calls averaged 4.3 minutes. These times remained consistent across all four quarters.",
+            "supporting_file_paths": [
+                "shared/2024-customer-service-report.docx"
+            ]
+        },
+        {
+            "id": "DI0017",
+            "justification": "",
+            "question": "How many customer service representatives received promotions within Rachel's department in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Five customer service representatives received promotions in 2024. Two were promoted to senior representative roles, two to team lead positions, and one to quality assurance specialist. Promotions were based on performance metrics, tenure, and leadership demonstrated.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_225704.jsonl"
+            ]
+        },
+        {
+            "id": "DI0018",
+            "justification": "",
+            "question": "What was MediConn's customer service department turnover rate in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The customer service department experienced a 12% turnover rate in 2024, down from 15% in 2023. Four representatives left for higher-paying positions, one retired, and three relocated outside of Canada. Rachel successfully reduced turnover through improved compensation and flexible scheduling.",
+            "supporting_file_paths": [
+                "shared/2024-Customer-Service-Review.pdf"
+            ]
+        },
+        {
+            "id": "DI0019",
+            "justification": "",
+            "question": "How many customer feedback surveys did Rachel's team distribute in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Rachel's team distributed 14,800 customer feedback surveys in 2024, with a response rate of 18%. Surveys were sent automatically after consultations, following support interactions, and quarterly to all active users. The response rate increased from 15% in Q1 to 21% in Q4.",
+            "supporting_file_paths": [
+                "shared/2024-Survey-Report.docx"
+            ]
+        },
+        {
+            "id": "DI0020",
+            "justification": "",
+            "question": "What customer service software tools did MediConn use in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, MediConn used Zendesk for ticket management, RingCentral for phone systems, Salesforce for CRM, and Slack for internal team communication. These tools were integrated with MediConn's proprietary patient platform through API connections.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_225836.jsonl"
+            ]
+        },
+        {
+            "id": "DI0021",
+            "justification": "",
+            "question": "How many customer service quality assurance audits did Rachel conduct in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Rachel conducted 480 quality assurance audits in 2024, reviewing 10 randomly selected interactions per representative monthly.",
+            "supporting_file_paths": [
+                "shared/2024-audit-report.docx"
+            ]
+        },
+        {
+            "id": "DI0022",
+            "justification": "",
+            "question": "What was the average age of customer service representatives on Rachel's team in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average age of customer service representatives was 32 years in 2024. The youngest representative was 22 and the oldest was 58. The age distribution showed 35% were under 30, 45% were between 30-40, and 20% were over 40.",
+            "supporting_file_paths": [
+                "shared/team-analysis-2024.docx"
+            ]
+        },
+        {
+            "id": "DI0023",
+            "justification": "",
+            "question": "How many customer service team meetings did Rachel facilitate in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Rachel facilitated 52 team meetings in 2024, holding weekly one-hour sessions every Monday. Meeting topics included performance reviews (30% of meetings), process updates (25%), training sessions (20%), team building (15%), and strategy discussions (10%).",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Customer_Service_Meetings_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0024",
+            "justification": "",
+            "question": "What was MediConn's customer service department's customer satisfaction score for post-consultation support in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The customer satisfaction score for post-consultation support was 4.2 out of 5 in 2024. This covered follow-up questions, test result inquiries, and general health guidance after completed appointments. The score remained stable throughout the year with minimal quarterly variation.",
+            "supporting_file_paths": [
+                "shared/customer-satisfaction-report-2024.pdf"
+            ]
+        },
+        {
+            "id": "DI0025",
+            "justification": "",
+            "question": "How many customer service performance reviews did Rachel complete in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Rachel completed 80 performance reviews in 2024, conducting quarterly reviews for all 40 team members. Reviews assessed customer satisfaction metrics, productivity, attendance, and teamwork. 85% of representatives received \"meets expectations\" or higher ratings.",
+            "supporting_file_paths": [
+                "shared/2024-customer-service-report.docx"
+            ]
+        },
+        {
+            "id": "DI0026",
+            "justification": "",
+            "question": "What was the percentage of customer service interactions handled via phone versus email versus chat at MediConn Solutions' in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, 58% of customer service interactions occurred via phone, 28% via email, and 14% via live chat. Phone remained the preferred channel, despite MediConn's efforts to shift users toward asynchronous channels. Chat adoption increased from 9% in Q1 to 17% in Q4.",
+            "supporting_file_paths": [
+                "shared/customer-interaction-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0027",
+            "justification": "",
+            "question": "How many customer privacy incidents did MediConn Solutions' team handle in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Rachel's team handled 23 customer privacy incidents in 2024, all of which were minor PIPEDA compliance concerns. Issues included misdirected emails (12 incidents), unauthorized account access attempts (8 incidents), and improper data disposal (3 incidents). All were resolved within 48 hours with no regulatory penalties.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_230115.jsonl"
+            ]
+        },
+        {
+            "id": "DI0028",
+            "justification": "",
+            "question": "What was the MediConn Solutions' customer service team's first-call resolution rate for technical support issues in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The first-call resolution rate for technical support issues was 76% in 2024. Common unresolved issues requiring escalation included password reset problems (34%), video connection failures (28%), and payment processing errors (22%). The resolution rate improved from 71% in Q1 to 79% in Q4.",
+            "supporting_file_paths": [
+                "shared/Tech-Support-Review-2024.pdf"
+            ]
+        },
+        {
+            "id": "DI0029",
+            "justification": "",
+            "question": "What was MediConn Solutions' average wait time for patients to secure a virtual consultation certificate in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In Q4 2024, MediConn Solutions\u2019 average wait time for patients to receive a virtual consultation certificate was 1.5 days.",
+            "supporting_file_paths": [
+                "shared/Q4-consultation-efficiency-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0030",
+            "justification": "",
+            "question": "What percentage of patients abandoned their booking attempts on MediConn's platform between January and December 2019?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Between January and December 2019, 52% of patients abandoned their booking attempts before completing an appointment reservation. The customer service team tracked that 58% of these abandonments occurred during the payment information entry phase. The remaining 32% abandoned during the availability selection step. Follow-up surveys revealed that 61% of abandoners did not attempt to rebook through alternative channels.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Booking_Abandonment_Statistics.xlsx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What was MediConn Solutions' average wait time for patients to secure a virtual consultation appointment in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In Q4 2024, MediConn Solutions' average wait time for virtual consultation appointments was 3.5 days. This represented a 40% increase from the 2.5-day average recorded in Q1 2024. Peak demand periods during flu season in November and December 2024 saw wait times spike to 5-7 days.",
+            "supporting_file_paths": [
+                "shared/patient-access-enhancement.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What percentage of patients abandoned their booking attempts on MediConn's platform in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In 2024, 42% of patients abandoned their booking attempts before completing an appointment reservation. The customer service team tracked that 68% of these abandonments occurred during the payment information entry phase. The remaining 32% abandoned during the availability selection step. Follow-up surveys revealed that 61% of abandoners did not attempt to rebook through alternative channels.",
+            "supporting_file_paths": [
+                "shared/enhancing-virtual-access.pptx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "How many inbound calls did MediConn's customer support call center handle monthly in 2024, and what percentage were booking-related?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn's call center handled an average of 8,200 inbound calls per month throughout 2024. Approximately 55% of these calls (4,510 monthly) were related to booking appointments, rescheduling, or navigating the online platform. The customer service team noted that call volumes increased by 23% between Q1 and Q4 2024.",
+            "supporting_file_paths": [
+                "shared/patient-access-enhancement.pdf"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "What was MediConn Solutions' Net Promoter Score (NPS) for the booking and scheduling experience in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn's NPS for the booking and scheduling experience was 32 in 2024, significantly lower than the company's overall NPS of 58. Patient feedback surveys conducted quarterly in 2024 showed that 47% of detractors specifically cited \"difficulty booking appointments\" and \"long wait times\" as primary reasons for their low scores.",
+            "supporting_file_paths": [
+                "shared/patient-access-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "What was the average turnaround time for prescription requests processed through MediConn's platform in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In 2024, the average turnaround time for prescription requests was 18 hours from consultation completion to pharmacy delivery confirmation. However, the customer service team documented that 31% of patients contacted customer support within this window asking for status updates. Weekend requests averaged 36 hours due to limited physician availability on Saturdays and Sundays.",
+            "supporting_file_paths": [
+                "shared/patient-access-improvement.docx"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "",
+            "question": "What was MediConn Solutions' patient retention rate for returning users in 2024 compared to 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn's patient retention rate for returning users declined from 71% in 2023 to 64% in 2024. Exit surveys conducted throughout 2024 revealed that 38% of patients who didn't return cited the inconvenient booking process as their primary reason. Another 29% mentioned long wait times for appointments.",
+            "supporting_file_paths": [
+                "shared/virtual-healthcare-enhancement.docx"
+            ]
+        },
+        {
+            "id": "IN0007",
+            "justification": "",
+            "question": "When did MediConn Solutions experience peak demand for virtual consultations during 2024, and how did the system perform?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn experienced peak demand during three periods in 2024: flu season (January-February), back-to-school season (August-September), and holiday illness surge (November-December). During these periods, booking system response times slowed by 60%, and the support team received 2.3 times their normal call volume. Patient complaints about system slowness increased by 145% during peak weeks.",
+            "supporting_file_paths": [
+                "shared/patient-access-enhancement.docx"
+            ]
+        },
+        {
+            "id": "IN0008",
+            "justification": "",
+            "question": "What percentage of MediConn's patients used self-service tools for rebooking or accessing medical records in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Only 28% of MediConn's patients used available self-service tools for rebooking appointments or accessing medical records in 2024. The customer service analysis showed that 64% of patients were unaware that these tools existed. Among patients who attempted self-service, 41% abandoned the process and called customer support instead due to difficult navigation.",
+            "supporting_file_paths": [
+                "shared/virtual-patient-access-strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0009",
+            "justification": "",
+            "question": "How long did it take first-time users to complete their initial booking on MediConn's platform in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "First-time users in 2024 took an average of 12.5 minutes to complete their initial booking on MediConn's platform. UX tracking data showed that 53% of first-time users required customer support intervention during the registration process. Post-booking satisfaction surveys indicated that patients who needed support intervention rated their booking experience 3.2 out of 5, compared to 4.4 out of 5 for those who completed booking independently.",
+            "supporting_file_paths": [
+                "shared/virtual-patient-access-strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0010",
+            "justification": "",
+            "question": "How did booking completion rates differ between mobile and desktop users on MediConn's platform in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In 2024, desktop users had a 72% booking completion rate while mobile users had only a 51% completion rate. The analytics team found that 83% of MediConn's traffic came from mobile devices. Mobile users were 2.4 times more likely to contact customer support for booking assistance than desktop users.",
+            "supporting_file_paths": [
+                "shared/virtual-healthcare-improvement.pdf"
+            ]
+        },
+        {
+            "id": "IN0011",
+            "justification": "",
+            "question": "What was the average resolution time for booking-related support tickets submitted to Rachel's team in Q3 and Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In Q3 2024, booking-related support tickets took an average of 4.2 hours to resolve. This increased to 6.8 hours in Q4 2024 as volume grew. Patient satisfaction surveys showed that patients waiting over 6 hours for ticket resolution gave satisfaction ratings of 2.8 out of 5, compared to 4.1 out of 5 for tickets resolved within 4 hours.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Support_Ticket_Resolution_Data.xlsx"
+            ]
+        },
+        {
+            "id": "IN0012",
+            "justification": "",
+            "question": "What feedback did MediConn's corporate clients provide about employee access to virtual consultations during their 2024 annual reviews?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "During 2024 annual reviews, 73% of MediConn's corporate clients requested improvements to appointment availability for their employees. HR managers reported that 44% of employees who attempted to book consultations during work hours couldn't find available slots within 48 hours. Two enterprise clients (representing 1,200 employees) threatened to explore alternative providers in December 2024 due to access issues.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_225053.jsonl"
+            ]
+        },
+        {
+            "id": "IN0013",
+            "justification": "",
+            "question": "What percentage of booking attempts occurred outside regular business hours (9 AM - 5 PM) on MediConn's platform in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In 2024, 58% of booking attempts occurred outside regular business hours, with peak activity between 7 PM and 10 PM on weekdays. However, customer support for booking assistance was only available until 8 PM, leaving a two-hour gap. Data showed that 34% of after-hours booking attempts resulted in incomplete registrations or abandoned carts, compared to 18% during business hours.",
+            "supporting_file_paths": [
+                "shared/virtual-patient-access-Q1-2026.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

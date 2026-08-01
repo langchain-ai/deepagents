@@ -1,0 +1,380 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How did MediConn Solutions' IT department contribute to the company's expansion in 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The IT department onboarded more corporate clients in 2023 by establishing an integrated IT portal for their employee health programs.",
+            "supporting_file_paths": [
+                "shared/IT-impact-2023-expansion.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What cybersecurity convention did Mediconn Solution's IT department host in 2025, and what was the main topic?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In February 2025, MediConn's IT department launched a cybersecurity campaign promoting awareness. The final meeting was held in Toronto on February 22, 2025, and the main topic was AI use in IT amongst healthcare providers.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_223718.jsonl"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What IT technology upgrades has MediConn Solutions implemented recently?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' IT department upgraded to a new infrastructure in 2025, improving uptime from 90% to 99.5%.",
+            "supporting_file_paths": [
+                "shared/it-upgrades-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What internal recognition has the IT department received in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' IT department was recognized as the most efficient department after achieving a record high 97% satisfaction rate from customers' survey in 2025.",
+            "supporting_file_paths": [
+                "shared/it-recognition-overview.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How did MediConn Solutions celebrate Telehealth Awareness Month in May 2025 to highlight the crucial role of AI technology in its ITSM?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The company organized an online health fair conducted by telemedicine practitioners featuring a live Q&A session specifically about about AI-technology and ITSM, and how it could increase patient satisfaction.",
+            "supporting_file_paths": [
+                "shared/telehealth-ai-itsm-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What recent innovation in the IT department did MediConn Solutions pilot in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In June 2025, MediConn Solutions began testing digital consent forms integrated with EHR to streamline the onboarding of patients.",
+            "supporting_file_paths": [
+                "shared/IT-innovation-update.pptx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "How many new devices did the MediConn Solutions' IT department deploy in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' IT department configured and distributed 300 teleconsultation tablets for doctors and corporate clients in August 2024.",
+            "supporting_file_paths": [
+                "shared/2024-IT-Deployment-Report.docx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "How would a new AI-integrated  ITSM change Mediconn Solutions' ticketing workflow in 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The IT department launched a test of a priority-level AI tagging system in July of 2025. The test proved that using AI could speed up ticket traffic issue resolution by 40%.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_223932.jsonl"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "What initiative was jointly launched by the HR and the IT department in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' HR and IT departments launched a \"Tech-Wellness\" program in January 2025 to promote balanced screen time and the mental well-being of employees.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_HR_and_IT_Initiatives_Overview.xlsx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "What certification has MediConn Solutions' IT department achieved in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions successfully renewed its ISO 27001 certification in September 2025 after an external audit of its IT and data security systems.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Compliance_Certification_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "Within the IT department of Mediconn Solution, How does the IT team mentor new IT department staff?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Since 2024, MediConn Solutions' IT department has run a six-month Mentorship Program to help junior IT analysts gain crucial skills in healthcare technology systems.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_224059.jsonl"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "What internal platform update did MediConn Solutions make in February 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions deployed SecureSyc 2.0 in February 2025, an upgraded collaboration platform that unifies internal communications and document sharing.",
+            "supporting_file_paths": [
+                "shared/february-2025-update.pptx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "What workplace modernization project did the Mediconn Solutions' IT department lead?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, MediConn Solutions' IT department oversaw a work infrastructure upgrade, improving VPN connectivity for home-based staff.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_IT_Projects_Overview.xlsx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "What technological award recognition did MediConn Solutions receive in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In June 2025, during the Health Tech Digital Awards, MediConn Solutions was awarded the achievement  \"The Best Telehealth Platform\" for its innovative solutions in patient experience strategies and designs.",
+            "supporting_file_paths": [
+                "shared/mediconn-tech-achievements.docx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "",
+            "question": "What quarterly goal did the IT department at MediConn Solutions achieve in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' IT department achieved a 98% response rate to internal helpdesk tickets, demonstrating strong operational reliability.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_224232.jsonl"
+            ]
+        },
+        {
+            "id": "DI0016",
+            "justification": "",
+            "question": "What quarterly goal did the MediConn Solutions' IT department achieve in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' IT department achieved a 99% response rate to internal helpdesk tickets, demonstrating strong operational efficiency and reliability.",
+            "supporting_file_paths": [
+                "shared/Q1-IT-Review.docx"
+            ]
+        },
+        {
+            "id": "DI0017",
+            "justification": "",
+            "question": "What community engagement did MediConn Solutions' IT department organize in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' IT department collaborated with the University of Victoria to offer TechCare Workshops, teaching students how IT supports online healthcare services.",
+            "supporting_file_paths": [
+                "shared/2025-Community-Engagement.docx"
+            ]
+        },
+        {
+            "id": "DI0018",
+            "justification": "",
+            "question": "What creative workplace improvement in the IT department did MediConn Solutions introduce in mid-2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions launched \"Flex Fridays\" in mid-2025, allowing IT staff to alternate between remote and in-office work to reduce burnout.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_224355.jsonl"
+            ]
+        },
+        {
+            "id": "DI0019",
+            "justification": "",
+            "question": "What system backup measure did MediConn Solutions pilot in July 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' IT department completed a nationwide disaster recovery simulation, successfully restoring critical systems within one hour.",
+            "supporting_file_paths": [
+                "shared/system-backup-july2025.docx"
+            ]
+        },
+        {
+            "id": "DI0020",
+            "justification": "",
+            "question": "What conference did MediConn Solutions' IT team attended in August 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2025, members of MediConn\u2019s IT team joined the Digital Health Transformation Summit in Montreal to present virtual service security.",
+            "supporting_file_paths": [
+                "shared/august-conference-insights.pdf"
+            ]
+        },
+        {
+            "id": "DI0021",
+            "justification": "",
+            "question": "How did MediConn Solutions handle the increased patient demand in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' IT team scaled virtual consultation servers to support a 45% traffic surge during the flu season in September 2025.",
+            "supporting_file_paths": [
+                "shared/patient-demand-response-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0022",
+            "justification": "",
+            "question": "What cultural event did MediConn Solutions' IT department help organize to boost morale among MediConn employees?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions held its Annual Care Connect Day in April 2025, featuring team-building wellness and tech innovation activities.",
+            "supporting_file_paths": [
+                "shared/IT-Engagement-Initiatives.docx"
+            ]
+        },
+        {
+            "id": "DI0023",
+            "justification": "",
+            "question": "How has MediConn Solutions' AI-integrated software for physicians impact the number of responses needed for IT-related issues in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to an internal IT report in January 2025, MediConn Solutions' AI-integrated software for physicians has reduce the number of responses needed for IT-related issues by almost 75%.",
+            "supporting_file_paths": [
+                "shared/AI-Impact-IT-Support.docx"
+            ]
+        },
+        {
+            "id": "DI0024",
+            "justification": "",
+            "question": "What is the average percentage accuracy of an AI-integrated IT system in predicting patient outcome detection?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to an expert review of 40 health care providers with AI-integrated IT in February 2025, AI-integrated IT could predict patient outcomes with 98% accuracy.",
+            "supporting_file_paths": [
+                "shared/AI-Patient-Outcomes.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "How could MediConn Solutions' AI-integrated ITSM impact the response times for IT-related issues?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to an internal IT report in January 2025, MediConn Solutions' AI-integrated ITSM could reduce response times by 50% leading to faster resolutions and improved overall operations.",
+            "supporting_file_paths": [
+                "shared/AI-ITSM-Adoption-Plan.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What is the average percentage accuracy of an AI-integrated ITSM in system issue detection?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to an expert review of 40 health care providers with AI-integrated ITSM in February 2025, AI-integrated ITSM detects system issues with 98% accuracy.",
+            "supporting_file_paths": [
+                "shared/ai-itsm-integration.docx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "How many IT-related routine tasks could MediConn Solutions' AI-integrated ITSM automate?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to a IT department survey in May of 2025, MediConn Solutions' AI-integrated ITSM could automate 95% of its routine tasks. This would significantly reduce the IT staff workload.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_223250.jsonl"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "How does MediConn Solutions' AI-integrated ITSM comply with regulatory compliance for cybersecurity?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn Solutions' AI-integrated ITSM detects cybersecurity threats and implements countermeasures, ensuring regulatory compliance as reported recently by its IT department.",
+            "supporting_file_paths": [
+                "shared/MediSolutions_Compliance_Insights_Data.xlsx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "What percentage of the IT desk tickets can the chatbot of MediConn Solutions' AI-integrated ITSM resolve?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn Solutions' AI-integrated ITSM tool includes an AI chatbot that addresses up to 90% of IT desk tickets, significantly speeding up response times as reported by its IT department.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_223358.jsonl"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "",
+            "question": "How would a MediConn Solutions' AI-integrated ITSM effect the IT service desk staff?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to a survey completed by MediConn Solutions' IT service desk employees, 90% of the employees polled stated that too much time was spent answering common questions, AI technology could be incorporated to answer these questions instead, freeing up valuable time for service desk workers to focus on more important issues.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_223456.jsonl"
+            ]
+        },
+        {
+            "id": "IN0007",
+            "justification": "",
+            "question": "Can AI ITSM systems be programmed to predict system failures?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In a presentation conducted by AI experts to MediConn's executives in January 2025, AI analysis can predict when a service failure is imminent with 90% accuracy.",
+            "supporting_file_paths": [
+                "shared/AI-ITSM-Impact.pdf"
+            ]
+        },
+        {
+            "id": "IN0008",
+            "justification": "",
+            "question": "How can MediConn Solutions' AI-integrated ITSM relieve the burden on the IT department, allowing them to focus on what matters most?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn Solutions' AI-integrated ITSM tool includes a self-service portal empowering clinicians to troubleshoot 75% of common technical issues, freeing IT staff to focus on more complex issues as its IT department reported significant reduction of common reoccuring issues.",
+            "supporting_file_paths": [
+                "shared/AI-ITSM-Impact.pdf"
+            ]
+        },
+        {
+            "id": "IN0009",
+            "justification": "",
+            "question": "Can an AI-integrated ITSM keep track and monitor the digital health devices of remote patients to maintain quality and efficient healthcare services?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Many AI-integrated ITSM include an asset-monitoring tool that conducts regular remote scanning of devices for updating and inventory to pinpoint faulty or outdated equipment for timely replacement. A report found in a professional healthcare IT journal in March 2025 declared that one health care provider similar in size to Mediconn Solutions, reported zero complaints since integrating AI tracking of digital health devices.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_AI_ITSM_Digital_Health_Device_T.xlsx"
+            ]
+        },
+        {
+            "id": "IN0010",
+            "justification": "",
+            "question": "Can AI-integrated ITSM prepare and allocate resources during peak demand periods, ensuring sufficient and efficient quality health service availability?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to a leading developer of AI-integrated ITSM software, a data analysis tool that predicts peak remote health demand periods and provides real-time data on resource allocation to meet healthcare demands will be available in January of 2026.",
+            "supporting_file_paths": [
+                "shared/AI-ITSM-Integration.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

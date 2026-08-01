@@ -1,0 +1,26 @@
+{
+    "dr_question": "How can MediConn Solutions leverage trendy new CRM solutions to improve patient engagement and retention, and what new CRM solutions are expected in 2025?",
+    "question_type": "ai_generated",
+    "question_source": {
+        "domain": "crm",
+        "dr_question": "How can MediConn Solutions leverage trendy new CRM solutions to improve patient engagement and retention, and what new CRM solutions are expected in 2025?",
+        "industry": "Virtual/Remote Healthcare",
+        "n_hops": 3,
+        "subquestions": [
+            "What are the key features of AI-driven personalization in healthcare CRM systems?",
+            "How do our competitors currently use AI in their virtual healthcare services?",
+            "What are the potential revenue growth opportunities from offering AI-driven personalization in our services?"
+        ],
+        "url": "https://wtt-solutions.com/blog/the-future-of-healthcare-crm-solutions-what-to-expect-in-2025"
+    },
+    "timestamp": "2025-08-08 13:21",
+    "task_id": "DR0009",
+    "subquestions": [
+        "What are the key features of AI-driven personalization in healthcare CRM systems?",
+        "How do our competitors currently use AI in their virtual healthcare services?",
+        "What are the potential revenue growth opportunities from offering AI-driven personalization in our services?"
+    ],
+    "industry": "healthcare",
+    "domain": "crm",
+    "url": "https://wtt-solutions.com/blog/the-future-of-healthcare-crm-solutions-what-to-expect-in-2025"
+}

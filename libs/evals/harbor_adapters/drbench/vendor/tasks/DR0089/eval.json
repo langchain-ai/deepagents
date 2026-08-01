@@ -1,0 +1,248 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "Details on battery technology production are provided and are unrelated to specific industry testing procedures.",
+            "question": "How many vehicles with solid-state batteries are projected to be produced in 2025 at Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Several prototypes with solid-state batteries are expected to reach production volumes of up to 10,000 units at Elexion Automotive in 2025.",
+            "supporting_file_paths": [
+                "shared/Solid-State-Battery-Forecast.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "This concerns product portfolio complexity rather than cold-weather testing or battery endurance and reliability.",
+            "question": "How many automotive models did Elexion Automotive manage in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive managed 60 automotive models in 2025.",
+            "supporting_file_paths": [
+                "shared/elexion-model-report-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "Micromobility trends focus on small urban transportation solutions and are not related to electric vehicle battery performance, cold-weather testing, EV battery endurance, or reliability.",
+            "question": "What is the projected rise in electric scooter sales value at Elexion Automotive from 2021 to 2028?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Electric scooter sales are projected to grow from $35 million in 2021 to over $95 million by 2028 at Elexion Automotive.",
+            "supporting_file_paths": [
+                "shared/electric-scooter-sales-forecast.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "Workforce-related challenges are unrelated to battery testing protocols, EV battery endurance, or reliability.",
+            "question": "What portion of the automotive workforce at Elexion Automotive is experiencing labor shortages that will affect 2025 production?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Labor shortages affect approximately 15% of the automotive manufacturing workforce at Elexion Automotive.",
+            "supporting_file_paths": [
+                "shared/workforce-impact-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "This focuses on software integration challenges unrelated to battery testing protocols, EV battery endurance, or reliability.",
+            "question": "By how much did automotive software-defined vehicle (SDV) development drive cost increase in 2025 at Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "SDV development increased product development costs by approximately 12% at Elexion Automotive.",
+            "supporting_file_paths": [
+                "shared/SDV-Cost-Analysis-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "This illustrates design and user experience trends, unrelated to battery testing protocols, EV battery endurance, or reliability.",
+            "question": "What percentage of Elexion's EVs used sensory storytelling in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Around 30% of Elexion's EVs used sensory storytelling in 2025.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_144546.jsonl"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "Luxury garages with tech-enabled features highlight a lifestyle and luxury market trend, which is unrelated to battery testing protocols, EV battery endurance, or reliability.",
+            "question": "How many luxury garages with tech-enabled features were created for affluent car owners at Elexion Automotive in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "15 ultra-luxury garages with integrated tech and bespoke design were created in 2025 at Elexion Automotive.",
+            "supporting_file_paths": [
+                "shared/luxury-garage-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "Product development timings are unrelated to battery testing protocols, EV battery endurance, or reliability.",
+            "question": "What was the average change in vehicle design cycles at Elexion Automotive due to software dependency in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Design cycles at Elexion Automotive have been extended by an average of 18% since 2024 due to increasing software complexity.",
+            "supporting_file_paths": [
+                "shared/software-design-cycle-impact.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "The increase in demand for AI-powered driver assistance systems represents a technology adoption metric that is unrelated to battery testing protocols, EV battery endurance, or reliability.",
+            "question": "What was the increase in demand for AI-powered driver assistance systems in 2025 at Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Demand for AI-powered driver assistance systems increased by 35% in 2025 at Elexion Automotive.",
+            "supporting_file_paths": [
+                "shared/ai-demand-analysis-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "Autonomous vehicle pilot programs relate to autonomous driving and are unrelated to battery testing protocols, EV battery endurance, or reliability.",
+            "question": "How much did autonomous vehicle pilot programs expand in 2025 at Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Autonomous vehicle pilot programs expanded by 40% in 2025 at Elexion Automotive.",
+            "supporting_file_paths": [
+                "shared/autonomous-expansion-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "Supply chain issues matter for production, not for cold-weather QA protocols, EV battery endurance, or reliability.",
+            "question": "By what percentage did supply chain disruptions delay vehicle deliveries in 2025 at Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "18% of vehicle deliveries experienced delays due to supply chain constraints in 2025 at Elexion Automotive.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_144735.jsonl"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "Consumer transportation behavior is unrelated to battery testing protocols, EV battery endurance, or reliability.",
+            "question": "What portion of US commuters used the micromobility options of Elexion Automotive in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Approximately 24% of U.S. commuters used the micromobility options of Elexion Automotive in 2024.",
+            "supporting_file_paths": [
+                "shared/micromobility-usage-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "The connected vehicle tech trend is unrelated to battery testing protocols, EV battery endurance, or reliability.",
+            "question": "How much has the demand for vehicle-to-everything (V2X) communication increased at Elexion Automotive in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The demand for vehicle-to-everything (V2X) rose by 42% at Elexion Automotive in 2025.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_144841.jsonl"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "Vehicle security features are unrelated to battery testing protocols, EV battery endurance, or reliability.",
+            "question": "What percentage of vehicles at Elexion Automotive offered biometric authentication features in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Around 15% of vehicles at Elexion Automotive offered biometric authentication features in 2025.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Austin_Vehicle_Features_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "The accessory market trend is unrelated to battery testing protocols, EV battery endurance, or reliability.",
+            "question": "By what percentage did Elexion's accessory sales grow in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion's accessory sales grew by 8% in 2025.",
+            "supporting_file_paths": [
+                "shared/2025-accessory-sales-analysis.pptx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "Knowing the temperatures that are already covered by Elexion's weather-testing protocols is essential to understanding the current endurance coverage of Elexion's protocols.",
+            "question": "What are the temperatures at which Elexion Automotive's current weather testing protocols validate EV performance?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The temperatures at which Elexion Automotive's current weather testing protocols validate EV performance are 20\u00b0C and -7\u00b0C.",
+            "supporting_file_paths": [
+                "shared/cold-weather-testing-enhancement.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "Since it is recommended to perform cold-weather testing at these temperatures, we can see that Elexion's current protocols have insufficient endurance coverage, causing reliability issues. The protocols must be amended to cover all recommended testing temperatures.",
+            "question": "According to Elexion's Annual Testing Report for 2024, what are the recommended temperatures at which cold-weather testing should be done for better endurance coverage?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to Elexion's Annual Testing Report for 2024, cold-weather testing should be conducted at -20\u00b0C, -15\u00b0C, -10\u00b0C, -5\u00b0C, and 0\u00b0C to ensure better endurance coverage.",
+            "supporting_file_paths": [
+                "shared/EV-Battery-Endurance.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "EV battery pack tests, when isolated from HVAC or cabin heating simulations, can underestimate real-world thermal load transitions, potentially leading to inaccurate assessments of battery endurance and performance in cold weather conditions. Therefore, it is crucial to know the percentage of manufacturing plants where this improvement should be made.",
+            "question": "What percentage of Elexion Automotive's manufacturing plants isolate EV battery pack tests from HVAC or cabin heating simulations?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "70% of Elexion Automotive's manufacturing plants isolate EV battery pack tests from HVAC or cabin heating simulations.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_144149.jsonl"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "This highlights a mismatch between current test cases and real-world conditions. Implementing preconditioning during testing can reduce energy loss by 15-20%, thereby improving battery endurance. Elexion's cold-weather testing protocols should be updated to better reflect real-world conditions and enhance energy retention.",
+            "question": "What is the percentage point gap between EV test cases that include preconditioning cycles and the real-world usage statistics of such cases in cold weather conditions at Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The percentage point gap between EV test cases that include preconditioning cycles and the real-world usage statistics of such cases in cold weather conditions is 20% at Elexion Automotive. \nOnly 40% of EV test cases include preconditioning cycles at Elexion Automotive, although real drivers use them in approximately 60% of cold starts.",
+            "supporting_file_paths": [
+                "shared/cold-weather-testing-enhancements.docx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "This defines the operational scaling path, which enables multi-phase testing to validate endurance improvements before Q4 2026.",
+            "question": "How many full-vehicle cold chambers operating from -30\u00b0C to +25\u00b0C are recommended to be added by Q4 2026 to enhance EV cold-weather testing capabilities at Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "6-8 full-vehicle cold chambers are recommended to be added by Q4 2026 to expand testing capacity at Elexion Automotive.",
+            "supporting_file_paths": [
+                "shared/EV-Battery-Endurance.docx"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "This confirms a quantifiable link between advanced testing and reliability gains, validating the phased upgrade strategy. Elexion Automotive's QA team must incorporate this to enhance cold-weather testing protocols by Q4 2026, thereby improving EV battery endurance and reliability in the country's key zero-emission vehicle markets.",
+            "question": "By what percentage did the integrated protocol models at Elexion Automotive retain additional winter range over six months?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Integrated protocol models at Elexion Automotive retained 9 to 11 percent more winter range over six months.",
+            "supporting_file_paths": [
+                "shared/cold-weather-testing-enhancement.docx"
+            ]
+        },
+        {
+            "id": "IN0007",
+            "justification": "Aligning the timeline and execution ensures that testing reforms are implemented before the fourth quarter of 2026 and deliver measurable endurance outcomes.",
+            "question": "How many phases are included in the EV cold-weather testing plan at Elexion Automotive from Q4 2025 to Q4 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The EV cold-weather testing plan at Elexion Automotive from Q4 2025 to Q4 2026 includes three phases. Phase A, scheduled for Q4 2025, focuses on conducting a gap audit and initiating pilot testing. Phase B, spanning Q1 to Q2 2026, aims to expand both laboratory and system-level tests. Phase C, planned for Q3 to Q4 2026, focuses on production validation and ongoing reliability monitoring, ensuring a comprehensive evaluation of EV performance in cold weather conditions.",
+            "supporting_file_paths": [
+                "shared/cold-weather-battery-testing.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

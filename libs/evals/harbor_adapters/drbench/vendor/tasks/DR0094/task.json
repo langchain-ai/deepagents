@@ -1,0 +1,43 @@
+{
+    "name": "DR0094",
+    "task_id": "DR0094",
+    "level": "",
+    "company_info": {
+        "name": "MediConn Solutions (Vancouver, Canada, $50M - $100M, 250 employees)",
+        "industry": "Virtual/Remote Healthcare",
+        "description": "A company in the Virtual/Remote Healthcare industry",
+        "size": "medium",
+        "employee_count": "100-500",
+        "annual_revenue": "Not specified"
+    },
+    "dr_question": "What steps can MediConn Solutions take in FY2026 to optimize cybersecurity and data protection amid the healthcare industry\u2019s growing focus on digital engagement and operational efficiency?",
+    "date": "2025-10-24",
+    "persona": {
+        "name": "Daniel Kim",
+        "first_name": "Daniel",
+        "last_name": "Kim",
+        "username": "daniel.kim",
+        "email": "daniel.kim@mediconnsolutions.com",
+        "role": "Information Security Manager",
+        "role_description": "Manages cybersecurity program for healthcare data protection, oversees security compliance audits, and leads security awareness training initiatives"
+    },
+    "citation_format": {
+        "urls": [
+            "https://www.example.com/article",
+            "https://techcrunch.com/2023/report.html"
+        ],
+        "file_names": [
+            "quarterly_report.pdf",
+            "market_analysis.docx",
+            "shared/file-pdf"
+        ],
+        "mattermost_chats": [
+            "MatterMost-Channel-Team-User",
+            "Mattermost Message - Enterprise Chat (User: john.doe, Team: Compliance, Channel: General)"
+        ],
+        "email_messages": [
+            "RoundCube-fromdemail-todemails-Subject",
+            "Email from sarah.johnson@company.com on 20 Jan 2025"
+        ]
+    }
+}

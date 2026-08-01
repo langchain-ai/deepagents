@@ -1,0 +1,30 @@
+{
+  "task_id": "DR0042",
+  "question": "According to an article in WTT Solutions in March 2025, Customer Relations Management (CRM) is an important component of any healthcare business plan. What would a business development representative look for in CRM software that would contribute to MediConn Solutions' business growth in 2026?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What type of training has the MediConn Solutions IT department provided to employees on the features of the CRM system and how could this training help the company increase clients through 2026?",
+      "answer": "The IT department of MediConn Solutions offered training sessions on the CRM system in January 2023. Since that time, they have offered training every 6 months with very low attendance. The last training was in June of 2025, with the next meeting planned for January 2026.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "Does Mediconn Solutions encourage its business department staff to seek out new information and software that could help in business growth into 2026?",
+      "answer": "Yes. MediConn Solutions encourages its business department staff to explore new strategies to grow its client base into 2026. In fact, the head of sales offers a rewards-based incentive to any staff member who is directly responsible for a strategy that helps business growth. In 2024, they gave out over $5,000 in bonuses for innovative ideas.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "Does MediConn Solutions have any CRM system requirements that are unique to Canada that would help business growth into 2026?",
+      "answer": "Yes. Since MediConn Solutions is based in Canada, certain CRM systems functions are required that would not be necessary in other countries. These CRM requirements were established fully in July 2014, by the Canadian government. These 3 requirements are necessary: attention to all legal compliance, patient data must be stored within Canadian borders, and information must be available in both French and English.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "What standard feature of the MediConn CRM system is most underused by MediConn Solutions' business staff, which would help drive up business into 2026?",
+      "answer": "According to a survey conducted by MediConn Solutions' IT department in December 5, 2025, only 60% of staff use the current CRM system to manage their contacts. This feature would be very helpful for a sales representative looking to organize their customer base.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

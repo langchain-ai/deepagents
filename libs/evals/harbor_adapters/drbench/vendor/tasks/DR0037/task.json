@@ -1,0 +1,66 @@
+{
+    "name": "DR0037",
+    "task_id": "DR0037",
+    "level": "",
+    "company_info": {
+        "name": "Lee's Market",
+        "industry": "Retail",
+        "size": "Enterprise",
+        "founded_year": 2003,
+        "headquarters": "Richmond, British Columbia, Canada",
+        "description": "Lee's Market is a regional Asian supermarket chain specializing in high-quality Asian groceries and household items. With a growing footprint in urban centers across the U.S. and Canada, Lee's Market blends traditional flavors with modern retail experiences, offering in-store, online, and delivery services.",
+        "key_products_services": [
+            "Fresh produce, meats, and seafood",
+            "Asian household items",
+            "Bakery and prepared foods",
+            "Online grocery shopping and delivery"
+        ],
+        "target_markets": [
+            "Asian communities in the U.S. and Canada",
+            "Urban centers with diverse populations"
+        ],
+        "annual_revenue": "$500M - $600M",
+        "employee_count": 5000,
+        "compliance_certifications": [
+            "FDA and CFIA Food Safety Compliance",
+            "HACCP Food Safety Compliance",
+            "USDA Import Inspection Regulations"
+        ],
+        "market_position": "Lee's Market is a rising regional player bridging cultural authenticity and modern retail innovation in the Asian grocery sector. It is carving a niche between mainstream retailers like Walmart and ethnic-focused giants like H-Mart."
+    },
+    "dr_question": "Between 2025 and 2027, what are the strategies that Andrew Park needs to put into place for Lee's Market to reduce reputational risk associated with corporate social responsibility communication and at the same time leverage the opportunities to position itself as an ethical alternative to large retailers across Canada and the United States?",
+    "date": "2025-10-30",
+    "persona": {
+        "role": "Public Relations Director",
+        "department": "Corporate Communications",
+        "name": "Andrew Park",
+        "first_name": "Andrew",
+        "last_name": "Park",
+        "email": "andrew.park@leesmarket.com",
+        "seniority": "Executive",
+        "responsibilities": "Leads all public relations and corporate communication initiatives, manages media relations, and oversees crisis communication planning. Ensures consistent brand messaging across press releases, community events, and digital platforms to strengthen Lee\u2019s Market\u2019s reputation in North America.",
+        "id": "PRM0001",
+        "domain": "public_relations",
+        "justification": "As the face of Lee\u2019s Market\u2019s brand reputation, Andrew\u2019s role is essential in managing public perception, promoting cultural authenticity, and building community trust across diverse audiences in Canada and the U.S.",
+        "username": "andrew.park"
+    },
+    "citation_format": {
+        "urls": [
+            "https://www.example.com/article",
+            "https://techcrunch.com/2023/report.html"
+        ],
+        "file_names": [
+            "quarterly_report.pdf",
+            "market_analysis.docx",
+            "shared/file-pdf"
+        ],
+        "mattermost_chats": [
+            "MatterMost-Channel-Team-User",
+            "Mattermost Message - Enterprise Chat (User: john.doe, Team: Compliance, Channel: General)"
+        ],
+        "email_messages": [
+            "RoundCube-fromdemail-todemails-Subject",
+            "Email from sarah.johnson@company.com on 20 Jan 2025"
+        ]
+    }
+}

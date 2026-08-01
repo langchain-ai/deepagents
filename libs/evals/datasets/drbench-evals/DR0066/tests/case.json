@@ -1,0 +1,84 @@
+{
+  "task_id": "DR0066",
+  "question": "By the end of 2025, how can Elexion Automotive use data generated through its customer relationship management system to analyze customer behavior online and identify patterns that drive sales?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "In 2025, how many days does Elexion Automotive typically take from the initial digital lead contact to the initial sales appointment?",
+      "answer": "A September 2025 report from Amanda Lee's team states that the median number of days between the first digital lead contact and the first sales appointment in Elexion Automotive is 14 days.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What is Elexion Automotive's gross or overall lead-to-sale conversion rate for qualified digital leads?",
+      "answer": "According to the sales department of Elexion Automotive, as of October 2023, the average percentage of qualified digital leads that result in a car sale is 4.8% for all channels combined.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "On average, how many electric vehicles did Elexion Automotive sell in Q4 2024 from leads that were tracked in the customer relationship management?",
+      "answer": "An audit report from Amanda Lee's team in Q4 of 2024 showed that the average electric vehicles sold per month from leads tracked in the CRM was 520 units.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "How often does the Elexion Automotive Sales Team make contacts to warm leads using the CRM?",
+      "answer": "Per Sales Department policy established in July 2021, the Sales Team use the CRM system to make contact for warm leads every four days as a default, though the customer can request a change to this frequency.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "What percentage of leads are generated through digital channels, and how has that changed from 2024-2025?",
+      "answer": "According to Sales Team reports, in October 2025, 82% of all new leads are generated through digital channels, including paid search and social media. This represents an increase of 18% since Q1 of 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0006",
+      "question": "What is the current cost of acquiring a customer through digital leads?",
+      "answer": "The sales department of Elexion Automotive highlighted that, in the second quarter of 2023, the digital cost of acquiring a customer is $550 per vehicle.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0007",
+      "question": "What percentage of customers who used the online scheduler in the CRM to schedule a digital test drive resulted in a vehicle purchase from Elexion Automotive?",
+      "answer": "As of September 2025 CRM reports, 35% of customers who used the online scheduler to schedule a digital test drive resulted in a vehicle purchase.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0008",
+      "question": "What were the response rates for leads who are contacted by Elexion Automotive Sales Team representatives via phone call, text, and email in Q2 of 2025?",
+      "answer": "Based on Sales Team Summary Reports, response rates were 45% for phone calls, 38% for texts, and 52% for email in Q2 of 2025",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0009",
+      "question": "Based on CRM data from 2024, is there a correlation between customers who purchased a vehicle from Elexion Automotive after more that five online interactions with the Sales Team and purchases of home charging stations?",
+      "answer": "CRM data from 2024 shows that customers who purchased an Elexion vehicle after a minimum of five online interactions with the Sales Team were twice as likely to also purchase a home charging station.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0010",
+      "question": "How many customers used the direct messaging feature in the CRM to contact a Sales Representative during the month of July 2025?",
+      "answer": "In July 2025, 46 customers used the direct messaging feature to speak with a live Sales Representative from Elexion Automotive.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0011",
+      "question": "How many vehicles sold by Elexion Automotive in August 2024 resulted from a first customer contact through email or direct message, and how does this compare to figures for August 2025?",
+      "answer": "60 of the vehicle sales in August 2024 resulted from first contact through email or direct message, contrasting with 120 vehicles from these first contacts in August 2025. This represents an increase of 100%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0012",
+      "question": "What is the range of automated nurturing sequence durations that Amanda Lee's team set up in the CRM?",
+      "answer": "In January 2023, Amanda Lee's sales operation team had configured the customer relationship management to send automated nurture sequences that extend from 14 to 90 days depending on buyer signals.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0013",
+      "question": "What were the unit sales and conversion rates in Q3 of 2024 for delivering personalized email content as opposed to generic materials over various timeframes?",
+      "answer": "According to CRM data, leads receiving personalized emails with vehicle configuration recommendations within 10 days of the initial inquiry convert at 9.7%, while those receiving generic content convert at 5.3%, which totals up to 234 and 167 units, respectively, across the third quarter of 2024.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

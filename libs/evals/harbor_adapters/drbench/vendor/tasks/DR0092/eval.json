@@ -1,0 +1,259 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "Employee wellness costs are unrelated to compliance data integration or Indigenous reporting standards, making them irrelevant to the research objective.",
+            "question": "What was MediConn's total internal spending on employee wellness incentives in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Approximately $85,000 CAD was allocated to employee wellness initiatives, including mental health support and virtual fitness reimbursements.",
+            "supporting_file_paths": [
+                "shared/wellness-incentives-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "Consultation duration affects service delivery but does not impact compliance reporting system design or audit integration.",
+            "question": "What is the average consultation duration per virtual patient session in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average consultation time is 15 minutes per session.",
+            "supporting_file_paths": [
+                "shared/virtual-consultation-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "Marketing expenditure is an internal financial metric unrelated to MediConn's compliance modernization or Indigenous data reporting standards.",
+            "question": "What is MediConn's internal marketing department budget for FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The internal marketing budget for FY2025 was $3.2 million CAD, covering advertising, digital campaigns, and brand development.",
+            "supporting_file_paths": [
+                "shared/fy2025-marketing-budget.pptx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "While internal, these staffing changes pertain to product development and not to Indigenous healthcare data governance or compliance integration efforts.",
+            "question": "How many new technical hires did MediConn's IT engineering team onboard during FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The IT division hired 12 new software engineers to support product development and infrastructure scaling.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_154343.jsonl"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "Customer satisfaction is tied to service quality, not compliance framework design or Indigenous reporting requirements.",
+            "question": "What internal customer satisfaction rating was achieved for MediConn's virtual consultations in Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal CX reports show an average satisfaction score of 4.7 out of 5 across all patient interactions.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_154450.jsonl"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "Revenue distribution is an internal financial detail that has no relevance to the compliance or Indigenous data reporting systems under discussion.",
+            "question": "What percentage of MediConn's internal revenue came from corporate wellness contracts in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Corporate wellness accounted for 12% of annual revenue.",
+            "supporting_file_paths": [
+                "shared/wellness-revenue-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "Office lease costs are general overhead expenses, not associated with compliance or healthcare data governance frameworks.",
+            "question": "What was MediConn's total internal office lease expenditure in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn spent $460,000 CAD on office leases for its Vancouver headquarters and satellite workspaces.",
+            "supporting_file_paths": [
+                "shared/office-expenditure-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "Turnover data affects HR and staffing decisions but does not influence compliance or Indigenous data integration activities.",
+            "question": "What is MediConn's annual internal employee turnover rate for FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn recorded an 11% annual turnover rate across all departments in FY2025.",
+            "supporting_file_paths": [
+                "shared/employee-turnover-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "While these integrations support patient experience, they are unrelated to the Government of Canada's Indigenous healthcare data governance or reporting compliance requirements.",
+            "question": "How many third-party wellness app integrations were added to MediConn's virtual health platform in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn added five new third-party wellness app integrations, including fitness tracking and nutrition logging tools, to enhance user engagement.",
+            "supporting_file_paths": [
+                "shared/FY2025-platform-integration-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "Fiscal timing is a financial reporting detail, completely unrelated to Indigenous healthcare compliance or system integration activities.",
+            "question": "What is MediConn's internal fiscal year-end date?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The fiscal year ends on December 31, 2025.",
+            "supporting_file_paths": [
+                "shared/fiscal-year-end-overview.pdf"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "Consultation duration reflects service delivery style and clinician workload but has no link to compliance system integration or the implementation of Indigenous reporting standards.",
+            "question": "What is the internal average session duration for MediConn's virtual mental health consultations as of Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average session length is 42 minutes per consultation.",
+            "supporting_file_paths": [
+                "shared/Q2-2025-Consultation-Metrics.docx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "These upgrades focus on user experience and video performance rather than the compliance framework or Indigenous healthcare reporting systems being implemented in FY2026.",
+            "question": "What percentage of MediConn's IT infrastructure budget in FY2025 was dedicated to upgrading telemedicine user interfaces and video quality?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Approximately 35% of MediConn's FY2025 IT infrastructure budget was spent improving user interface design and enhancing video call quality for patients and clinicians.",
+            "supporting_file_paths": [
+                "shared/FY2025-IT-Infrastructure-Report.docx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "Employee satisfaction is an HR metric and not tied to compliance or Indigenous data governance framework improvements.",
+            "question": "What was MediConn's internal staff satisfaction index score from the FY2025 engagement survey?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn achieved an 86% staff satisfaction rate, reflecting strong employee engagement levels.",
+            "supporting_file_paths": [
+                "shared/fy2025-engagement-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "Employee engagement initiatives are internal morale-building activities with no bearing on compliance integration or data governance outcomes.",
+            "question": "How many internal virtual team engagement events were hosted by MediConn in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The HR team organized 14 virtual engagement events, including wellness challenges and digital town halls.",
+            "supporting_file_paths": [
+                "shared/team-engagement-overview.pdf"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "This metric reflects IT operational efficiency, not compliance or Indigenous data reporting implementation.",
+            "question": "What was MediConn's internal IT helpdesk ticket resolution rate in Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal IT performance reports show a 94% issue resolution rate within 48 hours.",
+            "supporting_file_paths": [
+                "shared/Q4-IT-Helpdesk-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0016",
+            "justification": "Sales enablement and client demo activities are part of business development, not compliance governance or Indigenous data integration.",
+            "question": "How many internal product demos did MediConn conduct for potential enterprise clients during FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn's sales and product teams conducted 36 virtual demos for enterprise clients exploring corporate health solutions.",
+            "supporting_file_paths": [
+                "shared/demo-analysis-report.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "This high dependency on low-bandwidth networks highlights the need for adaptive authentication and verification controls to maintain compliance and data security standards.",
+            "question": "What percentage of MediConn's virtual consultations in 2024 involved Indigenous patients from regions with limited digital infrastructure?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "18% of MediConn's total consultations in 2024 originated from Indigenous communities located in areas with average connectivity speeds below 10 Mbps.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_153903.jsonl"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "The elevated error rate suggests current controls may not adequately support secure login mechanisms under unstable digital conditions.",
+            "question": "What was the authentication failure rate reported in MediConn's 2024 audit for remote or rural patient logins?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The 2024 internal compliance audit identified a 7.4% authentication failure rate in sessions initiated from low-connectivity regions.",
+            "supporting_file_paths": [
+                "shared/Indigenous-Verification-Controls.docx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "These incidents reveal systemic vulnerabilities tied to inconsistent network environments, warranting stronger offline or hybrid verification measures.",
+            "question": "How many data access incidents were reported in MediConn's platform from Indigenous community users in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Four minor data access incidents were reported between Q2 and Q4 2024 involving delayed multi-factor authentication in areas with intermittent connectivity.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_154018.jsonl"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "Underinvestment in authentication controls may hinder MediConn's ability to meet evolving regulatory expectations for secure digital identity verification.",
+            "question": "What proportion of MediConn's compliance budget was allocated to authentication system improvements in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "9% of the FY2025 compliance and cybersecurity budget ($1.2M CAD total) was directed toward authentication infrastructure upgrades.",
+            "supporting_file_paths": [
+                "shared/enhancing-indigenous-authentication.pptx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "Quantifying the required investment helps MediConn plan its compliance modernization budget while ensuring adequate resource allocation for both technology and personnel development.",
+            "question": "What percentage of MediConn's Indigenous patient base uses mobile devices as their primary means of accessing care?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Internal analytics from Q3 2025 show that 82% of Indigenous patients connect to MediConn's platform primarily through mobile devices.",
+            "supporting_file_paths": [
+                "shared/indigenous-patient-compliance.docx"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "The growing user base amplifies the need for scalable, compliant verification frameworks tailored to low-connectivity contexts.",
+            "question": "What is the expected increase in Indigenous patient enrollment between 2025 and 2027 based on MediConn's current growth projections?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Projections indicate a 35% increase in Indigenous patient enrollment by 2027, driven by regional telehealth expansion initiatives.",
+            "supporting_file_paths": [
+                "shared/compliance-enhancements-report.docx"
+            ]
+        },
+        {
+            "id": "IN0007",
+            "justification": "This internal KPI provides measurable progress tracking toward compliance integration and staff cultural competency goals.",
+            "question": "What internal compliance Key Performance Indicator (KPI) has MediConn introduced to measure readiness for Indigenous reporting by FY2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn introduced an internal KPI called the \"Indigenous Reporting Readiness Index (IRRI)\", targeting 85% framework compliance and 100% staff retraining completion by Q4 2026.",
+            "supporting_file_paths": [
+                "shared/authentication-security-controls.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

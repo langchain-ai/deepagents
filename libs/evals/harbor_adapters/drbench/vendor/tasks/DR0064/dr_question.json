@@ -1,0 +1,15 @@
+{
+    "dr_question": "How will Elexion Automotive's adoption of a complete direct-to-customer sales model by 2026 affect sales cycle duration, conversion rates, and average revenue per customer across the United States with franchise laws?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Sales",
+        "dr_question": "How will Elexion Automotive's adoption of a complete direct-to-customer sales model by 2026 affect sales cycle duration, conversion rates, and average revenue per customer across the United States with franchise laws?",
+        "industry": "Automotive -- Electric Vehicles",
+        "url": "https://theweek.com/us/1024416/tesla-vs-car-dealerships"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0064",
+    "industry": "automotive -- electric vehicles",
+    "domain": "Sales",
+    "url": "https://theweek.com/us/1024416/tesla-vs-car-dealerships"
+}

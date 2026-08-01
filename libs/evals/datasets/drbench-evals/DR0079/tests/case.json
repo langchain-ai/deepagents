@@ -1,0 +1,36 @@
+{
+  "task_id": "DR0079",
+  "question": "Based on the 2024 report \"Trends in electric cars\" on iea.org, how are competitor strategies and market positioning shaping the North American EV sector by Q2 2026?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "How did Elexion’s sales team quantify the impact of competitor launches on its EV inquiries in Q2, 2024?",
+      "answer": "In Q2 2024, Elexion Automotive’s internal CRM tracked a 12% drop in EV inquiry volume following competitor model announcements, signaling potential market share shifts.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "In March 2024, what percentage of Elexion’s North American service requests were related to vehicle software updates compared to hardware issues?",
+      "answer": "Elexion’s internal service dashboard recorded that 62% of service requests in March 2024 were related to software updates, which highlighted the growing role of digital systems in customer experience.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "In Q3, 2024, how did Elexion’s production delays impact its delivery commitments for mid-range EV models?",
+      "answer": "Elexion’s internal manufacturing dashboard reported that 17% of Q3 2024 mid-range EV orders were delayed by at least two weeks due to supply chain bottlenecks in battery components.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "In Q1 2024, how did Elexion’s customer feedback on pricing and feature preferences reflect shifts in competitive positioning?",
+      "answer": "Elexion’s internal CRM data reported that 42% of surveyed mid-income family customers cited competitor features and pricing as a key factor in considering alternative EV brands, highlighting the influence of market positioning on purchasing decisions.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "In Q3, 2024, how did Elexion’s customer service team measure the effect of delivery delays on prospective EV buyers?",
+      "answer": "Internal CRM logs show that 22% of new EV inquiries in Q3 2024 cited delayed delivery estimates as a concern, according to Elexion Automotive’s Customer Relationship Management dashboard.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

@@ -1,0 +1,182 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How often did the MediConn Solutions CRM system require maintenance in Q3, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal data, the MediConn Solutions CRM system required 3 maintenance checks between July 1 and September 30, 2025.",
+            "supporting_file_paths": [
+                "shared/Q3-CRM-Maintenance-Review.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "As of September 5, 2025, what Incentives does MediConn Solutions offer employees who fully use the company's CRM system?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to HR data, as of September 5, 2025, MediConn employees who fully embrace the CRM system enjoy a $50 gift voucher monthly.",
+            "supporting_file_paths": [
+                "shared/crm-usage-incentives.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "Did MediConn Solutions partner with a software implementation and management company to help with CRM data storage in Q1, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. MediConn Solutions began a partnership with CorsicaTech between January 1 and March 31, 2025 following a board management meeting in the begining of 2025.",
+            "supporting_file_paths": [
+                "shared/Q1-CRM-Overview.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "How many times did the MediConn Solutions CRM system completely crash between Q1 and Q3, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The MediConn Solutions CRM system crashed 2 times, between January 1 and September 30, 2025, according to maintenance logs.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_140336.jsonl"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "Since its implementation on September 5, 2023, to November 1, 2025,  what has been MediConn Solutions' return on investment(ROI) from using the CRM software?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to data from the accounts department, the MediConn solutions CRM reported an ROI of $10.38 for every $1.00 spent on the system between September 5, 2023 to November 1, 2025.",
+            "supporting_file_paths": [
+                "shared/crm-roi-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "Did the MediConn Solutions CRM system improve collaboration between the sales and human resources department in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. According to an employee survey conducted by the HR team, collaboration between the sales and HR department improved by 53% between July 1 and September 30, 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_CRM_Effectiveness_Survey_Result.xlsx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "As of October 15, 2025, how much data did MediConn Solutions generate daily tha was stored in its CRM system?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to a technology audit completed on MediConn Solutions systems on October 15, 2025, the company's CRM  stored an average of 15 terabytes of data daily.",
+            "supporting_file_paths": [
+                "shared/crm-data-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "How much do CRM software providers charge MediConn Solutions for their service as of September 15, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to MediConn Solutions' accounting department, as of September 15, 2025, CRM system software providers charge MediConn Solutions approximately $40-100 per user per month.",
+            "supporting_file_paths": [
+                "shared/crm-investment-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "Since September 2023, has the CRM system reduced the workload for employees of MediConn Solutions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to a study completed in August 2025 by the MediConn Solutions' Operations Department, employee workload has decreased by 5-10 hours a month since implementing the CRM system in September 2023.",
+            "supporting_file_paths": [
+                "shared/crm-impact-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "What percentage of MediConn Solutions' sales representatives found the CRM system too difficult to use in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Between January 1 and March 31, 2025, the MediConn Solutions business development department conducted an informal online survey of all current sales representatives. The survey covered CRM use among MediConn Solutions' sales department employees. The results showed that only 2% of sales representatives found the CRM system too difficult to use.",
+            "supporting_file_paths": [
+                "shared/Q1-CRM-Usability-Report.docx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "What standard feature of the MediConn Solution CRM system is underused by MediConn Solution's business staff, which would help drive up employee satisfaction into 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to a survey conducted by the MediConn Solution IT department in December 2025, only 35% take advantage of the CRM system's Employee Feedback Tool. The Employee Feedback Tool  would allow all employees to share their experiences working at MediConn Solutions in real-time. The human resources department could use this information to improve employee satisfaction into 2026.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_CRM_Utilization_Analysis.xlsx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "What type of training has the MediConn Solutions IT department provided to employees on the features of the CRM system, and how could this training help the company protect client privacy through 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The IT department of MediConn Solutions offered training sessions to its employees on the cybersecurity features of the CRM system in November 2025. This feature is structured to protect the privacy of MediConn Solution's clientele into 2026.",
+            "supporting_file_paths": [
+                "shared/crm-training-privacy.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What type of training has the MediConn Solutions IT department provided to employees on the features of the CRM system and how could this training help the company increase clients through 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The IT department of MediConn Solutions offered training sessions on the CRM system in January 2023. Since that time, they have offered training every 6 months with very low attendance. The last training was in June of 2025, with the next meeting planned for January 2026.",
+            "supporting_file_paths": [
+                "shared/evaluating-crm-software.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "Does Mediconn Solutions encourage its business department staff to seek out new information and software that could help in business growth into 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes. MediConn Solutions encourages its business department staff to explore new strategies to grow its client base into 2026. In fact, the head of sales offers a rewards-based incentive to any staff member who is directly responsible for a strategy that helps business growth. In 2024, they gave out over $5,000 in bonuses for innovative ideas.",
+            "supporting_file_paths": [
+                "shared/CRM-Software-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "Does MediConn Solutions have any CRM system requirements that are unique to Canada that would help business growth into 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes. Since MediConn Solutions is based in Canada, certain CRM systems functions are required that would not be necessary in other countries. These CRM requirements were established fully in July 2014, by the Canadian government. These 3 requirements are necessary: attention to all legal compliance, patient data must be stored within Canadian borders, and information must be available in both French and English.",
+            "supporting_file_paths": [
+                "shared/crm-optimization-strategy.pptx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "What standard feature of the MediConn CRM system is most underused by MediConn Solutions' business staff, which would help drive up business into 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to a survey conducted by MediConn Solutions' IT department in December 5, 2025, only 60% of staff use the current CRM system to manage their contacts. This feature would be very helpful for a sales representative looking to organize their customer base.",
+            "supporting_file_paths": [
+                "shared/CRM-Evaluation-Guide.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

@@ -1,0 +1,545 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "EX0000",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Digital-first patients prioritize convenience and speed, making it essential for telehealth marketing to emphasize flexibility, such as easy, same-day virtual appointments accessible from anywhere, to cater to their busy lifestyles or mobility needs.",
+            "supporting_urls": [
+                "https://marketinginsidergroup.com/marketing-strategy/how-to-market-telehealth-services-to-connect-with-digital-first-patients/"
+            ]
+        },
+        {
+            "id": "EX0001",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "To overcome trust barriers in online healthcare, providers like Teladoc and Amwell must emphasize secure, user-friendly platforms and highlight data privacy and compliance with regulations such as HIPAA. High-profile cyberattacks have increased consumer wariness, making proactive communication about security measures crucial for building trust in telehealth services.",
+            "supporting_urls": [
+                "https://marketinginsidergroup.com/marketing-strategy/how-to-market-telehealth-services-to-connect-with-digital-first-patients/"
+            ]
+        },
+        {
+            "id": "EX0002",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Telehealth providers need a robust digital presence, including a modern, mobile-optimized website with clear calls-to-action like \"Book an Appointment.\" Effective content marketing and SEO are also crucial to ensure the service appears in search results and is perceived as a trustworthy and convenient care option.",
+            "supporting_urls": [
+                "https://marketinginsidergroup.com/marketing-strategy/how-to-market-telehealth-services-to-connect-with-digital-first-patients/"
+            ]
+        },
+        {
+            "id": "qa_1755620545",
+            "justification": "Demographic breakdown does not inform digital presence optimization strategies.",
+            "question": "What is our patient demographic breakdown for Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Patient demographics show 60% female and 40% male participation.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_122313.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755633393",
+            "justification": "This answer helps address the DR Question by providing insight into the effectiveness of our digital presence and mobile optimization, a crucial element of a robust digital presence for a telehealth provider like MediConn Solutions.",
+            "question": "What percentage of our online consultations are booked through our mobile app?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "40% of our online consultations were booked through our mobile app in Q2 of 2025.",
+            "supporting_file_paths": [
+                "shared/Virtual-Health-Digital-Strategy.docx"
+            ]
+        },
+        {
+            "id": "qa_1755713021",
+            "justification": "Facility costs are not relevant to telehealth digital presence strategy.",
+            "question": "What was our facility water consumption cost in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility water consumption cost totaled $8,000 with an average cost of $0.05 per gallon.",
+            "supporting_file_paths": [
+                "shared/facility-cost-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755711940",
+            "justification": "Employee benefits metrics do not address the core DR Question focus area",
+            "question": "What was our employee benefits cost as a percentage of payroll in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee benefits cost averaged 12% of payroll with a total spend of $750,000.",
+            "supporting_file_paths": [
+                "shared/employee-benefits-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755633501",
+            "justification": "IT infrastructure upgrades are not relevant to the DR Question's focus on digital presence and content marketing",
+            "question": "What was our IT infrastructure upgrade cycle length in 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average IT infrastructure upgrade cycle length was 15 months.",
+            "supporting_file_paths": [
+                "shared/IT-Infrastructure-Upgrade-Analysis.docx"
+            ]
+        },
+        {
+            "id": "qa_1755712757",
+            "justification": "Internal audit frequency does not address digital-first patient engagement strategies",
+            "question": "What was our internal audit frequency in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal audits occurred bi-annually with an average duration of 2.5 days.",
+            "supporting_file_paths": [
+                "shared/audit-compliance-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755712284",
+            "justification": "Onboarding time does not relate to digital presence or content marketing strategy",
+            "question": "What was our employee onboarding time in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee onboarding time averaged 4.5 weeks with a 90% completion rate.",
+            "supporting_file_paths": [
+                "shared/onboarding-performance-review.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755620205",
+            "justification": "Employee retention metrics do not pertain to patient attraction strategies.",
+            "question": "What is our employee turnover rate for Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate was 12%, showing stable workforce retention this quarter.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_121722.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755710971",
+            "justification": "Allocating sufficient SEO budget ensures visibility for digital-first patients searching online.",
+            "question": "What is our search engine optimization (SEO) budget allocation for Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Our SEO budget allocation is $120,000 for Q4 2025.",
+            "supporting_file_paths": [
+                "shared/telehealth-digital-presence.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755634000",
+            "justification": "Facility costs are not linked to optimizing digital presence.",
+            "question": "What was our facility maintenance cost in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility maintenance cost was $35,000 in Q3 2024.",
+            "supporting_file_paths": [
+                "shared/facility-cost-analysis.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755633877",
+            "justification": "Employee satisfaction does not impact digital presence or content strategy.",
+            "question": "What was the employee satisfaction score in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee satisfaction score was 78 out of 100.",
+            "supporting_file_paths": [
+                "shared/employee-satisfaction-insights.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755633444",
+            "justification": "Training budget allocation does not address the core DR Question focus area",
+            "question": "What was our training budget allocation for Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Training budget allocation was $80,000 with a focus on compliance training for new hires.",
+            "supporting_file_paths": [
+                "shared/training-expenditure-analysis-2025.docx"
+            ]
+        },
+        {
+            "id": "qa_1755711234",
+            "justification": "Higher engagement rates on social media indicate a stronger online presence, supporting patient acquisition.",
+            "question": "What is our social media engagement rate for telehealth-related content in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Our social media engagement rate for telehealth-related content is 8% in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/telehealth-digital-strategy.pdf"
+            ]
+        },
+        {
+            "id": "qa_1756143883",
+            "justification": "IT support costs do not relate to digital presence or telehealth marketing",
+            "question": "What is our average IT support cost in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT support costs were $120,000 in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_IT_Support_Costs_Quarterly_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755633468",
+            "justification": "Employee turnover metrics do not address the core DR Question focus area",
+            "question": "What was our employee turnover rate for Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate was 12% with an average tenure of 2.5 years.",
+            "supporting_file_paths": [
+                "shared/Employee-Engagement-Metrics-Report.docx"
+            ]
+        },
+        {
+            "id": "qa_1755633460",
+            "justification": "IT infrastructure upgrade cycle length does not address the core DR Question focus area",
+            "question": "What was our average IT infrastructure upgrade cycle length in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average IT infrastructure upgrade cycle length was 18 months with a budget allocation of $250,000.",
+            "supporting_file_paths": [
+                "shared/IT-Infrastructure-Upgrade-Cycle-Analysis.docx"
+            ]
+        },
+        {
+            "id": "qa_1755633838",
+            "justification": "IT support costs are unrelated to digital presence and content strategy.",
+            "question": "What was our IT support cost in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT support costs were $150,000 in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/IT-cost-analysis.pptx"
+            ]
+        },
+        {
+            "id": "qa_1756143807",
+            "justification": "Facilities team satisfaction metrics are not relevant to the digital presence and content marketing strategy DR Question",
+            "question": "What was our employee satisfaction score for the facilities team in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee satisfaction score for facilities team was 92%",
+            "supporting_file_paths": [
+                "shared/MediConn_Employee_Satisfaction_Survey_Results.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1756143831",
+            "justification": "Employee onboarding time and training metrics are not relevant to the optimization of a website and content marketing strategy",
+            "question": "What percentage of our employee onboarding time is spent on training in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "44% of employee onboarding time is spent on training",
+            "supporting_file_paths": [
+                "shared/MediConn_Employee_Onboarding_Training_Schedule.xlsx"
+            ]
+        },
+        {
+            "id": "IN001",
+            "justification": "Identifying effective content marketing channels helps us optimize our strategy to attract digital-first patients.",
+            "question": "Which of our content marketing channels (blog, social media, email) generates the most leads in Q1 of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Our blog content generates 40% of our leads, with an average conversion rate of 5%.",
+            "supporting_file_paths": [
+                "shared/Digital-Presence-Optimization.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755711331",
+            "justification": "High blog traffic indicates effective content marketing, attracting digital-first patients.",
+            "question": "How many unique visitors did our blog attract in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Our blog attracted 15,000 unique visitors in Q2 2025.",
+            "supporting_file_paths": [
+                "shared/telehealth-digital-strategy.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755712721",
+            "justification": "Facility energy costs are unrelated to telehealth digital presence optimization",
+            "question": "What were our facility energy costs in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility energy costs totaled $18,000 with an average cost of $0.12 per kWh.",
+            "supporting_file_paths": [
+                "shared/facility-cost-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755619624",
+            "justification": "This insight informs the effectiveness of social media in attracting digital-first patients.",
+            "question": "How many new patients registered via social media Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "We gained 250 new patients from social media channels in Q1 2025.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_120736.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755633374",
+            "justification": "This answer addresses the DR Question by providing insight into the importance of effective SEO in a telehealth provider's digital presence, as emphasized by external market context and previous internal insights.",
+            "question": "What percentage of our website traffic is from organic search engine optimization?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "30% of our website traffic comes from organic search engine optimization in Q3 of 2025.",
+            "supporting_file_paths": [
+                "shared/Telehealth-Digital-Presence-Strategy-2023.docx"
+            ]
+        },
+        {
+            "id": "qa_1755619847",
+            "justification": "This metric helps identify website optimization needs for attracting digital-first patients.",
+            "question": "What is our website's conversion rate for appointment bookings in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Our website's conversion rate for appointment bookings is currently 4.2%.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_121123.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755713057",
+            "justification": "Server hardware upgrades are not central to digital presence optimization efforts.",
+            "question": "What was our server hardware upgrade budget allocation in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Server hardware upgrade budget allocation was $180,000 with a focus on storage expansion.",
+            "supporting_file_paths": [
+                "shared/it-budget-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755620300",
+            "justification": "Training metrics are unrelated to optimizing digital presence for patient attraction.",
+            "question": "What is our training completion rate for Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Training completion rate for staff was 90%, indicating strong participation.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_121846.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1756143709",
+            "justification": "Identifying key drivers of employee satisfaction to inform our content marketing and human resources strategies.",
+            "question": "What is our average employee satisfaction score among our customer-facing staff in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "85% of our customer-facing staff reported high job satisfaction in Q2 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Employee_Satisfaction_Analysis.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755706352",
+            "justification": "Improving SERP is essential for increasing visibility and attracting digital-first patients through organic search.",
+            "question": "What is our average search engine ranking position (SERP) for telehealth-related keywords in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Our average SERP for telehealth-related keywords is 4.8 in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/telehealth-digital-presence.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755619892",
+            "justification": "This insight informs optimization strategies for our mobile web presence and services.",
+            "question": "What percentage of patients prefer mobile access in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "80% of patients prefer mobile access for virtual healthcare services.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_121213.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1756143762",
+            "justification": "Commuter metrics are unrelated to the DR Question's focus on digital presence and telehealth marketing",
+            "question": "What was our average employee commuting distance in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average employee commuting distance was 15 miles with 75% using public transportation.",
+            "supporting_file_paths": [
+                "shared/Employee_Commuting_Data_MediConn_Solutions.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755633533",
+            "justification": "Facility rental costs are not relevant to the DR Question's focus on digital presence and content marketing",
+            "question": "What was our facility rental cost per square foot in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility rental cost per square foot averaged $25.",
+            "supporting_file_paths": [
+                "shared/Facility-Operations-Report-2024-Q3.docx"
+            ]
+        },
+        {
+            "id": "qa_1755633954",
+            "justification": "Compliance audit costs do not relate to digital presence optimization.",
+            "question": "What was the legal compliance audit cost in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Legal compliance audit cost was $50,000 in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/q3-compliance-insights.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755712211",
+            "justification": "Server downtime metrics do not address the core DR Question focus area",
+            "question": "What was our server downtime percentage in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Server downtime averaged 2.5% with a longest outage lasting 4 hours.",
+            "supporting_file_paths": [
+                "shared/infrastructure-report-q2.pdf"
+            ]
+        },
+        {
+            "id": "qa_1756143817",
+            "justification": "IT infrastructure budget allocation does not address the critical elements of a digital presence for a telehealth provider",
+            "question": "What was our IT infrastructure upgrade budget allocation for Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT infrastructure upgrade budget allocation was $220,000",
+            "supporting_file_paths": [
+                "shared/MediConn_Quarterly_IT_Budget_2023_Allocations.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755620068",
+            "justification": "Patient retention metrics do not pertain to optimizing digital presence.",
+            "question": "What is our patient retention rate for Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Our patient retention rate stands at 78%, showing stable engagement levels.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_121506.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1756143681",
+            "justification": "Understanding patient behavior and preferences to optimize our digital presence and content marketing strategy.",
+            "question": "What percentage of our online consultations are booked through our mobile app in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "35% of our online consultations were booked through our mobile app in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Online_Consultation_Booking_Insights.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1756143868",
+            "justification": "Facility energy costs do not address the core DR Question focus area",
+            "question": "What was our facility energy costs in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility energy costs totaled $12,000 with an average cost of $0.10 per kWh.",
+            "supporting_file_paths": [
+                "shared/MediConn_Facility_Energy_Costs_Q2_2024.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755712983",
+            "justification": "Employee sick leave metrics do not relate to digital presence optimization.",
+            "question": "What was our average employee sick leave duration in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average employee sick leave duration was 4.5 days with 12% staff affected.",
+            "supporting_file_paths": [
+                "shared/employee-absenteeism-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755633748",
+            "justification": "High mobile usage suggests optimizing for mobile can attract digital-first patients.",
+            "question": "What is our mobile traffic percentage Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Mobile traffic was 60% in Q2 2025.",
+            "supporting_file_paths": [
+                "shared/digital-strategy-insights.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755633587",
+            "justification": "High bounce rate indicates website optimization needs to retain digital-first patients.",
+            "question": "What is our website's bounce rate Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Bounce rate was 45% in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/digital-presence-strategy.pptx"
+            ]
+        },
+        {
+            "id": "qa_1756143723",
+            "justification": "Understanding the importance of SEO in our digital presence and optimizing our content marketing strategy accordingly.",
+            "question": "What percentage of our website traffic is from organic search engine optimization in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "22% of our website traffic comes from organic search engine optimization in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Website_Traffic_Insights.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755633519",
+            "justification": "Employee training budget allocation is not relevant to the DR Question's focus on digital presence and content marketing",
+            "question": "What was our employee training budget allocation for Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Training budget allocation was $90,000 with a focus on compliance training for new hires.",
+            "supporting_file_paths": [
+                "shared/Employee-Training-Budget-Analysis-2024.docx"
+            ]
+        },
+        {
+            "id": "qa_1755633384",
+            "justification": "This answer supports the DR Question by providing quantitative data on the effectiveness of our content marketing strategy, which is crucial for attracting digital-first patients.",
+            "question": "What is the average time-to-lead for our content marketing efforts, broken down by channel (blog, social media, email)?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Our email marketing efforts have an average time-to-lead of 2 hours, while social media takes 6 hours, and blog content takes 12 hours, as of Q1 of 2025.",
+            "supporting_file_paths": [
+                "shared/Digital-Presence-Optimization-Telehealth.docx"
+            ]
+        },
+        {
+            "id": "qa_1755620131",
+            "justification": "Compliance scores do not provide insights for enhancing digital marketing efforts.",
+            "question": "What is our average compliance audit score in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Our average compliance audit score was 85%, indicating strong adherence.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_121610.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755620392",
+            "justification": "Compliance audit costs do not support strategies for enhancing digital marketing presence.",
+            "question": "How much did we spend on compliance audits in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Compliance audit expenses totaled $300,000 for the quarter, ensuring regulations met.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_122033.jsonl"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

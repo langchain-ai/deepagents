@@ -1,0 +1,248 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "Employee work arrangements do not impact the implementation of virtual care standards or system interoperability.",
+            "question": "What is MediConn's planned increase in remote work options for staff in FY2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn plans to increase remote work options by 40% in FY2026.",
+            "supporting_file_paths": [
+                "shared/FY2026-Remote-Work-Strategy.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "Server virtualization improves internal infrastructure efficiency but does not impact implementation priorities for virtual care standards.",
+            "question": "What percentage of MediConn's internal servers were virtualized by Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "78% of internal servers were virtualized by Q2 2025.",
+            "supporting_file_paths": [
+                "shared/server-virtualization-report.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "Staff satisfaction is important for HR but does not affect platform scalability, interoperability, or data security.",
+            "question": "What was MediConn's employee satisfaction score in the 2025 annual survey?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee satisfaction rose from 78% in 2024 to 86% in 2025.",
+            "supporting_file_paths": [
+                "shared/2025-satisfaction-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "Internal API development supports operations but does not impact shared digital health infrastructure priorities.",
+            "question": "How many new APIs were developed internally by Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "19 new APIs were developed for internal applications by Q3 2025.",
+            "supporting_file_paths": [
+                "shared/api-development-progress.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "Marketing performance metrics are unrelated to technical and regulatory priorities for digital health.",
+            "question": "By how much did MediConn's social media engagement increase between 2024 and 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Brand engagement increased by 60% between 2024 and 2025.",
+            "supporting_file_paths": [
+                "shared/mediconn-social-media-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "Audits improve governance but do not determine which virtual care standards to implement.",
+            "question": "How many internal IT audits were conducted in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "6 internal IT audits were completed in 2025.",
+            "supporting_file_paths": [
+                "shared/it-audit-review-2025.pptx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "Team-building activities improve morale but do not influence digital health implementation priorities.",
+            "question": "How many team-building events did MediConn hold in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn organized 12 team-building events across all departments in 2025.",
+            "supporting_file_paths": [
+                "shared/team-building-summary-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "Training programs enhance leadership capacity but do not affect interoperability or platform scalability.",
+            "question": "What percentage of MediConn staff completed leadership training in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "35% of staff completed leadership development programs in 2025.",
+            "supporting_file_paths": [
+                "shared/leadership-training-review.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "Internal communications, while informative, are unrelated to virtual care implementation strategies.",
+            "question": "How many company-wide newsletters did MediConn publish in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "24 newsletters were published to communicate internal updates.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Internal_Communications_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "Operational IT responsiveness does not influence strategic decisions for virtual care interoperability or security.",
+            "question": "What was the average response time for internal IT tickets in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "3.4 hours average response time per ticket in 2025.",
+            "supporting_file_paths": [
+                "shared/IT-Performance-Report-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "Skills development is important for the CTO but does not directly define which implementation priorities to set for virtual care standards.",
+            "question": "What percentage of MediConn's developers participated in cloud certification programs in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "65% of developers completed cloud certifications in 2025.",
+            "supporting_file_paths": [
+                "shared/cloud-certification-participation.docx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "Desktop hardware upgrades do not directly influence virtual care system standards or interoperability.",
+            "question": "What percentage of MediConn's IT budget in 2025 was allocated to desktop hardware upgrades?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "18% of the IT budget went to desktop hardware upgrades.",
+            "supporting_file_paths": [
+                "shared/IT-expenditure-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "Internal API improvements do not affect shared digital health infrastructure or patient data interoperability.",
+            "question": "How many internal API endpoints were refactored by the IT team in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "15 internal APIs were refactored by the IT team in 2025.",
+            "supporting_file_paths": [
+                "shared/2025-IT-Refactoring-Report.pdf"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "Internal documentation helps knowledge sharing but does not influence strategic implementation priorities for virtual care systems.",
+            "question": "How many hours did the IT team spend on internal documentation updates in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The IT team spent 1,200 hours updating internal documentation.",
+            "supporting_file_paths": [
+                "shared/2025-IT-resource-report.docx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "Budget efficiency is operational and does not affect virtual care system interoperability or security priorities.",
+            "question": "What percentage of IT projects were completed under budget in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "72% of IT projects were completed under budget.",
+            "supporting_file_paths": [
+                "shared/2025-IT-budget-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0016",
+            "justification": "Certifications improve internal expertise but do not set strategic priorities for virtual care platform alignment.",
+            "question": "How many IT staff were certified in DevOps practices by Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "22 IT staff obtained DevOps certifications.",
+            "supporting_file_paths": [
+                "shared/devops-certification-report.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "The 60% compliance level reflects phased adoption of privacy and equity standards under the federal virtual-care framework.",
+            "question": "What percentage of MediConn's platform modules are fully compliant with Pan-Canadian Virtual Care Policy standards by Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "60% of MediConn's platform modules are fully compliant as of Q4 2025.",
+            "supporting_file_paths": [
+                "shared/IT-modernization-compliance.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "Early integration efforts prioritise core data domains, resulting in partial but substantial compliance with Infoway interoperability standards.",
+            "question": "What percentage of MediConn APIs are compatible with Canada Health Infoway's shared infrastructure by October 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "63% of MediConn's APIs are compatible with Infoway infrastructure by October 2025.",
+            "supporting_file_paths": [
+                "shared/IT-modernization-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "The lower capacity highlights MediConn's scalability gap, indicating the need for a 40% increase to match projected patient-volume growth.",
+            "question": "What is MediConn's peak concurrent-user capacity in Q3 2025 compared to leading virtual-care competitors?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn supports 5,000 concurrent users in Q3 2025, while competitors reach 8,000-10,000.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251121_122935.jsonl"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "These findings represent the baseline risk level used to define a 75% reduction goal under 2026 security-enhancement protocols.",
+            "question": "How many critical vulnerabilities were identified in MediConn's audits during 2024-2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Twelve critical vulnerabilities were identified in MediConn's audits across 2024-2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Vancouver_Audit_Vulnerability_R.xlsx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "Multi-cloud adoption typically achieves 20-30% savings by leveraging vendor competition and optimised regional deployments.",
+            "question": "What percentage reduction in MediConn's cloud infrastructure cost per patient session is expected by Q3 2026 after moving to a hybrid cloud model?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "A 25% reduction in MediConn's cloud infrastructure cost per active session is expected by Q3 2026.",
+            "supporting_file_paths": [
+                "shared/IT-modernization-strategy.pptx"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "Efficiency and interoperability investments position MediConn above the 20-25% industry average ROI among Canadian virtual-care providers.",
+            "question": "What is the projected ROI of MediConn's technology upgrades during 2025-2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The projected ROI for MediConn's 2025-2026 upgrades is approximately 28%.",
+            "supporting_file_paths": [
+                "shared/IT-modernization-strategy.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

@@ -1,0 +1,15 @@
+{
+    "dr_question": "As per the report by the U.S. Census Bureau's indication of a rise in food service sales since August 2024, how can Lee\u2019s Market optimize in-store layouts and product displays across its U.S. locations to increase bakery sales by 15% by the end of Q1 2026?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Sales",
+        "dr_question": "As per the report by the U.S. Census Bureau's indication of a rise in food service sales since August 2024, how can Lee\u2019s Market optimize in-store layouts and product displays across its U.S. locations to increase bakery sales by 15% by the end of Q1 2026?",
+        "industry": "Retail",
+        "url": "https://www.census.gov/retail/sales.html"
+    },
+    "timestamp": "2025-10-24 00:00",
+    "task_id": "DR0096",
+    "industry": "retail",
+    "domain": "Sales",
+    "url": "https://www.census.gov/retail/sales.html"
+}

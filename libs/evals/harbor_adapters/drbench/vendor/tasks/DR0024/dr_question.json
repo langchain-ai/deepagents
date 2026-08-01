@@ -1,0 +1,15 @@
+{
+    "dr_question": "What regulatory challenges should MediConn prepare for if it decided to expand its cash-only services into the United States?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Compliance",
+        "dr_question": "What regulatory challenges should MediConn prepare for if it decided to expand its cash-only services into the United States?",
+        "industry": "Virtual/Remote Healthcare",
+        "url": "https://www.healthcaredive.com/news/telehealth-providers-crossroads-regulations-paul-schmeltzer-clark-hill/727296/"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0024",
+    "industry": "virtual/remote healthcare",
+    "domain": "Compliance",
+    "url": "https://www.healthcaredive.com/news/telehealth-providers-crossroads-regulations-paul-schmeltzer-clark-hill/727296/"
+}

@@ -1,0 +1,50 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "Which Elexion models are equipped with ADAS?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Elexion's website, in January 2025, 4 out of 5 models come with the ADAS standard.",
+            "supporting_file_paths": [
+                "shared/ADAS-feature-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What are Elexion's total sales in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In the first half of 2025, Elexion sold 21,542 EVs. This number is expected to approach 50,000 before the new year.",
+            "supporting_file_paths": [
+                "shared/2025-sales-performance.pptx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What percentage of Elexion's ADAS suffered internet connectivity issues?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Based on internal testing performed in July 2025, .01% of Elexion's ADAS failed to consistently connect to the network, causing a shutdown of the system and non-operability.",
+            "supporting_file_paths": [
+                "shared/ADAS-Connectivity-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What percentage of Elexion's EV have not been tested for any of the company's compliance certifications?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Based on internal data compiled in July 2025, 4% of Elexion's EV have yet to go through any of the company's compliance certifications?",
+            "supporting_file_paths": [
+                "shared/AI-ADAS-Compliance.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

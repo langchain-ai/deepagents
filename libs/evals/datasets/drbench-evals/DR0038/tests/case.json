@@ -1,0 +1,24 @@
+{
+  "task_id": "DR0038",
+  "question": "Which community partnership programs gave regional food retailers with annual revenues that is between five hundred million dollars and six hundred million dollars the best return on investment during the period of 2022-2023, measured by media coverage value, costs to attract new customers, and improvements in how people felt about the brand?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What was the outcome of Lee's Market's 2022 partnership with the Urban Food Literacy Foundation?",
+      "answer": "Lee's Market's Chef in the Community program with the Urban Food Literacy Foundation in 2022 generated $250,000 in positive media coverage, reduced customer acquisition cost by 18%, and boosted brand sentiment scores by 12 points in participating cities.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "In 2022, Lee's Market sponsored local cultural festivals. How did the sponsorship perform?",
+      "answer": "In 2022, the sponsorship of 3 major Asian cultural festivals cost $150,000, but resulted in a 300% return on investment through earned media and an additional 25% increase in new customer acquisition that are culturally relevant.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "How did Lee's Market's school nutrition program improve its brand perception?",
+      "answer": "Following the 2023 launch of Lee's Market's Little Grocers school program, brand sentiment surveys conducted by Andrew Park alongside public relations team members in participating school districts showed a 15% increase in trust and community commitment among parents.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

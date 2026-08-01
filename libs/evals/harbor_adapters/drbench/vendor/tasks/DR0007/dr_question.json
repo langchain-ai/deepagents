@@ -1,0 +1,28 @@
+{
+    "dr_question": "How can we leverage ISTM and AI-driven analytics to minimize IT service desk workload and improve response times in MediConn Solutions?",
+    "question_type": "ai_generated",
+    "question_source": {
+        "domain": "itsm",
+        "dr_question": "How can we leverage ISTM and AI-driven analytics to minimize IT service desk workload and improve response times in MediConn Solutions?",
+        "industry": "Virtual/Remote Healthcare",
+        "n_hops": 4,
+        "subquestions": [
+            "What AI-driven analytics can we integrate with our ITSM?",
+            "How can we measure the reduction in service desk workload?",
+            "What are the potential benefits to patient care?",
+            "What are the implementation challenges we should consider?"
+        ],
+        "url": "https://www.topdesk.com/en/blog/itsm-healthcare/"
+    },
+    "timestamp": "2025-08-08 12:57",
+    "task_id": "DR0007",
+    "subquestions": [
+        "What AI-driven analytics can we integrate with our ITSM?",
+        "How can we measure the reduction in service desk workload?",
+        "What are the potential benefits to patient care?",
+        "What are the implementation challenges we should consider?"
+    ],
+    "industry": "healthcare",
+    "domain": "itsm",
+    "url": "https://www.topdesk.com/en/blog/itsm-healthcare/"
+}

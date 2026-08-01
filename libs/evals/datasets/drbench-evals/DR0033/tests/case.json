@@ -1,0 +1,90 @@
+{
+  "task_id": "DR0033",
+  "question": "How can Lee's Market, guided by information security manager Jason Wong, design and implement a cybersecurity awareness and training program by the end of 2025 that mitigates security risk from high employee turnover and seasonal hiring while minimizing incidents caused by human error and supporting the company's growth in both US and Canadian markets?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What was the percentage of Lee's Market's temporary employees during Q4 2024 who did not receive social engineering or email phishing training upon hire?",
+      "answer": "In Q4 2024, 75% of temporary sector employees of Lee's Market did not receive social engineering or email phishing training upon hire. This exposes the initial training gap relevant to cyber-risk mitigation.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "How many cyber incidents at Lee's Market from Nov 2024 to Oct 2025 specifically involved new or seasonal staff as the root cause?",
+      "answer": "In four of the seven cybersecurity incidents at Lee's Market reported between November 2024 and October 2025, new or seasonal staff were identified as the root cause.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "What modules did Jason Wong introduce or revise for all onboarding staff in Q1 2025, and what was the completion rate by the end of Q2 2025?",
+      "answer": "Phishing awareness, password security, and POS safety modules were introduced by Jason Wong for all onboarding staff in Q1 2025. 87% of new hires completed these modules by June 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "How did the frequency of phishing simulation test failures among Lee's Market employees change between December 2024 and September 2025 among seasonal staff?",
+      "answer": "Phishing simulation failures decreased from 38% to 19% at Lee's Market between December 2024 and September 2025 among seasonal staff.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "During the Dec 2024 seasonal hiring surge, what share of new hires at Lee's Market completed cybersecurity training before receiving system access?",
+      "answer": "Only 53% of new hires during the Dec 2024 seasonal hiring surge completed cybersecurity training before receiving system access at Lee's Market.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0006",
+      "question": "How often did Lee's Market conduct audit checks on training completion between January and October 2025, and what percentage of gaps led to corrective action within two weeks?",
+      "answer": "Lee's Market conducted two monthly audit checks on training completion between January and October 2025, and 12% of gaps that were found were remediated with follow-up training within two weeks.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0007",
+      "question": "What was the total business downtime Lee's Market experienced from cyber incidents involving employee error between August 2024 and August 2025?",
+      "answer": "Lee's Market experienced a total of 17 hours of business downtime, with 14 hours linked to employee error from August 2024 to August 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0008",
+      "question": "By August 2025, how did working with a managed security service provider change incident response times and loss ratios at Lee's Market?",
+      "answer": "By working with a managed security service provider, the incident response times dropped from 5 to 1.5 hours, and the per-incident losses decreased by about 43% by August 2025 at Lee's Market.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0009",
+      "question": "What audit pass rate did Lee's Market achieve for cybersecurity protocol compliance in the first and second halves of 2025?",
+      "answer": "Security audit pass rates improved from 78% in the first half of 2025 to 94% in the second half following targeted refresher trainings and management attention.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0010",
+      "question": "Among all seasonal staff trained in 2025, what percentage participated in at least one mock cyber drill or phishing simulation, and how does this compare to late 2024 sector participation rates?",
+      "answer": "62% of all 2025 seasonal staff participated in at least one in-house phishing or cyberattack simulation drill, outpacing the industry's late 2024 figure of 56%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0011",
+      "question": "How many supply chain (third-party) incidents were reported at Lee's Market in 2025, and were any traced to inadequate vendor training or oversight?",
+      "answer": "Two supply chain-attached cyber incidents were logged in 2025, as of October, with one traced to a partner unconstrained by Lee's Market's cyber training requirements. The breach started with a vendor employee succumbing to a phishing email.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0012",
+      "question": "What channels did Jason Wong use to reinforce urgent cybersecurity notifications in 2025, and what coverage rate did he achieve for offsite and hybrid staff?",
+      "answer": "Through an integrated use of email, SMS, and an employee dashboard, Wong achieved a 98% acknowledgement rate across all Lee's Market employees, including remote and part-time workers, on urgent cyber-risk notices.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0013",
+      "question": "How was customer trust measured after any cybersecurity incident at Lee's Market in 2024-2025, and did proactive communication impact NPS or similar scores?",
+      "answer": "Following cyber incidents from 2024 to 2025, Lee's Market's NPS score dropped by 15 points. However, with rapid and transparent customer communications orchestrated by Jason Wong, recovery rates to pre-incident NPS averages were up to 80% faster than after prior breaches.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0014",
+      "question": "What was the 2025 turnover rate among Lee's Market's seasonal staff who completed cybersecurity training versus those who did not, and did this correlate with incident or error rates?",
+      "answer": "Seasonal employees who completed required cyber awareness and security modules had a turnover rate of 19% compared to 41% for those who didn't and saw 65% fewer security errors or reported incidents.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

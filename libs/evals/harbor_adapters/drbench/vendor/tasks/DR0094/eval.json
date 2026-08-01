@@ -1,0 +1,248 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "Utility costs are operational overheads unrelated to cybersecurity or data protection optimization.",
+            "question": "What is MediConn's total annual expense on office utilities across all locations in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Total utilities expenses were $142,000 CAD in FY2025.",
+            "supporting_file_paths": [
+                "shared/mediconn-expenses-report-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "Employee morale metrics relate to HR and culture, not to information security optimization or patient data protection.",
+            "question": "What was the average employee satisfaction score from MediConn's 2025 engagement survey?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average satisfaction score was 82%.",
+            "supporting_file_paths": [
+                "shared/2025-survey-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "Operational volumes indicate service success but do not inform cybersecurity performance or strategy improvement.",
+            "question": "How many virtual consultations were completed in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn completed 520,000 virtual consultations.",
+            "supporting_file_paths": [
+                "shared/virtual-consultations-fy2025.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "User experience ratings are customer sentiment indicators, not relevant to data security or regulatory compliance.",
+            "question": "What is MediConn's average app store rating in 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The app's average rating is 4.4 stars.",
+            "supporting_file_paths": [
+                "shared/app-performance-evaluation.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "Revenue breakdown by service line is a business performance measure, unrelated to AI security or compliance risk.",
+            "question": "How much revenue did MediConn generate from mental health counseling in FY2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The mental health service generated $12 million CAD in FY2026.",
+            "supporting_file_paths": [
+                "shared/mental-health-revenue.pptx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "While related to service reliability, uptime metrics are not relevant to data protection or compliance risk evaluation.",
+            "question": "What is MediConn's average system uptime percentage in 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average uptime is 99.6%.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_173543.jsonl"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "Customer support metrics measure service quality, not cybersecurity system optimization or risk mitigation.",
+            "question": "What percentage of MediConn's customer support inquiries were resolved within 24 hours in Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "84% of customer inquiries were resolved within 24 hours.",
+            "supporting_file_paths": [
+                "shared/Q4-support-efficiency.pptx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "Marketing budget allocation is unrelated to data protection or cybersecurity efficiency operations.",
+            "question": "What was the company's total expenditure on marketing campaigns in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Marketing costs totaled $2.4 million CAD.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_173654.jsonl"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "Departmental staffing levels do not contribute to or affect cybersecurity optimization strategies.",
+            "question": "How many full-time staff were employed in MediConn's finance department in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A total of 14 employees worked in the finance department.",
+            "supporting_file_paths": [
+                "shared/finance-department-staffing-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "These projects focus on marketing insights, not on security compliance or system optimization.",
+            "question": "How many data analytics projects were initiated by MediConn's marketing division in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A total of 8 projects were initiated.",
+            "supporting_file_paths": [
+                "shared/marketing-analytics-fy2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "While relevant to HR policy, remote work percentages don't directly affect AI related risks.",
+            "question": "What percentage of MediConn's workforce operates remotely in 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Around 40% of staff work remotely.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Remote_Workforce_Statistics_Dat.xlsx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "Leadership training participation is not linked to cybersecurity process improvements.",
+            "question": "What was MediConn's staff training attendance rate for leadership development workshops in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Attendance rate was 91% across management teams.",
+            "supporting_file_paths": [
+                "shared/FY2025-Leadership-Workshop-Report.docx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "Session length affects patient interaction, not information security efficiency.",
+            "question": "What was the average duration of telehealth sessions across MediConn platforms in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average session duration was 16.5 minutes.",
+            "supporting_file_paths": [
+                "shared/session-duration-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "Corporate wellness events do not contribute to cybersecurity or compliance optimization.",
+            "question": "How many total corporate wellness events did MediConn host in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The company hosted 12 events.",
+            "supporting_file_paths": [
+                "shared/wellness-initiatives-report-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "User engagement metrics reflect platform success but are not relevant to cybersecurity operations optimization.",
+            "question": "What percentage of MediConn's users accessed their medical history through the platform's mobile app in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "71% of users accessed their records via the app.",
+            "supporting_file_paths": [
+                "shared/mobile-medical-records-analysis.pptx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "The predominance of mobile access highlights the need for mobile-optimized cybersecurity protocols, including encryption and secure authentication mechanisms.",
+            "question": "What percentage of MediConn's platform traffic in 2025 originated from mobile versus desktop users?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "73% of total platform interactions in 2025 came from mobile devices, while 27% came from desktop systems.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-optimization-plan.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "These incidents indicate ongoing threats and justify proactive enhancements to monitoring, detection, and response processes.",
+            "question": "How many security incidents were reported on MediConn's platform in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn recorded 12 minor security incidents in 2025, including attempted phishing and unauthorized login attempts, with no major breaches reported.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_173201.jsonl"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "Budget allocation data allows planning for targeted investments in FY2026 to further strengthen security posture in line with industry standards.",
+            "question": "What was MediConn's IT and cybersecurity budget allocation in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "$4.5M CAD of the FY2025 IT budget was allocated to cybersecurity initiatives, representing 22% of total IT expenditure.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-optimization-fy2026.pptx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "While high, the 6% of unencrypted data presents a compliance gap that should be addressed through encryption standardization in FY2026.",
+            "question": "What percentage of MediConn's patient data storage was encrypted end-to-end in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "94% of all stored patient data was encrypted end-to-end by Q4 2025.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-plan-FY2026.docx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "Quantifying vulnerabilities informs prioritization of patching and threat mitigation efforts for the next fiscal year.",
+            "question": "How many system vulnerabilities did MediConn identify during its internal FY2025 security audit?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The audit discovered 7 critical vulnerabilities and 18 medium-level vulnerabilities across the platform.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-optimization-fy2026.pptx"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "Employee readiness is a key component of data protection; improving completion rates to 100% may reduce operational risk.",
+            "question": "What percentage of MediConn's employees completed mandatory cybersecurity training in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "88% of employees completed the annual cybersecurity awareness and compliance training.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-plan-2026.pdf"
+            ]
+        },
+        {
+            "id": "IN0007",
+            "justification": "The growth in digital engagement underscores the urgency of strengthening cybersecurity controls to protect patient data and ensure uninterrupted services.",
+            "question": "What is the projected growth of digital engagement metrics for MediConn in FY2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Digital engagement is projected to increase by 42% in FY2026, including virtual consultations, chat interactions, and mobile app usage.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-optimization-fy2026.pptx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

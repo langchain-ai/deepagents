@@ -1,0 +1,15 @@
+{
+    "dr_question": "How can Jason Wong, given Lee's Markets' limited IT resources in 2025, strengthen employee cybersecurity training to reduce risk of retail cyberattacks that lead to operation disruptions and financial loss by Q3 2027?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Cybersecurity",
+        "dr_question": "How can Jason Wong, given Lee's Markets' limited IT resources in 2025, strengthen employee cybersecurity training to reduce risk of retail cyberattacks that lead to operation disruptions and financial loss by Q3 2027?",
+        "industry": "Retail",
+        "url": "https://www.vikingcloud.com/blog/retail-cybersecurity-stats-threats-and-solutions"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0034",
+    "industry": "retail",
+    "domain": "Cybersecurity",
+    "url": "https://www.vikingcloud.com/blog/retail-cybersecurity-stats-threats-and-solutions"
+}

@@ -1,0 +1,12 @@
+{
+  "task_id": "DR0069",
+  "question": "How can AI be used to help Elexion identify problems with their EVs before they become issues when EU's policy of zero emissions goes into effect in 2035?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "Has Elexion done any research on whether AI can improve EV battery life?",
+      "answer": "In August of 2024, Elexion's IT department researched the topic of AI integration and outcomes. The team discovered that AI can identify variables like analyzing temperature, voltage, and current, which have been proven to improve battery life.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

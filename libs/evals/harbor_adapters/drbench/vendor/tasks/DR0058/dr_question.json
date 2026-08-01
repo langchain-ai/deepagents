@@ -1,0 +1,15 @@
+{
+    "dr_question": "In 2026, since a ransomware attack would not be just an IT issue but a risk to every function of MediConn Solutions, what specific architectural and procedural controls would a cybersecurity specialist need to design and implement to minimize the blast radius and ensure MediConn\u2019s clinical continuity during an extended loss of services from one of their third-party providers?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Cybersecurity",
+        "dr_question": "In 2026, since a ransomware attack would not be just an IT issue but a risk to every function of MediConn Solutions, what specific architectural and procedural controls would a cybersecurity specialist need to design and implement to minimize the blast radius and ensure MediConn\u2019s clinical continuity during an extended loss of services from one of their third-party providers?",
+        "industry": "Virtual/Remote Healthcare",
+        "url": "https://www.aha.org/news/aha-cyber-intel/2024-10-07-look-2024s-health-care-cybersecurity-challenges"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0058",
+    "industry": "virtual/remote healthcare",
+    "domain": "Cybersecurity",
+    "url": "https://www.aha.org/news/aha-cyber-intel/2024-10-07-look-2024s-health-care-cybersecurity-challenges"
+}

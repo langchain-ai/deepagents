@@ -1,0 +1,62 @@
+{
+    "industry": "automotive -- electric vehicles",
+    "domain": "quality assurance",
+    "difficulty": "medium",
+    "files": [
+        {
+            "filetype": "jsonl",
+            "type": "distractor",
+            "app": "mattermost"
+        },
+        {
+            "filetype": "jsonl",
+            "type": "distractor",
+            "app": "mattermost"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "email",
+            "type": "distractor",
+            "app": "roundcube"
+        },
+        {
+            "filetype": "email",
+            "type": "distractor",
+            "app": "roundcube"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "jsonl",
+            "type": "distractor",
+            "app": "mattermost"
+        },
+        {
+            "filetype": "xlsx",
+            "type": "distractor",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "jsonl",
+            "type": "supporting",
+            "app": "mattermost"
+        },
+        {
+            "filetype": "pdf",
+            "type": "supporting",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "docx",
+            "type": "supporting",
+            "app": "file_system"
+        }
+    ]
+}

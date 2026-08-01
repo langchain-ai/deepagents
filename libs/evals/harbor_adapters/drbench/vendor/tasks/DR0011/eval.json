@@ -1,0 +1,138 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "EX0000",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Regulators like the EPA and California's CARB are now mandating durability and warranty guarantees for EV batteries, moving beyond mere production incentives. This shift aims to enhance consumer confidence in electric vehicles by ensuring high performance and reliability standards.",
+            "supporting_urls": [
+                "https://www.wardsauto.com/regulatory/ev-regulations-continue-evolving"
+            ]
+        },
+        {
+            "id": "EX0001",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "California's Advanced Clean Cars II (ACC II) rule requires 35% of new vehicles sold to be zero-emission by 2026, reaching 100% by 2035, with stringent EV standards. EV manufacturers must include OBD-II diagnostics, display battery \"state of health\" to drivers, and ensure that by 2030, EV batteries retain at least 80% of their range for 10 years or 150,000 miles.",
+            "supporting_urls": [
+                "https://www.wardsauto.com/regulatory/ev-regulations-continue-evolving"
+            ]
+        },
+        {
+            "id": "EX0002",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "The U.S. EPA's proposed 2027+ emissions standards suggest automakers will need approximately 67% EV sales by 2032 to meet CO2 limits. The proposal includes EV-specific durability rules, requiring battery health monitors and ensuring light-duty EVs maintain 80% battery capacity for up to 5 years/62,000 miles and 70% for up to 8 years/100,000 miles.",
+            "supporting_urls": [
+                "https://www.wardsauto.com/regulatory/ev-regulations-continue-evolving"
+            ]
+        },
+        {
+            "id": "qa_1755713357",
+            "justification": "Employee retention metrics do not address EV battery durability or regulations.",
+            "question": "What was our employee retention rate in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee retention averaged 85% with a 5% increase from Q2 2024.",
+            "supporting_file_paths": [
+                "shared/hr-metrics-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755713774",
+            "justification": "IT help desk metrics do not impact EV battery warranty guarantees.",
+            "question": "How many IT help desk tickets were resolved in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT help desk resolved 85% of 2,500 tickets within 24 hours.",
+            "supporting_file_paths": [
+                "shared/it-helpdesk-report.pdf"
+            ]
+        },
+        {
+            "id": "IN001",
+            "justification": "This answer provides a specific timeline and commitment to meeting regulatory requirements, helping to address the DR Question's concern for staying on track with production timelines.",
+            "question": "By Q2 of 2026, what percentage of our production timeline has been committed to meeting ACC II regulations?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "40% of our production timeline has been dedicated to meeting ACC II regulations since Q2 of 2024.",
+            "supporting_file_paths": [
+                "shared/Elexion-EV-Battery-Compliance.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755633171",
+            "justification": "This answer helps assess financial impacts of compliance on production timelines.",
+            "question": "What is the projected cost increase for battery durability compliance by Q1 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The projected cost increase is $15 million for compliance purposes.",
+            "supporting_file_paths": [
+                "shared/compliance-report-ev.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755633788",
+            "justification": "This aligns production goals with regulatory compliance for sustainability and market readiness.",
+            "question": "How many EV models meet ACC II standards by Q2 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Five EV models are anticipated to meet ACC II standards by Q2 2026.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_160355.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755713681",
+            "justification": "Employee training metrics do not address regulatory compliance or EV battery durability.",
+            "question": "What was our average training hours per employee in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average training hours per employee reached 12 hours, a 20% increase.",
+            "supporting_file_paths": [
+                "shared/training-development-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755633365",
+            "justification": "Facility cost metrics do not pertain to EV production or compliance issues.",
+            "question": "How much did facility costs increase by Q3 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility costs increased by 8% in Q3 of 2023.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_155640.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755713556",
+            "justification": "IT security incidents do not relate to EV battery warranty or production timelines.",
+            "question": "How many IT security incidents occurred in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Five IT security incidents were reported, resulting in $120,000 in damages.",
+            "supporting_file_paths": [
+                "shared/it-security-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755633407",
+            "justification": "IT budget allocation is unrelated to EV battery durability and compliance requirements.",
+            "question": "What is our IT infrastructure upgrade budget for Q4 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The IT infrastructure upgrade budget is set at $2 million.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_155731.jsonl"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

@@ -1,0 +1,248 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "This sales mix data concerns product category performance, not the redesign of Lee's Market's loyalty program.",
+            "question": "What percentage of Lee's Market's total 2025 sales came from bakery and prepared foods?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Bakery and prepared foods contributed 14% of Lee's Market's total 2025 sales.",
+            "supporting_file_paths": [
+                "shared/2025-sales-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "Employee wage levels affect HR operations and cost control, not customer loyalty or cross-generational engagement strategies.",
+            "question": "What was the average annual wage for full-time grocery associates at Lee's Market in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average annual wages was $35,000 USD at Lee's Market in 2025.",
+            "supporting_file_paths": [
+                "shared/grocery-associates-wage-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "Store expansion relates to geographic growth strategy, not loyalty program redesign or customer experience preferences.",
+            "question": "How many new stores did Lee's Market open across the U.S. and Canada during 2024-2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market opened 6 new stores across the U.S. and Canada during 2024-2025.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_175736.jsonl"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "Energy expenses reflect facility operations and sustainability management, not loyalty engagement or generational service design.",
+            "question": "What was Lee's Market's average refrigeration energy cost per store per month in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average refrigeration energy costs for Lee's Market's were $8,000 per store per month in 2025.",
+            "supporting_file_paths": [
+                "shared/energy-cost-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "Revenue channel mix concerns sales distribution, not loyalty structure or intergenerational engagement mechanisms.",
+            "question": "What percentage of Lee's Market's 2025 total revenue came from online orders and home delivery?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Online orders and home delivery generated 14% of total revenue of Lee's Market in 2025.",
+            "supporting_file_paths": [
+                "shared/online-sales-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "SKU breadth addresses merchandising assortment, not customer loyalty or personalization initiatives.",
+            "question": "What was the total number of unique SKUs (Stock Keeping Units) carried by Lee's Market as of Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market carried 27,000 SKUs in Q4 2025.",
+            "supporting_file_paths": [
+                "shared/inventory-analysis-Q4-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "Overall marketing expenditure concerns promotional budgeting, not the specific redesign of the loyalty program.",
+            "question": "What was Lee's Market's total annual marketing expenditure in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market's total annual marketing expenditure was $5M USD in 2025.",
+            "supporting_file_paths": [
+                "shared/2025-marketing-expenditure-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "Import lead times impact inventory planning and logistics, not customer loyalty design or generational experience focus.",
+            "question": "What was the Lee's Market's average supplier lead time for imported goods from Asia in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average supplier lead time was 28 days in 2025 for Lee's Market.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_175950.jsonl"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "Waste diversion pertains to sustainability efforts, not loyalty redesign or generational engagement strategies.",
+            "question": "What percentage of total waste output was recycled or composted in 2025 by Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market achieved a 50% waste diversion rate in 2025.",
+            "supporting_file_paths": [
+                "shared/2025-waste-management-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "Checkout processing times relate to operational efficiency, not loyalty program structure or engagement mechanics.",
+            "question": "What was the Lee's Market's average self-checkout transaction processing time in Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average self-checkout transaction time was 95 seconds per basket for Lee's Market.",
+            "supporting_file_paths": [
+                "shared/Q4-2025-Self-Checkout-Report.docx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "Advertising reach reflects brand visibility metrics, not loyalty redesign or intergenerational participation measures.",
+            "question": "What was the Lee's Market's total advertising reach across digital and print media in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Advertising campaigns reached 13 million unique individuals in 2025 for Lee's Market.",
+            "supporting_file_paths": [
+                "shared/lees-advertising-performance.pdf"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "Local sourcing reflects procurement and supply strategy, not loyalty engagement or customer experience redesign.",
+            "question": "What percentage of Lee's Market's product portfolio was locally sourced within Canada in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market's locally sourced products made up 19% of the total portfolio in 2025.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_180131.jsonl"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "Relates to logistics cost efficiency, not to loyalty design or generational engagement.",
+            "question": "What was Lee's Market's average packaging material cost per shipment in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market's average packaging material cost per shipment was $3.20 in 2025.",
+            "supporting_file_paths": [
+                "shared/packaging-cost-analysis-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "Concerns workforce stability and HR operations, unrelated to customer loyalty strategy.",
+            "question": "What was the average annual employee turnover rate at Lee's Market in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The employee turnover rate averaged 59% overall at Lee's Market in 2025.",
+            "supporting_file_paths": [
+                "shared/lees-market-turnover-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "Captures store-maintenance data, not connected to the persona's loyalty-program work or customer-engagement domain.",
+            "question": "How many refrigeration units were replaced or upgraded across Lee's Market stores in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "42 refrigeration units replaced/upgraded across Lee's Market stores in 2025.",
+            "supporting_file_paths": [
+                "shared/2025-refrigeration-analysis.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "This generational split confirms that younger customers now form the majority, emphasizing the need for digital-first loyalty engagement while maintaining value for the older, revenue-stable segment.",
+            "question": "What percentage of Lee's Market's active customers in Q4 2025 are Gen Z and Millennial shoppers compared to Gen X and Boomer shoppers?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In Q4 2025, Gen Z and Millennial shoppers account for 62% of Lee's Market's active customer base, while Gen X and Boomer shoppers represent 38%.",
+            "supporting_file_paths": [
+                "shared/loyalty-program-revamp.pptx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "The wide engagement gap indicates that younger shoppers are more responsive to app-based and gamified features, whereas older customers favor in-person interactions-validating a hybrid loyalty model.",
+            "question": "What are the average monthly loyalty engagement rates for Gen Z/Millennial customers versus Gen X/Boomer customers at Lee's Market during 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "During 2025, Gen Z and Millennial customers engage with the Lee's Market loyalty program at an average monthly rate of 50%, compared with 25% among Gen X and Boomer customers.",
+            "supporting_file_paths": [
+                "shared/loyalty-program-redesign.docx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "Younger customers favor online transactions, while older ones remain in-store centric-justifying a hybrid redemption system and balanced incentive structure.",
+            "question": "What is the average quarterly spend per loyalty member for Gen Z/Millennials versus Gen X/Boomers during 2025, segmented by online and in-store channels?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Gen Z/Millennials spend $250 online and $380 in-store; Gen X/Boomers spend $160 online and $480 in-store.",
+            "supporting_file_paths": [
+                "shared/loyalty-program-redesign.docx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "Higher redemption among younger users reflects stronger digital accessibility and tracking; redesigning with mobile-first reward visibility can elevate both segments redemption activity.",
+            "question": "What are the current loyalty reward redemption rates (%) for Gen Z/Millennials versus Gen X/Boomers between Q1 2024 and Q4 2025 at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "For Lee's Market, Gen Z/Millennials redeem at 38%, compared with 29% for Gen X/Boomers between Q1 2024 and Q4 2025.",
+            "supporting_file_paths": [
+                "shared/bridging-generational-preferences.pptx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "Digitally engaged members are more profitable and loyal, justifying investment in enhanced mobile personalization while maintaining legacy formats for high-value, less tech-savvy shoppers.",
+            "question": "What is the comparative customer lifetime value (USD) between digital-first members (app users) and traditional card/coupon users as of Q4 2025 at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "At Lee's Market, digital-first members show a CLV of $1,800, compared to traditional users' CLV of $1,350.",
+            "supporting_file_paths": [
+                "shared/loyalty-program-redesign.pdf"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "Measuring repeat-purchase impact clarifies how hybrid rewards directly influence buying behavior before rollout in Q2 2026.",
+            "question": "What is the projected uplift (%) in repeat-purchase rate from the pilot test planned for Q4 2025-Q1 2026 evaluating hybrid rewards (mobile + printed offers) across generations at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "At Lee Market's, the pilot projects a repeat-purchase uplift of 11% for Gen Z/Millennials and 7% for Gen X/Boomers.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Hybrid_Rewards_Program_Q4_2025_Q1_2026.xlsx"
+            ]
+        },
+        {
+            "id": "IN0007",
+            "justification": "Tracking NPS isolates emotional and service-experience gains from the hybrid loyalty model, ensuring distinct CX (Customer Experience) targets for 2026.",
+            "question": "What is the projected improvement (NPS-Net Promotor Score points) in customer satisfaction from the pilot test planned for Q4 2025-Q1 2026, evaluating hybrid rewards (mobile + printed offers) across generations at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The pilot planned for Lee's Market anticipates an NPS improvement of +8 points for Gen Z/Millennials and +5 points for Gen X/Boomers.",
+            "supporting_file_paths": [
+                "shared/loyalty-program-revamp.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

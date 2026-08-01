@@ -1,0 +1,28 @@
+{
+    "dr_question": "How can Lee's Market leverage FSMA 204 regulations to enhance food safety and customer trust?",
+    "question_type": "ai_generated",
+    "question_source": {
+        "domain": "compliance",
+        "dr_question": "How can Lee's Market leverage FSMA 204 regulations to enhance food safety and customer trust?",
+        "industry": "Retail",
+        "n_hops": 4,
+        "subquestions": [
+            "What are the key benefits of implementing FSMA 204 regulations for Lee's Market?",
+            "How do regional grocers like Lunds & Byerlys and Raley's approach FSMA 204 compliance?",
+            "What are the potential risks and challenges of non-compliance with FSMA 204 regulations for Lee's Market?",
+            "How can Lee's Market use FSMA 204 compliance as a competitive advantage in the market?"
+        ],
+        "url": "https://www.grocerydive.com/spons/grocers-talk-fsma-204-compliance-food-safety-and-the-future-of-grocery/722810/"
+    },
+    "timestamp": "2025-08-08 12:07",
+    "task_id": "DR0001",
+    "subquestions": [
+        "What are the key benefits of implementing FSMA 204 regulations for Lee's Market?",
+        "How do regional grocers like Lunds & Byerlys and Raley's approach FSMA 204 compliance?",
+        "What are the potential risks and challenges of non-compliance with FSMA 204 regulations for Lee's Market?",
+        "How can Lee's Market use FSMA 204 compliance as a competitive advantage in the market?"
+    ],
+    "industry": "retail",
+    "domain": "compliance",
+    "url": "https://www.grocerydive.com/spons/grocers-talk-fsma-204-compliance-food-safety-and-the-future-of-grocery/722810/"
+}

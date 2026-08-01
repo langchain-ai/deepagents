@@ -1,0 +1,435 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "EX0000",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Healthcare CRM systems are revolutionizing patient interactions by using data analysis and AI to enable personalized, proactive care management. This technology helps providers identify high-risk patients and intervene early, leading to improved health outcomes.",
+            "supporting_urls": [
+                "https://wtt-solutions.com/blog/the-future-of-healthcare-crm-solutions-what-to-expect-in-2025"
+            ]
+        },
+        {
+            "id": "EX0001",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "The global healthcare CRM market is expected to grow to approximately $30.65 billion by 2030, with a 7.7% CAGR from 2024, fueled by the increasing adoption of digital health solutions and the demand for improved patient engagement and operational efficiency.",
+            "supporting_urls": [
+                "https://wtt-solutions.com/blog/the-future-of-healthcare-crm-solutions-what-to-expect-in-2025"
+            ]
+        },
+        {
+            "id": "EX0002",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "By 2025, healthcare CRM will focus on AI-driven personalization and automation, integrating closely with chronic care management tools. Enhanced patient data security and cloud-based platforms will be prioritized to improve patient engagement and retention.",
+            "supporting_urls": [
+                "https://wtt-solutions.com/blog/the-future-of-healthcare-crm-solutions-what-to-expect-in-2025"
+            ]
+        },
+        {
+            "id": "qa_1755633152",
+            "justification": "This question helps address the DR Question by providing a specific timeline for expected improvements in patient engagement and retention.",
+            "question": "By what date do we expect to see a minimum 15% reduction in patient complaints due to improved CRM functionality?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "We anticipate a 15% reduction in patient complaints by Q3 2025, driven by the integration of AI-driven personalization and automation features.",
+            "supporting_file_paths": [
+                "shared/Patient-Engagement-Strategies.docx"
+            ]
+        },
+        {
+            "id": "qa_1755704406",
+            "justification": "Employee onboarding metrics are unrelated to CRM solutions and patient engagement",
+            "question": "What was our average employee onboarding time in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average employee onboarding time was 30 days with a 10% decrease expected.",
+            "supporting_file_paths": [
+                "shared/onboarding-performance-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1756143392",
+            "justification": "Identifying effective CRM features supports strategic patient retention improvements.",
+            "question": "What CRM features improve patient retention by Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "AI personalization and automation increase retention by 30% by Q2 2024.",
+            "supporting_file_paths": [
+                "shared/MediConn_CRM_Features_Effectiveness_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1756143506",
+            "justification": "Employee satisfaction is unrelated to CRM solution trends or patient engagement.",
+            "question": "What was our employee satisfaction rate in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee satisfaction rate was 82% in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/MediConn_Employee_Satisfaction_Metrics.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755633249",
+            "justification": "Employee training metrics do not address the core DR Question focus area on CRM solutions",
+            "question": "What was our average employee training hours per quarter in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average employee training hours per quarter was 12 hours with a 20% increase expected by Q2 2025.",
+            "supporting_file_paths": [
+                "shared/Training-Metrics-Q1-2025.docx"
+            ]
+        },
+        {
+            "id": "qa_1755632735",
+            "justification": "Identifies key CRM features to boost patient engagement and retention.",
+            "question": "What CRM features improve patient retention by Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "AI-driven personalization and automation improve retention by 35% by Q2 2025.",
+            "supporting_file_paths": [
+                "shared/crm-insights-2025.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755632969",
+            "justification": "Compliance costs are unrelated to CRM solution enhancements.",
+            "question": "Compliance audit cost increase by Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Compliance audit costs rose 15% by Q3 2024.",
+            "supporting_file_paths": [
+                "shared/compliance-cost-management.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755633027",
+            "justification": "Employee satisfaction scores do not impact CRM solution strategies.",
+            "question": "What was our employee satisfaction score in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee satisfaction score averaged 78% in Q4 2024.",
+            "supporting_file_paths": [
+                "shared/employee-engagement-insights.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755705257",
+            "justification": "Facility renovation costs are unrelated to the DR Question's CRM focus",
+            "question": "What were our facility renovation costs in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility renovation costs totaled $150,000 with a 10% overrun.",
+            "supporting_file_paths": [
+                "shared/Facility-Operations-Report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755632927",
+            "justification": "IT expenses don't impact CRM solutions for patient engagement.",
+            "question": "Average IT expenses per employee in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT expenses averaged $500 per employee in Q2 2025.",
+            "supporting_file_paths": [
+                "shared/IT-Spending-Analysis.pptx"
+            ]
+        },
+        {
+            "id": "qa_1756143468",
+            "justification": "Compliance training rates are not linked to CRM solutions or patient retention.",
+            "question": "What is our compliance training completion rate in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Compliance training completion rate was 88% in Q2 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Compliance_Training_Completion_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1756143457",
+            "justification": "IT maintenance costs don't impact CRM solution effectiveness or patient engagement.",
+            "question": "What were our IT maintenance costs in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT maintenance costs totaled $300,000 in Q1 2024.",
+            "supporting_file_paths": [
+                "shared/MediConn_IT_Quarterly_Expenses_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755633265",
+            "justification": "IT infrastructure upgrade cycles do not address the core DR Question focus area on CRM solutions",
+            "question": "What was our average IT infrastructure upgrade cycle in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average IT infrastructure upgrade cycle was 18 months with a 12% increase in upgrade frequency expected by 2025.",
+            "supporting_file_paths": [
+                "shared/IT-Infrastructure-Upgrade-Cycle-Analysis.docx"
+            ]
+        },
+        {
+            "id": "IN001",
+            "justification": "This question helps us quantify the potential impact of new CRM solutions on patient engagement and retention, providing a financial incentive for investment in these solutions.",
+            "question": "By what percentage will our revenue increase if we successfully integrate AI-powered chatbots into our CRM solution by Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "We estimate a 25% increase in revenue if we successfully integrate AI-powered chatbots into our CRM solution by Q2 2025, driven by improved patient engagement and retention.",
+            "supporting_file_paths": [
+                "shared/Patient-Engagement-Strategies.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755705568",
+            "justification": "Facility utility costs are unrelated to CRM solutions and patient retention",
+            "question": "What are our average utility costs per facility in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average utility costs per facility totaled $8,000 in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/Facility-Cost-Report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755626896",
+            "justification": "IT costs do not relate to CRM effectiveness or patient retention strategies.",
+            "question": "What are our IT infrastructure costs for Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT infrastructure costs are expected to reach $1.2 million by Q3.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_140842.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755704057",
+            "justification": "Provides insight into effectiveness of trendy new CRM solutions.",
+            "question": "How many patients do we expect to retain through AI-driven personalization by Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "50,000 patients retained through AI-driven personalization by Q3 2025.",
+            "supporting_file_paths": [
+                "shared/crm-innovation-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755632872",
+            "justification": "Staff turnover metrics do not relate to CRM solution improvements.",
+            "question": "What was our staff turnover rate in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Staff turnover rate was 12% in Q1 2024.",
+            "supporting_file_paths": [
+                "shared/workforce-analytics-overview.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755627280",
+            "justification": "IT support metrics do not pertain to patient engagement or CRM solutions.",
+            "question": "What is our IT support ticket resolution time in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average IT support ticket resolution time is 24 hours in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_141525.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755626505",
+            "justification": "This answer highlights expected retention, aligning with improving patient engagement strategies.",
+            "question": "What will be our patient retention rate by Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "We project a patient retention rate of 80% by Q3 2025.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_140234.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755704344",
+            "justification": "Helps evaluate financial viability of adopting trendy new CRM solutions.",
+            "question": "What is our anticipated ROI on cloud-based CRM solutions by Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "25% ROI expected on cloud-based CRM solutions by Q4 2025.",
+            "supporting_file_paths": [
+                "shared/crm-patient-engagement-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755705296",
+            "justification": "Employee benefits enrollment metrics do not impact the DR Question's CRM goals",
+            "question": "What was our employee benefits enrollment rate in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee benefits enrollment rate reached 90% with a 5% increase expected.",
+            "supporting_file_paths": [
+                "shared/employee-benefits-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755626953",
+            "justification": "Employee turnover does not impact CRM engagement or patient retention outcomes.",
+            "question": "What is our employee turnover rate in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate is anticipated to be 10% by Q2.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_140944.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755632791",
+            "justification": "Quantifies cloud CRM's impact on patient engagement improvement.",
+            "question": "Expected patient engagement increase using cloud CRM by Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Patient engagement increases 40% with cloud CRM by Q3 2025.",
+            "supporting_file_paths": [
+                "shared/crm-patient-engagement.pptx"
+            ]
+        },
+        {
+            "id": "qa_1756143440",
+            "justification": "Employee turnover metrics are unrelated to CRM strategy or patient engagement.",
+            "question": "What was our employee turnover rate in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate was 11% in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Employee_Turnover_Analysis_Summary.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755627210",
+            "justification": "Training costs are unrelated to CRM solutions or patient engagement strategies.",
+            "question": "What are our employee training costs for Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee training costs are projected at $200,000 for Q1 2025.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_141427.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1756143407",
+            "justification": "Determines financial benefits of CRM investment for patient engagement improvements.",
+            "question": "Expected ROI of new CRM by Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "30% ROI expected from new CRM by Q4 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_CRM_Investment_Analysis_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755633257",
+            "justification": "Facility costs do not address the core DR Question focus area on CRM solutions",
+            "question": "What was our annual facility maintenance cost in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Annual facility maintenance cost was $250,000 with a 10% increase expected by 2025.",
+            "supporting_file_paths": [
+                "shared/Fac-Maintenance-2024.docx"
+            ]
+        },
+        {
+            "id": "IN002",
+            "justification": "This metric helps evaluate the effectiveness of potential CRM solutions.",
+            "question": "What is our patient engagement rate anticipated for Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Expected patient engagement rate is 75% by Q2 of 2024.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_105652.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755633292",
+            "justification": "Employee retention metrics do not address the core DR Question focus area on CRM and patient engagement",
+            "question": "What was our employee turnover rate in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate was 10% with a 5% increase expected by 2025.",
+            "supporting_file_paths": [
+                "shared/workforce-insights-2024.docx"
+            ]
+        },
+        {
+            "id": "qa_1755624043",
+            "justification": "Compliance training rates are not relevant to CRM engagement and retention.",
+            "question": "What is our compliance training completion rate for Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Compliance training completion rate is expected to be 90% in Q1.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_132130.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755705614",
+            "justification": "Employee IT security training does not impact CRM solutions or patient engagement",
+            "question": "What percentage of employees completed IT security training by Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "85% of employees completed IT security training by Q1 2025.",
+            "supporting_file_paths": [
+                "shared/it-security-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755632054",
+            "justification": "Quantifying patient engagement helps assess the effectiveness of new CRM solutions.",
+            "question": "How many patients do we expect to engage through AI-driven personalization by Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "We expect to engage 40,000 patients through AI-driven personalization by Q2 2025.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_153509.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755705530",
+            "justification": "Employee referral metrics do not address CRM solutions or patient engagement",
+            "question": "What is our employee referral rate for new hires in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee referral rate for new hires averages 20% by Q3 2025.",
+            "supporting_file_paths": [
+                "shared/talent-acquisition-review.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755627349",
+            "justification": "Marketing budget allocation does not directly address CRM or patient engagement concerns.",
+            "question": "What is our annual marketing budget for 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Our annual marketing budget is anticipated to be $1 million for 2025.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_141648.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755633127",
+            "justification": "Understanding current patient engagement rates helps identify areas for improvement and informs the need for new CRM solutions.",
+            "question": "What percentage of our patients are currently engaged with our CRM solution?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "35% of our patients are actively utilizing our CRM solution, with a 20% increase expected by Q2 2025.",
+            "supporting_file_paths": [
+                "shared/Patient-Engagement-Strategies.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

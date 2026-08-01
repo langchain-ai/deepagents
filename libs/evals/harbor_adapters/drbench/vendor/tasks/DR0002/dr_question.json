@@ -1,0 +1,13 @@
+{
+    "dr_question": "How can personalization drive sales in the retail industry and what strategies can be used for Lee's Market in action?",
+    "question_type": "hand_written",
+    "question_source": {
+        "custom_input": true
+    },
+    "timestamp": "2025-08-08 12:04",
+    "task_id": "DR0002",
+    "subquestions": [],
+    "industry": "retail",
+    "domain": "sales",
+    "url": "https://www.bcg.com/publications/2024/personalization-in-action"
+}

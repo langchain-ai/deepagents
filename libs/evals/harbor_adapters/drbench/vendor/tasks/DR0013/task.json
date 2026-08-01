@@ -1,0 +1,67 @@
+{
+    "name": "DR0013",
+    "task_id": "DR0013",
+    "level": "",
+    "company_info": {
+        "annual_revenue": "$350M - $500M",
+        "compliance_certifications": [
+            "EPA Greenhouse Gas Emissions Compliance",
+            "Motor Vehicle Safety Oversight Program",
+            "CARB Zero-Emission Vehicle (ZEV) Program",
+            "ISO 26262 \u2013 Road Vehicles Functional Safety"
+        ],
+        "description": "Elexion Automotive designs and manufactures premium and mid-range electric vehicles tailored for the North American market. With a focus on sustainability, user-centric technology, and cross-border compliance, Elexion aims to accelerate the transition to zero-emission transportation.",
+        "employee_count": 1900,
+        "founded_year": 2010,
+        "headquarters": "Austin, Texas, USA",
+        "industry": "Automotive -- Electric Vehicles",
+        "key_products_services": [
+            "Electric vehicles",
+            "Plug-in hybrid electric vehicles",
+            "Home charging stations"
+        ],
+        "market_position": "Elexion is an emerging force in the North American EV market, offering affordable and high-performance electric vehicles with regulatory-first design and localized production.",
+        "name": "Elexion Automotive",
+        "size": "Enterprise",
+        "target_markets": [
+            "Mid-income families in North America",
+            "Provincial and municipal governments"
+        ]
+    },
+    "dr_question": "How can Elexion Automotive effectively implement a cybersecurity strategy for its electric vehicles, considering the risks and challenges posed by connected and autonomous technologies?",
+    "date": "2025-08-27",
+    "persona": {
+        "department": "Information Technology",
+        "domain": "cybersecurity",
+        "email": "ethan.thompson@elexionautomotive.com",
+        "first_name": "Ethan",
+        "id": "EMP0004",
+        "justification": "As a leading manufacturer of electric vehicles, Elexion Automotive relies heavily on complex software and connectivity systems, making cybersecurity a critical aspect of the business to protect customer data, prevent hacking, and maintain the integrity of vehicle systems.",
+        "last_name": "Thompson",
+        "name": "Ethan Thompson",
+        "password": "my_drbench_pwd",
+        "responsibilities": "Responsible for implementing and maintaining cybersecurity measures to protect the company's data and systems, conducting penetration testing and vulnerability assessments, and staying up-to-date with emerging threats and technologies.",
+        "role": "Cybersecurity Specialist",
+        "seniority": "Mid",
+        "username": "ethan.thompson"
+    },
+    "citation_format": {
+        "urls": [
+            "https://www.example.com/article",
+            "https://techcrunch.com/2023/report.html"
+        ],
+        "file_names": [
+            "quarterly_report.pdf",
+            "market_analysis.docx",
+            "shared/file-pdf"
+        ],
+        "mattermost_chats": [
+            "MatterMost-Channel-Team-User",
+            "Mattermost Message - Enterprise Chat (User: john.doe, Team: Compliance, Channel: General)"
+        ],
+        "email_messages": [
+            "RoundCube-fromdemail-todemails-Subject",
+            "Email from sarah.johnson@company.com on 20 Jan 2025"
+        ]
+    }
+}

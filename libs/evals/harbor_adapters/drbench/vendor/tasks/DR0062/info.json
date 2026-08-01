@@ -1,0 +1,102 @@
+{
+    "industry": "automotive -- electric vehicles",
+    "domain": "crm",
+    "difficulty": "hard",
+    "files": [
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "xlsx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "jsonl",
+            "type": "distractor",
+            "app": "mattermost"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pptx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pptx",
+            "type": "distractor",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "xlsx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pptx",
+            "type": "distractor",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "pdf",
+            "type": "supporting",
+            "app": "file_system"
+        },
+        {
+            "filetype": "email",
+            "type": "supporting",
+            "app": "roundcube"
+        },
+        {
+            "filetype": "email",
+            "type": "supporting",
+            "app": "roundcube"
+        },
+        {
+            "filetype": "jsonl",
+            "type": "supporting",
+            "app": "mattermost"
+        },
+        {
+            "filetype": "pdf",
+            "type": "supporting",
+            "app": "nextcloud"
+        }
+    ]
+}

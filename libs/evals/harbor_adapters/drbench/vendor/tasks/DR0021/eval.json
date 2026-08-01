@@ -1,0 +1,149 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "Which type of hot sauce receives the most online traffic on Lee\u2019s Market's website in August 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Lee\u2019s Market\u2019s e-commerce analytics, the most frequently searched hot sauce in August 2025 was  \u2018Firecracker Baby,\u2019 and during that time frame, the hot sauce was most popular in the Pacific Northwest region, and accounted for 18% of all condiment-related searches.",
+            "supporting_file_paths": [
+                "shared/august-2025-hotsauce-report.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "During Q2 2025, which time of day has the highest number of online orders from Lee\u2019s Market\u2019s website?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Lee's Market's online sales tracker, during Q2 2025, 7 pm was when most online orders were placed.",
+            "supporting_file_paths": [
+                "shared/Q2-2025-Order-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "Which product received the most negative online reviews on the Lee's Market website due to a poor product image in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Lee's Market's website reports for Q2 2025, 'Andy's Canned Broccoli' has gotten one-star reviews due to the brown coloring of the broccoli.",
+            "supporting_file_paths": [
+                "shared/Q2-2025-review-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "How much tofu do Texas millennials purchase online from Lee's Market each week?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Lee's Market's online sales tracker, millennials in Texas purchase 1,350 pounds of tofu each week online from Lee's Market.",
+            "supporting_file_paths": [
+                "shared/millennial-texas-tofu.pdf"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "Which Lee's Market food product GIF gets the most replay clicks by online consumers?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Lee's Market online sales tracker, the most popular product GIF is for 'Mr. Lee's Udon Soup' with over 10,000 views each month.",
+            "supporting_file_paths": [
+                "shared/consumer-GIF-engagement.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "On Lee's Market's homepage, which promotional banners are skipped the quickest by online customers?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Lee's Market online sales tracker, dried shrimp snack banners are skipped within 3 seconds.",
+            "supporting_file_paths": [
+                "shared/banner-engagement-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "Does including recipes help with Lee's Market's online sales of the specialized ingredients in the southern sales region?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Lee's Market online sales tracker, specialized ingredients featured in online recipes in the southern sales region saw a 60% increase in online sales in Q2 2025.",
+            "supporting_file_paths": [
+                "shared/recipe-sales-impact.pptx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "Which advertising banner, used on the online homepage of Lee's Market's has the highest viewer rate?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Lee's Market online sales tracker, the Lee's Market Holiday Jamboree banner attracted a 90% viewer rate in December 2024.",
+            "supporting_file_paths": [
+                "shared/banner-performance-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "Lee's Market is focused on increasing the popularity of its dried seaweed products by the end of 2025.  On average, how many customer clicks do dried seaweed products get each month?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Lee's Market online sales tracker, dried seaweed products receive over 2,000 clicks per month as of September 2025.",
+            "supporting_file_paths": [
+                "shared/seaweed-product-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "Why did it take so long to roll out tofu product updates across all Lee\u2019s Market stores in July 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the customer service department, 12 stores chose to double-check packaging colors and labels before making the updates live in July of 2025, which slowed down the rollout process.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Product_Update_Rollout_Data.xlsx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "Why are IT incidents taking longer to resolve across Lee\u2019s Market stores in multiple regions each month?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to Lee\u2019s Market\u2019s ITSM tracker for Q3 2024, average incident resolution time increased by 22%. The increase in time is caused by regional stores using separate IT systems, and regional teams being unable to communicate consistently. Also, processes for managing incidents, problems, and changes are not standardized.",
+            "supporting_file_paths": [
+                "shared/itsm-strategy-improvements.pptx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "Why are employees across multiple regions spending so much time each week manually tracking IT requests at Lee\u2019s Market?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to internal IT reports from June 2024, employees spent an average of 3.5 hours per week manually tracking requests because no automated workflow exists to prioritize or assign tasks, causing inefficiencies across regions.",
+            "supporting_file_paths": [
+                "shared/itsm-strategy-enhancement.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "Why does it take so long to roll out IT updates across all Lee\u2019s Market stores?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to Lee\u2019s Market\u2019s IT operations' logs from September 2024, rolling out updates to all stores takes an average of 5 business days because each location uses slightly different systems, requiring updates to be applied individually, which delays completion across regions.",
+            "supporting_file_paths": [
+                "shared/ITSM-Strategy-2026.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

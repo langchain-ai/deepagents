@@ -1,0 +1,67 @@
+{
+  "industry": "healthcare",
+  "domain": "compliance",
+  "difficulty": "easy",
+  "files": [
+    {
+      "filetype": "xlsx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "pptx",
+      "type": "supporting",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pptx",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pptx",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "chat",
+      "type": "supporting",
+      "app": "mattermost"
+    },
+    {
+      "filetype": "chat",
+      "type": "distractor",
+      "app": "mattermost"
+    },
+    {
+      "filetype": "chat",
+      "type": "distractor",
+      "app": "mattermost"
+    }
+  ]
+}

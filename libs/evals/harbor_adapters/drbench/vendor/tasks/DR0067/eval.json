@@ -1,0 +1,50 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "Did Elexion see an increase of EV sales in 2024 after implementing the newest ADAS features?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, Elexion saw an 11% increase in total sales of electric vehicles throughout the entire year of 2024. This may be attributed to the newest ADAS features that were implemented in the purchased models.",
+            "supporting_file_paths": [
+                "shared/EV-ADAS-Sales-Analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "When did Elexion start introducing ADAS technology in their electric vehicles?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The first Elexion electric vehicle models that included advanced driver-assisted systems were released in October 2023. Some ADAS features were implemented into existing models in the following months.",
+            "supporting_file_paths": [
+                "shared/ADAS-Implementation-Overview.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "In the external survey conducted in July 2024, what was the average customer satisfaction grade of Elexion's after-sales service in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average customer satisfaction of Elexion's after-sales service in Q2 2024 was 4.8 out of 5 stars across all their North American service centers.",
+            "supporting_file_paths": [
+                "shared/Q2-2024-Service-Evaluation.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "In the external survey conducted in July 2024, what percentage of Elexion's customers preferred using ADAS over manual operation?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The external survey conducted by Elexion in 2024 found that 74% of its customers reported a preference for ADAS-exclusive features, such as Adaptive Cruise Control with Active Lane Centering and Stop and Go, which indicates a high preference for ADAS technology over manual operation.",
+            "supporting_file_paths": [
+                "shared/AI-ADAS-Roadmap.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

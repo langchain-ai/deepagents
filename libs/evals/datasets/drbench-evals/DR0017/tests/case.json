@@ -1,0 +1,18 @@
+{
+  "task_id": "DR0017",
+  "question": "Given the 2025 market trend of consumers value-seeking and trading down to discounters, what specific metrics should Lee's Market utilize to measure the incremental market share gained within its target Asian community and diverse urban center markets by Q4 2026, assuming a strategic focus on expanding its culturally authentic private label and prepared foods offerings as its primary value proposition?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What percentage of customers at Lee's Market locations in Q3 of 2025 self-identified as Asian, and how has this changed from Q2?",
+      "answer": "According to customer surveys, 62% of customers across all Lee's Market locations self-identified as Asian in Q3 2025, which represents an increase of 8% from Q2 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What percentage of total sales at Lee's Market locations in Q3 were products from the culturally authentic private label, and how does this compare to Q2?",
+      "answer": "According to internal sales reports, 12% of Q3 2025 total sales across all Lee's Market locations were products from their culturally authentic private label, which represents an increase of 3% from Q2.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

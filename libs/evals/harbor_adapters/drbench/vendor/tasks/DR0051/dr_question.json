@@ -1,0 +1,15 @@
+{
+    "dr_question": "The article published on TechTarget in January 2024 cited the MGMA's findings, showing that patient communication technology addresses digital front door issues like poor booking systems. How might MediConn Solutions enhance patient access to virtual consultations and prescription management services in Q1 2026 to reduce wait times and boost satisfaction and retention?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "CSM",
+        "dr_question": "The article published on TechTarget in January 2024 cited the MGMA's findings, showing that patient communication technology addresses digital front door issues like poor booking systems. How might MediConn Solutions enhance patient access to virtual consultations and prescription management services in Q1 2026 to reduce wait times and boost satisfaction and retention?",
+        "industry": "Virtual/Remote Healthcare",
+        "url": "https://www.techtarget.com/patientengagement/answer/2024-to-Bring-Thoughtful-Patient-Engagement-Tech-Investments"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0051",
+    "industry": "virtual/remote healthcare",
+    "domain": "CSM",
+    "url": "https://www.techtarget.com/patientengagement/answer/2024-to-Bring-Thoughtful-Patient-Engagement-Tech-Investments"
+}

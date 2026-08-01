@@ -1,0 +1,36 @@
+{
+  "task_id": "DR0044",
+  "question": "Starting in 2026 through Q1 2027, how can MediConn Solutions integrate the use of AI in creating the right patient experience, starting from the first touch point through care delivery and follow up to increase the number of patients that engage with their tele-health services?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "As of 2024, what was the percentage of MediConn Solutions' patient interactions that required human intervention within the first 10 minutes of initial contact?",
+      "answer": "As of November 2024, 80% of MediConn Solutions' patient interactions required human intervention within the first 10 minutes of initial contact.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What is MediConn Solutions' patient drop-off rate during the initial website navigation phase in the first quarter of 2025?",
+      "answer": "As of March 2025, MediConn Solutions experienced a 19% patient drop-off rate during the initial website navigation phase.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "In a 2024 market survey done by the marketing department of MediConn, what percentage of Canadians agreed that 'AI-assisted consultation could build confidence' in telehealth?",
+      "answer": "In April 2024, 71% of Canadians agreed that AI-assisted consultation could boost their trust and confidence in telehealth.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "What year did MediConn Solutions conduct internal research to identify AI use cases within the company?",
+      "answer": "MediConn Solutions conducted internal research in the year 2024 to identify AI use cases in various departments at MediConn Solutions.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "How many of MediConn Solutions' patients missed their follow-up appointments in 2024?",
+      "answer": "As of December 31st, 2024, 560 MediConn Solutions' patients missed their follow-up appointments in 2024.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

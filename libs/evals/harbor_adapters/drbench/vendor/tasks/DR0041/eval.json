@@ -1,0 +1,182 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How much did the earnings of employees working at MediConn Solutions grow from 2020 to 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average earnings of employees of Mediconn Solutions increased by  21.8% from 2020 to 2024.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_220457.jsonl"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "Did MediConn Solution send any of its marketing representatives to the Society for Health Care Strategy and Market Development Conference in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. 5 members of MediConn Solutions' business department participated in the Society for Health Care Strategy and Market Development Conference in March 2025.",
+            "supporting_file_paths": [
+                "shared/mediconn-conference-participation.pptx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "When is MediConn Solutions next in house meeting with business development representatives and executives from across the greater Toronto region?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The next in-house meeting for business development representatives and executives from across the greater Toronto area will take place on January 14, 2026.",
+            "supporting_file_paths": [
+                "shared/meeting-overview.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "When was the last time that MediConn Solutions was subject to an audit on sales-related expenditures?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The most recent audit of sales-related expenditures at MediConn Solutions was performed in December 2024.",
+            "supporting_file_paths": [
+                "shared/sales-audit-overview.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "As of January 2025, what is the percentage of the business development team at MediConn Solutions that holds a Certified Healthcare Financial Professional certificate?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of January 2025, 80% of MediConn Solutions' business development team holds a Certified Healthcare Financial Professional certificate.",
+            "supporting_file_paths": [
+                "shared/team-credentials-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What was the turnover rate of employees of Mediconn Solutions from 2020 to 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the MediConn Solutions' human resources department, the overall turnover rate for MediConn employees was less than 5% from 2020 to 2024.",
+            "supporting_file_paths": [
+                "shared/employee-retention-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "How many social media healthcare influencers is MediConn Solutions currently partnered with as of September 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of September 2025, MediConn Solutions is only partnered with 2 Canadian social media healthcare influencers.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Partnership_Information_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "What percentage of MediConn Solutions CRM system employees are actively utilizing the integrated AI?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solution's AI department conducted a survey of all employees in March 2025 and discovered that 80% said they are actively using the AI function of the CRM.",
+            "supporting_file_paths": [
+                "shared/ai-utilization-report.docx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "What is the biggest complaint from the sales representatives at MediConn Solutions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to a survey conducted by MediConn Solutions' financial department in September 2024, 70% of sales representatives reported that their biggest complaint was being required to spend a significant amount of time on non-sales related task.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_220733.jsonl"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "How many sales representatives at MediConn Solutions don't expect to meet their sales quotas for the year 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to an informal survey of MediConn Solution sales representatives conducted by MediConn Solution financial executives, 65% of sales reps do not expect to make their quota by January 2025.",
+            "supporting_file_paths": [
+                "shared/sales-expectation-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "How do business representatives of MediConn Solutions currently use the Revenue Cycle Software system as of January 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of January 2025, MediConn Solution's business representatives use the Revenue Cycle Software system to ensure that the financial workflow of the company is organized and up-to-date. Representatives also use it to collect data on  payments and cash flow, which they use to predict MediConn Solutions' revenue for the year.",
+            "supporting_file_paths": [
+                "shared/revenue-cycle-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "Where does Mediconn Solutions store its insurance claim data as of September 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of September 2025, MediConn Solutions relies on Data Unlimited, a third-party provider, to store its insurance claims data. This company also provides reports on risk management and how it compares to similar healthcare providers like MediConn Solutions.",
+            "supporting_file_paths": [
+                "shared/mediconn-data-storage-review.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "How do business representatives of MediConn Solutions use the Customer Relationship Management system as of January 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to a January 2025 survey, business associates at Mediconn Solutions primarily used the CRM system to manage patient information and to organize marketing strategies. As of January 2025, no representatives indicated that they knew the CRM system has capabilities of analysis which would help drive sales into 2026.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_220308.jsonl"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What year did MediConn Solutions buy and put into use its current CRM system?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn Solutions' IT department bought the current CRM software in September 2023; however, the CRM system was not fully uploaded and functioning properly until December 2024.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_CRM_System_Data.xlsx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "Where does MediConn Solutions store its patient data as of October 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn Solutions is currently in the process of moving patient data from its previous Electronic Health Records(EHR) system to the CRM system. Currently 75% of the data has been migrated, while 25% remains on the EHR system.",
+            "supporting_file_paths": [
+                "shared/CRM-driven-growth.pptx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "Does MediConn Solutions' marketing department currently use the CRM system to analyze data to enhance its marketing campaigns, and how has it enhanced results?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes. The marketing department at MediConn Solutions uses the company's CRM to analyze data on lead generation and to track campaign success. Thanks to the utilization of CRM, the marketing department has predicted a 20% increase in patient volume going into the year 2026.",
+            "supporting_file_paths": [
+                "shared/CRM-clientele-growth.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

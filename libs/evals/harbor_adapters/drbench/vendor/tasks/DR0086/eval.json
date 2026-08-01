@@ -1,0 +1,237 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "The number of staff meetings is unrelated to CPPA compliance.",
+            "question": "What was the total number of physical meetings conducted by MediConn staff in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A total of 1500 physical meetings were conducted by MediConn staff in 2024.",
+            "supporting_file_paths": [
+                "shared/2024-staff-interaction-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "The number of coffee makers is unrelated to CPPA compliance or data protection frameworks.",
+            "question": "How many coffee makers were installed in MediConn's Vancouver office in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A total of 2 coffee makers were installed in MediConn's Vancouver office in 2024.",
+            "supporting_file_paths": [
+                "shared/office-equipment-inventory.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "The revenue figures are business performance metrics and not related to CPPA implementation or compliance processes.",
+            "question": "What was the total revenue generated from virtual consultations for MediConn Solutions in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The total revenue generated from virtual consultations for MediConn Solutions was 45 million CAD in 2024.",
+            "supporting_file_paths": [
+                "shared/2024-virtual-revenue-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "The launch of wellness programs is unrelated to CPPA privacy, consent, or data accountability measures.",
+            "question": "How many corporate wellness programs were launched by MediConn Solutions in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A total of 12 corporate wellness programs were launched by MediConn Solutions in 2024.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Corporate_Wellness_Programs_Dat.xlsx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "Parking availability is logistical and not related to CPPA privacy or compliance preparation.",
+            "question": "How many parking spaces are available at MediConn headquarters in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A total of 50 parking spaces are available at MediConn headquarters in 2024.",
+            "supporting_file_paths": [
+                "shared/MediConn-Facility-Analysis-2024.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "Marketing staff hiring does not influence CPPA data protection or privacy readiness measures.",
+            "question": "How many new hires joined the marketing department at MediConn Solutions in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A total of 3 new hires joined the marketing department at MediConn Solutions in 2024.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_135043.jsonl"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "The volume of patient appointments is operational and unrelated to CPPA compliance readiness.",
+            "question": "What was the total number of patient appointments booked with MediConn Solutions in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The total number of patient appointments booked with MediConn Solutions was nearly 500,000 in 2024.",
+            "supporting_file_paths": [
+                "shared/2024-Patient-Engagement-Report.docx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "The device distribution is an IT asset management activity and not linked to CPPA privacy or consent compliance.",
+            "question": "How many company-branded mobile devices were distributed to employees by MediConn Solutions in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Around 50 company-branded mobile devices were distributed to employees by MediConn Solutions in 2024.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_134606.jsonl"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "The purchasing productivity software does not affect CPPA data protection or accountability requirements.",
+            "question": "How many software licenses were purchased for productivity applications by MediConn Solutions in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Around 200 software licenses were purchased for productivity applications by MediConn Solutions in 2024.",
+            "supporting_file_paths": [
+                "shared/2024-software-expenditure.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "The number of elevators has no connection to CPPA privacy governance or compliance measures.",
+            "question": "How many elevators are present in MediConn's Vancouver office as of Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of Q4 2025, four elevators are present in MediConn's Vancouver office.",
+            "supporting_file_paths": [
+                "shared/office-infrastructure-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "Office furniture expenses are unrelated to CPPA data privacy or compliance readiness.",
+            "question": "What was the annual spend on office furniture by MediConn Solutions in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The annual spend on office furniture by MediConn Solutions was 140,000 CAD in 2024.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_134747.jsonl"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "Team-building events are cultural activities and not related to CPPA compliance or data protection.",
+            "question": "How many corporate team-building events were held by MediConn Solutions in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "There were around 8 corporate team-building events held by MediConn Solutions in 2024.",
+            "supporting_file_paths": [
+                "shared/team-building-review-2024.pdf"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "Customer demographics are business insights and unrelated to CPPA data governance or compliance measures.",
+            "question": "How many new customers above the age of 65 enrolled in MediConn's healthcare premium plan?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Around 5000 new customers above the age of 65 enrolled in MediConn's healthcare premium plan.",
+            "supporting_file_paths": [
+                "shared/senior-premium-enrollment.pdf"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "Stationery spending is an administrative expense and not relevant to CPPA compliance efforts.",
+            "question": "What was the annual spend on stationery items by MediConn Solutions in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The annual spend on stationery items was approximately 80,000 CAD by MediConn Solutions in 2024.",
+            "supporting_file_paths": [
+                "shared/2024-office-expenses-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "Electricity usage is operational and has no connection to CPPA privacy, consent, or accountability requirements.",
+            "question": "What was the electricity consumption in MediConn's Vancouver office in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The electricity consumption at MediConn headquarters was approximately 500,000 kWh in 2024.",
+            "supporting_file_paths": [
+                "shared/mediConn-energy-analysis.pptx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "This establishes MediConn's early readiness baseline, showing that most systems have already undergone preliminary alignment with CPPA principles. It demonstrates proactive risk mapping and forms the foundation for achieving full compliance before Q2 2026.",
+            "question": "What percentage of MediConn's current data processing systems and integrations have been reviewed against the new CPPA requirements as of Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Approximately 70% of MediConn's current data processing systems and integrations have been reviewed against the new CPPA requirements as of Q4 2025.",
+            "supporting_file_paths": [
+                "shared/cppa-compliance-preparedness.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "This timeline indicates that MediConn has a defined, time-bound remediation plan for the remaining reviews. Completing them by Q1 2026 ensures the company can transition to the compliance implementation and validation phases before the CPPA is enacted.",
+            "question": "How much time will MediConn's non-reviewed data and system integrations take to be reviewed against the new CPPA requirements by Q1 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn will take approximately 3 months for the non-reviewed data and system integrations to be reviewed against the new CPPA requirements by Q1 2026.",
+            "supporting_file_paths": [
+                "shared/CPPA-Compliance-Preparation.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "This highlights MediConn's measurable progress toward meeting CPPA standards. Quantifying current compliance helps identify remaining gaps, particularly around algorithmic transparency and data portability, thereby guiding targeted upgrades for full readiness.",
+            "question": "What percentage of MediConn's reviewed data processing systems and integrations is compliant with the new CPPA requirements as of Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "An estimated 60% of MediConn's reviewed data processing systems and integrations are compliant with the new CPPA requirements as of Q4 2025.",
+            "supporting_file_paths": [
+                "shared/CPPA-Act-Preparedness.pptx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "This projection demonstrates that MediConn has a feasible closure plan for residual gaps. Leveraging existing ISO 27001 and PIPEDA-aligned processes enables the organization to accelerate final remediation and verification steps before the CPPA's potential enforcement window.",
+            "question": "How much time will MediConn's non-compliant reviewed data and system integrations take to be compliant with the new CPPA requirements by Q2 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn's remaining non-compliant systems and integrations are expected to achieve full CPPA compliance within 5 months by Q2 2026.",
+            "supporting_file_paths": [
+                "shared/cppa-compliance-plan.docx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "These frameworks directly address new CPPA-specific requirements, including risk assessment (DPIA), content tracking, and data portability. Implementing them bridges the gap between existing PIPEDA controls and the stricter standards expected under CPPA.",
+            "question": "What additional frameworks or operational measures will MediConn need to implement to ensure compliance readiness for CPPA in 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn will need to implement additional frameworks, such as a DPIA framework, Vendor Data Accountability Program, and an Automated Consent and Data Portability Management System, to align with CPPA's enhanced privacy and transparency mandates.",
+            "supporting_file_paths": [
+                "shared/cppa-preparedness-plan.pdf"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "This quantifies the impact of MediConn's planned actions, showing a direct correlation between framework implementation and compliance maturity. The improvement demonstrates how structured upgrades can elevate the organization from partial readiness to near-full CPPA preparedness within one audit cycle.",
+            "question": "What measurable improvement in MediConn's overall compliance readiness index is expected by Q2 2026 after implementing the new frameworks and systems required under CPPA?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn's overall compliance readiness index is projected to improve from 60% in Q4 2025 to nearly 95% by Q2 2026, following the implementation of the new frameworks and systems required under CPPA.",
+            "supporting_file_paths": [
+                "shared/mediconn-cppa-preparedness.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

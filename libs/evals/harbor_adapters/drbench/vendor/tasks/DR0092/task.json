@@ -1,0 +1,43 @@
+{
+    "name": "DR0092",
+    "task_id": "DR0092",
+    "level": "",
+    "company_info": {
+        "name": "MediConn Solutions (Vancouver, Canada, $50M - $100M, 250 employees)",
+        "industry": "Virtual/Remote Healthcare",
+        "description": "A company in the Virtual/Remote Healthcare industry",
+        "size": "medium",
+        "employee_count": "100-500",
+        "annual_revenue": "Not specified"
+    },
+    "dr_question": "What additional compliance controls should be integrated into MediConn\u2019s platform by Q2 2026 to ensure secure authentication and patient verification for Indigenous patients in low-connectivity environments?",
+    "date": "2025-10-24",
+    "persona": {
+        "name": "Emma Martinez",
+        "first_name": "Emma",
+        "last_name": "Martinez",
+        "username": "emma.martinez",
+        "email": "emma.martinez@mediconnsolutions.com",
+        "role": "Healthcare Compliance Specialist",
+        "role_description": "Ensures virtual healthcare platform meets HIPAA and provincial health regulations, conducts compliance audits, and develops policies for secure patient data handling"
+    },
+    "citation_format": {
+        "urls": [
+            "https://www.example.com/article",
+            "https://techcrunch.com/2023/report.html"
+        ],
+        "file_names": [
+            "quarterly_report.pdf",
+            "market_analysis.docx",
+            "shared/file-pdf"
+        ],
+        "mattermost_chats": [
+            "MatterMost-Channel-Team-User",
+            "Mattermost Message - Enterprise Chat (User: john.doe, Team: Compliance, Channel: General)"
+        ],
+        "email_messages": [
+            "RoundCube-fromdemail-todemails-Subject",
+            "Email from sarah.johnson@company.com on 20 Jan 2025"
+        ]
+    }
+}

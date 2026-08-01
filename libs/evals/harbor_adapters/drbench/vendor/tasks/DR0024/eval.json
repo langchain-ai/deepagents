@@ -1,0 +1,127 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "Are there any Canadian provinces that have passed alternative legislation to the Personal Information Protection and Electronic Documents Act (PIPEDA)?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, in 2004 Ontario enacted The Personal Health Information Protection Act (PHIPA) and in 2021 Quebec established Law 25, which proposes more restrictions on patient privacy handling.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_221843.jsonl"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "How many privacy compliance complaints did MediConn Solutions field during the 2024 fiscal year?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "During fiscal year 2024, MediConn Solutions' compliance team received a total of 320 privacy compliance complaints.",
+            "supporting_file_paths": [
+                "shared/2024-privacy-compliance.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How does MediConn encourage its employees to participate in a culture of privacy regulation compliance?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn asked all of its employees to sign the Patient Privacy Pledge in 2024, pledging them to keep patient's information secure and confidential and to report any potential breaches to the Data Compliance Team.",
+            "supporting_file_paths": [
+                "shared/mediconn-privacy-compliance.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "Has MediConn Solutions received any recent recognition for its regulatory compliance efforts?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn was recognized by the Vancouver Voice newspaper in its \"Local Standouts\" series of business profiles for its customer-friendly philosophy and deep commitment to patient privacy.",
+            "supporting_file_paths": [
+                "shared/mediconn-compliance-recognition.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "Has MediConn updated its IT systems to prevent ransomware attacks on patient data?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions updated its security systems to protect against ransomware attacks in May of 2025.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-data-protection.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What was the most recent compliance violation filed against MediConn?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A patient of MediConn filed a formal PIPEDA complaint against the company in June 2025 over its handling of the provision of sensitive prescription data to their local pharmacy.",
+            "supporting_file_paths": [
+                "shared/compliance-violation-review.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "When was the last time that MediConn employees were given any training on sexual harassment in the workplace?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The last training date for recognition and avoidance of sexual harassment in the workplace was in October 2024. MediConn sponsors a training session on this topic once a year.",
+            "supporting_file_paths": [
+                "shared/workplace-training-review.pdf"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "How many Canadian patients who pay exclusively with cash are satisfied with efforts by MediConn Solutions to keep their information private?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In a 2024 survey given to MediConn Solutions' Canadian patients, 75% of customers who paid for their services in cash were satisfied with efforts to keep their information private.",
+            "supporting_file_paths": [
+                "shared/patient-privacy-analysis.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "Based on internal projections, how long will it take for MediConn to come into compliance with all U.S. state laws regarding cash-only patient privacy?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn's compliance team has projected that full compliance with all American state patient data privacy laws would not be able to be achieved until Q1 2027 at the earliest.",
+            "supporting_file_paths": [
+                "shared/us-expansion-implications.pptx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "Has MediConn contracted with legal specialists in the United States to provide risk management and oversight services?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn contracted with a leading healthcare services legal firm in New York in 2025 to perform a year-long review of MediConn's Canadian services portfolio and to provide recommendations for adapting them to the American regulatory market.",
+            "supporting_file_paths": [
+                "shared/us-expansion-preparedness.pptx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "When is MediConn Solution's next financial executives meeting, and will the U.S. market cash-only transition be on the agenda?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The next meeting of MediConn Solution's financial executives is October 30, 2025.  Cash-only health care and American patient privacy regulations are on the agenda and will be discussed.",
+            "supporting_file_paths": [
+                "shared/US-market-compliance.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

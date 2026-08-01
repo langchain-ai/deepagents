@@ -1,0 +1,237 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "EX0000",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "IT Service Management (ITSM) is essential for healthcare efficiency, as it streamlines IT incident handling and service requests in hospitals, significantly reducing response times and automating routine tasks. This allows staff to concentrate more on patient care instead of technical issues.",
+            "supporting_urls": [
+                "https://www.topdesk.com/en/blog/itsm-healthcare/"
+            ]
+        },
+        {
+            "id": "EX0001",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Integrating AI with ITSM enables healthcare IT teams to predict and prevent issues, enhancing support by using AI-driven analytics to foresee and proactively address system failures. Additionally, chatbot assistants manage common IT inquiries from staff and patients, reducing service desk workload and improving response times.",
+            "supporting_urls": [
+                "https://www.topdesk.com/en/blog/itsm-healthcare/"
+            ]
+        },
+        {
+            "id": "EX0002",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Effective ITSM in healthcare aids compliance and quality care by tracking changes and ensuring data security, meeting strict regulations. It optimizes critical systems like EHRs, enhancing patient outcomes and provider satisfaction by enabling quick access to patient records.",
+            "supporting_urls": [
+                "https://www.topdesk.com/en/blog/itsm-healthcare/"
+            ]
+        },
+        {
+            "id": "qa_1755632107",
+            "justification": "Facility maintenance costs do not address the core DR Question focus area of IT service desk workload and response times",
+            "question": "How much did we spend on facility maintenance and repairs in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "We spent $120,000 on facility maintenance and repairs in Q1 2024, a 10% increase from Q4 2023.",
+            "supporting_file_paths": [
+                "shared/Fac-Maint-Rep-2024-Q1.docx"
+            ]
+        },
+        {
+            "id": "qa_1755632100",
+            "justification": "Employee tenure metrics do not address the core DR Question focus area of IT service desk workload and response times",
+            "question": "What was the median employee tenure in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Median employee tenure was 2.5 years with 75% of employees having less than 3 years of service.",
+            "supporting_file_paths": [
+                "shared/Workforce-Development-Insights-2025.docx"
+            ]
+        },
+        {
+            "id": "DI001",
+            "justification": "Employee turnover metrics are unrelated to IT service desk workload reduction.",
+            "question": "What were our employee turnover rates in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate was 15%, with 40 hires this quarter.",
+            "supporting_file_paths": [
+                "shared/employee-retention-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755703148",
+            "justification": "Partnership metrics do not address IT service desk workload or response times",
+            "question": "How many new healthcare provider partnerships were formed in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "We formed 12 new partnerships with a 20% increase from Q1.",
+            "supporting_file_paths": [
+                "shared/partnership-growth-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755701049",
+            "justification": "Quantifying routine task hours helps determine potential AI-driven automation benefits.",
+            "question": "How many IT service desk staff hours were spent on routine tasks in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Our IT service desk staff spent 500 hours on routine tasks, accounting for 30% of total hours worked.",
+            "supporting_file_paths": [
+                "shared/IT-Service-Optimization.pdf"
+            ]
+        },
+        {
+            "id": "qa_1756142773",
+            "justification": "Demonstrates AI's impact on reducing workload and improving response times.",
+            "question": "How many AI-resolved tickets in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "500 tickets resolved by AI in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_AI_Resolved_Tickets_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755625336",
+            "justification": "Patient wait time metrics are unrelated to IT service desk efficiency.",
+            "question": "What is our average patient wait time as of Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average patient wait time is currently 20 minutes.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_134254.jsonl"
+            ]
+        },
+        {
+            "id": "IN001",
+            "justification": "Understanding the current IT service desk workload is crucial to identify areas for improvement and determine the potential impact of ISTM and AI-driven analytics.",
+            "question": "What is the current IT service desk workload in Q2 of 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The IT service desk workload has increased by 25% since Q1 2024, with an average of 150 tickets per day.",
+            "supporting_file_paths": [
+                "shared/IT-Service-Efficiency-Optimization.pdf"
+            ]
+        },
+        {
+            "id": "qa_1756142865",
+            "justification": "Training metrics do not impact IT service desk workload or response times.",
+            "question": "What was our training completion rate in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Training completion rate was 85% with 300 employees participating.",
+            "supporting_file_paths": [
+                "shared/MediConn_Employee_Training_Completion_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755625265",
+            "justification": "Training budget details do not relate to IT service desk workload improvement.",
+            "question": "What was our training budget allocation in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The training budget allocation was $300,000 for Q1 2024.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_134154.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1756142817",
+            "justification": "Identifying routine tasks helps focus AI efforts to reduce workload.",
+            "question": "What percentage of tickets are routine as of Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "40% of tickets are routine in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_IT_Service_Management_Insights_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755632159",
+            "justification": "This answer provides insight into the potential impact of AI-driven analytics on reducing IT service desk workload and improving response times, which is a key aspect of addressing the DR Question.",
+            "question": "What is the percentage of IT service desk tickets that can be resolved using AI-driven analytics in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Our analysis indicates that 60% of tickets can be resolved using AI-driven analytics, with a potential increase to 80% by the end of 2026.",
+            "supporting_file_paths": [
+                "shared/it-service-desk-optimization.docx"
+            ]
+        },
+        {
+            "id": "qa_1756142930",
+            "justification": "Network uptime doesn't directly affect IT service desk workload or response times.",
+            "question": "What was our network uptime percentage in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Network uptime was 99.8%, maintaining optimal operations.",
+            "supporting_file_paths": [
+                "shared/MediConn_Network_Uptime_IT_Service_Report.xlsx"
+            ]
+        },
+        {
+            "id": "IN002",
+            "justification": "This data helps identify areas for improvement in response times.",
+            "question": "What is our average service desk response time as of Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Our average service desk response time is currently 48 hours.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_104053.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1756142978",
+            "justification": "Training budget details don't relate to minimizing IT service desk workload.",
+            "question": "What was our training budget in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Training budget was $350,000 with a 5% increase.",
+            "supporting_file_paths": [
+                "shared/MediConn_Quarterly_Financial_Overview.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755702293",
+            "justification": "Employee benefits expenditure is unrelated to IT service desk workload optimization",
+            "question": "What was our employee benefits expenditure in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee benefits expenditure totaled $425,000 with a 5% increase from Q2.",
+            "supporting_file_paths": [
+                "shared/benefits-expense-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755703202",
+            "justification": "Marketing budget allocations are tangential to IT service desk operations optimization",
+            "question": "What was our marketing budget allocation for social media in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The social media marketing budget allocation was $120,000 with a 10% ROI.",
+            "supporting_file_paths": [
+                "shared/marketing-performance-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1756142856",
+            "justification": "Compliance costs are unrelated to IT service desk workload and response times.",
+            "question": "What were our compliance audit costs in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Compliance audit costs totaled $150,000 with a 5% increase.",
+            "supporting_file_paths": [
+                "shared/MediConn_Quarterly_Compliance_Costs_Report.xlsx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

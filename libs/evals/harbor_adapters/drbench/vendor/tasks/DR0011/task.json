@@ -1,0 +1,67 @@
+{
+    "name": "DR0011",
+    "task_id": "DR0011",
+    "level": "",
+    "company_info": {
+        "annual_revenue": "$350M - $500M",
+        "compliance_certifications": [
+            "EPA Greenhouse Gas Emissions Compliance",
+            "Motor Vehicle Safety Oversight Program",
+            "CARB Zero-Emission Vehicle (ZEV) Program",
+            "ISO 26262 \u2013 Road Vehicles Functional Safety"
+        ],
+        "description": "Elexion Automotive designs and manufactures premium and mid-range electric vehicles tailored for the North American market. With a focus on sustainability, user-centric technology, and cross-border compliance, Elexion aims to accelerate the transition to zero-emission transportation.",
+        "employee_count": 1900,
+        "founded_year": 2010,
+        "headquarters": "Austin, Texas, USA",
+        "industry": "Automotive -- Electric Vehicles",
+        "key_products_services": [
+            "Electric vehicles",
+            "Plug-in hybrid electric vehicles",
+            "Home charging stations"
+        ],
+        "market_position": "Elexion is an emerging force in the North American EV market, offering affordable and high-performance electric vehicles with regulatory-first design and localized production.",
+        "name": "Elexion Automotive",
+        "size": "Enterprise",
+        "target_markets": [
+            "Mid-income families in North America",
+            "Provincial and municipal governments"
+        ]
+    },
+    "dr_question": "How can we balance the need for durability and warranty guarantees for EV batteries with evolving regulatory requirements, especially ACC regulations (ACC II), while staying on track with our production timelines through 2035?",
+    "date": "2025-08-27",
+    "persona": {
+        "department": "Product Development",
+        "domain": "compliance",
+        "email": "sofia.rodriguez@elexionautomotive.com",
+        "first_name": "Sofia",
+        "id": "EMP0001",
+        "justification": "Elexion Automotive must ensure its products meet regulatory requirements, such as safety and emissions standards, to avoid costly recalls and reputational damage.",
+        "last_name": "Rodriguez",
+        "name": "Sofia Rodriguez",
+        "password": "my_drbench_pwd",
+        "responsibilities": "Conducts compliance testing and certification for Elexion Automotive's electric vehicles, collaborates with design teams to ensure regulatory requirements are met, and assists in the development of compliance documentation.",
+        "role": "Product Compliance Engineer",
+        "seniority": "Junior",
+        "username": "sofia.rodriguez"
+    },
+    "citation_format": {
+        "urls": [
+            "https://www.example.com/article",
+            "https://techcrunch.com/2023/report.html"
+        ],
+        "file_names": [
+            "quarterly_report.pdf",
+            "market_analysis.docx",
+            "shared/file-pdf"
+        ],
+        "mattermost_chats": [
+            "MatterMost-Channel-Team-User",
+            "Mattermost Message - Enterprise Chat (User: john.doe, Team: Compliance, Channel: General)"
+        ],
+        "email_messages": [
+            "RoundCube-fromdemail-todemails-Subject",
+            "Email from sarah.johnson@company.com on 20 Jan 2025"
+        ]
+    }
+}

@@ -1,0 +1,15 @@
+{
+    "dr_question": "Given that manufacturers typically lose all contact once their vehicles are resold by the original owner or dealer, how could Automotive Cloud's vehicle tracking capabilities help Elexion Automotive increase engagement with second-hand buyers of its EVs by 25% in North America by Q4 2025?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "CRM",
+        "dr_question": "Given that manufacturers typically lose all contact once their vehicles are resold by the original owner or dealer, how could Automotive Cloud's vehicle tracking capabilities help Elexion Automotive increase engagement with second-hand buyers of its EVs by 25% in North America by Q4 2025?",
+        "industry": "Automotive -- Electric Vehicles",
+        "url": "https://www.techtarget.com/searchcustomerexperience/news/252526031/Salesforce-Industries-adds-Automotive-Cloud-CRM"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0062",
+    "industry": "automotive -- electric vehicles",
+    "domain": "CRM",
+    "url": "https://www.techtarget.com/searchcustomerexperience/news/252526031/Salesforce-Industries-adds-Automotive-Cloud-CRM"
+}

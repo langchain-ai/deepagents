@@ -1,0 +1,226 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "Between December 1 and 31, 2024, did Lee\u2019s Market offer seasonal gift baskets?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, from December 1 to 31, 2024, Lee\u2019s Market sold over 3,000 holiday gift baskets in all locations.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_010937.jsonl"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "Are pets allowed inside Lee\u2019s Market stores as of August 1, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of August 1, 2025, only certified service animals were permitted into Lee's Market locations.",
+            "supporting_file_paths": [
+                "shared/pet-policy-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "Did Lee\u2019s Market offer in-store Wi-Fi as of January 31, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, free Wi-Fi has been available in all 42 Lee's Market stores since March 1, 2024.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Store_Features_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "Did Lee\u2019s Market provide reusable shopping bags throughout the year in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, from January 1 to December 31, 2024, Lee's Market sold over 15,000 branded reusable bags.",
+            "supporting_file_paths": [
+                "shared/sustainability-review-2024.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "Does Lee\u2019s Market offer home delivery for bulk orders as of January 1, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, as of January 1, 2025, large orders above $1,000 at all Lee's Market locations can be scheduled for delivery.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_011206.jsonl"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "Did Lee\u2019s Market sell alcoholic beverages as of June 30, 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of June 30, 2024, ten Lee\u2019s Market locations offered wine, beer, and specialty drinks.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_011303.jsonl"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "Did Lee's Market offer cooking utensils and appliances between January 1 and December 31, 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, more than 200 kitchenware items were added to store shelves during the 2024 calendar year.",
+            "supporting_file_paths": [
+                "shared/2024-kitchenware-evaluation.pdf"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "Did Lee\u2019s Market stores offer seasonal decorations as of January 1, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of January 1, 2025, all Lee's Market stores offered seasonal decorations for most of the major holidays, like Lunar New Year and Christmas.",
+            "supporting_file_paths": [
+                "shared/q1-2025-merchandising-review.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "Did Lee\u2019s Market participate in community charity events in the last quarter of 2024 (October 1\u2013December 31)?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, between October 1 and December 31, 2024, Lee's Market hosted three food drives across different cities.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_011456.jsonl"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "Did Lee\u2019s Market have a website with product listings as of June 30, 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, the Lee's Market website has existed since January 2016 and was updated on June 1, 2024 to include over 5,000 product listings.",
+            "supporting_file_paths": [
+                "shared/digital-presence-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "Did Lee\u2019s Market provide recipe cards in-store as of February 25, 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, from February 25, 2024 onward over 200 recipe cards were printed monthly and distributed across Lee's Market stores.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_011604.jsonl"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "Did Lee\u2019s Market maintain suggestion boxes for customer feedback as of April 1, 2015?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, since May 5, 2014, all 42 Lee's Market branches have maintained physical feedback boxes.",
+            "supporting_file_paths": [
+                "shared/customer-feedback-strategies.pdf"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "Did Lee\u2019s Market offer gift discounts in the third quarter of 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Between July and August 2024, Lee's Market offered gift discounts during its four marketing campaigns.",
+            "supporting_file_paths": [
+                "shared/q3-promotions-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "In the second quarter of 2024, how did Lee\u2019s Market use customer feedback forms to reduce response time for online customer inquiries?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Between April 1 and June 30, 2024, Lee\u2019s Market introduced digital feedback forms on its website and receipts, allowing shoppers to directly report issues or share suggestions. The streamlined process helped the customer service team categorize and address common concerns 15% faster.",
+            "supporting_file_paths": [
+                "shared/customer-feedback-utilization.pptx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "",
+            "question": "Between April 1 and June 30, 2025, how did Lee\u2019s Market use design apps to improve visual consistency?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "During Q2 2025, Lee\u2019s Market\u2019s marketing team used design applications to create uniform templates and visuals across live chat banners, and text campaigns. This ensured brand consistency and reduced design turnaround times by 15%.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_011804.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "In the first quarter of 2025 (January 1 \u2013 March 31), how many new customers followed Lee\u2019s Market on social media each month, and did these platforms convert those followers into sales?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Sales data from January 1 to March 31, 2025 show that an average of 100 new users per month followed Lee\u2019s Market on social media. Conversational AI chatbots engaged these users with personalized recommendations, leading to about 24% converting into completed purchases.",
+            "supporting_file_paths": [
+                "shared/customer-engagement-ai.pptx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "Between April 1 and June 30, 2024, how did the use of conversational AI on live chat and social media impact Lee\u2019s Market\u2019s customer service response times?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Internal tracking from the customer service team between April 1 and June 30, 2024, showed that using conversational AI on live chat and social media reduced average response time from 6 hours to under 30 minutes.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_AI_Impact_On_Customer_Service_Review.xlsx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "Between April 1 and June 30, 2025, how did Lee\u2019s Market use conversational AI across social media, live chat, and texting to personalize promotions for Centennial shoppers?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to Lee\u2019s Market's sales department data collected between 1 April and 30 June 2025, personalized messages sent through chatbots on social media, live chat, and texting generated a 22% higher conversion rate than standard promotions.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Conversation_AI_Promotion_Data.xlsx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "Between October 1 and December 31, 2024, how did conversational AI help Lee\u2019s Market identify and address common online customer complaints?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "During the period from October 1 to December 31, 2024, internal analytics showed that conversational AI flagged a 22% increase in product-availability questions. It also reduced unresolved inquiries by 15%, allowing staff to update inventory and notify customers faster.",
+            "supporting_file_paths": [
+                "shared/ai-customer-engagement.docx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "As of 1st September 2025, what measures did Lee\u2019s Market implement to keep chatbot interactions secure and protect customer data?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Internal IT reports confirmed that Lee\u2019s Market's chatbots, as of September 1, 2025, were operating with end-to-end encryption, multi-factor authentication, and weekly security audits, with no breaches recorded since their rollout on March 15, 2024.",
+            "supporting_file_paths": [
+                "shared/AI-customer-engagement.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

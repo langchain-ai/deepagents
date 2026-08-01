@@ -1,0 +1,380 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What percentage of virtual consultations are conducted outside business hours?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to MediConn Solutions' November 2025 data, 40% of virtual consultations happen outside business hours, accommodating patients' schedules.",
+            "supporting_file_paths": [
+                "shared/off-hours-consultation-trends.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "How many wellness programs did the company launch in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As per MediConn Solutions' internal records, 10 new employee wellness initiatives were introduced in 2024.",
+            "supporting_file_paths": [
+                "shared/wellness-program-analysis-2024.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What percentage of virtual mental health counseling sessions does the company conduct in video and chat?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the 2024 service statistics, 70% of virtual mental health counseling sessions were conducted via video and 30% were held in chat.",
+            "supporting_file_paths": [
+                "shared/virtual-counseling-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What is the average waiting time for virtual prescription delivery at MediConn Solutions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' logistics reports show an average waiting time for virtual prescription delivery of 1.5 days in 2024.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Virtual_Prescription_Delivery_R.xlsx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How many patient feedback surveys did MediConn Solutions collect in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions gathered 15,200 patient feedback surveys in 2024 to improve virtual healthcare delivery.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_141512.jsonl"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How many IT service desk tickets were created in 2024 for system enhancements?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' IT logs as of December 2024 indicate that 3,200 service desk tickets were created for system enhancements.",
+            "supporting_file_paths": [
+                "shared/2024-IT-Enhancements-Report.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "What percentage of employees at MediConn Solutions joined the cybersecurity awareness training in January 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Based on Human Resources' data as of January 2025, 90% of MediConn Solutions' staff joined the cybersecurity awareness training.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_141612.jsonl"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "What is the average number of logged-in users on MediConn Solutions' platform during peak hours?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In October 2025, MediConn Solutions' platform analytics recorded an average of 4,000 logged-in users during peak hours.",
+            "supporting_file_paths": [
+                "shared/user-engagement-report.docx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "How many provinces in Canada does MediConn Solutions cover in virtual healthcare services?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to MediConn Solutions' company data, its virtual healthcare services coverage expanded to 9 provinces by the end of November 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Virtual_Healthcare_Coverage_Dat.xlsx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "What is the age range of MediConn Solutions' patient base?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to MediConn Solutions' marketing data as of October 2025, patients are between the ages of 30-60 years old.",
+            "supporting_file_paths": [
+                "shared/patient-demographic-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "How many IT team members does the IT service desk manager oversee at MediConn Solutions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to HR data, MediConn Solutions' IT service desk manager oversees 18 specialists and 10 IT staff members as of November 2025.",
+            "supporting_file_paths": [
+                "shared/IT-Team-Overview.docx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "What percentage of IT service tickets at MediConn Solutions are resolved within 24 hours?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to MediConn Solutions' 2024 IT support statistics, 80% of tickets are closed within 24 hours.",
+            "supporting_file_paths": [
+                "shared/IT-service-efficiency-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "How many new features were added to MediConn Solutions' telehealth platform in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' product management reports show that 15 significant features were released in November 2024.",
+            "supporting_file_paths": [
+                "shared/2024-platform-features-update.docx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "What percentage of virtual healthcare consultations at MediConn Solutions are first-time patients?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to MediConn Solutions' 2024 customer records, 35% of virtual consultations are first-time patients.",
+            "supporting_file_paths": [
+                "shared/virtual-patient-demographics.pdf"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "",
+            "question": "How many active corporate wellness clients did MediConn Solutions support in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the company data report, MediConn Solutions served 60 corporate wellness clients by the end of 2024.",
+            "supporting_file_paths": [
+                "shared/corporate-client-analysis-2024.pdf"
+            ]
+        },
+        {
+            "id": "DI0016",
+            "justification": "",
+            "question": "What is the average session duration for virtual mental health consultations at MediConn Solutions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As per the company's clinical data, MediConn Solutions' virtual mental health consultation sessions averaged 45 minutes in 2024.",
+            "supporting_file_paths": [
+                "shared/mental-health-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0017",
+            "justification": "",
+            "question": "How many software updates did the IT team implement at MediConn Solutions in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to MediConn Solutions' IT logs, 30 new software updates were implemented in the company's database throughout 2024.",
+            "supporting_file_paths": [
+                "shared/2024-software-update-report.docx"
+            ]
+        },
+        {
+            "id": "DI0018",
+            "justification": "",
+            "question": "What percentage of MediConn Solutions' platform users access the services via mobile devices?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to MediConn Solutions' user analytics, 70% of users access the company's platform via mobile devices.",
+            "supporting_file_paths": [
+                "shared/user-access-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0019",
+            "justification": "",
+            "question": "How many customer complaints were recorded at the IT service desk at MediConn Solutions as of November 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' IT service desk recorded 1,200 customer complaints as of November 2024.",
+            "supporting_file_paths": [
+                "shared/service-desk-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0020",
+            "justification": "",
+            "question": "What is the average resolution time for IT requests unrelated to security at MediConn Solutions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the company's IT data in October 2024, MediConn Solutions typically resolves non-security IT requests within 12 hours.",
+            "supporting_file_paths": [
+                "shared/IT-Request-Resolution-Report.pdf"
+            ]
+        },
+        {
+            "id": "DI0021",
+            "justification": "",
+            "question": "How many internal IT training sessions did MediConn Solutions conduct in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to MediConn Solutions' event records, there were 10 successful formal IT skill-building sessions led by the IT department in 2024.",
+            "supporting_file_paths": [
+                "shared/2024-IT-Training-Analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0022",
+            "justification": "",
+            "question": "What percentage of MediConn Solutions' healthcare professionals regularly access the company's integrated electronic health record system?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to MediConn Solutions' November 2025 system reports, 92% of MediConn Solutions healthcare professionals regularly used their integrated electronic health record system.",
+            "supporting_file_paths": [
+                "shared/ehr-utilization-report.docx"
+            ]
+        },
+        {
+            "id": "DI0023",
+            "justification": "",
+            "question": "What percentage of MediConn Solutions' customer support tickets were resolved quickly due to automated AI-powered ITSM?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the November 2025 MediConn Solutions' IT support report, 50% of customer support tickets were resolved quickly by AI-powered ITSM.",
+            "supporting_file_paths": [
+                "shared/AI-ITSM-efficiency-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0024",
+            "justification": "",
+            "question": "What percentage of customer service issues at MediConn Solutions were resolved faster with AI-powered ITSM?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the October 2025 IT report at MediConn Solutions, 50% of customer service issues were resolved faster with AI-powered ITSM.",
+            "supporting_file_paths": [
+                "shared/AI-ITSM-Impact-Analysis.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What percentage of IT issues were prevented by using predictive analysis tools through AI-powered ITSM?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to MediConn Solutions' IT audit in 2024, 45% of potential IT incidents were proactively avoided using predictive analysis tools through AI-powered ITSM.",
+            "supporting_file_paths": [
+                "shared/ITSM-security-strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "How many routine IT tasks were automated through ITSM tools in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Based on company logs, MediConn Solutions automated approximately 5,000 IT tasks in 2024, increasing its IT service desk efficiency by 30%.",
+            "supporting_file_paths": [
+                "shared/ITSM-Security-Compliance.docx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "What reduction in incident response time did the company experience after implementing AI-integrated ITSM?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to the 2024 performance review, MediConn Solutions experienced a 30% decrease in incident response times after implementing AI-integrated ITSM, leading to faster issue resolution and improved customer satisfaction.",
+            "supporting_file_paths": [
+                "shared/itsm-security-strategy-2025.pdf"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "How much has the company reduced in security incidents related to network breaches since implementing the ITSM-based preventive security protocols?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "An internal security report from Q4 2024 at MediConn Solutions shows a 30% decrease in network breach incidents since the implementation of ITSM-based preventive security protocols.",
+            "supporting_file_paths": [
+                "shared/ITSM-Security-Compliance.pptx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "What percentage of compliance audits related to patients' data security passed in 2024 with ITSM?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn Solutions' records indicate that the company achieved a 100% compliance rate in patients' data security according to a 2024 performance audit.",
+            "supporting_file_paths": [
+                "shared/enhancing-security-measures.pptx"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "",
+            "question": "How many employee hours were saved due to ITSM process automation after the Q1 2024 network update according to time tracking data?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn Solutions' time tracking data shows that ITSM automation saved 1,400 employee hours in 2024, allowing staff to focus on more crucial tasks like patient care and follow-up services.",
+            "supporting_file_paths": [
+                "shared/ITSM-Security-Compliance-2025.pdf"
+            ]
+        },
+        {
+            "id": "IN0007",
+            "justification": "",
+            "question": "How much of the total company operations budget is devoted to ITSM and related AI tools that manage security compliance?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to MediConn Solution's financial report, approximately 25% of the IT department's budget in Q2 2025 was allocated to maintaining and enhancing ITSM tools and AI integration.",
+            "supporting_file_paths": [
+                "shared/itsm-security-strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0008",
+            "justification": "",
+            "question": "How many IT assets and remote medical devices were automatically discovered and tracked using ITSM discovery tools between September to December 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Between September and December 2024, asset management logs at MediConn Solutions show that 800 new devices, including remote devices, were added to the ITSM inventory system through automated discovery tools.",
+            "supporting_file_paths": [
+                "shared/securing-virtual-healthcare.pptx"
+            ]
+        },
+        {
+            "id": "IN0009",
+            "justification": "",
+            "question": "By what percentage did the implementation of ITSM-based management reduce in the number of unplanned service outages?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to a Q4 2024 report, incident records at MediConn Solutions indicate a 30% reduction in unexpected outages due to stricter management processes enabled by ITSM.",
+            "supporting_file_paths": [
+                "shared/IT-Security-Strategy-2025.docx"
+            ]
+        },
+        {
+            "id": "IN0010",
+            "justification": "",
+            "question": "What was the uptime improvement percentage for critical healthcare applications after ITSM optimization?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to a 2024 internal ITSM screening report, MediConn Solutions' system monitoring showed a 10% improvement in uptime for critical healthcare applications after the ITSM and AI tool deployment.",
+            "supporting_file_paths": [
+                "shared/securing-itsm-measures.pptx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

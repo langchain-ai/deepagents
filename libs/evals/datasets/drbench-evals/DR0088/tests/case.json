@@ -1,0 +1,54 @@
+{
+  "task_id": "DR0088",
+  "question": "In alignment with Canada’s new call for proposals to strengthen the country’s cyber resilience and address evolving cyber threats under the 2025 Cyber Security Cooperation Program (CSCP), what are some considerations to keep in mind while integrating a new AI anomaly detection tool into MediConn's existing infrastructure by Q3 2026 without disrupting critical healthcare services?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "Which four AI tools or services is MediConn currently using for anomaly detection in its security architecture?",
+      "answer": "The four AI tools that MediConn is currently using for anomaly detection in its security architecture are\n1) Blockchain\n2) Predictive analytics\n3) AI-driven virtual assistants\n4) Platforms like Sophos and Microsoft Security Copilot",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What percentage of MediConn's core security infrastructure components (firewalls, IAM, and SIEM systems) are currently compatible with its AI infrastructure as of Q4 2025?",
+      "answer": "30-40% (moderately read for integration)",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "What are the five new AI tools and services that Mediconn is planning to develop and integrate into its existing systems by Q3 2026?",
+      "answer": "The five new AI tools and services that Mediconn is planning to develop and integrate into its existing systems by Q3 2026 are\n1) Intrusion detection systems (IDS)\n2) Behavioral Biometrics\n3) AI for data anonymization\n4) Federated Learning\n5) Automated compliance monitoring",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "What were the three main issues faced the last time an AI anomaly detection tool was integrated at Elexion?",
+      "answer": "The three main issues faced were\n1) False positives that isolated critical medical systems unnecessarily.\n2) Model drift or bias, leading to undetected real threats over time.\n3) Data integration failures with legacy hospital systems, causing gaps in monitoring coverage.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "Does MediConn plan to have a safe, separate 'test' system where they can try out the new AI tools without affecting real patient services?",
+      "answer": "Yes, Mediconn is planning to have a staging environment, which is a complete replica of their live production system but is fully isolated on separate cloud infrastructure to prevent any impact on real patient services.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0006",
+      "question": "What is the proposed start time of the tool integration process?",
+      "answer": "The proposed start time of the tool integration process is March 2026.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0007",
+      "question": "How many weeks does it usually take at Elexion to deploy AI models into production?",
+      "answer": "It usually takes 6-8 weeks for containerization, security testing, and controlled rollout of AI models into production at Elexion.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0008",
+      "question": "How many phases does the AI anomaly detection integration need to be completed in?",
+      "answer": "The integration should be executed in five phases-assessment, design, pilot testing, deployment, and post-deployment validation.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

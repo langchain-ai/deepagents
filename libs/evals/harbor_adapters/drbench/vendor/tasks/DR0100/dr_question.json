@@ -1,0 +1,15 @@
+{
+    "dr_question": "Which IT modernization efforts should MediConn emphasize to stay aligned with national virtual care standards and shared digital health infrastructure by 2026?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "IT Service Management",
+        "dr_question": "Which IT modernization efforts should MediConn emphasize to stay aligned with national virtual care standards and shared digital health infrastructure by 2026?",
+        "industry": "Virtual/Remote Healthcare",
+        "url": "https://www.canada.ca/en/health-canada/corporate/transparency/health-agreements/bilateral-agreement-pan-canadian-virtual-care-priorities-covid-19/policy-framework.html"
+    },
+    "timestamp": "2025-10-24 00:00",
+    "task_id": "DR0100",
+    "industry": "virtual/remote healthcare",
+    "domain": "IT Service Management",
+    "url": "https://www.canada.ca/en/health-canada/corporate/transparency/health-agreements/bilateral-agreement-pan-canadian-virtual-care-priorities-covid-19/policy-framework.html"
+}

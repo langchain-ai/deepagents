@@ -1,0 +1,523 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How did the Information Security Manager, Jason Wong, contribute to Lee's Market's sustainability reporting in April 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong generated Lee's Market's first greenhouse gas emission analytics from IT equipment, showing a 7% reduction for Q2 2025.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Information_Security_GHG_Contribution_.xlsx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What hardware refresh project did the Information Security Manager, Jason Wong, pilot in February 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "All 53 Lee's Market's back office desktops were replaced with energy-efficient models under Jason Wong's supervision in February 2025.",
+            "supporting_file_paths": [
+                "shared/hardware-refresh-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How did the IT & Security team support secure vendor contact storage in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In March 2025, the IT & Security team for Lee's Market set up a new encrypted shared storage drive for contacts, auditing 217 documents for compliance.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_IT_Security_Vendor_Contact_Storage.xlsx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "How did Information Security Manager, Jason Wong, and his team manage Lee's Market's POS expansion for June - August 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The IT & Security team installed new POS terminals at 6 locations between June and August 2025, ensuring all devices met PCI compliance standards.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_POS_Expansion_Projects_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How did Information Security Manager, Jason Wong, prepare for the June 2025 fire safety inspection?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason coordinated weekly backups of safety records and programmed fire alarm checks, passing compliance audits on June 24, 2025.",
+            "supporting_file_paths": [
+                "shared/fire-inspection-preparation.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What biometric upgrades did Jason Wong and the IT & Security team deploy for server room security in May 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The IT & Security team activated fingerprint access for 32 servers, recording 108 unique access logs for May 2025.",
+            "supporting_file_paths": [
+                "shared/server-room-security.pptx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "How did Jason Wong improve Lee's Market's reporting of inventory shrinkage in February 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "He built a dashboard tracking shrink rates from 3.8% to 3.2% quarterly, with the largest drop recorded in February 2025.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Inventory_Shrinkage_Improvement_Analys.xlsx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "What SaaS rollout did Information Security Manager, Jason Wong, oversee for Lee's Market's HR department in May 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong oversaw Lee's Market's HR adoption of the \"staffsense\" onboarding portal, in order to successfully onboard 37 new hires in May 2025.",
+            "supporting_file_paths": [
+                "shared/saas-hr-review.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "What digital signage preventive maintenance schedule did Information Security Manager, Jason Wong, establish in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong set a new quarterly cleaning and reboot protocol for all 15 digital display units, starting from March 2025.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Digital_Signage_Maintenance_Schedule.xlsx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "How did Information Security Manager, Jason Wong, facilitate secure supplier e-invoicing in April 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "By April 2025, Jason Wong facilitated the migration of 89% of supplier invoices to encrypted emails, thus reducing manual paper handling by 62%.",
+            "supporting_file_paths": [
+                "shared/secure-e-invoicing-report.docx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "How did Information Security Manager, Jason Wong, handle upgrading Lee's Market's cloud storage limits in May 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong expanded storage by 500 GB for HR docs and 1 TB for supplier records in May 2025, following the increase in company hiring.",
+            "supporting_file_paths": [
+                "shared/cloud-storage-upgrade-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "What was Information Security Manager, Jason Wong's, response to the March 2025 wifi outage at three Lee's Market stores?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason coordinated a network reset and firewall update and restored online within four hours on March 10, 2025.",
+            "supporting_file_paths": [
+                "shared/wifi-outage-response.docx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "How did Jason Wong support vendor payment automation in April 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In April 2025, Jason Wong implemented batch processing scripts for vendor payment that cut manual entries by 70%.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_015053.jsonl"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "What encryption protocol did Information Security Manager, Jason Wong, select for new Lee's Market staff devices in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In June 2025, Jason Wong deployed AES-256 encryption on 45 new iPads distributed to managers for secure store management.",
+            "supporting_file_paths": [
+                "shared/june-2025-security-update.pptx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "",
+            "question": "How did Information Security Manager, Jason Wong, conduct an audit of unused company email accounts in February 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason identified and closed 18 dormant accounts, reviewing user activity logs on February 16, 2025.",
+            "supporting_file_paths": [
+                "shared/email-audit-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0016",
+            "justification": "",
+            "question": "What role did Jason Wong play in automating Lee's Market's annual inventory count in January 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong linked barcode scanner analytics to the central database, streamlining inventory reporting in stores for Q1 2025.",
+            "supporting_file_paths": [
+                "shared/inventory-automation-strategy.pptx"
+            ]
+        },
+        {
+            "id": "DI0017",
+            "justification": "",
+            "question": "What communication improvement did Information Security Manager, Jason Wong, roll out for the payroll system in April 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong switched payroll alerts to encrypted SMS, improving notification delivery to 94% by the end of April 2025.",
+            "supporting_file_paths": [
+                "shared/payroll-communication-enhancement.docx"
+            ]
+        },
+        {
+            "id": "DI0018",
+            "justification": "",
+            "question": "How did Jason Wong ensure compliance with Lee's Market's new customer privacy policy in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "On June 3, 2025, Jason Wong coordinated a training for managers on privacy changes and updated the online privacy FAQ.",
+            "supporting_file_paths": [
+                "shared/privacy-policy-compliance.docx"
+            ]
+        },
+        {
+            "id": "DI0019",
+            "justification": "",
+            "question": "What upgrade did Information Security Manager, Jason Wong, oversee for Lee's Market's conference rooms in May 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong upgraded the conferencing devices to 4K and installed secure wireless tech in seven locations by May 21, 2025.",
+            "supporting_file_paths": [
+                "shared/may-2025-security-upgrades.pdf"
+            ]
+        },
+        {
+            "id": "DI0020",
+            "justification": "",
+            "question": "What was Jason Wong's involvement in the quarterly business continuity planning review in April 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong reviewed and updated failover recovery plans for POS crashes and cloud outages on April 15, 2025.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_015347.jsonl"
+            ]
+        },
+        {
+            "id": "DI0021",
+            "justification": "",
+            "question": "How did Information Security Manager, Jason Wong, facilitate a secure communication pilot between stores in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "On March 25, 2025, Jason Wong implemented encrypted chat across all regional store management teams for sensitive sales discussions.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_015448.jsonl"
+            ]
+        },
+        {
+            "id": "DI0022",
+            "justification": "",
+            "question": "How did Jason Wong help the finance team automate monthly expenditure reports in May 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In May 2025, Jason Wong converted 84 monthly spreadsheets into dashboard visualizations, improving approval speed.",
+            "supporting_file_paths": [
+                "shared/finance-automation-report.docx"
+            ]
+        },
+        {
+            "id": "DI0023",
+            "justification": "",
+            "question": "What password storage upgrade did Jason Wong and the IT & Security team order for store managers in April 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The IT & Security team replaced manual logbooks with \"Vaultpro\" password manager licenses in April 2025.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_015624.jsonl"
+            ]
+        },
+        {
+            "id": "DI0024",
+            "justification": "",
+            "question": "What disaster recovery testing did Information Security Manager, Jason Wong, organize for Lee's Market's servers in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong scheduled three full server failover tests on June 11, 15, and 30, 2025, which resulted in all the systems being recovered within 40 minutes.",
+            "supporting_file_paths": [
+                "shared/disaster-recovery-report.docx"
+            ]
+        },
+        {
+            "id": "DI0025",
+            "justification": "",
+            "question": "What software license audits did Lee's Market's IT & Security team close in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The IT & Security team audited all 217 workstations on March 28, 2025, and 97% matched valid license records.",
+            "supporting_file_paths": [
+                "shared/q1-2025-audit-report.docx"
+            ]
+        },
+        {
+            "id": "DI0026",
+            "justification": "",
+            "question": "How did Information Security Manager, Jason Wong, improve internal company newsletter privacy controls in January 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In January 2025, Jason separated HR updates from general announcements, applying access restrictions.",
+            "supporting_file_paths": [
+                "shared/newsletter-privacy-enhancements.pdf"
+            ]
+        },
+        {
+            "id": "DI0027",
+            "justification": "",
+            "question": "What procurement system enhancement did Information Security Manager, Jason Wong, roll out in February 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong set up automated purchase order matching to invoices, reducing manual entry by 80% this February 2025.",
+            "supporting_file_paths": [
+                "shared/procurement-system-overview.docx"
+            ]
+        },
+        {
+            "id": "DI0028",
+            "justification": "",
+            "question": "How did Jason Wong manage Lee's Market's March 2025 backup rotation schedule?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong moved hourly backup to redundant cloud system on March 7, 2025, reducing recovery time by 60% in tests.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Backup_Rotation_Schedule_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0029",
+            "justification": "",
+            "question": "What improvement did Jason Wong and the IT & Security team make to Lee's Market's supplier onboarding security protocol in April 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In April 2025, Jason Wong introduced digital certificate verification for all suppliers onboarding 12 new vendors.",
+            "supporting_file_paths": [
+                "shared/supplier-security-enhancements.docx"
+            ]
+        },
+        {
+            "id": "DI0030",
+            "justification": "",
+            "question": "How did the Information Security Manager handle mobile device password enforcement in May 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "On May 4, 2025, Jason Wong conducted an audit for instituted mandatory mobile device password resets for 89 employees.",
+            "supporting_file_paths": [
+                "shared/mobile-security-report.docx"
+            ]
+        },
+        {
+            "id": "DI0031",
+            "justification": "",
+            "question": "What training did Information Security Manager, Jason Wong, run for store assistant managers regarding POS error troubleshooting in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "On June 9, 2025, Jason Wong conducted a half-day workshop on POS error codes and basic fixes for assistant managers.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_015951.jsonl"
+            ]
+        },
+        {
+            "id": "DI0032",
+            "justification": "",
+            "question": "How does serving multiple urban centers increase Lee's Market's operational complexity?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In August 2025, Lee's Market's urban stores faced more transactions and varied customer needs, which made staffing and inventory management a business hurdle.",
+            "supporting_file_paths": [
+                "shared/urban-operations-complexity.pdf"
+            ]
+        },
+        {
+            "id": "DI0033",
+            "justification": "",
+            "question": "How did high staff turnover affect Lee's Market's customer service quality in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In March 2025, constant hiring of temporary workers resulted in more staff lacking customer service experience, causing more service errors.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Service_Quality_Analysis.xlsx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "How does serving multiple urban centers increase Lee's Market's cybersecurity risk?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In Q4 2025, serving diverse urban centers exposes Lee's Market to higher transaction volumes and varied staff profiles, increasing potential cyberattack vectors. Urban retailers handle 40% more transactions than their rural counterparts, leading to a proportional rise in social engineering attempts.",
+            "supporting_file_paths": [
+                "shared/Cybersecurity-Training-Strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "How does high staff turnover affect Lee's Market's vulnerability to cyber attacks in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In 2025, frequent hiring of temporary or seasonal workers who constitute 30% of the workforce during peak periods results in many employees lacking adequate cyber training, increasing exposure to cyberattacks.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-enhancement.docx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "Why is dual-channel retail (in-store and online) a unique security challenge for Lee's Market moving into Q1 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Moving into Q1 2026, employees of Lee's Market must manage security at both digital and physical checkout points because 65% of previous retail breaches involved compromised POS or e-commerce endpoints.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-2027.pdf"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "What makes digital POS and e-commerce systems critical to training employees at Lee's Market in Q1-Q3 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Digital POS and e-commerce platforms process thousands of transactions daily at Lee's Market and are the target of 65% of reported cyberattacks in retail. That is why it is critical to train employees at Lee's Market in Q1-Q3 2026.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-enhancement.pptx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "How does the handling of sensitive customer data at Lee's Market impact potential cyber risks in 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "With over 1,000,000 customer payment records handled annually, any lapse in employee vigilance could potentially cause widespread data breaches in 2026.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "",
+            "question": "How did the Information Security Manager, Jason Wong, and the HR and Operations managers' collaborations enhance security training at Lee's Market in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Jason Wong's cross-departmental leadership enabled targeted rollouts of training modules to new hires that are up to 25% faster in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-strategies.pptx"
+            ]
+        },
+        {
+            "id": "IN0007",
+            "justification": "",
+            "question": "What is the link between compliance certifications and employee training at Lee's Market in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Compliance audits found that untrained employees accounted for 70% of minor noncompliance findings at Lee's Market in 2025.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Compliance_Audit_Insights_Report.xlsx"
+            ]
+        },
+        {
+            "id": "IN0008",
+            "justification": "",
+            "question": "How did operational downtime from cyberattacks affect Lee's Market's business in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Cyber disruption cost an average of $30,000 per hour in lost sales for Lee's Market in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0009",
+            "justification": "",
+            "question": "What percentage of past breaches in 2025 were contained by employees who had undergone incident response training at Lee's Market's in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Because of clear incident protocols, 30% of past breaches at Lee's Market retail locations were contained by employees within the first hour in 2025.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0010",
+            "justification": "",
+            "question": "How does a limited IT/security budget in Q1 2026 impact Lee's Market's cybersecurity priorities?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "With only 1.8% of revenue budgeted for IT in Q1 2026, Lee's Market prioritizes scalable in-house training over expensive external solutions.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-plan.pdf"
+            ]
+        },
+        {
+            "id": "IN0011",
+            "justification": "",
+            "question": "How did education on multi-factor authentication improve Lee's Market security in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Retailers saw a 60% drop in unauthorized access after staff-wide MFA education and adoption in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0012",
+            "justification": "",
+            "question": "What is the relationship between reputation protection and staff training at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In 2024, companies with zero major incidents cite 95% staff cyber training completion. Lee's Market relies on the same for the retaining of its diverse customer base.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-strategy-plan.pdf"
+            ]
+        },
+        {
+            "id": "IN0013",
+            "justification": "",
+            "question": "How can industry certification improve the quality of Lee's Market's security training?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In 2025, the alignment of the PCI and DSS training has led to 40% fewer audit findings in the comparable enterprise.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Security_Training_Improvement_Data.xlsx"
+            ]
+        },
+        {
+            "id": "IN0014",
+            "justification": "",
+            "question": "How did promotions and online events affect Lee's Market's cyber risk profile in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In 2025, cyber threats spiked by 27% during promotional periods due to increased new hires and online activities.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-enhancement.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

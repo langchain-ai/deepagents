@@ -1,0 +1,24 @@
+{
+  "task_id": "DR0074",
+  "question": "What impact would a 20% increase in dealer-led customer education on EV infotainment and connectivity features have on reducing service visit frequency by 2027?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What was the average duration Elexion Automotive's dealers spent on vehicle orientation and infotainment training during customer delivery in 2024, and how much time was dedicated to connectivity features?",
+      "answer": "In 2024, Elexion Automotive dealers spent an average of 45 minutes on vehicle orientation and infotainment training during customer delivery, with only 12 minutes specifically dedicated to connectivity features.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What percentage of Elexion Automotive's plug-in hybrid and electric vehicle customers reported confusion with the vehicle's infotainment system within the first 90 days of ownership?",
+      "answer": "As shown by Elexion Automotive's internal customer satisfaction surveys conducted in 2023, 41% of its plug-in hybrid and electric vehicle customers reported experiencing confusion or difficulty with the vehicle's infotainment system within the first 90 days of ownership, with connectivity issues representing 58% of these complaints.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "Did Elexion Automotive introduce a formal certification for infotainment systems?",
+      "answer": "Yes, in early 2025, Elexion Automotive, after disclosing its plan publicly, launched its Dealer Knowledge Certification program to ensure sales and service staff achieve uniform expertise on infotainment and connectivity systems.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

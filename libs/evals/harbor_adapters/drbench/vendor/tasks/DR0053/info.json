@@ -1,0 +1,47 @@
+{
+    "industry": "virtual/remote healthcare",
+    "domain": "knowledge management",
+    "difficulty": "easy",
+    "files": [
+        {
+            "filetype": "xlsx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pptx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pptx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "xlsx",
+            "type": "supporting",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "docx",
+            "type": "supporting",
+            "app": "file_system"
+        }
+    ]
+}

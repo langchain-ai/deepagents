@@ -1,0 +1,215 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What was Elexion Automotive's Sierra model's 90-day customer satisfaction rate in 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2023, post-purchase surveys taken after the first 90 days of ownership revealed a 91% customer satisfaction rate for Elexion Automotive's Sierra Model.",
+            "supporting_file_paths": [
+                "shared/sierra-satisfaction-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What percentage of customer service inquiries in 2024 were about home charger installation?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A January 2025 internal report from the sales and marketing department revealed that 28% of all customer service inquiries in 2024 were about the home charging station installation process.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Customer_Service_Inquiries_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How many Elexion Automotive vehicle buyers were eligible to apply for the new battery warranty extension in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "An analysis performed by the sales and marketing department in March of 2024 revealed that 65% of Elexion Automotive's customers were eligible to apply for the newly extended 8-year/100,000-mile battery warranty.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_163530.jsonl"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What was Elexion Automotive's average customer response time in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive's customer service team achieved an average response time of 1.5 hours in 2024.",
+            "supporting_file_paths": [
+                "shared/2024-customer-service-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What was the Q3 2024 customer Net Promoter Score for Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive achieved a Net Promoter Score of 70 among its customers in Q3 2024, placing it within the strong performance range among automotive manufacturers.",
+            "supporting_file_paths": [
+                "shared/Q3-2024-Customer-Insights.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "In 2024, what percentage of Elexion Automotive's new car sales were referred by customers?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The sales and marketing department's internal report states that in Q4 2024, new sales from the Elexion Automotive customer referral program made up 9% of total deals.",
+            "supporting_file_paths": [
+                "shared/2024-referral-sales-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "In Q3 2024, how many appointments were made at service centers using the Elexion Automotive mobile app?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive customers scheduled 1,635 service center appointments through the mobile app in Q3 2024.",
+            "supporting_file_paths": [
+                "shared/Q3-Appointments-Analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "Why did Elexion Automotive's sales and marketing department decide to switch to a different CRM software in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive's old CRM system had limited capabilities for tracking social media engagement, particularly on newer platforms such as Threads and Bluesky. As a result, the sales and marketing department decided to license a new CRM system in February 2024.",
+            "supporting_file_paths": [
+                "shared/CRM-transition-insights.pptx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "How many members did Elexion Automotive's loyalty program have as of January 2013?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the sales department records, Elexion Automotive's loyalty program had 3,500 members as of January 2013.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Customer_Loyalty_Program_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "When did Emily Lee finish the customer base segmentation project for targeted campaigns?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In February 2024, Emily Lee finished the development of unique customer personas as part of the buyer base segmentation project for targeted marketing campaigns.",
+            "supporting_file_paths": [
+                "shared/customer-segmentation-debrief.pdf"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "What initiatives did Elexion Automotive use in 2024 to engage its loyalty program members as part of its customer retention and brand advocacy strategy?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Throughout 2024, Elexion Automotive organized local EV Maintenance Best Practices workshops for all major sales regions to engage customers and improve brand loyalty.",
+            "supporting_file_paths": [
+                "shared/loyalty-program-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "What was the completion rate for Elexion Automotive's new customer onboarding process in September 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In September 2024, 95% of new Elexion Automotive customers completed the full onboarding process, which included warranty registration, software customization, and vehicle orientation.",
+            "supporting_file_paths": [
+                "shared/september-onboarding-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "How long does it typically take before an Elexion Automotive car requires its first service?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the customer retention report prepared by Elexion Automotive's sales and marketing department in 2024, customers used their vehicles for an average of 3.5 years before taking them in for the first service.",
+            "supporting_file_paths": [
+                "shared/vehicle-maintenance-schedule.pdf"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "What was the projected 2027 growth rate for the North American first-hand EV market in the 2024 forecast presented by the sales and marketing team?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The sales and marketing team's 2024 forecast projected the North American first-hand EV market to grow by 35% in 2027.",
+            "supporting_file_paths": [
+                "shared/EV-Market-Analysis.pptx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "In the May 2022 survey, what percentage of Elexion Automotive EV buyers reported plans to sell their vehicles within a 3- to 5-year timeframe?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In a May 2022 ownership survey, 38% of Elexion Automotive EV buyers indicated they planned to resell their vehicles within 3-5 years after purchase, suggesting approximately 3,000-5,000 of Elexion Automotive's EVs could enter the second-hand market by 2027 based on current sales volumes.",
+            "supporting_file_paths": [
+                "shared/second-hand-buyer-engagement.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What was the average period that Elexion Automotive customers kept their vehicles before selling them?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to the customer retention report that Elexion Automotive's sales and marketing department completed in 2024, customers kept their cars for an average of 3.5 years before reselling them.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_163214.jsonl"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "What percentage of first-hand and second-hand Elexion Automotive EV buyers purchased home charging stations between January 2023 and December 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to the customer insight report completed in December 2023, 40% of firsthand Elexion Automotive buyers purchased home charging stations between January 2023 and December 2023. However, the company cannot offer the same option to second-hand buyers due to lost contact.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_163300.jsonl"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "Did Elexion Automotive have any system integrated with U.S. DMV databases to track vehicle ownership changes as of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of January 2025, Elexion Automotive lacked integration with U.S. DMV databases to track vehicle ownership changes, making second-hand buyer identification challenging through its current channels.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_163352.jsonl"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "What was the projected 2027 growth rate for the North American second-hand EV market in the 2024 forecast presented by the sales and marketing team?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The sales and marketing team's 2024 forecast projected the North American second-hand EV market to grow by 34% in 2027.",
+            "supporting_file_paths": [
+                "shared/second-hand-ev-engagement.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

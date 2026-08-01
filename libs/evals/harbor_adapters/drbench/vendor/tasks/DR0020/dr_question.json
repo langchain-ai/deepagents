@@ -1,0 +1,15 @@
+{
+    "dr_question": "What is the best way for my team at Lee's Market to leverage retail personalization techniques to make customer interactions more convenient and efficient and generate more regional growth in 2026?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Sales",
+        "dr_question": "What is the best way for my team at Lee's Market to leverage retail personalization techniques to make customer interactions more convenient and efficient and generate more regional growth in 2026?",
+        "industry": "Retail",
+        "url": "https://www.bcg.com/publications/2024/personalization-in-action"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0020",
+    "industry": "retail",
+    "domain": "Sales",
+    "url": "https://www.bcg.com/publications/2024/personalization-in-action"
+}

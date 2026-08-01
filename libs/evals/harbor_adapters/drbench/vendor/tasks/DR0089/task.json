@@ -1,0 +1,43 @@
+{
+    "name": "DR0089",
+    "task_id": "DR0089",
+    "level": "",
+    "company_info": {
+        "name": "Elexion Automotive (Austin, Texas, USA, $350M - $500M, 1900 employees)",
+        "industry": "Automotive \u2013 Electric Vehicles",
+        "description": "A company in the Automotive \u2013 Electric Vehicles industry",
+        "size": "medium",
+        "employee_count": "100-500",
+        "annual_revenue": "Not specified"
+    },
+    "dr_question": "Given that one in seven new vehicles sold in Canada in 2024 were zero-emission, how can Elexion Automotive\u2019s QA team enhance cold-weather testing protocols by Q4 2026 to improve EV battery endurance and reliability in the country\u2019s key ZEV markets?",
+    "date": "2025-10-24",
+    "persona": {
+        "name": "Amanda Foster",
+        "first_name": "Amanda",
+        "last_name": "Foster",
+        "username": "amanda.foster",
+        "email": "amanda.foster@elexionautomotive.com",
+        "role": "Senior QA Engineer",
+        "role_description": "Designs comprehensive testing protocols for electric vehicles, mentors junior QA staff, and collaborates with engineering teams to resolve quality issues"
+    },
+    "citation_format": {
+        "urls": [
+            "https://www.example.com/article",
+            "https://techcrunch.com/2023/report.html"
+        ],
+        "file_names": [
+            "quarterly_report.pdf",
+            "market_analysis.docx",
+            "shared/file-pdf"
+        ],
+        "mattermost_chats": [
+            "MatterMost-Channel-Team-User",
+            "Mattermost Message - Enterprise Chat (User: john.doe, Team: Compliance, Channel: General)"
+        ],
+        "email_messages": [
+            "RoundCube-fromdemail-todemails-Subject",
+            "Email from sarah.johnson@company.com on 20 Jan 2025"
+        ]
+    }
+}

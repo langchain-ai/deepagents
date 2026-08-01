@@ -1,0 +1,281 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "EX0000",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Data-driven loyalty programs are enabling grocers to sustain growth amid inflation, with those integrating customer data into their strategies experiencing a 3.8% average increase in same-store sales, even in price-sensitive markets.",
+            "supporting_urls": [
+                "https://eagleeye.com/blog/grocery-loyalty-inflation-data-growth"
+            ]
+        },
+        {
+            "id": "EX0001",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Modern consumers, particularly Gen Z and Millennials, prefer personalized, context-aware rewards over generic points. Grocery chains such as Tesco, Kroger, and Asda are transitioning to AI-driven, predictive offers that adapt in real time to shopper behavior, addressing \"loyalty fatigue\" and maintaining engagement with younger customers.",
+            "supporting_urls": [
+                "https://eagleeye.com/blog/grocery-loyalty-inflation-data-growth"
+            ]
+        },
+        {
+            "id": "EX0002",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Retailers using AI and CRM data to align loyalty offers with inventory and shopping patterns enhance engagement and protect margins by timing personalized promotions with stock levels. This CRM-driven personalization leads to superior customer retention and sales growth compared to competitors.",
+            "supporting_urls": [
+                "https://eagleeye.com/blog/grocery-loyalty-inflation-data-growth"
+            ]
+        },
+        {
+            "id": "IN004_xlsx",
+            "justification": "Understanding current customer retention rate helps inform data-driven loyalty program goals.",
+            "question": "What is our current customer retention rate as of Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market has a customer retention rate of 62% as of Q2 2024.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Customer_Retention_Metrics.xlsx"
+            ]
+        },
+        {
+            "id": "DI003_roundcube",
+            "justification": "IT security metrics are unrelated to customer loyalty program enhancement.",
+            "question": "How many IT security incidents occurred in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT security incidents totaled 12 cases with a 20% decrease annually.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_121200.jsonl"
+            ]
+        },
+        {
+            "id": "DI011_xlsx",
+            "justification": "Supply chain automation metrics do not address customer loyalty program strategies.",
+            "question": "What percentage of our supply chain operations were automated in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "About 40% of our supply chain operations were automated in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Supply_Chain_Automation_Metrics.xlsx"
+            ]
+        },
+        {
+            "id": "DI007_xlsx",
+            "justification": "Employee turnover metrics do not relate to customer loyalty programs",
+            "question": "What is our employee turnover rate as of Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market has a 12% employee turnover rate as of Q3 2024.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Employee_Turnover_Metrics.xlsx"
+            ]
+        },
+        {
+            "id": "DI010_xlsx",
+            "justification": "Training metrics do not relate to customer loyalty program engagement.",
+            "question": "What was our employee training program completion rate in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee training program completion rate was 85% in Q3 2024.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Employee_Training_Metrics.xlsx"
+            ]
+        },
+        {
+            "id": "IN005_xlsx",
+            "justification": "Knowing loyalty program member count and engagement helps tailor data-driven loyalty strategies.",
+            "question": "How many loyalty program members do we have as of Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "We have 350,000 loyalty program members, with 25% actively engaged as of Q1 2024.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Loyalty_Program_Performance_Metrics.xlsx"
+            ]
+        },
+        {
+            "id": "IN002_pdf",
+            "justification": "Tracks Gen Z engagement, essential for targeting with personalized loyalty rewards.",
+            "question": "How many Gen Z members joined by Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "2,500 new Gen Z members joined by Q2 2024.",
+            "supporting_file_paths": [
+                "shared/customer-loyalty-strategies.pdf"
+            ]
+        },
+        {
+            "id": "DI001_pdf",
+            "justification": "Employee turnover is unrelated to data-driven loyalty program strategies.",
+            "question": "What was turnover rate in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Turnover rate was 12% in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/q2-workforce-report.pdf"
+            ]
+        },
+        {
+            "id": "IN003_pdf",
+            "justification": "Measures effectiveness of personalized offers, enhancing customer loyalty.",
+            "question": "What Q2 2024 CRM loyalty offer redemption rate?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "35% CRM offer redemption rate achieved by Q2 2024.",
+            "supporting_file_paths": [
+                "shared/loyalty-programs-insights.pdf"
+            ]
+        },
+        {
+            "id": "IN001_pdf",
+            "justification": "Quantifies AI impact on loyalty, aiding customer engagement through data-driven insights.",
+            "question": "What Q2 2024 loyalty sales increase is achievable with AI?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "A 4% sales increase is achievable using AI-driven loyalty programs.",
+            "supporting_file_paths": [
+                "shared/loyalty-engagement-strategies.pdf"
+            ]
+        },
+        {
+            "id": "DI003_pdf",
+            "justification": "Facility costs are unrelated to customer engagement strategies.",
+            "question": "What were facility maintenance costs in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility maintenance costs totaled $1.5M in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/facility-maintenance-report.pdf"
+            ]
+        },
+        {
+            "id": "DI001",
+            "justification": "Employee retention metrics do not address customer loyalty programs.",
+            "question": "What was our employee retention rate in Q3 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee retention averaged 85% with a 5% increase year-over-year.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250815_170233.jsonl"
+            ]
+        },
+        {
+            "id": "IN006",
+            "justification": "This helps evaluate the impact of our loyalty program on driving sales growth and customer engagement.",
+            "question": "What is the average order value increase for loyalty program members in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Our loyalty program members had a $6 average order value increase with 10% growth.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250815_165817.jsonl"
+            ]
+        },
+        {
+            "id": "DI002_pdf",
+            "justification": "IT budget figures don't contribute to loyalty program insights.",
+            "question": "What was IT budget in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT budget was $12M in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/it-budget-review.pdf"
+            ]
+        },
+        {
+            "id": "DI006_pdf",
+            "justification": "IT system downtime metrics do not address customer engagement strategies",
+            "question": "What was the IT system downtime rate in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT system downtime rate averaged 2% with a maximum of 4%.",
+            "supporting_file_paths": [
+                "shared/it-performance-report.pdf"
+            ]
+        },
+        {
+            "id": "IN008_roundcube",
+            "justification": "Analyzing revenue from loyalty programs helps evaluate their business impact.",
+            "question": "What percentage of sales revenue comes from loyalty program redemptions in Q3 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Loyalty program redemptions accounted for 18% of sales revenue with a 5% increase annually.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_120501.jsonl"
+            ]
+        },
+        {
+            "id": "DI005_pdf",
+            "justification": "Warehouse rental costs do not impact loyalty program effectiveness",
+            "question": "What were total warehouse rental costs in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Total warehouse rental costs totaled $850,000 for the quarter.",
+            "supporting_file_paths": [
+                "shared/warehouse-cost-report.pdf"
+            ]
+        },
+        {
+            "id": "DI004_roundcube",
+            "justification": "Energy usage metrics do not impact customer loyalty program engagement strategies.",
+            "question": "What percentage of our energy usage is renewable as of Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Renewable energy usage reached 25% with a 15% increase annually.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_121421.jsonl"
+            ]
+        },
+        {
+            "id": "DI004_pdf",
+            "justification": "Absenteeism metrics do not relate to customer loyalty programs",
+            "question": "What was employee absenteeism rate in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee absenteeism rate averaged 5% with a peak of 7%.",
+            "supporting_file_paths": [
+                "shared/Q3-Attendance-Report.pdf"
+            ]
+        },
+        {
+            "id": "DI009_xlsx",
+            "justification": "IT infrastructure details do not address loyalty program effectiveness",
+            "question": "What percentage of our IT infrastructure is cloud-based as of Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "About 70% of our IT infrastructure is cloud-based as of Q2 2024.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_IT_Infrastructure_Overview.xlsx"
+            ]
+        },
+        {
+            "id": "DI002",
+            "justification": "Supplier diversity metrics do not address loyalty program effectiveness",
+            "question": "What percentage of our supply chain partners are minority-owned as of Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Minority-owned supply chain partners reached 18% with a 12% increase annually.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250815_170453.jsonl"
+            ]
+        },
+        {
+            "id": "DI008_xlsx",
+            "justification": "Facility costs are unrelated to enhancing customer engagement strategies",
+            "question": "How much did we spend on facility maintenance in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility maintenance costs totaled $1.2M in Q1 2024, averaging $300K monthly.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Facility_Maintenance_Costs_Tracker.xlsx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

@@ -1,0 +1,182 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How many vulnerability scans did MediConn's cybersecurity team conduct on its virtual healthcare platform between January 1 and September 30, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal data, MediConns cybersecurity specialist and his team conducted 84 vulnerability scans on the company's virtual healthcare platform between Q1 and Q3 2025.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-analysis-2025.pptx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What percentage of MediConn\u2019s virtual healthcare platform\u2019s API end points were encrypted under Brian Smith\u2019s security configuration project completed by March 1, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the end of project internal report, Brian Smith ensured that 98% of MediConn\u2019s virtual healthcare platform\u2019s API endpoints were encrypted under the March 1, 2025 configuration project.",
+            "supporting_file_paths": [
+                "shared/api-security-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How many firewall rule changes did MediConn\u2019s cybersecurity specialist implement across the virtual healthcare platform between April 1 and June 30, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The cybersecurity specialist implemented 14 firewall rule changes on MediConn\u2019s virtual healthcare platform during Q2 2025, according to internal statistics.",
+            "supporting_file_paths": [
+                "shared/Q2-firewall-changes.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "Did MediConn\u2019s cybersecurity specialist complete all scheduled penetration tests of the firm's virtual healthcare systems in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. According to internal testing logs, Brian Smith conducted all 6 penetration tests of the firm's virtual healthcare systems that were scheduled for that quarter.",
+            "supporting_file_paths": [
+                "shared/Q2-2025-Cybersecurity-Report.pdf"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How many internal access attempts by new MediConn interns were logged on the firm's clinical communication system in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal logs, 42 internal access attempts by new MediConn interns were recorded on the virtual healthcare platform\u2019s clinical communication system between January 1 and March 31, 2024.",
+            "supporting_file_paths": [
+                "shared/intern-access-audit.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How many log retention audits were performed on MediConn\u2019s virtual healthcare platform\u2019s EHR systems between April 1 and June 30, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The cybersecurity team conducted 22 log retention audits on MediConn\u2019s virtual healthcare platform EHR systems during Q2 2025.",
+            "supporting_file_paths": [
+                "shared/ehr-audit-summary-q2-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "Were all scheduled patch updates for MediConn\u2019s telehealth database servers completed in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. According to internal records, the cybersecurity specialist completed all scheduled patch updates for MediConn\u2019s telehealth database servers between January 1 and March 31, 2025.",
+            "supporting_file_paths": [
+                "shared/Q1-2025-Maintenance-Report.pdf"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "Were all scheduled security awareness refresher sessions completed by the cybersecurity specialist for  MediConns virtual care team staff in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. The cybersecurity specialist completed all scheduled security awareness refresher sessions for MediConn\u2019s virtual healthcare platform staff in 2024.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-compliance-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "How many privileged account reviews did the cybersecurity specialist conduct on MediConn\u2019s virtual healthcare platform between July 1 and September 30, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The cybersecurity specialist conducted 15 privileged account reviews on MediConn\u2019s virtual healthcare platform during Q3 2025.",
+            "supporting_file_paths": [
+                "shared/Q3-Cybersecurity-Review.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "How many MediConn virtual healthcare platform staff had multi-factor authentication (MFA) verified by the cybersecurity specialist between January 1 and June 30, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The cybersecurity specialist verified MFA for all 215 staff members on MediConn\u2019s virtual healthcare platform in Q1, 2025.",
+            "supporting_file_paths": [
+                "shared/mfa-verification-report.docx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "By June 15, 2026, how will Brian Smith strengthen MediConn\u2019s data-recovery capability to ensure uninterrupted virtual-care delivery after a cloud misconfiguration?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to MediConn\u2019s internal change-control report from October 2025, Brian Smith will enforce GitOps workflows, implement policy-as-code checks, and require cross-team approvals for all Infrastructure-as-Code changes. These measures will detect cloud misconfigurations before they are applied, allowing the team to remediate potential errors within 30 minutes and restore any affected virtual healthcare services.",
+            "supporting_file_paths": [
+                "shared/data-recovery-enhancement.docx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "By August 31, 2026, how will Brian Smith improve staff readiness on MediConn\u2019s virtual healthcare platform to detect and respond to misapplied access-control policies?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "By August 31, 2026, Brian Smith plans to conduct quarterly access-control audits and train MediConn\u2019s virtual healthcare platform staff on proper role-based permissions. This includes reviewing admin assignments, enforcing least-privilege access, and issuing corrective guidance when misconfigurations are detected.",
+            "supporting_file_paths": [
+                "shared/enhancing-virtual-security.pptx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "Is MediConn's cybersecurity team on track to fully integrate Endpoint Detection and Response across all its virtual healthcare systems by April 15, 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes. According to MediConn\u2019s cybersecurity progress report released on September 30, 2025, Brian Smith\u2019s team has completed 85% of EDR deployment across all core virtual healthcare systems (telehealth, e-prescription, clinical communication) and is on track to finalize full integration by February 15, 2026.",
+            "supporting_file_paths": [
+                "shared/ransomware-defense-strategies.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "By June 15, 2026, how will Brian Smith strengthen MediConn\u2019s data-recovery capability to ensure uninterrupted virtual-care delivery after a ransomware breach?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn\u2019s infrastructure plan, approved in October 2025, shows that Brian Smith will implement immutable cloud backups across all MediConn EHR and telehealth databases by June 1, 2026. This will enable full restoration of the virtual healthcare platform within 30 minutes without paying ransom demands.",
+            "supporting_file_paths": [
+                "shared/2026-ransomware-defense.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "How will Brian Smith improve MediConn\u2019s ability to anticipate ransomware campaigns targeting its virtual healthcare platform by collaborating with external intelligence networks in 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to a partnership proposal dated October 2025, Brian plans to join the Health ISAC threat-intelligence exchange by January 1, 2026, allowing MediConn to receive real-time alerts on ransomware indicators from over 400 member hospitals and vendors. This will allow Brian to detect emerging ransomware threats early and take pre-emptive actions to secure MediConn's telehealth, e-prescription, and clinical systems.",
+            "supporting_file_paths": [
+                "shared/ransomware-defence-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "By August 31, 2026, how will Brian Smith improve staff readiness on MediConn\u2019s virtual healthcare platform to detect and respond to ransomware attacks?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to MediConn\u2019s cybersecurity training roadmap approved on October 10, 2025, Brian Smith plans to launch quarterly phishing-simulation drills for all MediConn staff. He will also expand security-awareness certification across MediConn\u2019s clinical and IT departments by August 15, 2026. These measures aim to cut average cyberattack incident-reporting time from 45 minutes to under 10.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-report-2026.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

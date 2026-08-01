@@ -1,0 +1,259 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "EX0000",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "As shoppers become increasingly price-conscious heading into 2025, many are opting for cheaper brands and shopping across multiple stores for deals, boosting the market share of discounters like Aldi and Walmart. This shift poses a significant challenge for traditional supermarkets, making competition with these value-focused retailers a top priority for grocers.",
+            "supporting_urls": [
+                "https://www.grocerydive.com/news/grocery-trends-outlook-2025/738623/"
+            ]
+        },
+        {
+            "id": "EX0001",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Supermarkets are focusing on health and wellness, private label products, and technologies like electronic shelf labels to differentiate beyond price. These innovations can help traditional grocers attract customers despite inflation concerns.",
+            "supporting_urls": [
+                "https://www.grocerydive.com/news/grocery-trends-outlook-2025/738623/"
+            ]
+        },
+        {
+            "id": "EX0002",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Following a failed merger with Kroger, Albertsons plans to cut $1.5 billion in costs and invest in sales to remain competitive. This highlights a broader trend where retail chains need to streamline operations and reinvest in customer-facing improvements to sustain momentum amid economic challenges.",
+            "supporting_urls": [
+                "https://www.grocerydive.com/news/grocery-trends-outlook-2025/738623/"
+            ]
+        },
+        {
+            "id": "DI003_roundcube",
+            "justification": "Facility energy sources do not directly impact competitiveness in the market.",
+            "question": "What percentage of Lee's Market's facilities are solar-powered as of Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "About 25% of Lee's Market's facilities use solar power, reducing energy costs.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_132706.jsonl"
+            ]
+        },
+        {
+            "id": "DI005_pptx",
+            "justification": "Employee training hours do not impact trends or competitive strategies in grocery retail.",
+            "question": "How many training hours were completed in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employees completed 3,500 training hours in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/Q2-training-overview.pptx"
+            ]
+        },
+        {
+            "id": "IN002_roundcube",
+            "justification": "Analyzing online shopping platform usage informs strategies to remain competitive in the digital age.",
+            "question": "How many customers used Lee's Market's online shopping platform in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In Q1 2024, 250,000 customers used Lee's Market's online shopping platform, a 20% increase from Q1 2023.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_132216.jsonl"
+            ]
+        },
+        {
+            "id": "DI004_pptx",
+            "justification": "Compliance costs are unrelated to competitive strategies or market trend analysis.",
+            "question": "What were compliance costs in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Compliance costs totaled $750,000 in Q4 2024.",
+            "supporting_file_paths": [
+                "shared/q4-compliance-costs.pptx"
+            ]
+        },
+        {
+            "id": "DI003_pptx",
+            "justification": "IT downtime is not related to competitive strategies or market trends.",
+            "question": "What was IT downtime in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT systems experienced 15 hours of downtime in Q3 2024.",
+            "supporting_file_paths": [
+                "shared/IT-Performance-Q3.pptx"
+            ]
+        },
+        {
+            "id": "DI009_docx",
+            "justification": "Employee turnover metrics do not address the grocery retail market trends and competitive strategies",
+            "question": "What was our employee turnover rate in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate remained at 12% with a 3-month average tenure.",
+            "supporting_file_paths": [
+                "shared/Talent-Management-Insights-2025-Q1.docx"
+            ]
+        },
+        {
+            "id": "DI002_roundcube",
+            "justification": "Compliance training metrics are unrelated to market trends or competitiveness",
+            "question": "What percentage of Lee's Market employees completed compliance training in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "92% of employees completed compliance training, exceeding the 90% target.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_132519.jsonl"
+            ]
+        },
+        {
+            "id": "IN001_pptx",
+            "justification": "Helps identify digital trends and guide competitive strategy enhancements.",
+            "question": "What are Q2 2024 online sales growth projections?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Online sales projected to grow 15% in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/market-trends-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI008_docx",
+            "justification": "IT infrastructure metrics do not address the core DR Question focus area",
+            "question": "What percentage of our IT infrastructure was outsourced in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "55% of our IT infrastructure was outsourced, with plans to increase to 60% by Q2 2025.",
+            "supporting_file_paths": [
+                "shared/IT-Outsourcing-Landscape-Report.docx"
+            ]
+        },
+        {
+            "id": "DI002_pptx",
+            "justification": "Facility maintenance costs don't impact competitive strategies in grocery retail.",
+            "question": "What were facility maintenance costs in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility maintenance costs totaled $1.2M, slightly increasing from $1.1M.",
+            "supporting_file_paths": [
+                "shared/q3-maintenance-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI004_roundcube",
+            "justification": "Employee benefits costs are unrelated to market trends and competitiveness.",
+            "question": "What was Lee's Market's employee benefits cost in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee benefits cost totaled $4.5 million, a 10% increase from Q3 2023.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_133005.jsonl"
+            ]
+        },
+        {
+            "id": "IN004_docx",
+            "justification": "This answer highlights the importance of efficient customer service in the competitive grocery retail market, and can inform strategies for improving customer satisfaction.",
+            "question": "What is the average time-to-resolution for customer complaints in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The average time-to-resolution for customer complaints is 2 hours, indicating a need for process improvements to enhance customer satisfaction.",
+            "supporting_file_paths": [
+                "shared/Market-Trends-and-Strategies.docx"
+            ]
+        },
+        {
+            "id": "DI001_pptx",
+            "justification": "Employee turnover metrics are unrelated to grocery retail market trends.",
+            "question": "What was employee turnover rate in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover was 12%, down from 14% in previous quarter.",
+            "supporting_file_paths": [
+                "shared/workforce-analysis-2024.pptx"
+            ]
+        },
+        {
+            "id": "DI007_docx",
+            "justification": "Facility maintenance costs do not address the core DR Question focus area",
+            "question": "What was the average cost of a single facility maintenance issue in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average cost of a single issue was $1,200, with a 10% increase from Q1 2024.",
+            "supporting_file_paths": [
+                "shared/Facilities-Maintenance-Cost.docx"
+            ]
+        },
+        {
+            "id": "IN002_pptx",
+            "justification": "Evaluates customer loyalty strategies to maintain competitive edge.",
+            "question": "What is Q2 2024 customer retention rate?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Customer retention rate is 85% in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/grocery-trends-strategy.pptx"
+            ]
+        },
+        {
+            "id": "DI001_roundcube",
+            "justification": "Employee turnover metrics do not address market trends or competitiveness",
+            "question": "What was Lee's Market employee turnover rate in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate was 12% with an average tenure of 2.5 years.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_132344.jsonl"
+            ]
+        },
+        {
+            "id": "DI010_docx",
+            "justification": "Facility costs and labor metrics do not address the core DR Question focus area",
+            "question": "What was the average cost of labor per square foot in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average cost of labor per square foot was $23.50 with a 5% increase YoY.",
+            "supporting_file_paths": [
+                "shared/labor-efficiency-review.docx"
+            ]
+        },
+        {
+            "id": "DI006_docx",
+            "justification": "Employee engagement metrics do not address the core DR Question focus area",
+            "question": "What was our employee engagement survey score in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee engagement score was 82%, with a 5% increase from Q3 2024.",
+            "supporting_file_paths": [
+                "shared/Employee-Engagement-Insights-2024-Q4.docx"
+            ]
+        },
+        {
+            "id": "IN001_roundcube",
+            "justification": "Understanding private label sales growth helps assess competitiveness in the grocery retail market.",
+            "question": "What is Lee's Market's private label sales growth in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market saw a 12% increase in private label sales in Q2 2024, reaching $15 million.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_131813.jsonl"
+            ]
+        },
+        {
+            "id": "IN003_docx",
+            "justification": "This answer provides insight into customer behavior and preferences, which can inform strategies for remaining competitive in the grocery retail market.",
+            "question": "What percentage of our online transactions were made using mobile devices in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "60% of our online transactions were made using mobile devices, with an average order value of $50.",
+            "supporting_file_paths": [
+                "shared/Market-Competition-Strategies.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

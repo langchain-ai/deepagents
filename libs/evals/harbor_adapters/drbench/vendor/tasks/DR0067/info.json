@@ -1,0 +1,27 @@
+{
+    "industry": "automotive -- electric vehicles",
+    "domain": "research",
+    "difficulty": "easy",
+    "files": [
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "supporting",
+            "app": "file_system"
+        }
+    ]
+}

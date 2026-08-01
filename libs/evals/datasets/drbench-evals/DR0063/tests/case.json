@@ -1,0 +1,36 @@
+{
+  "task_id": "DR0063",
+  "question": "How could Elexion Automotive utilize Automotive Cloud's dealer performance management tools by early 2027 to strengthen relationships with its North American dealer network and, at the same time, maintain 90% of its direct-to-government sales channel?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What is the size and performance tracking challenge of Elexion Automotive current dealer network?",
+      "answer": "As of January 2025, Elexion Automotive's dealer network consisted of 45 independent dealerships across the United States and Canada.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "How is sales performance distributed across Elexion Automotive's dealer network, and what capability gaps exist in knowledge sharing?",
+      "answer": "By September 2024, Elexion Automotive's customer relationship manager, Emily Lee, identified that Elexion Automotive's top-performing dealerships generated 67% of total dealer channel revenue, but Elexion Automotive lacked systematic tools to replicate best practices across 33 locations.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "How frequently does Elexion Automotive evaluate the performance of its dealers, and what problems with data quality influence these evaluations?",
+      "answer": "In February 2025, Elexion Automotive's dealer performance review occurred quarterly but relied on self-review data from dealerships, with Emily Lee estimating that 34% of performance metrics were incomplete or submitted late.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "How long does it take Elexion Automotive to resolve dealer relationship issues, and what causes these delays?",
+      "answer": "In December 2024, Emily Lee found that resolving dealer disputes or performance issues at Elexion Automotive required an average of 6 weeks, due to fragmented documentation and a lack of standardized performance contracts across the dealer network.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "How many dealers have requested additional training support in 2025?",
+      "answer": "By July 2025, Emily Lee identifies that 19 of Elexion Automotive's 45 dealerships had requested additional training on EV technology and sustainability messaging.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

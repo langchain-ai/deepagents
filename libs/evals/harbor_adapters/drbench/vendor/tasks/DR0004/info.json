@@ -1,0 +1,107 @@
+{
+  "industry": "retail",
+  "domain": "market_analysis",
+  "difficulty": "medium",
+  "files": [
+    {
+      "filetype": "pptx",
+      "type": "supporting",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pptx",
+      "type": "supporting",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pptx",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pptx",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pptx",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pptx",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pptx",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "docx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "email",
+      "type": "supporting",
+      "app": "roundcube"
+    },
+    {
+      "filetype": "email",
+      "type": "supporting",
+      "app": "roundcube"
+    },
+    {
+      "filetype": "email",
+      "type": "distractor",
+      "app": "roundcube"
+    },
+    {
+      "filetype": "email",
+      "type": "distractor",
+      "app": "roundcube"
+    },
+    {
+      "filetype": "email",
+      "type": "distractor",
+      "app": "roundcube"
+    },
+    {
+      "filetype": "email",
+      "type": "distractor",
+      "app": "roundcube"
+    }
+  ]
+}

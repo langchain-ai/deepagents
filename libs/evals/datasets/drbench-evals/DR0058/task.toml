@@ -1,0 +1,27 @@
+version = "1.3"
+
+[metadata]
+source = "drbench"
+task_id = "DR0058"
+industry = "virtual/remote healthcare"
+domain = "cybersecurity"
+difficulty = "hard"
+insight_count = 4
+external_insight_count = 0
+document_count = 16
+
+[environment]
+# Public egress, unlike the context-retrieval tasks: DRBench splits its ground truth
+# into enterprise facts (in the corpus) and external facts that only exist on the open
+# web, so an allowlist would make the external insights unreachable by construction.
+network_mode = "public"
+build_timeout_sec = 900.0
+
+[agent]
+# Deep research over a multi-format corpus plus open-web search; the scorecard scales
+# this with `agent_timeout_multiplier`.
+timeout_sec = 3600.0
+
+[verifier]
+# One judge call to split the report into claims, then one per gold insight.
+timeout_sec = 1800.0

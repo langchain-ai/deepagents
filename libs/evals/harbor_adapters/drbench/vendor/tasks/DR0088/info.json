@@ -1,0 +1,122 @@
+{
+    "industry": "virtual/remote healthcare",
+    "domain": "cybersecurity",
+    "difficulty": "hard",
+    "files": [
+        {
+            "filetype": "email",
+            "type": "distractor",
+            "app": "roundcube"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "email",
+            "type": "distractor",
+            "app": "roundcube"
+        },
+        {
+            "filetype": "pptx",
+            "type": "distractor",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "email",
+            "type": "distractor",
+            "app": "roundcube"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pptx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "email",
+            "type": "distractor",
+            "app": "roundcube"
+        },
+        {
+            "filetype": "xlsx",
+            "type": "distractor",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "email",
+            "type": "distractor",
+            "app": "roundcube"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "supporting",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "supporting",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pdf",
+            "type": "supporting",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pptx",
+            "type": "supporting",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pptx",
+            "type": "supporting",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "supporting",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pdf",
+            "type": "supporting",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "supporting",
+            "app": "file_system"
+        }
+    ]
+}

@@ -1,0 +1,12 @@
+{
+  "task_id": "DR0068",
+  "question": "HERE's ADAS technology has the potential to warn drivers about hazards they might not see in front of them. How can Elexion utilize AI to test our ADAS while maintaining our compliance certifications by Q2 2026?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What percentage of Elexion's EV have not been tested for any of the company's compliance certifications?",
+      "answer": "Based on internal data compiled in July 2025, 4% of Elexion's EV have yet to go through any of the company's compliance certifications?",
+      "type": "enterprise_fact"
+    }
+  ]
+}

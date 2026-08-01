@@ -1,0 +1,43 @@
+{
+    "name": "DR0093",
+    "task_id": "DR0093",
+    "level": "",
+    "company_info": {
+        "name": "MediConn Solutions (Vancouver, Canada, $50M - $100M, 250 employees)",
+        "industry": "Virtual/Remote Healthcare",
+        "description": "A company in the Virtual/Remote Healthcare industry",
+        "size": "medium",
+        "employee_count": "100-500",
+        "annual_revenue": "Not specified"
+    },
+    "dr_question": "In response to the federal government\u2019s 2025 interpretation of the Canada Health Act, what should MediConn Solutions do to address compliance risks from legal precedents or provincial variations by Q4 2028?",
+    "date": "2025-10-24",
+    "persona": {
+        "name": "Dr. Priya Patel",
+        "first_name": "Dr.",
+        "last_name": "Patel",
+        "username": "dr..patel",
+        "email": "dr..patel@mediconnsolutions.com",
+        "role": "Director of Regulatory Affairs",
+        "role_description": "Manages relationships with healthcare regulatory bodies, oversees compliance strategy for telehealth services, and leads cross-functional compliance initiatives"
+    },
+    "citation_format": {
+        "urls": [
+            "https://www.example.com/article",
+            "https://techcrunch.com/2023/report.html"
+        ],
+        "file_names": [
+            "quarterly_report.pdf",
+            "market_analysis.docx",
+            "shared/file-pdf"
+        ],
+        "mattermost_chats": [
+            "MatterMost-Channel-Team-User",
+            "Mattermost Message - Enterprise Chat (User: john.doe, Team: Compliance, Channel: General)"
+        ],
+        "email_messages": [
+            "RoundCube-fromdemail-todemails-Subject",
+            "Email from sarah.johnson@company.com on 20 Jan 2025"
+        ]
+    }
+}

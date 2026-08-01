@@ -1,0 +1,15 @@
+{
+    "dr_question": "Given the evolving battery price trends, supply chain dynamics, and regional material availability highlighted in the 2024 IEA report \"Trends in Electric Cars\", how can Elexion Automotive optimize its battery sourcing and procurement strategy to maintain cost efficiency and production resilience by Q1 2026?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Market Analysis",
+        "dr_question": "Given the evolving battery price trends, supply chain dynamics, and regional material availability highlighted in the 2024 IEA report \"Trends in Electric Cars\", how can Elexion Automotive optimize its battery sourcing and procurement strategy to maintain cost efficiency and production resilience by Q1 2026?",
+        "industry": "Automotive -- Electric Vehicles",
+        "url": "https://www.iea.org/reports/global-ev-outlook-2024/trends-in-electric-cars"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0081",
+    "industry": "automotive -- electric vehicles",
+    "domain": "Market Analysis",
+    "url": "https://www.iea.org/reports/global-ev-outlook-2024/trends-in-electric-cars"
+}

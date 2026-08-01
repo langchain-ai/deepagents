@@ -1,0 +1,77 @@
+{
+  "industry": "retail",
+  "domain": "sales",
+  "difficulty": "easy",
+  "files": [
+    {
+      "filetype": "xlsx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "chat",
+      "type": "supporting",
+      "app": "mattermost"
+    },
+    {
+      "filetype": "chat",
+      "type": "distractor",
+      "app": "mattermost"
+    },
+    {
+      "filetype": "chat",
+      "type": "distractor",
+      "app": "mattermost"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "task_id": "DR0043",
+  "question": "Considering the tele-health industry trends discussed in the article, how can MediConn Solutions improve patient experience in terms of trust, satisfaction, and retention in Canada by Q4 2026 to stay ahead of competitors?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "As of 2025, what languages does MediConn Solutions currently offer beyond English?",
+      "answer": "As of 2025, MediConn Solutions offers services only in English, despite Canada's increasingly diverse population requiring support in additional languages.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What percentage of patients accessed MediConn Solutions' prescription delivery service in Q2 2024?",
+      "answer": "In Q2 2024, only 23% of patients who received prescriptions during consultations utilized MediConn Solutions' integrated prescription delivery service, indicating a low adoption of this value-added integration.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "What was the change in MediConn Solutions' patient retention rate based on consumer behavior analysis completed in June 2025?",
+      "answer": "Based on customer behavior analysis done in June of 2025, MediConn Solutions' patient retention rate increased by 10%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "What is the latest market research report about the health professionals at MediConn Solutions' partnering hospitals regarding discomfort with virtual patient visits?",
+      "answer": "The latest market research report in 2023 suggests that 25% of the health professionals from the partnering hospitals have reported that they are not tech-savvy and are uncomfortable seeing patients virtually. This leads to a 30% longer average setup time for virtual appointments.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "What percentage of first-time users on MediConn Solutions' platform completed their initial consultation in 2024?",
+      "answer": "In September 2024, 81% of first-time users who created an account on MediConn Solutions' platform completed their initial consultation, with 19% abandoning the process before connecting with a healthcare professional.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

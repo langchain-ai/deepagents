@@ -1,0 +1,149 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "Do inactive customers cite concerns about cybersecurity as a reason for not continuing to use MediConn's services?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, over 28% of inactive customers who responded to our March 2025 customer survey have referred to cybersecurity concerns about their personal data as a reason for stopping usage of MediConn's services.",
+            "supporting_file_paths": [
+                "shared/customer-retention-cybersecurity.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "Do MediConn's customers compare its services favorably or unfavorably to its competitors?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "80% of MediConn's customers state that they prefer using its services to its competitors.",
+            "supporting_file_paths": [
+                "shared/service-comparison-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How much do patients pay out of pocket for prescriptions through MediConn compared to directly working with pharmacies?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Patients typically save 10-25% on prescriptions using MediConn's prescription management service.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Prescription_Cost_Comparison_Da.xlsx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "How long is the typical wait for the virtual appointments?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Appointment wait times varies. Our statistics show in the last 6 months of 2024, that wait time is three days to 1 month on average.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Virtual_Appointment_Wait_Times_.xlsx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How did MediConn do on meeting the sales budget expectations from 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The MediConn sales teams stayed 5% under budget in 2024 and still met its sales goals.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_223009.jsonl"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "When was the last time MediConn employed an outside consultant to analyze the effectiveness of its marketing efforts?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn's last marketing review by an outside consultant was performed in 2023.",
+            "supporting_file_paths": [
+                "shared/marketing-analysis-summary.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "How many doctors does MediConn currently partner with to provide healthcare services?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of July 1, 2025, there are 4,342 doctors in MediConn's Virtual Healthcare system.",
+            "supporting_file_paths": [
+                "shared/partnership-overview.pdf"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "How much do doctors who work with MediConn earn from a virtual healthcare appointment?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Rates vary depending on the appointment type as well as the specialization and experience level of the doctor. In general, rates can range from $20 CAD to over $2,000 CAD.",
+            "supporting_file_paths": [
+                "shared/virtual-appointment-compensation.docx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "Does MediConn expect to grow its sales or marketing departments in 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "No, MediConn has a company-wide hiring freeze until 2027.",
+            "supporting_file_paths": [
+                "shared/2026-growth-projections.pdf"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "How many patients did MediConn Solutions refer to doctors for in-person consultations based on their virtual pre-screening interviews in 2024, and did that number grow from 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, 24,800 patients were referred to doctors for in-person consultations due to their cases being determined as too complex or risky for a virtual appointment. This was an increase of 21% over 2023.",
+            "supporting_file_paths": [
+                "shared/virtual-referral-analysis.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What market share does MediConn Solutions currently have in Canada?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn Solutions currently has 19% of the Canadian virtual healthcare market as of our recent study on July 1, 2025.",
+            "supporting_file_paths": [
+                "shared/virtual-healthcare-marketing-plan.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "Do in-person marketing events, such as university outreach tables or sales representatives at doctors' offices, increase customer conversion?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Based on a marketing department report from May 2024, potential customers are 60% more likely to start using MediConn services after encountering in-person marketing in comparison to encountering digital ads.",
+            "supporting_file_paths": [
+                "shared/virtual-healthcare-marketing.pptx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "How effective are social media campaigns at encouraging new patients to sign up for MediConn accounts?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "During our last Facebook ad push, there was an increase of 10% in new patient sign-ups, 6% of which were referred directly to the MediConn site through Facebook ad links.",
+            "supporting_file_paths": [
+                "shared/virtual-healthcare-strategy.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

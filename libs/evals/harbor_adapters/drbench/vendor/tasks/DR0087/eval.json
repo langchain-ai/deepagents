@@ -1,0 +1,237 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "The voluntary turnover rate is HR-related. It does not address on-floor customer engagement. So, it doesn't inform an associate's tactics to recover sales.",
+            "question": "What was the voluntary turnover rate for Lee's Market in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "10.2% was the voluntary turnover rate for Lee's Market in 2025.",
+            "supporting_file_paths": [
+                "shared/2025-turnover-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "This macro employment figure is far removed from on-floor engagement strategy. Thus, it is not directly actionable for sales associates.",
+            "question": "What was the monthly employment change in Lee's Market in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The monthly employment change in Lee's Market in June 2025 was +0.4%.",
+            "supporting_file_paths": [
+                "shared/employment-overview-june-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "This does not address engagement tactics at the store-floor level for seasonal products. It is therefore not relevant for sales associates aiming to enhance on-floor customer engagement and personalized upselling strategies.",
+            "question": "What was the retail vacancy rate in Lee's Market in H1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The overall retail vacancy rate in Lee's Market was 3.5% in the first half of 2025.",
+            "supporting_file_paths": [
+                "shared/retail-vacancy-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "Rent trends are a cost metric and do not relate to how sales associates engage customers. Therefore, they do not help answer the research question.",
+            "question": "By what amount did the average asking gross rent decline in Lee's Market in H1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average asking gross rent in Lee's Market declined by $0.86 per square foot in the first half of 2025.",
+            "supporting_file_paths": [
+                "shared/H1-2025-Market-Analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "Demographic data does not directly inform how to enhance on-floor engagement. Hence, it does not provide any valuable input to the sales associate.",
+            "question": "What is the average age of Lee's Market's retail workers?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average age of Lee's Market's retail workers is 36.7 years.",
+            "supporting_file_paths": [
+                "shared/lees-market-demographic-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "This pertains to employee sentiment and culture rather than specific on-floor engagement metrics. So it doesn't provide any valuable input to sales associates.",
+            "question": "What share of retail workers in Lee's Market say that meaningful work is their priority at work?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Sixty-eight percent of retail workers in Lee's Market identified meaningful work as their priority at work.",
+            "supporting_file_paths": [
+                "shared/employee-motivation-insights.pptx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "This is a retail labor statistic and does not directly relate to a sales associate's role in engaging customers on the floor to drive sales recovery.",
+            "question": "How many jobs were lost in Lee's Market in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Approximately 1% jobs were lost in Lee's Market in March 2025.",
+            "supporting_file_paths": [
+                "shared/march-2025-workforce-report.pptx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "Scheduling lead time pertains to employee operations rather than on-floor customer engagement. So it doesn't provide any valuable input to sales associates.",
+            "question": "What proportion of employees said they receive their weekly schedule one week or less in advance at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "56% of retail employees received their schedule one week or less in advance at Lee's Market.",
+            "supporting_file_paths": [
+                "shared/scheduling-insight-report.docx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "Scheduling autonomy is an internal HR detail. It may impact morale, but it doesn't speak to on-floor engagement with customers to drive sales rebound. So it doesn't provide any valuable input to sales associates.",
+            "question": "What proportion of Lee's Market's retail employees report little input into their schedules?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Approximately 80% of workers report having little input into their schedules at Lee's Market.",
+            "supporting_file_paths": [
+                "shared/scheduling-satisfaction-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "Real estate vacancy metrics are broader property market data. They do not specifically address on-floor customer engagement at Lee's Market and are therefore tangential.",
+            "question": "In Lee's Market in 2025, by how much did the vacancy rate increase year-over-year in retail space?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Increase of 70 basis points (from ~2.8% to 3.5%).",
+            "supporting_file_paths": [
+                "shared/retail-space-analysis-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "Side income for employees may reflect workforce conditions, but it does not indicate how a sales associate can improve customer engagement.",
+            "question": "What proportion of Lee's Market's retail workers say they have another source of income?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "32% of full-time retail workers have another source of income at Lee's Market.",
+            "supporting_file_paths": [
+                "shared/workforce-financial-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "Negative absorption is property market data and is not directly related to a sales associate's ability to engage clients. So it doesn't provide any valuable input to sales associates.",
+            "question": "How many square feet of negative absorption did Lee's Market's regional malls record in the first half of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market's regional malls recorded 237,000 square feet of negative absorption in the first half of 2025.",
+            "supporting_file_paths": [
+                "shared/lees-market-absorption-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "While price hikes can affect sales, 1-year price hikes will not impact sales-recovery tactics from a particular month (July 2025). So, they are not directly tied to on-floor associate behavior and do not provide any valuable input to sales associates.",
+            "question": "What are the one-year-ahead price-hike expectations of Lee's Market products in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Around 3%.",
+            "supporting_file_paths": [
+                "shared/Q3-2025-pricing-forecast.pdf"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "The total employee count is too broad. It does not link to sales associate tactics for customer engagement. Thus, it is irrelevant to the goal.",
+            "question": "What was the number of employees in wholesale & retail trade in Lee's Market in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "There were 400 employees in the wholesale & retail trade in Lee's Market in June 2025.",
+            "supporting_file_paths": [
+                "shared/lees-market-employee-stats.docx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "Employee stress is relevant for HR, but it doesn't yield actionable insights for sales associates' engagement tactics.",
+            "question": "What percentage of Lee's Market's retail workers reported stress due to their working hours?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "41% reported such stress.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Employee_Working_Condition_Insights.xlsx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "This establishes a quantitative baseline indicating the decline in the average buying-decision time of customers before the July 2025 sales drop. This information tells sales associates to drive personalized engagement initiatives that can potentially improve customer dwell time.",
+            "question": "What was the percentage dip in average customer dwell time on the sales floor between May and July 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The percentage dip in average customer dwell time on the sales floor between May and July 2025 was 18%.",
+            "supporting_file_paths": [
+                "shared/customer-engagement-strategies.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "This establishes a quantitative baseline indicating the decline in the average number of products considered by customers before the July 2025 sales drop. This information tells sales associates to drive personalized engagement initiatives that can potentially improve the number of product interactions per customer.",
+            "question": "What was the percentage dip in the number of product interactions per customer on the sales floor between May and July 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The percentage dip in the number of product interactions per customer on the sales floor between May and July 2025 was 40%.",
+            "supporting_file_paths": [
+                "shared/customer-engagement-strategies.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "This highlights the product categories most affected by reduced engagement and guides sales associates on which SKUs require greater personalized recommendation focus and on-floor visibility to improve sales.",
+            "question": "How many of the top 10 seasonal SKUs underperformed from June to August 2025 compared to the same period in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Eight of the top 10 seasonal SKUs underperformed from June to August 2025 compared to the same period in 2024.",
+            "supporting_file_paths": [
+                "shared/customer-engagement-strategy-2025.pdf"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "This insight helps sales associates identify the customer segment (non-Asian customers) that requires greater focus in terms of personalized engagement. Upcoming engagement initiatives can be tailored to non-Asian customers to improve sales for this segment.",
+            "question": "By what percentage was the average order size of Asian customers higher than the average order size of non-Asian customers during July 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The average order size of Asian customers was 18% higher than the average order size of non-Asian customers during July 2025.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_141127.jsonl"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "This highlights the impact of proactive engagement on sales, motivating associates to focus on initiating conversations and upselling strategies to boost overall sales.",
+            "question": "How much higher was the average basket value for customers who interacted with sales associates compared to those who shopped independently in July 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The average basket value for customers who interacted with sales associates was 22% higher than for independent shoppers.",
+            "supporting_file_paths": [
+                "shared/customer-engagement-strategies.pdf"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "This helps sales associates understand the effectiveness of personalized engagement, encouraging more tailored recommendations to increase repeat visits and offset the overall sales decline.",
+            "question": "What percentage of customers who received personalized product recommendations in July 2025 returned to make additional purchases in August 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "35% of customers who received personalized recommendations returned for additional purchases in August 2025.",
+            "supporting_file_paths": [
+                "shared/customer-engagement-strategies.pptx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

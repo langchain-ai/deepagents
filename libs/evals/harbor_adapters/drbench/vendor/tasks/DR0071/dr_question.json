@@ -1,0 +1,15 @@
+{
+    "dr_question": "Referencing the information shared in the April 2025 article from Help Net Security, what external cybersecurity market data involving the automotive industry should Elexion Automotive analyze by the end of Q4 2025 to protect consumer data and safety?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Cybersecurity",
+        "dr_question": "Referencing the information shared in the April 2025 article from Help Net Security, what external cybersecurity market data involving the automotive industry should Elexion Automotive analyze by the end of Q4 2025 to protect consumer data and safety?",
+        "industry": "Automotive -- Electric Vehicles",
+        "url": "https://www.helpnetsecurity.com/2025/04/04/cybersecurity-risks-cars/"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0071",
+    "industry": "automotive -- electric vehicles",
+    "domain": "Cybersecurity",
+    "url": "https://www.helpnetsecurity.com/2025/04/04/cybersecurity-risks-cars/"
+}

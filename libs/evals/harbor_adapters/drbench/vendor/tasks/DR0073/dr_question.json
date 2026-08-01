@@ -1,0 +1,15 @@
+{
+    "dr_question": "How can Elexion Automotive's control interface design strategy for 2026 EV models prioritize physical buttons and switches by Q3 2025 to reduce the 30% higher control/display problem rate for EVs and achieve PP100 scores below the 266 EV average?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Quality Assurance",
+        "dr_question": "How can Elexion Automotive's control interface design strategy for 2026 EV models prioritize physical buttons and switches by Q3 2025 to reduce the 30% higher control/display problem rate for EVs and achieve PP100 scores below the 266 EV average?",
+        "industry": "Automotive -- Electric Vehicles",
+        "url": "https://www.greencars.com/expert-insights/do-evs-have-more-quality-problems"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0073",
+    "industry": "automotive -- electric vehicles",
+    "domain": "Quality Assurance",
+    "url": "https://www.greencars.com/expert-insights/do-evs-have-more-quality-problems"
+}

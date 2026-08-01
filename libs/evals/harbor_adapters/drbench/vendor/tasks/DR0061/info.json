@@ -1,0 +1,102 @@
+{
+    "industry": "automotive -- electric vehicles",
+    "domain": "crm",
+    "difficulty": "hard",
+    "files": [
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pptx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pptx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "jsonl",
+            "type": "distractor",
+            "app": "mattermost"
+        },
+        {
+            "filetype": "pptx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pptx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "jsonl",
+            "type": "distractor",
+            "app": "mattermost"
+        },
+        {
+            "filetype": "email",
+            "type": "distractor",
+            "app": "roundcube"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "supporting",
+            "app": "file_system"
+        },
+        {
+            "filetype": "xlsx",
+            "type": "supporting",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pdf",
+            "type": "supporting",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "pptx",
+            "type": "supporting",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "docx",
+            "type": "supporting",
+            "app": "file_system"
+        }
+    ]
+}

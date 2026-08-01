@@ -1,0 +1,30 @@
+{
+  "task_id": "DR0077",
+  "question": "How can Elexion Automotive use real-time data from IoT sensors embedded in vehicles and manufacturing equipment, combined with digital engineering-enabled digital twins, to enhance predictive maintenance and minimize downtime in production lines by the end of 2025?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "By November 30, 2025 how many production lines at Elexion Automotive will be integrated with digital twin-enabled IoT monitoring?",
+      "answer": "According to an internal planning report dated September 5, 2025, Elexion Automotive plans to integrate digital twin-enabled IoT monitoring on 26 production lines across its North American facilities by October 15, 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "How many key operational metrics will Elexion Automotive collect from each of its production lines using IoT sensors and digital twins in Q1 2026?",
+      "answer": "Internal Elexion Automotive analytics projections indicate that each production line will collect approximately 1,500 real-time metrics from IoT sensors and digital twins, covering equipment performance, cycle times, and anomaly detection.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "How many predictive maintenance alerts does Elexion Automotive expect to receive per month from digital twin monitoring across all its production lines in Q4, 2025?",
+      "answer": "Internal Elexion Automotive system forecasts estimate that digital twin-enabled monitoring will generate 120 predictive maintenance alerts per month across all integrated production lines between October 1 and December 31, 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "By December 31, 2025, will Elexion Automotive’s digital engineering team be able to detect early signs of equipment degradation using digital twin-enabled IoT data?",
+      "answer": "Yes. Internal Elexion Automotive test results from October 10 to October 18, 2025, confirm that the digital engineering-enabled digital twins can detect early signs of equipment degradation in real time.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+    "dr_question": "What is the impact of third-party data breaches on MediConn's virtual healthcare platforms and patient data, and what new regulations can be implemented to defend against these breaches?",
+    "question_type": "ai_generated",
+    "question_source": {
+        "domain": "cybersecurity",
+        "dr_question": "What is the impact of third-party data breaches on MediConn's virtual healthcare platforms and patient data, and what new regulations can be implemented to defend against these breaches?",
+        "industry": "Virtual/Remote Healthcare",
+        "n_hops": 3,
+        "subquestions": [
+            "What is the average cost of a data breach in the healthcare industry?",
+            "What are the common causes of data breaches in the healthcare industry?",
+            "How can MediConn's virtual healthcare platforms be designed to minimize the risk of third-party data breaches?"
+        ],
+        "url": "https://www.aha.org/news/aha-cyber-intel/2024-10-07-look-2024s-health-care-cybersecurity-challenges"
+    },
+    "timestamp": "2025-08-08 13:09",
+    "task_id": "DR0008",
+    "subquestions": [
+        "What is the average cost of a data breach in the healthcare industry?",
+        "What are the common causes of data breaches in the healthcare industry?",
+        "How can MediConn's virtual healthcare platforms be designed to minimize the risk of third-party data breaches?"
+    ],
+    "industry": "healthcare",
+    "domain": "cybersecurity",
+    "url": "https://www.aha.org/news/aha-cyber-intel/2024-10-07-look-2024s-health-care-cybersecurity-challenges"
+}

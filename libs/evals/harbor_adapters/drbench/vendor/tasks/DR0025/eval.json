@@ -1,0 +1,226 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What was Lee\u2019s Market's customer satisfaction score in last year\u2019s annual report?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The company scored 87% on overall customer satisfaction in 2024.",
+            "supporting_file_paths": [
+                "shared/customer-satisfaction-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "How many customer service representatives currently work under David\u2019s supervision as of July 1, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of July 1, 2025, David manages a team of 25 full-time customer service representatives across 12 Lee's Market stores.",
+            "supporting_file_paths": [
+                "shared/staffing-analysis-report.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What was Lee's Market's average wait time for customer service calls between October 1 and December 31, 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The company's average wait time for customer service calls was 3 minutes and 40 seconds during the last quarter of 2024.",
+            "supporting_file_paths": [
+                "shared/Q4-2024-service-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "How many new stores did Lee\u2019s Market open in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The company expanded by opening 4 new branches in the U.S. Midwest region.",
+            "supporting_file_paths": [
+                "shared/lees-market-expansion-2024.pdf"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What is the most commonly purchased product category at Lee\u2019s Market as of October 20, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of October 20, 2025, fresh produce and seafood account for 38% of total sales. These were the most purchased product categories across all Lee's Market stores.",
+            "supporting_file_paths": [
+                "shared/product-category-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How many loyalty program members does Lee\u2019s Market currently have as of June 30, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Data from the company indicates that as of June 30, 2025, the loyalty program includes over 90,000 registered members nationwide.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_010012.jsonl"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "How often does Lee\u2019s Market conduct in-person customer feedback surveys?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Surveys were conducted twice in 2024. Once in January and again in July, across selected stores",
+            "supporting_file_paths": [
+                "shared/feedback-collection-practices.docx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "What\u2019s the most common customer complaint category received through Lee's Market's hotline as of February 15, 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of February 15, 2024, 45% of Lee's Market's hotline complaints were related to delayed grocery deliveries.",
+            "supporting_file_paths": [
+                "shared/customer-complaints-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "How many customer service awards has Lee\u2019s Market received since 2020?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The company has received three regional awards for outstanding service quality.",
+            "supporting_file_paths": [
+                "shared/customer-service-report.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "What period in 2024 recorded Lee\u2019s Market's highest in-person shopping traffic?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Store analytics from Q4 2024 show that in-store visits increased by 28% on Saturdays between 1 pm and 4 pm across all branches.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_010226.jsonl"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "Between January 1 and March 31, 2025, what language was most used in customer service calls at Lee\u2019s Market?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to data from the customer service department, 55% of calls were conducted in English, followed by Mandarin at 25% during the first quarter of 2025.",
+            "supporting_file_paths": [
+                "shared/Q1-2025-Language-Analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "What\u2019s the average age group of Lee\u2019s Market's walk-in shoppers between October 1 and December 31, 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average in-store shopper age in the fourth quarter of 2024 was between 35 and 50 years.",
+            "supporting_file_paths": [
+                "shared/q4-customer-demographics.pdf"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "As of December 31, 2024, how often did Lee's Market's outlets have to refund customer orders because of spoilt or damaged goods?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal data, as of December 31, 2024, on average, the business refunded 0.25% of customer orders due to bad, expired, or damaged products.",
+            "supporting_file_paths": [
+                "shared/refunds-quality-review.pptx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "Between January and March 2025, how many customers directly asked for a human agent because they weren\u2019t tech-savvy?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Data from Lee\u2019s Market shows that in the first quarter of 2025, 5% of clients requested a human agent due to low digital literacy.",
+            "supporting_file_paths": [
+                "shared/customer-interaction-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "",
+            "question": "Between April and June 2025, how often did customers use Lee\u2019s Market\u2019s online expiration checker when shopping for groceries?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal analytics, in the second quarter of 2025, 48% of Lee's Market's online shoppers checked for grocery expiration dates using the online expiration checker.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_010450.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "How many customers have directly asked for a human customer service agent due to a failure with an AI chatbot as of July 15, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Internal company data as of July 15, 2025 show that 30% of clients asked for human assistance even when they initially started with a chatbot.",
+            "supporting_file_paths": [
+                "shared/ai-enhanced-customer-experience.pptx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "As of October 1, 2024, how often did customers use Lee's Market store\u2019s online product search or recipe feature when shopping for groceries?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Internal analytics show as of October 1, 2024, about 55% of online shoppers used the product search tool, but less than 20% explored recipes or meal suggestions.",
+            "supporting_file_paths": [
+                "shared/ai-customer-experience.pptx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "Between December 1 and 31, 2024, what were the most common customer complaints handled by Lee\u2019s Market's customer service team?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Customer logs reveal that 40% of inquiries in that period related to product availability or ingredient details, and most of these were addressed by an AI chatbot with real-time inventory and product data access.",
+            "supporting_file_paths": [
+                "shared/AI-enhanced-customer-experience.pdf"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "How many repeat customers interacted with Lee\u2019s Market via digital platforms such as social media or live chat between June 1 and June 30, 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Between June 1 and June 30, 2024, roughly 65% of repeat buyers engaged Lee's Market through messaging apps or social media pages rather than phone or email.",
+            "supporting_file_paths": [
+                "shared/ai-customer-experience.pptx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "What percentage of Lee's Market's customer interactions with AI chatbots currently result in a completed online purchase as of January 1, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Data shows that only 50% of digital interactions with chatbots as of January 1, 2025, lead to a checkout, with the rest abandoning their carts",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_005746.jsonl"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

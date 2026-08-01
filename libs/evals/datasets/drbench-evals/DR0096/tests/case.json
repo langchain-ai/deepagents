@@ -1,0 +1,54 @@
+{
+  "task_id": "DR0096",
+  "question": "As per the report by the U.S. Census Bureau's indication of a rise in food service sales since August 2024, how can Lee’s Market optimize in-store layouts and product displays across its U.S. locations to increase bakery sales by 15% by the end of Q1 2026?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What has been the monthly sales trend (in USD) for bakery products across all Lee's Market's U.S. stores from Q1 2025 to Q3 2025?",
+      "answer": "For bakery products across all Lee's Market's U.S. stores from Q1 2025 to Q3 2025, the monthly sales have been an estimated $5.5M USD per month, representing an average quarterly growth rate of approximately 5%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "For Lee's Market, how does average dwell time (in minutes) in bakery areas correlate with conversion rate from April to September 2025?",
+      "answer": "For Lee's Market, an average dwell time of approximately 5 minutes in bakery areas correlated with a positive conversion rate of 0.65% from April to September 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "Based on heatmap data from June-September 2025, what are the top five traffic flow zones within the bakery section across all Lee's Market's U.S. stores?",
+      "answer": "From June to September 2025, the top five bakery traffic zones in Lee's Market's U.S. stores were the entrance-facing bread display, cake and pastry display, checkout-side impulse rack, beverage adjacency shelf, and custom cake counter.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "Based on heatmap data from June-September 2025, what are the sales per square foot for each of the top five bakery traffic zones across all Lee's Market's U.S. stores?",
+      "answer": "From June to September 2025, Lee's Market's U.S. bakery zones achieved sales per square foot of $1,250 for the entrance-facing bread display, $1,100 for the cake and pastry display, $900 for the checkout-side impulse rack, $650 for the beverage adjacency shelf, and $1,500 for the custom cake counter.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "Based on heatmap data from June-September 2025, which of these top five bakery traffic zones demonstrate below-average sales conversion across all Lee's Market's U.S. stores?",
+      "answer": "From June to September 2025, the beverage adjacency shelf and mid-aisle cake and pastry demonstrated below-average sales conversion across all Lee's Market's U.S. stores.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0006",
+      "question": "What is the average cross-sell uplift (%) when bakery items are displayed near coffee, dairy, or snack products during the Q2-Q3 2025 promotional cycles across all Lee's Market's U.S. stores?",
+      "answer": "During Q2-Q3 2025, across all Lee's Market's U.S. stores, bakery items displayed near coffee or snack products generated an estimated 12% cross-sell uplift, compared to approximately 7% when placed beside dairy items.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0007",
+      "question": "What is the projected change in staff workload (hours/week) per store if bakery layouts are optimized with new display cases and prep counters for the Q1 2026 rollout across all Lee's Market's U.S. stores?",
+      "answer": "Across all Lee's Market's U.S. stores, optimizing bakery layouts with new display cases and prep counters for the Q1 2026 rollout is projected to increase staff workload by around 45 hours per week per store.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0008",
+      "question": "What is the projected ROI (%) for bakery layout optimizations by the end of Q1 2026 for Lee's Market, factoring in equipment and labor costs?",
+      "answer": "By Q1 2026, Lee's Market's bakery layout optimizations are projected to yield an ROI of approximately 24% with a payback period of approximately 15 months.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

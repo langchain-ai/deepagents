@@ -1,0 +1,171 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How many employees attended last quarter\u2019s wellness seminar?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Attendance was 310 employees.",
+            "supporting_file_paths": [
+                "shared/q3-wellness-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What is the cafeteria\u2019s revised meal rotation schedule?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Meal rotation adjusted to a 3\u2011week cycle.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_231101.jsonl"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How many branded hats were distributed at the 2024 summer fair?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "4,200 units were distributed.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_231159.jsonl"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What percentage of employees updated their ID photos this year?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "79% completed photo updates.",
+            "supporting_file_paths": [
+                "shared/id-update-compliance-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What changes were made to parking allocation at HQ?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "EV\u2011charging-only spots increased by 12.",
+            "supporting_file_paths": [
+                "shared/parking-allocation-update.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How many HR onboarding sessions were held in Q2?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Nine sessions were completed.",
+            "supporting_file_paths": [
+                "shared/Q2-HR-Onboarding-Overview.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "What color theme was chosen for the annual brand day?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Silver Horizon was selected.",
+            "supporting_file_paths": [
+                "shared/brand-day-recap.pptx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "How many internal newsletters were sent in Q3?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Five newsletters were released.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_231352.jsonl"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "How many plant maintenance work orders were closed?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "284 orders were closed.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_231436.jsonl"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "How many internship applications were received this year?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "1,480 applications were submitted.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_231535.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What does internal dealership audit data show about current vehicle placement?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Only 42% of partnered dealerships consistently display Elexion models in primary walk\u2011in zones.",
+            "supporting_file_paths": [
+                "shared/lithium-sourcing-strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What patterns appear in Elexion\u2019s remote diagnostic error logs?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "35% of service tickets were escalated due to insufficient pre\u2011visit troubleshooting.",
+            "supporting_file_paths": [
+                "shared/lithium-sourcing-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "What risks does Elexion face in its lithium supplier mix?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Elexion relies on two suppliers with quarterly variable-pricing clauses tied to global spot markets.",
+            "supporting_file_paths": [
+                "shared/battery-sourcing-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "What internal gaps were found in CARB data readiness?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Battery traceability reports lack timestamp verification for 18% of VIN batches.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_230939.jsonl"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "Which geographic markets show rising EV demand?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Colorado and Arizona dealerships recorded 12\u201315% YoY growth in mid\u2011range EV inquiries.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_EV_Demand_Growth_by_Region_Anal.xlsx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

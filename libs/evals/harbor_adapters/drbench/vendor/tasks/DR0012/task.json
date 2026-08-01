@@ -1,0 +1,67 @@
+{
+    "name": "DR0012",
+    "task_id": "DR0012",
+    "level": "",
+    "company_info": {
+        "annual_revenue": "$350M - $500M",
+        "compliance_certifications": [
+            "EPA Greenhouse Gas Emissions Compliance",
+            "Motor Vehicle Safety Oversight Program",
+            "CARB Zero-Emission Vehicle (ZEV) Program",
+            "ISO 26262 \u2013 Road Vehicles Functional Safety"
+        ],
+        "description": "Elexion Automotive designs and manufactures premium and mid-range electric vehicles tailored for the North American market. With a focus on sustainability, user-centric technology, and cross-border compliance, Elexion aims to accelerate the transition to zero-emission transportation.",
+        "employee_count": 1900,
+        "founded_year": 2010,
+        "headquarters": "Austin, Texas, USA",
+        "industry": "Automotive -- Electric Vehicles",
+        "key_products_services": [
+            "Electric vehicles",
+            "Plug-in hybrid electric vehicles",
+            "Home charging stations"
+        ],
+        "market_position": "Elexion is an emerging force in the North American EV market, offering affordable and high-performance electric vehicles with regulatory-first design and localized production.",
+        "name": "Elexion Automotive",
+        "size": "Enterprise",
+        "target_markets": [
+            "Mid-income families in North America",
+            "Provincial and municipal governments"
+        ]
+    },
+    "dr_question": "How can Elexion Automotive\u2019s quality assurance processes be optimized to address the unique challenges of electric vehicle production, such as software and user experience issues, compared to gasoline cars?",
+    "date": "2025-08-27",
+    "persona": {
+        "department": "Quality and Reliability",
+        "domain": "quality_assurance",
+        "email": "ethan.smith@elexionautomotive.com",
+        "first_name": "Ethan",
+        "id": "EMP0005",
+        "justification": "As a Quality Assurance Engineer at Elexion Automotive, Ethan plays a crucial role in ensuring the highest quality of electric vehicles. His research focus on quality assurance helps the company maintain a positive reputation, attract customers, and stay competitive in the electric vehicle market.",
+        "last_name": "Smith",
+        "name": "Ethan Smith",
+        "password": "my_drbench_pwd",
+        "responsibilities": "Develop and implement quality control processes for electric vehicle production, conduct testing and inspection to identify defects, and collaborate with cross-functional teams to resolve quality issues.",
+        "role": "Quality Assurance Engineer",
+        "seniority": "Mid",
+        "username": "ethan.smith"
+    },
+    "citation_format": {
+        "urls": [
+            "https://www.example.com/article",
+            "https://techcrunch.com/2023/report.html"
+        ],
+        "file_names": [
+            "quarterly_report.pdf",
+            "market_analysis.docx",
+            "shared/file-pdf"
+        ],
+        "mattermost_chats": [
+            "MatterMost-Channel-Team-User",
+            "Mattermost Message - Enterprise Chat (User: john.doe, Team: Compliance, Channel: General)"
+        ],
+        "email_messages": [
+            "RoundCube-fromdemail-todemails-Subject",
+            "Email from sarah.johnson@company.com on 20 Jan 2025"
+        ]
+    }
+}

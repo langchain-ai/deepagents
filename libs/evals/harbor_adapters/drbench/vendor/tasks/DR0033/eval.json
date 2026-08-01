@@ -1,0 +1,523 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "In 2025, what percentage of Lee's Market staff employed for 3 years or more did not complete their annual cybersecurity training module before receiving a second reminder email?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Per employee training compliance logs for 2025, 29% of Lee's Market staff employed for 3 years or more did not complete their annual cybersecurity training module before receiving a second reminder email.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Employee_Training_Compliance_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "How many hours did Lee's Market's IT & Security department dedicate to the volunteer work with a local foodbank in 2025, as part of the team-building initiative started by Jason Wong?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The IT & Security department of Lee's Market logged a total of 68 volunteer hours with a local foodbank in 2025.",
+            "supporting_file_paths": [
+                "shared/IT-Security-Community-Engagement.pptx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What local charity did the IT & Security department of Lee's Market, under Jason Wong's suggestion, support during their 2024 holiday canned food drive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "During the 2024 holiday season, Jason Wong recommended the Lee's Market IT team partner with the Westport Food Bank, organizing food drives and arranging matching donations with the customer purchases. The company promoted the event through in-store signage and local press coverage, successfully collecting over 300 food items for families in need.",
+            "supporting_file_paths": [
+                "shared/2024-charitable-initiatives-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What was the last update pushed to the Lee's Market app?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The last update pushed to the Lee's Market app was Version 2.3.1, released on October 1, 2025. It contained several small bug fixes to the UI.",
+            "supporting_file_paths": [
+                "shared/lees-market-app-enhancements.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How many times did Jason Wong attend cybersecurity conferences in 2020?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong participated in two virtual cybersecurity grocery conferences across 2020, including one national convention and one regional.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-assessment-wong.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What was the color scheme that Jason Wong chose for Lee's Market's customer app redesign in April 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The customer app was relaunched (version 2.0) in April 2025 with Jason Wong approving a sage green and gold color scheme after a customer vote, aiming to reflect freshness and heritage.",
+            "supporting_file_paths": [
+                "shared/app-redesign-overview.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "What was the average checkout time for customers at Lee's Market in Q3 2025, a KPI shared by Jason Wong in his monthly dashboard?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In Q3 2025, the average checkout time as shared by Jason Wong in his monthly dashboard held steady at 4.2 minutes, with express lanes and self-checkout helping reduce peak time wait for customers at Lee's Market.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_094521.jsonl"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "How many POS systems updates did the Lee's Market IT team conduct in 2018?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2018, the IT team made 7 updates to the Lee's Market POS systems.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_094606.jsonl"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "How many IT service requests did the Lee's Market IT & Security team address in May 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The IT & Security team at Lee's Market fielded 44 service requests in May 2025.",
+            "supporting_file_paths": [
+                "shared/may-2025-IT-service-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "How many employee computers did the Lee's Market's IT & Security team, under Jason Wong, replace in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, 14 employee computing units were replaced by Jason Wong and the IT & Security crew.",
+            "supporting_file_paths": [
+                "shared/IT-Report-2024.pptx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "In which month of 2023 did the Lee's Market app experience a multi-hour service outage?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Lee's Market app was temporarily unavailable for 27 hours during March of 2023.",
+            "supporting_file_paths": [
+                "shared/2023-app-service-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "How many downloads of the Lee's Market app occurred in July 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In July 2025, the Lee's Market app had 207 downloads, across all platforms.",
+            "supporting_file_paths": [
+                "shared/July-App-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "What percentage of Lee's Market cashiers in Q2 2025 were under 21, after Jason Wong's youth recruitment campaign?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "After recruiting efforts led by Jason Wong, 37% of cashiers were under 21, bringing fresh energy and skills to the team in Q2 2025.",
+            "supporting_file_paths": [
+                "shared/youth-recruitment-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "What social platform did Lee's Market use to publish Jason Wong's 2025 IT & Security department hiking challenge, encouraging employee wellness?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Wong's hiking challenge for IT & Security staff in 2025, designed to promote employee wellness, was chronicled through regular Instagram and Facebook updates.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Employee_Wellness_Activities_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "",
+            "question": "What energy-saving strategies did Jason Wong promote for Lee's Market's refrigeration costs in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong guided minor scheduling and equipment upgrades that cut refrigeration bills to an average of $2300 per month, highlighted in the quarterly utility review.",
+            "supporting_file_paths": [
+                "shared/energy-efficiency-strategies.docx"
+            ]
+        },
+        {
+            "id": "DI0016",
+            "justification": "",
+            "question": "How did Jason Wong promote the bakery's record 93 birthday cake sales in May 2025 at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The bakery's milestone was broadcast by Jason Wong via the store's e-newsletter along with the staff shoutouts and marketing highlights for its 93 birthday cake sales in May 2025.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Birthday_Cake_Promotion_Data_Record.xlsx"
+            ]
+        },
+        {
+            "id": "DI0017",
+            "justification": "",
+            "question": "How did Jason Wong and Lee's Market use his 2025 tech articles to inspire staff development?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "After publishing in \"Retail Technology Monthly,\" Jason Wong arranged \"lunch and learns\" at the store, using his article as inspiration for the IT innovation discussions.",
+            "supporting_file_paths": [
+                "shared/staff-development-insights.docx"
+            ]
+        },
+        {
+            "id": "DI0018",
+            "justification": "",
+            "question": "How many new staff joined the Lee's Market IT & Security team in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Fifteen new staff joined the Lee's Market IT & Security team in 2024.",
+            "supporting_file_paths": [
+                "shared/IT-Security-Expansion.pptx"
+            ]
+        },
+        {
+            "id": "DI0019",
+            "justification": "",
+            "question": "How did Jason Wong track and analyze Lee's Market's Q4 2025 gift card redemptions for marketing feedback?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong's analytics solutions showed 386 gift card redemptions in Q4 2025, influencing future marketing approaches shared in the staff meeting.",
+            "supporting_file_paths": [
+                "shared/Q4-GiftCard-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0020",
+            "justification": "",
+            "question": "What insight did Jason Wong highlight after analyzing data from Lee's Market's customer parking time audit in the summer of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong reviewed parking time data and suggested small operational changes after learning the average customer stayed for 45 minutes.",
+            "supporting_file_paths": [
+                "shared/summer-2025-parking-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0021",
+            "justification": "",
+            "question": "What was Jason Wong's role in ensuring meat department staff at Lee's Market received food safety certifications in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong maintained digital compliance records, ensuring all 7 meat clerks passed the 2025 safety certification.",
+            "supporting_file_paths": [
+                "shared/food-safety-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0022",
+            "justification": "",
+            "question": "How did Jason Wong's favorite 2025 podcasts influence discussion topics at Lee's Market's lunch and learn sessions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong's integrated podcasts in 2025 highlight monthly learning sessions, prompting staff to share ideas and inspirational stories.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Podcast_Influence_Learning_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0023",
+            "justification": "",
+            "question": "What signage upgrades did Jason Wong implement in Lee's Market in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong led a $3500 initiative to upgrade branding and safety signage throughout the store, improving visual standards in 2025.",
+            "supporting_file_paths": [
+                "shared/signage-upgrade-report-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0024",
+            "justification": "",
+            "question": "How did Lee's Market and Jason Wong prepare for four generator activations during the 2025 outages?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong conducted emergency response drills, preparing staff to keep operations running during 2025 outages.",
+            "supporting_file_paths": [
+                "shared/outage-preparedness-case-study.pptx"
+            ]
+        },
+        {
+            "id": "DI0025",
+            "justification": "",
+            "question": "How did Jason Wong's team-building strategy increase Lee's Market Staff picnic attendance in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2025, through regular reminders and reward raffles, Jason Wong lifted picnic attendance to a company record of 95%, enhancing team spirit.",
+            "supporting_file_paths": [
+                "shared/wongs-team-building-impact.pptx"
+            ]
+        },
+        {
+            "id": "DI0026",
+            "justification": "",
+            "question": "How did Jason Wong utilize staff supplier feedback to improve Lee's Market's local produce sourcing in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong's suggestion for greater supplier outreach resulted in 34% of Q3 produce being sourced locally, as reported in the staff meeting.",
+            "supporting_file_paths": [
+                "shared/Q3-2025-sourcing-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0027",
+            "justification": "",
+            "question": "When did Jason Wong update the Lee's Market website cybersecurity infrastructure in 2022?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Wong and his team updated the Lee's Market website cybersecurity infrastructure from April 23-April 30 in 2022.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-update-2022.docx"
+            ]
+        },
+        {
+            "id": "DI0028",
+            "justification": "",
+            "question": "What was Jason Wong's involvement in Lee's Market's September 2025 coupon campaign?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong's communication plan published five coupon promotions to staff and customers, increasing the campaign engagement for Lee's Market's September 2025 coupon campaign.",
+            "supporting_file_paths": [
+                "shared/september-2025-campaign-review.pptx"
+            ]
+        },
+        {
+            "id": "DI0029",
+            "justification": "",
+            "question": "How did Jason Wong use Lee's Market's October 2025 loyalty program results for staff recognition?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong congratulated departments for enrolling 161 new program members in October 2025, handing out bonuses and certificates.",
+            "supporting_file_paths": [
+                "shared/oct-2025-recognition.pdf"
+            ]
+        },
+        {
+            "id": "DI0030",
+            "justification": "",
+            "question": "How did Jason Wong and Lee's Market's Bakery Team conduct three vendor quality audits in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Jason Wong and the team performed three vendor quality audits in 2025 by focusing on supplier consistency and inventory controls, updating vendor via scorecards,",
+            "supporting_file_paths": [
+                "shared/2025-audit-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0031",
+            "justification": "",
+            "question": "Which meal did Jason Wong find as Lee's Market's most popular breakroom lunch in Q2 2025, and how was this promoted to boost morale?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "After tallying the staff breakroom survey for Q2 2025, Jason Wong found the turkey sandwich as the top choice for lunch and organized a themed free lunch event.",
+            "supporting_file_paths": [
+                "shared/breakroom-lunch-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0032",
+            "justification": "",
+            "question": "How did the frequency of basic English test failures among Lee's Market employees change between December 2024 and September 2025 among seasonal staff?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Basic English test failures among Lee's Market seasonal staff decreased from 22% in December 2024 to 16% in September 2025. Most issues were related to choosing wrong options and not finishing on time during onboarding.",
+            "supporting_file_paths": [
+                "shared/staff-english-proficiency.pptx"
+            ]
+        },
+        {
+            "id": "DI0033",
+            "justification": "",
+            "question": "How many service complaints at Lee's Market from Nov 2024 to Oct 2025 specifically involved new or seasonal staff as the root cause?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "From Nov 2024 to Oct 2025, eight out of thirteen customer service complaints at Lee's Market were reported related to new or seasonal staff cited as the main factor for dissatisfaction. Most complaints concerned delays in checkout and unfamiliarity with store policies.",
+            "supporting_file_paths": [
+                "shared/staff-service-complaint-analysis.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What was the percentage of Lee's Market's temporary employees during Q4 2024 who did not receive social engineering or email phishing training upon hire?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In Q4 2024, 75% of temporary sector employees of Lee's Market did not receive social engineering or email phishing training upon hire. This exposes the initial training gap relevant to cyber-risk mitigation.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-strategy.pptx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "How many cyber incidents at Lee's Market from Nov 2024 to Oct 2025 specifically involved new or seasonal staff as the root cause?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In four of the seven cybersecurity incidents at Lee's Market reported between November 2024 and October 2025, new or seasonal staff were identified as the root cause.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_020252.jsonl"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "What modules did Jason Wong introduce or revise for all onboarding staff in Q1 2025, and what was the completion rate by the end of Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Phishing awareness, password security, and POS safety modules were introduced by Jason Wong for all onboarding staff in Q1 2025. 87% of new hires completed these modules by June 2025.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-strategy.pptx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "How did the frequency of phishing simulation test failures among Lee's Market employees change between December 2024 and September 2025 among seasonal staff?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Phishing simulation failures decreased from 38% to 19% at Lee's Market between December 2024 and September 2025 among seasonal staff.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "During the Dec 2024 seasonal hiring surge, what share of new hires at Lee's Market completed cybersecurity training before receiving system access?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Only 53% of new hires during the Dec 2024 seasonal hiring surge completed cybersecurity training before receiving system access at Lee's Market.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-strategy.pptx"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "",
+            "question": "How often did Lee's Market conduct audit checks on training completion between January and October 2025, and what percentage of gaps led to corrective action within two weeks?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market conducted two monthly audit checks on training completion between January and October 2025, and 12% of gaps that were found were remediated with follow-up training within two weeks.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-program-blueprint.docx"
+            ]
+        },
+        {
+            "id": "IN0007",
+            "justification": "",
+            "question": "What was the total business downtime Lee's Market experienced from cyber incidents involving employee error between August 2024 and August 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market experienced a total of 17 hours of business downtime, with 14 hours linked to employee error from August 2024 to August 2025.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-plan.pdf"
+            ]
+        },
+        {
+            "id": "IN0008",
+            "justification": "",
+            "question": "By August 2025, how did working with a managed security service provider change incident response times and loss ratios at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "By working with a managed security service provider, the incident response times dropped from 5 to 1.5 hours, and the per-incident losses decreased by about 43% by August 2025 at Lee's Market.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_093951.jsonl"
+            ]
+        },
+        {
+            "id": "IN0009",
+            "justification": "",
+            "question": "What audit pass rate did Lee's Market achieve for cybersecurity protocol compliance in the first and second halves of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Security audit pass rates improved from 78% in the first half of 2025 to 94% in the second half following targeted refresher trainings and management attention.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0010",
+            "justification": "",
+            "question": "Among all seasonal staff trained in 2025, what percentage participated in at least one mock cyber drill or phishing simulation, and how does this compare to late 2024 sector participation rates?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "62% of all 2025 seasonal staff participated in at least one in-house phishing or cyberattack simulation drill, outpacing the industry's late 2024 figure of 56%.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-program-design.pdf"
+            ]
+        },
+        {
+            "id": "IN0011",
+            "justification": "",
+            "question": "How many supply chain (third-party) incidents were reported at Lee's Market in 2025, and were any traced to inadequate vendor training or oversight?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Two supply chain-attached cyber incidents were logged in 2025, as of October, with one traced to a partner unconstrained by Lee's Market's cyber training requirements. The breach started with a vendor employee succumbing to a phishing email.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-strategic-plan.pdf"
+            ]
+        },
+        {
+            "id": "IN0012",
+            "justification": "",
+            "question": "What channels did Jason Wong use to reinforce urgent cybersecurity notifications in 2025, and what coverage rate did he achieve for offsite and hybrid staff?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Through an integrated use of email, SMS, and an employee dashboard, Wong achieved a 98% acknowledgement rate across all Lee's Market employees, including remote and part-time workers, on urgent cyber-risk notices.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-program.docx"
+            ]
+        },
+        {
+            "id": "IN0013",
+            "justification": "",
+            "question": "How was customer trust measured after any cybersecurity incident at Lee's Market in 2024-2025, and did proactive communication impact NPS or similar scores?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Following cyber incidents from 2024 to 2025, Lee's Market's NPS score dropped by 15 points. However, with rapid and transparent customer communications orchestrated by Jason Wong, recovery rates to pre-incident NPS averages were up to 80% faster than after prior breaches.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-program-proposal.docx"
+            ]
+        },
+        {
+            "id": "IN0014",
+            "justification": "",
+            "question": "What was the 2025 turnover rate among Lee's Market's seasonal staff who completed cybersecurity training versus those who did not, and did this correlate with incident or error rates?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Seasonal employees who completed required cyber awareness and security modules had a turnover rate of 19% compared to 41% for those who didn't and saw 65% fewer security errors or reported incidents.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-training-program.pptx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

@@ -1,0 +1,15 @@
+{
+    "dr_question": "Given the drop in Canadian retail sales brought on by US tariffs in 2025, what insights should Lee\u2019s Market derive from product-level sales trends across tariff-exposed and tariff-insulated categories to update sales forecasts by 2027?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Sales",
+        "dr_question": "Given the drop in Canadian retail sales brought on by US tariffs in 2025, what insights should Lee\u2019s Market derive from product-level sales trends across tariff-exposed and tariff-insulated categories to update sales forecasts by 2027?",
+        "industry": "Retail",
+        "url": "https://www.reuters.com/business/autos-transportation/canadas-retail-sales-shrink-tariffs-bite-june-expected-improve-2025-07-24/"
+    },
+    "timestamp": "2025-10-24 00:00",
+    "task_id": "DR0098",
+    "industry": "retail",
+    "domain": "Sales",
+    "url": "https://www.reuters.com/business/autos-transportation/canadas-retail-sales-shrink-tariffs-bite-june-expected-improve-2025-07-24/"
+}

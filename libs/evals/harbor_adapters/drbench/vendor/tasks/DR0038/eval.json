@@ -1,0 +1,127 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How does Lee's Market handle crisis communication?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Andrew Park's communication plan was successfully activated 3 times in 2022, which had an average response time of 2 hours.",
+            "supporting_file_paths": [
+                "shared/crisis-communication-strategy.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What is Lee's Market's policy on press releases?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee\u2019s Market\u2019s policy regarding press releases is to issue regular press releases managed by the corporate communications team to maintain transparency and public engagement, which, in 2023, led the team to release 120 press statements, representing a 10% increase from 2022.",
+            "supporting_file_paths": [
+                "shared/press-release-policy.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How does Lee's Market perform on social media generally?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The main corporate Instagram account of Lee's Market gained over 80,000 new followers in 2022.",
+            "supporting_file_paths": [
+                "shared/social-media-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "How many media mentions did Lee's Market secure?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, Andrew Park's team secured 1,200 total media mentions across print, online and broadcast channels in North America.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_214938.jsonl"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How many profiles has the public relations team of Lee's Market placed?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Andrew Park's media relations efforts successfully resulted in 15 feature articles profiling Lee's Market CEO and other executives in 2023.",
+            "supporting_file_paths": [
+                "shared/PR-Profile-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How many speaking engagements did the public relations team of Lee's Market secure?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The corporate communications team secured 22 industry speaking engagements for Lee's Market representatives at retail and food conferences in 2022.",
+            "supporting_file_paths": [
+                "shared/PR-engagements-overview.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "What is Lee's Market's public relations team's capacity in media monitoring?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Led by Andrew Park, Lee's Market's public relations department in February 2023 had a monitoring service track over 50,000 news sources globally and had flag Lee's Market mentions an average of 85 times daily.",
+            "supporting_file_paths": [
+                "shared/media-monitoring-capacity.docx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "In 2022, Lee's Market sponsored local school festivals. How was the sponsorship received?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2022, the sponsorship of 3 major local school events cost $10,000, generating significant reception from the students and families.",
+            "supporting_file_paths": [
+                "shared/school-festival-sponsorship-analysis.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What was the outcome of Lee's Market's 2022 partnership with the Urban Food Literacy Foundation?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market's Chef in the Community program with the Urban Food Literacy Foundation in 2022 generated $250,000 in positive media coverage, reduced customer acquisition cost by 18%, and boosted brand sentiment scores by 12 points in participating cities.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Partnership_Outcome_Analysis.xlsx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "In 2022, Lee's Market sponsored local cultural festivals. How did the sponsorship perform?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In 2022, the sponsorship of 3 major Asian cultural festivals cost $150,000, but resulted in a 300% return on investment through earned media and an additional 25% increase in new customer acquisition that are culturally relevant.",
+            "supporting_file_paths": [
+                "shared/community-partnerships-analysis.pptx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "How did Lee's Market's school nutrition program improve its brand perception?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Following the 2023 launch of Lee's Market's Little Grocers school program, brand sentiment surveys conducted by Andrew Park alongside public relations team members in participating school districts showed a 15% increase in trust and community commitment among parents.",
+            "supporting_file_paths": [
+                "shared/partnership-roi-analysis.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

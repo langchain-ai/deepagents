@@ -1,0 +1,94 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How did MediConn Solution ensure CRM data integrity during quarterly sales operations in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Julian Lee, sales operations manager at MediConn Solutions,  performed quarterly CRM audits in 2024, flagging data entry errors and automating record validation for improved recording accuracy.",
+            "supporting_file_paths": [
+                "shared/crm-integrity-2024.pptx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What role does MediConn Solutions play in improving mental health access for Canadian employees in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In Q1-Q3 2025, MediConn Solutions expanded video-based counseling services to more than 500 SME clients across Canada.",
+            "supporting_file_paths": [
+                "shared/mediconn-mental-health-access.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How does MediConn Solutions maintain client confidentiality within its virtual platforms as of Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of Q1 2025, encryption upgrades and ISO 27001 compliance ensured all client sessions and data transfers met updated regulatory standards.",
+            "supporting_file_paths": [
+                "shared/MediConn-Confidentiality-Review.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What distinguishes MediConn Solutions' platform design from competitors in the Canadian healthcare market in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "User satisfaction surveys from Q2 2025 showed MediConn outperformed competitors in interface ease of use and onboarding speed by 30%.",
+            "supporting_file_paths": [
+                "shared/mediconn-competitive-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How does MediConn Solution utilize sales analytics for service delivery optimization in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Julian Lee, sales operations manager at MediConn Solutions, used the monthly analytics dashboard in 2025 to monitor SME-based appointment reminders, increasing repeat usage by 15% over the year.",
+            "supporting_file_paths": [
+                "shared/sales-analytics-optimization.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What major challenges has MediConn faced while onboarding the first 100 new doctors from January 2016 to June 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The major challenges MediConn faced while onboarding new doctors from January 2016 to June 2023 include verifying medical credentials, ensuring alignment with platform compliance standards, providing digital training, and integrating doctors smoothly into the virtual workflow.",
+            "supporting_file_paths": [
+                "shared/doctor-onboarding-challenges.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What sales campaigns has MediConn Solutions used to reach new virtual healthcare markets in 2022?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In 2022, MediConn Solutions ran multichannel campaigns aimed at decision makers responsible for digital health adoption in Canadian SMEs, specifically COOs, CIOs, and benefit managers. The campaigns highlighted video consultation service and B2B health and wellness solutions, tracked conversion rates, and measured campaign ROI using CRM data relevant to company-level purchasing.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_232556.jsonl"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What major challenges does MediConn face when broadening its virtual healthcare services into 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of October 2025, MediConn Solutions faces a long B2B sales cycle, multi-stakeholder decision-making processes, regulatory compliance hurdles, frequent objections over cost, and solution integration for large organizations (2021-22 trend).",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Sales_Challenges_Analysis.xlsx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

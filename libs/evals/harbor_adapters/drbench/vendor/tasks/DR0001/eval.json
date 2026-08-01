@@ -1,0 +1,149 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "EX0000",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "U.S. grocers are working to meet the FDA's FSMA 204 traceability rules by January 2026, which require tracking lot codes and key data for high-risk foods to expedite recalls. This compliance is viewed as an \"evolutionary step\" to modernize grocery operations and enhance food safety.",
+            "supporting_urls": [
+                "https://www.grocerydive.com/spons/grocers-talk-fsma-204-compliance-food-safety-and-the-future-of-grocery/722810/"
+            ]
+        },
+        {
+            "id": "EX0001",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "By capturing detailed traceability data, such as lot codes, at every step, retailers can meet regulations and gain inventory benefits. This allows grocers to know exact expiration dates by lot, enabling them to discount items before they expire, thus reducing food waste and keeping products fresher.",
+            "supporting_urls": [
+                "https://www.grocerydive.com/spons/grocers-talk-fsma-204-compliance-food-safety-and-the-future-of-grocery/722810/"
+            ]
+        },
+        {
+            "id": "EX0002",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Regional grocers like Lunds & Byerlys and Raley\u2019s see FSMA 204 as a chance to enhance their systems and supply chain transparency. They believe improved traceability will boost customer trust and could signal the start of more extensive future food safety regulations.",
+            "supporting_urls": [
+                "https://www.grocerydive.com/spons/grocers-talk-fsma-204-compliance-food-safety-and-the-future-of-grocery/722810/"
+            ]
+        },
+        {
+            "id": "IN002_pdf",
+            "justification": "Identifying high-risk food products informs FSMA 204 compliance and traceability efforts.",
+            "question": "How many high-risk food products does Lee's Market currently track as of Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market tracks 250 high-risk food products as of Q3 2024, affecting 30% of inventory.",
+            "supporting_file_paths": [
+                "shared/food-safety-compliance.pdf"
+            ]
+        },
+        {
+            "id": "DI001_pdf",
+            "justification": "Employee turnover metrics do not impact FSMA 204 regulations directly.",
+            "question": "What was Lee's Market employee turnover rate in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate averaged 12% with 150 new hires in Q3 2024.",
+            "supporting_file_paths": [
+                "shared/q3-workforce-report.pdf"
+            ]
+        },
+        {
+            "id": "IN001_pdf",
+            "justification": "Understanding current food waste reduction rates helps inform FSMA 204 implementation strategies.",
+            "question": "What is Lee's Market's current food waste reduction rate as of Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market reduced food waste by 8% in Q2 2024, saving $1.2M.",
+            "supporting_file_paths": [
+                "shared/food-safety-regulatory-compliance.pdf"
+            ]
+        },
+        {
+            "id": "DI003_pdf",
+            "justification": "Energy consumption metrics are unrelated to food safety regulations.",
+            "question": "What was the total energy consumption of Lee's Market stores in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Total energy consumption was 15 million kWh with a cost of $1.8M in Q1 2024.",
+            "supporting_file_paths": [
+                "shared/energy-consumption-review.pdf"
+            ]
+        },
+        {
+            "id": "DI002_roundcube",
+            "justification": "Onboarding time does not relate to food safety or FSMA 204 regulations.",
+            "question": "What was Lee's Market employee onboarding time in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee onboarding averaged 30 days with a 90% completion rate.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_113104.jsonl"
+            ]
+        },
+        {
+            "id": "DI002_pdf",
+            "justification": "IT system downtime does not affect food safety or customer trust.",
+            "question": "What was the average IT system downtime in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average IT system downtime was 2 hours with 95% uptime in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/it-performance-review.pdf"
+            ]
+        },
+        {
+            "id": "DI005_pdf",
+            "justification": "Store renovation costs are unrelated to food safety and FSMA 204 compliance.",
+            "question": "What was the average store renovation cost for Lee's Market in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average store renovation cost was $250,000 with 10 stores renovated in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/renovation-cost-report.pdf"
+            ]
+        },
+        {
+            "id": "DI004_pdf",
+            "justification": "Employee training hours do not directly relate to FSMA 204 regulations.",
+            "question": "What was Lee's Market's employee training hours per employee in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee training hours averaged 12 hours per employee with a total cost of $750,000.",
+            "supporting_file_paths": [
+                "shared/training-insights-report.pdf"
+            ]
+        },
+        {
+            "id": "IN011_roundcube",
+            "justification": "Determining supplier compliance rate helps assess overall food safety and trust enhancement.",
+            "question": "What is Lee's Market's FSMA 204 compliance rate among high-risk food suppliers as of Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "85% of high-risk food suppliers are FSMA 204 compliant, totaling 270 vendors.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_112436.jsonl"
+            ]
+        },
+        {
+            "id": "DI001_roundcube",
+            "justification": "Employee training hours do not directly address FSMA 204 regulations",
+            "question": "How many hours of training did Lee's Market employees receive in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employees received an average of 12 hours of training with a 90% completion rate.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250818_112818.jsonl"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

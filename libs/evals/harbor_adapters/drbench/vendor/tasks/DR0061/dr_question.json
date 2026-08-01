@@ -1,0 +1,15 @@
+{
+    "dr_question": "By Q3 2026, which specific features of Salesforce's Automotive Cloud, such as Drive Console, House Management, or Vehicle Console, could most effectively enhance Elexion's customer retention strategies for mid-income families across North American markets, keeping in mind Elexion Automotive's focus on sustainability messaging and after-purchase charging station support?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "CRM",
+        "dr_question": "By Q3 2026, which specific features of Salesforce's Automotive Cloud, such as Drive Console, House Management, or Vehicle Console, could most effectively enhance Elexion's customer retention strategies for mid-income families across North American markets, keeping in mind Elexion Automotive's focus on sustainability messaging and after-purchase charging station support?",
+        "industry": "Automotive -- Electric Vehicles",
+        "url": "https://www.techtarget.com/searchcustomerexperience/news/252526031/Salesforce-Industries-adds-Automotive-Cloud-CRM"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0061",
+    "industry": "automotive -- electric vehicles",
+    "domain": "CRM",
+    "url": "https://www.techtarget.com/searchcustomerexperience/news/252526031/Salesforce-Industries-adds-Automotive-Cloud-CRM"
+}

@@ -1,0 +1,15 @@
+{
+    "dr_question": "By Q4 2025, how can MediConn Solutions integrate the HHS Cybersecurity Performance Goals (CPGs) into its virtual healthcare platform to ensure compliance for both internal systems and third-party vendors, while effectively mitigating emerging cyber threats?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Cybersecurity",
+        "dr_question": "By Q4 2025, how can MediConn Solutions integrate the HHS Cybersecurity Performance Goals (CPGs) into its virtual healthcare platform to ensure compliance for both internal systems and third-party vendors, while effectively mitigating emerging cyber threats?",
+        "industry": "Virtual/Remote Healthcare",
+        "url": "https://www.aha.org/news/aha-cyber-intel/2024-10-07-look-2024s-health-care-cybersecurity-challenges"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0059",
+    "industry": "virtual/remote healthcare",
+    "domain": "Cybersecurity",
+    "url": "https://www.aha.org/news/aha-cyber-intel/2024-10-07-look-2024s-health-care-cybersecurity-challenges"
+}

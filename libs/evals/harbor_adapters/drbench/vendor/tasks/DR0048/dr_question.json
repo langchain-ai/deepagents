@@ -1,0 +1,15 @@
+{
+    "dr_question": "By Q3 2025, how can MediConn Solutions' IT Service Management (ITSM) team manage security protocols, ensure regulatory compliance, and implement preventive measures against network and information system security risks, given the sensitivity of electronic medical data?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "ITSM",
+        "dr_question": "By Q3 2025, how can MediConn Solutions' IT Service Management (ITSM) team manage security protocols, ensure regulatory compliance, and implement preventive measures against network and information system security risks, given the sensitivity of electronic medical data?",
+        "industry": "Virtual/Remote Healthcare",
+        "url": "https://www.topdesk.com/en/blog/itsm-healthcare/"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0048",
+    "industry": "virtual/remote healthcare",
+    "domain": "ITSM",
+    "url": "https://www.topdesk.com/en/blog/itsm-healthcare/"
+}

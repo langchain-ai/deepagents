@@ -1,0 +1,24 @@
+{
+  "task_id": "DR0023",
+  "question": "By Q3 2026, how can Lee’s Market expand and optimize its IT self-service capabilities to reduce service desk dependency, accelerate resolution times, and improve both employee and customer experience across all stores?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What caused employees across multiple Lee’s Market stores to submit the same IT requests every week during Q2 2025?",
+      "answer": "According to Lee’s Market internal tracking from Q2 2025, employees across multiple stores submitted an average of 480 duplicate IT requests every week, primarily for password resets and printer errors, due to a confusing self-service portal.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "During Q3 2025, what types of IT requests take the longest for employees to resolve on their own?",
+      "answer": "According to Lee’s Market internal logs from Q3 2025, requests related to online ordering system errors take the longest to resolve, averaging 2.5 hours per incident, due to a lack of clear self-service guidance.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "During Q3 2025, are there certain times when Lee’s Market employees across all regions struggle the most to get IT issues resolved?",
+      "answer": "According to Lee’s Market internal IT performance reports from Q3 2025, service desk requests spike by 40% on Mondays and Fridays at around 11 a.m., with average resolution times increasing by up to 3 hours when self-service guidance is unclear.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

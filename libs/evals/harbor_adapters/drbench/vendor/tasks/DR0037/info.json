@@ -1,0 +1,62 @@
+{
+    "industry": "retail",
+    "domain": "public relations",
+    "difficulty": "medium",
+    "files": [
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "xlsx",
+            "type": "distractor",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "email",
+            "type": "supporting",
+            "app": "roundcube"
+        },
+        {
+            "filetype": "jsonl",
+            "type": "supporting",
+            "app": "mattermost"
+        },
+        {
+            "filetype": "xlsx",
+            "type": "supporting",
+            "app": "nextcloud"
+        }
+    ]
+}

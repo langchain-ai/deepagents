@@ -1,0 +1,215 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How has MediConn Solutions' website performance changed recently?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of 2025, MediConn Solutions' website showed a 32% increase in website traffic after launching its redesigned user interface.",
+            "supporting_file_paths": [
+                "shared/website-performance-insights.pptx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "How effective was MediConn Solutions' 2024 marketing campaign in terms of brand awareness?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions reported a significant 28% increase in brand awareness after its marketing campaign in 2024.",
+            "supporting_file_paths": [
+                "shared/marketing-campaign-evaluation.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How significant is prescription delivery in Canada's virtual healthcare market?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Market research from April 2024 prescription delivery services account for 18% of interactions in the virtual healthcare platform in Canada.",
+            "supporting_file_paths": [
+                "shared/MediConn_Virtual_Healthcare_Market_Insights_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What is the growth trajectory of MediConn Solutions' mental health service line?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Mental health counseling service through MediConn Solutions' platform generated up to 12% of the total revenue in the second quarter of 2024.",
+            "supporting_file_paths": [
+                "shared/mental-health-growth.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How effective is MediConn Solutions' email marketing performance compared to the industry's benchmark?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' newsletter has an open rate of 34%, which is 4% above the healthcare industry average.",
+            "supporting_file_paths": [
+                "shared/email-marketing-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How prevalent is AI assisted prescription management among virtual healthcare competitors?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A November 2024 competitor analysis showed that AI assisted prescription management is offered by 5 out of 8 major virtual healthcare competitors.",
+            "supporting_file_paths": [
+                "shared/AI-in-healthcare.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "What is the rate of patients not showing up for in-person appointments?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A recent analysis conducted by MediConn Solutions' marketing department in September 2022 discovered that the rate of patients not showing up for in-person appointments was 15%.",
+            "supporting_file_paths": [
+                "shared/no-show-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "Which group of patients is most valuable for MediConn Solutions' prescription service?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A report from the marketing department of MediConn Solutions conducted in the second quarter of 2023 revealed that 25% of prescription delivery requests come from chronic condition patients, which is significantly higher than acute care patients.",
+            "supporting_file_paths": [
+                "shared/patient-prescription-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "How effective was MediConn Solutions' platform redesign in attracting potential new patients?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "After the redesign of MediConn Solutions' platform in 2024, it achieved a 58% increase in marketing qualified leads.",
+            "supporting_file_paths": [
+                "shared/platform-impact-assessment.pptx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "What is the growth trend for MediConn Solutions' app adoption?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' mobile app reached 150,000 downloads by August 2025 from 95,000 the previous year.",
+            "supporting_file_paths": [
+                "shared/app-growth-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "How much will MediConn Solutions' marketing budget increase by 2027?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to MediConn Solutions' financial executives, the marketing budget for the company is expected to increase by 31% by the year 2027.",
+            "supporting_file_paths": [
+                "shared/marketing-budget-forecast.docx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "How has MediConn Solutions' online presence on LinkedIn evolved from 2022 to 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' LinkedIn following significantly grew by 45% between 2022 and 2024, reaching 25,000 followers.",
+            "supporting_file_paths": [
+                "shared/linkedin-presence-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "What percentage of MediConn Solutions' marketing campaign is expected to be assisted by AI by 2027?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to a study completed by MediConn Solutions' marketing department, by 2027, approximately 35% of MediConn Solutions' market campaigns are expected to be AI-assisted.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_AI_Assisted_Marketing_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "What was the effect of MediConn Solutions' platform redesign on it's ability to attract new healthcare providers?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions achieved a 58% increase in the sign-up rate of providers after its platform was redesigned.",
+            "supporting_file_paths": [
+                "shared/platform-redesign-impact.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "How many consultations did MediConn Solutions complete virtually for patients in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In 2024, MediConn Solutions completed slightly over 1.2 million virtual consultations.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Virtual_Consultation_Statistics.xlsx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What percentage of MediConn Solutions' consultations are expected to be assisted by AI by 2027?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "By 2027, about 35% MediConn Solutions' consultation are expected to be AI-assisted.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_221023.jsonl"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "By what percentage did MediConn Solutions reduce average wait times for virtual consultations between 2019 and 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn Solutions successfully reduced the average wait time by 43% between 2019 and 2023.",
+            "supporting_file_paths": [
+                "shared/virtual-service-strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "What percentage of patient satisfaction did MediConn Solutions achieve after platform redesign in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn Solutions was able to achieve a 58% patient satisfaction rate after its platform redesign in 2024.",
+            "supporting_file_paths": [
+                "shared/virtual-service-promotion.pdf"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "What percentage of MediConn Solutions' users would recommend the service to others?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to Mediconn's marketing specialist Emily Chen's patient satisfaction survey, completed in April 2024, showed that 78% of MediConn Solutions users would recommend the service to others.",
+            "supporting_file_paths": [
+                "shared/virtual-care-promotion-strategy.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

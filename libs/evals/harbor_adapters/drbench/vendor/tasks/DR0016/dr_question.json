@@ -1,0 +1,15 @@
+{
+    "dr_question": "How is Lee's Market positioned to communicate with all of its suppliers, big and small, concerning FSMA 204 regulations, specifically the tracking of Lot codes?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Compliance",
+        "dr_question": "How is Lee's Market positioned to communicate with all of its suppliers, big and small, concerning FSMA 204 regulations, specifically the tracking of Lot codes?",
+        "industry": "Retail",
+        "url": "https://www.grocerydive.com/spons/grocers-talk-fsma-204-compliance-food-safety-and-the-future-of-grocery/722810/"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0016",
+    "industry": "retail",
+    "domain": "Compliance",
+    "url": "https://www.grocerydive.com/spons/grocers-talk-fsma-204-compliance-food-safety-and-the-future-of-grocery/722810/"
+}

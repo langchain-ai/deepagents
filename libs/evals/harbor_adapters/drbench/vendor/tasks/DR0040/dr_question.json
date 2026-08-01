@@ -1,0 +1,15 @@
+{
+    "dr_question": "The WTT Solution article from March 2025 indicates that Customer Relationship Management (CRM) software is trending in the healthcare industry. How can MediConn Solutions leverage this software to drive the growth of its healthcare services, using patient benefits from the software as a key to increased business by the year 2028?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "CRM",
+        "dr_question": "The WTT Solution article from March 2025 indicates that Customer Relationship Management (CRM) software is trending in the healthcare industry. How can MediConn Solutions leverage this software to drive the growth of its healthcare services, using patient benefits from the software as a key to increased business by the year 2028?",
+        "industry": "Virtual/Remote Healthcare",
+        "url": "https://wtt-solutions.com/blog/the-future-of-healthcare-crm-solutions-what-to-expect-in-2025"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0040",
+    "industry": "virtual/remote healthcare",
+    "domain": "CRM",
+    "url": "https://wtt-solutions.com/blog/the-future-of-healthcare-crm-solutions-what-to-expect-in-2025"
+}

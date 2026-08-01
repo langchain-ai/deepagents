@@ -1,0 +1,182 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "As of May 31, 2025, did Elexion Automotive\u2019s asset management platform auto-generate warranty renewal reminders for critical production equipment?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. An internal Elexion Automotive update dated May 12, 2025 confirmed that Olivia Martinez\u2019s asset management team enabled automated warranty renewal alerts for 146 production-line assets.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_022308.jsonl"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "Between January 1 and September 30, 2025, how many preventive-maintenance schedules did Olivia Martinez\u2019s team update in Elexion Automotive\u2019s digital asset ledger?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal Elexion records show that Olivia Martinez\u2019s lifecycle team updated 512 preventive-maintenance schedules between Q1 and Q3, 2025.",
+            "supporting_file_paths": [
+                "shared/maintenance-report-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "In 2024, how many non-battery production assets did Olivia Martinez\u2019s team audit for asset utilization at Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal Elexion Automotive audit reports, Olivia Martinez\u2019s team completed utilization audits for 11 non-battery production assets across Elexion's North American facilities between January 1 and December 31, 2024.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_022411.jsonl"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "By July 1, 2025, did Elexion Automotive integrate supplier audit data into its central asset lifecycle system?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. A system integration log dated June 28, 2025 confirms that supplier audit data was successfully incorporated into Elexion Automotive\u2019s lifecycle management platform.",
+            "supporting_file_paths": [
+                "shared/supplier-integration-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "Between March 1 and December 31, 2024, how many unused assets did Elexion Automotive\u2019s lifecycle team decommission from its digital asset registry?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal decommissioning records show that Olivia Martinez\u2019s team removed 327 inactive assets from Elexion Automotive\u2019s registry between March 1 and December 31, 2024.",
+            "supporting_file_paths": [
+                "shared/asset-lifecycle-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "Between April 1 and September 30, 2025, how many total physical and digital assets did Elexion Automotive log into its lifecycle management platform?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to asset tracking summaries, 4,850 assets were logged into Elexion Automotive\u2019s lifecycle system between Q2 and Q3, 2025.",
+            "supporting_file_paths": [
+                "shared/asset-lifecycle-report-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "By October 31, 2025, did Elexion Automotive implement predictive alerts for expiring software licenses across its manufacturing divisions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. A software management update issued on September 30, 2025 confirmed that predictive alerts were activated across all Elexion Automotive divisions.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_022556.jsonl"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "In 2024, how many cost-recovery reports did the asset lifecycle management team submit for depreciated Elexion Automotive production assets?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal finance records show that Olivia Martinez\u2019s team filed 19 cost-recovery reports for depreciated production assets between January 1 and December 31, 2024.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Asset_Management_Cost_Recovery_.xlsx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "Between January 1 and September 30, 2025, how many lifecycle compliance audits did Olivia Martinez oversee across Elexion Automotive\u2019s regional plants?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal Elexion Automotive compliance records, Olivia Martinez oversaw 14 lifecycle compliance audits across the company's North American plants between Q1 and Q3, 2025.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Compliance_Audit_Records.xlsx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "Between July 1 and December 31, 2024, how many internal training workshops did Olivia Martinez organize on lifecycle documentation standards for Elexion staff?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Training logs show that Olivia Martinez conducted 9 internal workshops on documentation standards between Q3 and Q4, 2024 for Elexion staff.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_022721.jsonl"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "How many EV motor prototypes did Elexion Automotive\u2019s digital engineering team simulate using digital twins between January 1 and September 30, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal testing records, Elexion\u2019s digital engineering team simulated 24 EV motor prototypes between Q1 and Q3 2025 to test material durability and assembly procedures.",
+            "supporting_file_paths": [
+                "shared/digital-twin-report.docx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "Between April 1 and December 31, 2025, how many cross-departmental workflow planning reviews did Elexion Automotive conduct using its internal collaboration logs?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal collaboration logs, Elexion conducted 18 cross-departmental workflow planning reviews between April 1 and December 31, 2025 using its internal collaboration logs.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_022830.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "By Q1 2026, will Elexion Automotive\u2019s digital engineering team integrate digital twin dashboards to monitor EV battery performance in real time?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes. An internal project brief dated October 1, 2025 confirms that Elexion\u2019s digital engineering team plans to deploy digital twin dashboards to track EV battery health, charge cycles, and temperature patterns in real time by January 1, 2026.",
+            "supporting_file_paths": [
+                "shared/EV-Battery-Optimization.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "How many EV battery prototypes did Elexion Automotive\u2019s digital engineering team simulate using digital twins between January 1 and September 30, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to internal testing records, Elexion\u2019s digital engineering team simulated 48 EV battery prototypes using digital twins between Q1 and Q3 2025 to test material durability and charging efficiency.",
+            "supporting_file_paths": [
+                "shared/EV-Battery-Optimization.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "In Q3 2025, how many data points per EV battery module did Elexion Automotive\u2019s lifecycle system collect through its digital twin integration?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "An internal analytics summary for Q3 2025 (July 1 to September 30) shows that Elexion\u2019s digital twin system collected an average of 1,200 performance data points per battery module, covering voltage, temperature, and charge-discharge rates.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Digital_Twin_Battery_Module_Dat.xlsx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "Between April 1 and December 31, 2025, how many cross-departmental design reviews did Elexion Automotive conduct using its new digital engineering and digital twin integration platform?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to internal collaboration logs, Elexion conducted 22 cross-departmental design reviews between April 1 and December 31, 2025 using its digital engineering and digital twin integration platform.",
+            "supporting_file_paths": [
+                "shared/digital-twin-asset-management.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

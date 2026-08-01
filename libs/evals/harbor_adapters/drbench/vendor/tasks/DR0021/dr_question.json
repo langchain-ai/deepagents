@@ -1,0 +1,15 @@
+{
+    "dr_question": "What ITSM strategies, such as governance improvements, workflow automation, or system integrations, could provide insights to improve incident, problem, and change management at Lee\u2019s Market in 2026?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "ITSM",
+        "dr_question": "What ITSM strategies, such as governance improvements, workflow automation, or system integrations, could provide insights to improve incident, problem, and change management at Lee\u2019s Market in 2026?",
+        "industry": "Retail",
+        "url": "https://www.thirdera.com/insights/retailer-drives-enterprise-wide-transformation-through-strategic-it-optimization"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0021",
+    "industry": "retail",
+    "domain": "ITSM",
+    "url": "https://www.thirdera.com/insights/retailer-drives-enterprise-wide-transformation-through-strategic-it-optimization"
+}

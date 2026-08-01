@@ -1,0 +1,94 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How many large corporations use MediConn Solutions for their employee wellness solutions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of April 2025, MediConn Solutions provided employee wellness platforms to 15 large corporations across Canada.",
+            "supporting_file_paths": [
+                "shared/corporate-utilization-report.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "Did MediConn Solutions update their platform interface for users in 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. A major user interface update in Q1 2023 added new dashboard features, improved navigation, and introduced dark mode for users with that visual preference.",
+            "supporting_file_paths": [
+                "shared/2023-platform-overview.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How many regions is MediConn Solutions planning to launch new services in 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions is planning teams for four new provincial markets in 2026 with launch dates yet to be finalized.",
+            "supporting_file_paths": [
+                "shared/2026-expansion-plan.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What pharmacy partnerships did MediConn Solutions announce in May 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "By May 2023, 16 pharmacy chains were integrated into MediConn Solutions' prescription delivery network to improve accessibility to clients all over the country.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_232333.jsonl"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What was the most common technical support issue reported by our clients in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The top issue for MediConn Solutions clients in Q4 2024 was initial login failures following a security upgrade, which support teams were reportedly able to resolve within 8 hours of the lodgment of the support ticket.",
+            "supporting_file_paths": [
+                "shared/q4-2024-tech-support.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How did the MediConn Solutions Sales team handle customer data for new patients as per Canadian privacy law in Q1, 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of Q1 2023, MediConn solutions updated its compliance protocols for new patient data, including annual ISO 27001 audits and stricter data validation procedures in line with Canadian PHIPA regulations.",
+            "supporting_file_paths": [
+                "shared/Q1-2023-Data-Privacy-Report.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "How did MediConn Solution use sales analytics to increase SME client retention in virtual health care services in 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In 2023, MediConn Solutions segmented SME client data by engagement tier and initiated targeted outreach campaigns. Clients receiving personalized support showed a documented 15% increase in account retention over six months, per CRM analytics.",
+            "supporting_file_paths": [
+                "shared/digital-health-sales-strategies.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What did MediConn Solutions do in 2022 to handle customer support for new patient complaints and queries?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn Solution introduced a dedicated response team and automated ticketing system in early 2022, reducing the average resolution time of tickets to under 48 hours.",
+            "supporting_file_paths": [
+                "shared/sales-strategy-enhancements.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

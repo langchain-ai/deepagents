@@ -1,0 +1,237 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "This measures product-mix dynamics and market preference, not compliance documentation or credit tracking.",
+            "question": "What percentage of Elexion's total 2025 EV sales came from its mid-range models?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "60% of Elexion's 2025 EV sales came from its mid-range vehicle lineup.",
+            "supporting_file_paths": [
+                "shared/elexion-sales-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "It concerns maintenance economics and cost control and is unrelated to regulatory record-keeping.",
+            "question": "What was the average cost of EV battery replacement for Elexion's mid-range vehicles in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average 2025 battery replacement cost for Elexion's mid-range vehicles was $10000 per unit.",
+            "supporting_file_paths": [
+                "shared/battery-cost-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "OTA activity reflects post-sale software support, not compliance credit administration.",
+            "question": "What was the average number of connected software updates (OTA- Over-the-Air) delivered per vehicle in 2025 by Elexion?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Each Elexion vehicle received 6 OTA updates during 2025.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251121_122221.jsonl"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "This captures manufacturing scale-up trends and is not related to regulatory compliance tracking.",
+            "question": "How much did Elexion's total production output increase between 2024 and 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion's total production volume grew by 22 percent year-over-year between 2024 and 2025.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Austin_Production_Output_Report.xlsx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "Service quality perception is operational feedback, not a compliance-documentation factor.",
+            "question": "What was the average customer satisfaction score for Elexion's after-sales service in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Customer satisfaction with Elexion's after-sales service averaged at 8 out of 10 in 2025.",
+            "supporting_file_paths": [
+                "shared/after-sales-service-report.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "This concerns supply-chain localization, not credit-compliance documentation.",
+            "question": "What percentage of Elexion's vehicle components were sourced domestically within North America in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "68 percent of component value in Elexion vehicles was sourced from North American suppliers in 2025.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251121_122350.jsonl"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "Delivery timelines describe logistics performance, not administrative compliance systems.",
+            "question": "What was the average delivery time for new Elexion EV orders in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The typical delivery window for new Elexion EV orders in 2025 was around 12 weeks from purchase to delivery.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251121_122428.jsonl"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "R&D investment levels reflect innovation priorities, not regulatory compliance documentation.",
+            "question": "What was Elexion's total R&D expenditure in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion's total research-and-development spending for 2025 was estimated at $44 million USD.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251121_122512.jsonl"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "Warranty-plan adoption measures consumer behavior and is unrelated to compliance reporting.",
+            "question": "What percentage of total 2025 Elexion EV buyers opted for the extended battery-warranty plan?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "50 percent of Elexion EV buyers in 2025 chose the company's extended battery-warranty option.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_EV_Buyers_Extended_Battery_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "This is a performance-efficiency metric, not part of documentation or credit-tracking systems.",
+            "question": "What was the average energy consumption across Elexion's 2025 EV lineup?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average energy consumption across Elexion's 2025 vehicle range was around 17 kWh per 100 km.",
+            "supporting_file_paths": [
+                "shared/2025-EV-Energy-Review.pdf"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "Partnership counts describe business alliances, not compliance documentation processes.",
+            "question": "How many active charging-network partnerships did Elexion maintain across North America in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2025, Elexion maintained 9 active charging-network partnerships across North America.",
+            "supporting_file_paths": [
+                "shared/charging-network-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "Marketing-budget allocation deals with promotional strategy, not compliance documentation frameworks.",
+            "question": "What percentage of Elexion's 2025 marketing spend was allocated to digital-advertising channels?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "72 percent of Elexion's 2025 marketing budget was dedicated to digital-advertising platforms.",
+            "supporting_file_paths": [
+                "shared/2025-Digital-Marketing-Review.pdf"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "Supplier partnership counts are not directly related to Elexion's compliance documentation frameworks.",
+            "question": "How many supplier partnerships did Elexion establish or renew between 2024 and 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion formed or renewed 14 supplier partnerships during 2024-2025.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Supplier_Partnerships_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "Marketing expenditure is not linked to administrative compliance systems.",
+            "question": "What was Elexion's total marketing spend (USD) on EV awareness campaigns in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Marketing spend reached $22 million in 2025.",
+            "supporting_file_paths": [
+                "shared/EV-campaigns-budget-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "Sales volume figures do not contribute to the documentation and tracking protocols.",
+            "question": "How many EV units did Elexion sell in Canada during 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion sold 1,990 units in Canada in 2024.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_EV_Sales_Data_Austin_Texas.xlsx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "This baseline shows how many supplier records already meet verification standards; the gap identifies how much supplier remediation and documentation work Elexion must scope when designing unified tracking protocols.",
+            "question": "What percentage of Elexion Automotive's supplier investment records include complete verification data required for ZEV credit eligibility as of Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of Q4 2025, 65% of Elexion Automotive's supplier investment records include full verification data (proof-of-origin, emissions certificates, investment receipts) required for ZEV credit eligibility.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_ZEV_Credit_Eligibility_Data.xlsx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "Accuracy indicates the current reliability of Elexion's compliance checks; knowing this helps prioritize process controls and automated validation rules to reduce false positives/negatives in credit claims.",
+            "question": "What is the internal verification accuracy rate (%) of Elexion Automotive's supply-chain investment documentation based on internal audits as of Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Elexion Automotive's internal verification accuracy rate is estimated at 88% as of Q4 2025.",
+            "supporting_file_paths": [
+                "shared/zev-compliance-revision.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "Measuring the current hours per report quantifies the manual workload and identifies where automation or template standardization will yield the largest time savings in the new documentation protocol.",
+            "question": "Under the 2025 framework, what is the average administrative time (in staff hours) Elexion Automotive requires to compile and verify one complete supply-chain investment report per compliance cycle?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Under the 2025 framework, Elexion Automotive requires 40 staff hours to compile and verify one complete supply-chain investment report per compliance cycle.",
+            "supporting_file_paths": [
+                "shared/compliance-framework-zev.docx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "The automation share shows how much of the documentation pipeline is already machine-readable; this determines the remaining integration effort (APIs, supplier onboarding) needed for audit-grade, unified reporting.",
+            "question": "What percentage of Elexion Automotive's supply-chain compliance data is automatically captured through digital traceability systems (ERP/supplier portal) as of Q1 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of Q1 2026,  72% of Elexion Automotive's supply-chain compliance data is automatically captured through digital traceability systems.",
+            "supporting_file_paths": [
+                "shared/zev-compliance-update.pptx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "People readiness is essential: training scope and hours define budget, scheduling, and the realistic timeline for staff to operate the new documentation workflows without creating audit gaps.",
+            "question": "By Q2 2026, how many compliance personnel at Elexion Automotive require retraining on the updated verification protocols, and what is the total estimated training time?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "By Q2 2026,  55 compliance personnel at Elexion Automotive will require retraining, representing an estimated 1,200 collective training hours.",
+            "supporting_file_paths": [
+                "shared/zev-compliance-update.pptx"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "Projected error reduction quantifies the expected effectiveness of system upgrades and supplier standardization, helping justify investment and setting a target for post-implementation audits.",
+            "question": "What percentage reduction in documentation errors or verification discrepancies can Elexion Automotive expect by Q4 2026 after rolling out the updated compliance documentation framework?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "After implementing the updated compliance documentation framework, Elexion Automotive can expect a 35% reduction in documentation errors and verification discrepancies by Q4 2026.",
+            "supporting_file_paths": [
+                "shared/zev-compliance-framework.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

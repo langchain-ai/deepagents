@@ -1,0 +1,94 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "By Q3 2025, did the knowledge management lead at Mediconn complete the quarterly review of system access permissions for all virtual care staff?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. According to a MediConn performance update, between July 1 and September 30, 2025, the knowledge management lead successfully completed the quarterly review of system access permissions for all virtual care staff.",
+            "supporting_file_paths": [
+                "shared/Q3-2025-Access-Review.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "In 2024, how many HR and Operations departmental procedure documents did the knowledge management lead verify for accuracy in MediConn\u2019s knowledge management system?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal documentation, between January 1 and December 31, 2024, the knowledge management lead verified 42 HR and Operations departmental procedure documents for accuracy and consistency.",
+            "supporting_file_paths": [
+                "shared/MediConn_Knowledge_Management_Verification_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "Between October 1 and December 31, 2024, how many reminders for upcoming general training sessions on MediConn\u2019s virtual knowledge management platform did the knowledge team lead send to virtual care staff?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In Q4, 2024, the knowledge team lead at Mediconn sent 65 reminders for upcoming general training sessions on MediConn\u2019s virtual knowledge management platform to virtual care staff.",
+            "supporting_file_paths": [
+                "shared/training-communication-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "In 2024, did the knowledge management lead organize cross-departmental knowledge-sharing sessions for non-clinical staff to improve collaboration and efficiency?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. According to MediConn's annual performance report, the knowledge management lead conducted several knowledge-sharing sessions for non-clinical staff.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Knowledge_Sharing_Sessions_Reco.xlsx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How many virtual care staff members logged into MediConn\u2019s knowledge management platform at least once for browsing non-clinical content or company-wide updates between March 1 and March 31, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Between March 1 and March 31, 2025, 78 virtual care staff members logged into MediConns's knowledge management platform for non-clinical content or general company updates, according to data from the Telehealth department.",
+            "supporting_file_paths": [
+                "shared/platform-usage-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "In Q3 2025, how many virtual multidisciplinary care team members at MediConn Solutions had completed the targeted online training modules for fistula management?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal data, between July 1 and September 30, 2025, 95 out of 130 targeted care team members had completed the fistula management online training modules",
+            "supporting_file_paths": [
+                "shared/Q3-2025-training-report.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "By Q1 2025, had MediConn Solutions reviewed and updated its online training modules to ensure multidisciplinary care teams received accurate guidance for head and neck cancer management?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes. As of January 1, 2025, all relevant training modules in MediConn\u2019s knowledge management platform were reviewed and updated to reflect the latest clinical guidelines and best practices for multidisciplinary care teams managing head and neck cancer patients.",
+            "supporting_file_paths": [
+                "shared/virtual-training-enhancement.pptx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "In Q3 2025, how many virtual multidisciplinary care team members at MediConn Solutions had completed the targeted online training modules for head and neck cancer management?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to internal data, between July 1 and September 30, 2025, 120 out of 150 targeted care team members had completed the head and neck cancer management online training modules.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_230405.jsonl"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

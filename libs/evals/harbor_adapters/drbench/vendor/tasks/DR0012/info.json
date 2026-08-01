@@ -1,0 +1,52 @@
+{
+  "industry": "automobiles",
+  "domain": "quality_assurance",
+  "difficulty": "easy",
+  "files": [
+    {
+      "filetype": "xlsx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    }
+  ]
+}

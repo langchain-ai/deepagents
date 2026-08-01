@@ -1,0 +1,479 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "When was Elexion Automotive's CRM system first implemented, and how many times has it been upgraded?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Elexion Automotive CRM system was first implemented in 2018 and has undergone 3 major software upgrades since then.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_CRM_System_Implementation_Updat.xlsx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What was the budget for the first marketing campaign of Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The first marketing campaign of Elexion Automotive was in 2011 and had a budget of $200,000.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Marketing_Campaigns_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What is the Sales Team satisfaction with the CRM mobile app?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A survey of 100 sales team members done in July of 2025 shows a 76% satisfaction rate for using the CRM for daily actions such as updating customer interactions on the go.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_001836.jsonl"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What percentage of CRM data is incomplete?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A system audit conducted in November 2024 found that approximately 22% of CRM contact records had missing or invalid data.",
+            "supporting_file_paths": [
+                "shared/crm-data-quality.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What is the best-selling vehicle model of Elexion Automotive in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Elexion 'NEXUS' SUV is the best-selling vehicle model of the company. It constituted 58% of all the vehicles sold in the North American market in 2024.",
+            "supporting_file_paths": [
+                "shared/elexion-sales-review-2024.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How many sales representatives does Elexion Automotive currently employ?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of October 2025, the Elexion Automotive Sales department has 132 sales representatives across North America.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Sales_Department_Staffing_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "What was the 2024 budget for CRM software at Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive spent $108,000 on CRM software licensing and maintenance in 2024.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_002028.jsonl"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "How many potential customers visited the Elexion Automotive showrooms in the first quarter of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "During Q1 2025, 21,490 potential customers visited Elexion Automotive showrooms.",
+            "supporting_file_paths": [
+                "shared/Q1-2025-Showroom-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "How many hours of training did the sales representatives of Elexion Automotive complete between 2022 and 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The sales representatives of Elexion Automotive completed 10,768 hours of process and product training between 2022 and 2024.",
+            "supporting_file_paths": [
+                "shared/sales-training-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "How quickly does Elexion Automotive sell its vehicle inventory?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In the year 2024, Elexion Automotive maintained an inventory turnover rate of 8.2 times.",
+            "supporting_file_paths": [
+                "shared/inventory-turnover-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "How many sales territories were reorganized in 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In March 2023, Amanda Lee oversaw the redistribution of 8 sales territories to improve geographic coverage and reduce travel time by 15%.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Sales_Territories_Reorganizatio.xlsx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "What percentage of Elexion Automotive sales staff actively use the CRM system?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In November 2024, Amanda Lee, in a brief morning meeting, highlighted that 94% of the Elexion Automotive sales team logged into the CRM system more than once a day with an average session of 37 minutes.",
+            "supporting_file_paths": [
+                "shared/crm-utilization-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "What is the target response time for new leads?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In a May 2025 Department Meeting, Amanda Lee stated that Elexion Automotive's sales operation protocol requires sales operatives to contact new leads within two business days.",
+            "supporting_file_paths": [
+                "shared/lead-response-optimization.pptx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "What is the average selling price of Elexion Automotive's vehicles?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In the first quarter of 2025, Elexion Automotive vehicles sold at an average price of $48,750.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_002325.jsonl"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "",
+            "question": "How many sales team conferences were conducted monthly in Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Amanda Lee facilitated an average of 23 sales operations conference calls per month in 2024, with 15\u201318 participants per call.",
+            "supporting_file_paths": [
+                "shared/sales-conference-overview.docx"
+            ]
+        },
+        {
+            "id": "DI0016",
+            "justification": "",
+            "question": "How often does the director of sales operations at Elexion Automotive generate a sales performance report?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, Amanda Lee and her team generate 47 comprehensive sales reports, including monthly reports and 4 quarterly strategic analyses.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Sales_Report_Generation_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0017",
+            "justification": "",
+            "question": "How large is Elexion Automotive's sales office space?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "After the renovation of the headquarters of Elexion Automotive in late 2023, its sales operation department occupies 4,800 square feet on the third floor.",
+            "supporting_file_paths": [
+                "shared/sales-infrastructure-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0018",
+            "justification": "",
+            "question": "How accurate was Elexion Automotive last quarter sales forecast?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Amanda Lee's team successfully achieved a 91% forecast accuracy in the second quarter of 2025, predicting 2,850 units of vehicles sold as opposed to 2,620 units of vehicles actually sold.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_002519.jsonl"
+            ]
+        },
+        {
+            "id": "DI0019",
+            "justification": "",
+            "question": "How many sales training videos were produced by the sales team of Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive's sales operations team produced 18 videos in the year 2024, of which each of them contains a total of 6.5 hours of content covering CRM usage, product knowledge and effective sales techniques.",
+            "supporting_file_paths": [
+                "shared/sales-training-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0020",
+            "justification": "",
+            "question": "How much data storage does the Elexion Automotive Sales team's CRM system use?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Elexion Automotive's CRM database utilized 2.7 terabytes of space as of April 2025.",
+            "supporting_file_paths": [
+                "shared/sales-crm-data-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0021",
+            "justification": "",
+            "question": "How many assignment criteria and average weekly lead assignments were processed by the Elexion Automotive CRM, and what was the acceptance rate?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2022, Amanda Lee set up the CRM to automatically assign leads to sales representatives on 12 different criteria, including geography, product interest, and lead score.",
+            "supporting_file_paths": [
+                "shared/crm-lead-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0022",
+            "justification": "",
+            "question": "How many CRM support tickets did the Elexion Automotive's Sales Team put in during Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "During the third quarter of 2024, Elexion Automotive's Sales Team registered 39 CRM support tickets.",
+            "supporting_file_paths": [
+                "shared/sales-crm-analysis-Q3.docx"
+            ]
+        },
+        {
+            "id": "DI0023",
+            "justification": "",
+            "question": "When did the director of sales operations at Elexion Automotive negotiate the CRM licensing renewal for 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In November 2024, Amanda Lee negotiated a CRM software licensing renewal that resulted in a significant annual savings.",
+            "supporting_file_paths": [
+                "shared/CRM-Renewal-Analysis-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0024",
+            "justification": "",
+            "question": "When did the CRM mobile app become available to Sales Team Representatives at Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In February 2023, Amanda Lee implemented a CRM mobile application which allows the Sale Team Representatives to log customer interactions on the go.",
+            "supporting_file_paths": [
+                "shared/crm-deployment-timeline.docx"
+            ]
+        },
+        {
+            "id": "DI0025",
+            "justification": "",
+            "question": "How many automated notifications did the CRM system of Elexion Automotive send to sales representatives from February to November during 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Between February and November 2024, Elexion Automotive CRM system sent 19,255 automated email notifications to sales representatives about lead activities.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_003439.jsonl"
+            ]
+        },
+        {
+            "id": "DI0026",
+            "justification": "",
+            "question": "Are Elexion Sales Representatives available to answer live calls from customers at any time?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "No, per Sales Department Policy, Sales Department phone lines are staffed with live representatives from 8 a.m. CDT to 8 p.m. CDT, on all days of the week. Outside of these times, customers are directed to an automated voice messaging system where they can leave a message and a Sales Representative will contact them within 24 hours.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Customer_Service_Availability_R.xlsx"
+            ]
+        },
+        {
+            "id": "DI0027",
+            "justification": "",
+            "question": "How often is data backed up in Elexion Automotive's CRM mobile app?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive's CRM mobile app backs up data every 15 seconds when the app is open.",
+            "supporting_file_paths": [
+                "shared/CRM-Backup-Analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0028",
+            "justification": "",
+            "question": "Do sales representatives receive commission payments at Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. In September 2024, Amanda Lee set up a CRM-based commission tracking system that calculates commission payouts for sales representatives based on conversion and lead contact rates.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_003048.jsonl"
+            ]
+        },
+        {
+            "id": "DI0029",
+            "justification": "",
+            "question": "On average, how many electric vehicles did Elexion Automotives sell in Q4 2024 from leads that were obtained via word-of-mouth?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "An audit report from Elexion Automotive's sales department showed that the average electric vehicles sold per month from word-of-mouth leads in the last quarter of 2024 was 34 units.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Sales_Data_Report.xlsx"
+            ]
+        },
+        {
+            "id": "DI0030",
+            "justification": "",
+            "question": "How many customers used the main phoneline to contact a Sales Representative during the month of July 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In July 2025, 23 customers used the main phoneline to contact an Elexion Automotive Sales Representative.",
+            "supporting_file_paths": [
+                "shared/customer-engagement-analysis.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "In 2025, how many days does Elexion Automotive typically take from the initial digital lead contact to the initial sales appointment?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "A September 2025 report from Amanda Lee's team states that the median number of days between the first digital lead contact and the first sales appointment in Elexion Automotive is 14 days.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_003247.jsonl"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What is Elexion Automotive's gross or overall lead-to-sale conversion rate for qualified digital leads?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to the sales department of Elexion Automotive, as of October 2023, the average percentage of qualified digital leads that result in a car sale is 4.8% for all channels combined.",
+            "supporting_file_paths": [
+                "shared/crm-sales-strategy.pptx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "On average, how many electric vehicles did Elexion Automotive sell in Q4 2024 from leads that were tracked in the customer relationship management?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "An audit report from Amanda Lee's team in Q4 of 2024 showed that the average electric vehicles sold per month from leads tracked in the CRM was 520 units.",
+            "supporting_file_paths": [
+                "shared/CRM-Sales-Strategy-2025.docx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "How often does the Elexion Automotive Sales Team make contacts to warm leads using the CRM?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Per Sales Department policy established in July 2021, the Sales Team use the CRM system to make contact for warm leads every four days as a default, though the customer can request a change to this frequency.",
+            "supporting_file_paths": [
+                "shared/crm-sales-strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "What percentage of leads are generated through digital channels, and how has that changed from 2024-2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to Sales Team reports, in October 2025, 82% of all new leads are generated through digital channels, including paid search and social media. This represents an increase of 18% since Q1 of 2024.",
+            "supporting_file_paths": [
+                "shared/crm-sales-optimization.pdf"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "",
+            "question": "What is the current cost of acquiring a customer through digital leads?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The sales department of Elexion Automotive highlighted that, in the second quarter of 2023, the digital cost of acquiring a customer is $550 per vehicle.",
+            "supporting_file_paths": [
+                "shared/crm-sales-optimization.docx"
+            ]
+        },
+        {
+            "id": "IN0007",
+            "justification": "",
+            "question": "What percentage of customers who used the online scheduler in the CRM to schedule a digital test drive resulted in a vehicle purchase from Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of September 2025 CRM reports, 35% of customers who used the online scheduler to schedule a digital test drive resulted in a vehicle purchase.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Digital_Test_Drive_Conversion_R.xlsx"
+            ]
+        },
+        {
+            "id": "IN0008",
+            "justification": "",
+            "question": "What were the response rates for leads who are contacted by Elexion Automotive Sales Team representatives via phone call, text, and email in Q2 of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Based on Sales Team Summary Reports, response rates were 45% for phone calls, 38% for texts, and 52% for email in Q2 of 2025",
+            "supporting_file_paths": [
+                "shared/crm-sales-strategy-2025.docx"
+            ]
+        },
+        {
+            "id": "IN0009",
+            "justification": "",
+            "question": "Based on CRM data from 2024, is there a correlation between customers who purchased a vehicle from Elexion Automotive after more that five online interactions with the Sales Team and purchases of home charging stations?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "CRM data from 2024 shows that customers who purchased an Elexion vehicle after a minimum of five online interactions with the Sales Team were twice as likely to also purchase a home charging station.",
+            "supporting_file_paths": [
+                "shared/crm-sales-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0010",
+            "justification": "",
+            "question": "How many customers used the direct messaging feature in the CRM to contact a Sales Representative during the month of July 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In July 2025, 46 customers used the direct messaging feature to speak with a live Sales Representative from Elexion Automotive.",
+            "supporting_file_paths": [
+                "shared/CRM-data-sales-optimization.pptx"
+            ]
+        },
+        {
+            "id": "IN0011",
+            "justification": "",
+            "question": "How many vehicles sold by Elexion Automotive in August 2024 resulted from a first customer contact through email or direct message, and how does this compare to figures for August 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "60 of the vehicle sales in August 2024 resulted from first contact through email or direct message, contrasting with 120 vehicles from these first contacts in August 2025. This represents an increase of 100%.",
+            "supporting_file_paths": [
+                "shared/crm-sales-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0012",
+            "justification": "",
+            "question": "What is the range of automated nurturing sequence durations that Amanda Lee's team set up in the CRM?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In January 2023, Amanda Lee's sales operation team had configured the customer relationship management to send automated nurture sequences that extend from 14 to 90 days depending on buyer signals.",
+            "supporting_file_paths": [
+                "shared/crm-sales-strategy-2025.docx"
+            ]
+        },
+        {
+            "id": "IN0013",
+            "justification": "",
+            "question": "What were the unit sales and conversion rates in Q3 of 2024 for delivering personalized email content as opposed to generic materials over various timeframes?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to CRM data, leads receiving personalized emails with vehicle configuration recommendations within 10 days of the initial inquiry convert at 9.7%, while those receiving generic content convert at 5.3%, which totals up to 234 and 167 units, respectively, across the third quarter of 2024.",
+            "supporting_file_paths": [
+                "shared/crm-sales-enhancement.pptx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

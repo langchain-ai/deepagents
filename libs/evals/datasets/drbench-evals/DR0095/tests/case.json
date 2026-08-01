@@ -1,0 +1,48 @@
+{
+  "task_id": "DR0095",
+  "question": "What considerations will need to be made when Lee's Market is redesigning its loyalty program by Q2 2026 to serve both Gen Z/Millennial digital preferences and Gen X/Boomer traditional service expectations?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What percentage of Lee's Market's active customers in Q4 2025 are Gen Z and Millennial shoppers compared to Gen X and Boomer shoppers?",
+      "answer": "In Q4 2025, Gen Z and Millennial shoppers account for 62% of Lee's Market's active customer base, while Gen X and Boomer shoppers represent 38%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What are the average monthly loyalty engagement rates for Gen Z/Millennial customers versus Gen X/Boomer customers at Lee's Market during 2025?",
+      "answer": "During 2025, Gen Z and Millennial customers engage with the Lee's Market loyalty program at an average monthly rate of 50%, compared with 25% among Gen X and Boomer customers.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "What is the average quarterly spend per loyalty member for Gen Z/Millennials versus Gen X/Boomers during 2025, segmented by online and in-store channels?",
+      "answer": "Gen Z/Millennials spend $250 online and $380 in-store; Gen X/Boomers spend $160 online and $480 in-store.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "What are the current loyalty reward redemption rates (%) for Gen Z/Millennials versus Gen X/Boomers between Q1 2024 and Q4 2025 at Lee's Market?",
+      "answer": "For Lee's Market, Gen Z/Millennials redeem at 38%, compared with 29% for Gen X/Boomers between Q1 2024 and Q4 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "What is the comparative customer lifetime value (USD) between digital-first members (app users) and traditional card/coupon users as of Q4 2025 at Lee's Market?",
+      "answer": "At Lee's Market, digital-first members show a CLV of $1,800, compared to traditional users' CLV of $1,350.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0006",
+      "question": "What is the projected uplift (%) in repeat-purchase rate from the pilot test planned for Q4 2025-Q1 2026 evaluating hybrid rewards (mobile + printed offers) across generations at Lee's Market?",
+      "answer": "At Lee Market's, the pilot projects a repeat-purchase uplift of 11% for Gen Z/Millennials and 7% for Gen X/Boomers.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0007",
+      "question": "What is the projected improvement (NPS-Net Promotor Score points) in customer satisfaction from the pilot test planned for Q4 2025-Q1 2026, evaluating hybrid rewards (mobile + printed offers) across generations at Lee's Market?",
+      "answer": "The pilot planned for Lee's Market anticipates an NPS improvement of +8 points for Gen Z/Millennials and +5 points for Gen X/Boomers.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

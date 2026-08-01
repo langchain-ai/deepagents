@@ -1,0 +1,15 @@
+{
+    "dr_question": "Which compliance gaps must Elexion address to meet updated CARB ZEV 2025 reporting requirements?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Automotive -- Electric Vehicles",
+        "dr_question": "Which compliance gaps must Elexion address to meet updated CARB ZEV 2025 reporting requirements?",
+        "industry": "Automotive -- Electric Vehicles",
+        "url": "https://www.act-news.com/news/carb-moves-forward-with-emergency-vehicle-emissions-amendments"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0085",
+    "industry": "automotive -- electric vehicles",
+    "domain": "Automotive -- Electric Vehicles",
+    "url": "https://www.act-news.com/news/carb-moves-forward-with-emergency-vehicle-emissions-amendments"
+}

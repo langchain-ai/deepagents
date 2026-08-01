@@ -1,0 +1,182 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "By June 30, 2025, how many high-value assembly machines had Elexion Automotive revalued under Olivia Martinez's quarterly asset depreciation audit?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Elexion Automotive's internal finance and asset management audit for Q2 2025, Olivia Martinez's team revalued 160 high-value assembly machines to align with updated depreciation schedules.",
+            "supporting_file_paths": [
+                "shared/asset-depreciation-audit.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "Had Elexion Automotive finalized its renewable-material asset utilization plan under its Asset Lifecycle Manager's direction by October 1, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. According to Elexion Automotive's sustainability and material utilization memo, the plan to guide the reuse of recycled metal and polymers across its facilities was finalized on September 20, 2025.",
+            "supporting_file_paths": [
+                "shared/asset-utilization-report.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "By July 10, 2025, how many EV charging units under Elexion Automotive's internal asset registry had Olivia Martinez's team inspected for maintenance compliance across its Texas and Arizona facilities?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Elexion's internal asset audit reports, Olivia Martinez's team completed maintenance inspections for 360 EV charging units across its Texas and Arizona plants.",
+            "supporting_file_paths": [
+                "shared/ev-charging-inspection-report.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "As of August 1, 2025, has Elexion Automotive completed its regional asset-standardization project to unify lifecycle tracking across all its plants?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. According to Elexion Automotive's asset-management bulletin, the company finalized its asset-standardization project on July 25, 2025.",
+            "supporting_file_paths": [
+                "shared/asset-standardization-update.pdf"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "By April 21, 2025, how many legacy diagnostic systems had the Asset Lifecycle Manager decommissioned across Elexion Automotive's North American plants?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Elexion Automotive's Q2 2025 decommissioning report, Olivia Martinez retired 200 outdated diagnostic systems that no longer met EV production standards.",
+            "supporting_file_paths": [
+                "shared/asset-lifecycle-report-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "By February 15, 2026, how many cross-facility risk readiness audits will the asset management team have completed to prepare Elexion Automotive for its annual enterprise risk assessment review?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Elexion Automotive's internal compliance and risk report, Olivia Martinez's team is projected to complete 42 cross-facility risk-readiness audits by February 15, 2026, ensuring that all physical and digital assets meet corporate audit standards.",
+            "supporting_file_paths": [
+                "shared/risk-readiness-audit-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "By Q2 2026, how many training sessions will Olivia Martinez's asset management team complete on the new lifecycle-tracking software at Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Elexion Automotive's internal HR and IT team projections published on October 14, 2025, Olivia's team is expected to complete 28 sessions on the specialized lifecycle-tracking software between April 30 and June 30, 2026.",
+            "supporting_file_paths": [
+                "shared/software-adoption-plan.docx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "By April 1, 2026, how many redundant software licenses will the asset management team have identified and consolidated under Elexion Automotive's digital asset registry?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Elexion Automotive's 2025 IT governance forecast, Olivia's team is projected to consolidate 312 redundant software licenses to reduce operating costs and streamline digital asset management.",
+            "supporting_file_paths": [
+                "shared/software-licenses-review.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "Will the Elexion Automotive asset lifecycle management team have implemented the predictive maintenance scheduling tool company-wide by May 1, 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "No. According to an internal deployment roadmap issued on October 7, 2025, the predictive maintenance scheduling tool is expected to continue in a phased rollout, with full adoption targeted for early 2027.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Predictive_Maintenance_Implemen.xlsx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "By May 31, 2025, how many strategic suppliers did Olivia Martinez's team benchmark for equipment uptime and delivery performance under Elexion Automotive's supplier evaluation program?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the firm's Q2 2025 supply chain performance forecast, Olivia benchmarked 95 strategic suppliers to compare equipment reliability, uptime consistency, and delivery performance across regions.",
+            "supporting_file_paths": [
+                "shared/supplier-evaluation-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "By August 5, 2026, how many production assets will the lifecycle management team have digitized and calibrated for AI-integrated risk-audit readiness assessments across Elexion Automotive's EV plants?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Elexion Automotive's internal compliance roadmap, the Asset Lifecycle Manager plans to digitize and calibrate 428 production assets for AI-integrated risk readiness assessments by August 5, 2026.",
+            "supporting_file_paths": [
+                "shared/production-assets-transformation.pdf"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "By Q3 2026, how many AI-assisted supplier evaluation models will the asset lifecycle management team at Elexion Automotive have tested to improve sourcing reliability for EV production lines?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal documentation, by September 30, 2026, the asset management team is expected to have tested 24 AI-assisted supplier evaluation models.",
+            "supporting_file_paths": [
+                "shared/ai-supplier-evaluation.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "By August 5, 2026, how many production assets will the lifecycle management team have digitized and calibrated for AI-integrated digital twin simulations across Elexion Automotive's EV plants?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to Elexion Automotive's 2026 digital readiness roadmap, the asset lifecycle management team is expected to digitize and calibrate 1850 production assets by August 5, 2026, to support AI-driven digital twin simulations for scalable EV customization.",
+            "supporting_file_paths": [
+                "shared/ai-ev-customization-sustainability.pptx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "By Q3 2026, how many AI-assisted predictive maintenance models will the asset lifecycle management team at Elexion Automotive have tested to improve asset uptime for EV production lines?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to Elexion Automotive's internal report forecast, by September 30, 2026, the asset management team will have tested 18 AI-assisted predictive maintenance models to enhance uptime and reduce unplanned downtime across the firm's production facilities.",
+            "supporting_file_paths": [
+                "shared/digital-twin-ev-customization.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "In Q3 2025, how many cross-platform asset integration dashboards did the Asset Lifecycle Manager develop to support real-time data synchronization for AI-enabled digital twin simulations?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to internal reports, Olivia Martinez and her team deployed 12 cross-platform dashboards connecting asset data from manufacturing, design, and supply chain systems to enhance digital twin integration.",
+            "supporting_file_paths": [
+                "shared/EV-Customization-Digital-Twins.docx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "Will Elexion Automotive's Asset Lifecycle Manager implement AI-powered lifecycle analytics by August 15, 2026, to optimize resource usage in EV production?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes. According to Elexion Automotive's internal management plan, the asset management division is scheduled to deploy AI-powered lifecycle analytics by August 15, 2026.",
+            "supporting_file_paths": [
+                "shared/EV-Digital-Twin-Implementation.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

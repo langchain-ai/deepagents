@@ -1,0 +1,15 @@
+{
+    "dr_question": "Given the Help Net Security article from April 2025, what strategies should Elexion Automotive be cognizant of to protect its consumer base from remote cybersecurity attacks going into Q1 of 2026?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Cybersecurity",
+        "dr_question": "Given the Help Net Security article from April 2025, what strategies should Elexion Automotive be cognizant of to protect its consumer base from remote cybersecurity attacks going into Q1 of 2026?",
+        "industry": "Automotive -- Electric Vehicles",
+        "url": "https://www.helpnetsecurity.com/2025/04/04/cybersecurity-risks-cars/"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0070",
+    "industry": "automotive -- electric vehicles",
+    "domain": "Cybersecurity",
+    "url": "https://www.helpnetsecurity.com/2025/04/04/cybersecurity-risks-cars/"
+}

@@ -1,0 +1,204 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What percentage of the warehouse operations employees have completed training on the updated warehouse SOPs developed by Sophie Tran in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to HR reports, 89% of the warehouse operations staff at Lee's Market have completed training on the updated warehouse SOPs developed by Sophie Train in June 2025.",
+            "supporting_file_paths": [
+                "shared/training-compliance-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "How many of Lee's Market's divisions have received the new knowledge-sharing forms as of October 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of October 2025, 4 out of the 5 business divisions at Lee's Market have incorporated the new knowledge-sharing forms into their workflows.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Knowledge_Sharing_Forms_Update_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What percentage of the IT staff is directly involved in developing and upgrading the knowledge management database as of September 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of September 2025, the knowledge management team collaborates with 12% of the IT staff to manage and enhance the knowledge management system at Lee's Market.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_132610.jsonl"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "When and why did the senior executives at Lee's Market decide to significantly increase the knowledge management team size starting from 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "After reading the KM team coordinator, Sophie Tran's, detailed July 2025 report on the benefits a strong knowledge database can bring to a retailer, senior management at Lee's Market decided to significantly increase the KM team size starting from 2026.",
+            "supporting_file_paths": [
+                "shared/KM-expansion-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What percentage of the 2024 improvements in customer service quality was attributed to a series of training documentation refinements initiated by Sophie Tran?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the February 2025 internal Process & Operations analysis report, at least 25% of the customer service quality improvements recorded in the previous year were directly tied to Sophie Tran's refinements of the training documentation.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_132722.jsonl"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How many times did the KM team at Lee's Market meet with the HR and IT teams in 2024 regarding improving the knowledge hub's usability and data quality?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, the KM team at Lee's market organized regular meetings with the HR and IT teams to enhance the knowledge management system access and improve the overall quality. A total of 56 meetings were conducted with the IT specialists and 33 with the HR team.",
+            "supporting_file_paths": [
+                "shared/knowledge-hub-meetings-2024.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "Who was named the March 2025 Employee of the Month at Lee's Market's knowledge management team for having the most contributions to the knowledge database's error reduction and quality improvements?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Sophie Tran received the March 2025 Employee of the Month award for outstanding contributions to improving knowledge database accuracy and quality.",
+            "supporting_file_paths": [
+                "shared/march-2025-knowledge-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "How many requests to improve the ease of finding product information in the knowledge hub did the KM team receive from Lee's Market employees in December 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In December 2024, the knowledge management team at Lee's Market received a record 128 requests from various departments to improve access to product information in the knowledge hub.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_132907.jsonl"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "Why did the KM team at Lee's Market decide to overhaul the warehouse operations processes at Montreal's local stock and inventory center in October 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "After major disruptions in the store restocking and inventory management operations at Montreal's warehouse in October 2024, the KM team decided to completely remodel the warehouse operations procedures and introduce new SOPs.",
+            "supporting_file_paths": [
+                "shared/warehouse-overhaul-report.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "On average, how many SOP documents does a typical warehouse in British Columbia have as of October 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of October 2025, an average warehouse in British Columbia follows 13 SOP documents developed by the KM team.",
+            "supporting_file_paths": [
+                "shared/warehouse-sop-overview.pptx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "How much time on average was saved on new marketing department employee onboarding because of the changes in the training materials the KM team introduced in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As a result of the revised training materials introduced in Q4 2024 by the KM team, the average time to onboard new marketing specialists was reduced by almost 2 hours.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Onboarding_Efficiency_Improvement_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "What percentage of in-store employees across all branches have reported a \"Significantly better\" understanding of the knowledge system after the June 2025 on-the-job training round, according to the post-training surveys?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As noted in the post-training survey results, 39% of the in-store staff across all Lee's Market branches have reported \"Significantly better\" understanding of the knowledge system after participating in the June 2025 round of training.",
+            "supporting_file_paths": [
+                "shared/training-impact-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "How much HR time per employee can Lee's Market save on average in 2026 by outsourcing the onboarding and training of newly-hired IT specialists, according to the knowledge management team's calculations?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market's knowledge management team has calculated that outsourcing onboarding and training of the newly-hired IT specialists can save up to 1.5 hours per employee by 2026.",
+            "supporting_file_paths": [
+                "shared/outsourcing-analysis-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "Which department within the company recorded the highest dismissal rate in 2024, and how could enhanced on-the-job training help solve the issue?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, Lee's Market's in-store operations team had the highest dismissal rate, driven by customer complaints. Providing the customer-facing employees with enhanced training and support could enable them to deliver better service and accelerate problem resolution.",
+            "supporting_file_paths": [
+                "shared/dismissal-analysis-training-enhancement.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "How much time per employee can Lee's Market save on average in 2026 by using AI to generate tailored training material for newly-hired IT specialists, according to the knowledge management team's calculations?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market's knowledge management team has calculated that using AI tools to customize onboarding training material for IT specialists based on their academic details and previous experience, the company can save up to 2 hours and 45 minutes per new employee by 2026.",
+            "supporting_file_paths": [
+                "shared/ai-integration-strategies.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "Which department within the company recorded the highest turnover rate in 2024, and how could AI tools help solve the issue?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In 2024, Lee's Market's call center had the highest turnover rate caused by heavy workloads and stress. Introducing an effective AI assistant to the company's website and app could reduce customer call volume and employee strain.",
+            "supporting_file_paths": [
+                "shared/AI-Knowledge-Integration.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "What improvements in average handling time could introducing AI-powered database search capabilities provide for customer support agents in 2027?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to Sophie Tran's research, introducing AI-powered database search tools into the customer support agents' workflow could reduce the average handling time by 13 minutes.",
+            "supporting_file_paths": [
+                "shared/AI-Knowledge-Integration.docx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "What percentage of Lee's Market's knowledge management team members have received substantial training in potential AI integration methods to improve knowledge systems in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Since the beginning of 2025, over 60% of the 25-member knowledge management team at Lee's Market has completed training in potential AI integration methods aimed at improving knowledge systems.",
+            "supporting_file_paths": [
+                "shared/ai-knowledge-strategy.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

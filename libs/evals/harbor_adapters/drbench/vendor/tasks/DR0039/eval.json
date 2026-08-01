@@ -1,0 +1,127 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How many media outlets received Lee's Market's updated brand guidelines in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market's updated brand and media guidelines were distributed to 47 local media outlets across Vancouver, Toronto, Seattle and Los Angeles in March 2024.",
+            "supporting_file_paths": [
+                "shared/brand-guidelines-distribution.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What is the media reach of the Lee's Market's new store opening in Toronto, Canada?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The grand opening of Lee's Market in Toronto in February 2025 generated nearly 1.1 million media impressions across print and digital channels.",
+            "supporting_file_paths": [
+                "shared/toronto-media-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How many cultural festivals did Lee's Market sponsor in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, Lee's Market sponsored 23 Asian cultural festivals and 41 community events across North America, with an average of 8400 attendees per event.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_112411.jsonl"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What was the growth in Lee's Market's Instagram followers throughout 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market's Instagram following gained 120,000 followers between January and December 2024.",
+            "supporting_file_paths": [
+                "shared/instagram-growth-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How many press releases did the PR department of Lee's Market issue in 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market PR department issued 31 press releases in 2023, covering new product launches and store openings.",
+            "supporting_file_paths": [
+                "shared/PR-Analysis-2023.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How many social media influencers partnered with Lee's Market in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market partnered with 34 Asian food and lifestyle influencers in 2024.",
+            "supporting_file_paths": [
+                "shared/influencer-partnership-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "Were there any executive interviews secured in major publications by Andrew's PR team in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Andrew's team were able to secure only 2 interviews for the CEO of Lee's Market in major publications in the second quarter of 2025.",
+            "supporting_file_paths": [
+                "shared/2025-PR-Strategy-Review.pdf"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "According to Lee's Market's 2024 Product Analysis Report, in which market, Canada or the US, did product quality transparency have a greater impact on customer perception?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market 2024 product analysis report revealed that product quality transparency generated stronger customer perception impact in the Canadian markets, in which 89% stated transparency influenced positive perception compared to the 71% coming from the U.S.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_112636.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What are the latest detailed carbon footprint metrics that Lee's Market published regarding its online delivery operations?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market published a quarterly carbon footprint report in 2024, giving a detailed breakdown that its online delivery operations generated 847 metric tons of CO2 equivalent annually and further added that 68% is from vehicle fuel consumption, 22% from packaging materials, and 10% from warehouse operations.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_112115.jsonl"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "How did customer perception of Lee's Market's carbon footprint transparency differ between its Canadian and U.S. markets?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Based on Lee's Market's 2024 sustainability report, customer perception of the carbon footprint transparency was significantly more positive in Canadian markets than in U.S. markets. In Canada, 89% of customers reported a positive influence from the transparency, compared to 71% in the U.S.",
+            "supporting_file_paths": [
+                "shared/eco-impact-transparency.pptx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "When did Andrew's team initiate research on customer attitude towards sustainability transparency?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Andrew's team initiated research on customer attitudes towards sustainability transparency in January 2024, measuring how disclosure of delivery carbon footprints would influence shopping behaviors.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_112236.jsonl"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

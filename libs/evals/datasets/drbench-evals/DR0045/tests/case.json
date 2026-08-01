@@ -1,0 +1,36 @@
+{
+  "task_id": "DR0045",
+  "question": "Given the CHG Healthcare article from June 2025, in which the firm of McKinsey and Company estimates that more than 50 million in-person visits could be converted to virtual visits, how could MediConn Solution's marketing department promote this virtual service to their current patients through Q4 2026?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "How many consultations did MediConn Solutions complete virtually for patients in 2024?",
+      "answer": "In 2024, MediConn Solutions completed slightly over 1.2 million virtual consultations.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What percentage of MediConn Solutions' consultations are expected to be assisted by AI by 2027?",
+      "answer": "By 2027, about 35% MediConn Solutions' consultation are expected to be AI-assisted.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "By what percentage did MediConn Solutions reduce average wait times for virtual consultations between 2019 and 2023?",
+      "answer": "MediConn Solutions successfully reduced the average wait time by 43% between 2019 and 2023.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "What percentage of patient satisfaction did MediConn Solutions achieve after platform redesign in 2024?",
+      "answer": "MediConn Solutions was able to achieve a 58% patient satisfaction rate after its platform redesign in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "What percentage of MediConn Solutions' users would recommend the service to others?",
+      "answer": "According to Mediconn's marketing specialist Emily Chen's patient satisfaction survey, completed in April 2024, showed that 78% of MediConn Solutions users would recommend the service to others.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

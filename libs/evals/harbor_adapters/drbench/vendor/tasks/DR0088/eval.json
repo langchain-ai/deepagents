@@ -1,0 +1,259 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "This data is irrelevant to the cybersecurity research as it does not offer any key insight into how the new AI anomaly detection tools can be efficiently integrated into the security architecture without disrupting the current user services.",
+            "question": "What are the key healthcare areas Mediconn Solutions deals with?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The top three healthcare areas are General Physician, Dermatology and Mental Health services.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_143531.jsonl"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "This information does not play any role in the AI tool integration research of the company.",
+            "question": "What is the average salary of a doctor in Mediconn Solutions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "$90,000 to $115,000 (based on the field of work)",
+            "supporting_file_paths": [
+                "shared/physician-salary-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "Work schedules are administrative details that do not influence the AI anomaly detection tool integration in the security systems.",
+            "question": "What is the standard workweek for corporate employees at Mediconn?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Monday through Friday, 9 AM-5 PM local time.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_143637.jsonl"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "No use in the research area of cybersecurity or AI tools. This is general employee hiring information.",
+            "question": "What percentage of MediConn's new hires in the most recent quarter came from the employee referral program?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "30-40%",
+            "supporting_file_paths": [
+                "shared/workforce-expansion-referral-impact.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "Workforce retention data relates to HR performance and plays no role in the cybersecurity research on new AI tools..",
+            "question": "What is MediConn Solutions' employee turnover rate as of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Approximately 10.8% annually.",
+            "supporting_file_paths": [
+                "shared/mediConn-retention-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "This business insight has nothing to do with the research of the AI systems for enhanced cybersecurity at Mediconn.",
+            "question": "What is the market capitalization value of MediConn Solutions' as of Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "$0.5-0.7 billion",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_143757.jsonl"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "Language availability for the services is also irrelevant to the cybersecurity research or in analyzing the integration of the new AI anomaly detection tools in the security architecture of the company.",
+            "question": "In how many languages are MediConn services available?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "21",
+            "supporting_file_paths": [
+                "shared/language-accessibility-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "Payroll timing is purely administrative, not related to technology or cyber planning.",
+            "question": "What payroll frequency is used for employees?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Bi-weekly payroll cycle.",
+            "supporting_file_paths": [
+                "shared/mediconn-payroll-overview.pptx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "This information about the number of licensed care providers does not help in the research required for the integration of AI tech for enhanced cybersecurity systems at Mediconn.",
+            "question": "How many licensed care providers does MediConn Solutions have?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "5000+",
+            "supporting_file_paths": [
+                "shared/provider-network-overview.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "Email marketing opt-in rates do not provide any actionable information about the integration of AI anomaly detection tools.",
+            "question": "What percentage of registered patients have opted into MediConn promotional email communications?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Approximately 22% of registered patients have opted into MediConn promotional email communications.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_143908.jsonl"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "The information about the vendor management affects procurement, not cybersecurity analysis at the company.",
+            "question": "How many vendor contracts does MediConn manage annually?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Around 90 active vendor contracts, primarily for telehealth equipment and cloud services.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Vendor_Contract_Management_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "This information is relevant for market profit and success insights but won't help the cybersecurity team to develop AI systems for data breaches and threats.",
+            "question": "What is MediConn's growth rate among other virtual healthcare services in Canada?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn is among the top 10 fastest-growing virtual healthcare startups in Canada (2024-2025), with a 38% YoY increase in enterprise wellness partnerships.",
+            "supporting_file_paths": [
+                "shared/mediconn-growth-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "This marketing metric relates to promotional activity and supply logistics. It provides no technical or operational insight for AI anomaly-detection integration.",
+            "question": "What is the number of branded promotional items produced annually by MediConn?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Approximately 25000 branded promotional items are produced annually by MediConn.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_144002.jsonl"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "CSR spending reflects external community investments and corporate priorities but has no bearing on how an AI detection tool must be integrated to avoid service disruption.",
+            "question": "What was MediConn's corporate social responsibility (CSR) expenditure for 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn's corporate social responsibility (CSR) expenditure for 2024 was $1.2 million.",
+            "supporting_file_paths": [
+                "shared/mediconn-csr-analysis-2024.pdf"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "Social media reach is a marketing metric concerned with public engagement, but it does not provide actionable information about the integration of anomaly detection AI tools.",
+            "question": "How many total followers does MediConn have across all corporate social media accounts?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn has roughly 1.8 million total followers across all corporate social media accounts.",
+            "supporting_file_paths": [
+                "shared/social-media-analysis.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "This information matters because confirming current AI use helps identify which tools and services are likely to be affected by the integration of a new AI anomaly detection tool.",
+            "question": "Which four AI tools or services is MediConn currently using for anomaly detection in its security architecture?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The four AI tools that MediConn is currently using for anomaly detection in its security architecture are\n1) Blockchain\n2) Predictive analytics\n3) AI-driven virtual assistants\n4) Platforms like Sophos and Microsoft Security Copilot",
+            "supporting_file_paths": [
+                "shared/ai-integration-plan.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "This will help establish a baseline of the technical readiness of Mediconn systems for AI integration.",
+            "question": "What percentage of MediConn's core security infrastructure components (firewalls, IAM, and SIEM systems) are currently compatible with its AI infrastructure as of Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "30-40% (moderately read for integration)",
+            "supporting_file_paths": [
+                "shared/AI-Integration-Plan.docx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "This information matters because concurrent integrations are likely to affect each other. Therefore, it is important to understand which other technology risks are to be kept in mind while trying to integrate the new anomaly detection tool.",
+            "question": "What are the five new AI tools and services that Mediconn is planning to develop and integrate into its existing systems by Q3 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The five new AI tools and services that Mediconn is planning to develop and integrate into its existing systems by Q3 2026 are\n1) Intrusion detection systems (IDS)\n2) Behavioral Biometrics\n3) AI for data anonymization\n4) Federated Learning\n5) Automated compliance monitoring",
+            "supporting_file_paths": [
+                "shared/ai-integration-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "Knowledge of these risks ensures proactive mitigation planning, preventing service interruptions, missed threat detections, or monitoring gaps that could compromise the reliability and safety of healthcare operations.",
+            "question": "What were the three main issues faced the last time an AI anomaly detection tool was integrated at Elexion?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The three main issues faced were\n1) False positives that isolated critical medical systems unnecessarily.\n2) Model drift or bias, leading to undetected real threats over time.\n3) Data integration failures with legacy hospital systems, causing gaps in monitoring coverage.",
+            "supporting_file_paths": [
+                "shared/ai-integration-cyber-resilience.pptx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "This information is necessary to ensure that Mediconn can run security tests without causing downtime for their actual platform. Without this service, the whole integration of the new AI system can rupture the workflow of the current services.",
+            "question": "Does MediConn plan to have a safe, separate 'test' system where they can try out the new AI tools without affecting real patient services?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes, Mediconn is planning to have a staging environment, which is a complete replica of their live production system but is fully isolated on separate cloud infrastructure to prevent any impact on real patient services.",
+            "supporting_file_paths": [
+                "shared/AI-Cybersecurity-Integration.pptx"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "Since the tool integration deadline is Q3 2026 (September 2026), the proposed start time of 6-7 months prior to implementation reflects the typical timeline observed in comparable tool integrations and establishes the pace at which the development team must operate to meet the integration deadline.",
+            "question": "What is the proposed start time of the tool integration process?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The proposed start time of the tool integration process is March 2026.",
+            "supporting_file_paths": [
+                "shared/ai-integration-plan.docx"
+            ]
+        },
+        {
+            "id": "IN0007",
+            "justification": "The deployment lead time defines how long it takes to transition the AI model from pilot to live use, including containerization, security validation, and system compatibility checks, all of which must be tightly scheduled to ensure the model is fully operational and compliant before the Q3 2026 deadline.",
+            "question": "How many weeks does it usually take at Elexion to deploy AI models into production?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "It usually takes 6-8 weeks for containerization, security testing, and controlled rollout of AI models into production at Elexion.",
+            "supporting_file_paths": [
+                "shared/ai-tool-integration.pdf"
+            ]
+        },
+        {
+            "id": "IN0008",
+            "justification": "Clearly defining phased milestones helps structure the project timeline, ensuring each stage is completed sequentially and efficiently to meet the Q3 2026 integration deadline.",
+            "question": "How many phases does the AI anomaly detection integration need to be completed in?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The integration should be executed in five phases-assessment, design, pilot testing, deployment, and post-deployment validation.",
+            "supporting_file_paths": [
+                "shared/ai-integration-strategy.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

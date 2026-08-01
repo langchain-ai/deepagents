@@ -1,0 +1,47 @@
+{
+    "industry": "automotive -- electric vehicles",
+    "domain": "compliance",
+    "difficulty": "easy",
+    "files": [
+        {
+            "filetype": "pptx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "jsonl",
+            "type": "distractor",
+            "app": "mattermost"
+        },
+        {
+            "filetype": "email",
+            "type": "distractor",
+            "app": "roundcube"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "email",
+            "type": "distractor",
+            "app": "roundcube"
+        },
+        {
+            "filetype": "email",
+            "type": "supporting",
+            "app": "roundcube"
+        },
+        {
+            "filetype": "pdf",
+            "type": "supporting",
+            "app": "file_system"
+        }
+    ]
+}

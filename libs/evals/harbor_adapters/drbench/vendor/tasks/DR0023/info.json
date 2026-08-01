@@ -1,0 +1,72 @@
+{
+    "industry": "retail",
+    "domain": "itsm",
+    "difficulty": "medium",
+    "files": [
+        {
+            "filetype": "jsonl",
+            "type": "distractor",
+            "app": "mattermost"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pptx",
+            "type": "distractor",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "xlsx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "email",
+            "type": "distractor",
+            "app": "roundcube"
+        },
+        {
+            "filetype": "docx",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "pdf",
+            "type": "distractor",
+            "app": "file_system"
+        },
+        {
+            "filetype": "docx",
+            "type": "supporting",
+            "app": "nextcloud"
+        },
+        {
+            "filetype": "email",
+            "type": "supporting",
+            "app": "roundcube"
+        },
+        {
+            "filetype": "pdf",
+            "type": "supporting",
+            "app": "nextcloud"
+        }
+    ]
+}

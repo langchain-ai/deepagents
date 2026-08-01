@@ -1,0 +1,127 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "Did the Elexion Automotive cybersecurity team analyze any external market data during Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, the Elexion Automotive cybersecurity team did analyze external market data in Q4 2024. Specifically, the team reviewed the 2024 Global Automotive Cybersecurity report, which gave them insights for heading into the 2025 fiscal year.",
+            "supporting_file_paths": [
+                "shared/Q4-Cybersecurity-Report.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "How many internal security audits of Elexion Automotive's customer web portal did the cybersecurity team perform so far in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Elexion Automotive cybersecurity team has performed two internal security audits of the company's customer web portal thus far in 2025.",
+            "supporting_file_paths": [
+                "shared/2025-audit-summary.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What percentage of Elexion Automotive's customers reported losing access to their mobile app due to stolen credentials in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "It was documented by the cybersecurity team at Elexion Automotive that roughly 2% of their customers had reported losing access to their mobile app due to stolen credentials in 2024.",
+            "supporting_file_paths": [
+                "shared/2024-security-analysis-report.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "How many Elexion Automotive vehicles have fallen victim to physical access attacks from diagnostic ports (OBD-II) in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The cybersecurity team at Elexion Automotive published a report on October 1, 2025, that stated exactly one of their vehicles had fallen victim to a physical access attack involving the car's diagnostic port (OBD-II) so far in 2025.",
+            "supporting_file_paths": [
+                "shared/vehicle-security-assessment.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "For the fiscal year 2025, what percentage of the budget afforded to the cybersecurity team at Elexion Automotive was allocated toward R&D purposes to prevent future attacks?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In the fiscal year 2025, roughly 20% of the cybersecurity team's budget was set to be allocated towards R&D purposes in the interest of preventing future attacks.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-budget-fy2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What proportion of the Elexion Automotive cybersecurity team's efforts was spent on preparing over-the-air (OTA) updates for their vehicles in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The cybersecurity team at Elexion Automotive reported that roughly 5% of their efforts were spent on preparing OTA updates for the company's vehicles during Q3 2025.",
+            "supporting_file_paths": [
+                "shared/OTA-Cybersecurity-Q3-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "Has Elexion Automotive already made any efforts in 2025 within its own organization to utilize available internal consumer data to help protect company data security and safety concerns?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, Elexion Automotive has already held a major company town hall meeting in September 2025 to discuss their latest internal consumer data, with a significant portion of the meeting dedicated to company data security and safety.",
+            "supporting_file_paths": [
+                "shared/data-protection-measures.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "Has Elexion Automotive already made any efforts in 2025 within its own organization to utilize available external market data to help protect consumer data security and safety concerns?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes, Elexion Automotive has already held a major company town hall meeting in September 2025 to discuss the latest external market data, with a significant portion of the meeting dedicated to consumer data security and safety.",
+            "supporting_file_paths": [
+                "shared/automotive-cybersecurity-analysis.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What proportion of the cybersecurity team's time is dedicated to analyzing and learning from externally available cybersecurity market data within the automotive industry, and how will that change by the end of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The cybersecurity team at Elexion Automotive currently spends roughly just over half of their time on analyzing and learning from external cybersecurity market trends, also known as \"threat intelligence\". This proportion of the team's effort is planned to climb to roughly 60% by the end of 2025.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_015803.jsonl"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "Has the Elexion Automotive cybersecurity team used any external market data from Q3 2025 to help them with engineering any models' software updates being released in Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes, the cybersecurity team at Elexion Automotive has leveraged external market data from Q3 to influence their Q4 software updates in 2025. Specifically, the team's planned software update in Q4 focuses primarily on preventing remote malware attacks that had been reported by similar automotive brands during Q3 2025.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-market-analysis.docx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "How much did Elexion Automotive spend on securing external market data for its cybersecurity team in Q3 2025, and how will that number change by the end of Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Elexion Automotive spent $25,000 on securing valuable external market data for its cybersecurity team in Q3 of 2025, with plans to increase spend by $4,000 in Q4 totaling $29,000.",
+            "supporting_file_paths": [
+                "shared/automotive-cybersecurity-analysis.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

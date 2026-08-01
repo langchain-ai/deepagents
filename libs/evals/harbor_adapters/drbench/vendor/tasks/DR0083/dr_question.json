@@ -1,0 +1,15 @@
+{
+    "dr_question": "How can Elexion use virtual healthcare-style remote diagnostics to reduce warranty repair downtime?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Virtual/Remote Healthcare",
+        "dr_question": "How can Elexion use virtual healthcare-style remote diagnostics to reduce warranty repair downtime?",
+        "industry": "Automotive -- Electric Vehicles",
+        "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8734917"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0083",
+    "industry": "automotive -- electric vehicles",
+    "domain": "Virtual/Remote Healthcare",
+    "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC8734917"
+}

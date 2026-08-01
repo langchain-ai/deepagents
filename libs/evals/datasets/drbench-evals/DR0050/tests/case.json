@@ -1,0 +1,84 @@
+{
+  "task_id": "DR0050",
+  "question": "According to an article published on TechTarget.com in 2024, excellent patient communication is critical for a successful customer service department. How can MediConn Solutions improve patient communication in order to reduce service calls into Q12025?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "In Q3 2024, what was the most frequent reason patients contacted the MediConn Solutions' customer service department after their virtual visits, and what is the desired decrease in percentage of that inquiry in 2025?",
+      "answer": "In Q3 2024, according to a poll conducted by MediConn Solutions' customer service department, 42% of post-visit customer service inquiries were about billing confusion, specifically why charges differed from what patients expected based on their corporate wellness plan coverage versus provincial health insurance. The MediConn Solutions' customer service department is looking to reduce the percentage of such inquiries by 50% by 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "How does MediConn's billing structure vary across different customer segments as of Q4 2024, leading into 2025?",
+      "answer": "As of Q4 2024, and leading into 2025, individual patients of MediConn Solutions can pay out of pocket ($45 per consultation, $65 for mental health sessions). Corporate wellness program participants have employer-subsidized rates with variable co-pays ($10-$25), and some services are partially covered by private insurance that requires claims submission.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "In Q3 2024, what documentation did patients receive immediately after their virtual consultation ended, and will this trend continue into 2025?",
+      "answer": "In Q3 2024, patients received an automated email with appointment date and provider name, but no itemized billing breakdown, next steps, or follow-up instructions until 24-48 hours later, when the full visit summary was manually processed. Because there have currently been no updates to the system, this trend will continue into 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "As of Q4 2024, what is the timeline for prescription management and delivery after a doctor prescribes medication during a virtual visit, and will this trend continue into 2025?",
+      "answer": "As of Q4 2024, electronic prescriptions are sent to partner pharmacies within 2 hours, but patients must separately arrange delivery or pickup. Prescription delivery through MediConn's service takes 24-48 hours and costs an additional $15. MediConn Solutions has no plans to change this protocol by 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "During Q4 2024, how did follow-up appointments at MediConn Solutions work differently for mental health counselling versus general practitioner consultations, and is there any plan to change this difference by 2025?",
+      "answer": "During Q4 2024, mental health sessions typically involved recurring appointments booked in series (weekly or bi-weekly), while doctor consultations were one-time unless the physician recommended a follow-up. According to a customer service survey conducted by MediConn's customer service team in January 2024, 75 % of patients didn't understand they needed to manually book subsequent mental health sessions, which resulted in a high volume of customer service calls. MediConn Solutions' executives are aware of this issue and have made plans to address these differences by 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0006",
+      "question": "What was Rachel's team's average response time for patient inquiries about billing and next steps in Q4 2024? Are there any plans to require customer service employees to lower that response time by 2025?",
+      "answer": "In Q4 2024, MediConn Solutions' customer support team answered email inquiries within 18 hours, while live chat and phone support during business hours (9 AM - 6 PM PT) had 8-minute average wait times. After-hours inquiries went to an automated system with a next-business-day response. Beginning in Q1 2025, the customer service team will be required to cut these response times by 20%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0007",
+      "question": "As of Q4 2024 and moving into 2025, how do provincial regulations affect what information customer service can provide about billing and medical follow-up?",
+      "answer": "According to MediConn Solutions' billing department, as of Q3 2024, and moving into 2025, Ontario patients can access provincial telehealth billing codes, reducing out-of-pocket costs by 20%, while British Columbia patients pay standard rates. Customer service cannot provide medical advice on follow-up care, but can explain administrative next steps, like booking referrals.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0008",
+      "question": "In Q4 2024, how are billing and follow-up communications handled for employees using MediConn Solution through their employer's wellness program?",
+      "answer": "In Q3 2024, corporate program participants had pre-negotiated rates and simplified billing (charged directly to employer or subsidized), but when the MediConn Solutions audited employee patient call records, it was discovered that 65% of patients didn't understand their specific coverage limits (e.g., 5 sessions per year) or what services required co-pays versus full employer coverage. There are no plans to update communications to decrease this volume of calls.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0009",
+      "question": "As of Q4 2024, what self-service resources are available for patients seeking billing or next-steps information at MediConn Solutions?",
+      "answer": "As of Q4 2025, MediConn Solutions has a basic FAQ page covering general topics, but lacks searchable knowledge base articles about specific scenarios (e.g., \"How do I get a prescription refill?\" or \"Why was I charged twice?\"). In Q3 2025, 68% of customers who checked FAQs still contacted support, according to a January 2024 poll of customers conducted by Mediconn's customer service team.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0010",
+      "question": "In Q4 2024, how did post-visit confusion about billing and next steps affect MediConn's customer satisfaction scores?",
+      "answer": "Results of a MediConn Solutions patient questionnaire completed in October 2024 showed that, so far in Q4 2024, patients who contacted support and were confused about billing rated their experience 3.2/5 on average, compared to 4.5/5 for patients who didn't need post-visit clarification. Clear billing explanations during support calls raised scores to 4.1/5.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0011",
+      "question": "In Q4 2025, what happened when a virtual doctor recommended a patient see a specialist or get lab work, and what confusion did this create?",
+      "answer": "In Q4 2024, doctors could provide referral recommendations and requisitions through the platform, but patients had to independently book with external specialists and labs. 31% of patients contacting support were confused about whether MediConn coordinated these appointments or if they must do it themselves.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0012",
+      "question": "As of Q4 2024, what training do MediConn Solutions customer service representatives (CSR) receive concerning billing explanations and post-visit processes?",
+      "answer": "As of Q4 2024, CSRs are required to complete a 2-day onboarding covering basic platform navigation and billing structures. The training lacks detailed scripts for handling complex scenarios like insurance coordination, corporate plan variations, or province-specific processes. After a September 2024 training, MediConn customer service representatives indicated on a post-training questionnaire that 8/10 times they escalated these inquiries to their supervisors.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0013",
+      "question": "As of Q4 2024, what patient information can Rachel's customer service team access in real-time when helping confused patients, and how often is it used?",
+      "answer": "As of Q4 2024, CSRs can view patient account details, billing history, scheduled appointments, and visit summaries (once processed), which they accessed while answering patient questions 95% of the time during 2024, according to IT records.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

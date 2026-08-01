@@ -1,0 +1,24 @@
+{
+  "task_id": "DR0075",
+  "question": "How can Elexion Automotive's quality assurance testing protocols prioritize Apple CarPlay and Android Auto connectivity performance by Q4 2025 for 2026 EV models to differentiate from competitors and attract 50% of Apple users and 42% of Samsung users who depend on smartphone connections every drive?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What percentage of Elexion Automotive's customer satisfaction complaints were related to infotainment connectivity issues in 2024?",
+      "answer": "In Q3 2024, 30% of Elexion Automotive's customer satisfaction complaints were related to infotainment connectivity issues, making it the second-highest complaint category after charging speed concerns.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "How many distinct smartphone models and iOS versions does the Elexion Automotive quality assurance team currently test for connectivity compatibility?",
+      "answer": "As of December 2024, the Elexion Automotive quality assurance team tests connectivity compatibility across 87 distinct smartphone models, 15 iOS versions and 22 Android versions, with plans to expand to 120 devices by 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "What was the customer retention rate for Elexion Automotive owners who reported excellent infotainment system performance as opposed to those who reported connectivity problems?",
+      "answer": "A 2023 owner satisfaction study conducted in September revealed a 94% retention rate among customers who reported excellent infotainment system performance, compared to only 71% retention among those who experienced repeated connectivity problems.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

@@ -1,0 +1,94 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "By Q4 2025, will MediConn\u2019s knowledge management system automatically flag outdated compliance documents for review?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. According to an internal update on July 15, 2025, the Knowledge Management system flags all compliance documents older than 12 months for review.",
+            "supporting_file_paths": [
+                "shared/compliance-review-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "How many new internal documentation templates were added to MediConn\u2019s KM system in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Data from MediConn's Telehealth department show that 18 new internal documentation templates were added to the Knowledge Management system between July 1 and September 30, 2025.",
+            "supporting_file_paths": [
+                "shared/Q3-KM-System-Update.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How many emails did Isabella send regarding upcoming KM system enhancements to clinical teams between January 1 and March 31, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal data a total of 12 emails were sent to clinical teams summarizing planned updates and maintenance schedules in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/Q1-2025-KM-Communication.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "How many internal newsletters summarizing MediConn's KM system updates were distributed to staff between January 1 and March 31, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In Q1 2025, 5 internal newsletters summarizing MediConn's KM system updates were distributed to the staff.",
+            "supporting_file_paths": [
+                "shared/q1-internal-communications-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "By Q2 2025, had Isabella\u2019s team collaborated with IT to test new KM system features for employee training?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. An internal update on February 12, 2025, confirms the KM and IT teams conducted feature testing for upcoming system updates.",
+            "supporting_file_paths": [
+                "shared/KM-system-evaluation.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "By Q2 2026, will MediConn\u2019s knowledge management system include real-time alerts for updated documentation standards for virtual care teams?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. According to an internal MediConn update on July 10, 2025, the system automatically sends real-time alerts when documentation standards are revised or updated.",
+            "supporting_file_paths": [
+                "shared/knowledge-management-enhancements.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "By Q2 2026, will MediConn\u2019s knowledge management system include real-time alerts for newly updated clinical guidelines for virtual care teams?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes. According to a MediConn internal report published on October 13, 2025, the system will automatically send real-time alerts to all virtual care team members when clinical guidelines are updated effective January 1, 2026.",
+            "supporting_file_paths": [
+                "shared/knowledge-management-enhancement.pptx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "How many virtual care team members at MediConn accessed the internal knowledge management platform at least weekly in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to data from MediConn's Telehealth Department, between January 1 and March 31, 2025, out of 120 virtual care professionals, 95 (79%) accessed the platform at least weekly, showing strong engagement with critical medical information.",
+            "supporting_file_paths": [
+                "shared/knowledge-management-strategy.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

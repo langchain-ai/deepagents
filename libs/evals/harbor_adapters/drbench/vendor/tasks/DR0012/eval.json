@@ -1,0 +1,138 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "EX0000",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "J.D. Power\u2019s 2024 Initial Quality Study reveals that new EVs average 266 problems per 100 vehicles in the first 90 days, compared to the industry average of 195 PP100, with issues primarily related to software and user experience rather than core mechanics. The study highlights that the problems are largely due to high-tech features and infotainment systems, not drivetrain failures.",
+            "supporting_urls": [
+                "https://www.greencars.com/expert-insights/do-evs-have-more-quality-problems"
+            ]
+        },
+        {
+            "id": "EX0001",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Tesla's removal of traditional turn-signal and wiper stalks in favor of touch controls on newer models led to increased owner complaints and lower quality ratings due to the unintuitive interface. Additionally, misunderstandings about advanced driver-assist features, such as alerts for rear-seat reminders or automatic braking, contribute to perceived problems among EV owners. These issues underscore the importance of user-centric design and comprehensive customer training in enhancing EV quality assurance.",
+            "supporting_urls": [
+                "https://www.greencars.com/expert-insights/do-evs-have-more-quality-problems"
+            ]
+        },
+        {
+            "id": "EX0002",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Infotainment and connectivity systems are the leading sources of initial problems in modern vehicles, particularly EVs, with J.D. Power data indicating \"features, controls, and displays\" issues are 30% higher for electric cars. Common complaints include unreliable navigation, smartphone app glitches, and difficulties with touch-screen menus, with phone integration issues like Apple CarPlay/Android Auto dropouts being prevalent. Brands like Ram and Lexus, which prioritize simplicity and robust design, scored better in quality, highlighting the importance of rigorous software testing and user-friendly controls in automotive quality assurance for EVs.",
+            "supporting_urls": [
+                "https://www.greencars.com/expert-insights/do-evs-have-more-quality-problems"
+            ]
+        },
+        {
+            "id": "qa_1756143934",
+            "justification": "This answer provides a quantitative metric to address the DR Question's concern about optimizing quality assurance processes for electric vehicle production, specifically regarding software and user experience issues.",
+            "question": "What proportion of our software quality assurance testing time is spent on user experience and interface issues in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "45% of our software quality assurance testing time will be dedicated to user experience and interface issues in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_SQA_Test_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755626972",
+            "justification": "Employee volunteer program metrics do not address the core DR Question focus area",
+            "question": "What was our employee volunteer program participation rate in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "75% of employees participated in at least one volunteer activity, with 40 hours average volunteering per employee.",
+            "supporting_file_paths": [
+                "shared/Q1-2025-Employee-Engagement-Report.docx"
+            ]
+        },
+        {
+            "id": "qa_1756143963",
+            "justification": "Data center energy consumption metrics do not address the unique challenges of electric vehicle production",
+            "question": "What was our energy consumption cost for our data center in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Data center energy consumption cost was $90,000 with a carbon footprint reduction of 30%.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Data_Center_Energy_Usage.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755626952",
+            "justification": "Facility energy consumption costs do not address the core DR Question focus area",
+            "question": "What was our facility energy consumption cost in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility energy consumption cost was $120,000 with electricity usage accounting for 70% of total energy expenses.",
+            "supporting_file_paths": [
+                "shared/Energy-Consumption-Report-2025.docx"
+            ]
+        },
+        {
+            "id": "qa_1755626937",
+            "justification": "IT infrastructure maintenance costs do not address the core DR Question focus area",
+            "question": "What was our average IT infrastructure maintenance cost per vehicle in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average IT infrastructure maintenance cost per vehicle was $230 with total maintenance costs reaching $450,000.",
+            "supporting_file_paths": [
+                "shared/IT-Infrastructure-Maintenance-Report-Q3-2024.docx"
+            ]
+        },
+        {
+            "id": "qa_1755626924",
+            "justification": "Employee engagement survey data does not address the core DR Question focus area",
+            "question": "What was our employee engagement survey response rate in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee engagement survey response rate was 85% with 75%+ responses indicating high job satisfaction.",
+            "supporting_file_paths": [
+                "shared/Engagement-Insights-2025.docx"
+            ]
+        },
+        {
+            "id": "qa_1756143978",
+            "justification": "Compliance audit costs do not address the optimization of quality assurance processes for electric vehicle production",
+            "question": "What was our compliance audit cost as a percentage of annual revenue in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Compliance audit cost was 1.5% of annual revenue with a total cost of $4.5 million.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Compliance_Audit_Overview.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755626851",
+            "justification": "This answer provides a quantitative snapshot of our current software testing priorities, helping us identify areas to optimize for electric vehicle production.",
+            "question": "What proportion of our software quality assurance testing time is spent on user experience and interface issues in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "By Q2 2025, 50% of our software quality assurance testing time will be dedicated to user experience and interface issues.",
+            "supporting_file_paths": [
+                "shared/Elexion-QA-Optimization-Electric-Vehicle-Production.docx"
+            ]
+        },
+        {
+            "id": "qa_1755626868",
+            "justification": "This answer sheds light on the current software bug distribution, allowing us to focus on the most critical areas for improvement in electric vehicle production.",
+            "question": "What percentage of our software bugs are attributed to user experience and interface issues in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In Q3 2024, 60% of our software bugs were related to user experience and interface issues, highlighting the need for improved testing and quality assurance.",
+            "supporting_file_paths": [
+                "shared/QA-EV-Production-Optimization.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

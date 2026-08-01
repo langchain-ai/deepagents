@@ -1,0 +1,237 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "EX0000",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "In 2024, researchers exposed cybersecurity vulnerabilities in connected cars by remotely exploiting a flaw in Kia's online services, allowing them to control functions on any Kia vehicle made since 2013, and similarly hijacking certain Subaru models. These incidents highlight the significant risks to driver safety and data privacy posed by modern vehicles, often referred to as \"computers on wheels.\" Automakers must address these cybersecurity threats to protect their customers.",
+            "supporting_urls": [
+                "https://www.helpnetsecurity.com/2025/04/04/cybersecurity-risks-cars/"
+            ]
+        },
+        {
+            "id": "EX0001",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Cyberattacks on vehicles and automotive IT systems have resulted in estimated financial losses of $22.5 billion, including $20 billion from data breaches and $1.9 billion from operational downtime. Vulnerabilities such as unsecured wireless interfaces and physical access points are being targeted, prompting manufacturers to enhance cybersecurity measures with improved encryption, authentication, and intrusion detection systems.",
+            "supporting_urls": [
+                "https://www.helpnetsecurity.com/2025/04/04/cybersecurity-risks-cars/"
+            ]
+        },
+        {
+            "id": "EX0002",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "The rise of autonomous and connected EVs introduces significant cybersecurity challenges, particularly with V2X communications and over-the-air updates. The European Union has enacted strict automotive cybersecurity rules, while the U.S. relies on voluntary guidelines. Automakers must collaborate with governments and tech partners to integrate cybersecurity as a core aspect of vehicle safety.",
+            "supporting_urls": [
+                "https://www.helpnetsecurity.com/2025/04/04/cybersecurity-risks-cars/"
+            ]
+        },
+        {
+            "id": "qa_1755628546",
+            "justification": "Facility costs are irrelevant to vehicle cybersecurity implementation.",
+            "question": "What were the facility costs in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility costs totaled $1.8 million in Q1 2024.",
+            "supporting_file_paths": [
+                "shared/facility-costs-q1.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755628263",
+            "justification": "Intrusion detection systems counteract cyber threats, enhancing vehicle cybersecurity.",
+            "question": "How many EVs have intrusion detection by Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "70% of EVs have intrusion detection systems by Q1 2025.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-strategy-evs.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755634695",
+            "justification": "Marketing spending is unrelated to addressing cybersecurity concerns in vehicles.",
+            "question": "How much did we spend on marketing in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Marketing expenditure reached $5 million in Q2 2024.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_161854.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755628489",
+            "justification": "Training hours do not relate to cybersecurity strategy for vehicles.",
+            "question": "How many training hours per employee in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Each employee completed an average of 12 training hours.",
+            "supporting_file_paths": [
+                "shared/training-strategy-overview.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755714339",
+            "justification": "Manufacturing equipment purchases do not impact cybersecurity implementation.",
+            "question": "How many new manufacturing equipment were purchased in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion purchased 15 new manufacturing equipment totaling $1.5 million.",
+            "supporting_file_paths": [
+                "shared/manufacturing-equipment-report.pdf"
+            ]
+        },
+        {
+            "id": "IN001",
+            "justification": "Understanding the scope of V2X communications integration will help us prioritize cybersecurity measures for our vehicles.",
+            "question": "What percentage of our vehicle models have V2X communications integrated?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "60% of our vehicle models have V2X communications integrated as of Q2 2024.",
+            "supporting_file_paths": [
+                "shared/Cyber-Security-Framework.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755634566",
+            "justification": "This data highlights current risks, informing necessary cybersecurity strategy adjustments.",
+            "question": "How many cybersecurity incidents were reported in Q1 of 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Three cybersecurity incidents reported in Q1 of 2024, indicating vulnerabilities.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_161647.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755714219",
+            "justification": "Employee turnover metrics do not address cybersecurity strategy.",
+            "question": "What was the employee turnover rate in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate was 8% with an average tenure of 3 years.",
+            "supporting_file_paths": [
+                "shared/workforce-metrics-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755635069",
+            "justification": "Operational costs do not pertain to electric vehicle cybersecurity strategies.",
+            "question": "What are our manufacturing facility operational costs in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Operational costs for the facility were $8 million in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_162517.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755628173",
+            "justification": "Encryption protects data, mitigating cybersecurity threats in autonomous and connected vehicles.",
+            "question": "What percentage of EVs have encryption by Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "85% of EVs have encryption by Q1 2025.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-strategy-elexion.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755634125",
+            "justification": "Understanding update frequency aids in evaluating our commitment to cybersecurity for vehicles.",
+            "question": "What percentage of our software updates include cybersecurity enhancements?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "40% of our software updates include specific cybersecurity enhancements as of Q2 2024.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_160917.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755634742",
+            "justification": "Production costs do not impact the implementation of cybersecurity strategies.",
+            "question": "What is our average production cost per vehicle in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average production cost per vehicle was $32,000 in Q2 2024.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_161937.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755635200",
+            "justification": "Training expenditures are irrelevant to the cybersecurity strategy for electric vehicles.",
+            "question": "How much did we spend on employee training in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee training expenses totaled $1.2 million during Q2 2024.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_162726.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755714060",
+            "justification": "Analyzing cybersecurity incidents in V2X systems helps identify vulnerabilities in connected EVs.",
+            "question": "How many cybersecurity incidents occurred in our V2X systems in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Two cybersecurity incidents were reported in our V2X systems in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/ev-cybersecurity-strategy.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755714717",
+            "justification": "Customer satisfaction metrics do not address cybersecurity risks and challenges.",
+            "question": "What was the average customer satisfaction rating in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average customer satisfaction rating was 85% with 90% recommending Elexion.",
+            "supporting_file_paths": [
+                "shared/customer-experience-review.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755628605",
+            "justification": "IT hiring numbers do not influence vehicle cybersecurity strategies.",
+            "question": "How many new IT hires in Q3 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion hired 15 new IT staff in Q3 2023.",
+            "supporting_file_paths": [
+                "shared/it-hiring-insights.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755718551",
+            "justification": "R&D budget is not directly related to cybersecurity strategy.",
+            "question": "What was our research and development budget in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Research and development budget was $8 million in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/RnD-Report-Q2-2024.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755628424",
+            "justification": "Office utilization metrics do not address the core DR Question focus area",
+            "question": "What was our office space utilization rate in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Office space utilization averaged 65% with peak usage reaching 80%.",
+            "supporting_file_paths": [
+                "shared/space-efficiency-analysis.pptx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

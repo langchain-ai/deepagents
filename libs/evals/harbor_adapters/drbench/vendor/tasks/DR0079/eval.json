@@ -1,0 +1,215 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "In February 2024, what percentage of Elexion\u2019s home charging station installations were completed within the scheduled 48-hour window?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion\u2019s Internal tracking indicated that 88% of installations were completed within the 48-hour target in February 2024.",
+            "supporting_file_paths": [
+                "shared/installation-performance-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "In Q1, 2024, how did Elexion Automotive track improvements in battery assembly time for its mid-range EV line?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion\u2019s internal manufacturing dashboard recorded a 12% reduction in battery assembly time for the MX-300 model in Q1 2024 compared to Q4 2023, indicating improved production efficiency.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Battery_Assembly_Efficiency_Dat.xlsx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "In April 2024, how many Elexion employees completed the company\u2019s internal sustainability training program?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Elexion\u2019s internal HR records, 245 employees completed the sustainability training program in April 2024, representing 92% of the production and engineering teams.",
+            "supporting_file_paths": [
+                "shared/sustainability-training-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "During Q1 2025, what percentage of Elexion\u2019s home charging stations required maintenance due to installation errors?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal service logs show that 7% of Elexion\u2019s home charging stations installed in Q1 2025 required maintenance due to installation errors.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_024033.jsonl"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "In Q2 2025, how many Elexion mid-range EVs were returned for interior accessory defects during the first 90 days of ownership?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Company warranty tracking indicates that 42 mid-range Elexion EVs were returned in Q2 2025 due to interior accessory defects within the first 90 days of ownership.",
+            "supporting_file_paths": [
+                "shared/q2-2025-evs-defects-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "In Q1 2025, what percentage of Elexion\u2019s home charging stations required software troubleshooting within the first six months of installation?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal maintenance records show that 18% of Elexion\u2019s home charging stations reported software troubleshooting issues within the first six months of installation in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_024144.jsonl"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "Between January and June 2024, how did employee engagement survey scores among Elexion\u2019s sales and marketing teams change compared to the previous year?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion\u2019s HR analytics dashboard reported a 6% increase in employee engagement scores for sales and marketing teams between January and June 2024 compared to the same period in 2023.",
+            "supporting_file_paths": [
+                "shared/employee-engagement-evolution.pptx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "In Q4 2024, how did Elexion\u2019s IT department reduce data storage costs across its cloud analytics systems?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal IT performance metrics from Q4 2024 indicate that Elexion lowered its annual cloud storage costs by 18% through a migration to a hybrid on-premise system.",
+            "supporting_file_paths": [
+                "shared/Q4-2024-IT-Cost-Report.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "In January 2024, what percentage of Elexion employees participated in the company\u2019s new sustainability training program?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the Elexion Internal Sustainability Dashboard, 82% of employees completed the mandatory sustainability certification module by the end of January 2024.",
+            "supporting_file_paths": [
+                "shared/2024-sustainability-training.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "During Q1 2024, how many units of Elexion\u2019s EcoDrive X2 model were recalled due to a faulty battery sensor?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Data from Elexion\u2019s Quality Control System shows that 2,300 EcoDrive X2 vehicles were recalled across North America during Q1 2024 following a battery sensor malfunction alert.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_024339.jsonl"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "In May 2025, how did Elexion\u2019s partnership with municipal governments in Texas influence its fleet vehicle pilot programs?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Elexion\u2019s internal sustainability tracking, in May 2025 the company expanded pilot programs for electric municipal fleets in Austin, resulting in a 15% increase in local EV adoption rates among government-operated vehicles.",
+            "supporting_file_paths": [
+                "shared/texas-partnership-impact.pdf"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "In Q4, 2024, how did Elexion\u2019s in-house battery recycling initiative impact its overall production efficiency?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion\u2019s internal sustainability report for Q4 2024 showed that implementing closed-loop battery recycling reduced raw material procurement costs by 12% and improved production efficiency metrics across its Texas manufacturing facilities.",
+            "supporting_file_paths": [
+                "shared/battery-recycling-efficiency-report.docx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "In Q2, 2024, how did Elexion\u2019s sales team track the response time for customer inquiries after competitor EV launches?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion\u2019s internal CRM recorded an average response time of 18 hours for customer inquiries in Q2 2024, a slight increase from 16 hours in Q1 2024.",
+            "supporting_file_paths": [
+                "shared/sales-response-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "In March 2024, what percentage of Elexion\u2019s North American service requests were related to vehicle infotainment system customization compared to standard software updates?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion\u2019s internal tracking showed 25% of service requests were for infotainment customization, while 75% were for standard software updates.",
+            "supporting_file_paths": [
+                "shared/infotainment-service-analysis.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "How did Elexion\u2019s sales team quantify the impact of competitor launches on its EV inquiries in Q2, 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In Q2 2024, Elexion Automotive\u2019s internal CRM tracked a 12% drop in EV inquiry volume following competitor model announcements, signaling potential market share shifts.",
+            "supporting_file_paths": [
+                "shared/EV-Competitor-Analysis.pptx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "In March 2024, what percentage of Elexion\u2019s North American service requests were related to vehicle software updates compared to hardware issues?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Elexion\u2019s internal service dashboard recorded that 62% of service requests in March 2024 were related to software updates, which highlighted the growing role of digital systems in customer experience.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Service_Requests_Analysis_Data.xlsx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "In Q3, 2024, how did Elexion\u2019s production delays impact its delivery commitments for mid-range EV models?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Elexion\u2019s internal manufacturing dashboard reported that 17% of Q3 2024 mid-range EV orders were delayed by at least two weeks due to supply chain bottlenecks in battery components.",
+            "supporting_file_paths": [
+                "shared/ev-market-analysis.pptx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "In Q1 2024, how did Elexion\u2019s customer feedback on pricing and feature preferences reflect shifts in competitive positioning?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Elexion\u2019s internal CRM data reported that 42% of surveyed mid-income family customers cited competitor features and pricing as a key factor in considering alternative EV brands, highlighting the influence of market positioning on purchasing decisions.",
+            "supporting_file_paths": [
+                "shared/ev-landscape-2026.pptx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "In Q3, 2024, how did Elexion\u2019s customer service team measure the effect of delivery delays on prospective EV buyers?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Internal CRM logs show that 22% of new EV inquiries in Q3 2024 cited delayed delivery estimates as a concern, according to Elexion Automotive\u2019s Customer Relationship Management dashboard.",
+            "supporting_file_paths": [
+                "shared/EV-landscape-2026.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

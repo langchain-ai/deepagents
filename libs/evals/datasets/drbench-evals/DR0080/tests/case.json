@@ -1,0 +1,36 @@
+{
+  "task_id": "DR0080",
+  "question": "Based on the 2024 report \"Trends in electric cars\" on iea.org, which developments in battery technology and EV supply chains are likely to impact global production and delivery dynamics by Q2 2026?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "Which battery types are currently prioritized in Elexion Automotive’s North American production planning for Q1 2026?",
+      "answer": "Elexion internal planning data for Q1 2026 shows lithium-ion batteries account for 80% of planned EV allocations, solid-state batteries 15%, and sodium-ion batteries 5%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What is the current production capacity of Elexion Automotive’s key battery suppliers for Q1–Q2 2026 and how does this compare to projected demand?",
+      "answer": "Elexion's internal Supplier Reports indicate that combined production capacity is projected to meet only 85% of projected EV demand for Q2 2026, with potential shortfalls concentrated in lithium-ion supply.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "Which regions supplied by Elexion are projected to experience the highest EV delivery delays in Q2 2026?",
+      "answer": "Elexion internal logistics projections for Q2 2026 indicate that delivery delays will be highest in the Northeast US, where shipments are expected to face delays of up to 12 days due to port congestion and limited local battery inventory.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "What percentage of Elexion Automotive’s EV prototypes in Q1 2026 are using emerging battery technologies like solid-state or sodium-ion?",
+      "answer": "Elexion internal R&D tracking shows that 22% of prototypes are equipped with solid-state batteries and 8% with sodium-ion batteries, while the remaining 70% still use lithium-ion.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "What is the current average EV battery inventory level across Elexion’s North American distribution centers?",
+      "answer": "As of October 2025, Elexion internal logistics tracking indicates that an average of 78% of planned battery inventory is in stock across all distribution centers, with the lowest levels at the Midwest and Northeast hubs.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

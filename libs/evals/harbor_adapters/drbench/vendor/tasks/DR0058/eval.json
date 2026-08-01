@@ -1,0 +1,182 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "In Q1 2024, did the cybersecurity specialist participate in internal meetings to update secure coding guidelines for the MediConn development team?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. The cybersecurity specialist attended 12 meetings between January 1 and March 31, 2024 to review and update secure coding standards for MediConn\u2019s development team.",
+            "supporting_file_paths": [
+                "shared/Q1-2024-cybersecurity-review.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "In Q1 2024, how many internal platform modules did the cybersecurity specialist review for compliance with MediConn\u2019s coding standards?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal documentation, the cybersecurity specialist reviewed 15 of 20 platform modules for coding standard compliance between January 1 and March 31, 2024.",
+            "supporting_file_paths": [
+                "shared/Q1-2024-Cybersecurity-Report.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "Between June 1 and June 28, 2024, how many internal reports did the cybersecurity specialist generate on system configuration changes for MediConn\u2019s IT team?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Data from the IT department show that the cybersecurity specialist generated 6 internal reports on configuration changes between June 1 and June 28, 2024.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-reports-overview.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "In Q3 2024, did the cybersecurity specialist conduct internal walkthroughs of MediConn\u2019s platform architecture for knowledge sharing with the development team?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, the cybersecurity specialist led two internal sessions for MediConn\u2019s development team between July 1 and September 30, 2024 to review pre-release code changes.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_234553.jsonl"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "In Q4 2024, how many internal threat logs did the cybersecurity specialist review for MediConn\u2019s virtual healthcare platform?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The cybersecurity specialist reviewed 28 internal threat logs for MediConn\u2019s virtual healthcare platform between October 1 and December 31, 2024.",
+            "supporting_file_paths": [
+                "shared/q4-cybersecurity-review.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "In Q1 2025, how many mock internal phishing tests did the cybersecurity specialist conduct for MediConn employees?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The cybersecurity specialist conducted 3 mock phishing tests for MediConn employees between January 1 and March 31, 2025.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_234651.jsonl"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "In Q2 2025, did the cybersecurity specialist participate in internal review meetings on MediConn\u2019s CI/CD pipeline security?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. The cybersecurity specialist attended 4 internal review meetings between April 1 and June 30, 2025 to discuss CI/CD pipeline security for MediConn.",
+            "supporting_file_paths": [
+                "shared/Q2-2025-Cybersecurity-Report.docx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "In Q3 2025, how many internal system backup checks did the cybersecurity specialist complete for MediConn\u2019s virtual healthcare platform?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The cybersecurity specialist completed 6 internal system backup checks for MediConn\u2019s virtual healthcare platform between July 1 and September 30, 2025.",
+            "supporting_file_paths": [
+                "shared/MediConnSolutions_Cybersecurity_Backup_Checks_Revi.xlsx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "In Q4 2024, how many internal secure coding reviews did the cybersecurity specialist perform for MediConn\u2019s development team?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The cybersecurity specialist performed 12 internal secure coding reviews for MediConn\u2019s development team between October 1 and December 31, 2024.",
+            "supporting_file_paths": [
+                "shared/cybersecurity-review-q4-2024.pdf"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "In Q1 2025, how many internal training sessions on MediConn\u2019s platform vulnerability monitoring tools did the cybersecurity specialist attend?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The cybersecurity specialist attended 3 internal training sessions between January 1 and March 31, 2025 for MediConn\u2019s platform vulnerability monitoring tools.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Cybersecurity_Training_Attendan.xlsx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "In Q2 2025 did the cybersecurity specialist perform a design review of MediConn's dependencies on critical third-party providers?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. According to internal IT records, the cybersecurity specialist conducted a design review of the architecture and integration approach for all critical third-party providers between April 1 and June 30, 2025",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_CyberSecurity_Review_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "How many configuration audits of MediConn\u2019s virtual healthcare platform did the cybersecurity specialist complete in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to an IT department report, the cybersecurity specilaist completed 4 configuration audits of the virtual healthcare platform between January 1 and March 31, 2024, focusing on internal system settings and platform parameters.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_234928.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "In Q2 2025 did the cybersecurity specialist perform a vulnerability assessment of MediConn's dependencies on critical third-party providers?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes. According to data from the IT department between April 1 and June 30, 2025 the cybersecurity specialist perform a vulnerability assessment of MediConn's dependencies",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_234249.jsonl"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "How many penetration tests of MediConn\u2019s virtual healthcare platform did the cybersecurity specialist complete in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn's cybersecurity specialist completed 5 full-scale penetration tests on the platform between January 1 and March 31, 2024, focusing on both internal systems and third-party integrations.",
+            "supporting_file_paths": [
+                "shared/ransomware-mitigation-strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "During Q3 2024, how many hours did MediConn's cybersecurity specialist spend reviewing and updating the incident response plan for third-party outages and ransomware scenarios?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to internal documentation, the cybersecurity specialist spent 36 hours between July 1 and September 30, 2024 reviewing and updating MediConn\u2019s incident response plan to address extended outages from mission-critical third-party providers.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Cybersecurity_Operations_Data.xlsx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "In Q1 2025, how many proactive threat detection alerts did MediConn's cybersecurity specialist configure for third-party integrations with MediConn\u2019s virtual healthcare platform?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Between January 1 and March 31, 2025, MediConn's cybersecurity specialist configured 25 proactive threat detection alerts across all critical third-party integrations connected to MediConn\u2019s virtual healthcare platform.",
+            "supporting_file_paths": [
+                "shared/ransomware-readiness-strategy.pptx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

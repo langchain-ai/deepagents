@@ -1,0 +1,15 @@
+{
+    "dr_question": "If Elexion Automotive shifts from dealership franchising to a direct-to-customer sales model, how could it capture the benefits of the transition to drive sales and higher margins in 2027?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Sales",
+        "dr_question": "If Elexion Automotive shifts from dealership franchising to a direct-to-customer sales model, how could it capture the benefits of the transition to drive sales and higher margins in 2027?",
+        "industry": "Automotive -- Electric Vehicles",
+        "url": "https://theweek.com/us/1024416/tesla-vs-car-dealerships"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0065",
+    "industry": "automotive -- electric vehicles",
+    "domain": "Sales",
+    "url": "https://theweek.com/us/1024416/tesla-vs-car-dealerships"
+}

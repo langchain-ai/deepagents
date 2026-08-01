@@ -1,0 +1,193 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "EX0000",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Retailers excelling in personalized marketing are growing revenues about 10 percentage points faster than their peers, according to BCG. By effectively using first-party customer data, these leaders could unlock an estimated $570 billion in additional sales, highlighting the importance of data-driven sales strategies for growth.",
+            "supporting_urls": [
+                "https://www.bcg.com/publications/2024/personalization-in-action"
+            ]
+        },
+        {
+            "id": "EX0001",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Personalized promotions can deliver returns three times higher than mass promotions, yet many retailers allocate under 5% of their promo budgets to personalization. One major chain increased its personalized promo spend from 1% to 10% by establishing a \"customer investment council,\" resulting in $250 million in incremental sales.",
+            "supporting_urls": [
+                "https://www.bcg.com/publications/2024/personalization-in-action"
+            ]
+        },
+        {
+            "id": "EX0002",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Retail media networks are expanding rapidly, with retail media growing at approximately 25% annually, offering retailers a profitable revenue stream to reinvest in technology, data, and personnel. By integrating loyalty data, retailers like Sephora, which links 95% of transactions to loyalty accounts, enhance precision in product recommendations and provide a seamless omnichannel experience, boosting conversion rates and customer lifetime value.",
+            "supporting_urls": [
+                "https://www.bcg.com/publications/2024/personalization-in-action"
+            ]
+        },
+        {
+            "id": "DI003_docx",
+            "justification": "Facility costs do not address the core DR Question focus area on personalization driving sales",
+            "question": "What is the total facility cost for our company's HQ building in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The total facility cost for our company's HQ building is $1.2 million.",
+            "supporting_file_paths": [
+                "shared/HQ-Facility-Cost-Analysis-2024.docx"
+            ]
+        },
+        {
+            "id": "IN001_docx",
+            "justification": "This answer helps address the DR Question by providing insight into the effectiveness of personalized marketing strategies, specifically in the context of Lee's Market's online presence.",
+            "question": "What percentage of our online customers have engaged with personalized product recommendations in the past year?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "45% of our online customers have interacted with personalized product recommendations, resulting in a 25% increase in average order value.",
+            "supporting_file_paths": [
+                "shared/Retail-Growth-Strategies-2023.docx"
+            ]
+        },
+        {
+            "id": "DI002_docx",
+            "justification": "HR training metrics do not address the core DR Question focus area on personalization driving sales",
+            "question": "What is the average cost of training an HR representative in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average training cost per HR representative is $8,000.",
+            "supporting_file_paths": [
+                "shared/hr-training-cost-analysis-2025q3.docx"
+            ]
+        },
+        {
+            "id": "DI001_xlsx",
+            "justification": "Employee turnover metrics are unrelated to personalization-driven sales strategies.",
+            "question": "What was Lee's Market employee turnover rate in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market employee turnover rate was 15% in Q3 2024, down 3%.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Employee_Turnover_Rates.xlsx"
+            ]
+        },
+        {
+            "id": "DI001",
+            "justification": "Employee turnover metrics do not address the core DR Question focus area",
+            "question": "What was our employee turnover rate in Q3 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate averaged 12% with a peak of 15%.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250815_160539.jsonl"
+            ]
+        },
+        {
+            "id": "IN002_xlsx",
+            "justification": "Loyalty program data is crucial for creating effective personalized marketing campaigns.",
+            "question": "How many loyalty program members does Lee's Market have as of Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of Q3 2024, Lee's Market has 1.2 million loyalty program members.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Loyalty_Program_Performance_Metrics.xlsx"
+            ]
+        },
+        {
+            "id": "IN001",
+            "justification": "Understanding customer data collection rate informs personalization strategy effectiveness.",
+            "question": "What is Lee's Market customer data collection rate as of Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "85% of Lee's Market transactions are linked to customer loyalty accounts as of Q2 2024.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250815_142815.jsonl"
+            ]
+        },
+        {
+            "id": "DI003_xlsx",
+            "justification": "Compliance training metrics are not relevant to personalization-driven sales strategies.",
+            "question": "What percentage of Lee's Market employees completed compliance training in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "92% of Lee's Market employees completed compliance training in Q1 2024, exceeding targets.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Compliance_Training_Metrics_Report.xlsx"
+            ]
+        },
+        {
+            "id": "IN001_xlsx",
+            "justification": "Understanding online sales growth informs personalization strategies for future sales increases.",
+            "question": "What was Lee's Market online sales growth Q2 2024 versus Q2 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market online sales grew 12% in Q2 2024 compared to Q2 2023.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Online_Sales_Growth_Report.xlsx"
+            ]
+        },
+        {
+            "id": "DI002_xlsx",
+            "justification": "IT infrastructure costs do not directly impact personalization-driven sales growth.",
+            "question": "How much did Lee's Market spend on IT infrastructure in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market spent $2.5 million on IT infrastructure upgrades in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_IT_Infrastructure_Spend_by_Quarter.xlsx"
+            ]
+        },
+        {
+            "id": "DI001_docx",
+            "justification": "Time-to-fill metrics for HR do not address the core DR Question focus area on personalization in sales",
+            "question": "What is our average time-to-fill for open positions in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Our average time-to-fill for open positions is 60 days.",
+            "supporting_file_paths": [
+                "shared/Talent-Recruitment-Insights-2025.docx"
+            ]
+        },
+        {
+            "id": "DI005_xlsx",
+            "justification": "Facility maintenance metrics do not impact sales growth through personalization",
+            "question": "How many facility maintenance requests were resolved in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market resolved 85% of 540 facility maintenance requests in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Facility_Maintenance_Performance_Track.xlsx"
+            ]
+        },
+        {
+            "id": "DI002",
+            "justification": "IT infrastructure costs do not relate to the DR Question on sales",
+            "question": "How much did we spend on IT infrastructure in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "We spent $1.2 million on IT infrastructure upgrades and maintenance.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250815_160910.jsonl"
+            ]
+        },
+        {
+            "id": "DI004_xlsx",
+            "justification": "Employee training budget is unrelated to personalization driving sales growth",
+            "question": "What was Lee's Market employee training budget in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market allocated $750,000 for employee training in Q3 2024.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Employee_Training_Budget_Allocation.xlsx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

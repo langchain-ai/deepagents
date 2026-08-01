@@ -1,0 +1,12 @@
+{
+  "industry": "retail",
+  "domain": "compliance",
+  "difficulty": "easy",
+  "files": [
+    {
+      "filetype": "pdf",
+      "type": "supporting",
+      "app": "nextcloud"
+    }
+  ]
+}

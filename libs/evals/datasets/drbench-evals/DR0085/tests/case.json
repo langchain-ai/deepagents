@@ -1,0 +1,36 @@
+{
+  "task_id": "DR0085",
+  "question": "Which compliance gaps must Elexion address to meet updated CARB ZEV 2025 reporting requirements?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What does internal dealership audit data show about current vehicle placement?",
+      "answer": "Only 42% of partnered dealerships consistently display Elexion models in primary walk‑in zones.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What patterns appear in Elexion’s remote diagnostic error logs?",
+      "answer": "35% of service tickets were escalated due to insufficient pre‑visit troubleshooting.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "What risks does Elexion face in its lithium supplier mix?",
+      "answer": "Elexion relies on two suppliers with quarterly variable-pricing clauses tied to global spot markets.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "What internal gaps were found in CARB data readiness?",
+      "answer": "Battery traceability reports lack timestamp verification for 18% of VIN batches.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "Which geographic markets show rising EV demand?",
+      "answer": "Colorado and Arizona dealerships recorded 12–15% YoY growth in mid‑range EV inquiries.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

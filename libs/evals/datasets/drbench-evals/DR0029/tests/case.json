@@ -1,0 +1,30 @@
+{
+  "task_id": "DR0029",
+  "question": "Given the rise of AI-based knowledge management systems, what strategies can Lee's Market's knowledge management team implement to help maintain low employee turnover rates through 2027?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What was the average employee retraining time at Lee's Market's Cooking and Baking division in H2 of 2024, and how did it compare to H1 2025?",
+      "answer": "According to the knowledge management team's record, the average employee retraining time in Lee's Market's Cooking and Baking division was reduced from 1 hour and 45 minutes in H2 2024 to 1 hour and 10 minutes in H1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What percentage of copywriters on the marketing team cited \"tight deadlines\" and \"insufficient training\" as key causes of high stress in the anonymous employee satisfaction survey for Q4 2024?",
+      "answer": "According to the Q4 2024 anonymous employee satisfaction survey, 30% of the copywriting team have attributed their stress to \"tight deadlines\", while 33% reported \"insufficient training\" as another key reason.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "How has the KM team at Lee's Market collaborated with the IT department to improve staff onboarding, training, and information access in 2024?",
+      "answer": "In 2024, the knowledge management team assisted the IT department in creating an AI-powered knowledge base for the employees. The new system allows faster onboarding and training for new hires. It has also saved countless hours for the retail staff, who can now quickly search and find exact product information.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "What goals has the Lee's Market management set for the warehouse operations, and how do they plan to achieve them?",
+      "answer": "Lee's Market's senior management has set a Q2 2026 target to cut warehouse unloading times by 15 minutes per cargo load. The KM team intends to train the warehouse staff to use AI tools to optimize shipment planning and reduce human mistakes.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

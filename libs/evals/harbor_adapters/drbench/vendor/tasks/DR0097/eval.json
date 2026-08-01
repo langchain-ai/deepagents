@@ -1,0 +1,259 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "The time it takes to hire new engineers does not inform how to optimize current IT operations or control per-consultation costs with the existing team in Q4 2025.",
+            "question": "What is the average time-to-hire for a senior software engineer in MediConn's Vancouver office as of mid-2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average time to hire a senior software engineer in MediConn's Vancouver office as of mid-2025 is 60 days.",
+            "supporting_file_paths": [
+                "shared/hiring-timeline-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "The source of revenue does not impact the analysis of IT operational efficiency or the per-consultation technical costs that need to be optimized.",
+            "question": "What percentage of MediConn's revenue in 2025 came from its corporate clients versus individual patients?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Approximately 40% of revenue came from corporate clients, while 60% came from individual patients.",
+            "supporting_file_paths": [
+                "shared/2025-revenue-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "Sales training outcomes do not affect internal IT or clinical workflow processes.",
+            "question": "What is the average score on post-training assessments for new corporate sales hires at MediConn in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average score for new corporate sales hires at MediConn was 87%.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Post_Training_Assessment_Scores.xlsx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "Overall remote workforce statistics do not provide actionable data for IT or clinical workflow optimization.",
+            "question": "What percentage of MediConn's employees worked remotely full-time in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "74% of MediConn's employees worked remotely full-time.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251121_115515.jsonl"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "Marketing expenditures for a separate program are financially and operationally disconnected from the IT costs and clinician efficiency.",
+            "question": "What was the MediConn's total marketing spend on its corporate wellness programs in fiscal year 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The total marketing spend was approximately 5,000,000 CAD in fiscal year 2025.",
+            "supporting_file_paths": [
+                "shared/2025-marketing-expenditure-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "While related to IT infrastructure, the number of cloud vendors does not specifically impact clinician workflow or consultation-level cost management.",
+            "question": "How many cloud vendors does MediConn use for data storage and backup services?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn uses two primary cloud vendors.",
+            "supporting_file_paths": [
+                "shared/data-storage-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "Browser market share is not relevant to optimizing MediConn internal IT or clinical efficiency.",
+            "question": "What is the most common internet browser among MediConn users in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Google Chrome is the most common internet browser among MediConn users in 2025.",
+            "supporting_file_paths": [
+                "shared/mediconn-browser-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "The launch year of the ESOP is irrelevant to clinical workflow or operational IT costs.",
+            "question": "What year did MediConn Solutions first launch its employee stock ownership plan (ESOP)?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn launched its ESOP in 2020.",
+            "supporting_file_paths": [
+                "shared/mediconn-esop-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "Age demographics do not determine the process efficiency or IT infrastructure requirements for virtual consults.",
+            "question": "What was the median age of patients using MediConn's platforms in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The median patient age was 39 years.",
+            "supporting_file_paths": [
+                "shared/Q3-Patient-Demographics.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "The morale of non-technical staff is a human resources metric that has no direct connection to the technical performance or cost structure of the IT operations supporting virtual consultations.",
+            "question": "What was the average employee satisfaction score (eNPS) for MediConn's non-technical staff in the 2025 annual survey?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average eNPS score was +40.",
+            "supporting_file_paths": [
+                "shared/employee-satisfaction-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "Customer lifetime value is a financial metric used for marketing and sales strategy, and it does not provide data on the per-consultation IT costs or clinician workflow efficiency that needs to be optimized.",
+            "question": "What was the average customer lifetime value (CLV) for an individual patient using MediConn's services in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average CLV for an individual patient was estimated at 650 CAD.",
+            "supporting_file_paths": [
+                "shared/2025-CLV-Analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "Payroll software reliability does not impact virtual clinical IT operations or per-consultation costs.",
+            "question": "What is the uptime guarantee offered by MediConn's HR payroll software provider?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The provider offers a 99.9% uptime guarantee.",
+            "supporting_file_paths": [
+                "shared/payroll-provider-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "Employee wellness participation rates are HR metrics that do not inform IT cost management or workflow improvement strategies.",
+            "question": "What percentage of MediConn's employees participated in the annual wellness challenge in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "About 68% of MediConn's employees participated in the annual wellness challenge in 2025.",
+            "supporting_file_paths": [
+                "shared/wellness-challenge-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "HR helpdesk response metrics are not related to optimizing clinical IT workflows or virtual care cost structures.",
+            "question": "What was MediConn's average helpdesk response time for employee HR queries in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average helpdesk response time for employee HR queries was 6 hours.",
+            "supporting_file_paths": [
+                "shared/hr-response-analysis-2024.pptx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "Training frequency for new employees does not provide relevant insight into IT efficiency or clinician productivity during consultations.",
+            "question": "How many virtual reality (VR) training sessions were conducted for MediConn's onboarding programs in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A total of 12 VR training sessions were conducted in 2025.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251121_115841.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "Knowing baseline per-consultation costs is essential for quantifying and tracking improvements in operational efficiency and cost control.",
+            "question": "What is MediConn's average operational IT cost per virtual consultation as of October 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn's IT cost per consult is approximately $10 CAD as of October 2025.",
+            "supporting_file_paths": [
+                "shared/IT-Workflow-Optimization.pptx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "This metric reflects the proportion of clinician time devoted to productive activities. Improving it is vital for driving operational efficiency.",
+            "question": "What percentage of MediConn's clinician worktime is dedicated to interacting with and diagnosing patients during virtual consultations as per the Q3 2025 internal analysis?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "40% of clinician worktime per visit is spent on direct patient interaction and diagnosis.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Clinician_Worktime_Analysis_Rep.xlsx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "Quantifying the time spent on inefficient or redundant tasks helps pinpoint workflow bottlenecks and is essential for targeting IT solutions that increase clinical productivity.",
+            "question": "According to MediConn's internal analysis for Q3 2025, what percentage of a clinician's worktime is spent on activities like documentation and platform navigation?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "EHR documentation, data entry, and navigating across platforms for calls, reports, and expert opinions consume approximately 50% of the clinician work time.",
+            "supporting_file_paths": [
+                "shared/IT-Workflow-Optimization.docx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "Tracking current automation rates reveals how effectively technology is streamlining workflows and highlights the remaining potential for further efficiency gains.",
+            "question": "What portion of EHR and documentation workflows are automated or streamlined through MediConn's IT systems as of October 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "50% of EHR and documentation workflows are automated as of October 2025.",
+            "supporting_file_paths": [
+                "shared/IT-Workflow-Plan-Q4.docx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "The number of platforms used reflects workflow fragmentation, with more platforms indicating greater inefficiency and the need for a unified system.",
+            "question": "As of October 2025, how many technology platforms do MediConn clinicians use in their daily workflows?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn clinicians currently use three specialized platforms: one for patient interaction, one for lab results, and one for expert consultations.",
+            "supporting_file_paths": [
+                "shared/IT-Workflow-Optimization-Q4.pdf"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "The promising results highlight how targeted automation can enhance clinician efficiency and lower per-consultation costs, suggesting that the pilot could be scaled across the entire platform for even greater impact.",
+            "question": "What was the impact of MediConn's Ambient AI scribing pilot launched in Q3 2025 on clinician EHR time?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The AI scribing pilot automatically generated visit summaries and completed EHR documentation, resulting in a 70% reduction in clinician time spent on these tasks compared to previous levels.",
+            "supporting_file_paths": [
+                "shared/IT-Optimization-Strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0007",
+            "justification": "The UC Platform pilot demonstrates that consolidating multiple systems into a single interface can drastically reduce time spent navigating platforms, thereby enhancing clinician efficiency and reducing per-consultation operational costs. Scaling this solution could further streamline workflows across MediConn.",
+            "question": "What were the results of MediConn's Q3 2025 pilot implementation of the Unified Communications (UC) Platform that integrates multiple systems for clinicians?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The UC Platform combined messaging, video consultations, lab results review, and expert opinion requests into a single interface. This eliminated time spent juggling between systems and improved navigation speed by 90% compared to previous workflows.",
+            "supporting_file_paths": [
+                "shared/Q4-IT-Optimization-Plan.pdf"
+            ]
+        },
+        {
+            "id": "IN0008",
+            "justification": "The automated lab result annotation pilot shows that poorly calibrated automation can increase errors and add complexity, emphasizing the need for careful design and testing of IT interventions to improve clinician efficiency without compromising documentation quality.",
+            "question": "What was the outcome of MediConn's Q3 2025 pilot for automated lab result annotation for clinicians?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The automated lab result annotation pilot, designed to reduce clinician review time by automatically flagging abnormal values and generating preliminary notes, instead led to a 20% increase in documentation errors and added workflow complexity.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251121_115324.jsonl"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

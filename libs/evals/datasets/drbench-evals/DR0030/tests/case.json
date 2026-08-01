@@ -1,0 +1,30 @@
+{
+  "task_id": "DR0030",
+  "question": "Considering the Retail Knowledge Management article published on the Knowmax website in June 2025, what AI integration strategies could Lee's Market consider for its knowledge systems to help achieve its financial targets for 2030?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "How much time per employee can Lee's Market save on average in 2026 by using AI to generate tailored training material for newly-hired IT specialists, according to the knowledge management team's calculations?",
+      "answer": "Lee's Market's knowledge management team has calculated that using AI tools to customize onboarding training material for IT specialists based on their academic details and previous experience, the company can save up to 2 hours and 45 minutes per new employee by 2026.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "Which department within the company recorded the highest turnover rate in 2024, and how could AI tools help solve the issue?",
+      "answer": "In 2024, Lee's Market's call center had the highest turnover rate caused by heavy workloads and stress. Introducing an effective AI assistant to the company's website and app could reduce customer call volume and employee strain.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "What improvements in average handling time could introducing AI-powered database search capabilities provide for customer support agents in 2027?",
+      "answer": "According to Sophie Tran's research, introducing AI-powered database search tools into the customer support agents' workflow could reduce the average handling time by 13 minutes.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "What percentage of Lee's Market's knowledge management team members have received substantial training in potential AI integration methods to improve knowledge systems in 2025?",
+      "answer": "Since the beginning of 2025, over 60% of the 25-member knowledge management team at Lee's Market has completed training in potential AI integration methods aimed at improving knowledge systems.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

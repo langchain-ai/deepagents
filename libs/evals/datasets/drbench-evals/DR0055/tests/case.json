@@ -1,0 +1,18 @@
+{
+  "task_id": "DR0055",
+  "question": "What data-based strategies can MediConn Solutions opt for to boost sales for their digital health services in Canada in order to reduce readmission rates and improve customer lifetime retention by 2026?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "How did MediConn Solution use sales analytics to increase SME client retention in virtual health care services in 2023?",
+      "answer": "In 2023, MediConn Solutions segmented SME client data by engagement tier and initiated targeted outreach campaigns. Clients receiving personalized support showed a documented 15% increase in account retention over six months, per CRM analytics.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What did MediConn Solutions do in 2022 to handle customer support for new patient complaints and queries?",
+      "answer": "MediConn Solution introduced a dedicated response team and automated ticketing system in early 2022, reducing the average resolution time of tickets to under 48 hours.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

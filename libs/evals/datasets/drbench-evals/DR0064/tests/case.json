@@ -1,0 +1,84 @@
+{
+  "task_id": "DR0064",
+  "question": "How will Elexion Automotive's adoption of a complete direct-to-customer sales model by 2026 affect sales cycle duration, conversion rates, and average revenue per customer across the United States with franchise laws?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What was the average sales cycle duration for Elexion Automotive dealership in the third quarter of 2024?",
+      "answer": "In Q3 2024, the average sales cycle duration for Elexion Automotive dealership was 29 days from initial customer contact to final purchase completion.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What percentage markup did Elexion Automotive partnering dealers add to its manufacturer's suggested retail prices (MSRP) on average in 2024?",
+      "answer": "Throughout the year 2024, Elexion Automotive partnering dealers added an average markup of 9% above its MSRP.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "What percentage of Elexion Automotive customers who completed dealership test drives in 2024 proceeded to purchase within 60 days?",
+      "answer": "In 2024, 28% of customers who completed Elexion Automotive dealership test drives proceeded to purchase within 60 days, indicating a significant drop-off after initial contact with the customers.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "As of August 2025, how many sales representatives does the Elexion Automotive dealership network employ across North America?",
+      "answer": "As of August 2025, Elexion Automotive dealership employed 1737 sales representatives across North America.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "What was the average time for dealerships to respond to customers' inquiries about Elexion Automotive in 2024?",
+      "answer": "In 2024, Elexion Automotive dealerships took an average of 3 hours to respond to online customer enquiries, with 21% of leads not receiving any response.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0006",
+      "question": "What is the average time Elexion Automotive vehicles spent in dealerships before being sold to customers in 2024?",
+      "answer": "During the year 2024, Elexion Automotive vehicles spent an average of 54 days in dealerships before being sold.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0007",
+      "question": "What percentage of Elexion Automotive customers used the online configuration tool before visiting dealerships in 2024?",
+      "answer": "In 2024, 87% of Elexion Automotive customers used the online configuration tool to customize their ideal vehicle before visiting the dealership.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0008",
+      "question": "Has Elexion Automotive secured legal counsel specializing in state franchise laws as of 2025 to support the direct-to-customer model transition?",
+      "answer": "Yes, as of February 2025, Elexion Automotive retained the law firm Jack Morrison & Rachael Pierce, which specializes in U.S. automotive franchise law.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0009",
+      "question": "Are all of Elexion Automotive's current dealer partnership contracts set to expire or give room for termination by December 2025?",
+      "answer": "No, as of January 2025, all of Elexion Automotive's current dealer partnership contracts extend beyond December 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0010",
+      "question": "Is Elexion Automotive current CRM system capable of supporting a full direct-to-customer sales model as of July 2025?",
+      "answer": "No, as of July 2025, Elexion Automotive current CRM system is not capable of supporting a full direct-to-customer sales model. It is designed specifically for dealership management and lacks the customer-direct functionality.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0011",
+      "question": "Can Elexion Automotive current manufacturing capacity support a shift to production for direct sales by Q1 2026?",
+      "answer": "As of January 2025, Elexion Automotive headquarters has the capacity to support a shift to production for direct sales by Q1 2026 based on 2024 and 2025 internal business strategies reports.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0012",
+      "question": "What was the average revenue per customer under the dealership model in 2024?",
+      "answer": "The average revenue per customer under the dealership model in 2024 was $127,000.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0013",
+      "question": "What was Elexion Automotive lead to sale conversion rate through dealerships in 2024?",
+      "answer": "As of December 2024, Elexion Automotive lead to sale conversion rate through the dealership network in 2024 was 12%.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

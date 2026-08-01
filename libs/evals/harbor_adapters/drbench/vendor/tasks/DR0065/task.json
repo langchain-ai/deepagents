@@ -1,0 +1,66 @@
+{
+    "name": "DR0065",
+    "task_id": "DR0065",
+    "level": "",
+    "company_info": {
+        "name": "Elexion Automotive",
+        "industry": "Automotive -- Electric Vehicles",
+        "size": "Enterprise",
+        "founded_year": 2010,
+        "headquarters": "Austin, Texas, USA",
+        "description": "Elexion Automotive designs and manufactures premium and mid-range electric vehicles tailored for the North American market. With a focus on sustainability, user-centric technology, and cross-border compliance, Elexion aims to accelerate the transition to zero-emission transportation.",
+        "key_products_services": [
+            "Electric vehicles",
+            "Plug-in hybrid electric vehicles",
+            "Home charging stations"
+        ],
+        "target_markets": [
+            "Mid-income families in North America",
+            "Provincial and municipal governments"
+        ],
+        "annual_revenue": "$350M - $500M",
+        "employee_count": 1900,
+        "compliance_certifications": [
+            "EPA Greenhouse Gas Emissions Compliance",
+            "Motor Vehicle Safety Oversight Program",
+            "CARB Zero-Emission Vehicle (ZEV) Program",
+            "ISO 26262 \u2013 Road Vehicles Functional Safety"
+        ],
+        "market_position": "Elexion is an emerging force in the North American EV market, offering affordable and high-performance electric vehicles with regulatory-first design and localized production."
+    },
+    "dr_question": "If Elexion Automotive shifts from dealership franchising to a direct-to-customer sales model, how could it capture the benefits of the transition to drive sales and higher margins in 2027?",
+    "date": "2025-10-30",
+    "persona": {
+        "role": "Director of Sales Operations",
+        "department": "Sales",
+        "name": "Amanda Lee",
+        "first_name": "Amanda",
+        "last_name": "Lee",
+        "email": "amanda.lee@elexionautomotive.com",
+        "seniority": "Senior",
+        "responsibilities": "Develop and implement sales processes, manage CRM systems, and analyze sales data to inform business decisions.",
+        "id": "MNG0003",
+        "domain": "sales",
+        "justification": "As the director of sales operations, Amanda is responsible for ensuring the sales team has the necessary tools and processes to succeed. Researching sales processes helps her identify opportunities to improve collaboration between CRM and service platforms, reducing friction and driving revenue growth.",
+        "username": "amanda.lee"
+    },
+    "citation_format": {
+        "urls": [
+            "https://www.example.com/article",
+            "https://techcrunch.com/2023/report.html"
+        ],
+        "file_names": [
+            "quarterly_report.pdf",
+            "market_analysis.docx",
+            "shared/file-pdf"
+        ],
+        "mattermost_chats": [
+            "MatterMost-Channel-Team-User",
+            "Mattermost Message - Enterprise Chat (User: john.doe, Team: Compliance, Channel: General)"
+        ],
+        "email_messages": [
+            "RoundCube-fromdemail-todemails-Subject",
+            "Email from sarah.johnson@company.com on 20 Jan 2025"
+        ]
+    }
+}

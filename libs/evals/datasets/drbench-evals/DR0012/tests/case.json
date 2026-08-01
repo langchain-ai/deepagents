@@ -1,0 +1,42 @@
+{
+  "task_id": "DR0012",
+  "question": "How can Elexion Automotive’s quality assurance processes be optimized to address the unique challenges of electric vehicle production, such as software and user experience issues, compared to gasoline cars?",
+  "insights": [
+    {
+      "id": "EX0000",
+      "question": "",
+      "answer": "J.D. Power’s 2024 Initial Quality Study reveals that new EVs average 266 problems per 100 vehicles in the first 90 days, compared to the industry average of 195 PP100, with issues primarily related to software and user experience rather than core mechanics. The study highlights that the problems are largely due to high-tech features and infotainment systems, not drivetrain failures.",
+      "type": "external_fact"
+    },
+    {
+      "id": "EX0001",
+      "question": "",
+      "answer": "Tesla's removal of traditional turn-signal and wiper stalks in favor of touch controls on newer models led to increased owner complaints and lower quality ratings due to the unintuitive interface. Additionally, misunderstandings about advanced driver-assist features, such as alerts for rear-seat reminders or automatic braking, contribute to perceived problems among EV owners. These issues underscore the importance of user-centric design and comprehensive customer training in enhancing EV quality assurance.",
+      "type": "external_fact"
+    },
+    {
+      "id": "EX0002",
+      "question": "",
+      "answer": "Infotainment and connectivity systems are the leading sources of initial problems in modern vehicles, particularly EVs, with J.D. Power data indicating \"features, controls, and displays\" issues are 30% higher for electric cars. Common complaints include unreliable navigation, smartphone app glitches, and difficulties with touch-screen menus, with phone integration issues like Apple CarPlay/Android Auto dropouts being prevalent. Brands like Ram and Lexus, which prioritize simplicity and robust design, scored better in quality, highlighting the importance of rigorous software testing and user-friendly controls in automotive quality assurance for EVs.",
+      "type": "external_fact"
+    },
+    {
+      "id": "qa_1756143934",
+      "question": "What proportion of our software quality assurance testing time is spent on user experience and interface issues in Q3 2025?",
+      "answer": "45% of our software quality assurance testing time will be dedicated to user experience and interface issues in Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755626851",
+      "question": "What proportion of our software quality assurance testing time is spent on user experience and interface issues in Q2 2025?",
+      "answer": "By Q2 2025, 50% of our software quality assurance testing time will be dedicated to user experience and interface issues.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755626868",
+      "question": "What percentage of our software bugs are attributed to user experience and interface issues in Q3 2024?",
+      "answer": "In Q3 2024, 60% of our software bugs were related to user experience and interface issues, highlighting the need for improved testing and quality assurance.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

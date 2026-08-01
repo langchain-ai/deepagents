@@ -1,0 +1,30 @@
+{
+  "task_id": "DR0072",
+  "question": "In response to the April 2025 Help Net Security article, how well is Elexion Automotive poised to adapt and take proactive measures to prevent itself and its consumer base from the latest cybersecurity threats as we approach 2026?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "How many over-the-air (OTA) updates primarily focused on proactive safety measures against cyber threats will the cybersecurity team at Elexion Automotive push in 2026?",
+      "answer": "The cybersecurity team at Elexion Automotive has an initial plan to execute as many as 12 OTA updates focused on proactive safety measures for its various models throughout 2026 (at least one per month). This is a step up from their 2025 efforts, as only 6 proactive OTA updates have been pushed as of October 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What percentage of Elexion Automotive's newly approved 2026 budget will be allotted to the cybersecurity team, and how does this differ from 2025?",
+      "answer": "Elexion Automotive has approved its 2026 budget to include a 4% allocation to the cybersecurity team. This represents an increase from 2025's budget, which afforded just 2% of the budget to the cybersecurity team.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "When will the Elexion Automotive cybersecurity team release the first software update of 2026 for its customer web portal, and what will be the new requirement for login attempts?",
+      "answer": "The cybersecurity team at Elexion Automotive plans to release the first software update of 2026 for its customer web portal during the very first week of January 2026. Users will now be required, as a result of this software update, to add an authenticator app as a part of the two-factor authentication process required by the customer web portal. SMS verification will no longer be accepted as an available method of two-factor authentication due to security reasons.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "Does the Elexion Automotive cybersecurity team know how much the rate of cyberattacks is expected to increase in 2026, and if so, by how much?",
+      "answer": "Yes, due to Elexion Automotive's investment in valuable external market data from 2025, the cybersecurity team has confidently ascertained the expected rate of change in cyber attacks for 2026. The team expects the rate of cyber attacks launched against Elexion Automotive to grow by 11% in 2026 from 2025, and is prepared to combat this percentage increase and beyond if need be.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

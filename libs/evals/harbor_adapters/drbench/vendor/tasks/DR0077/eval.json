@@ -1,0 +1,182 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "By July 15, 2025, had Elexion Automotive completed its transition to fully automated inventory management across all production facilities?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. Internal operations records confirm that by July 15, 2025, Elexion Automotive had finalized its shift to a fully automated inventory management system across all of its 60 production plants.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Inventory_Management_Transition.xlsx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "By December 31, 2025, will Elexion Automotive integrate augmented reality (AR) headsets for technician training at its Texas assembly facility?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. A pilot program beginning in November 2025 will introduce AR headsets to improve on-the-job training for maintenance staff at the Texas plant.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_023225.jsonl"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How many production staff members did Elexion Automotive certify in digital safety compliance programs by September 15, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal documentation 1,120 Elexion Automotive production staff members were certified in digital safety compliance by September 15, 2025.",
+            "supporting_file_paths": [
+                "shared/safety-compliance-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "As of October 1, 2025, what percentage of Elexion's Automotive manufacturing equipment had been revalued for depreciation tracking under Olivia Martinez's asset audit?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to company data, as of October 1, 2025, 96% of Elexion Automotive's manufacturing equipment had been revalued to reflect updated depreciation schedules.",
+            "supporting_file_paths": [
+                "shared/asset-audit-report.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "As of October 5, 2025, how many robotic arms are actively deployed in Elexion Automotive\u2019s assembly facilities across North America?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of October 5, 2025, factory records show Elexion Automotive currently operates 2,850 robotic arms across its North American assembly facilities.",
+            "supporting_file_paths": [
+                "shared/robotics-assembly-operations.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "By September 15, 2025, how many Elexion Automotive legacy combustion-engine diagnostic tools had Olivia Martinez and her asset lifecycle team decommissioned across all the company's facilities?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to company records, by September 15, 2025, Olivia's team had decommissioned 740 diagnostic tools in Elexion Automotive plants that were no longer compatible with EV assembly systems.",
+            "supporting_file_paths": [
+                "shared/asset-decommissioning-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "By Q4 2024, had Elexion Automotive achieved complete ISO 9001:2015 recertification for its quality management systems?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. Company documents show Elexion Automotive successfully renewed its ISO 9001:2015 certification on September 1, 2024.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_023438.jsonl"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "By Q3 2025, had Olivia Martinez's asset lifecycle management team at Elexion Automotive finalized the firm's centralized digital asset registry for software assets and maintenance contracts?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive's asset lifecycle management team finalized the centralized digital asset registry on August 12, 2025.",
+            "supporting_file_paths": [
+                "shared/digital-asset-report.docx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "By June 12, 2025, how many major leasing equipment agreements had Olivia Martinez renewed to maintain Elexion Automotive's production capacity?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal data, by June 12, 2025, Olivia Martinez had renewed 54 major equipment leasing agreements to support ongoing production operations at Elexion Automotive.",
+            "supporting_file_paths": [
+                "shared/lease-agreements-evaluation.pptx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "As of Q1 2025, had the new Elexion Automotive asset disposal policy developed by Olivia Martinez been approved across the firm's production lines?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal company documents show that the new Elexion Automotive asset disposal policy that Olivia Martinez developed was approved on February 12, 2025, and rolled out company-wide on February 24, 2025.",
+            "supporting_file_paths": [
+                "shared/asset-disposal-review.pdf"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "By November 30, 2025, how many production lines at Elexion Automotive will be integrated with digital twin-enabled energy efficiency monitoring?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to an internal planning report dated September 5, 2025, Elexion Automotive plans to integrate digital twin-enabled energy efficiency monitoring on 14 production lines across select facilities by October 5, 2025.",
+            "supporting_file_paths": [
+                "shared/digital-twin-integration.docx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "How many key environmental compliance metrics will Elexion Automotive collect from each of its production lines using IoT sensors and digital twins in Q1 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal Elexion Automotive analytics projections indicate that each production line will collect approximately 500 real-time environmental compliance metrics from IoT sensors and digital twins between January 1 and March 31, 2026. This will cover emissions, energy use, and waste management.",
+            "supporting_file_paths": [
+                "shared/iot-environmental-compliance.pptx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "By November 30, 2025 how many production lines at Elexion Automotive will be integrated with digital twin-enabled IoT monitoring?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to an internal planning report dated September 5, 2025, Elexion Automotive plans to integrate digital twin-enabled IoT monitoring on 26 production lines across its North American facilities by October 15, 2025.",
+            "supporting_file_paths": [
+                "shared/predictive-maintenance-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "How many key operational metrics will Elexion Automotive collect from each of its production lines using IoT sensors and digital twins in Q1 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Internal Elexion Automotive analytics projections indicate that each production line will collect approximately 1,500 real-time metrics from IoT sensors and digital twins, covering equipment performance, cycle times, and anomaly detection.",
+            "supporting_file_paths": [
+                "shared/maintenance-enhancement-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "How many predictive maintenance alerts does Elexion Automotive expect to receive per month from digital twin monitoring across all its production lines in Q4, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Internal Elexion Automotive system forecasts estimate that digital twin-enabled monitoring will generate 120 predictive maintenance alerts per month across all integrated production lines between October 1 and December 31, 2025.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_023038.jsonl"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "By December 31, 2025, will Elexion Automotive\u2019s digital engineering team be able to detect early signs of equipment degradation using digital twin-enabled IoT data?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes. Internal Elexion Automotive test results from October 10 to October 18, 2025, confirm that the digital engineering-enabled digital twins can detect early signs of equipment degradation in real time.",
+            "supporting_file_paths": [
+                "shared/iot-predictive-maintenance.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

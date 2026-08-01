@@ -1,0 +1,30 @@
+{
+  "task_id": "DR0041",
+  "question": "According to an article in WTT Solutions from March 2025, Customer Relationship Management (CRM) software is trending. What kind of business data can this software analyze, which would aid in the growth of Mediconn Solutions' virtual healthcare clientele going into the year 2026?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "How do business representatives of MediConn Solutions use the Customer Relationship Management system as of January 2025?",
+      "answer": "According to a January 2025 survey, business associates at Mediconn Solutions primarily used the CRM system to manage patient information and to organize marketing strategies. As of January 2025, no representatives indicated that they knew the CRM system has capabilities of analysis which would help drive sales into 2026.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What year did MediConn Solutions buy and put into use its current CRM system?",
+      "answer": "MediConn Solutions' IT department bought the current CRM software in September 2023; however, the CRM system was not fully uploaded and functioning properly until December 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "Where does MediConn Solutions store its patient data as of October 2025?",
+      "answer": "MediConn Solutions is currently in the process of moving patient data from its previous Electronic Health Records(EHR) system to the CRM system. Currently 75% of the data has been migrated, while 25% remains on the EHR system.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "Does MediConn Solutions' marketing department currently use the CRM system to analyze data to enhance its marketing campaigns, and how has it enhanced results?",
+      "answer": "Yes. The marketing department at MediConn Solutions uses the company's CRM to analyze data on lead generation and to track campaign success. Thanks to the utilization of CRM, the marketing department has predicted a 20% increase in patient volume going into the year 2026.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

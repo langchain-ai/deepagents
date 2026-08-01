@@ -1,0 +1,14 @@
+{
+    "dr_question": "How can Lee's Market leverage chatbots to enhance the consumer experience for centennial shoppers?",
+    "question_type": "hand_written",
+    "timestamp": "2025-08-08 13:11",
+    "task_id": "DR0005",
+    "subquestions": [
+        "What percentage of grocery retailers believe conversational AI is necessary for future customer service?",
+        "What are the top benefits of implementing chatbots in retail, according to the external insights?",
+        "How can Lee's Market utilize chatbots for personalized recommendations, instant issue resolution, and omnichannel engagement?"
+    ],
+    "industry": "retail",
+    "domain": "csm",
+    "url": "https://www.grocerydoppio.com/articles/chatbots-improving-seamless-interactions-between-grocers-and-centennials"
+}

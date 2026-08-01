@@ -1,0 +1,15 @@
+{
+    "dr_question": "Based on the 2024 report \"Trends in electric cars\" on iea.org, which developments in battery technology and EV supply chains are likely to impact global production and delivery dynamics by Q2 2026?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Market Analysis",
+        "dr_question": "Based on the 2024 report \"Trends in electric cars\" on iea.org, which developments in battery technology and EV supply chains are likely to impact global production and delivery dynamics by Q2 2026?",
+        "industry": "Automotive -- Electric Vehicles",
+        "url": "https://www.iea.org/reports/global-ev-outlook-2024/trends-in-electric-cars"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0080",
+    "industry": "automotive -- electric vehicles",
+    "domain": "Market Analysis",
+    "url": "https://www.iea.org/reports/global-ev-outlook-2024/trends-in-electric-cars"
+}

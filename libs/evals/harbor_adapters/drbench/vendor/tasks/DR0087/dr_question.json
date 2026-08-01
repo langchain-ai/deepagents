@@ -1,0 +1,15 @@
+{
+    "dr_question": "What are some ways for Lee's Market to enhance on-floor customer engagement to offset the impact of Canada\u2019s July 2025 retail sales decline of 0.8% and drive a measurable rebound in the remaining months of 2025?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Sales",
+        "dr_question": "What are some ways for Lee's Market to enhance on-floor customer engagement to offset the impact of Canada\u2019s July 2025 retail sales decline of 0.8% and drive a measurable rebound in the remaining months of 2025?",
+        "industry": "Retail",
+        "url": "https://www.reuters.com/world/americas/canadas-july-retail-sales-drop-08-rebound-likely-august-2025-09-19/"
+    },
+    "timestamp": "2025-10-24 00:00",
+    "task_id": "DR0087",
+    "industry": "retail",
+    "domain": "Sales",
+    "url": "https://www.reuters.com/world/americas/canadas-july-retail-sales-drop-08-rebound-likely-august-2025-09-19/"
+}

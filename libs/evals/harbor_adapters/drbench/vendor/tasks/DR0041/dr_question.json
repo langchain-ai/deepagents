@@ -1,0 +1,15 @@
+{
+    "dr_question": "According to an article in WTT Solutions from March 2025, Customer Relationship Management (CRM) software is trending. What kind of business data can this software analyze, which would aid in the growth of Mediconn Solutions' virtual healthcare clientele going into the year 2026?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "CRM",
+        "dr_question": "According to an article in WTT Solutions from March 2025, Customer Relationship Management (CRM) software is trending. What kind of business data can this software analyze, which would aid in the growth of Mediconn Solutions' virtual healthcare clientele going into the year 2026?",
+        "industry": "Virtual/Remote Healthcare",
+        "url": "https://wtt-solutions.com/blog/the-future-of-healthcare-crm-solutions-what-to-expect-in-2025"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0041",
+    "industry": "virtual/remote healthcare",
+    "domain": "CRM",
+    "url": "https://wtt-solutions.com/blog/the-future-of-healthcare-crm-solutions-what-to-expect-in-2025"
+}

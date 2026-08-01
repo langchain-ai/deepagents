@@ -54,6 +54,113 @@ def test_langgraph_config_points_to_deepagent_factory() -> None:
     assert not (project_path / "langsmith.py").exists()
 
 
+def test_langgraph_config_declares_tavily_for_web_search() -> None:
+    # `_web_search_tool` imports tavily at call time; the bare graph depends on it
+    # directly, so it must be declared rather than relied on transitively via
+    # deepagents-code.
+    dependencies = json.loads(
+        Path("deepagents_harbor/langgraph_project/langgraph.json").read_text()
+    )["dependencies"]
+    assert any(dep.startswith("tavily-python") for dep in dependencies)
+
+
+@pytest.fixture
+def _untraced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep `tool.invoke` from reaching the LangSmith tracer.
+
+    Invoking a LangChain tool starts a run, so a developer or runner with tracing
+    configured in its environment would have these tests attempt real egress.
+    """
+    for name in ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2", "LANGCHAIN_TRACING"):
+        monkeypatch.setenv(name, "false")
+    for name in ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT", "LANGSMITH_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_web_search_tool_absent_without_a_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Every category except research runs without the key, and their tool lists must be
+    # unchanged by this feature existing.
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    assert langgraph_agent._web_search_tool() is None
+
+
+def test_web_search_tool_present_with_a_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    tool = langgraph_agent._web_search_tool()
+    assert tool is not None
+    assert tool.name == "web_search"
+
+
+@pytest.mark.usefixtures("_untraced")
+def test_web_search_bounds_and_renders_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    captured: dict[str, object] = {}
+
+    def fake_search(query: str, max_results: int) -> dict:
+        captured["query"] = query
+        captured["max_results"] = max_results
+        return {
+            "results": [{"title": "A title", "url": "https://example.com/a", "content": "A body"}]
+        }
+
+    monkeypatch.setattr(langgraph_agent, "_tavily_search", fake_search)
+    tool = langgraph_agent._web_search_tool()
+    assert tool is not None
+
+    # max_results is clamped, so a model asking for 500 cannot flood the context.
+    rendered = tool.invoke({"query": "fsma 204", "max_results": 500})
+    assert captured["max_results"] == langgraph_agent._WEB_SEARCH_MAX_RESULTS
+    assert captured["query"] == "fsma 204"
+    assert "A title" in rendered
+    assert "https://example.com/a" in rendered
+    assert "A body" in rendered
+    # The key reaches the client but never the tool's output.
+    assert "test-key" not in rendered
+
+
+@pytest.mark.usefixtures("_untraced")
+def test_web_search_truncates_an_oversized_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    monkeypatch.setattr(
+        langgraph_agent,
+        "_tavily_search",
+        lambda _query, _max_results: {
+            "results": [
+                {"title": "t", "url": "u", "content": "z" * langgraph_agent._WEB_SEARCH_MAX_CHARS}
+            ]
+        },
+    )
+    tool = langgraph_agent._web_search_tool()
+    assert tool is not None
+    rendered = tool.invoke({"query": "x"})
+    assert "[truncated at" in rendered
+    assert len(rendered) < langgraph_agent._WEB_SEARCH_MAX_CHARS + 100
+
+
+@pytest.mark.usefixtures("_untraced")
+def test_web_search_reports_no_results(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+    monkeypatch.setattr(langgraph_agent, "_tavily_search", lambda _q, _n: {"results": []})
+    tool = langgraph_agent._web_search_tool()
+    assert tool is not None
+    assert "No results" in tool.invoke({"query": "nothing"})
+
+
+@pytest.mark.usefixtures("_untraced")
+def test_web_search_reports_failure_without_raising(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+
+    def failing_search(_query: str, _max_results: int) -> dict:
+        msg = "upstream down"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(langgraph_agent, "_tavily_search", failing_search)
+    tool = langgraph_agent._web_search_tool()
+    assert tool is not None
+    # A search outage must not end a multi-hour research run.
+    assert "web_search failed" in tool.invoke({"query": "x"})
+
+
 def test_langgraph_config_uses_harbor_env_for_fireworks_prereleases() -> None:
     config_path = Path("deepagents_harbor/langgraph_project/langgraph.json")
 

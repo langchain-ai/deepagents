@@ -1,0 +1,68 @@
+{
+    "name": "DR0010",
+    "task_id": "DR0010",
+    "level": "",
+    "company_info": {
+        "annual_revenue": "$50M - $100M",
+        "compliance_certifications": [
+            "PIPEDA Compliance Certification",
+            "ISO 27001: Information Security Management",
+            "Provincial regulatory approvals (e.g., Ontario, British Columbia)"
+        ],
+        "description": "MediConn Solutions is a forward-thinking company specializing in virtual healthcare services, connecting patients to licensed healthcare professionals through secure, compliant, and user-friendly digital platforms. We aim to provide accessible and cost-effective care for individuals and businesses across Canada.",
+        "employee_count": 250,
+        "founded_year": 2018,
+        "headquarters": "Vancouver, Canada",
+        "industry": "Virtual/Remote Healthcare",
+        "key_products_services": [
+            "Virtual doctor consultations",
+            "Mental health counseling via video and chat",
+            "Prescription management and delivery",
+            "Corporate health and wellness programs"
+        ],
+        "market_position": "MediConn Solutions is a rising leader in the Canadian virtual healthcare market, known for its innovative platform design, strong compliance framework, and tailored services for both individuals and businesses.",
+        "name": "MediConn Solutions",
+        "size": "Medium",
+        "target_markets": [
+            "Individual patients in Canada",
+            "Small-to-medium-sized enterprises (SMEs)",
+            "Large corporations seeking employee wellness solutions"
+        ]
+    },
+    "dr_question": "What are the most critical elements of a robust digital presence for a telehealth provider such as MediConn Solutions, and how can we optimize our website and content marketing strategy to attract digital-first patients?",
+    "date": "2025-08-27",
+    "persona": {
+        "department": "Marketing",
+        "domain": "marketing",
+        "email": "ryan.thompson@mediconn.com",
+        "first_name": "Ryan",
+        "id": "MNG0006",
+        "justification": "Ryan's expertise in content marketing is essential for validating product-market fit and informing strategic decisions, making him an important persona for research in the marketing domain.",
+        "last_name": "Thompson",
+        "name": "Ryan Thompson",
+        "password": "my_drbench_pwd",
+        "responsibilities": "Creates and oversees the content marketing strategy, including blog posts, whitepapers, and case studies, to establish MediConn Solutions as a thought leader in the virtual/remote healthcare industry.",
+        "role": "Content Marketing Manager",
+        "seniority": "Senior",
+        "username": "ryan.thompson"
+    },
+    "citation_format": {
+        "urls": [
+            "https://www.example.com/article",
+            "https://techcrunch.com/2023/report.html"
+        ],
+        "file_names": [
+            "quarterly_report.pdf",
+            "market_analysis.docx",
+            "shared/file-pdf"
+        ],
+        "mattermost_chats": [
+            "MatterMost-Channel-Team-User",
+            "Mattermost Message - Enterprise Chat (User: john.doe, Team: Compliance, Channel: General)"
+        ],
+        "email_messages": [
+            "RoundCube-fromdemail-todemails-Subject",
+            "Email from sarah.johnson@company.com on 20 Jan 2025"
+        ]
+    }
+}

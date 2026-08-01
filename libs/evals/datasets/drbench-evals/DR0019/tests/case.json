@@ -1,0 +1,18 @@
+{
+  "task_id": "DR0019",
+  "question": "Given the industry focus on operational efficiency and the trend of using technology like electronic shelf labels (ESL) mentioned in 2025 forecasts, what is the projected return on investment (ROI) that Lee's Market's Canadian operations can expect from a full rollout of ESL technology by Q3 2026, considering its unique challenge of managing a high volume of bilingual/multilingual product information?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "As of March 2025, how does Lee's Market's large volume of bilingual/multilingual product information in its Canadian urban stores create unique operational challenges?",
+      "answer": "In March 2025, Lee's Market operates in Canadian cities with diverse populations, requiring thousands of items to display pricing and product information in English plus at least one additional language. During peak promotions, changes can impact over 500 shelf labels per store, straining staff and increasing the risk of pricing inaccuracies or compliance issues.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "How many staff hours were spent per month in 2025 on manual shelf label changes across all Lee's Market locations?",
+      "answer": "According to the monthly operational reviews for 2025, manual shelf label changes, especially for multilingual updates, consume over 120 staff hours on average per month across each of Lee's Market's locations.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

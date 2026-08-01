@@ -1,0 +1,94 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How much did the overall efficiency in the braking system increase in the new Taurus 3S model and what impact did it have on safety ratings?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The product engineering team recorded a 13% increase in the braking system efficiency of the Elexion Taurus 3S model compared to its previous generation car. In turn, this improvement increased the model's overall Motor Vehicle Safety Oversight Program safety score by 0.5 points in 2017.",
+            "supporting_file_paths": [
+                "shared/taurus-3s-braking-safety.pptx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "When did Elexion Automotive receive its Road Vehicles Functional Safety  ISO 26262 certification?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive successfully passed the Road Vehicles Functional Safety ISO 26262 certification tests in February 2012.",
+            "supporting_file_paths": [
+                "shared/safety-certification-overview.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How does Elexion Automotive rank among other EV manufacturers in terms of passenger safety?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The most recent report by Canada's Motor Vehicle Safety Oversight Program evaluates Elexion Automotive cars, specifically, the Orion 5S model, as safe. The mentioned model is ranked as the second safest family car in Canada.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_223959.jsonl"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "How many times has the company been required to issue recalls due to violating car safety regulations?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Since its inception in 2010, Elexion Automotive has issued car recalls only once, in 2019. It was due to faulty tire pressure sensors on two 2017 models.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_224051.jsonl"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What is the average customer safety rating on Elexion's Orion 5M model?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the latest customer satisfaction report, the Orion 5M model was rated 4.4 out of 5 on average on safety.",
+            "supporting_file_paths": [
+                "shared/orion-5m-safety-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What percentage of North American EV manufacturers are likely to comply with CARB's ACC II 100% ZEV sale mandate in California by 2035?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to a recent CARB report, only about 35% of NA EV manufacturers are currently sufficiently in compliance with the ACC II ZEV sale mandate.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_224209.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "Based on the most recent internal compliance reports, is the company on track to meet the 2035 100% ZEV mandate in California?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Based on the 2025 compliance review, Elexion Automotive already covers 60% of the new CARB ACC II mandate criteria. The internal consensus is that the company is on track to be fully compliant with the new mandate.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_223805.jsonl"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What steps has the company taken in 2024 to help the product design team reach faster compliance with the ACC II mandate's battery regulations?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "To accelerate the process of designing vehicles compliant with the ACC II ZEV mandate, Elexion Automotive purchased new software licenses in 2024 for the engineering team. The upgrade allows 80% faster and more efficient battery discharge data modeling and processing.",
+            "supporting_file_paths": [
+                "shared/CARB-ZEV-Compliance-Strategy.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

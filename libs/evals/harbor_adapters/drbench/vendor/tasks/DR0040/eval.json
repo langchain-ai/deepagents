@@ -1,0 +1,182 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What is the average time that top sellers at MediConn Solution spend on seeking out new business each week?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to a survey of MediConn Solution sales representatives conducted in September 2025, the average amount of time spent on seeking out new business each week was only 8 hours.",
+            "supporting_file_paths": [
+                "shared/sales-efficiency-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What percentage of new patient accounts are created after the third contact by MediConn Solution sales representatives with a prospective client?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "At MediConn Solutions, 60% of new patient accounts are created after the third contact by MediConn Solution sales representatives.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_215800.jsonl"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What percentage of lost new client accounts can be attributed to a lack of qualifying the potential customer at MediConn Solutions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Unfortunately, 54% of lost new clients at MediConn Solutions can be contributed to sales people failing to qualify the prospective client fully.  This information shows that thoroughly vetting a potential client for needs and financial means.",
+            "supporting_file_paths": [
+                "shared/client-acquisition-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "Does MediConn Solutions use social media to attract new customers?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. Currently, MediConn Solutions conducts 70% of its recruitment efforts using social media sites such as LinkedIn and Facebook.",
+            "supporting_file_paths": [
+                "shared/social-media-outreach-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What percentage of clients are gained for MediConn Solutions from referrals?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, 55% of new client accounts were the result of referrals. This number of referrals shows the trust that some clients place in MediConn Solutions. However, this number also indicates that there is room to grow as far as referral sales strategies are concerned.",
+            "supporting_file_paths": [
+                "shared/client-acquisition-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "According to sales associates, what is the most challenging part of the sales process at MediConn Solutions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In March of 2025, a survey of the sales staff at MediConn Solutions showed that 60% of the salespeople said that prospecting is the most challenging part of the sales process.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Sales_Process_Challenges_Analys.xlsx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "According to a recent report by MediConn Solutions' Marketing Department, does the private sector or the public sector account for more of total health spending in Canada?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the report conducted by MediConn Solutions' Marketing Department, the public sector accounts for 75% of total health expenditures, while the private sector accounts for only 25%.",
+            "supporting_file_paths": [
+                "shared/healthcare-spending-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "What is the approval rating of provincial healthcare providers, similar to Mediconn Solutions in Canada in 2025, and how does this compare to 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A survey conducted by Ipsos, shows that the approval rating of provincial healthcare providers, like MediConn Solutions, has improved from 2024 to 2025. In 2024, only 40% of Canadians were satisfied with their healthcare, while in 2025, that number improved to 50%.",
+            "supporting_file_paths": [
+                "shared/healthcare-ratings-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "If given the chance, how many Canadians would prefer to switch their healthcare coverage to independent healthcare providers like MediConn Solutions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to a national survey conducted by an independent research group in July 2025, over half of Canadians (54%) would prefer to use independent healthcare providers like MediConn Solutions.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_220038.jsonl"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "In 2024, how many MediConn Solutions' patients did not have a primary care provider, and how many of those patients closed their accounts in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, MediConn's Electronic Health Records, showed that 20% of MediConn Solutions' patients lacked a primary care provider. Of those patients without a designated primary care provider, 65% closed their MediConn Solutions accounts during 2025.",
+            "supporting_file_paths": [
+                "shared/patient-retention-assessment.pdf"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "How much did growth did MediConn Solutions experience after implementing SEO for their virtual healthcare website?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions first implemented dedicated SEO (search engine optimization) on their virtual healthcare website in September 2022. As of the end of January 2025, MediConn Solutions' business has grown by 62%, according to the company's annual report.",
+            "supporting_file_paths": [
+                "shared/seo-impact-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "Is there a website feature that MediConn patients highlight as a reason for switching from a previous provider to MediConn Solutions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, in a survey conducted by MediConn's Quality Assurance Team in September 2025, patients ranked the accessibility and clarity of MediConn's website as the number 3 reason, out of 10, that they switched healthcare providers. Clear, legible websites can make it easier for patients to find the information they are looking for. This ensures that patients do not get frustrated and increases patient satisfaction.",
+            "supporting_file_paths": [
+                "shared/patient-switch-drivers.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "How much growth did MediConn Solutions experience after implementing a CRM system for virtual healthcare, and what are the projections for future growth based on this trend?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Between the launch of its CRM system in January 2023 and the end of January 2025, MediConn Solutions' virtual healthcare business grew by 10%, according to the company's annual report. If this growth trend continues, MediConn solutions could be 31.1% larger by 2028.",
+            "supporting_file_paths": [
+                "shared/CRM-healthcare-growth.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "Is there a CRM system feature that MediConn patients highlight as a reason for switching from a previous provider to MediConn Solutions?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes, in a survey conducted by MediConn's Quality Assurance Team in September 2025, patients ranked automated reminders as the number 1 reason, out of 10, that they switched healthcare providers. Healthcare CRM software can smooth communication between patients and their providers through the use of automatic reminders for appointments and medication. This ensures that patients stay engaged in their care plans without extra work on their part.",
+            "supporting_file_paths": [
+                "shared/crm-healthcare-growth.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "How has using CRM software made MediConn's services even more cost-effective for patients over the past year, and how much savings potential does this represent forward into the next year?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to an internal financial review conducted from September 2024 to September 2025, MediConn has been able to save 20% on labor costs by automating repetitive processes through its CRM, a savings which has been passed directly on to its clients through lower annual fees. This savings is projected to increase to 23% over the next year.",
+            "supporting_file_paths": [
+                "shared/crm-growth-strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "Besides automated reminders and cost effectiveness, what other features available on MediConn Solutions' new CRM software would be important to customers?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to a survey of virtual healthcare patients completed in January 2025, 90% of patients ranked personalized and timely care as two of the top five reasons for choosing a healthcare provider.",
+            "supporting_file_paths": [
+                "shared/crm-healthcare-growth.pptx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

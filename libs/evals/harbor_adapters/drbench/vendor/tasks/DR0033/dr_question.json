@@ -1,0 +1,15 @@
+{
+    "dr_question": "How can Lee's Market, guided by information security manager Jason Wong, design and implement a cybersecurity awareness and training program by the end of 2025 that mitigates security risk from high employee turnover and seasonal hiring while minimizing incidents caused by human error and supporting the company's growth in both US and Canadian markets?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Cybersecurity",
+        "dr_question": "How can Lee's Market, guided by information security manager Jason Wong, design and implement a cybersecurity awareness and training program by the end of 2025 that mitigates security risk from high employee turnover and seasonal hiring while minimizing incidents caused by human error and supporting the company's growth in both US and Canadian markets?",
+        "industry": "Retail",
+        "url": "https://www.vikingcloud.com/blog/retail-cybersecurity-stats-threats-and-solutions"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0033",
+    "industry": "retail",
+    "domain": "Cybersecurity",
+    "url": "https://www.vikingcloud.com/blog/retail-cybersecurity-stats-threats-and-solutions"
+}

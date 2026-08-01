@@ -1,0 +1,36 @@
+{
+  "task_id": "DR0026",
+  "question": "How can Lee’s Market use conversational AI and data-driven chatbots to capture the growing Centennial market by providing them with instant feedback and responding to cultural and linguistic nuances among its diverse customer base by May 2026?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "How will Lee’s Market make chatbot conversations easier for customers who speak different languages by May 31, 2026?",
+      "answer": "By December 31, 2025, Lee’s Market will train its chatbots using customer data to determine the top five languages used online and in stores. This upgrade is projected to enhance chatbot understanding and reduce response delays by approximately 10%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "How will Lee’s Market ensure customers receive timely store inventory updates through chatbots by November 10, 2025?",
+      "answer": "By October 15, 2025, Lee’s Market will connect chatbots directly to its store inventory, allowing shoppers to check stock, delivery times, or pickup options in under five seconds. This integration is projected to increase the number of online shoppers visiting the store by 8% within nine months.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "Will Lee’s Market’s chatbots be able to provide real-time sustainability details by February 1, 2026?",
+      "answer": "Yes. By February 1, 2026, Lee’s Market will enable its chatbots to display verified information on product sourcing, packaging, and environmental impact for its private-label items.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "How will Lee’s Market use chatbots to give personalized product suggestions by January 1, 2026?",
+      "answer": "By January 1, 2026, Lee’s Market will train its chatbot on data from over one million past purchases to identify patterns of customer behavior. This will help it recommend products that fit each shopper’s preferences, aiming to boost click rates by 10% and order value by 9%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "How will Lee’s Market use chatbots to lower refund rates and checkout mistakes by the first quarter of 2026?",
+      "answer": "By the first quarter of 2026, Lee’s Market will have chatbots that confirm items, flag duplicates, and guide customers through final order checks. These steps are expected to lower refunds by about 15% and cut order mistakes by 18% within twelve months.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

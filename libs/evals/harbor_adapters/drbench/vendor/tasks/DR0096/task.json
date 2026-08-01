@@ -1,0 +1,43 @@
+{
+    "name": "DR0096",
+    "task_id": "DR0096",
+    "level": "",
+    "company_info": {
+        "name": "Lee's Market (Richmond, British Columbia, Canada, $500M - $600M, 5000 employees)",
+        "industry": "Retail",
+        "description": "A company in the Retail industry",
+        "size": "medium",
+        "employee_count": "100-500",
+        "annual_revenue": "Not specified"
+    },
+    "dr_question": "As per the report by the U.S. Census Bureau's indication of a rise in food service sales since August 2024, how can Lee\u2019s Market optimize in-store layouts and product displays across its U.S. locations to increase bakery sales by 15% by the end of Q1 2026?",
+    "date": "2025-10-24",
+    "persona": {
+        "name": "Maria Gonzalez",
+        "first_name": "Maria",
+        "last_name": "Gonzalez",
+        "username": "maria.gonzalez",
+        "email": "maria.gonzalez@leesmarket.com",
+        "role": "Department Sales Supervisor",
+        "role_description": "Manages daily sales operations for specific departments, trains new sales staff, and ensures customer service standards are maintained"
+    },
+    "citation_format": {
+        "urls": [
+            "https://www.example.com/article",
+            "https://techcrunch.com/2023/report.html"
+        ],
+        "file_names": [
+            "quarterly_report.pdf",
+            "market_analysis.docx",
+            "shared/file-pdf"
+        ],
+        "mattermost_chats": [
+            "MatterMost-Channel-Team-User",
+            "Mattermost Message - Enterprise Chat (User: john.doe, Team: Compliance, Channel: General)"
+        ],
+        "email_messages": [
+            "RoundCube-fromdemail-todemails-Subject",
+            "Email from sarah.johnson@company.com on 20 Jan 2025"
+        ]
+    }
+}

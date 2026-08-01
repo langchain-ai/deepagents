@@ -1,0 +1,380 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How many IT support tickets did MediConn Solutions process in January 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solution processed approximately 1,800 IT support tickets in January 2025, according to the company's internal IT operations report.",
+            "supporting_file_paths": [
+                "shared/january-2025-it-support.pptx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What percentage of MediConn IT service desk staff work at the Vancouver headquarters?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the Q3 2025 staffing reports, 55% of IT service desk staff work at the Vancouver headquarters.",
+            "supporting_file_paths": [
+                "shared/IT-Desk-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How many new employees joined the IT service desk team in January 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The internal HR review at MediConn Solutions revealed five new IT service desk hires in January 2025.",
+            "supporting_file_paths": [
+                "shared/IT-team-expansion-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What is the average amount of time that IT Service Desk staff have been working for MediConn Solutions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to a internal IT staffing reports, the average employee of the IT Service Desk has been working with MediConn Solutions for 2.5 years.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Employee_Longevity_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How many virtual doctor consultations were completed by healthcare professionals with MediConn Solutions in May 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The May service report at MedConn Solutions recorded approximately 5,000 virtual doctor consultations.",
+            "supporting_file_paths": [
+                "shared/may-2025-activity-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What percentage of scheduled virtual mental health consultations were cancelled by the patient at least one day before the appointment in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the June 2025 virtual consultation summary at MediConn Solutions, 8% of scheduled virtual mental health consultations were cancelled by the patient at least one day before the appointment.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Mental_Health_Virtual_Consultat.xlsx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "How many prescription deliveries were accomplished in July 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The internal delivery logs at MediConn Solutions show 3,500 prescriptions were completed in July 2025.",
+            "supporting_file_paths": [
+                "shared/july-2025-delivery-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "How many companies subscribed to MediConn Solutions' corporate wellness program in August 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The MediConn Solutions' corporate report in August 2025 indicated 102 companies subscribed to the wellness program.",
+            "supporting_file_paths": [
+                "shared/corporate-wellness-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "What percentage of IT service desk requests came from MediConn employees versus those from customers in September 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' September 2025 service desk audit uncovered that 70% of requests came from employees and 30% came from customers.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Service_Desk_Audit_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "How many IT service desk tickets were escalated in October 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' internal escalation records showed 175 tickets escalated in October 2025.",
+            "supporting_file_paths": [
+                "shared/october-2025-IT-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "How many updates to the mobile app did the IT Service Desk roll out in September 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to operational reports, the IT Service Desk issued two minor updates to the mobile app during September 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_IT_ServiceDesk_AppUpdates_Repor.xlsx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "How many major IT system updates were completed in December 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "System audits at MediConn Solutions report the successful completion of five major IT system updates in December 2024.",
+            "supporting_file_paths": [
+                "shared/december-2024-IT-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "What percentage of IT service desk agents completed certification training in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to 2024 MediConn Solutions' training records, 95% of IT desk agents completed certification.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_IT_Certification_Training_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "How many features were added to the virtual health app in January 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The January 2025 product update at MediConn Solutions launched four new health app features.",
+            "supporting_file_paths": [
+                "shared/january-2025-app-update.pptx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "",
+            "question": "How many user logins were recorded on the mobile health app in May 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' user analytics recorded 230,000 logins in May 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Mobile_App_Login_Statistics.xlsx"
+            ]
+        },
+        {
+            "id": "DI0016",
+            "justification": "",
+            "question": "What percentage of help desk tickets were related to password resets in July 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In July 2025, MediConn Solutions' help desk reports recorded 20% of the tickets concerning password resets.",
+            "supporting_file_paths": [
+                "shared/help-desk-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0017",
+            "justification": "",
+            "question": "How many employees' mental health wellness seminars were conducted in April 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' internal HR event records show 2 wellness seminars conducted in April 2025.",
+            "supporting_file_paths": [
+                "shared/wellness-initiatives-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0018",
+            "justification": "",
+            "question": "How many IT Service Desk staff trainings were conducted between June 2024 and June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The IT Service Desk staff had 14 training sessions between June 2024 and June 25",
+            "supporting_file_paths": [
+                "shared/IT-Training-Report.docx"
+            ]
+        },
+        {
+            "id": "DI0019",
+            "justification": "",
+            "question": "How many remote health monitoring devices were distributed to patients in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' device distribution logs indicate that 1,200 remote health monitoring devices were handed out in June 2025.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_143548.jsonl"
+            ]
+        },
+        {
+            "id": "DI0020",
+            "justification": "",
+            "question": "What percentage of patients used the support chatbot for medical advice in October 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to MediConn Solutions' October 2025 patient support report, 30% of patients use the support chatbot for medical advice.",
+            "supporting_file_paths": [
+                "shared/october-chatbot-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0021",
+            "justification": "",
+            "question": "How many MediConn staff updated the operating systems on their employee devices in September 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions' operation logs recorded operating systems updates on the employee devices of 56 employees in September 2025.",
+            "supporting_file_paths": [
+                "shared/device-compliance-report.docx"
+            ]
+        },
+        {
+            "id": "DI0022",
+            "justification": "",
+            "question": "What was the attendance rate of the IT team's virtual training in September 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The attendance records of the IT team at MediConn Solutions showed a 94% attendance rate during the virtual training in September 2025.",
+            "supporting_file_paths": [
+                "shared/IT-Training-Analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0023",
+            "justification": "",
+            "question": "What percentage of remote care IT incidents in MediConn Solutions are resolved by the IT team in Vancouver?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Based on MediConn Solutions' 2025 IT operations report, 65% of remote healthcare IT support requests are handled by the main IT team in Vancouver, with the rest being handled in regional offices.",
+            "supporting_file_paths": [
+                "shared/IT-Incident-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0024",
+            "justification": "",
+            "question": "What is the most frequently documented customer compliment about the IT Service Desk's performance at MediConn Solutions in Q2 of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Based on Customer Satisfaction surveys in Q2 2025, the most frequently documented customer compliment about the IT Service Desk was staff politeness.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_143750.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What percentage of remote care IT incidents in MediConn Solutions are resolved by the IT team in under two hours?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to the 2025 MediConn Solutions IT report, 57% of remote care IT incidents are resolved in under two hours.",
+            "supporting_file_paths": [
+                "shared/AI-ITSM-Enhancement.pptx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What did the internal audit in 2024 reveal about MediConn Solutions\u2019 compliance with PIPEDA and ISO 27001?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to an internal audit completed in December 2024, MediConn Solutions maintains 100% compliance with PIPEDA and ISO 27001, a figure which it has maintained for the last three years.",
+            "supporting_file_paths": [
+                "shared/ai-itsm-integration.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "What is the IT Service Desk's average incident response time for mobile health app users in Q3 of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to a recent company review, the IT Service Desk at MediConn Solutions had an average response time of 15 minutes in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/AI-ITSM-Enhanced-Support.pptx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "What was the total service downtime across MediConn Solutions networks during Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The internal summary report in 2025 from the MediConn Solutions IT Desk states a total of 350 minutes of service downtime across all networks during Q1.",
+            "supporting_file_paths": [
+                "shared/AI-ITSM-Enhancement.pptx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "What is the most frequently documented customer complaint about the IT Service Desk's performance at MediConn Solutions in Q2 of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Based on Customer Satisfaction surveys in Q2 2025, the most frequently documented customer complain about the IT Service Desk was long wait times for service ticket resolution.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_142559.jsonl"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "",
+            "question": "What percentage of IT staff reported that completing the mandatory data privacy training for PIPEDA adherence made it difficult for them to respond to service tickets in a timely manner during July 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to MediConn Solutions' internal IT staff surveys upon the completion of data privacy training for PIPEDA adherence in July 2025, 78% of IT staff reported that the lengthy training modules made it difficult for them to respond to service tickets in a timely manner. Service ticket average response times increased by 5 minutes in during the month of July 2025.",
+            "supporting_file_paths": [
+                "shared/ai-itsm-strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0007",
+            "justification": "",
+            "question": "What percentage of routine IT requests are automated in MediConn Solutions' IT Department as of September 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to an internal review conducted at MediConn Solutions in September 2025, the IT Department automates 18% of routine IT requests using internal routines.",
+            "supporting_file_paths": [
+                "shared/AI-ITSM-Patient-Experience.pptx"
+            ]
+        },
+        {
+            "id": "IN0008",
+            "justification": "",
+            "question": "How many service tickets did the IT Service Desk at MediConn Solutions handle in August 2025, and what percentage of these tickets were routine service requests?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According the team's internal dashboard reports, the IT Service Desk at MediConn handled 2,350 service tickets in August 2025, and 22% of these service requests were routine.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_IT_ServiceDesk_Ticket_Data.xlsx"
+            ]
+        },
+        {
+            "id": "IN0009",
+            "justification": "",
+            "question": "How many major patient care-impacting IT disruptions occurred in 2025 within MediConn Solutions' networks?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to MediConn Solutions' operational reports, there were 30 major patient care-impacting IT disruptions across all networks in 2025.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_142759.jsonl"
+            ]
+        },
+        {
+            "id": "IN0010",
+            "justification": "",
+            "question": "How much of their time did IT service desk staff report spending answering common questions from healthcare providers and patients in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn Solutions' IT Department analytics reports that service desk staff spent over 25% of their time in March 2025 answering common questions from healthcare providers and patients.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_143913.jsonl"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

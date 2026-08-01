@@ -1,0 +1,54 @@
+{
+  "task_id": "DR0097",
+  "question": "How can MediConn streamline its IT workflows in Q4 2025 to boost clinician efficiency and manage per-consultation costs, given that virtual healthcare expansion has improved access but increased overall expenses?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What is MediConn's average operational IT cost per virtual consultation as of October 2025?",
+      "answer": "MediConn's IT cost per consult is approximately $10 CAD as of October 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "What percentage of MediConn's clinician worktime is dedicated to interacting with and diagnosing patients during virtual consultations as per the Q3 2025 internal analysis?",
+      "answer": "40% of clinician worktime per visit is spent on direct patient interaction and diagnosis.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "According to MediConn's internal analysis for Q3 2025, what percentage of a clinician's worktime is spent on activities like documentation and platform navigation?",
+      "answer": "EHR documentation, data entry, and navigating across platforms for calls, reports, and expert opinions consume approximately 50% of the clinician work time.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "What portion of EHR and documentation workflows are automated or streamlined through MediConn's IT systems as of October 2025?",
+      "answer": "50% of EHR and documentation workflows are automated as of October 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "As of October 2025, how many technology platforms do MediConn clinicians use in their daily workflows?",
+      "answer": "MediConn clinicians currently use three specialized platforms: one for patient interaction, one for lab results, and one for expert consultations.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0006",
+      "question": "What was the impact of MediConn's Ambient AI scribing pilot launched in Q3 2025 on clinician EHR time?",
+      "answer": "The AI scribing pilot automatically generated visit summaries and completed EHR documentation, resulting in a 70% reduction in clinician time spent on these tasks compared to previous levels.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0007",
+      "question": "What were the results of MediConn's Q3 2025 pilot implementation of the Unified Communications (UC) Platform that integrates multiple systems for clinicians?",
+      "answer": "The UC Platform combined messaging, video consultations, lab results review, and expert opinion requests into a single interface. This eliminated time spent juggling between systems and improved navigation speed by 90% compared to previous workflows.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0008",
+      "question": "What was the outcome of MediConn's Q3 2025 pilot for automated lab result annotation for clinicians?",
+      "answer": "The automated lab result annotation pilot, designed to reduce clinician review time by automatically flagging abnormal values and generating preliminary notes, instead led to a 20% increase in documentation errors and added workflow complexity.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

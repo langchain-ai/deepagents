@@ -1,0 +1,28 @@
+{
+    "dr_question": "How can Elexion Automotive increase customer trust through after-sales support while balancing the need for exceptional customer care with efficient and cost-effective service?",
+    "question_type": "ai_generated",
+    "question_source": {
+        "domain": "csm",
+        "dr_question": "What are the most effective strategies for Elexion Automotive to balance the need for exceptional customer care with the need for efficient and cost-effective after-sales service?",
+        "industry": "Automotive -- Electric Vehicles",
+        "n_hops": 4,
+        "subquestions": [
+            "What are the primary drivers of customer satisfaction with after-sales service?",
+            "How can Elexion Automotive balance the need for personalized service with the need for scalable and cost-effective solutions?",
+            "What role do technology and data analytics play in optimizing after-sales service operations?",
+            "What are the most important metrics to measure the success of Elexion Automotive's after-sales service strategy in terms of customer satisfaction and operational efficiency?"
+        ],
+        "url": "https://theevreport.com/enhancing-ev-trust-through-aftersales-support"
+    },
+    "timestamp": "2025-08-10 19:09",
+    "task_id": "DR0015",
+    "subquestions": [
+        "What are the primary drivers of customer satisfaction with after-sales service?",
+        "How can Elexion Automotive balance the need for personalized service with the need for scalable and cost-effective solutions?",
+        "What role do technology and data analytics play in optimizing after-sales service operations?",
+        "What are the most important metrics to measure the success of Elexion Automotive's after-sales service strategy in terms of customer satisfaction and operational efficiency?"
+    ],
+    "industry": "automobiles",
+    "domain": "csm",
+    "url": "https://theevreport.com/enhancing-ev-trust-through-aftersales-support"
+}

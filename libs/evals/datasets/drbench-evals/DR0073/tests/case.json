@@ -1,0 +1,24 @@
+{
+  "task_id": "DR0073",
+  "question": "How can Elexion Automotive's control interface design strategy for 2026 EV models prioritize physical buttons and switches by Q3 2025 to reduce the 30% higher control/display problem rate for EVs and achieve PP100 scores below the 266 EV average?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What was the percentage of customer complaints received by Elexion Automotive between 2023 and 2024 that were related to touchscreen interface usability issues?",
+      "answer": "From the internal quality assurance report completed in Q4 2024, 68% of Elexion Automotive's customers complained about touchscreen interface usability issues, including accidental inputs and delayed response times.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "In November 2024, what percentage of test drivers reported improved task accuracy when using prototype models that have rotary knobs for key controls?",
+      "answer": "According to the test drive analysis report published in November 2024 by Elexion Automotive's Quality and Reliability Department, 82% of test drivers reported higher accuracy when using physical rotary knobs compared to touchscreen sliders.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "Has Elexion Automotive established a date for finalizing the 2026 model control interface design?",
+      "answer": "Yes, Elexion Automotive established March 31, 2025, as the target date for finalizing the 2026 model control interface design. This timeline will allow 6 months for validation testing and production line integration before full production begins in October 2025.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "Currently, what is the weight of the battery Elexion is using in its best selling EV?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to 2024 sales records, Elexion's bestselling EV is the Electro. The Electro's battery weighs approximately 1500 pounds.",
+            "supporting_file_paths": [
+                "shared/EV-Battery-Analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "Out of all the sizes of Elexion's EV batteries, which is the most commonly used in our latest models?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Of the latest models produced in 2024, the most common battery size used in Elexion's electric vehicles is 80 kWh.",
+            "supporting_file_paths": [
+                "shared/ev-battery-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "Has Elexion done any research on the effects of AI usage in their company?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. In August of 2024, Elexion's IT department researched the topic of AI usage and consumption. The team discovered that AI usage can be beneficial to innovation and operations.",
+            "supporting_file_paths": [
+                "shared/elexion-ai-implementation.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "Has Elexion done any research on whether AI can improve EV battery life?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In August of 2024, Elexion's IT department researched the topic of AI integration and outcomes. The team discovered that AI can identify variables like analyzing temperature, voltage, and current, which have been proven to improve battery life.",
+            "supporting_file_paths": [
+                "shared/ai-ev-diagnostics.pptx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

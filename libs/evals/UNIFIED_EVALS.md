@@ -9,8 +9,8 @@ This document explains the *decisions* behind that battery: which benchmarks we 
 Dispatched from the Actions tab (`workflow_dispatch`). Every input has a default except `models`:
 
 - **`models`** *(required)* — comma-separated `provider:model` specs (e.g. `anthropic:claude-opus-4-8,openai:gpt-5.2`). The set of models compared in one run; everything else is applied identically across them.
-- **`categories`** *(default `autonomous,conversation,context`)* — which capability axes to run. The radar chart is produced only when all three run.
-- **`agent_impl`** *(default `bare`, options `bare` / `dcode`)* — the deep-agents harness for the **autonomous** and **context** categories: `bare` (`create_deep_agent`, the neutral SDK agent) or `dcode` (the deep-agents-code product agent). The **conversation** category ignores this and always uses `tau3`: `tau3` is not just a harness but the τ³-bench runtime that hosts the **user simulator** the agent has to converse with, so the category is bound to it — `bare`/`dcode` are single-shot deep-agents graphs and can't drive the multi-turn simulated-user protocol.
+- **`categories`** *(default `autonomous,conversation,context`)* — which capability axes to run; `research` is available but opt-in. The radar chart is produced whenever at least three axes run.
+- **`agent_impl`** *(default `bare`, options `bare` / `dcode`)* — the deep-agents harness for the **autonomous**, **context**, and **research** categories: `bare` (`create_deep_agent`, the neutral SDK agent) or `dcode` (the deep-agents-code product agent). The **conversation** category ignores this and always uses `tau3`: `tau3` is not just a harness but the τ³-bench runtime that hosts the **user simulator** the agent has to converse with, so the category is bound to it — `bare`/`dcode` are single-shot deep-agents graphs and can't drive the multi-turn simulated-user protocol.
 - **`rollouts`** *(default `3`)* — trials per task, i.e. **K** in the two scores reported per `(model × category)`:
   - **pass@K** — fraction of tasks that passed at least once within K rollouts.
   - **avg@K** — passing trials (capped at K per task) ÷ expected trials (tasks × K); missing rollouts count as failures, so a partial run can't inflate the score.
@@ -32,10 +32,13 @@ A "deep agent" is not one skill, so a single benchmark can't score one. We split
 | **autonomous** | End-to-end task execution in a real, sandboxed computer/terminal environment | [`harbor-index/harbor-index-1.0`](https://github.com/laude-institute/harbor) (Harbor registry) | bare · dcode |
 | **conversation** | Multi-turn, tool-using dialogue against a simulated user, following a policy | [`tau3-subset`](https://github.com/sierra-research/tau2-bench) (τ³-bench) | tau3 |
 | **context** | Retrieval + reasoning over a large, multi-file corpus | [`context-retrieval-evals`](https://github.com/letta-ai/letta-evals) (Context-Bench) | bare · dcode |
+| **research** | Open-ended research across a heterogeneous private corpus **and** the open web, synthesized into a cited report | [`drbench-evals`](https://github.com/ServiceNow/drbench) (DRBench, local mode) | bare · dcode |
 
-The default run exercises all three (`categories: "autonomous,conversation,context"`). A radar chart is only meaningful with the full set, so it is emitted only when all three categories run.
+The default run exercises the first three (`categories: "autonomous,conversation,context"`). A radar chart needs at least three axes to be meaningful, so it is emitted only once that many categories run.
 
-The `autonomous` and `context` categories run a deep-agents graph: by default the **bare** `create_deep_agent` — the SDK agent with no product scaffolding, which keeps the score a measure of the *model* rather than of a harness wrapped around it — with **`dcode`** (deep-agents-code, the full product agent) selectable as an option. The `conversation` category runs the τ³ runtime, which supplies a **user simulator** the agent must converse with rather than a static prompt.
+**`research`** is opt-in rather than default. It differs from the other categories in two ways worth knowing before dispatching it: its tasks run with `network_mode = "public"` (DRBench's ground truth includes facts that exist only on the open web, so an allowlist would make them unreachable), and it is the only category granted `TAVILY_API_KEY`, which is what activates the agent's `web_search` tool. Its reward is DRBench's `insights_recall` — the fraction of the benchmark's expected findings the agent's report actually recovers — so scores are continuous rather than pass/fail per task. See [`datasets/drbench-evals/README.md`](datasets/drbench-evals/README.md) for the runtime contract and scoring detail.
+
+The `autonomous`, `context`, and `research` categories run a deep-agents graph: by default the **bare** `create_deep_agent` — the SDK agent with no product scaffolding, which keeps the score a measure of the *model* rather than of a harness wrapped around it — with **`dcode`** (deep-agents-code, the full product agent) selectable as an option. The `conversation` category runs the τ³ runtime, which supplies a **user simulator** the agent must converse with rather than a static prompt.
 
 ## Task-selection philosophy
 

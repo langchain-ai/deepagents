@@ -1,0 +1,60 @@
+{
+  "task_id": "DR0004",
+  "question": "What are the new trends in the grocery retail market and what strategies can Lee's Market adopt to remain competitive?",
+  "insights": [
+    {
+      "id": "EX0000",
+      "question": "",
+      "answer": "As shoppers become increasingly price-conscious heading into 2025, many are opting for cheaper brands and shopping across multiple stores for deals, boosting the market share of discounters like Aldi and Walmart. This shift poses a significant challenge for traditional supermarkets, making competition with these value-focused retailers a top priority for grocers.",
+      "type": "external_fact"
+    },
+    {
+      "id": "EX0001",
+      "question": "",
+      "answer": "Supermarkets are focusing on health and wellness, private label products, and technologies like electronic shelf labels to differentiate beyond price. These innovations can help traditional grocers attract customers despite inflation concerns.",
+      "type": "external_fact"
+    },
+    {
+      "id": "EX0002",
+      "question": "",
+      "answer": "Following a failed merger with Kroger, Albertsons plans to cut $1.5 billion in costs and invest in sales to remain competitive. This highlights a broader trend where retail chains need to streamline operations and reinvest in customer-facing improvements to sustain momentum amid economic challenges.",
+      "type": "external_fact"
+    },
+    {
+      "id": "IN002_roundcube",
+      "question": "How many customers used Lee's Market's online shopping platform in Q1 2024?",
+      "answer": "In Q1 2024, 250,000 customers used Lee's Market's online shopping platform, a 20% increase from Q1 2023.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN001_pptx",
+      "question": "What are Q2 2024 online sales growth projections?",
+      "answer": "Online sales projected to grow 15% in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN004_docx",
+      "question": "What is the average time-to-resolution for customer complaints in Q2 2025?",
+      "answer": "The average time-to-resolution for customer complaints is 2 hours, indicating a need for process improvements to enhance customer satisfaction.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN002_pptx",
+      "question": "What is Q2 2024 customer retention rate?",
+      "answer": "Customer retention rate is 85% in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN001_roundcube",
+      "question": "What is Lee's Market's private label sales growth in Q2 2024?",
+      "answer": "Lee's Market saw a 12% increase in private label sales in Q2 2024, reaching $15 million.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN003_docx",
+      "question": "What percentage of our online transactions were made using mobile devices in Q3 2024?",
+      "answer": "60% of our online transactions were made using mobile devices, with an average order value of $50.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

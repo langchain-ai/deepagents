@@ -1,0 +1,204 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How many SOP documents were updated by Lee's Market knowledge management team in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The knowledge management team at Lee's Market refined 31 out of the 54 SOP documents in Q1 2024.",
+            "supporting_file_paths": [
+                "shared/q1-2024-knowledge-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What improvements in warehouse operations at Lee's Market were recorded following the new round of employee training at the end of 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The warehouse managers at Lee's Market reported on average 7% faster unloading times following the employee retraining program at the end of 2024.",
+            "supporting_file_paths": [
+                "shared/post-training-outcomes.pptx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What was the primary factor contributing to the success of the time-saving initiative carried out at Lee's Market's call centers in February 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Lee's Market knowledge management team identified the implementation of decision trees in the customer support hotlines as the key factor behind the success of the time-saving initiative carried out in February 2025.",
+            "supporting_file_paths": [
+                "shared/call-center-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What percentage of the marketing department staff reported \"significant improvements\" in the content creation process after the knowledge management team updated the process repository access and usability in February 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "More than 68% of Lee's Market's marketing staff reported \"significant improvements\" in the day-to-day content creation process following usability and access enhancements to the process repository that the KM team completed in February 2025.",
+            "supporting_file_paths": [
+                "shared/knowledge-management-impact.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "When was the major decision to overhaul the warehouse operation processes at the Toronto branch made by the KM team in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In October 2025, following a thorough study of major operational inefficiencies at the Toronto warehouse, the KM team decided to entirely restructure the processes at the location.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_131713.jsonl"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How much time per customer interaction did Lee's Market August 2023 on-the-job training of call center agents save for the company?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The August 2023 round of on-the-job training of Lee's Market call center agents resulted in approximately 12 minutes of saved time per call, according to internal reports.",
+            "supporting_file_paths": [
+                "shared/call-center-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "As of October 2025, how long does a Lee's Market marketing department employee typically spend in the knowledge database looking for information about a specific product?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Based on October 2025 internal reports, a marketing specialist typically spends 23 minutes looking for information about a specific product in the company's knowledge database.",
+            "supporting_file_paths": [
+                "shared/database-usage-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "How did the knowledge management team learn about major time-saving initiatives that a Lee's Market competitor implemented in their warehouse operations in January 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "While reading The Basics of Process Mapping by Robert Damelio, Sophie Tran discovered an operations methodology that a Lee's Market competitor used to achieve significant time savings in January 2024.",
+            "supporting_file_paths": [
+                "shared/competitor-operations-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "How many updates to the knowledge management software did the knowledge management team implement in collaboration with the IT department during Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The knowledge management team collaborated with the IT specialists to push 13 updates to the knowledge management software at Lee's Market in Q2 2025.",
+            "supporting_file_paths": [
+                "shared/Q2-KM-Software-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "What share of Lee's Market's customers applying for product refunds in H2 2024 complained about inconsistent information about the return process on the post-return feedback forms?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The post-return survey results showed that 33% of customers who applied for a refund in H2 2024 received conflicting information about the return process.",
+            "supporting_file_paths": [
+                "shared/H2-2024-Refund-Feedback.docx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "How many training programs aimed at optimizing in-store inventory management were conducted by Lee's Market's knowledge management and human resources teams in the first half of 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In the first half of 2025, Lee's Market's knowledge management team collaborated with the human resources specialists to conduct 7 training programs aimed at improving in-store inventory management by utilizing the knowledge database.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_131945.jsonl"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "How many workshops did Lee's Market knowledge management team conduct for teams interacting with the knowledge database after the new knowledge-sharing process was introduced in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market's knowledge management team held 3 mini-workshops for each team actively using the knowledge database to demonstrate the new March 2025 process of knowledge-sharing on the platform.",
+            "supporting_file_paths": [
+                "shared/knowledge-management-evaluation.pdf"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "According to Lee's Market's September 2024 employee efficiency analysis report, on average, how long does it take an in-store employee to restock the beverage aisle?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As reported by Lee's Market's September 2024 employee efficiency analysis report, it takes an in-store employee approximately 39 minutes a day to restock the beverage aisle.",
+            "supporting_file_paths": [
+                "shared/beverage-restocking-efficiency.pptx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "Based on Lee's Market's knowledge management team's February 2025 calculations, how much time per truck unloading operation could the Quebec City warehouse save by implementing AI solutions to optimize warehouse staff management?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The knowledge management team calculated in February 2025 that using AI tools to predict product delivery patterns in the Quebec City warehouse could save the branch at least 17 minutes per unloading operation on average.",
+            "supporting_file_paths": [
+                "shared/AI-impact-warehouse-operations.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "According to Lee's Market's September 2024 customer satisfaction survey results, on average, how long does it take a customer to find the necessary product information on the company's website?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to Lee's Market's September 2024 customer satisfaction survey results, it takes 15-20 minutes on average for a consumer to browse the website and find the product information they need, which needs to be improved in order to enhance customer experience by 2028.",
+            "supporting_file_paths": [
+                "shared/ai-knowledge-strategies.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "According to Lee's Market's Q3 2024 internal reports, which Lee's Market store had the longest average payment and checkout process of all branches in the Quebec province? And how can the company use AI to improve the process by 2028?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The Quebec City Lee's Market store had the longest average payment and checkout process of all branches in the province, according to the Q3 2024 internal reports. Lee's Market could use AI to predict customer flow based on sales history and improve staff management practices at the branch, thus improving customer satisfaction by 2028.",
+            "supporting_file_paths": [
+                "shared/AI-Knowledge-Management.pptx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "Based on Lee's Market's knowledge management team's January 2025 calculations, how much time per checkout could the Quebec City store save by implementing AI solutions to optimize checkout staff management by 2028?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The knowledge management team calculated in January 2025 that using AI tools to predict customer flow in the Quebec City store could save the branch 7 minutes per checkout on average and enhance Lee's Market's customer experience by 2028.",
+            "supporting_file_paths": [
+                "shared/AI-Knowledge-Management.docx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "What customer experience improvements have been recorded at Lee's Market stores in Q4 2024 following the installation of screens with AI-driven product summaries in each aisle that could lead to enhanced customer service experience by 2028?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Q4 2024 Lee's Market customer satisfaction surveys showed that the installation of AI-powered product summary screens in store aisles helped buyers find necessary product information 30% faster. This speed would improve customer experience by 2028.",
+            "supporting_file_paths": [
+                "shared/AI-Knowledge-Management.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

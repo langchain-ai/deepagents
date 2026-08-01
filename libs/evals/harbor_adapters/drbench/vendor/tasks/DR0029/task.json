@@ -1,0 +1,66 @@
+{
+    "name": "DR0029",
+    "task_id": "DR0029",
+    "level": "",
+    "company_info": {
+        "name": "Lee's Market",
+        "industry": "Retail",
+        "size": "Enterprise",
+        "founded_year": 2003,
+        "headquarters": "Richmond, British Columbia, Canada",
+        "description": "Lee's Market is a regional Asian supermarket chain specializing in high-quality Asian groceries and household items. With a growing footprint in urban centers across the U.S. and Canada, Lee's Market blends traditional flavors with modern retail experiences, offering in-store, online, and delivery services.",
+        "key_products_services": [
+            "Fresh produce, meats, and seafood",
+            "Asian household items",
+            "Bakery and prepared foods",
+            "Online grocery shopping and delivery"
+        ],
+        "target_markets": [
+            "Asian communities in the U.S. and Canada",
+            "Urban centers with diverse populations"
+        ],
+        "annual_revenue": "$500M - $600M",
+        "employee_count": 5000,
+        "compliance_certifications": [
+            "FDA and CFIA Food Safety Compliance",
+            "HACCP Food Safety Compliance",
+            "USDA Import Inspection Regulations"
+        ],
+        "market_position": "Lee's Market is a rising regional player bridging cultural authenticity and modern retail innovation in the Asian grocery sector. It is carving a niche between mainstream retailers like Walmart and ethnic-focused giants like H-Mart."
+    },
+    "dr_question": "Given the rise of AI-based knowledge management systems, what strategies can Lee's Market's knowledge management team implement to help maintain low employee turnover rates through 2027?",
+    "date": "2025-10-30",
+    "persona": {
+        "role": "Knowledge Management Coordinator",
+        "department": "Operations and Training",
+        "name": "Sophie Tran",
+        "first_name": "Sophie",
+        "last_name": "Tran",
+        "email": "sophie.tran@leesmarket.com",
+        "seniority": "Mid",
+        "responsibilities": "Develops and manages internal knowledge systems, including training documentation, SOPs, and process repositories for store and warehouse operations. Works with HR and IT teams to maintain centralized, searchable knowledge hubs for staff onboarding and continuous learning.",
+        "id": "KMG0001",
+        "domain": "knowledge_management",
+        "justification": "With thousands of employees across multiple regions, effective knowledge management is critical for operational consistency and efficiency. Sophie\u2019s work ensures that employees can easily access accurate information, reducing errors and improving overall service delivery.",
+        "username": "sophie.tran"
+    },
+    "citation_format": {
+        "urls": [
+            "https://www.example.com/article",
+            "https://techcrunch.com/2023/report.html"
+        ],
+        "file_names": [
+            "quarterly_report.pdf",
+            "market_analysis.docx",
+            "shared/file-pdf"
+        ],
+        "mattermost_chats": [
+            "MatterMost-Channel-Team-User",
+            "Mattermost Message - Enterprise Chat (User: john.doe, Team: Compliance, Channel: General)"
+        ],
+        "email_messages": [
+            "RoundCube-fromdemail-todemails-Subject",
+            "Email from sarah.johnson@company.com on 20 Jan 2025"
+        ]
+    }
+}

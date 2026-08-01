@@ -1,0 +1,67 @@
+{
+    "name": "DR0002",
+    "task_id": "DR0002",
+    "level": "",
+    "company_info": {
+        "annual_revenue": "$500M - $600M",
+        "compliance_certifications": [
+            "FDA and CFIA Food Safety Compliance",
+            "HACCP Food Safety Compliance",
+            "USDA Import Inspection Regulations"
+        ],
+        "description": "Lee's Market is a regional Asian supermarket chain specializing in high-quality Asian groceries and household items. With a growing footprint in urban centers across the U.S. and Canada, Lee's Market blends traditional flavors with modern retail experiences, offering in-store, online, and delivery services.",
+        "employee_count": 5000,
+        "founded_year": 2003,
+        "headquarters": "Richmond, British Columbia, Canada",
+        "industry": "Retail",
+        "key_products_services": [
+            "Fresh produce, meats, and seafood",
+            "Asian household items",
+            "Bakery and prepared foods",
+            "Online grocery shopping and delivery"
+        ],
+        "market_position": "Lee's Market is a rising regional player bridging cultural authenticity and modern retail innovation in the Asian grocery sector. It is carving a niche between mainstream retailers like Walmart and ethnic-focused giants like H-Mart.",
+        "name": "Lee's Market",
+        "size": "Enterprise",
+        "target_markets": [
+            "Asian communities in the U.S. and Canada",
+            "Urban centers with diverse populations"
+        ]
+    },
+    "dr_question": "How can personalization drive sales in the retail industry and what strategies can be used for Lee's Market in action?",
+    "date": "2025-08-27",
+    "persona": {
+        "department": "Sales",
+        "domain": "sales",
+        "email": "michael.lee@leesmarket.com",
+        "first_name": "Michael",
+        "id": "MNG0005",
+        "justification": "As a sales team lead at Lee's Market, Michael's leadership and strategic planning in sales processes are crucial for revenue growth, and his collaboration with customer service teams makes him an important persona for research in reducing friction post-sale and improving CRM and service platform integration.",
+        "last_name": "Lee",
+        "name": "Michael Lee",
+        "password": "my_drbench_pwd",
+        "responsibilities": "Lead a team of sales representatives, set sales targets, and develop strategies to achieve sales goals while collaborating with the customer service team to ensure smooth handovers.",
+        "role": "Sales Team Lead",
+        "seniority": "Mid",
+        "username": "michael.lee"
+    },
+    "citation_format": {
+        "urls": [
+            "https://www.example.com/article",
+            "https://techcrunch.com/2023/report.html"
+        ],
+        "file_names": [
+            "quarterly_report.pdf",
+            "market_analysis.docx",
+            "shared/file-pdf"
+        ],
+        "mattermost_chats": [
+            "MatterMost-Channel-Team-User",
+            "Mattermost Message - Enterprise Chat (User: john.doe, Team: Compliance, Channel: General)"
+        ],
+        "email_messages": [
+            "RoundCube-fromdemail-todemails-Subject",
+            "Email from sarah.johnson@company.com on 20 Jan 2025"
+        ]
+    }
+}

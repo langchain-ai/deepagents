@@ -1,0 +1,66 @@
+{
+  "task_id": "DR0014",
+  "question": "Can we leverage AI-enhanced battery management to improve EV battery lifespan by 15%?",
+  "insights": [
+    {
+      "id": "EX0000",
+      "question": "",
+      "answer": "AI-enhanced battery management systems can predict and maintain State-of-Health, enabling EV batteries to retain approximately 90 % of their original capacity even after 6.5 years of use.",
+      "type": "external_fact"
+    },
+    {
+      "id": "EX0001",
+      "question": "",
+      "answer": "Reinforcement learning–based energy management in PHEVs and FCEVs has shown measurable improvements in energy efficiency and real-time performance, outperforming conventional strategies.",
+      "type": "external_fact"
+    },
+    {
+      "id": "EX0002",
+      "question": "",
+      "answer": "Adaptive charging and routing strategies using pre-computed shortest-path trees have led to up to 97 % reductions in waiting times at charging stations in simulation studies.",
+      "type": "external_fact"
+    },
+    {
+      "id": "qa_1756144116",
+      "question": "What is the average cost of replacing an EV battery in our current fleet, as of Q4 2024?",
+      "answer": "$120,000 is the average cost of replacing an EV battery in our current fleet, as of Q4 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755628787",
+      "question": "What is projected EV battery lifespan by Q2 2024?",
+      "answer": "Projected lifespan is 8 years by Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756144076",
+      "question": "What percentage of our current EV battery design features AI-enhanced battery management for our North American market as of Q2 2025?",
+      "answer": "40% of our current EV battery design features AI-enhanced battery management for our North American market as of Q2 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755635391",
+      "question": "What is the average lifespan of our current EV batteries by Q2 2024?",
+      "answer": "Our current EV batteries average 5 years lifespan with 80% capacity retention.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755629282",
+      "question": "What percentage of our current EV battery design features AI-enhanced battery management for our North American market, as of Q2 2024?",
+      "answer": "35% of our current EV battery design features AI-enhanced battery management for our North American market as of Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756144104",
+      "question": "How many years of data do we have on EV battery lifespan, including data on AI-enhanced battery management, as of Q3 2025?",
+      "answer": "We have 5 years of data on EV battery lifespan, including data on AI-enhanced battery management, as of Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755629244",
+      "question": "What is the average EV battery lifespan of our current fleet as of Q3 2025?",
+      "answer": "Our current fleet's average EV battery lifespan is 6.8 years as of Q3 2025.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

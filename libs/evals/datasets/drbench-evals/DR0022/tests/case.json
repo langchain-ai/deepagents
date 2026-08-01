@@ -1,0 +1,24 @@
+{
+  "task_id": "DR0022",
+  "question": "Lee's Market is getting a high number of service desk emails across our stores, so how could we reduce the number of these emails by Q2 2026?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "Which type of IT requests generates the most service desk emails monthly, across all of Lee Market stores in all regions?",
+      "answer": "According to Lee’s Market’s internal IT tracking for Q3 2025, inventory system access requests make up 35% of monthly service desk emails. Knowing this highlights where catalog consolidation or workflow improvements could reduce repeated emails and speed resolution.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "Which catalog items cause the most confusion for Lee's Market employees in Q3 2025 via internal emails?",
+      "answer": "According to internal tracking, shrimp crisp products generated 47 confusing emails in Q3 2025. Knowing this identifies catalog items where clearer organization or guidance could reduce service desk email volume.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "Are there specific days or times when Lee’s Market service desk emails spike across all stores?",
+      "answer": "According to Lee’s Market IT tracking in October 2025, service desk emails peak Monday mornings and Friday afternoons, especially within two hours after system updates. Identifying these spikes helps plan workflow improvements to reduce overall email volume.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

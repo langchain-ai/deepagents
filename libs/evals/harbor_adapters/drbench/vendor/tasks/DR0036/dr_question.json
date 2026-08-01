@@ -1,0 +1,15 @@
+{
+    "dr_question": "With the reported slowdown in the sales of electric vehicles (EV), how can after sales products and customer service strategies help our company remain successful in 2026?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "CSM",
+        "dr_question": "With the reported slowdown in the sales of electric vehicles (EV), how can after sales products and customer service strategies help our company remain successful in 2026?",
+        "industry": "Automotive -- Electric Vehicles",
+        "url": "https://theevreport.com/enhancing-ev-trust-through-aftersales-support"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0036",
+    "industry": "automotive -- electric vehicles",
+    "domain": "CSM",
+    "url": "https://theevreport.com/enhancing-ev-trust-through-aftersales-support"
+}

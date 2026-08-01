@@ -1,0 +1,534 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "EX0000",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "As EV sales growth slows, automakers are emphasizing after-sales service quality, with strong warranties and customer support as key differentiators. A survey revealed that 75% of global consumers prioritize warranties when purchasing vehicles, prompting EV brands like VinFast to offer 10-year comprehensive warranties, including battery coverage, to build trust with hesitant buyers.",
+            "supporting_urls": [
+                "https://theevreport.com/enhancing-ev-trust-through-aftersales-support"
+            ]
+        },
+        {
+            "id": "EX0001",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "EV companies are enhancing customer service by incorporating software updates as part of aftersales services, with VinFast using over-the-air updates to add features like entertainment apps to existing vehicles. Additionally, VinFast has partnered to secure access to over 90,000 charging stations in North America, addressing range anxiety and improving convenience for customers.",
+            "supporting_urls": [
+                "https://theevreport.com/enhancing-ev-trust-through-aftersales-support"
+            ]
+        },
+        {
+            "id": "EX0002",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "In the EV sector, companies are adopting future-oriented aftersales strategies like remote diagnostics and predictive maintenance to proactively address issues and offer personalized services. While technology plays a crucial role, executives emphasize that exceptional customer care, such as quick roadside assistance and attentive service staff, is vital for fostering customer loyalty and positive word-of-mouth during the shift to electric mobility.",
+            "supporting_urls": [
+                "https://theevreport.com/enhancing-ev-trust-through-aftersales-support"
+            ]
+        },
+        {
+            "id": "qa_1755719789",
+            "justification": "Employee benefits enrollment metrics do not relate to after-sales support",
+            "question": "What was our employee benefits enrollment rate in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee benefits enrollment rate reached 90% with 85% opting for premium plans.",
+            "supporting_file_paths": [
+                "shared/benefits-report-q3.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755638320",
+            "justification": "Facility maintenance budget does not influence customer care or trust.",
+            "question": "What was our facility maintenance budget in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The facility maintenance budget was $500,000 for this quarter.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_171920.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1756144545",
+            "justification": "Quick assistance strengthens customer trust and service satisfaction.",
+            "question": "What is roadside assistance wait time Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Average wait time is 25 minutes.",
+            "supporting_file_paths": [
+                "shared/Elexion_Roadside_Assistance_Performance_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1756144587",
+            "justification": "Recruitment costs don't relate to after-sales support or customer trust.",
+            "question": "What was our recruitment cost in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Recruitment cost totaled $90,000 with 10 new hires.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Quarterly_Recruitment_Costs.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755720659",
+            "justification": "Server metrics do not address the core DR Question on customer trust",
+            "question": "What was our server downtime frequency in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Server downtime averaged 2.5 hours with 95% resolved within 4 hours.",
+            "supporting_file_paths": [
+                "shared/it-performance-review.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755637757",
+            "justification": "Employee retention does not impact customer trust or after-sales support strategies.",
+            "question": "What is our employee retention rate in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Our employee retention rate stands at 90%, consistent with previous quarters.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_170957.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755721205",
+            "justification": "Software licensing costs are not directly related to after-sales support quality.",
+            "question": "What were our annual software licensing costs in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Software licensing costs totaled $1.2 million with 15% allocated to CRM tools.",
+            "supporting_file_paths": [
+                "shared/it-expense-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755629576",
+            "justification": "Understanding the average resolution time for software updates helps Elexion Automotive identify the most effective strategies for increasing customer trust through efficient and cost-effective service.",
+            "question": "What is the average resolution time for software updates in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Software updates are typically resolved within 2 hours, with 95% of requests resolved within 4 hours.",
+            "supporting_file_paths": [
+                "shared/Customer-Trust-Proactive-Support.docx"
+            ]
+        },
+        {
+            "id": "qa_1756144603",
+            "justification": "Training budgets are unrelated to after-sales support strategy.",
+            "question": "What was our training budget in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Training budget was $100,000 with a 5% increase.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Quarterly_Financial_Insights.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755637800",
+            "justification": "Compliance audit durations do not relate to enhancing customer trust in services.",
+            "question": "What is the average time for compliance audits in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Compliance audits averaged 45 days, with a maximum of 60 days.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_171033.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1756144619",
+            "justification": "Logistics costs don't impact after-sales support or customer trust.",
+            "question": "What were our logistics costs in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Logistics costs were $1.5 million, showing a 10% decrease.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Quarterly_Financial_Performance.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755719848",
+            "justification": "R&D costs are not directly related to customer trust or after-sales support",
+            "question": "What were our total research and development costs in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Research and development costs totaled $1.8 million, a 10% increase.",
+            "supporting_file_paths": [
+                "shared/RnD-Expense-Report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755629599",
+            "justification": "Analyzing the total cost of providing after-sales support helps Elexion Automotive identify areas for cost optimization and balance the need for exceptional customer care with efficient and cost-effective service.",
+            "question": "What is the total cost of providing after-sales support to our enterprise customers in the last quarter, broken down by region and service type?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The total cost of providing after-sales support to our enterprise customers in Q1 2025 was $375,000, with North America accounting for 60% of the total cost and software updates making up 30% of the total cost.",
+            "supporting_file_paths": [
+                "shared/Trust-Enhancing-Support-Strategies.docx"
+            ]
+        },
+        {
+            "id": "qa_1755720559",
+            "justification": "Marketing expenses do not directly relate to after-sales support trust",
+            "question": "What were our annual marketing costs in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Annual marketing costs totaled $850,000 with 35% allocated online.",
+            "supporting_file_paths": [
+                "shared/marketing-cost-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755631193",
+            "justification": "IT support costs don't relate to after-sales customer trust enhancement.",
+            "question": "What were IT support costs in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT support costs were $150,000 in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/IT-support-analysis.pptx"
+            ]
+        },
+        {
+            "id": "IN001",
+            "justification": "Quantifying service costs by region and type helps identify areas for cost optimization and resource allocation, ultimately supporting efficient customer care.",
+            "question": "What is the average cost of a single service request from our enterprise customers, broken down by region and service type?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The average cost of a single service request from our enterprise customers in North America is $150, while in Europe it is $120, with software updates averaging $80 per request.",
+            "supporting_file_paths": [
+                "shared/Customer-Experience-Support-Strategies.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755636201",
+            "justification": "This reflects customers' trust in our warranty offerings, influencing after-sales support strategies.",
+            "question": "What percentage of customers utilize our warranty services Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Approximately 60% of customers have utilized our warranty services this quarter.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_164353.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755719703",
+            "justification": "Helps understand customer trust in remote diagnostics, a key after-sales support service.",
+            "question": "What is the average customer satisfaction score for our remote diagnostics services in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The average customer satisfaction score is 88% with 90% resolution rate.",
+            "supporting_file_paths": [
+                "shared/after-sales-support-strategy.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755638190",
+            "justification": "Training costs are unrelated to customer trust or after-sales support.",
+            "question": "What were our training costs in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Training costs totaled $1.2 million, reflecting a 15% increase.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_171700.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755630926",
+            "justification": "Quick resolutions build trust, aligning with the DR Question focus on customer care.",
+            "question": "How many Q3 2025 roadside assistance requests resolved within 30 minutes?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "95% of roadside assistance requests resolved within 30 minutes in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/trust-through-support.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755631231",
+            "justification": "Recruitment costs are unrelated to after-sales support or customer care.",
+            "question": "What was the recruitment cost in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Recruitment costs totaled $85,000 in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/recruitment-cost-analysis.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755719913",
+            "justification": "Time-to-hire metrics for engineers do not address after-sales support or customer trust",
+            "question": "What was our average time-to-hire for new engineering positions in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Average time-to-hire for engineering positions was 45 days, with 80% hired within 60 days.",
+            "supporting_file_paths": [
+                "shared/engineering-talent-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755721147",
+            "justification": "Employee referral metrics do not impact after-sales support directly.",
+            "question": "What was our employee referral rate for new hires in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee referrals accounted for 25% of new hires with 40 referrals total.",
+            "supporting_file_paths": [
+                "shared/talent-acquisition-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755631057",
+            "justification": "Employee turnover is unrelated to after-sales support and customer trust.",
+            "question": "What is the employee turnover rate in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate was 15% in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/workforce-stability-analysis.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755631262",
+            "justification": "Compliance audits don't influence after-sales support or customer trust directly.",
+            "question": "What was the compliance audit frequency in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Compliance audits conducted quarterly, four times in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/compliance-review-q1.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755638376",
+            "justification": "Logistics costs are unrelated to customer trust and after-sales support.",
+            "question": "What are our logistics costs in Q2 of 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Logistics costs totaled $2 million, reflecting a 5% increase this quarter.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_172017.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755629835",
+            "justification": "Training budget metrics do not address the core DR Question focus area",
+            "question": "What is the average annual training budget for our customer service representatives?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average annual training budget is $12,000 per representative.",
+            "supporting_file_paths": [
+                "shared/Rep-Training-Budget-2023.docx"
+            ]
+        },
+        {
+            "id": "qa_1755629857",
+            "justification": "HR metrics do not address the core DR Question focus area",
+            "question": "What is the average employee tenure at our company as of Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The average employee tenure is 2.5 years.",
+            "supporting_file_paths": [
+                "shared/Elexion-Staff-Retention-Report-2024.docx"
+            ]
+        },
+        {
+            "id": "qa_1755636754",
+            "justification": "This score indicates customer trust levels, essential for enhancing after-sales support.",
+            "question": "What is our customer satisfaction score for after-sales support Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Our customer satisfaction score for after-sales support is 85% currently.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_165313.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755631115",
+            "justification": "IT infrastructure costs do not influence after-sales customer support strategies.",
+            "question": "What are the IT infrastructure costs in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT infrastructure costs totaled $200,000 in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/IT-Costs-Analysis.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755630837",
+            "justification": "High satisfaction rate indicates trust in after-sales support, aiding DR Question resolution.",
+            "question": "What is Q3 2025 customer satisfaction rate post-service?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Customer satisfaction post-service is 85% in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/customer-trust-strategy.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755636908",
+            "justification": "Understanding retention rates helps gauge trust built through after-sales support.",
+            "question": "What is the customer retention rate after warranty service Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The customer retention rate post-warranty service is 85% currently.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_165548.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755636796",
+            "justification": "Quick resolution of claims is crucial for building customer trust and loyalty.",
+            "question": "What percentage of warranty claims are resolved within one week Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Approximately 75% of warranty claims are resolved within one week currently.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_165402.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755719202",
+            "justification": "Understanding resolution time helps optimize after-sales support efficiency and customer satisfaction.",
+            "question": "What is the average resolution time for after-sales support requests in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The average resolution time is 4 hours, with 90% resolved within 8 hours.",
+            "supporting_file_paths": [
+                "shared/customer-trust-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1756144662",
+            "justification": "Facility maintenance is unrelated to after-sales support or customer trust.",
+            "question": "What is our facility maintenance budget in Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility maintenance budget is $600,000, with 10% for green initiatives.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Facility_Maintenance_Budget.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755638229",
+            "justification": "IT support metrics do not impact customer trust in after-sales services.",
+            "question": "What is our IT support response time in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Our IT support response time averaged 3 hours this quarter.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_171757.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755631136",
+            "justification": "Facility maintenance costs are irrelevant to after-sales support and customer care.",
+            "question": "What was the facility maintenance cost in Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility maintenance cost was $50,000 in Q4 2025.",
+            "supporting_file_paths": [
+                "shared/facility-cost-review.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755638425",
+            "justification": "Employee training metrics do not impact after-sales support strategies directly.",
+            "question": "What is our employee training completion rate in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee training completion rate reached 92%, consistent with previous quarters.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_172115.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755637407",
+            "justification": "IT costs are unrelated to customer trust or after-sales support initiatives.",
+            "question": "What were our IT infrastructure costs in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT infrastructure costs totaled $2.5 million, showing a 10% increase.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_170356.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755719413",
+            "justification": "Analyzing remote diagnostics usage helps identify opportunities to enhance proactive customer care.",
+            "question": "What percentage of customers have utilized our remote diagnostics services in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Approximately 40% of customers have utilized remote diagnostics, with a 25% increase.",
+            "supporting_file_paths": [
+                "shared/customer-experience-report.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755630958",
+            "justification": "Balancing costs with quality service supports the DR Question's cost-effectiveness goal.",
+            "question": "What is cost per service request in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Cost per service request is $140 in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/support-trust-initiatives.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755629888",
+            "justification": "Training budget metrics do not address the core DR Question focus area",
+            "question": "What was the total departmental training budget for our customer service representatives in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The total departmental training budget was $75,000.",
+            "supporting_file_paths": [
+                "shared/Training-Budget-Report-2025.docx"
+            ]
+        },
+        {
+            "id": "qa_1755721394",
+            "justification": "Data center metrics do not address after-sales support or customer trust.",
+            "question": "What was our average data center downtime in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Data center downtime averaged 1.5 hours with 95% resolved within 3 hours.",
+            "supporting_file_paths": [
+                "shared/data-center-review.pdf"
+            ]
+        },
+        {
+            "id": "qa_1755629844",
+            "justification": "Facility costs do not address the core DR Question focus area",
+            "question": "What is the total monthly electricity cost for our facilities in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The total monthly electricity cost is $10,000.",
+            "supporting_file_paths": [
+                "shared/electricity-cost-analysis-2025.docx"
+            ]
+        },
+        {
+            "id": "qa_1756144531",
+            "justification": "High resolution rate builds trust and enhances after-sales support efficiency.",
+            "question": "What is Q3 2025 warranty claim resolution rate?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "70% of warranty claims resolved within one week.",
+            "supporting_file_paths": [
+                "shared/Elexion_Warranty_Claim_Resolution_Stats.xlsx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

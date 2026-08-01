@@ -1,0 +1,270 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "EX0000",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "In 2024, healthcare cyberattacks remain at record levels, with 386 attacks reported in the year's first part, matching the pace of 2023, the worst year for breaches. These breaches have significantly impacted both data security and clinical operations.",
+            "supporting_urls": [
+                "https://www.aha.org/news/aha-cyber-intel/2024-10-07-look-2024s-health-care-cybersecurity-challenges"
+            ]
+        },
+        {
+            "id": "EX0001",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Ransomware attacks in healthcare pose \"threat-to-life\" risks by shutting down critical systems and delaying patient care. A February 2024 attack on Change Healthcare, a major third-party health IT provider, disrupted nationwide patient care and halted billions in payments, highlighting the severe impact a single cyber incident can have on healthcare delivery.",
+            "supporting_urls": [
+                "https://www.aha.org/news/aha-cyber-intel/2024-10-07-look-2024s-health-care-cybersecurity-challenges"
+            ]
+        },
+        {
+            "id": "EX0002",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Healthcare's third-party data breaches surged by 287% from 2022 to 2023, affecting a significant number of individuals. The evolving cybersecurity threats, marked by collaboration between nation-state hackers and ransomware groups, have led to calls for stronger coordinated defenses, including new HHS cybersecurity guidelines, to safeguard patient data and maintain service continuity.",
+            "supporting_urls": [
+                "https://www.aha.org/news/aha-cyber-intel/2024-10-07-look-2024s-health-care-cybersecurity-challenges"
+            ]
+        },
+        {
+            "id": "qa_1755625657",
+            "justification": "Hiring metrics are unrelated to cybersecurity threats and patient data protection.",
+            "question": "How many new employees were hired in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn hired 30 new employees in Q3 2025 to support growth.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_134803.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1756143302",
+            "justification": "Patient satisfaction rates are not linked to data breach impacts.",
+            "question": "What was patient satisfaction rate in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Patient satisfaction rate was 89% in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Patient_Satisfaction_Insights_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755632247",
+            "justification": "This answer provides a quantitative insight into the scope of the problem, which is necessary to understand the impact of third-party data breaches on MediConn's virtual healthcare platforms.",
+            "question": "What percentage of our virtual healthcare platforms have been compromised in the last 12 months?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "25% of our virtual healthcare platforms have been compromised in the last 12 months, resulting in 15 significant data breaches.",
+            "supporting_file_paths": [
+                "shared/Cybersecurity-Risks-in-Virtual-Healthcare.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755632445",
+            "justification": "Training session frequency is unrelated to cybersecurity breach issues.",
+            "question": "How many training sessions were conducted in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Conducted 15 training sessions in Q3 2024.",
+            "supporting_file_paths": [
+                "shared/q3-training-summary.pptx"
+            ]
+        },
+        {
+            "id": "qa_1756143029",
+            "justification": "Shows financial impact, aiding in understanding breach consequences for mitigation strategies.",
+            "question": "What were data breach costs in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Data breach costs totaled $3 million in Q4 2024.",
+            "supporting_file_paths": [
+                "shared/MediConn_Data_Breach_Financial_Impact_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1756143067",
+            "justification": "Highlights third-party vulnerability, informing regulatory changes to protect patient data.",
+            "question": "How many breaches involved third parties in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Eight breaches involved third parties in Q2 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Third_Party_Breach_Analysis_Q2_Review.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1756143239",
+            "justification": "Facility costs do not relate to data breaches or cybersecurity regulations.",
+            "question": "What was facility cost in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility costs totaled $350,000 in Q3 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Quarterly_Facility_Costs_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755632546",
+            "justification": "Training budget allocations do not address data breach impacts or regulations.",
+            "question": "What was the training budget for Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Training budget was $200,000 in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/q2-training-budget.pptx"
+            ]
+        },
+        {
+            "id": "DI001",
+            "justification": "IT upgrades do not pertain to third-party data breaches or regulations.",
+            "question": "How many IT infrastructure upgrades were completed by Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A total of 12 IT infrastructure upgrades were completed by Q3 2025.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_105136.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755625808",
+            "justification": "Facility costs do not impact the cybersecurity focus of the DR Question.",
+            "question": "What were the facility costs in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Facility costs for Q2 2024 totaled $300,000, up from $250,000.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_135057.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755632483",
+            "justification": "Infrastructure costs don't directly address third-party data breach impacts.",
+            "question": "What was the IT infrastructure cost in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT infrastructure cost was $2.5 million in Q1 2024.",
+            "supporting_file_paths": [
+                "shared/IT-Cost-Analysis.pptx"
+            ]
+        },
+        {
+            "id": "qa_1756143286",
+            "justification": "IT training budget doesn't relate to third-party data breach impacts.",
+            "question": "What was the IT training budget in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The IT training budget was $300,000 in Q3 2024.",
+            "supporting_file_paths": [
+                "shared/MediConn_IT_Training_Budget_Analysis_2023.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1756143047",
+            "justification": "Helps assess vendor risk, guiding regulation implementation to improve security.",
+            "question": "What was third-party compliance rate in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Third-party compliance rate was 55% in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Third_Party_Compliance_Insights.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1756143202",
+            "justification": "Turnover rates are unrelated to platform security or data breach regulations.",
+            "question": "What was employee turnover rate in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate was 10% in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_Employee_Turnover_Analysis_Report.xlsx"
+            ]
+        },
+        {
+            "id": "IN003",
+            "justification": "Vendor compliance is crucial for improving overall data security and patient safety.",
+            "question": "What percentage of third-party vendors complied by Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Only 45% of third-party vendors achieved compliance by Q3 2025.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_104852.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755632377",
+            "justification": "Employee turnover does not impact third-party data breach concerns.",
+            "question": "What is the employee turnover rate in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover rate was 12% in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/q2-workforce-analysis.pptx"
+            ]
+        },
+        {
+            "id": "IN002",
+            "justification": "This quantifies the financial impact of breaches relevant to patient data.",
+            "question": "What was the financial impact of breaches in Q1 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Data breaches in Q1 2024 cost MediConn approximately $2 million.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_104741.jsonl"
+            ]
+        },
+        {
+            "id": "DI002",
+            "justification": "Patient satisfaction metrics do not relate to cybersecurity or regulatory issues.",
+            "question": "What was the patient satisfaction rate in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Patient satisfaction rate stood at 87%, improving from 82% last year.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20250819_105235.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1756143175",
+            "justification": "HR training metrics do not address data breach impact or regulations.",
+            "question": "How many HR training sessions in Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Conducted 10 HR training sessions in Q2 2025.",
+            "supporting_file_paths": [
+                "shared/MediConn_HR_Training_Impact_Metrics_Report.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755632294",
+            "justification": "This answer provides a quantitative insight into the financial impact of third-party data breaches on MediConn, which is necessary to inform new regulations and defense strategies.",
+            "question": "What is the average cost of a data breach to MediConn in the last 2 years?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The average cost of a data breach to MediConn in the last 2 years is $450,000, with 80% of those breaches occurring on third-party servers.",
+            "supporting_file_paths": [
+                "shared/Virtual-Healthcare-Security-Outlook.pptx"
+            ]
+        },
+        {
+            "id": "qa_1756143187",
+            "justification": "IT costs do not directly relate to third-party data breach impacts.",
+            "question": "What were IT infrastructure costs in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT infrastructure costs were $1.8 million in Q3 2024.",
+            "supporting_file_paths": [
+                "shared/MediConn_Infra_Costs_Analysis_Report.xlsx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

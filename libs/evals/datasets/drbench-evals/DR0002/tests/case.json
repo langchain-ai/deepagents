@@ -1,0 +1,48 @@
+{
+  "task_id": "DR0002",
+  "question": "How can personalization drive sales in the retail industry and what strategies can be used for Lee's Market in action?",
+  "insights": [
+    {
+      "id": "EX0000",
+      "question": "",
+      "answer": "Retailers excelling in personalized marketing are growing revenues about 10 percentage points faster than their peers, according to BCG. By effectively using first-party customer data, these leaders could unlock an estimated $570 billion in additional sales, highlighting the importance of data-driven sales strategies for growth.",
+      "type": "external_fact"
+    },
+    {
+      "id": "EX0001",
+      "question": "",
+      "answer": "Personalized promotions can deliver returns three times higher than mass promotions, yet many retailers allocate under 5% of their promo budgets to personalization. One major chain increased its personalized promo spend from 1% to 10% by establishing a \"customer investment council,\" resulting in $250 million in incremental sales.",
+      "type": "external_fact"
+    },
+    {
+      "id": "EX0002",
+      "question": "",
+      "answer": "Retail media networks are expanding rapidly, with retail media growing at approximately 25% annually, offering retailers a profitable revenue stream to reinvest in technology, data, and personnel. By integrating loyalty data, retailers like Sephora, which links 95% of transactions to loyalty accounts, enhance precision in product recommendations and provide a seamless omnichannel experience, boosting conversion rates and customer lifetime value.",
+      "type": "external_fact"
+    },
+    {
+      "id": "IN001_docx",
+      "question": "What percentage of our online customers have engaged with personalized product recommendations in the past year?",
+      "answer": "45% of our online customers have interacted with personalized product recommendations, resulting in a 25% increase in average order value.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN002_xlsx",
+      "question": "How many loyalty program members does Lee's Market have as of Q3 2024?",
+      "answer": "As of Q3 2024, Lee's Market has 1.2 million loyalty program members.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN001",
+      "question": "What is Lee's Market customer data collection rate as of Q2 2024?",
+      "answer": "85% of Lee's Market transactions are linked to customer loyalty accounts as of Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN001_xlsx",
+      "question": "What was Lee's Market online sales growth Q2 2024 versus Q2 2023?",
+      "answer": "Lee's Market online sales grew 12% in Q2 2024 compared to Q2 2023.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

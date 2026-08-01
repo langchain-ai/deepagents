@@ -1,0 +1,232 @@
+{
+  "industry": "automobiles",
+  "domain": "csm",
+  "difficulty": "hard",
+  "files": [
+    {
+      "filetype": "pdf",
+      "type": "supporting",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "supporting",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "supporting",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "supporting",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "xlsx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "pptx",
+      "type": "supporting",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pptx",
+      "type": "supporting",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pptx",
+      "type": "supporting",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pptx",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pptx",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pptx",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pptx",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pptx",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pptx",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "docx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "supporting",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "docx",
+      "type": "distractor",
+      "app": "file_system"
+    },
+    {
+      "filetype": "email",
+      "type": "supporting",
+      "app": "roundcube"
+    },
+    {
+      "filetype": "email",
+      "type": "supporting",
+      "app": "roundcube"
+    },
+    {
+      "filetype": "email",
+      "type": "distractor",
+      "app": "roundcube"
+    },
+    {
+      "filetype": "email",
+      "type": "distractor",
+      "app": "roundcube"
+    },
+    {
+      "filetype": "email",
+      "type": "distractor",
+      "app": "roundcube"
+    },
+    {
+      "filetype": "email",
+      "type": "distractor",
+      "app": "roundcube"
+    },
+    {
+      "filetype": "chat",
+      "type": "supporting",
+      "app": "mattermost"
+    },
+    {
+      "filetype": "chat",
+      "type": "supporting",
+      "app": "mattermost"
+    },
+    {
+      "filetype": "chat",
+      "type": "distractor",
+      "app": "mattermost"
+    },
+    {
+      "filetype": "chat",
+      "type": "distractor",
+      "app": "mattermost"
+    },
+    {
+      "filetype": "chat",
+      "type": "distractor",
+      "app": "mattermost"
+    },
+    {
+      "filetype": "chat",
+      "type": "distractor",
+      "app": "mattermost"
+    }
+  ]
+}

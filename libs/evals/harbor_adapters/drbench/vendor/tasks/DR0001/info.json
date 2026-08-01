@@ -1,0 +1,57 @@
+{
+  "industry": "retail",
+  "domain": "compliance",
+  "difficulty": "easy",
+  "files": [
+    {
+      "filetype": "pdf",
+      "type": "supporting",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "supporting",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "pdf",
+      "type": "distractor",
+      "app": "nextcloud"
+    },
+    {
+      "filetype": "email",
+      "type": "supporting",
+      "app": "roundcube"
+    },
+    {
+      "filetype": "email",
+      "type": "distractor",
+      "app": "roundcube"
+    },
+    {
+      "filetype": "email",
+      "type": "distractor",
+      "app": "roundcube"
+    }
+  ]
+}

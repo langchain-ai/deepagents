@@ -1,0 +1,237 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "This data is not relevant because it focuses on checkout technology deployment, which improves transaction efficiency, but doesn't reveal product-level sales shifts from tariff-driven spending slowdown. Lee's Market cannot use this data to gauge which product categories are experiencing tariff-related sales declines or require promotion planning. This data is related to transaction infrastructure and does not affect product-level sales performance analysis under economic pressure.",
+            "question": "What percentage of transactions were processed by self-checkout kiosks across Lee's Market's stores in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Approximately 48% of transactions were processed by self-checkout kiosks across Lee's Market's stores in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/self-checkout-performance-Q1-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "This data is not relevant because it focuses on refrigeration efficiency, which maintains product quality but doesn't reveal product-level sales shifts from tariff-driven spending slowdown. Lee's Market cannot use this data to measure the impact of tariffs on product sales or adjust promotion strategies. This data is related to facilities infrastructure and does not affect product-level sales performance analysis under economic pressure.",
+            "question": "What was the reduction in energy consumption (in %) after Lee's Market upgraded refrigeration systems in 20 stores in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market reduced energy consumption by 28% after upgrading refrigeration systems across 20 stores in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/energy-efficiency-overview.pptx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "This data is not relevant because it focuses on lighting improvements, which affect ambiance and costs, but don't directly affect product-level sales changes from tariffs. Lee's Market cannot use this data to gauge the tariff impact on product sales or adjust promotion strategies. This data is related to facilities upgrade, and does not affect product-level performance sales analysis under economic pressure.",
+            "question": "What was the reduction in Lee's Market's energy costs (in %) after replacing lighting systems with LED technology, across 22 stores in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market's energy costs reduced by approximately 34% after it replaced lighting systems in 22 stores in 2025 with LED technology.",
+            "supporting_file_paths": [
+                "shared/energy-efficiency-report-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "This data is not relevant because management retention supports operational stability, but does not measure product-level sales shifts from tariff impact. Lee's Market cannot use this data to gauge which product categories are experiencing a consumer spending slowdown or require adjusting promotion planning. This data is related to human resources (HR) performance, without any significant impact on product-level sales performance.",
+            "question": "What was the store manager retention rate of Lee's Market as compared to the industry average of 72% in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market achieved a 91% store manager retention rate in 2025, thus greater than the industry average of 72%, through competitive compensation and career development.",
+            "supporting_file_paths": [
+                "shared/lees-market-retention-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "This data is not relevant because it focuses on back-office staffing, which supports infrastructure but does not reveal product-level sales shifts from tariff-driven spending slowdown. Lee's Market cannot use this data to gauge which products are seeing reduced demand due to tariffs or to inform short-term sales projections. This data is related to administrative staffing and doesn't affect the tariff's impact on sales projections and promotion planning.",
+            "question": "How many new employees did Lee's Market hire across finance, HR, and IT departments to support business growth and digital transformation initiatives in December 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market hired 35 new corporate staff in December 2024 across finance, HR, and IT departments to support business growth and digital transformation initiatives.",
+            "supporting_file_paths": [
+                "shared/workforce-expansion-december.pptx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "This data is not relevant because checkout technology improves transaction speed, but does not directly capture the impact of tariffs on the product-level sales performance in the Canadian retail sector. Lee's Market cannot use this data to gauge which product categories are experiencing tariff-related sales declines or adjust promotion planning. This data is related to transaction infrastructure without any impact on product sales performance under economic pressure.",
+            "question": "What investment was made by Lee's Market to complete a system upgrade across 35 stores in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market invested $6.5 million for a POS system upgrade across all 35 stores in 2025.",
+            "supporting_file_paths": [
+                "shared/system-upgrade-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "This data is not relevant because it focuses on IT infrastructure reliability, which supports operations, but doesn't directly affect product sales or promotion planning. Lee's Market cannot use this data to gauge which products are experiencing a demand slowdown. This data is related to backend technology, not tariff-impacted sales analysis.",
+            "question": "What was the reduction in IT operational costs after Lee's Market completed a $3.5 million cloud infrastructure migration in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market reduced IT operational costs by 24% after completing a $3.5 million cloud infrastructure migration in 2025.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251121_120457.jsonl"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "This data is not relevant because it focuses on parking availability, which addresses access, but does not reveal consumer behavior shifts that affect sales. Lee's Market cannot use this data to gauge which products are experiencing a slowdown or require promotion planning. This data is related to site infrastructure and does not affect sales projections or promotion planning.",
+            "question": "How many parking spaces did Lee's Market add to increase the parking capacity of 5 high-traffic locations in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market added 450 additional parking spaces to expand parking capacity at 5 high-traffic locations in 2024, reducing congestion and improving customer convenience.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251121_120600.jsonl"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "This data is not relevant because it focuses on charitable giving, which builds goodwill, but doesn't reveal tariff-related consumer spending patterns that affect sales. Lee's Market cannot use this data to gauge product-level tariff impacts or adjust its sales projections and promotion planning for the next 2 years. This data is related to corporate social responsibility (CSR) activity, not product sales performance measurement.",
+            "question": "What was the worth of food donated by Lee's Market to local food banks in 2025 to prevent food wastage?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market donated $720,000 worth of food to local food banks in 2025, diverting tonnes from waste while supporting communities.",
+            "supporting_file_paths": [
+                "shared/lees-market-donation-impact.docx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "This data is not relevant because social media metrics show digital reach but do not measure product-level consumer spending changes from tariffs. Lee's Market cannot use this data to gauge product-level tariff impacts or to inform sales projections.  This data is related to digital marketing performance, and not product sales performance measurement.",
+            "question": "How many social media followers did Lee's Market have across different social media platforms by June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market's social media following reached 450,000 followers in June 2025 across different platforms.",
+            "supporting_file_paths": [
+                "shared/lees-market-social-media.pdf"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "This data is not relevant because it focuses on environmental initiatives that demonstrate sustainability, but don't affect sales strategies to handle consumer behavior shifts due to tariffs. Lee's Market cannot use this data to gauge the impact of tariffs or to readjust its sales projections and promotion planning for the next 2 years. This data is related to environmental performance, with no effect on sales.",
+            "question": "How many single-use plastic bags were eliminated by Lee's Market in 2025 by adopting reusable bags?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market eliminated 4.2 million single-use plastic bags in 2025 by adopting reusable bags and receiving environmental recognition.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251121_120721.jsonl"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "This data is not relevant because it focuses on environmental performance, which addresses sustainability, but doesn't measure the impact of tariffs on sales projections and promotion planning. Lee's Market cannot use this data to gauge which products are experiencing a slowdown or to plan promotions. This data is an environmental metric and does not affect the product sales impact analysis.",
+            "question": "What reduction in carbon footprint (in %) was achieved by Lee's Market in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market reduced its carbon footprint by 26% in 2024 by increasing its focus on renewable energy, efficient logistics, and refrigeration upgrades.",
+            "supporting_file_paths": [
+                "shared/2024-carbon-footprint-report.docx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "This data is not relevant because it focuses on home delivery service coverage, which highlights market reach but doesn't reveal product-level consumer spending patterns under tariffs. Lee's Market cannot use this data to gauge which products are experiencing a slowdown or to readjust its short-term sales projections and promotional planning. This data is related to service footprint, and not product performance analysis.",
+            "question": "What percentage of Lee's Market's stores offered same-day home delivery options in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Approximately 90% of Lee's Market's stores offered same-day home delivery options in June 2025.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Richmond_Service_Coverage_Analysis.xlsx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "This data is not relevant because real estate cost savings improve margins but don't address the adjustments that need to be made in short-term sales projections. Lee's Market cannot use this data to gauge product-level tariff impacts or adjust its sales projections and promotion planning for the next 2 years. This data is related to occupancy cost management and does not affect product sales impact analysis.",
+            "question": "What was the average rent reduction secured by Lee's Market after renegotiating leases for 12 locations in March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market secured an average 7% rent reduction after renegotiating leases for 12 locations in March 2025.",
+            "supporting_file_paths": [
+                "shared/lease-renegotiation-impact.pptx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "This data is not relevant because it focuses on brand recognition, which measures market presence, but doesn't show product-level sales performance under tariff pressure. Lee's Market cannot use this data to gauge which product categories are experiencing tariff-driven sales declines or to readjust short-term sales projections and promotion planning. This data is a brand equity metric that does not affect product sales impact analysis.",
+            "question": "What was the increase (in %) in Lee's Market's aided brand awareness among Asian-Canadian households from 2024 to 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market increased its aided brand awareness among Asian-Canadian households from 61% in 2024 to 68% in 2025, thus noting a 7% increase.",
+            "supporting_file_paths": [
+                "shared/lees-market-brand-analysis.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "This data is relevant as it highlights the decline in Lee's Market's sales due to tariffs. It quantifies the effect of tariffs on Lee's Market, thus justifying the need to readjust short-term sales projections and promotion planning. Lee's Market can use this data to identify product categories contributing most to the decline (tariff-affected imports)and focus on creating sales recovery strategies and promotional planning for these.",
+            "question": "Just after the imposition of tariffs in Q1 2025, what drop in sales (Year on Year decline) was recorded by Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Just after the imposition of tariffs in Q1 2025, Lee's Market recorded a 5.7% YoY decline in sales.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251121_120008.jsonl"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "This data is relevant because it highlights Lee's Market's dependence on imported goods from tariff-affected regions, quantifying its direct product-level vulnerability to tariffs. It provides a baseline for assessing price sensitivity and sales impacts. Lee's Market can use this data for segmenting SKUs by tariff exposure and purchasing low-exposure domestic goods for developing markdowns or substitute pushes",
+            "question": "As of Q3 2025, what percentage of Lee's Market's total stock-keeping units (SKUs) by value were imported from the U.S. or tariff-affected regions?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of Q3 2025, approximately 43% of Lee's Market's total stock-keeping units (SKUs) by value were imported from the U.S. or tariff-affected regions.",
+            "supporting_file_paths": [
+                "shared/tariff-impact-sales-forecast.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "This data is relevant as it highlights customer response, shifting from tariff-impacted items to domestic products, thus measuring consumer behavior elasticity under price pressure. It quantifies consumer adaptation patterns and identifies substitute product lines for promoting offset losses. Lee's Market can use this data to adjust cross-merchandising plans and guide pricing strategies for identifying replacement SKUs that are gaining traction, highlighting them in in-store promotions.",
+            "question": "Since the imposition of tariffs in Q1 2025, what percentage of Lee's Market's customers have shifted their purchases from tariff-impacted items (like U.S. imports) to domestic or alternative products?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Since the imposition of tariffs in Q1 2025, approximately 11% of Lee's Market's customers have shifted their supermarket purchases from tariff-impacted items (like U.S. imports) to domestic or alternative products within 90 days.",
+            "supporting_file_paths": [
+                "shared/tariff-impact-analysis.docx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "This data is relevant because it highlights the elasticity (quantitative sensitivity measure) between sales volume change and price change, thus allowing precise modeling of promotion depth against expected lift or loss. Lee's Market can use this data to run category-level regression analysis, set discount thresholds for maintaining margins, and optimize promotional frequency by focusing on SKUs with mid-range elasticity.",
+            "question": "For Lee's Market's top 50 tariff-affected stock keeping units (SKUs), what is the expected elasticity coefficient between sales volume change (in %) and price change (in %) from Q4 2025 - Q4 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "For Lee's Market's top 50 tariff-affected stock keeping units (SKUs), the expected elasticity coefficient between sales volume change (in %) and price change (in %) from Q4 2025 - Q4 2026 is approximately -1.25.",
+            "supporting_file_paths": [
+                "shared/tariff-impact-analysis.pdf"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "This data is relevant because it focuses on average quarterly deviation from projected sales growth, thus quantifying the magnitude of slowdown impacting planning accuracy. It reveals short-term volatility and category-level sensitivity. Lee's Market can use this data to adjust quarterly sales targets by category and region, and to feed into forecast refinement models for improving demand planning accuracy through 2027.",
+            "question": "What average quarterly deviation (in %) from projected sales growth (set before tariffs) is expected by Lee's Market across major categories of products sold from 2025 to 2027?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The average quarterly deviation (in %) from projected sales growth (set before tariffs) across major categories of products sold by Lee's Market between 2025-2027 is expected to be approximately -2.5%.",
+            "supporting_file_paths": [
+                "shared/us-tariffs-sales-impact.pdf"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "This data is relevant because it highlights the sales uplift target by Lee's Market, quantifying the targeted outcomes of promotional campaigns on tariff-affected product categories. It also indicates how effective promotions need to be to offset the negative impact of tariffs on consumer spending. Lee's Market can use this data to evaluate return on investment (ROI) on promotions, allocate promotional budgets towards SKUs with the highest responsiveness.",
+            "question": "What sales uplift (in %) from promotional campaigns (like discounts, loyalty bonuses) on tariff-affected product categories is targeted by Lee's Market between Q3 2025 and Q4 2027?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market is targeting a 6.5% sales uplift from promotional campaigns on tariff-affected product categories between Q3 2025 and Q4 2027.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Richmond_Sales_Uplift_Targets_Data.xlsx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

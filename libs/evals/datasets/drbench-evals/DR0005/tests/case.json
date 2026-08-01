@@ -1,0 +1,120 @@
+{
+  "task_id": "DR0005",
+  "question": "How can Lee's Market leverage chatbots to enhance the consumer experience for centennial shoppers?",
+  "insights": [
+    {
+      "id": "EX0000",
+      "question": "",
+      "answer": "Retailers are increasingly using AI chatbots to cater to Gen Z and Millennial demands for instant, 24/7 service. While 86% of consumers preferred human agents in 2019, by 2023, 62% of shoppers favored chatbots for quick inquiries due to their ability to provide instant responses and save time.",
+      "type": "external_fact"
+    },
+    {
+      "id": "EX0001",
+      "question": "",
+      "answer": "Chatbots can reduce customer service costs by about 30%, helping businesses save from the $1.3 trillion spent annually on customer queries. Additionally, 69% of shoppers appreciate chatbots for their quick responses, enhancing customer satisfaction and reducing frustration.",
+      "type": "external_fact"
+    },
+    {
+      "id": "EX0002",
+      "question": "",
+      "answer": "Grocery retailers see conversational AI as crucial for future customer service, with 82% believing its adoption is necessary and 78% highlighting customer experience improvement as a top use-case for technologies like ChatGPT. By utilizing chatbots for personalized recommendations, instant issue resolution, and omnichannel engagement, retailers aim to reduce churn and enhance customer loyalty through proactive, always-available support.",
+      "type": "external_fact"
+    },
+    {
+      "id": "IN009_roundcube",
+      "question": "What percentage of Lee's Market customers have used online shopping services in Q3 2023?",
+      "answer": "45% of Lee's Market customers have used online shopping services, with a 10% increase from Q3 2022.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN010_roundcube",
+      "question": "What is the average resolution rate of Lee's Market customer inquiries via chat in Q2 2024?",
+      "answer": "85% of customer inquiries were resolved via chat within 30 minutes.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN005_xlsx",
+      "question": "What was Lee's Market customer service call volume in Q2 2024?",
+      "answer": "Customer service call volume averaged 5,000 calls per month in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN002_pdf",
+      "question": "Projected chatbot cost savings in Q2 2024?",
+      "answer": "Expect 25% cost reduction by Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN003_pdf",
+      "question": "Centennial satisfaction increase from chatbots by Q2 2024?",
+      "answer": "Satisfaction rises by 15% by Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN001_pdf",
+      "question": "Chatbot adoption rate among centennials by Q2 2024?",
+      "answer": "40% centennials prefer chatbots by Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN001",
+      "question": "How many customer queries does Lee's Market receive monthly in 2024?",
+      "answer": "Lee's Market receives an average of 50,000 customer queries per month in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN004_pdf",
+      "question": "Centennial chatbot engagement rate by Q3 2025?",
+      "answer": "50% centennials engage weekly by Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN001_pptx",
+      "question": "Centennial satisfaction improvement by Q3 2025?",
+      "answer": "Satisfaction improved by 30% with chatbot use by Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN004_docx",
+      "question": "How many customer service inquiries do we receive from centennial shoppers on average per quarter?",
+      "answer": "2,500 customer service inquiries from centennial shoppers are received on average per quarter.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN002_pptx",
+      "question": "Chatbot adoption rate Q1 2025?",
+      "answer": "55% adoption rate by centennials by Q1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN005_docx",
+      "question": "What is the average time-to-resolve for customer service issues reported by centennial shoppers in Q2 2025?",
+      "answer": "Average time-to-resolve for customer service issues reported by centennial shoppers in Q2 2025 was 2 hours and 15 minutes.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN006_xlsx",
+      "question": "How many Lee's Market customers used online shopping services in Q1 2024?",
+      "answer": "About 30% of customers used online shopping services, totaling 150,000 users in Q1 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN002",
+      "question": "What percentage of Lee's Market customers are centennial shoppers in Q3 2024?",
+      "answer": "25% of Lee's Market customers are centennial shoppers as of Q3 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN003_docx",
+      "question": "What percentage of our centennial shoppers have interacted with our customer service team in the past 6 months?",
+      "answer": "45% of our centennial shoppers have contacted our customer service team in the past 6 months.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN007_xlsx",
+      "question": "What was Lee's Market customer satisfaction rating for phone support in Q3 2023?",
+      "answer": "Customer satisfaction rating for phone support averaged 80% with a 5% drop in Q3 2023.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

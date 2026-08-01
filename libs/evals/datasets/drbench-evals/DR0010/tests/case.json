@@ -1,0 +1,120 @@
+{
+  "task_id": "DR0010",
+  "question": "What are the most critical elements of a robust digital presence for a telehealth provider such as MediConn Solutions, and how can we optimize our website and content marketing strategy to attract digital-first patients?",
+  "insights": [
+    {
+      "id": "EX0000",
+      "question": "",
+      "answer": "Digital-first patients prioritize convenience and speed, making it essential for telehealth marketing to emphasize flexibility, such as easy, same-day virtual appointments accessible from anywhere, to cater to their busy lifestyles or mobility needs.",
+      "type": "external_fact"
+    },
+    {
+      "id": "EX0001",
+      "question": "",
+      "answer": "To overcome trust barriers in online healthcare, providers like Teladoc and Amwell must emphasize secure, user-friendly platforms and highlight data privacy and compliance with regulations such as HIPAA. High-profile cyberattacks have increased consumer wariness, making proactive communication about security measures crucial for building trust in telehealth services.",
+      "type": "external_fact"
+    },
+    {
+      "id": "EX0002",
+      "question": "",
+      "answer": "Telehealth providers need a robust digital presence, including a modern, mobile-optimized website with clear calls-to-action like \"Book an Appointment.\" Effective content marketing and SEO are also crucial to ensure the service appears in search results and is perceived as a trustworthy and convenient care option.",
+      "type": "external_fact"
+    },
+    {
+      "id": "qa_1755633393",
+      "question": "What percentage of our online consultations are booked through our mobile app?",
+      "answer": "40% of our online consultations were booked through our mobile app in Q2 of 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755710971",
+      "question": "What is our search engine optimization (SEO) budget allocation for Q4 2025?",
+      "answer": "Our SEO budget allocation is $120,000 for Q4 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755711234",
+      "question": "What is our social media engagement rate for telehealth-related content in Q1 2025?",
+      "answer": "Our social media engagement rate for telehealth-related content is 8% in Q1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN001",
+      "question": "Which of our content marketing channels (blog, social media, email) generates the most leads in Q1 of 2025?",
+      "answer": "Our blog content generates 40% of our leads, with an average conversion rate of 5%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755711331",
+      "question": "How many unique visitors did our blog attract in Q2 2025?",
+      "answer": "Our blog attracted 15,000 unique visitors in Q2 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755619624",
+      "question": "How many new patients registered via social media Q1 2025?",
+      "answer": "We gained 250 new patients from social media channels in Q1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633374",
+      "question": "What percentage of our website traffic is from organic search engine optimization?",
+      "answer": "30% of our website traffic comes from organic search engine optimization in Q3 of 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755619847",
+      "question": "What is our website's conversion rate for appointment bookings in Q2 2024?",
+      "answer": "Our website's conversion rate for appointment bookings is currently 4.2%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143709",
+      "question": "What is our average employee satisfaction score among our customer-facing staff in Q2 2025?",
+      "answer": "85% of our customer-facing staff reported high job satisfaction in Q2 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755706352",
+      "question": "What is our average search engine ranking position (SERP) for telehealth-related keywords in Q3 2025?",
+      "answer": "Our average SERP for telehealth-related keywords is 4.8 in Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755619892",
+      "question": "What percentage of patients prefer mobile access in Q3 2024?",
+      "answer": "80% of patients prefer mobile access for virtual healthcare services.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143681",
+      "question": "What percentage of our online consultations are booked through our mobile app in Q3 2025?",
+      "answer": "35% of our online consultations were booked through our mobile app in Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633748",
+      "question": "What is our mobile traffic percentage Q2 2025?",
+      "answer": "Mobile traffic was 60% in Q2 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633587",
+      "question": "What is our website's bounce rate Q3 2025?",
+      "answer": "Bounce rate was 45% in Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143723",
+      "question": "What percentage of our website traffic is from organic search engine optimization in Q1 2025?",
+      "answer": "22% of our website traffic comes from organic search engine optimization in Q1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633384",
+      "question": "What is the average time-to-lead for our content marketing efforts, broken down by channel (blog, social media, email)?",
+      "answer": "Our email marketing efforts have an average time-to-lead of 2 hours, while social media takes 6 hours, and blog content takes 12 hours, as of Q1 of 2025.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

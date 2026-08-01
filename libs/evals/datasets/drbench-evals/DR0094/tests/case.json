@@ -1,0 +1,48 @@
+{
+  "task_id": "DR0094",
+  "question": "What steps can MediConn Solutions take in FY2026 to optimize cybersecurity and data protection amid the healthcare industry’s growing focus on digital engagement and operational efficiency?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What percentage of MediConn's platform traffic in 2025 originated from mobile versus desktop users?",
+      "answer": "73% of total platform interactions in 2025 came from mobile devices, while 27% came from desktop systems.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "How many security incidents were reported on MediConn's platform in 2025?",
+      "answer": "MediConn recorded 12 minor security incidents in 2025, including attempted phishing and unauthorized login attempts, with no major breaches reported.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "What was MediConn's IT and cybersecurity budget allocation in FY2025?",
+      "answer": "$4.5M CAD of the FY2025 IT budget was allocated to cybersecurity initiatives, representing 22% of total IT expenditure.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "What percentage of MediConn's patient data storage was encrypted end-to-end in 2025?",
+      "answer": "94% of all stored patient data was encrypted end-to-end by Q4 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "How many system vulnerabilities did MediConn identify during its internal FY2025 security audit?",
+      "answer": "The audit discovered 7 critical vulnerabilities and 18 medium-level vulnerabilities across the platform.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0006",
+      "question": "What percentage of MediConn's employees completed mandatory cybersecurity training in 2025?",
+      "answer": "88% of employees completed the annual cybersecurity awareness and compliance training.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0007",
+      "question": "What is the projected growth of digital engagement metrics for MediConn in FY2026?",
+      "answer": "Digital engagement is projected to increase by 42% in FY2026, including virtual consultations, chat interactions, and mobile app usage.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

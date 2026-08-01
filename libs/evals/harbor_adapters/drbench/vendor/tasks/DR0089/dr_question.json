@@ -1,0 +1,15 @@
+{
+    "dr_question": "Given that one in seven new vehicles sold in Canada in 2024 were zero-emission, how can Elexion Automotive\u2019s QA team enhance cold-weather testing protocols by Q4 2026 to improve EV battery endurance and reliability in the country\u2019s key ZEV markets?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Quality Assurance",
+        "dr_question": "Given that one in seven new vehicles sold in Canada in 2024 were zero-emission, how can Elexion Automotive\u2019s QA team enhance cold-weather testing protocols by Q4 2026 to improve EV battery endurance and reliability in the country\u2019s key ZEV markets?",
+        "industry": "Automotive \u2013 Electric Vehicles",
+        "url": "https://www.statcan.gc.ca/o1/en/plus/7915-2024-one-seven-new-vehicles-sold-canada-were-zero-emission"
+    },
+    "timestamp": "2025-10-24 00:00",
+    "task_id": "DR0089",
+    "industry": "automotive \u2013 electric vehicles",
+    "domain": "Quality Assurance",
+    "url": "https://www.statcan.gc.ca/o1/en/plus/7915-2024-one-seven-new-vehicles-sold-canada-were-zero-emission"
+}

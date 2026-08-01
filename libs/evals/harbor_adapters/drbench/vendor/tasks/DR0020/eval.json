@@ -1,0 +1,149 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What percentage of sales does Lee's Market plan to reach in 2026 for the fruits and vegetables department?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market expects to have about 20% - 25% of revenue coming from the fruits and vegetables department.",
+            "supporting_file_paths": [
+                "shared/projected-sales-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "How does the sales department at Lee's Market plan to integrate the new AI forecasting tools into their work?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of November 2025, the new AI forecasting tools will be available to the sales team lead and select sales managers at Lee's Market. The AI will help them quickly get the necessary data and draft charts and short summaries based on product categories and sales parameters.",
+            "supporting_file_paths": [
+                "shared/ai-sales-integration.pptx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How many new statisticians and data analysts does the sales department plan to add to the team in 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The sales team needs three statisticians and two data analysts to help them forecast sales by product category in 2026.",
+            "supporting_file_paths": [
+                "shared/sales-expansion-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "Which packaging design for the newly introduced pretzels generated more sales in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The red packaging with yellow brand letters sold more successfully in 2025, compared to the blue/yellow packaging.",
+            "supporting_file_paths": [
+                "shared/pretzel-packaging-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How has the addition of 9 new customer service call agents impacted the sales of the overall company in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Through internal research the sales team was able to attribute a 1.6% increase in 2025 sales to the addition of 9 new call agents after controlling for other parameters.",
+            "supporting_file_paths": [
+                "shared/expanded-customer-service-impact.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What percentage of newly introduced New Year decorations have received a 5% return rate in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market have seen 12% of their newly introduced New Year decoration items receive a 5% return rate across all stores in 2025.",
+            "supporting_file_paths": [
+                "shared/new-year-decorations-return.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "How has opening a new supermarket in Vaughan, Ontario helped increase sales in other stores in Toronto?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Before opening the new store in Vaughan in 2025, most customers used the delivery option for their shopping needs. The opening of the Vaughan supermarket has freed up the delivery personnel to fulfill more orders in the main Toronto area faster and more efficiently, which has increased the sales there by about 1.2%.",
+            "supporting_file_paths": [
+                "shared/vaughan-store-impact.docx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "What percentage of hot meat and seafood meal orders in Toronto received high customer rating scores (at least 4 out of 5) in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Over 94% of hot meat and seafood orders in Toronto received high customer rating scores in 2025, which is an increase of over 6 percentage points as compared with 2024.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Toronto_Meal_Ratings_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "What are the top 3 geographies that brought in the most sales in Canada in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Toronto, Montreal, and Calgary areas contributed the most to the company in terms of revenue in 2024.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_221257.jsonl"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "How much of the 2024 revenue increase has the sales team attributed to the introduction of the new Lee's Advisor AI agent on the website, allowing customers to ask specific product questions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The sales team has calculated that approximately 15% of the increase in 2024 revenue was thanks to the introduction of the new AI agent called Lee's Advisor to the website.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_221358.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What was the share of personalized offers in our overall promotion budget in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to the 2025 annual report, Lee's Market spent just under 2% of its marketing budget on personalized promotions.",
+            "supporting_file_paths": [
+                "shared/retail-personalization-strategies.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What personalization techniques did Lee's Market use in 2025 to increase sales?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "To drive more sales in 2025, the company offered 10% discount codes to customers who signed up for email newsletters but had not yet made their first purchase.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Sales_Tactics_Analysis_Metrics.xlsx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "Is there any evidence to suggest that the lack of sufficient customer support call agents could affect future sales at the company?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes. According to customer satisfaction survey results in 2025, 37% of the customers who were not able to reach a customer support agent for help said they would not shop at Lee's Market again. The sales team calculated that if the trend continued, it could represent a loss of 1.2% in future sales.",
+            "supporting_file_paths": [
+                "shared/personalization-strategy-2026.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

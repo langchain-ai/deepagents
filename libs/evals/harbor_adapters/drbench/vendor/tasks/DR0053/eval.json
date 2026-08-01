@@ -1,0 +1,94 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "By Q2 2025, how many uploaded content items in MediConn\u2019s knowledge management system underwent internal quality review?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Mediconn internal data between January 1 and June 30, 2025, 150 uploaded items were reviewed for accuracy and compliance.",
+            "supporting_file_paths": [
+                "shared/MediConn_Knowledge_Management_System_Review_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "How many clinician feedback suggestions were implemented in MediConn\u2019s knowledge management system for workflow improvements in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "From January 1 to December 31, 2024, 70 feedback suggestions from clinicians were integrated in Mediconn's knowledge management database to improve platform usability.",
+            "supporting_file_paths": [
+                "shared/2024-kms-improvements.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How many internal compliance checkpoints were completed during MediConn\u2019s general quality audit in 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "29 compliance checkpoints were completed between January 1 and December 31, 2023.",
+            "supporting_file_paths": [
+                "shared/quality-audit-review.pptx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "Did new clinicians in 2025 participate in MediConn\u2019s onboarding training to use the knowledge management system properly?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. Internal records show that new clinicians hired in 2025 completed the required onboarding training.",
+            "supporting_file_paths": [
+                "shared/2025-Onboarding-Report.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How does MediConn categorize general platform resources within its knowledge management system as of March 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of March 2025, MediConn organizes its knowledge management content into 12 main resource categories to help users navigate the platform more easily.",
+            "supporting_file_paths": [
+                "shared/resource-categorization-overview.pptx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "In Q4 2024, how many newly approved documentation standards were added to MediConn\u2019s knowledge database for clinician reference?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal updates, 15 new documentation standards were added to MediConn's knowledge database between October 1 and December 31, 2024.",
+            "supporting_file_paths": [
+                "shared/Q4-Clinical-Documentation-Update.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "In Q4 2024, how many newly approved medications were added to MediConn\u2019s prescription knowledge database for clinician reference?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to internal data from MediConn\u2019s Telehealth Department between October 1 and December 31, 42 newly approved medications were added to the knowledge management system.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Prescription_Update_Data.xlsx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "How does the centralization of medical reference materials on MediConn\u2019s platform support clinicians in making safe prescribing decisions in 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of November 20, 2024, MediConn\u2019s internal system consolidates all relevant clinical references, guidelines, and educational resources in one place, updated weekly by the platform team.",
+            "supporting_file_paths": [
+                "shared/prescription-management-enhancement.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

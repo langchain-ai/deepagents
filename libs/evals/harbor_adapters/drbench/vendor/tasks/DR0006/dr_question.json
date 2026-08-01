@@ -1,0 +1,28 @@
+{
+    "dr_question": "What are the key factors influencing MediConn Solutions' decision to accept insurance for telehealth providers, considering HIPAA compliance and state-specific data privacy regulations?",
+    "question_type": "ai_generated",
+    "question_source": {
+        "domain": "compliance",
+        "dr_question": "What are the key factors influencing MediConn Solutions' decision to accept insurance for telehealth providers, considering HIPAA compliance and state-specific data privacy regulations?",
+        "industry": "Virtual/Remote Healthcare",
+        "n_hops": 4,
+        "subquestions": [
+            "What are the HIPAA compliance requirements for telehealth providers?",
+            "What are the key considerations for data encryption and risk analysis?",
+            "How do state-specific data privacy regulations impact telehealth providers?",
+            "What are the potential benefits of accepting insurance for telehealth providers?"
+        ],
+        "url": "https://www.healthcaredive.com/news/telehealth-providers-crossroads-regulations-paul-schmeltzer-clark-hill/727296/"
+    },
+    "timestamp": "2025-08-08 12:49",
+    "task_id": "DR0006",
+    "subquestions": [
+        "What are the HIPAA compliance requirements for telehealth providers?",
+        "What are the key considerations for data encryption and risk analysis?",
+        "How do state-specific data privacy regulations impact telehealth providers?",
+        "What are the potential benefits of accepting insurance for telehealth providers?"
+    ],
+    "industry": "healthcare",
+    "domain": "compliance",
+    "url": "https://www.healthcaredive.com/news/telehealth-providers-crossroads-regulations-paul-schmeltzer-clark-hill/727296/"
+}

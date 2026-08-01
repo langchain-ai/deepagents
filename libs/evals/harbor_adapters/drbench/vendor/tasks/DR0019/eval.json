@@ -1,0 +1,105 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "In February 2025, what loyalty program segmentation did Sofia Patel recommend based on customer purchasing patterns at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Sofia advised splitting the rewards program into three tiers after finding that 38% of enrolled customers shopped more than once a week.",
+            "supporting_file_paths": [
+                "shared/loyalty-segmentation-recommendations.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What did Sofia Patel evaluate during the digital marketing effectiveness analysis for Lee's Market's household goods category in June 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In June 2025, Sofia's analysis showed a 22% click-through rate for email campaigns specifically targeting new arrivals in household goods, leading to a 9% lift in category sales that month.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Digital_Marketing_Effectiveness_Analys.xlsx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What did Sofia Patel report about the demographic trends among Lee's Market's online customers in January 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In January 2025, Sofia's research identified that 58% of new online customers were under 35, advocating for more youth-centric promotions on digital platforms.",
+            "supporting_file_paths": [
+                "shared/customer-demographics-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "How did Sofia Patel measure the success of Lee's Market's multicultural food festival campaign in May 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In May 2025, Sofia's campaign analysis found that footfall during the festival rose by 17%, with ethnic snack sales doubling, compared to the previous month.",
+            "supporting_file_paths": [
+                "shared/food-festival-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "In July 2025, what insights did Sofia Patel provide about competitive pricing for Lee's Market's bakery products?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Sofia's benchmarking showed Lee's Market's bakery prices averaged 11% higher than two leading local competitors, prompting a targeted pricing adjustment.",
+            "supporting_file_paths": [
+                "shared/bakery-pricing-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How did Sofia Patel's quarterly shopper satisfaction survey in June 2025 influence product assortment strategy at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In June 2025, survey findings that 29% of shoppers wanted more ready-to-eat meal options led to the introduction of five new items in July.",
+            "supporting_file_paths": [
+                "shared/Q2-2025-Product-Strategy.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "As of March 2025, how does Lee's Market's large volume of bilingual/multilingual marketing campaigns in its Canadian urban stores create unique outreach challenges?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "To design and deliver promotions in English plus at least one additional language, campaign changes can impact over 500 advertisements per store, straining staff and increasing the risk of messaging inaccuracies or missed outreach opportunities.",
+            "supporting_file_paths": [
+                "shared/bilingual-marketing-challenges.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "As of March 2025, how does Lee's Market's large volume of bilingual/multilingual product information in its Canadian urban stores create unique operational challenges?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In March 2025, Lee's Market operates in Canadian cities with diverse populations, requiring thousands of items to display pricing and product information in English plus at least one additional language. During peak promotions, changes can impact over 500 shelf labels per store, straining staff and increasing the risk of pricing inaccuracies or compliance issues.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Bilingual_Operation_Challenges_Report.xlsx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "How many staff hours were spent per month in 2025 on manual shelf label changes across all Lee's Market locations?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to the monthly operational reviews for 2025, manual shelf label changes, especially for multilingual updates, consume over 120 staff hours on average per month across each of Lee's Market's locations.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Operational_Review_Data.xlsx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

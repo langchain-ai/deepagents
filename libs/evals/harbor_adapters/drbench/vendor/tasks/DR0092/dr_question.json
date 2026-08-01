@@ -1,0 +1,15 @@
+{
+    "dr_question": "What additional compliance controls should be integrated into MediConn\u2019s platform by Q2 2026 to ensure secure authentication and patient verification for Indigenous patients in low-connectivity environments?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Compliance",
+        "dr_question": "What additional compliance controls should be integrated into MediConn\u2019s platform by Q2 2026 to ensure secure authentication and patient verification for Indigenous patients in low-connectivity environments?",
+        "industry": "Virtual/Remote Healthcare",
+        "url": "https://www.canada.ca/en/innovation-science-economic-development/news/2025/08/government-of-canada-expanding-health-care-to-more-indigenous-communities.html"
+    },
+    "timestamp": "2025-10-24 00:00",
+    "task_id": "DR0092",
+    "industry": "virtual/remote healthcare",
+    "domain": "Compliance",
+    "url": "https://www.canada.ca/en/innovation-science-economic-development/news/2025/08/government-of-canada-expanding-health-care-to-more-indigenous-communities.html"
+}

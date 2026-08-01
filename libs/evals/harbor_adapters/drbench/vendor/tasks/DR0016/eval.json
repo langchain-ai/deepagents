@@ -1,0 +1,105 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "Was Lee's Market in compliance with HACCP Food Safety Compliance in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, Lee's Market was 100% compliant with HACCP Food Compliance.",
+            "supporting_file_paths": [
+                "shared/haccp-compliance-2024.pptx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "When was the last time that Lee's Market discussed upcoming regulatory changes with other retail grocers?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Most recently, the Lee's Market Regulatory Affairs team attended the Future of Retail conference in March 2025, where they sat down with regulatory affairs representatives from other major retailers to discuss future rules changes and how their companies were approaching them.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_212859.jsonl"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What is Lee's Market doing to prepare its retail and logistics divisions for FDA inspectors coming to check for compliance in 2027?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market has prepared a checklist for inspection preparedness which will be distributed to retail stores and distribution centers in Q2 2026.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_212951.jsonl"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "Have any retail employees of Lee's Market experienced injuries while on the job?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In a survey completed by compliance auditors in February  of 2025, it was reported that 14 employees throughout all of Lee's Market chains suffered bodily harm while on the job during the time period of January 2024-January 2025.",
+            "supporting_file_paths": [
+                "shared/employee-safety-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How many times has Lee's Market been up for an award for increased sustainability?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In the last ten years, 2014-2024, Lee's Market has never won any award for increased sustainability.",
+            "supporting_file_paths": [
+                "shared/lees-market-sustainability.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "Is Lee's Market currently fully compliant with the Equal Employment Opportunity Commission (EEOC) ?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of January 2025, Lee's Market has completely fulfilled all regulations of the Equal Employment Opportunity Commission (EEOC)",
+            "supporting_file_paths": [
+                "shared/lees-market-eeoc-review.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "What percentage of our customers believe that we are moving in the direction of compliance of FSMA 204?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In a recent survey completed in August 2024, 74% of Lee's Market customers believe that Lee's Market is doing all it can to become compliant with FSMA 204.",
+            "supporting_file_paths": [
+                "shared/fsma-compliance-perceptions.pptx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "When was the last time that Lee's Market checked on the readiness of its suppliers to comply with FSMA 204 rules on lot codes?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market hosted representatives from all of its major suppliers at the Q1 2025 Supplier Review Day, where FSMA 204 and its rules regarding lot codes were the main subject of discussion.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_212737.jsonl"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "Is Lee's Market currently developing Lot code tracing infrastructure for receiving, stocking, transforming, and selling products?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of Augst 2025, Lee's Market is on track to launch the LeeLots internal Lot code tracking system in Q2 2026, which will enable real-time tracking of products as they're received, stocked, transformed into other products, or sold to customers.",
+            "supporting_file_paths": [
+                "shared/fsma-204-compliance-strategy.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

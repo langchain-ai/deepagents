@@ -1,0 +1,43 @@
+{
+    "name": "DR0091",
+    "task_id": "DR0091",
+    "level": "",
+    "company_info": {
+        "name": "Lee's Market (Richmond, British Columbia, Canada, $500M - $600M, 5000 employees)",
+        "industry": "Retail",
+        "description": "A company in the Retail industry",
+        "size": "medium",
+        "employee_count": "100-500",
+        "annual_revenue": "Not specified"
+    },
+    "dr_question": "Considering companies achieve superior financial results by focusing on enhancing the experience of existing customers, what CS service improvements could be implemented by 2026 to make customers feel more recognized and valued during interactions?",
+    "date": "2025-10-24",
+    "persona": {
+        "name": "Sophie Liu",
+        "first_name": "Sophie",
+        "last_name": "Liu",
+        "username": "sophie.liu",
+        "email": "sophie.liu@leesmarket.com",
+        "role": "Customer Service Manager",
+        "role_description": "Handles customer inquiries and complaints through phone and digital channels, processes returns and exchanges, and maintains customer account information"
+    },
+    "citation_format": {
+        "urls": [
+            "https://www.example.com/article",
+            "https://techcrunch.com/2023/report.html"
+        ],
+        "file_names": [
+            "quarterly_report.pdf",
+            "market_analysis.docx",
+            "shared/file-pdf"
+        ],
+        "mattermost_chats": [
+            "MatterMost-Channel-Team-User",
+            "Mattermost Message - Enterprise Chat (User: john.doe, Team: Compliance, Channel: General)"
+        ],
+        "email_messages": [
+            "RoundCube-fromdemail-todemails-Subject",
+            "Email from sarah.johnson@company.com on 20 Jan 2025"
+        ]
+    }
+}

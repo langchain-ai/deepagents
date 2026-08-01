@@ -1,0 +1,66 @@
+{
+  "task_id": "DR0048",
+  "question": "By Q3 2025, how can MediConn Solutions' IT Service Management (ITSM) team manage security protocols, ensure regulatory compliance, and implement preventive measures against network and information system security risks, given the sensitivity of electronic medical data?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "What percentage of IT issues were prevented by using predictive analysis tools through AI-powered ITSM?",
+      "answer": "According to MediConn Solutions' IT audit in 2024, 45% of potential IT incidents were proactively avoided using predictive analysis tools through AI-powered ITSM.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "How many routine IT tasks were automated through ITSM tools in 2024?",
+      "answer": "Based on company logs, MediConn Solutions automated approximately 5,000 IT tasks in 2024, increasing its IT service desk efficiency by 30%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0003",
+      "question": "What reduction in incident response time did the company experience after implementing AI-integrated ITSM?",
+      "answer": "According to the 2024 performance review, MediConn Solutions experienced a 30% decrease in incident response times after implementing AI-integrated ITSM, leading to faster issue resolution and improved customer satisfaction.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0004",
+      "question": "How much has the company reduced in security incidents related to network breaches since implementing the ITSM-based preventive security protocols?",
+      "answer": "An internal security report from Q4 2024 at MediConn Solutions shows a 30% decrease in network breach incidents since the implementation of ITSM-based preventive security protocols.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0005",
+      "question": "What percentage of compliance audits related to patients' data security passed in 2024 with ITSM?",
+      "answer": "MediConn Solutions' records indicate that the company achieved a 100% compliance rate in patients' data security according to a 2024 performance audit.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0006",
+      "question": "How many employee hours were saved due to ITSM process automation after the Q1 2024 network update according to time tracking data?",
+      "answer": "MediConn Solutions' time tracking data shows that ITSM automation saved 1,400 employee hours in 2024, allowing staff to focus on more crucial tasks like patient care and follow-up services.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0007",
+      "question": "How much of the total company operations budget is devoted to ITSM and related AI tools that manage security compliance?",
+      "answer": "According to MediConn Solution's financial report, approximately 25% of the IT department's budget in Q2 2025 was allocated to maintaining and enhancing ITSM tools and AI integration.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0008",
+      "question": "How many IT assets and remote medical devices were automatically discovered and tracked using ITSM discovery tools between September to December 2024?",
+      "answer": "Between September and December 2024, asset management logs at MediConn Solutions show that 800 new devices, including remote devices, were added to the ITSM inventory system through automated discovery tools.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0009",
+      "question": "By what percentage did the implementation of ITSM-based management reduce in the number of unplanned service outages?",
+      "answer": "According to a Q4 2024 report, incident records at MediConn Solutions indicate a 30% reduction in unexpected outages due to stricter management processes enabled by ITSM.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0010",
+      "question": "What was the uptime improvement percentage for critical healthcare applications after ITSM optimization?",
+      "answer": "According to a 2024 internal ITSM screening report, MediConn Solutions' system monitoring showed a 10% improvement in uptime for critical healthcare applications after the ITSM and AI tool deployment.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

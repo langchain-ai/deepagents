@@ -1,0 +1,204 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What percentage of the retail in-store staff members participated in customer relations retraining programs in Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A record 79% of the in-store staff at Lee's Market partook in customer relations retraining programs in Q4 2024.",
+            "supporting_file_paths": [
+                "shared/q4-retraining-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What percentage of SOP documents have been updated by the KM team to meet the new safety regulations in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The knowledge management team was able to update 89% of the SOP documents in light of the new safety regulations in Q1 2025.",
+            "supporting_file_paths": [
+                "shared/sop-compliance-review.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How many projects have the KM and HR teams at Lee's Market implemented together regarding employee onboarding improvements in 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The KM and HR teams at Lee's Market developed and carried out 13 projects aimed at improving the employee onboarding process in 2023.",
+            "supporting_file_paths": [
+                "shared/km-hr-onboarding-2023.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What were the primary strategic priorities of the knowledge management team at Lee's Market during Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The knowledge management team at Lee's Market had a clear objective of reviewing all training procedures to improve the employees' understanding of the central knowledge database.",
+            "supporting_file_paths": [
+                "shared/KM-Q1-2025-Overview.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What changes has Lee's Market's senior management implemented to improve the collaboration between the IT and KM teams in 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Recognizing the significance of close cooperation between IT and KM teams to improve the knowledge database, the senior management at Lee's Market relocated both departments to the same floor in 2023.",
+            "supporting_file_paths": [
+                "shared/IT-KM-Collaboration-Report.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What percentage of warehouse employees found the 2025 SOP training material enjoyable?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the training results, only 67% of the warehouse staff have completed the 2025 SOP training.",
+            "supporting_file_paths": [
+                "shared/SOP-Training-Evaluation.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "What was one of the knowledge management team's major objectives in Q3 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "One of the KM team's primary goals in Q3 2023 was to add safe operating procedure guidelines for the new kitchen appliances in the stores in Toronto.",
+            "supporting_file_paths": [
+                "shared/knowledge-management-report-Q3.docx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "Following the costly technical failure of Lee's Market's knowledge database system on September 13, 2024, what measures did the KM team implement to prevent similar issues in the future?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "After the costly collapse of the knowledge database system on September 13, 2024, the KM team revised operating guidelines to schedule updates only during non-working hours and directed the IT department to develop an emergency plan for quickly deploying the backup system until the issues are resolved.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_013226.jsonl"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "What percentage of 2025 training programs were aimed at encouraging a culture of knowledge-sharing at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Approximately 25% of the 2025 training programs at Lee's Market encouraged employees to actively share knowledge with their peers and colleagues.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_013325.jsonl"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "According to post-training surveys, how valuable did the in-store employees find the August 2025 \"Using the Database to Manage Customer Experience\" training program?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The post-training survey results show that 9 out of 10 in-store employees found the August 2025 \"Using the Database to Manage Customer Experience\" training program valuable.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_013432.jsonl"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "How many in-store employees have reported using the knowledge management system at Lee's Market to find an answer to a customer's question at least once a week in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Weekly Q3 2025 survey results show that 68% of in-store employees have accessed the knowledge management system at least once a week to answer a customer's inquiry about a product.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_004913.jsonl"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "How many times have the warehouse employees filled and submitted the knowledge-sharing form in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A record 39 knowledge-sharing forms were submitted to the KM office, containing know-how and suggestions on process improvements.",
+            "supporting_file_paths": [
+                "shared/knowledge-sharing-report-Q1-2025.docx"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "What percentage of the copywriters on the marketing team have cited \"career advancement\" and \"insufficient training\" as key reasons for applying to the new certification training program in the Q4 2024 anonymous employee satisfaction survey?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the Q4 2024 anonymous employee satisfaction survey, 22% of the copywriting team have attributed their desire to join the new certification training program to \"career advancement\", while 33% reported \"insufficient training\" as another key reason.",
+            "supporting_file_paths": [
+                "shared/employee-satisfaction-survey.pptx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "What was the average time taken by employees in Lee's Market's Cooking and Baking division to complete and submit the weekly safety and health checklist for H2 2024, compared to the H1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to the knowledge management team's record, the average time to submit the weekly safety and health checklist at the company's Cooking and Baking division was reduced from 1 hour and 35 minutes in H2 2024 to 1 hour and 5 minutes in H1 2025.",
+            "supporting_file_paths": [
+                "shared/Safety-Checklist-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What was the average employee retraining time at Lee's Market's Cooking and Baking division in H2 of 2024, and how did it compare to H1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to the knowledge management team's record, the average employee retraining time in Lee's Market's Cooking and Baking division was reduced from 1 hour and 45 minutes in H2 2024 to 1 hour and 10 minutes in H1 2025.",
+            "supporting_file_paths": [
+                "shared/ai-employee-retention.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What percentage of copywriters on the marketing team cited \"tight deadlines\" and \"insufficient training\" as key causes of high stress in the anonymous employee satisfaction survey for Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to the Q4 2024 anonymous employee satisfaction survey, 30% of the copywriting team have attributed their stress to \"tight deadlines\", while 33% reported \"insufficient training\" as another key reason.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Employee_Satisfaction_Survey_Q4.xlsx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "How has the KM team at Lee's Market collaborated with the IT department to improve staff onboarding, training, and information access in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In 2024, the knowledge management team assisted the IT department in creating an AI-powered knowledge base for the employees. The new system allows faster onboarding and training for new hires. It has also saved countless hours for the retail staff, who can now quickly search and find exact product information.",
+            "supporting_file_paths": [
+                "shared/ai-knowledge-management.pptx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "What goals has the Lee's Market management set for the warehouse operations, and how do they plan to achieve them?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market's senior management has set a Q2 2026 target to cut warehouse unloading times by 15 minutes per cargo load. The KM team intends to train the warehouse staff to use AI tools to optimize shipment planning and reduce human mistakes.",
+            "supporting_file_paths": [
+                "shared/ai-knowledge-strategies.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

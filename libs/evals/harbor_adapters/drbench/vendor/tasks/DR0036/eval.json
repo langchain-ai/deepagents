@@ -1,0 +1,127 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "When was the Customer Experience team created at Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Customer Experience team was created at Elexion Automotive on May 20, 2015, one year before the arrival of current team lead Ryan Thompson.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Company_Teams_Overview.xlsx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "As of first quarter 2025, what percentage of incoming calls were found to be automated?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "During recent audits, 3.7% of customer service calls were found to be from automated callers.",
+            "supporting_file_paths": [
+                "shared/Q1-2025-Interaction-Analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "Can customers call Elexion to speak to a live customer service representative at any time?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A global network of 50 call services ensures each call is handled by a Customer Service Specialist in under one hour at any time of the day during the entire week.",
+            "supporting_file_paths": [
+                "shared/customer-service-evaluation.pptx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "How many total service calls did Elexion have in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Based on the 2024 Customer Service Internal Report, Elexion recorded 1265 service calls in the field and 2824 in-house services.",
+            "supporting_file_paths": [
+                "shared/service-calls-analysis-2024.pdf"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What is Elexion's average turnaround time for scheduling service appointments for customers?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Per the 2024 Customer Service team annual review, customer service specialists typically needed between 1 and 3 hours to coordinate service appointments for customers.",
+            "supporting_file_paths": [
+                "shared/service-appointment-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What percentage of active customers respond to customer service surveys are collected each month?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "An average of 40% of active customers per month respond to customer service surveys.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Customer_Service_Survey_Respons.xlsx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "How many staff retreats did the Customer Service Team have in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, the Customer Service Team had 3 staff retreats, in March, July, and November. During these all-day meetings, the team focused on strategizing new initiatives to increase sales and customer retention for the 2025 year.",
+            "supporting_file_paths": [
+                "shared/customer-service-engagement.pptx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "Do Elexion Automotive's customer service representatives work more efficiently when they have the weekend off?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes. According to our end-of-year 2024 data, all 42 of our customer service representatives work more efficiently after having a day or two off. We know that if we overwork our employees, we lose productivity. The data shows a 21% increase in productivity for rested employees.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_224742.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "How does Elexion's reported customer satisfaction rate on warranties compare to the industry standard of 75%?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Since 2022, Elexion leads the industry with a higher than 80% satisfaction rate on its warranties, based on the company's 2024 Customer Service Report.",
+            "supporting_file_paths": [
+                "shared/customer-retention-strategies.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "How long are the auto warranties that Elexion Automotive offers as part of its after sales product suite as of August 1, 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of August 1, 2025, Elexion Automotive offers a 10-year warranty standard with all purchases.",
+            "supporting_file_paths": [
+                "shared/sales-service-strategies.docx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "Do returning customers cite warranty length as a reason for their repeat purchases from Elexion?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Based on our 2025 tracking data of 20,132 customers who purchased another vehicle from Elexion within five years of purchasing their first, 16,562 cited the warranty length as a reason for doing so.",
+            "supporting_file_paths": [
+                "shared/after-sales-strategies.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

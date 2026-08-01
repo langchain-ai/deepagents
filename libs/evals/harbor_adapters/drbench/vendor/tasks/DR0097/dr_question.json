@@ -1,0 +1,15 @@
+{
+    "dr_question": "How can MediConn streamline its IT workflows in Q4 2025 to boost clinician efficiency and manage per-consultation costs, given that virtual healthcare expansion has improved access but increased overall expenses?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "IT Service Management",
+        "dr_question": "How can MediConn streamline its IT workflows in Q4 2025 to boost clinician efficiency and manage per-consultation costs, given that virtual healthcare expansion has improved access but increased overall expenses?",
+        "industry": "Virtual/Remote Healthcare",
+        "url": "https://www.deloitte.com/us/en/insights/industry/health-care/life-sciences-and-health-care-industry-outlooks/2025-global-health-care-executive-outlook.html#health"
+    },
+    "timestamp": "2025-10-24 00:00",
+    "task_id": "DR0097",
+    "industry": "virtual/remote healthcare",
+    "domain": "IT Service Management",
+    "url": "https://www.deloitte.com/us/en/insights/industry/health-care/life-sciences-and-health-care-industry-outlooks/2025-global-health-care-executive-outlook.html#health"
+}

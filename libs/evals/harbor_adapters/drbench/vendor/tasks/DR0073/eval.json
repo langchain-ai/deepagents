@@ -1,0 +1,127 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What percentage reduction in paint defects did Elexion Automotive achieve in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The Quality and Reliability Department at Elexion Automotive published a report in Q1 2025 revealing that the Austin, Texas, facility achieved a 43% reduction in paint defects after implementing an updated spray booth calibration protocol.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_021601.jsonl"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "How many charge-cycle tests did Ethan's quality assurance team at Elexion Automotive conduct on the combined charging system 1 charging port in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Ethan's quality assurance team conducted 5,000 charge-cycle durability tests on the combined charging system 1 charging port design in January 2024.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_021647.jsonl"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What stopping distance did the quality assurance team validate for the 2024 Elexion Automotive models from 60 mph in dry conditions?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The quality assurance team validated that the 2024 models achieved a stopping distance of 117 feet from 60 mph in dry conditions during brake system testing in December 2023.",
+            "supporting_file_paths": [
+                "shared/2024-Model-Stopping-Distance.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What interior noise level did Elexion Automotive achieve at 70 mph highway speed during Ethan's quality assurance team's Q2 2024 testing?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "During the Q2 2024 testing, Ethan and his quality assurance team measured that Elexion Automotive electric vehicles achieved a noise level of 55 dB at 70 mph.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_021802.jsonl"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What temperature range did Ethan's quality assurance team use for Elexion Automotive's 2025 vehicle models in the 2024 environmental chamber test?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Ethan's quality assurance team tested Elexion Automotive's 2025 vehicles in the environmental chamber from -40 degrees Fahrenheit to 150 degrees Fahrenheit in May 2024, validating that all systems function in extreme weather conditions.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_021854.jsonl"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "When did Ethan, as a quality assurance engineer, coordinate the top safety pick crash testing for the 2025 Elexion Automotive Cascade model?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Ethan and his quality assurance team coordinated the top safety pick crash testing for the 2025 Elexion Automotive Cascade model in February 2024.",
+            "supporting_file_paths": [
+                "shared/cascade-safety-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "What tool did Elexion Automotive's quality assurance engineer, Ethan Smith, develop in 2024 for battery health tracking in Elexion Automotive EVs?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive quality assurance engineer, Ethan Smith, developed a predictive maintenance dashboard in June 2024 to monitor battery degradation patterns in Elexion Automotive EVs.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_021956.jsonl"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "Has Elexion Automotive established a target date for finalizing the vehicle software interface design?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, Elexion Automotive established March 31, 2025, as the target date for finalizing the software design, allowing 6 months for validation testing and production line integration before full production begins in October 2025.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Product_Development_Milestones_.xlsx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What was the percentage of customer complaints received by Elexion Automotive between 2023 and 2024 that were related to touchscreen interface usability issues?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "From the internal quality assurance report completed in Q4 2024, 68% of Elexion Automotive's customers complained about touchscreen interface usability issues, including accidental inputs and delayed response times.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_021428.jsonl"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "In November 2024, what percentage of test drivers reported improved task accuracy when using prototype models that have rotary knobs for key controls?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to the test drive analysis report published in November 2024 by Elexion Automotive's Quality and Reliability Department, 82% of test drivers reported higher accuracy when using physical rotary knobs compared to touchscreen sliders.",
+            "supporting_file_paths": [
+                "shared/ev-interface-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "Has Elexion Automotive established a date for finalizing the 2026 model control interface design?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes, Elexion Automotive established March 31, 2025, as the target date for finalizing the 2026 model control interface design. This timeline will allow 6 months for validation testing and production line integration before full production begins in October 2025.",
+            "supporting_file_paths": [
+                "shared/ev-interface-strategy-2026.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

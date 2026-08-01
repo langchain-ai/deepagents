@@ -1,0 +1,215 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "How has Emily Lee's team size changed to support Elexion Automotive's business growth?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "By August 2025, Emily Lee's sales and marketing department expanded from 12 to 19 team members to support Elexion Automotive's growing North American market presence.",
+            "supporting_file_paths": [
+                "shared/team-dynamics-growth.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What professional development did Emily Lee pursue to strengthen her personal analytical capabilities?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In November 2023, Emily Lee completed a professional certification in Advanced Marketing Analytics, enhancing her qualifications for analyzing customer data at Elexion Automotive.",
+            "supporting_file_paths": [
+                "shared/emily-lee-development.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What sales growth did Emily Lee report for Elexion Automotive's government fleet segment?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In December 2024, Emily Lee presented Elexion Automotive's quarterly sales performance to the executive team, reporting a 22% increase in vehicle sales to municipal government fleets.",
+            "supporting_file_paths": [
+                "shared/gov-fleet-sales-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "How successful was Elexion Automotive's customer testimonial social media campaign in terms of engagement?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Elexion Automotive's marketing launched a social media campaign in July 2025, highlighting customer testimonials about electric vehicle ownership. which generated 47,000 engagements within the first month.",
+            "supporting_file_paths": [
+                "shared/social-media-campaign-analysis.pptx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What insurance partnership benefits did Emily Lee secure for Elexion Automotive's customers?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Emily Lee negotiated a partnership with 3 automotive insurance providers in March 2024 to offer bundled electric vehicle insurance packages to Elexion Automotive customers at a 15% discount.",
+            "supporting_file_paths": [
+                "shared/insurance-partnership-impact.pptx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How did Emily Lee contribute to product customization decisions based on customer feedback?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of June 2024, Emily Lee coordinated with Elexion Automotive's product team to develop new color options for the mid-range vehicle line based on customers' preference surveys that indicate the desire for earthy color finishes.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_164243.jsonl"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "What customer engagement event did Emily Lee organize, and how many participants attended?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In April 2025, Emily Lee organized a customer appreciation event in Dallas, Texas, attracting 320 Elexion Automotive vehicle owners who participated in the sustainability workshops and test drives for new models.",
+            "supporting_file_paths": [
+                "shared/customer-engagement-overview.pptx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "How did Emily Lee improve email marketing performance for Elexion Automotive communications?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Around October 2024, Emily Lee implemented a new email marketing platform that increased open rates for Elexion Automotive's monthly newsletter from 18% to 29% among mid-income family subscribers.",
+            "supporting_file_paths": [
+                "shared/email-marketing-enhancements.docx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "What industry event did Emily Lee attend to gather market intelligence?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In January 2025, Emily attended the North American International Auto Show in Detroit, where she collected a lot of competitive intelligence on rival EV manufacturers' customer engagement strategies.",
+            "supporting_file_paths": [
+                "shared/industry-event-insights.pptx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "What customer advocacy metric did Emily Lee's team achieve for Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "As of November 2024, Emily Lee's team achieved a Net Promoter Score of 72 for Elexion Automotive, placing the company in the third quartile among North American EV manufacturers.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251202_164425.jsonl"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "",
+            "question": "What financing program did Emily Lee help to create vehicle affordability?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Emily Lee collaborated with the finance department of Elexion Automotive in December 2024 to develop a new 84-month financing option with 2.9% annual percentage rate specifically designed to make EVs more accessible to mid-income families.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251202_164513.jsonl"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "",
+            "question": "What customer feedback mechanism did Emily Lee establish, and how effective was customer participation?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "By February 2024, Emily Lee had implemented a customer feedback survey program that achieved a 41% response rate from recent Elexion Automotive vehicle purchasers.",
+            "supporting_file_paths": [
+                "shared/feedback-mechanism-evaluation.pdf"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "",
+            "question": "How frequently do government fleet managers contact Elexion Automotive for service support, and what are their primary concerns?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In September 2024, Emily identified that provincial and municipal government fleet managers purchasing Elexion Automotive vehicles made an average of 12 service-related contacts within their first 28 months of ownership, primarily concerning home charging station installation and troubleshooting.",
+            "supporting_file_paths": [
+                "shared/fleet-service-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "",
+            "question": "What visibility challenges does the Elexion Automotive CRM system create for tracking dealer performance over time?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In March 2025, Emily Lee reported that the Elexion Automotive CRM system fragmented customer data across many separate platforms, making it difficult to view complete dealer performance metrics from initial territory assignment through quarterly sales reporting.",
+            "supporting_file_paths": [
+                "shared/CRM-Dealer-Performance.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What is Elexion Automotive's current customer retention performance, and how significant is charging station support in maintaining customer relationships?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of August 2024, Elexion Automotive's customer retention rate for first-time EV buyers stood at 68% after the first year of ownership, having post-purchase charging station support accounting for 42% of customer touchpoints.",
+            "supporting_file_paths": [
+                "shared/salesforce-customer-retention.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "How frequently do Elexion Automotive's target customers interact with the company after purchase, and what are their primary service needs?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In September 2024, Emily Lee identified that mid-income families purchasing Elexion Automotive vehicles made an average of 12 service-related contacts within their first 28 months of ownership, primarily concerning home charging station installations and troubleshooting.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Customer_Interaction_and_Servic.xlsx"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "What percentage of Elexion Automotive's target customers engage in a repeat purchasing behavior for products related to charging?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "By December 2024, Elexion Automotive documented that 73% of their mid-income family customers in North America purchased additional charging accessories or upgraded their home charging stations within two years of purchase.",
+            "supporting_file_paths": [
+                "shared/salesforce-enhanced-retention.pdf"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "",
+            "question": "What are the current CRM challenges that Emily Lee faces in managing customer relationships at Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In March 2025, Emily Lee reported that the Elexion Automotive CRM system fragmented customer data across many separate platforms, making it difficult to view complete customer journeys from initial inquiry through after-purchase charging support.",
+            "supporting_file_paths": [
+                "shared/salesforce-customer-retention.pptx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "",
+            "question": "How does proactive, as opposed to reactive, customer service impact retention at Elexion Automotive?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "By July 2024, Elexion Automotive found that customers who received proactive maintenance reminders for their vehicles and charging stations had a 24% higher retention rate compared to those who only received reactive support.",
+            "supporting_file_paths": [
+                "shared/salesforce-enhancing-retention.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

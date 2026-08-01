@@ -1,0 +1,237 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "Operational infrastructure investments do not influence digital interaction or consumer trust in online communications.",
+            "question": "What is Lee's Market's annual expenditure on store lighting upgrades in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market spent $1.8 million CAD on energy-efficient lighting installations in FY2025.",
+            "supporting_file_paths": [
+                "shared/lighting-expenditure-report.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "Fleet logistics relate to supply chain operations, not digital customer interaction improvement or trust building.",
+            "question": "How many refrigerated trucks were operational in Lee's Market's logistics fleet in Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "A total of 120 refrigerated trucks were in use for regional deliveries in Lee's Market in Q4 2025.",
+            "supporting_file_paths": [
+                "shared/lees-market-logistics-Q4-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "In-store foot traffic measures physical engagement, which is unrelated to improving digital customer interactions or addressing social media trust issues.",
+            "question": "What was the average daily foot traffic at Lee's Market's Richmond flagship store during Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Around 2,700 customers per day visited Lee's Market's Richmond flagship location during Q2 2025.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Richmond_Daily_Foot_Traffic_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "Store size data affects real estate planning, not digital communication or consumer trust strategies.",
+            "question": "What is the total retail floor space occupied by Lee's Market across Canada as of FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Approximately 1.4 million square feet of retail space is the retail floor space occupied by Lee's Market across Canada as of FY2025.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_152046.jsonl"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "Employment structure influences staffing flexibility but has no connection to how customers perceive or trust Lee's Market digitally.",
+            "question": "What percentage of Lee's Market's workforce was part-time during Q4 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Roughly 48% of Lee's Market's employees were part-time during Q4 2025.",
+            "supporting_file_paths": [
+                "shared/Q4-Workforce-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "Product-level sales performance impacts category management, not digital interaction quality or online brand credibility.",
+            "question": "What were Lee's Market's total seafood sales during Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market seafood sales totaled $38 million CAD during Q3 2025.",
+            "supporting_file_paths": [
+                "shared/Q3-2025-Seafood-Sales.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "Financial year-end timing is an accounting practice unrelated to digital trust enhancement or customer engagement strategies.",
+            "question": "What is Lee's Market's fiscal year-end date for FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market's fiscal year ended on December 31, 2025.",
+            "supporting_file_paths": [
+                "shared/FY2025-Financial-Calendar.docx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "Temperature control ensures product freshness but is completely unrelated to online customer interaction or brand trust efforts.",
+            "question": "What was the average temperature maintained in refrigerated produce sections during Q1 2026 at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Temperatures were kept between 3\u00b0C and 5\u00b0C during Q1 2026 at Lee's Market.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_152244.jsonl"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "Expansion plans relate to physical footprint growth, not digital trust-building or consumer engagement improvements.",
+            "question": "How many new stores did Lee's Market plan to open in Q4 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In Q4 2026, Lee's Market planned to open three new urban stores - two in Ontario and one in British Columbia.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_152327.jsonl"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "Store layout and checkout capacity affect in-person experiences, not digital interaction trust or brand perception online.",
+            "question": "How many checkout counters does the average Lee's Market location operate as of FY2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Each Lee's Market store operates an average of 14 checkout counters as of FY2026.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Richmond_Checkout_Counters_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "Unionization is a labor relations statistic, irrelevant to understanding or improving customer trust through digital communication.",
+            "question": "What percentage of Lee's Market employees were unionized as of Q2 2026?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Approximately 22% of Lee's Market employees were union members as of Q2 2026.",
+            "supporting_file_paths": [
+                "shared/lees-market-unionization.pptx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "Maintenance costs relate to physical asset upkeep and do not influence customer engagement or trust in Lee's Market's digital platforms.",
+            "question": "What was Lee's Market's total expenditure on store maintenance and facility repairs in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market spent approximately $4.6 million CAD on store maintenance and facility repairs in FY2025.",
+            "supporting_file_paths": [
+                "shared/store-maintenance-costs-2025.pdf"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "Supplier relationship management affects procurement stability but has no bearing on customer perception or online trust metrics.",
+            "question": "How many supplier contracts did Lee's Market renew during Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "During Q3 2025, Lee's Market renewed 56 supplier contracts across various product categories.",
+            "supporting_file_paths": [
+                "shared/Q3-2025-Contract-Review.pdf"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "Energy consumption data reflects operational efficiency, not consumer trust or digital engagement effectiveness.",
+            "question": "What was the average energy consumption per store location at Lee's Market in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Each Lee's Market store consumed an average of 420,000 kWh of electricity during FY2025.",
+            "supporting_file_paths": [
+                "shared/energy-consumption-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "Packaging design updates impact shelf appeal and in-store marketing but are unrelated to digital communication or customer trust-building strategies.",
+            "question": "How many packaging design changes did Lee's Market's product development team implement in FY2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market implemented 12 packaging redesigns across different private-label product lines in FY2025.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_152825.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "Implementing a unified Customer Data Platform (CDP) by Q2 2026 is projected to save 1.1 minutes per call, translating to an estimated annual labor cost reduction of $75,000 in the contact center.",
+            "question": "What was the agent time wasted due to customers repeating information in Q4 2025 at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In Q4 2025, Lee's Market's average time agents spent gathering basic, repeated customer context was 1.8 minutes per call, representing 17% of the average call duration for escalated tickets.",
+            "supporting_file_paths": [
+                "shared/customer-experience-enhancement.pptx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "Customers appreciate not having to start from scratch. Enhancing this personalized portal will directly drive efficiency by keeping high-FCR volume out of the live agent queues.",
+            "question": "What is Lee's Market's current First Contact Resolution (FCR) rate for customers who use the \"Recognized Customer\" self-service portal in H2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "At Lee's Market, the FCR rate for customers who authenticated and used the personalized self-service portal (referencing their last 3 interactions) was 88% in H2 2025, which is 12 percentage points higher than the average FCR for all channels combined.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_151724.jsonl"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "This fact quantifies the superior financial results achieved by focusing on personalized communication, linking customer recognition directly to LTV growth.",
+            "question": "What is Lee's Market's difference in lifetime value (LTV) between customers who receive personalized versus generic support communication at Lee's Market?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Customers who received at least one personalized follow-up email referencing their specific product model or issue in FY 2025 have an average Customer Lifetime Value (LTV) that is 34% higher than those who only received standard, generic templates.",
+            "supporting_file_paths": [
+                "shared/CS-Improvement-Plan-2026.docx"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "Proactive communication makes customers feel valued. This quantifiable internal result supports the investment in automated alert systems for Q1 2026 implementation.",
+            "question": "What was Lee's Market's monthly churn rate for accounts that experienced a service issue but received a proactive alert in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Accounts identified by the system as having a service issue but who received a proactive status alert via text/app notification registered a monthly churn rate of 0.9% in Q3 2025, which is 33% lower than the 1.35% rate for accounts that waited until the issue was manually reported.",
+            "supporting_file_paths": [
+                "shared/customer-experience-2026.pptx"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "This fast, high-value channel ensures top customers feel valued and converts that positive experience into revenue, supporting a Q2 2026 expansion of this service to all loyalty-tier customers.",
+            "question": "What is Lee's Market's average upsell/cross-sell conversion rate for our \"Fast-Tracked\" support channel (priority live chat) for high-tier customers?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market's average conversion rate for upsell/cross-sell offers made within the exclusive \"Fast-Tracked\" live chat channel in Q4 2025 was 15.2%, generating 2.5 times the Average Revenue Per User (ARPU) compared to transactions originating from the standard support queue.",
+            "supporting_file_paths": [
+                "shared/customer-experience-enhancement.docx"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "This metric ties the high value of speed to the highest satisfaction tier, indicating that service improvements targeting resolution time will have a direct impact on our brand promoters.",
+            "question": "What percentage of Lee's Market's customers consistently rate us as \"Very Satisfied\" (CSAT 5/5) after a service interaction that was resolved in under 5 minutes?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "65% of customers who had their issue resolved in under 5 minutes via chat or phone in 2025 rated the experience a 5/5 (Very Satisfied).",
+            "supporting_file_paths": [
+                "shared/customer-experience-strategy.docx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

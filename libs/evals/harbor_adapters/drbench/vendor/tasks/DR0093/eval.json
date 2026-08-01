@@ -1,0 +1,237 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "This data is not relevant because it focuses on MediConn's technical capacity that addresses scalability, but doesn't inform any CHA compliance strategy or provincial regulatory variations. MediConn cannot use this data to determine what strategic adjustments are needed to address legal precedents about billing for medically necessary care by non-physician providers. This data is related to IT infrastructure scaling, not regulatory compliance risk mitigation.",
+            "question": "What was the percentage increase in MediConn's video conferencing infrastructure to support concurrent consultations after upgrading it in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn Solutions upgraded its video infrastructure in Q1 2025 to support 15,000 concurrent consultations, noting a 50% increase.",
+            "supporting_file_paths": [
+                "shared/Q1-2025-Upgrade-Report.docx"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "This data is not relevant because it highlights MediConn's app features that enhance patient engagement, but don't address any CHA compliance risks. MediConn cannot use this data to identify strategic adjustments needed for provincial regulatory variations or legal precedent compliance. This data is related to product development, not regulatory risk strategy.",
+            "question": "What was the increase in daily active users (in %) after MediConn launched 12 new mobile features in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn increased its daily active users by  38% after launching 12 new mobile app features in 2024, including symptom tracking, medication reminders, and health goal setting.",
+            "supporting_file_paths": [
+                "shared/mobile-feature-impact.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "This data is not relevant because it focuses on MediConn's AI-powered chatbot that improves efficiency, but doesn't inform compliance strategy for CHA interpretation. MediConn cannot use this data to determine what adjustments are required to tackle legal precedents or provincial variations in billing regulations for medically necessary care. This data is related to customer service automation, not regulatory compliance planning.",
+            "question": "What was the reduction in wait times (in minutes) achieved by MediConn after it deployed an AI-powered chatbot in late 2024 that handles 60% of initial patient inquiries?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn deployed an AI-powered chatbot in late 2024 that reduced wait times by 12 minutes by concurrently handling 60% of initial patient inquiries.",
+            "supporting_file_paths": [
+                "shared/ai-chatbot-impact.docx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "Although provider composition is important, this data is not relevant because it focuses on recruitment volume, but not the compliance implications of provider types.MediConn cannot use this data by itself to determine strategic adjustments needed to address whether different provider categories can legally charge for medically necessary services under provincial CHA interpretations. This data is related to network growth, not regulatory compliance analysis by provider category.",
+            "question": "How many health care providers were added by MediConn to its network in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn added 80 new healthcare providers to its network in 2024, including 45 physicians, 20 nurse practitioners, and 15 mental health counselors.",
+            "supporting_file_paths": [
+                "shared/2024-provider-network-expansion.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "This data is not relevant because it indicates MediConn's internal employee satisfaction, which is important for workforce stability, but doesn't inform external regulatory compliance. MediConn cannot use this data to identify strategic adjustments for CHA compliance risks or provincial legal precedents. This data is related to HR performance, not regulatory risk mitigation strategy.",
+            "question": "What employee satisfaction rate (in %) was achieved by MediConn in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn achieved 88% employee satisfaction in 2024.",
+            "supporting_file_paths": [
+                "shared/employee-satisfaction-2024.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "This data is not relevant as it highlights MediConn's brand recognition, which measures market presence but cannot be used to make adjustments to MediConn's CHA compliance strategy. MediConn cannot use Awareness metrics to identify strategic adjustments needed for provincial regulatory variations or legal precedents affecting billing practices. This data is related to marketing effectiveness, not regulatory risk assessment.",
+            "question": "What was the increase in unaided brand recalls among target demographics from 2023 to 2024 achieved by MediConn after a 2024 brand awareness campaign?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn's 2024 brand awareness campaign among target demographics increased unaided brand recall by approximately 17%, jumping from 28% in 2023 to 45% in 2024.",
+            "supporting_file_paths": [
+                "shared/brand-campaign-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "This data is not relevant because it focuses on MediConn's media coverage that builds its reputation, but doesn't add any value to the strategy for tackling regulatory compliance risks. MediConn cannot use such metrics to determine what adjustments are required to tackle CHA interpretation challenges across provinces. This data is related to communications success, not compliance risk mitigation.",
+            "question": "What were the impressions achieved by Mediconn after securing 35 positive media placements in 2024 and also featuring in major health and technology publications?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn achieved an estimated reach of 12M impressions after securing 35 positive media placements in 2024, including features in major health and technology publications.",
+            "supporting_file_paths": [
+                "shared/media-impact-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "This data is not relevant because MediConn's referral effectiveness shows organic growth, but cannot be utilized to make changes in the CHA compliance strategy. MediConn cannot use referral conversion rates to identify strategic adjustments for legal precedents or provincial variations in billing regulations. This data is related to growth marketing, not regulatory compliance planning.",
+            "question": "How many new patient registrations were generated by MediConn's referral program in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn's referral program generated 18,000 new patient registrations in 2024, representing a significant portion of new customer acquisition.",
+            "supporting_file_paths": [
+                "shared/referral-program-impact.pptx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "This data is not relevant as it focuses on MediConn's educational partnerships that expand market reach but don't necessarily affect the restructuring of the CHA compliance strategy. MediConn cannot use university partnership data to identify adjustments required for legal precedents affecting billing by non-physician providers. This data is related to institutional sales, not regulatory compliance planning.",
+            "question": "How many students is MediConn serving after extending partnerships with 6 additional Canadian universities in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn is currently serving 65,000 students after it extended partnerships with 6 additional Canadian universities in 2024.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_University_Partnerships_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "This data is not relevant because MediConn's current satisfaction shows service quality, but doesn't address future compliance risks. MediConn cannot use satisfaction scores to identify strategic adjustments needed to tackle CHA interpretation or provincial regulatory variations. This data is related to quality of care measurement, not regulatory risk assessment.",
+            "question": "What was the patient satisfaction rate achieved by MediConn in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn achieved a 91% patient satisfaction rate in 2024, with many patients rating their services as \"excellent\" or \"very good.\"",
+            "supporting_file_paths": [
+                "shared/patient-satisfaction-2024.docx"
+            ]
+        },
+        {
+            "id": "DI0011",
+            "justification": "This data is not relevant because it highlights MediConn's complaint handling, which shows service recovery, but cannot be used to assess or predict regulatory compliance risks. MediConn cannot use resolution metrics to identify strategic adjustments for provincial variations in CHA enforcement or legal precedents. This data is related to customer service performance, not regulatory risk mitigation.",
+            "question": "What percentage of patient complaints in 2024 were resolved by MediConn within 72 hours?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "94% of patient complaints in 2024 were resolved by MediConn within 72 hours, with very less escalations to formal grievances.",
+            "supporting_file_paths": [
+                "shared/resolution-efficiency-report.docx"
+            ]
+        },
+        {
+            "id": "DI0012",
+            "justification": "This data is not relevant because it highlights MediConn's environmental sustainability practices, which demonstrate corporate values but cannot be utilized to make changes in the CHA billing compliance strategy. MediConn cannot use carbon neutrality to identify strategic adjustments for provincial regulatory variations or legal precedents about provider billing. This data is related to environmental corporate social responsibility (CSR), not healthcare regulatory compliance.",
+            "question": "What investment did MediConn make to achieve carbon neutrality certification in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn invested a total of $180,000 to achieve carbon neutrality certification in 2024 through renewable energy purchases and carbon offset investments.",
+            "supporting_file_paths": [
+                "shared/carbon-neutrality-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0013",
+            "justification": "This data is not relevant because it focuses on training investment, which supports workforce capability, but doesn't address CHA billing compliance. MediConn cannot use this data to determine the adjustments required to tackle legal precedents about which providers can charge for medically necessary care. This data is related to employee development and does not affect the regulatory compliance strategy.",
+            "question": "What percentage of employee participation was achieved by MediConn for its professional development activities in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn achieved 95% employee participation in professional development activities, aimed at continuing education and certification programs for employees.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251120_170457.jsonl"
+            ]
+        },
+        {
+            "id": "DI0014",
+            "justification": "This data is not relevant because consultation duration reflects clinical thoroughness, but doesn't inform the CHA compliance strategy. MediConn cannot use this data to determine the adjustments required to address legal precedents about billing for medically necessary care. This data is a clinical quality metric that does not affect the regulatory compliance planning.",
+            "question": "What was the increase in average video consultation duration from 2024 to 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn's average video consultation duration increased by 4 minutes, from 14 minutes in 2024 to 18 minutes in 2025, indicating more thorough patient assessments and improved care quality.",
+            "supporting_file_paths": [
+                "shared/consultation-duration-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0015",
+            "justification": "This data is not relevant because clinical effectiveness validates program quality, but doesn't address regulatory compliance risks. MediConn cannot use this data to determine what strategic adjustments are needed for provincial CHA variations or billing compliance. This data is related to clinical program performance, with no effect on the regulatory risk mitigation.",
+            "question": "What percentage reduction in HbA1c among participants was demonstrated by MediConn's diabetes management program in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "MediConn's diabetes management program in 2024 demonstrated a 15% average HbA1c reduction among participants, with a majority of them meeting treatment goals.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Diabetes_Management_Program_Dat.xlsx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "This data is relevant because it quantifies the immediate regulatory inconsistency risk and highlights the number of provinces posing the highest operational compliance challenges. MediConn can use this to prioritize resource allocation for compliance teams and legal review across the five non-aligned jurisdictions, allowing for a phased risk mitigation strategy.",
+            "question": "As of September 2025, how many of MediConn's 10 covered provincial jurisdictions have published regulatory or billing guidance that creates a direct operational conflict with the federal CHA interpretation?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As of September 2025, 5 out of 10 provinces under MediConn's coverage have issued provincial health billing policies that differ significantly from the federal CHA interpretation.",
+            "supporting_file_paths": [
+                "shared/MediConn_Provincial_CHA_Conflict_Analysis.xlsx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "This data is relevant because it sets a target for billing and reimbursement workflows that MediConn must work upon to align with the new CHA interpretation, thus quantifying the execution pace of internal compliance reform and ensuring a timely adaptation to updated legal requirements. MediConn can use this data to conduct a process audit that tracks progress against compliance milestones.",
+            "question": "By Q1 2026, what percentage of MediConn's existing billing and reimbursement workflows must be audited and updated to align with the new CHA interpretation?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "By Q1 2026, approximately 63% of MediConn's existing billing and reimbursement workflows must be audited and updated to align with the new CHA interpretation.",
+            "supporting_file_paths": [
+                "shared/regulatory-compliance-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "This data is relevant because it provides empirical evidence of the magnitude of legal exposure (the \"cost of failure\"). Quantifying the fine range ($20k-$100k) and mandatory repayment (up to $500k+) gives MediConn a verifiable metric for financial risk.",
+            "question": "What was the average financial penalty (in Canadian Dollars) imposed by provincial regulatory bodies or health ministries for a single instance of fraudulent billing or over-billing by MediConn Solutions from 2022 to 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The average financial penalty imposed by provincial regulatory bodies or health ministries for fraudulent billing or over-billing by MediConn Solutions from 2022 to 2025 was 65,000 Canadian Dollars per case.",
+            "supporting_file_paths": [
+                "shared/regulatory-compliance-strategy.pdf"
+            ]
+        },
+        {
+            "id": "IN0004",
+            "justification": "This data is relevant because it highlights the efforts taken by MediConn to train its staff to follow the updated compliance initiatives of CHA, thus ensuring organization-wide compliance literacy, reducing human error-driven legal violations. MediConn can use this data as a target to monitor the training completion and assessments.",
+            "question": "By Q3 2027, what is the targeted percentage of all MediConn Solutions staff that must have successfully completed the updated Canada Health Act (CHA) compliance training module?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "By Q3 2027, MediConn should target to complete the CHA-focused compliance training of 95% of its staff.",
+            "supporting_file_paths": [
+                "shared/Compliance-Strategy-2025.pdf"
+            ]
+        },
+        {
+            "id": "IN0005",
+            "justification": "This data is relevant because it highlights the correlation between MediConn's provincial compliance scores and regional revenue growth rates, thus quantifying whether higher compliance consistency directly improves revenue stability by demonstrating the value of regulatory alignment. MediConn can use this data to analyze the quarterly financial and compliance data per province for correlating compliance success with revenue trends.",
+            "question": "What has been the correlation (r-value) between MediConn's provincial compliance scores and regional revenue growth rates from 2022?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "The correlation (r-value) between MediConn's provincial compliance scores and regional revenue growth rates from 2022 is approximately equal to 0.67.",
+            "supporting_file_paths": [
+                "shared/MediConn_Solutions_Compliance_Scores_and_Revenue_A.xlsx"
+            ]
+        },
+        {
+            "id": "IN0006",
+            "justification": "This data is relevant because it sets the target that MediConn has planned to achieve to highlight the return on compliance investment (ROCI), i.e., the tangible outcome of adopting a proactive regulatory strategy. MediConn can use this data to compare incident logs and cost reports before and after the execution of the CHA-aligned strategy.",
+            "question": "What is MediConn's targeted percentage reduction in compliance-related costs from Q4 2025 to Q4 2028?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "MediConn should target a 20% reduction in compliance-related costs from Q4 2025 to Q4 2028.",
+            "supporting_file_paths": [
+                "shared/compliance-strategy-2025.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

@@ -1,0 +1,149 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "During Q2 2025, which frozen dumpling generated the most traffic in Lee\u2019s Market\u2019s online inventory tracking system for Montana stores?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Lee\u2019s Market e-commerce analytics from Q2 2025, pork and chive dumplings accounted for 42% of all frozen dumpling sales in Montana.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251119_003146.jsonl"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "During Q2 2025, which product image on Lee\u2019s Market\u2019s website generated the most internal IT tickets related to customer complaints about labeling?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal tracking shows that the \u201cDr. Sandy's Spicy Kimchi Pack\u201d image triggered 154 service desk tickets because the packaging wasn\u2019t clearly visible.",
+            "supporting_file_paths": [
+                "shared/product-image-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "During September 2025, how many IT requests were submitted to install colored LED lights on keyboards to match store branding in the Southwest region?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal analytics show that 230 requests across four Southwestern stores were documented during the month of September.",
+            "supporting_file_paths": [
+                "shared/southwest-IT-branding.pptx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "During June 2025, which demographic segment spends the most time downloading recipes on the Lee\u2019s Market site?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal analytics state that female millennials aged 25\u201334 in the U.S. have the highest rate of recipe downloads during June 2025.",
+            "supporting_file_paths": [
+                "shared/web-engagement-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "During Q3 2025, what other unusual IT-related complaints did Lee\u2019s Market employees submit?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal analytics show that 7 employees submitted requests labeled \"Other\" during Q3 2025 that involved adjusting office lighting because the \"brightness interfered with monitor visibility\".",
+            "supporting_file_paths": [
+                "shared/Lees_Market_IT_Complaints_Record.xlsx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "During Q3 2025, which type of ramen bowl triggered the most abandoned cart error reports in Lee\u2019s Market\u2019s online ordering system?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to internal analytics, spicy miso ramen bowls were removed the most before checkout during Q3 2025.",
+            "supporting_file_paths": [
+                "shared/Q3-2025-Ordering-Analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "How many IT tickets were generated in July 2025 to implement an online filter for gluten-free dumplings?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Internal IT tracking shows that 14 tickets were submitted in July 2025 to the IT team to develop or troubleshoot the gluten-free dumpling filter in the online store.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_003442.jsonl"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "During Q2 2025, how often did employees need IT assistance to update online pricing for seasonal produce such as dragon fruit?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Lee\u2019s Market Q2 2025 internal IT logs, 95 assistance tickets were submitted for updating seasonal produce pricing.",
+            "supporting_file_paths": [
+                "shared/Q2-IT-Assistance-Report.docx"
+            ]
+        },
+        {
+            "id": "DI0009",
+            "justification": "",
+            "question": "During Q2 2025, how many customer requests in Delaware asked IT to enable recipe page automation that suggests side dishes based on selected main dishes?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Lee\u2019s Market Q2 2025 internal analytics, 73 feature requests were submitted through the feedback portal in the Delaware region for this automation.",
+            "supporting_file_paths": [
+                "shared/Q2-Customer-Request-Analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0010",
+            "justification": "",
+            "question": "During Q3 2025, what types of IT requests take the longest for employees to set up new email signatures across devices?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to Lee\u2019s Market internal IT logs from Q3 2025, configuration requests for email signatures across multiple devices accounted for 18% of all IT setup delays, with most issues occurring among employees managing three or more linked accounts.",
+            "supporting_file_paths": [
+                "shared/IT-Support-Analysis-Q3-2025.pdf"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What caused employees across multiple Lee\u2019s Market stores to submit the same IT requests every week during Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to Lee\u2019s Market internal tracking from Q2 2025, employees across multiple stores submitted an average of 480 duplicate IT requests every week, primarily for password resets and printer errors, due to a confusing self-service portal.",
+            "supporting_file_paths": [
+                "shared/it-self-service-strategy.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "During Q3 2025, what types of IT requests take the longest for employees to resolve on their own?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to Lee\u2019s Market internal logs from Q3 2025, requests related to online ordering system errors take the longest to resolve, averaging 2.5 hours per incident, due to a lack of clear self-service guidance.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251119_003019.jsonl"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "During Q3 2025, are there certain times when Lee\u2019s Market employees across all regions struggle the most to get IT issues resolved?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to Lee\u2019s Market internal IT performance reports from Q3 2025, service desk requests spike by 40% on Mondays and Fridays at around 11 a.m., with average resolution times increasing by up to 3 hours when self-service guidance is unclear.",
+            "supporting_file_paths": [
+                "shared/IT-self-service-optimization.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

@@ -1,0 +1,270 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "EX0000",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "AI-enhanced battery management systems can predict and maintain State-of-Health, enabling EV batteries to retain approximately 90 % of their original capacity even after 6.5 years of use.",
+            "supporting_urls": [
+                "https://www.here.com/learn/blog/how-ai-optimizes-electric-vehicles"
+            ]
+        },
+        {
+            "id": "EX0001",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Reinforcement learning\u2013based energy management in PHEVs and FCEVs has shown measurable improvements in energy efficiency and real-time performance, outperforming conventional strategies.",
+            "supporting_urls": [
+                "https://www.here.com/learn/blog/how-ai-optimizes-electric-vehicles"
+            ]
+        },
+        {
+            "id": "EX0002",
+            "justification": "",
+            "question": "",
+            "type": "external_fact",
+            "qa_type": "insight",
+            "answer": "Adaptive charging and routing strategies using pre-computed shortest-path trees have led to up to 97 % reductions in waiting times at charging stations in simulation studies.",
+            "supporting_urls": [
+                "https://www.here.com/learn/blog/how-ai-optimizes-electric-vehicles"
+            ]
+        },
+        {
+            "id": "qa_1756144116",
+            "justification": "This answer provides a quantitative understanding of the potential cost savings of improving EV battery lifespan through AI-enhanced battery management, helping to inform the potential business case for implementing this technology.",
+            "question": "What is the average cost of replacing an EV battery in our current fleet, as of Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "$120,000 is the average cost of replacing an EV battery in our current fleet, as of Q4 2024.",
+            "supporting_file_paths": [
+                "shared/Elexion_EV_Battery_Replacement_Cost_Analysis.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755628787",
+            "justification": "Helps measure progress towards improving lifespan by 15%.",
+            "question": "What is projected EV battery lifespan by Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Projected lifespan is 8 years by Q2 2024.",
+            "supporting_file_paths": [
+                "shared/ai-battery-longevity.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755628926",
+            "justification": "Compliance audits don't impact battery lifespan enhancement strategies.",
+            "question": "How many compliance audits conducted in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Seven compliance audits conducted in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/compliance-overview-q2.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755629380",
+            "justification": "Compliance audits do not address the focus area of AI-enhanced battery management",
+            "question": "How many compliance audits did we conduct in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Seven compliance audits were conducted in Q2 2024.",
+            "supporting_file_paths": [
+                "shared/Q2-2024-Compliance-Monitoring-Report.docx"
+            ]
+        },
+        {
+            "id": "qa_1756144256",
+            "justification": "Employee wellness programs do not address the core DR Question focus area of AI-enhanced battery management",
+            "question": "What was our total spent on employee wellness programs in Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "$350,000 was allocated for employee wellness programs, focusing on mental health",
+            "supporting_file_paths": [
+                "shared/ElexionAutomotive_Q3_2025_Expenditure_Analysis.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1756144076",
+            "justification": "This answer provides a baseline understanding of the current state of AI-enhanced battery management in our EV design, helping to inform the potential impact of implementing AI-enhanced battery management on EV battery lifespan.",
+            "question": "What percentage of our current EV battery design features AI-enhanced battery management for our North American market as of Q2 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "40% of our current EV battery design features AI-enhanced battery management for our North American market as of Q2 2025.",
+            "supporting_file_paths": [
+                "shared/Elexion_EV_Battery_Design_Features_Analysis.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755635391",
+            "justification": "Understanding battery lifespan helps evaluate potential improvements with AI-enhanced management.",
+            "question": "What is the average lifespan of our current EV batteries by Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Our current EV batteries average 5 years lifespan with 80% capacity retention.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_163028.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755629350",
+            "justification": "Employee retention bonuses are unrelated to EV battery management and lifespan",
+            "question": "How many employee retention bonuses were issued in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Twenty-five employee retention bonuses were issued, totaling $250,000.",
+            "supporting_file_paths": [
+                "shared/Retain-Talent-Strategies-2025.docx"
+            ]
+        },
+        {
+            "id": "qa_1755629357",
+            "justification": "IT infrastructure cost is unrelated to AI-enhanced battery management and EV lifespan",
+            "question": "What was our average IT infrastructure cost per employee in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "$1,200 was the average IT infrastructure cost per employee, with a total of $2.3 million spent.",
+            "supporting_file_paths": [
+                "shared/IT-Cost-Optimization-Report.docx"
+            ]
+        },
+        {
+            "id": "qa_1756144150",
+            "justification": "Employee retention metrics do not address the core DR Question focus area",
+            "question": "What was our employee turnover rate in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Employee turnover averaged 12% with 30 employees leaving the company.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Employee_Turnover_Q1_2025.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755629282",
+            "justification": "This information will help us identify the scope of AI-enhanced battery management in our current fleet and its potential for improvement.",
+            "question": "What percentage of our current EV battery design features AI-enhanced battery management for our North American market, as of Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "35% of our current EV battery design features AI-enhanced battery management for our North American market as of Q2 2024.",
+            "supporting_file_paths": [
+                "shared/ev-battery-management-strategies.docx"
+            ]
+        },
+        {
+            "id": "qa_1756144104",
+            "justification": "This answer provides a quantitative understanding of the data available for analysis, helping to inform the potential impact of implementing AI-enhanced battery management on EV battery lifespan.",
+            "question": "How many years of data do we have on EV battery lifespan, including data on AI-enhanced battery management, as of Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "We have 5 years of data on EV battery lifespan, including data on AI-enhanced battery management, as of Q3 2025.",
+            "supporting_file_paths": [
+                "shared/Elexion_EV_Battery_Lifespan_Analysis.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1756144167",
+            "justification": "IT infrastructure costs do not address the core DR Question focus area",
+            "question": "What was our average IT infrastructure cost per employee in Q2 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "$1,200 was the average IT infrastructure cost per employee, with a total of $2.3 million spent.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_IT_Costs_Per_Employee.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755635619",
+            "justification": "Training completion rates do not impact battery management or AI enhancements.",
+            "question": "What percentage of training sessions were completed by Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "75% of training sessions were completed, totaling 300 participants this year.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_163411.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1756144178",
+            "justification": "Employee bonuses do not address the core DR Question focus area",
+            "question": "How many employee bonuses were issued in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Twenty employee bonuses were issued, totaling $200,000.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Employee_Bonus_Distribution.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1756144224",
+            "justification": "Employee retention bonuses do not address the core DR Question focus area on AI-enhanced battery management",
+            "question": "How many employee retention bonuses were issued in Q1 2023?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Twenty-five employee retention bonuses were issued, totaling $250,000.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Employee_Retention_Bonuses_Q1.xlsx"
+            ]
+        },
+        {
+            "id": "qa_1755635750",
+            "justification": "Compliance audit metrics do not impact the battery lifespan inquiry.",
+            "question": "How many compliance audits were completed by Q4 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Fifteen compliance audits were completed, ensuring 100% regulatory adherence.",
+            "supporting_file_paths": [
+                "jsonl/mattermost_chat_20250819_163626.jsonl"
+            ]
+        },
+        {
+            "id": "qa_1755628888",
+            "justification": "IT costs are unrelated to battery management improvements.",
+            "question": "What was IT infrastructure cost in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "IT infrastructure cost was $2.3 million in Q3 2024.",
+            "supporting_file_paths": [
+                "shared/it-infrastructure-q3.pptx"
+            ]
+        },
+        {
+            "id": "qa_1755629338",
+            "justification": "Training budget is unrelated to AI-enhanced battery management and EV lifespan",
+            "question": "What was our total training budget in Q3 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "$750,000 was allocated for training and development programs.",
+            "supporting_file_paths": [
+                "shared/Training-Expenditure-Q3-2024.docx"
+            ]
+        },
+        {
+            "id": "qa_1755629244",
+            "justification": "Understanding the current EV battery lifespan is crucial to determining the potential impact of AI-enhanced battery management on extending battery life.",
+            "question": "What is the average EV battery lifespan of our current fleet as of Q3 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Our current fleet's average EV battery lifespan is 6.8 years as of Q3 2025.",
+            "supporting_file_paths": [
+                "shared/EV-Battery-Optimization-Strategy.docx"
+            ]
+        },
+        {
+            "id": "qa_1756144303",
+            "justification": "Employee wellness program budget is tangential to the DR Question on AI-enhanced battery management",
+            "question": "What was our employee wellness program budget in Q1 2025?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "$500,000 was allocated for employee wellness programs, focusing on mental health",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Employee_Wellness_Budget.xlsx"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

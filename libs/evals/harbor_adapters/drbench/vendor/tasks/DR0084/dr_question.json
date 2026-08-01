@@ -1,0 +1,15 @@
+{
+    "dr_question": "How should Elexion adjust its battery sourcing strategy to mitigate lithium price volatility expected in 2025?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Automotive -- Electric Vehicles",
+        "dr_question": "How should Elexion adjust its battery sourcing strategy to mitigate lithium price volatility expected in 2025?",
+        "industry": "Automotive -- Electric Vehicles",
+        "url": "https://www.woodmac.com/press-releases/lithium-market-volatility-2025"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0084",
+    "industry": "automotive -- electric vehicles",
+    "domain": "Automotive -- Electric Vehicles",
+    "url": "https://www.woodmac.com/press-releases/lithium-market-volatility-2025"
+}

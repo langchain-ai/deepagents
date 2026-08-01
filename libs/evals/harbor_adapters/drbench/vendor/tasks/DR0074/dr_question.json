@@ -1,0 +1,15 @@
+{
+    "dr_question": "What impact would a 20% increase in dealer-led customer education on EV infotainment and connectivity features have on reducing service visit frequency by 2027?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Quality Assurance",
+        "dr_question": "What impact would a 20% increase in dealer-led customer education on EV infotainment and connectivity features have on reducing service visit frequency by 2027?",
+        "industry": "Automotive -- Electric Vehicles",
+        "url": "https://www.greencars.com/expert-insights/do-evs-have-more-quality-problems"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0074",
+    "industry": "automotive -- electric vehicles",
+    "domain": "Quality Assurance",
+    "url": "https://www.greencars.com/expert-insights/do-evs-have-more-quality-problems"
+}

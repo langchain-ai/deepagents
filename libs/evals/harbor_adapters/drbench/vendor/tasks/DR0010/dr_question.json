@@ -1,0 +1,24 @@
+{
+    "dr_question": "What are the most critical elements of a robust digital presence for a telehealth provider such as MediConn Solutions, and how can we optimize our website and content marketing strategy to attract digital-first patients?",
+    "question_type": "ai_generated",
+    "question_source": {
+        "domain": "marketing",
+        "dr_question": "What are the most critical elements of a robust digital presence for a telehealth provider such as MediConn Solutions, and how can we optimize our website and content marketing strategy to attract digital-first patients?",
+        "industry": "Virtual/Remote Healthcare",
+        "n_hops": 2,
+        "subquestions": [
+            "What are the essential features of a modern, mobile-optimized website for a telehealth provider?",
+            "How can we effectively use SEO to ensure our service appears in search results and is perceived as trustworthy and convenient?"
+        ],
+        "url": "https://marketinginsidergroup.com/marketing-strategy/how-to-market-telehealth-services-to-connect-with-digital-first-patients/"
+    },
+    "timestamp": "2025-08-08 13:24",
+    "task_id": "DR0010",
+    "subquestions": [
+        "What are the essential features of a modern, mobile-optimized website for a telehealth provider?",
+        "How can we effectively use SEO to ensure our service appears in search results and is perceived as trustworthy and convenient?"
+    ],
+    "industry": "healthcare",
+    "domain": "marketing",
+    "url": "https://marketinginsidergroup.com/marketing-strategy/how-to-market-telehealth-services-to-connect-with-digital-first-patients/"
+}

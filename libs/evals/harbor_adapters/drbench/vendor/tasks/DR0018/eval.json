@@ -1,0 +1,105 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What insights did Sofia Patel's July 2025 analysis provide about fluctuations in the open rates for Lee's Market's email newsletters, and what recommendations did she make for increasing general subscriber engagement?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Sofia Patel's July 2025 report showed that open rates for monthly email blasts averaged 35%, peaking in August at 38% following the launch of a new subject line strategy. She recommended testing future campaigns to push overall engagement above 40%.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251124_150102.jsonl"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "Based on the June 2025 internal employee experience survey at the Richmond store, how did Lee's Market react to an 82% \"excellent\" or \"very good\" rating for store atmosphere, and what operational adjustments followed?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "On the basis of the June 2025 internal employee experience survey at the Richmond store, management used the high satisfaction score to justify keeping the current cleaning schedule but decided to add more staff breakroom amenities after some lower marks there.",
+            "supporting_file_paths": [
+                "shared/roundcube_email_20251124_145731.jsonl"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "How did Sofia Patel leverage trends from March to August 2025, when Lee's Market's Instagram contest participation climbed 27%, to shape the fall influencer partnership budget?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Leveraging the increase of 27%, Sofia advocated allocating 20% more of the fall digital budget to Instagram content partnerships, anticipating further engagement lifts.",
+            "supporting_file_paths": [
+                "shared/Lees_Market_Influencer_Partnership_Budget_Analysis.xlsx"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What operational patterns emerged in Lee's Market's bakery section after the bakery rewards kiosk tallied 1230 unique customer log-ins in August 2025, and how did Sofia Patel advise optimizing traffic?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Bakery sales data showed kiosk users bought 18% more items per visit. Sofia Patel recommended signage updates and additional morning staffing to reduce wait times.",
+            "supporting_file_paths": [
+                "shared/bakery-kiosk-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "How did Sofia Patel's July 2025 report interpret the comparative 36% online coupon redemption versus 26% for paper flyers, and what strategy did Lee's Market set as a result?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Sofia concluded that digital coupons more strongly motivated shopper action. Based on this, Lee's Market shifted 70% of August promotional offers to online-only codes.",
+            "supporting_file_paths": [
+                "shared/coupon-redemption-strategy.pdf"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "What were the outcomes of the May 14, 2025 Lee's Market community grocery delivery seminar based on feedback from 75 registered attendees, and how did that shape Sofia Patel's outreach approach for future events?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Participant feedback showed 90% found the seminar informative; Sofia Patel used these insights to design a quarterly schedule of similar events.",
+            "supporting_file_paths": [
+                "shared/seminar-evaluation-report.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "What are two company-specific sales trends that Lee's Market and Market Research Analyst, Sofia Patel, can determine from January to December 2024 sales reports to benchmark premium bakery and dairy segment performance in their suburban stores?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market recorded a 12% increase in premium bakery sales and a 9% increase in dairy sales (focused on specialty cheese and yogurt lines) from January to December 2024 across its Surrey, British Columbia, and Bellevue suburban stores.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251124_145939.jsonl"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What company-specific sales trend should Lee's Market and Sofia Patel analyze from January to December 2024 to benchmark value-seeking and health-oriented customer segments?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Lee's Market recorded a 12% increase in quarterly private label grocery sales (focused on low-sodium and organic lines) and a 9% increase in fresh produce and meat sales from January to December 2024 across its Richmond, British Columbia, and Seattle urban stores.",
+            "supporting_file_paths": [
+                "shared/market-competitive-analysis.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "Which measurable competitor benchmarking practice did Sofia Patel, implement for Lee's Market between January and December 2025 to track consumer value and wellness priorities?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Sofia Patel conducted monthly pricing audits for the top ten basket items and quarterly customer satisfaction surveys, aiming to track a minimum 15% gap in advertised discounts between Lee's Market and mass retailers in target urban zip codes while measuring +10 point quarterly net promoter score (NPS) gain regarding health product satisfaction.",
+            "supporting_file_paths": [
+                "shared/market-consumer-shift-analysis.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

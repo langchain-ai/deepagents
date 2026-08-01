@@ -1,0 +1,15 @@
+{
+    "dr_question": "Given the industry focus on operational efficiency and the trend of using technology like electronic shelf labels (ESL) mentioned in 2025 forecasts, what is the projected return on investment (ROI) that Lee's Market's Canadian operations can expect from a full rollout of ESL technology by Q3 2026, considering its unique challenge of managing a high volume of bilingual/multilingual product information?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Market Analysis",
+        "dr_question": "Given the industry focus on operational efficiency and the trend of using technology like electronic shelf labels (ESL) mentioned in 2025 forecasts, what is the projected return on investment (ROI) that Lee's Market's Canadian operations can expect from a full rollout of ESL technology by Q3 2026, considering its unique challenge of managing a high volume of bilingual/multilingual product information?",
+        "industry": "Retail",
+        "url": "https://www.grocerydive.com/news/grocery-trends-outlook-2025/738623/"
+    },
+    "timestamp": "2025-10-30 00:00",
+    "task_id": "DR0019",
+    "industry": "retail",
+    "domain": "Market Analysis",
+    "url": "https://www.grocerydive.com/news/grocery-trends-outlook-2025/738623/"
+}

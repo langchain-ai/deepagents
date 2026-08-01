@@ -1,0 +1,105 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What supermarket department generated the highest percentage of gross sales in the supermarket industry in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Based on industry-wide research profiles, meat/poultry departments were responsible for the highest percentage (43%) of gross sales in the supermarket industry in 2024.",
+            "supporting_file_paths": [
+                "shared/2024-sales-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What is the job title of the Persona responsible for conducting market trend analysis and competitor activity reports?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "The persona's job title is Market Research Analyst.",
+            "supporting_file_paths": [
+                "shared/competitive-market-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What food safety compliance certification does Lee's Market hold regarding its food handling and production?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Based on its 2025 summary compliance report, Lee's Market proudly maintains 100% HACCP Food Safety Compliance, a perfect score which it has maintained for the past 3 years.",
+            "supporting_file_paths": [
+                "shared/food-safety-report.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "What services does Lee's Market offer to facilitate customer access to groceries from home?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In order to serve customers' access to groceries from the comfort of their own homes, Lee's Market offers 24-hour Online grocery shopping. Customers can also schedule delivery services based on store hours.",
+            "supporting_file_paths": [
+                "shared/home-grocery-accessibility.pdf"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "In which Canadian province is the headquarters of Lee's Market Marketing Department located?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Lee's Market's general headquarters is located in Richmond, British Columbia, Canada, and the Marketing Department has its headquarters in the same building",
+            "supporting_file_paths": [
+                "shared/marketing-dynamics-overview.pptx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "How many stores did Lee's Market open in 2025 that were within 10 kilometers of a competitor's store?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "15 Lee's Market locations were opened in 2025 within 10 kilometers of a competitor's store.",
+            "supporting_file_paths": [
+                "shared/store-expansion-analysis.docx"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "What percentage of customers at Lee's Market locations in Q3 of 2025 were repeat shoppers, and how has this changed from Q2?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "According to customer surveys, 70% of customers across all Lee's Market locations were repeat shoppers in Q3 2025, which represents an increase of 2% from Q2 2025",
+            "supporting_file_paths": [
+                "shared/customer-retention-analysis.pptx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What percentage of customers at Lee's Market locations in Q3 of 2025 self-identified as Asian, and how has this changed from Q2?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to customer surveys, 62% of customers across all Lee's Market locations self-identified as Asian in Q3 2025, which represents an increase of 8% from Q2 2025.",
+            "supporting_file_paths": [
+                "shared/market-share-growth-2026.pdf"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What percentage of total sales at Lee's Market locations in Q3 were products from the culturally authentic private label, and how does this compare to Q2?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "According to internal sales reports, 12% of Q3 2025 total sales across all Lee's Market locations were products from their culturally authentic private label, which represents an increase of 3% from Q2.",
+            "supporting_file_paths": [
+                "shared/market-share-strategy.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

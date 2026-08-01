@@ -1,0 +1,26 @@
+{
+    "dr_question": "How can we balance the need for durability and warranty guarantees for EV batteries with evolving regulatory requirements, especially ACC regulations (ACC II), while staying on track with our production timelines through 2035?",
+    "question_type": "ai_generated",
+    "question_source": {
+        "domain": "compliance",
+        "dr_question": "How can we balance the need for durability and warranty guarantees for EV batteries with the regulatory requirements and our production timelines?",
+        "industry": "Automotive -- Electric Vehicles",
+        "n_hops": 3,
+        "subquestions": [
+            "What are the key durability and warranty requirements for EV batteries under the EPA's proposed 2027+ emissions standards?",
+            "How can we prioritize our compliance testing and certification efforts to meet these requirements?",
+            "What production timeline adjustments can we make to accommodate these new regulatory demands?"
+        ],
+        "url": "https://www.wardsauto.com/regulatory/ev-regulations-continue-evolving"
+    },
+    "timestamp": "2025-08-10 19:03",
+    "task_id": "DR0011",
+    "subquestions": [
+        "What are the key durability and warranty requirements for EV batteries under the EPA's proposed 2027+ emissions standards?",
+        "How can we prioritize our compliance testing and certification efforts to meet these requirements?",
+        "What production timeline adjustments can we make to accommodate these new regulatory demands?"
+    ],
+    "industry": "automobiles",
+    "domain": "compliance",
+    "url": "https://www.wardsauto.com/regulatory/ev-regulations-continue-evolving"
+}

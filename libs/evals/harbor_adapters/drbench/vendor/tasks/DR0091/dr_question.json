@@ -1,0 +1,15 @@
+{
+    "dr_question": "Considering companies achieve superior financial results by focusing on enhancing the experience of existing customers, what CS service improvements could be implemented by 2026 to make customers feel more recognized and valued during interactions?",
+    "question_type": "human_generated",
+    "question_source": {
+        "domain": "Customer relationship Management",
+        "dr_question": "Considering companies achieve superior financial results by focusing on enhancing the experience of existing customers, what CS service improvements could be implemented by 2026 to make customers feel more recognized and valued during interactions?",
+        "industry": "Retail",
+        "url": "https://www.mckinsey.com/capabilities/growth-marketing-and-sales/our-insights/experience-led-growth-a-new-way-to-create-value"
+    },
+    "timestamp": "2025-10-24 00:00",
+    "task_id": "DR0091",
+    "industry": "retail",
+    "domain": "Customer relationship Management",
+    "url": "https://www.mckinsey.com/capabilities/growth-marketing-and-sales/our-insights/experience-led-growth-a-new-way-to-create-value"
+}

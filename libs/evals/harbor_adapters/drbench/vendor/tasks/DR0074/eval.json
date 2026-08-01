@@ -1,0 +1,127 @@
+{
+    "supporting_file_paths": [],
+    "dr_report_evaluation_qa": [
+        {
+            "id": "DI0001",
+            "justification": "",
+            "question": "What was Elexion Automotive's total production capacity across North American manufacturing facilities in 2024, and how has this changed since 2023",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In March 2024, Elexion Automotive discloses that its total production capacity across all North American manufacturing facilities reached 127,000 vehicles annually, which represents a 15% increase from the 110,500 vehicle capacity in 2023.",
+            "supporting_file_paths": [
+                "shared/production-capacity-report-2024.pdf"
+            ]
+        },
+        {
+            "id": "DI0002",
+            "justification": "",
+            "question": "What was the average increase in battery range for all of Elexion Automotive's electric car models from 2023 to 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Between the 2023 and 2024 model years, the Elexion Automotive electric vehicle lineup achieved an average battery range improvement of 32 miles per charge.",
+            "supporting_file_paths": [
+                "shared/battery-range-report.docx"
+            ]
+        },
+        {
+            "id": "DI0003",
+            "justification": "",
+            "question": "What percentage of the Elexion Automotive supply chain for battery components was sourced from North American suppliers?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, 61% of Elexion Automotive's supply chain for battery components, including lithium, nickel and cobalt materials, was sourced from North American suppliers, which back in 2023 was 54%.",
+            "supporting_file_paths": [
+                "shared/supply-chain-analysis.pdf"
+            ]
+        },
+        {
+            "id": "DI0004",
+            "justification": "",
+            "question": "Did Elexion Automotive establish a battery recycling partnership with a North American recycling facility?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, in October 2024, Elexion Automotive established an extensive battery recycling partnership with a North American recycling facility based in Nevada to process dying vehicle batteries and recover lithium, cobalt, and nickel for reuse in new battery production.",
+            "supporting_file_paths": [
+                "shared/mattermost_chat_20251120_021157.jsonl"
+            ]
+        },
+        {
+            "id": "DI0005",
+            "justification": "",
+            "question": "What percentage of Elexion Automotive's vehicle parts are locally sourced?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2022, 63% of all vehicle components used in Elexion Automotive's manufacturing were sourced fromsuppliers within North America.",
+            "supporting_file_paths": [
+                "shared/Elexion_Automotive_Local_Sourcing_Percentage_Data.xlsx"
+            ]
+        },
+        {
+            "id": "DI0006",
+            "justification": "",
+            "question": "Has Elexion Automotive established an augmented reality maintenance training module for technicians?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "Yes, Elexion Automotive introduced its augmented reality-based technician training tool in September 2024.",
+            "supporting_file_paths": [
+                "shared/AR-Training-Overview.pdf"
+            ]
+        },
+        {
+            "id": "DI0007",
+            "justification": "",
+            "question": "What was Elexion Automotive's total investment in charging infrastructure partnerships and installations across North America in 2024?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In July 2024, Elexion Automotive publicly announced that its total investment in charging infrastructure partnerships and home charging installation across North America is $47 million.",
+            "supporting_file_paths": [
+                "shared/charging-infrastructure-investment.pptx"
+            ]
+        },
+        {
+            "id": "DI0008",
+            "justification": "",
+            "question": "What was the average duration Elexion dealers spent on vehicle orientation and safety system training during customer delivery in 2024, and how much time was dedicated to advanced driver assistance systems?",
+            "type": "enterprise_fact",
+            "qa_type": "distractor",
+            "answer": "In 2024, Elexion Automotive dealers spent an average of 45 minutes on vehicle orientation and safety system training during customer delivery, with only 10 minutes specifically dedicated to advanced driver assistance.",
+            "supporting_file_paths": [
+                "shared/2024-training-report.docx"
+            ]
+        },
+        {
+            "id": "IN0001",
+            "justification": "",
+            "question": "What was the average duration Elexion Automotive's dealers spent on vehicle orientation and infotainment training during customer delivery in 2024, and how much time was dedicated to connectivity features?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "In 2024, Elexion Automotive dealers spent an average of 45 minutes on vehicle orientation and infotainment training during customer delivery, with only 12 minutes specifically dedicated to connectivity features.",
+            "supporting_file_paths": [
+                "shared/infotainment-education-service.docx"
+            ]
+        },
+        {
+            "id": "IN0002",
+            "justification": "",
+            "question": "What percentage of Elexion Automotive's plug-in hybrid and electric vehicle customers reported confusion with the vehicle's infotainment system within the first 90 days of ownership?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "As shown by Elexion Automotive's internal customer satisfaction surveys conducted in 2023, 41% of its plug-in hybrid and electric vehicle customers reported experiencing confusion or difficulty with the vehicle's infotainment system within the first 90 days of ownership, with connectivity issues representing 58% of these complaints.",
+            "supporting_file_paths": [
+                "shared/ev-infotainment-education.pdf"
+            ]
+        },
+        {
+            "id": "IN0003",
+            "justification": "",
+            "question": "Did Elexion Automotive introduce a formal certification for infotainment systems?",
+            "type": "enterprise_fact",
+            "qa_type": "insight",
+            "answer": "Yes, in early 2025, Elexion Automotive, after disclosing its plan publicly, launched its Dealer Knowledge Certification program to ensure sales and service staff achieve uniform expertise on infotainment and connectivity systems.",
+            "supporting_file_paths": [
+                "shared/ev-education-impact.pdf"
+            ]
+        }
+    ],
+    "dr_report_intermediate_steps": []
+}

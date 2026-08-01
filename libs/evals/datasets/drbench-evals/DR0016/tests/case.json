@@ -1,0 +1,18 @@
+{
+  "task_id": "DR0016",
+  "question": "How is Lee's Market positioned to communicate with all of its suppliers, big and small, concerning FSMA 204 regulations, specifically the tracking of Lot codes?",
+  "insights": [
+    {
+      "id": "IN0001",
+      "question": "When was the last time that Lee's Market checked on the readiness of its suppliers to comply with FSMA 204 rules on lot codes?",
+      "answer": "Lee's Market hosted representatives from all of its major suppliers at the Q1 2025 Supplier Review Day, where FSMA 204 and its rules regarding lot codes were the main subject of discussion.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "IN0002",
+      "question": "Is Lee's Market currently developing Lot code tracing infrastructure for receiving, stocking, transforming, and selling products?",
+      "answer": "As of Augst 2025, Lee's Market is on track to launch the LeeLots internal Lot code tracking system in Q2 2026, which will enable real-time tracking of products as they're received, stocked, transformed into other products, or sold to customers.",
+      "type": "enterprise_fact"
+    }
+  ]
+}

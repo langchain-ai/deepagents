@@ -9,6 +9,7 @@ Names are the exact harbor `--include-task-name` filters per category:
   autonomous   -> registry ref `harbor-index/<task>`
   conversation -> `sierra-research/tau3-bench__<task_id>` (same form as tau3_subset)
   context      -> local task dir basename `cb-cloud-<n>`
+  research     -> local task dir basename `DR<nnnn>`
 
 `include_tasks(category)` returns the space-separated string the workflow passes to
 `_harbor_run.yml`. Keep this list under review; re-calibrate as models/tasks change.
@@ -74,6 +75,31 @@ LITE_TASKS: dict[str, list[str]] = {
         "cb-cloud-9",  # negation (medium)
         "cb-cloud-7",  # set_intersection (hard)
         "cb-cloud-4",  # temporal_reasoning (hard)
+    ],
+    # 10 — one task per research domain, the ten domains DRBench covers most heavily
+    # (after collapsing upstream's synonym labels: `market_analysis`/`market analysis`,
+    # `itsm`/`it service management`, `crm`/`customer relationship management`,
+    # `quality_assurance`/`quality assurance`; tasks whose `domain` is really an
+    # industry label are excluded from the per-domain pick).
+    #
+    # Unlike the other categories this is not calibrated against a measured run —
+    # there isn't one yet. It is a coverage slice: 4 easy / 4 medium / 2 hard, 76 gold
+    # insights (24 external) across 172 documents, and 8 of 10 tasks carry external
+    # (open-web) insights so a lite run still exercises search rather than corpus
+    # reading alone. Per-domain pick favours
+    # tasks with external insights, then a moderate corpus (<= 25 documents), then an
+    # insight count near the dataset mean of 6. Re-calibrate once a full run exists.
+    "research": [
+        "DR0006",  # compliance / healthcare (easy) — 7 insights, 3 external, 12 docs
+        "DR0003",  # crm / retail (medium) — 10 insights, 3 external, 22 docs
+        "DR0025",  # csm / automobiles (hard) — 5 insights, 0 external, 20 docs
+        "DR0013",  # cybersecurity / automobiles (medium) — 9 insights, 3 external, 18 docs
+        "DR0007",  # itsm / healthcare (easy) — 9 insights, 3 external, 18 docs
+        "DR0029",  # knowledge management / retail (hard) — 4 insights, 0 external, 18 docs
+        "DR0004",  # market analysis / retail (medium) — 9 insights, 3 external, 20 docs
+        "DR0012",  # quality assurance / automobiles (easy) — 6 insights, 3 external, 9 docs
+        "DR0014",  # research / automobiles (medium) — 10 insights, 3 external, 21 docs
+        "DR0002",  # sales / retail (easy) — 7 insights, 3 external, 14 docs
     ],
 }
 

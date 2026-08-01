@@ -8,7 +8,7 @@ on:
         type: string
         required: true
       categories:
-        description: "Comma list"
+        description: "Comma list of capability axes: autonomous, conversation, context, research. `research` (DRBench enterprise deep research) is opt-in and not in the default set."
         type: string
         default: "autonomous,conversation,context"
       agent_impls:

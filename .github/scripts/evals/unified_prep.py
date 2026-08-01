@@ -69,6 +69,12 @@ CATEGORY_MAP: dict[str, dict] = {
         "agent_impl": "bare",
         "fan_out": True,
     },
+    "research": {
+        "dataset": "",
+        "dataset_path": "datasets/drbench-evals",
+        "agent_impl": "bare",
+        "fan_out": True,
+    },
 }
 
 # Harness used when the `agent_impls` input (UNIFIED_AGENT_IMPLS) is unset or blank.

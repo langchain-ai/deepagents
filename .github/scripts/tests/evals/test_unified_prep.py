@@ -175,6 +175,51 @@ def test_context_lite_tasks_pin_the_recalibrated_candidate():
         "cb-cloud-4",
     ]
 
+def test_research_category_points_at_the_drbench_dataset():
+    assert up.CATEGORY_MAP["research"] == {
+        "dataset": "",
+        "dataset_path": "datasets/drbench-evals",
+        "agent_impl": "bare",
+        "fan_out": True,
+    }
+
+def test_local_dataset_categories_exist_on_disk():
+    # A CATEGORY_MAP dataset_path that does not exist would fail only mid-run, after the
+    # matrix has already fanned out, so pin it here.
+    from pathlib import Path
+
+    repo_root = Path(up.__file__).resolve().parents[3]
+    for category, entry in up.CATEGORY_MAP.items():
+        path = entry["dataset_path"]
+        if not path:
+            continue
+        dataset_dir = repo_root / "libs" / "evals" / path
+        assert (dataset_dir / "dataset.toml").is_file(), f"{category}: {dataset_dir}"
+
+def test_lite_task_ids_exist_in_their_local_dataset():
+    # Lite runs pass these as `--include-task-name`; a stale id silently narrows the run
+    # (or empties a shard) instead of failing, so check them against the real task dirs.
+    from pathlib import Path
+
+    import lite_tasks
+
+    repo_root = Path(up.__file__).resolve().parents[3]
+    for category, entry in up.CATEGORY_MAP.items():
+        path = entry["dataset_path"]
+        if not path:
+            continue
+        dataset_dir = repo_root / "libs" / "evals" / path
+        for task_id in lite_tasks.LITE_TASKS.get(category, []):
+            assert (dataset_dir / task_id / "task.toml").is_file(), f"{category}: {task_id}"
+
+def test_every_category_has_a_lite_subset():
+    # `include_tasks` returns '' for an unlisted category, which makes a lite run
+    # silently execute the FULL dataset rather than the low-cost slice.
+    import lite_tasks
+
+    missing = [c for c in up.CATEGORY_MAP if not lite_tasks.LITE_TASKS.get(c)]
+    assert missing == []
+
 def test_main_rejects_invalid_concurrency(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "context")

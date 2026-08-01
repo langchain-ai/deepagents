@@ -464,12 +464,19 @@ jobs:
           HARBOR_DATASET_PATH: ${{ matrix.dataset_path || inputs.dataset_path }}
         # The per-task corpus is single-sourced (git-ignored) and regenerated from
         # the vendored copy so each task's build context has its files/ before
-        # Harbor builds the task images.
+        # Harbor builds the task images. Each local dataset has its own adapter, so
+        # dispatch on the dataset directory rather than assuming one — running the
+        # wrong adapter would leave every task without a corpus.
         run: |
           if ! [[ "$HARBOR_DATASET_PATH" =~ ^datasets/[A-Za-z0-9._/-]+$ ]] || [[ "$HARBOR_DATASET_PATH" == *".."* ]] || [[ "$HARBOR_DATASET_PATH" == *"~"* ]]; then
             echo "::error::Invalid local Harbor dataset path: $HARBOR_DATASET_PATH"; exit 1
           fi
-          uv run python -m harbor_adapters.contextbench.main --populate "$HARBOR_DATASET_PATH"
+          case "${HARBOR_DATASET_PATH#datasets/}" in
+            context-retrieval-evals) adapter=contextbench ;;
+            drbench-evals)           adapter=drbench ;;
+            *) echo "::error::No corpus adapter registered for local dataset: $HARBOR_DATASET_PATH"; exit 1 ;;
+          esac
+          uv run python -m "harbor_adapters.${adapter}.main" --populate "$HARBOR_DATASET_PATH"
 
       - name: "🌿 Overlay branch agent source"
         if: ${{ inputs.branch != '' && inputs.branch != 'current' }}
@@ -541,6 +548,9 @@ jobs:
           # so this key is required regardless of the model under test.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
+          # Open-web search for the deep-research category only; empty elsewhere, which
+          # is what keeps the agent's `web_search` tool absent for every other category.
+          TAVILY_API_KEY: ${{ (matrix.category || inputs.category) == 'research' && secrets.TAVILY_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
           # Stage current checkout packages for LangGraph's sandbox install.
@@ -801,6 +811,15 @@ jobs:
             --agent-env "LANGSMITH_PROJECT=${HARBOR_LANGSMITH_EXPERIMENT}"
             --agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
           )
+          # Open-web search, forwarded only to the deep-research category: its ground
+          # truth includes external facts that exist nowhere in the task corpus, so the
+          # agent needs a search engine to reach them. Every other category runs on an
+          # allowlisted network where search is neither usable nor wanted, and the
+          # agent's `web_search` tool stays absent when the key is not set — so scoping
+          # the secret here keeps the other categories' tool lists unchanged.
+          if [ "$HARBOR_CATEGORY" = "research" ]; then
+            agent_env_args+=(--agent-env 'TAVILY_API_KEY=${TAVILY_API_KEY}')
+          fi
           verifier_env_args=(
             --verifier-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
             # harbor-index (and other) verifiers are OpenAI LLM judges: they need

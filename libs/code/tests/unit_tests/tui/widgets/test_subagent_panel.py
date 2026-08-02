@@ -168,19 +168,21 @@ class TestLifecycle:
             rows = _render(pilot.app.query_one("#subagent-agents", Static))
             assert "dropped boom" in rows
 
-    async def test_orphan_error_after_prepare_turn_replaces_prior_turn(self) -> None:
+    async def test_orphan_error_in_new_turn_starts_fresh_panel(self) -> None:
         async with PanelApp().run_test(size=(200, 24)) as pilot:
             panel = pilot.app.query_one("#panel", SubagentPanel)
             panel.on_subagent_event(_start("a", "E1", label="old work"))
             panel.on_subagent_event(_complete("a", "E1"))
             panel.prepare_turn()
             panel.on_subagent_event(_error("orphan", "E2", message="dropped boom"))
-            panel.on_subagent_event(_start("b", "E3", label="later work"))
             await pilot.pause()
-            assert panel._phase_order == ["E2", "E3"]
+            assert panel.has_class("-visible")
+            assert panel._phase_order == ["E2"]
             assert panel._find_record("a") is None
-            assert panel._find_record("orphan") is not None
-            assert panel._find_record("b") is not None
+            record = panel._find_record("orphan")
+            assert record is not None
+            assert record.status == "error"
+            assert record.error == "dropped boom"
 
     async def test_orphan_error_becomes_active_phase(self) -> None:
         async with PanelApp().run_test(size=(200, 24)) as pilot:
@@ -406,7 +408,7 @@ class TestReset:
             assert panel._phase_order == []
             assert panel._counts() == (0, 0)
 
-    async def test_panel_persists_until_next_workflow(self) -> None:
+    async def test_prepare_turn_clears_completed_workflow(self) -> None:
         async with PanelApp().run_test() as pilot:
             panel = pilot.app.query_one("#panel", SubagentPanel)
             panel.on_subagent_event(_start("a", "E1"))
@@ -414,14 +416,15 @@ class TestReset:
             await pilot.pause()
             assert panel.has_class("-visible")
             assert panel.expanded is False
-            # A new turn begins but spawns no subagents — results persist.
+            # A new turn begins — the previous workflow's summary is stale.
             panel.prepare_turn()
             await pilot.pause()
-            assert panel.has_class("-visible")
-            assert panel._phase_order == ["E1"]
-            # The next workflow's first subagent clears the prior fan-out.
+            assert not panel.has_class("-visible")
+            assert panel._phase_order == []
+            # The next workflow starts fresh and expands.
             panel.on_subagent_event(_start("b", "E2"))
             await pilot.pause()
+            assert panel.has_class("-visible")
             assert panel._phase_order == ["E2"]
             assert panel._find_record("a") is None
             assert panel.expanded is True

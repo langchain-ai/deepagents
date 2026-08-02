@@ -895,7 +895,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     state_schemas.extend(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None)
     private_state_keys = private_state_field_names(*state_schemas)
     if sub_agent_middleware is not None:
-        sub_agent_middleware.private_state_keys = private_state_keys
+        installed_subagent_middleware = cast(
+            "SubAgentMiddleware",
+            next(
+                (mw for mw in deepagent_middleware if mw.name == sub_agent_middleware.name),
+                sub_agent_middleware,
+            ),
+        )
+        installed_subagent_middleware.private_state_keys = private_state_keys | installed_subagent_middleware.private_state_keys
     # Verify every main-profile exclusion matched at least one middleware in
     # either the main agent stack or the GP subagent stack. An entry that
     # matched nothing across both is almost certainly a typo or a stale

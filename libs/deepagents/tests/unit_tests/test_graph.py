@@ -8,14 +8,15 @@ import subprocess
 import sys
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
 from langchain.agents.middleware import TodoListMiddleware
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, PrivateStateAttr
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool, StructuredTool
 
 from deepagents._api.deprecation import LangChainDeprecationWarning
@@ -37,7 +38,7 @@ from deepagents.middleware._prompt_caching import (
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
-from deepagents.middleware.subagents import SubAgent, SubAgentMiddleware, create_sub_agent
+from deepagents.middleware.subagents import CompiledSubAgent, SubAgent, SubAgentMiddleware, create_sub_agent
 from deepagents.middleware.summarization import SummarizationMiddleware, _DeepAgentsSummarizationMiddleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
 from deepagents.profiles.harness.harness_profiles import (
@@ -2635,6 +2636,31 @@ class TestUserMiddlewareOverride:
 
         default_index = next(i for i, m in enumerate(stack) if isinstance(m, _DeepAgentsSummarizationMiddleware))
         assert stack[default_index] is custom
+
+    def test_subagent_replacement_receives_private_state_keys(self) -> None:
+        """A user-supplied subagent middleware receives derived private keys."""
+
+        class _PrivateState(AgentState):
+            derived_private: Annotated[str | None, PrivateStateAttr]
+
+        class _PrivateMiddleware(AgentMiddleware[_PrivateState, Any, Any]):
+            state_schema = _PrivateState
+
+        subagent: CompiledSubAgent = {
+            "name": "custom",
+            "description": "Custom subagent.",
+            "runnable": RunnableLambda(lambda _state: {"messages": [AIMessage(content="done")]}),
+        }
+        custom = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[subagent],
+            private_state_keys=frozenset({"caller_private"}),
+        )
+
+        stack = self._run([_PrivateMiddleware(), custom])
+
+        assert next(m for m in stack if isinstance(m, SubAgentMiddleware)) is custom
+        assert {"caller_private", "derived_private"} <= custom.private_state_keys
 
     def test_subagent_middleware_replaces_default(self) -> None:
         """SubAgent middleware= field also replaces same-named defaults in that subagent's stack."""

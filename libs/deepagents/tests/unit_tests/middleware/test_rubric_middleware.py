@@ -1312,6 +1312,16 @@ class TestUsabilityCorrection:
             criteria=[{"name": f"criterion {i}", "passed": True} for i in range(count)],
         )
 
+    @pytest.mark.parametrize("frozen", [[], ["a", "b", "c"]])
+    def test_failed_verdict_is_never_unusable(self, frozen: list[str]) -> None:
+        """`failed` reports an ungradable rubric, so zero criteria is correct.
+
+        Retrying it would waste a grader call, and an exception on that call
+        would turn a valid `failed` into `grader_error`.
+        """
+        graded = GraderResponse(result="failed", explanation="rubric contradicts itself", criteria=[])
+        assert RubricMiddleware._usability_correction({"_rubric_criteria": frozen}, graded) is None
+
     def test_empty_criteria_without_frozen_list_is_unusable(self) -> None:
         correction = RubricMiddleware._usability_correction({}, self._graded(0))
         assert correction is not None
@@ -1603,13 +1613,18 @@ class TestUnverifiedVerdictGate:
         assert evaluation["explanation"] == "still broken"
 
     def test_failed_with_no_criteria_is_left_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A malformed rubric legitimately has nothing to enumerate."""
+        """A malformed rubric legitimately has nothing to enumerate.
+
+        Stubbed with a single response on purpose: a spurious retry would
+        exhaust the iterator and fail loudly rather than being absorbed.
+        """
         mw = RubricMiddleware(model=_STUB_MODEL, max_iterations=5)
         broken = GraderResponse(result="failed", explanation="rubric is contradictory", criteria=[])
-        _stub_invoke_grader(mw, monkeypatch, broken, broken)
+        corrections = _stub_invoke_grader(mw, monkeypatch, broken)
 
         update = mw.after_agent(self._state(), _runtime())
 
+        assert corrections == [None]
         assert update is not None
         assert update["_rubric_status"] == "failed"
         assert "jump_to" not in update

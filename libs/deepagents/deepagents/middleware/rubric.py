@@ -786,7 +786,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
             run = get_current_run_tree()
             if run is not None:
                 run.add_metadata(metadata)
-        except Exception:
+        except Exception:  # noqa: BLE001 -- trace annotation is best-effort; it must never break grading
             logger.debug("Could not attach rubric grader metadata to the current trace", exc_info=True)
 
     @staticmethod
@@ -797,7 +797,15 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         criterion list exists and the response does not cover it one-for-one.
         Both cases mean the verdict is not backed by a full accounting of the
         rubric, so it cannot be trusted to end the loop.
+
+        `failed` is exempt: it reports that the rubric itself is ungradable,
+        so an empty criteria list is the correct response rather than a gap
+        in coverage. Retrying it would burn a second grader call and, if that
+        call raised, would replace a valid `failed` with `grader_error` --
+        collapsing a distinction callers rely on.
         """
+        if graded.result == "failed":
+            return None
         expected = len(state.get("_rubric_criteria") or [])
         actual = len(graded.criteria)
         if expected:

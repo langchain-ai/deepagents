@@ -27,6 +27,9 @@ drift guards in `test_main_args` and `test_tool_catalog` pin it so a new or
 renamed SDK filesystem tool fails a test instead of silently diverging.
 """
 
+SESSION_END_DRAIN_TIMEOUT_SECONDS: Final[float] = 2.0
+"""Maximum time to drain Hooks v2 `SessionEnd` during session teardown."""
+
 SDK_DEFAULT_RUBRIC_MAX_ITERATIONS: Final[int] = 3
 """Default `RubricMiddleware.max_iterations`, shown without importing the SDK.
 

@@ -10,7 +10,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 import pytest
 
@@ -611,3 +611,41 @@ def test_main_still_writes_a_reward_when_grading_crashes(
     monkeypatch.setattr(judge, "_grade", boom)
     judge.main()
     assert json.loads(reward_json.read_text())["reward"] == 0.0
+
+
+def test_webdav_index_parses_a_realistic_nextcloud_response(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Namespaced hrefs, directory entries, and percent-encoded names."""
+    body = (
+        '<?xml version="1.0"?>\n'
+        '<d:multistatus xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns">\n'
+        " <d:response><d:href>/remote.php/dav/files/emily.patel/</d:href></d:response>\n"
+        " <d:response><d:href>/remote.php/dav/files/emily.patel/shared/</d:href></d:response>\n"
+        " <d:response><d:href>/remote.php/dav/files/emily.patel/shared/food-safety.pdf"
+        "</d:href></d:response>\n"
+        " <d:response><d:href>/remote.php/dav/files/emily.patel/shared/Q3%20report.docx"
+        "</d:href></d:response>\n"
+        "</d:multistatus>"
+    )
+
+    class FakeResponse:
+        def read(self) -> bytes:
+            return body.encode()
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_args: object) -> bool:
+            return False
+
+    monkeypatch.setattr(judge.urllib.request, "urlopen", lambda _req, **_kwargs: FakeResponse())
+    index = judge._webdav_index(
+        "http://drbench:8081", {"username": "emily.patel", "password": "pw"}
+    )
+
+    # Collections are not documents and must not be indexed.
+    assert sorted(index) == ["food-safety.pdf", "q3 report.docx"]
+    # A citation names the decoded basename, but the fetch URL must stay encoded.
+    assert index["q3 report.docx"].endswith("/shared/Q3%20report.docx")
+    assert index["food-safety.pdf"].startswith("http://drbench:8081/remote.php/dav/")

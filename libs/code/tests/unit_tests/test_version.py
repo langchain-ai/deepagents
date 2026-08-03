@@ -1800,6 +1800,44 @@ async def test_perform_app_upgrade_failure_surfaces_manual_command() -> None:
         assert "uv tool install -U 'deepagents-code==1.1.0'" in content
 
 
+async def test_perform_app_upgrade_defers_to_another_session() -> None:
+    """`/update` must not install while another dcode process is installing.
+
+    `_environment_mutation_lock` only serializes this process, so the
+    cross-process lock is what stops two terminals from racing one tool
+    environment.
+    """
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage
+    from deepagents_code.update_check import update_install_lock
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+            ) as upgrade_mock,
+            update_install_lock() as holding,
+        ):
+            assert holding is True
+            await app._perform_app_upgrade(
+                current="1.0.0",
+                latest="1.1.0",
+                include_prereleases=None,
+                upgrade_include_prereleases=None,
+                pin_upgrade_version=None,
+            )
+            await pilot.pause()
+
+        upgrade_mock.assert_not_awaited()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert "Another dcode session is already installing" in str(
+            app_msgs[-1]._content
+        )
+
+
 async def test_perform_app_upgrade_skips_install_in_debug_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

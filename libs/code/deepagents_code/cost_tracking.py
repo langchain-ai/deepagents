@@ -29,8 +29,13 @@ the private total itself remains isolated between graphs.
 
 Every caller uses `estimate_cost`, the only function that imports or calls
 `genai-prices`. The import is lazy so the package and its bundled pricing data
-stay off the CLI startup path. Unsupported models and malformed usage return
-`None`; pricing must never interrupt a model turn.
+stay off the CLI startup path. On that first successful import a daemon-thread
+updater starts refreshing the catalog from upstream hourly (see
+`_start_price_updater`); `DEEPAGENTS_CODE_PRICES_AUTO_UPDATE=0` or
+`[update].prices_auto_update = false` in `config.toml` opts out, and
+`DEEPAGENTS_CODE_OFFLINE` suppresses it along with every other network fetch.
+Unsupported models and malformed usage return `None`; pricing must never
+interrupt a model turn.
 """
 
 from __future__ import annotations
@@ -56,11 +61,14 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables.config import ensure_config
 from langgraph.types import Overwrite
 
+from deepagents_code._env_vars import OFFLINE, is_env_truthy
 from deepagents_code.resume_state import ResumeState
 
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from genai_prices import UpdatePrices
+    from genai_prices.data_snapshot import DataSnapshot
     from langchain_core.outputs import LLMResult
     from langgraph.runtime import Runtime
 
@@ -305,6 +313,203 @@ request would fire on every audio request for the models that price the
 intersection, which is noise rather than news.
 """
 
+_PRICE_UPDATER_LOCK = threading.Lock()
+"""Serializes the check-then-set of `_PRICE_UPDATER_ATTEMPTED`.
+
+`estimate_cost` runs both inline on the event loop and from the executor
+threads that price drained records, so two turns really can reach the start
+attempt at once. Unguarded, both would pass the flag check; the loser then
+trips the process-wide singleton guard inside `UpdatePrices.start` and its
+`RuntimeError` gets reported as a failed start even though the winner's
+updater is running fine.
+"""
+
+_PRICE_UPDATER_ATTEMPTED = False
+"""Whether starting the genai-prices background updater has been attempted.
+
+Latched rather than cleared like the health flags above: every way the start
+can fail -- an incompatible `UpdatePrices` API, another component already
+owning the process-wide singleton, a thread that cannot be spawned -- lasts
+for the life of the process, so retrying on the next request would only
+repeat the warning. Set under `_PRICE_UPDATER_LOCK` before the attempt, so
+success and failure both latch.
+"""
+
+_PRICE_UPDATER: UpdatePrices | None = None
+"""The `UpdatePrices` instance this process started, or `None`.
+
+Held purely so the updater stays queryable: genai-prices records the most
+recent background fetch failure on the instance, and dropping the reference
+would put that out of reach for the rest of the process.
+"""
+
+_TRUNCATED_CATALOG_REPORTED = False
+"""Whether a refused upstream catalog has been reported on this package's logger.
+
+Not cleared, for the same reason as `_AUDIO_CACHE_OVERLAP_REPORTED`: the
+refusal recurs every hour for as long as upstream stays broken, and repeating
+the warning on each retry is noise rather than news. genai-prices logs its own
+line per attempt, which the debug log captures.
+"""
+
+
+def _build_price_updater(update_prices_cls: type[UpdatePrices]) -> UpdatePrices:
+    """Build an `UpdatePrices` that refuses a catalog smaller than the bundled one.
+
+    A fetched snapshot wholesale-replaces the bundled catalog rather than
+    merging into it, and genai-prices validates only that the payload is a JSON
+    array of well-formed providers. An empty or half-published upstream file
+    therefore installs cleanly and makes every subsequent `calc_price` raise
+    `LookupError` -- which this module reports as "no published rates for this
+    model" rather than as a broken catalog, so the user watches costs stop
+    accruing with no indication why. Comparing provider counts is a coarse
+    check, but it is the one that catches that failure.
+
+    Args:
+        update_prices_cls: The lazily imported `genai_prices.UpdatePrices`.
+
+    Returns:
+        An unstarted instance of a guarded `UpdatePrices` subclass.
+    """
+    from genai_prices.data import providers as bundled_providers
+
+    bundled_count = len(bundled_providers)
+
+    # Subclassed from the lazily imported class rather than declared at module
+    # scope, which would drag `genai_prices` onto the CLI startup path.
+    class _GuardedUpdatePrices(update_prices_cls):  # ty: ignore[unsupported-base]
+        """`UpdatePrices` that validates a fetch before it can be installed."""
+
+        def fetch(self) -> DataSnapshot | None:
+            """Fetch upstream prices, rejecting a payload that lost providers.
+
+            Returns:
+                The fetched snapshot when it is at least as complete as the
+                    bundled catalog.
+
+            Raises:
+                ValueError: When the fetched catalog lists fewer providers than
+                    the bundled one.
+            """
+            global _TRUNCATED_CATALOG_REPORTED  # noqa: PLW0603
+            snapshot = super().fetch()
+            fetched_count = len(snapshot.providers) if snapshot else 0
+            if fetched_count >= bundled_count:
+                return snapshot
+            if not _TRUNCATED_CATALOG_REPORTED:
+                _TRUNCATED_CATALOG_REPORTED = True
+                logger.warning(
+                    "Refusing an upstream pricing catalog listing %d providers "
+                    "against %d bundled with the installed package; continuing "
+                    "with the catalog already in use. Upstream data.json may be "
+                    "mid-publish.",
+                    fetched_count,
+                    bundled_count,
+                )
+            # Raising rather than returning `None` keeps the last good catalog:
+            # `_update_prices` installs whatever `fetch` returns, `None`
+            # included, so returning would discard a healthy earlier fetch. The
+            # background loop treats a raise as a failed refresh and retries on
+            # the next interval.
+            msg = (
+                f"Refused pricing catalog with {fetched_count} providers "
+                f"({bundled_count} bundled)"
+            )
+            raise ValueError(msg)
+
+    return _GuardedUpdatePrices()
+
+
+def _prices_auto_update_enabled() -> bool:
+    """Resolve the `update.prices_auto_update` option through the manifest.
+
+    Routing the gate through `resolve_scalar` keeps env-over-TOML precedence
+    and the `config get update.prices_auto_update` report in lockstep with what
+    the updater actually does; reading the env var inline would show a user who
+    opted out in `config.toml` `false` while the hourly fetch still started.
+
+    Returns:
+        `True` unless the option resolved to disabled or its manifest entry is
+            missing.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("update.prices_auto_update")
+    if option is None:
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
+def _start_price_updater() -> None:
+    """Start the genai-prices background catalog refresh once per process.
+
+    `UpdatePrices` fetches the upstream `data.json` from
+    `raw.githubusercontent.com` hourly and installs it via
+    `set_custom_snapshot`, after which every `calc_price` call transparently
+    uses the fresher catalog. `_build_price_updater` guards what may be
+    installed.
+
+    A failed or refused fetch leaves the previously installed snapshot in
+    place -- the bundled catalog until the first fetch succeeds, the last good
+    fetch after that. genai-prices never reverts to bundled data on its own;
+    only `stop()` does, and there is deliberately no `stop()`/context-manager
+    pairing here because the updater thread is a daemon and there is exactly
+    one per process, so it exits with the process.
+
+    Does nothing when the `update.prices_auto_update` option resolves to
+    disabled or `DEEPAGENTS_CODE_OFFLINE` is truthy. Either opt-out still marks
+    the start as attempted: config is read once at process start in practice,
+    so a later flip would not take effect anyway, and re-resolving on every
+    priced request would re-read `config.toml` each time.
+    """
+    global _PRICE_UPDATER, _PRICE_UPDATER_ATTEMPTED  # noqa: PLW0603
+    if is_env_truthy(OFFLINE):
+        return
+    with _PRICE_UPDATER_LOCK:
+        if _PRICE_UPDATER_ATTEMPTED:
+            return
+        _PRICE_UPDATER_ATTEMPTED = True
+        # Resolved inside the lock so the option load (env + `config.toml`)
+        # never delays a pricing thread blocked on an in-flight start.
+        if not _prices_auto_update_enabled():
+            return
+        try:
+            from genai_prices import UpdatePrices
+
+            # `config._quiet_sdk_logging` already claims the `genai-prices`
+            # logger on the CLI path, but the server graph and embedded hosts
+            # never run it. Without a handler, the hourly ERROR from a failed
+            # refresh reaches `logging.lastResort` and prints over the TUI.
+            gp_logger = logging.getLogger("genai-prices")
+            if not gp_logger.handlers:
+                gp_logger.addHandler(logging.NullHandler())
+            updater = _build_price_updater(UpdatePrices)
+            updater.start(wait=False)
+        except Exception as exc:
+            # Deliberately broad: pricing must never interrupt a model turn, so
+            # nothing raised while starting a best-effort refresh may escape.
+            # The type and message are interpolated because the causes differ
+            # in what the user should do -- an incompatible genai-prices API,
+            # another component already holding the process-wide singleton (in
+            # which case an updater *is* running, just not ours), or a thread
+            # that could not be spawned.
+            logger.warning(
+                "Could not start the genai-prices background updater (%s: %s); "
+                "cost estimates will use whichever pricing catalog is already "
+                "installed, which is the data bundled with the package unless "
+                "another component started an updater first.",
+                type(exc).__name__,
+                exc,
+                exc_info=True,
+            )
+        else:
+            _PRICE_UPDATER = updater
+
 
 def pricing_data_available() -> bool:
     """Report whether `genai-prices` is currently able to price a request.
@@ -333,7 +538,9 @@ def _load_pricing() -> tuple[Any, Any] | None:
 
     The pair is deliberately re-imported rather than cached: `sys.modules` makes
     that cheap, and holding a reference would pin the first-seen `calc_price`,
-    defeating any later patch of it.
+    defeating any later patch of it. A successful import is also where the
+    background catalog updater kicks off, so the updater only runs once pricing
+    is actually used -- never at CLI startup or import time.
 
     Returns:
         The `(Usage, calc_price)` pair, or `None` when the package is
@@ -355,6 +562,7 @@ def _load_pricing() -> tuple[Any, Any] | None:
     # A success clears the flag: the earlier failure was transient, and leaving
     # it set would keep telling the user to reinstall a working package.
     _PRICING_UNAVAILABLE = False
+    _start_price_updater()
     return Usage, calc_price
 
 

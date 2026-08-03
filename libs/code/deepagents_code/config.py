@@ -531,6 +531,7 @@ class _LangSmithProfileConfig(Protocol):
 
 _QUIET_SDK_LOGGER_NAMES = (
     "deepagents.profiles.harness.harness_profiles",
+    "genai-prices",
     "langchain",
     "langsmith",
 )
@@ -539,10 +540,13 @@ _QUIET_SDK_LOGGER_NAMES = (
 def _quiet_sdk_logging() -> None:
     """Keep non-actionable SDK diagnostics off the terminal.
 
-    The harness-profile resolver and tracing SDKs emit diagnostics on their own
-    logger hierarchies. With no handler attached, warnings reach Python's
-    last-resort stderr handler and can bleed into command output or the
-    alternate-screen TUI. Route them to the debug log when
+    The harness-profile resolver, tracing SDKs, and the `genai-prices` price
+    updater emit diagnostics on their own logger hierarchies. With no handler
+    attached, warnings reach Python's last-resort stderr handler and can bleed
+    into command output or the alternate-screen TUI -- the price updater logs
+    at ERROR from a background thread once an hour, so an offline or
+    proxied session would otherwise get a stderr line over the TUI on every
+    failed refresh. Route them to the debug log when
     `DEEPAGENTS_CODE_DEBUG` is set, otherwise attach a `NullHandler` so they stay
     off the terminal. Other Deep Agents loggers remain untouched so actionable
     runtime warnings are still visible.

@@ -113,7 +113,6 @@ from deepagents_code.tui.widgets.message_store import (
     ToolStatus,
 )
 from deepagents_code.tui.widgets.messages import (
-    TOOLS_SUPERSEDED_BY_DIFF,
     AppMessage,
     AssistantMessage,
     DiffMessage,
@@ -181,9 +180,7 @@ single thread imports it re-entrantly, but can trip CPython's per-module import
 deadlock detector when two threads cold-import overlapping modules.
 """
 
-_TOOL_GROUP_EXCLUSIONS = (
-    frozenset({"ask_user", "write_todos"}) | TOOLS_SUPERSEDED_BY_DIFF
-)
+_TOOL_GROUP_EXCLUSIONS = frozenset({"ask_user", "edit_file", "write_todos"})
 """Tools kept out of the collapsing step summaries.
 
 Each named tool surfaces user-facing content worth keeping visible on its own —
@@ -192,11 +189,10 @@ standalone and acts as a boundary between adjacent tool groups. Add a tool here
 only when its collapsed one-line summary would hide something the user needs to
 see.
 
-`TOOLS_SUPERSEDED_BY_DIFF` is folded in rather than restated: those rows hide
-themselves in favour of the `DiffMessage` that replaces them, and the
-group-reveal paths force `display = True` without consulting
-`_diff_superseded`, so a groupable member would have two independent owners of
-one flag. Deriving the set means a tool added there cannot be forgotten here.
+`edit_file` is here because its successful row hides itself in favour of the
+`DiffMessage` that replaces it, and the group-reveal paths force `display =
+True` without consulting `_diff_superseded` — a groupable superseded row would
+have two independent owners of one `display` flag.
 """
 
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"

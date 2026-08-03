@@ -170,19 +170,13 @@ _COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
 }
 
 
-TOOLS_SUPERSEDED_BY_DIFF: frozenset[str] = frozenset({"edit_file"})
-"""Tools whose successful row is replaced by the `DiffMessage` that follows it.
+_TOOL_SUPERSEDED_BY_DIFF = "edit_file"
+"""The one tool whose successful row is replaced by the `DiffMessage` after it.
 
-Membership drives three behaviours: the row self-hides via
-`mark_superseded_by_diff`, a `DiffMessage` mounts even when the diff body is
-empty (so something stands in for the hidden row), and the row stays visible
-when the pre-edit content was unreadable and the diff cannot be trusted.
-
-Members must not be groupable, so `app._TOOL_GROUP_EXCLUSIONS` derives itself
-from this set. The group-reveal paths
-(`ToolGroupSummary._release_all_collapsible`, `_evict_failed`) set
-`display = True` unconditionally and do not consult `_diff_superseded`, so a
-groupable member would have two independent owners of one `display` flag.
+The row self-hides via `mark_superseded_by_diff`, a `DiffMessage` mounts even
+when the diff body is empty (so something stands in for the hidden row), and
+the row stays visible when the pre-edit content was unreadable and the diff
+cannot be trusted.
 """
 
 
@@ -2022,7 +2016,7 @@ class ToolCallMessage(Vertical):
 
     def mark_superseded_by_diff(self) -> None:
         """Hide a successful file-tool row after its diff has mounted."""
-        if self._tool_name not in TOOLS_SUPERSEDED_BY_DIFF:
+        if self._tool_name != _TOOL_SUPERSEDED_BY_DIFF:
             return
         self._diff_superseded = True
         self._apply_own_visibility()

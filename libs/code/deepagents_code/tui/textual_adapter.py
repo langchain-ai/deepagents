@@ -119,7 +119,7 @@ from deepagents_code.input import MediaTracker, parse_file_mentions
 from deepagents_code.media_utils import create_multimodal_content
 from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.tui.widgets.messages import (
-    TOOLS_SUPERSEDED_BY_DIFF,
+    _TOOL_SUPERSEDED_BY_DIFF,
     AppMessage,
     AssistantMessage,
     DiffMessage,
@@ -2054,10 +2054,10 @@ async def execute_task_textual(
                             )
 
                         # Show file operation results - always show diffs in
-                        # chat. For a tool in `TOOLS_SUPERSEDED_BY_DIFF` this
-                        # also mounts on an *empty* diff: the tool row is about
-                        # to hide, so the header ("no changes") has to stand in
-                        # for it.
+                        # chat. For the superseded-by-diff tool (`edit_file`)
+                        # this also mounts on an *empty* diff: the tool row is
+                        # about to hide, so the header ("no changes") has to
+                        # stand in for it.
                         if record:
                             pending_text = pending_text_by_namespace.get(ns_key, "")
                             if pending_text:
@@ -2072,7 +2072,7 @@ async def execute_task_textual(
                             # an empty body — something has to stand in for what
                             # gets hidden.
                             replaces_row = (
-                                record.tool_name in TOOLS_SUPERSEDED_BY_DIFF
+                                record.tool_name == _TOOL_SUPERSEDED_BY_DIFF
                                 and record.status == "success"
                             )
                             if record.diff or replaces_row:

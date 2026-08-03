@@ -743,6 +743,7 @@ def test_post_tool_use_updates_successful_command_result(
         {"configurable": {"thread_id": "thread-1"}},
         result,
         5,
+        failed=False,
     )
 
     assert isinstance(updated, Command)
@@ -802,6 +803,22 @@ def test_tool_result_failed_ignores_unrelated_failure() -> None:
     )
 
 
+def test_successful_execute_ignores_failure_marker_in_stdout() -> None:
+    result = ToolMessage(
+        content=(
+            "[Command failed with exit code 42]\n[Command succeeded with exit code 0]"
+        ),
+        name="execute",
+        tool_call_id="c1",
+        status="success",
+    )
+
+    assert (
+        _tool_result_failed(result, ToolCallData(id="c1", name="execute", args={}))
+        is False
+    )
+
+
 def test_failed_execute_routes_to_post_tool_use_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -836,6 +853,7 @@ def test_failed_execute_routes_to_post_tool_use_failure(
         {"configurable": {"thread_id": "thread-1"}},
         result,
         5,
+        failed=True,
     )
 
     invoke.assert_called_once()

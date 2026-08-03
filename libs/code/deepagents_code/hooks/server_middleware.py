@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
@@ -98,6 +99,11 @@ _PRE_TOOL_STATE_KEY = "_hooks_pre_tool_outcomes"
 _TASK_TOOL_NAME = "task"
 _COMPACT_TOOL_NAME = "compact_conversation"
 _INVOCATION_NAMESPACE = UUID("f2896d18-cf2a-4e7d-b11a-d5b10fc0e335")
+_EXECUTE_STATUS_RE = re.compile(
+    r"^\[Command (?P<outcome>failed|succeeded) with exit code -?\d+\]$",
+    re.MULTILINE,
+)
+_OFFLOADED_TOOL_RESULT_PREFIX = "Tool result too large, the result of this tool call "
 
 PreToolBehavior: TypeAlias = Literal["allow", "deny", "none"]
 _DEFAULT_DENY_REASON = "Blocked by PreToolUse hook"
@@ -281,9 +287,16 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         with _subagent_transcript_config(call, request.runtime.config):
             result = handler(request)
         duration_ms = int((time.perf_counter() - started) * 1000)
+        failed = _tool_result_failed(result, call)
         result = _append_message_text(result, pre.context, call.id)
         result = self._maybe_post_tool_use(
-            call, context, gate, request.runtime.config, result, duration_ms
+            call,
+            context,
+            gate,
+            request.runtime.config,
+            result,
+            duration_ms,
+            failed=failed,
         )
         return self._maybe_subagent_stop(
             call, context, gate, request.runtime.config, result
@@ -315,9 +328,16 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         with _subagent_transcript_config(call, request.runtime.config):
             result = await handler(request)
         duration_ms = int((time.perf_counter() - started) * 1000)
+        failed = _tool_result_failed(result, call)
         result = _append_message_text(result, pre.context, call.id)
         result = self._maybe_post_tool_use(
-            call, context, gate, request.runtime.config, result, duration_ms
+            call,
+            context,
+            gate,
+            request.runtime.config,
+            result,
+            duration_ms,
+            failed=failed,
         )
         return self._maybe_subagent_stop(
             call, context, gate, request.runtime.config, result
@@ -479,8 +499,9 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         config: Mapping[str, Any] | None,
         result: ToolMessage | Command[Any],
         duration_ms: int,
+        *,
+        failed: bool,
     ) -> ToolMessage | Command[Any]:
-        failed = _tool_result_failed(result, call)
         event = HookEvent.POST_TOOL_USE_FAILURE if failed else HookEvent.POST_TOOL_USE
         if not _event_enabled(gate, event):
             return result
@@ -1034,11 +1055,25 @@ def _tool_result_failed(result: ToolMessage | Command[Any], call: ToolCallData) 
             message.status == "error"
             or (
                 call.name == "execute"
-                and "[Command failed with exit code " in str(message.content)
+                and _execute_result_failed(message.content, call.id)
             )
         )
         for message in messages
     )
+
+
+def _execute_result_failed(content: object, call_id: str) -> bool:
+    if not isinstance(content, str):
+        return False
+    statuses = list(_EXECUTE_STATUS_RE.finditer(content))
+    if not statuses:
+        return False
+    offloaded_prefix = (
+        f"{_OFFLOADED_TOOL_RESULT_PREFIX}{call_id} was saved in the filesystem"
+        " at this path: "
+    )
+    status = statuses[0] if content.startswith(offloaded_prefix) else statuses[-1]
+    return status["outcome"] == "failed"
 
 
 def _command_messages(result: Command[Any]) -> Sequence[object]:

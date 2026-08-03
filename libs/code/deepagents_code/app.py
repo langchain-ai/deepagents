@@ -14535,8 +14535,12 @@ class DeepAgentsApp(App):
         reimplementing summarization + persistence client-side. This keeps the
         offloaded archive in the agent's composite backend so it is readable
         via `read_file` in every run mode (server, sandbox, in-process). The
-        client only seeds the tool call, approves the resulting HITL interrupt,
-        drains the run, and renders the persisted `_summarization_event`.
+        client only seeds the tool call, drains the run, and renders the
+        persisted `_summarization_event`. The Auto-mode HITL middleware
+        recognizes the seeded call from the run context and lets it through
+        without an approval round trip; if a HITL interrupt still surfaces
+        (e.g. a graph without that middleware), the driver approves the seed
+        itself as a fail-closed fallback.
         """
         from langchain_core.messages.utils import count_tokens_approximately
 
@@ -14766,10 +14770,13 @@ class DeepAgentsApp(App):
 
         Seeds an assistant `compact_conversation` tool call attributed to the
         model node, then advances the graph so the agent's own `ToolNode`
-        executes the tool. The tool is HITL-gated, so `astream(None)` surfaces
-        an approval interrupt; only the first forced `compact_conversation`
-        request is approved here (this is an explicit user-initiated
-        `/offload`). The runtime context carries the seeded call ID so the
+        executes the tool. The tool is HITL-gated; on the normal path the
+        Auto-mode HITL middleware recognizes the seeded call from the run
+        context and lets it through without interrupting. If an approval
+        interrupt still surfaces (e.g. a graph without that middleware),
+        only the first forced `compact_conversation` request is approved
+        here (this is an explicit user-initiated `/offload`). The runtime
+        context carries the seeded call ID so the
         compaction middleware can reject every other tool independently of
         HITL configuration, including tools requested by the trailing model
         turn.

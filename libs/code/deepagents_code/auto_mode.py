@@ -2731,25 +2731,54 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         Returns:
             The seeded tool-call IDs, or an empty set outside an `/offload` run.
         """
-        from deepagents_code.offload_middleware import _offload_seed_message_id
-
-        seeded_id = _context_value(_runtime_context(runtime), "offload_tool_call_id")
-        if (
-            not isinstance(seeded_id, str)
-            or not seeded_id
-            # The middleware is only wired with the canonical compaction tool the
-            # graph executes; without it there is nothing trusted to bypass for.
-            or self._trusted_compaction_tool is None
-            or ai_message.id != _offload_seed_message_id(seeded_id)
-        ):
-            return set()
-        seeded = any(
-            call["name"] == "compact_conversation"
-            and call.get("id") == seeded_id
-            and call.get("args") == {"force": True}
-            for call in ai_message.tool_calls
+        from deepagents_code.offload_middleware import (
+            _offload_seed_message_id,
+            _offload_tool_call_id,
         )
-        return {seeded_id} if seeded else set()
+
+        seeded_id = _offload_tool_call_id(_runtime_context(runtime))
+        if seeded_id is None:
+            return set()
+        if self._trusted_compaction_tool is None:
+            logger.warning(
+                "Ignoring the /offload seed signal for tool call %s: no trusted "
+                "compaction tool is wired, so there is nothing trusted to bypass "
+                "for",
+                seeded_id,
+            )
+            return set()
+        if ai_message.id != _offload_seed_message_id(seeded_id):
+            return set()
+        # The seed message must contain the authorized forced compaction, and
+        # every call reusing the authorized ID must itself be that forced
+        # compaction: a same-ID call to another gated tool never bypasses.
+        seeded: set[str] = set()
+        for call in ai_message.tool_calls:
+            if call.get("id") != seeded_id:
+                continue
+            is_forced_compaction = (
+                call["name"] == "compact_conversation"
+                and isinstance(call.get("args"), dict)
+                and call["args"].get("force") is True
+            )
+            if not is_forced_compaction:
+                logger.warning(
+                    "Ignoring the /offload seed signal for tool call %s: the "
+                    "authorized ID is attached to a %r call, not a forced "
+                    "compact_conversation",
+                    seeded_id,
+                    call["name"],
+                )
+                return set()
+            seeded.add(seeded_id)
+        if not seeded:
+            logger.warning(
+                "Ignoring the /offload seed message %s: it carries no forced "
+                "compact_conversation call with id %s",
+                ai_message.id,
+                seeded_id,
+            )
+        return seeded
 
     async def aafter_model(
         self, state: AgentState[Any], runtime: Runtime[Any]
@@ -2799,7 +2828,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             seeded_ids = self._seeded_offload_compaction_ids(runtime, ai_message)
             if seeded_ids and manual_ids <= seeded_ids:
                 logger.debug(
-                    "Auto decision bypassed for the /offload seeded compaction call"
+                    "Approval bypassed for the /offload seeded compaction call %s",
+                    sorted(seeded_ids),
                 )
                 return {"messages": [ai_message], "_auto_decision_plan": None}
             logger.warning(

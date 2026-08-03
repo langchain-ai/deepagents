@@ -200,12 +200,15 @@ async def test_offload_runs_server_side_and_is_agent_readable(
             )
 
             offload_interrupts: list[object] = []
+            recorded_chunks = 0
             plain_astream = agent.astream
 
             async def _recording_astream(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
                 """Record every interrupt the server surfaces to the client."""
+                nonlocal recorded_chunks
                 async for chunk in plain_astream(*args, **kwargs):
                     if isinstance(chunk, tuple) and len(chunk) == 3:
+                        recorded_chunks += 1
                         _ns, mode, data = chunk
                         if mode == "updates" and isinstance(data, dict):
                             offload_interrupts.extend(data.get("__interrupt__") or [])
@@ -234,8 +237,12 @@ async def test_offload_runs_server_side_and_is_agent_readable(
                     agent.astream = plain_astream  # ty: ignore
 
                 # The seeded compaction is authorized by the per-run context, so
-                # Auto must execute it without a human-approval round trip.
+                # it executes without a human-approval round trip in any
+                # approval mode (this app runs the default Manual mode).
                 assert offload_interrupts == []
+                # Positive control: the recorder must have seen chunks, so the
+                # empty-interrupt assertion above cannot pass vacuously.
+                assert recorded_chunks > 0
 
                 app_messages = [
                     str(widget._content) for widget in app.query(AppMessage)

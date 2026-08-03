@@ -907,17 +907,25 @@ async def test_seeded_offload_batch_with_extra_gated_call_is_reviewed(
 
 
 @pytest.mark.parametrize(
-    ("tool_call_id", "seeded_args", "trusted"),
+    ("tool_call_id", "seed_call_id", "seeded_args", "trusted"),
     [
-        pytest.param("seed-call", {"force": True}, False, id="untrusted-tool"),
-        pytest.param(None, {"force": True}, True, id="no-offload-context"),
-        pytest.param("other-call", {"force": True}, True, id="unauthorized-call-id"),
-        pytest.param("seed-call", {}, True, id="unforced-args"),
+        pytest.param(
+            "seed-call", "seed-call", {"force": True}, False, id="untrusted-tool"
+        ),
+        pytest.param(None, "seed-call", {"force": True}, True, id="no-offload-context"),
+        pytest.param(
+            "other-call", "seed-call", {"force": True}, True, id="message-id-mismatch"
+        ),
+        pytest.param(
+            "seed-call", "other-call", {"force": True}, True, id="tool-call-id-mismatch"
+        ),
+        pytest.param("seed-call", "seed-call", {}, True, id="unforced-args"),
     ],
 )
 async def test_plan_less_compaction_without_seed_signals_is_reviewed(
     tmp_path: Path,
     tool_call_id: str | None,
+    seed_call_id: str,
     seeded_args: dict[str, object],
     trusted: bool,
 ) -> None:
@@ -927,7 +935,7 @@ async def test_plan_less_compaction_without_seed_signals_is_reviewed(
         tmp_path, trusted_compaction_tool=compact_tool if trusted else None
     )
     request = _offload_request(tmp_path, compact_tool, tool_call_id=tool_call_id)
-    ai_message = _offload_seed("seed-call", args=seeded_args)
+    ai_message = _offload_seed(seed_call_id, args=seeded_args)
 
     with patch(
         "deepagents_code.auto_mode.interrupt",
@@ -938,6 +946,37 @@ async def test_plan_less_compaction_without_seed_signals_is_reviewed(
     assert review.call_args.args[0]["action_requests"][0]["name"] == (
         "compact_conversation"
     )
+
+
+async def test_seed_message_carrying_other_gated_tool_is_reviewed(
+    tmp_path: Path,
+) -> None:
+    """A seed-ID'd message does not bypass review for a non-compaction tool."""
+    compact_tool = _tool("compact_conversation")
+    middleware = _middleware(tmp_path, trusted_compaction_tool=compact_tool)
+    request = _offload_request(tmp_path, compact_tool)
+    ai_message = _offload_seed(
+        "seed-call",
+        extra_calls=[
+            {
+                "name": "execute",
+                "args": {"command": "curl https://example.com", "force": True},
+                "id": "seed-call",
+                "type": "tool_call",
+            }
+        ],
+    )
+
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}, {"type": "approve"}]},
+    ) as review:
+        await _after_model_without_plan(middleware, request, ai_message)
+
+    reviewed = [
+        action["name"] for action in review.call_args.args[0]["action_requests"]
+    ]
+    assert reviewed == ["compact_conversation", "execute"]
 
 
 async def test_model_generated_compaction_during_offload_is_reviewed(

@@ -16155,6 +16155,78 @@ class TestApprovalPositionBindings:
 
         assert app._pending_approval_widget is None
 
+    def test_tab_mirror_must_be_priority(self) -> None:
+        """The Tab mirror needs `priority=True` to beat `Screen.focus_next`.
+
+        Unlike its sibling approval keys, `tab` is already bound by
+        `Screen.BINDINGS` (`app.focus_next`), and the screen resolves before the
+        app - so a non-priority mirror here would silently never fire, leaving
+        the footer's unconditional `Tab reject with feedback` hint a lie whenever
+        the menu is not the focused widget.
+        """
+        bindings = [
+            binding
+            for binding in DeepAgentsApp.BINDINGS
+            if isinstance(binding, Binding) and binding.key == "tab"
+        ]
+
+        assert len(bindings) == 1
+        assert bindings[0].action == "approval_reject_with_reason"
+        assert bindings[0].priority is True
+
+    def test_tab_delegates_to_pending_approval(self) -> None:
+        """The Tab mirror opens the menu's free-text reject field."""
+        app = DeepAgentsApp()
+        approval = MagicMock()
+        app._pending_approval_widget = approval
+        app._is_input_focused = MagicMock(return_value=False)  # ty: ignore
+
+        app.action_approval_reject_with_reason()
+
+        approval.action_reject_with_reason.assert_called_once_with()
+
+    def test_tab_is_no_op_while_chat_input_focused(self) -> None:
+        """Tab belongs to the chat input's completion while the user is typing."""
+        app = DeepAgentsApp()
+        approval = MagicMock()
+        app._pending_approval_widget = approval
+        app._is_input_focused = MagicMock(return_value=True)  # ty: ignore
+
+        app.action_approval_reject_with_reason()
+
+        approval.action_reject_with_reason.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("pending", "input_focused", "expected"),
+        [
+            (False, False, False),
+            (True, True, False),
+            (True, False, True),
+        ],
+        ids=["no-approval", "input-focused", "approval-pending"],
+    )
+    def test_check_action_steps_tab_aside_unless_approval_pending(
+        self, *, pending: bool, input_focused: bool, expected: bool
+    ) -> None:
+        """Tab reverts to focus traversal and completion outside an approval.
+
+        The binding is `priority=True`, so without this step-aside it would
+        swallow `tab` app-wide - breaking focus traversal everywhere.
+        """
+        app = DeepAgentsApp()
+        app._pending_approval_widget = MagicMock() if pending else None
+        app._is_input_focused = MagicMock(return_value=input_focused)  # ty: ignore
+
+        assert app.check_action("approval_reject_with_reason", ()) is expected
+
+    def test_check_action_leaves_sibling_approval_keys_enabled(self) -> None:
+        """The Tab gate keys on its own action only."""
+        app = DeepAgentsApp()
+        app._pending_approval_widget = None
+
+        assert app.check_action("approval_yes", ()) is True
+        assert app.check_action("approval_no", ()) is True
+
 
 class TestIsUserTyping:
     """Unit tests for `_is_user_typing()` threshold logic."""

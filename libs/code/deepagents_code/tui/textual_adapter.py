@@ -437,6 +437,7 @@ def _reject_tracked_rows(
     """
     rejected = _pop_rows_not_awaiting_deferred_result(adapter._current_tool_messages)
     for tool_msg in rejected.values():
+        # DOM teardown may fail; cleanup must not mask the originating exception.
         with contextlib.suppress(Exception):
             tool_msg.set_rejected(reason=reason)
             adapter._sync_tool_widget(tool_msg)

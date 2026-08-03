@@ -2,6 +2,12 @@
 
 # Deep Agents Changelog
 
+## [0.7.2](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.1...deepagents==0.7.2) (2026-08-03)
+
+### Bug Fixes
+
+- Scrub multimodal content blocks that are unsupported by the model's profile. ([#5194](https://github.com/langchain-ai/deepagents/issues/5194))
+
 ## [0.7.1](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.0...deepagents==0.7.1) (2026-07-30)
 
 ### Features

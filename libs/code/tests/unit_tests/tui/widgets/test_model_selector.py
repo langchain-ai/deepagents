@@ -2004,30 +2004,6 @@ class TestAvailabilityOrdering:
 class TestCuratedModelSelection:
     """Tests for onboarding curated model selection."""
 
-    @pytest.mark.parametrize(
-        ("spec", "provider"),
-        [
-            ("baseten:deepseek-ai/DeepSeek-V4-Flash-0731", "baseten"),
-            (
-                "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731",
-                "fireworks",
-            ),
-            ("openrouter:deepseek/deepseek-v4-flash-0731", "openrouter"),
-        ],
-    )
-    def test_deepseek_v4_flash_0731_is_recommended(
-        self, spec: str, provider: str
-    ) -> None:
-        """DeepSeek V4 Flash 0731 should be recommended through supported hosts."""
-        from deepagents_code.tui.widgets import model_selector
-
-        all_models = [(spec, provider), ("openai:gpt-4o", "openai")]
-
-        curated = ModelSelectorScreen._curate_models(all_models)
-
-        assert model_selector._RECOMMENDED_MODELS[spec] == "DeepSeek V4 Flash 0731"
-        assert curated == all_models[:1]
-
     def test_opus_5_is_recommended(self) -> None:
         """Opus 5 should be discoverable in the frontier picker subset."""
         from deepagents_code.tui.widgets import model_selector

@@ -9,7 +9,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from deepagents_code.hooks.capabilities import HookOwner, get_event_spec
-from deepagents_code.hooks.loading import compute_snapshot_id
+from deepagents_code.hooks.loading import UNSOURCED, SourcedGroup, compute_snapshot_id
 from deepagents_code.hooks.models.domain import (
     HookDiagnostic,
     HookEvent,
@@ -27,9 +27,10 @@ from deepagents_code.hooks.projection import to_wire_notification_type
 from deepagents_code.hooks.tools import to_wire_tool_name
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
     from re import Pattern
 
+    from deepagents_code.hooks.loading import HooksSource
     from deepagents_code.hooks.models.config import HooksConfig
     from deepagents_code.hooks.models.domain import HookInvocation
 
@@ -51,6 +52,8 @@ class HookHandler:
     matcher: Pattern[str] | frozenset[str] | None
     matcher_text: str | None
     argv: tuple[str, ...] | None = None
+    source: HooksSource = UNSOURCED
+    """Where the handler came from, which fixes its environment overlay."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,16 +77,18 @@ class HooksSnapshot:
         cls,
         config: HooksConfig,
         *,
+        groups: Mapping[HookEvent, Sequence[SourcedGroup]] | None = None,
         diagnostics: tuple[HookDiagnostic, ...] = (),
         snapshot_id: str | None = None,
     ) -> HooksSnapshot:
         """Build an immutable runtime snapshot from validated configuration.
 
-        Invalid matcher groups are rejected at compile time with a warning
-        diagnostic; their handlers are never added to the snapshot.
+        Invalid matcher groups become diagnostics and are excluded.
 
         Args:
             config: Validated Hooks v2 configuration.
+            groups: Matcher groups with source provenance. Plain configurations
+                use a source with no environment overlay.
             diagnostics: Diagnostics retained from configuration loading.
             snapshot_id: Optional precomputed canonical hash. When omitted, it
                 is derived from `config`.
@@ -94,16 +99,20 @@ class HooksSnapshot:
         Raises:
             ValueError: If `snapshot_id` disagrees with the canonical config.
         """
-        canonical_id = compute_snapshot_id(config)
+        canonical_id = compute_snapshot_id(config, groups=groups)
         if snapshot_id is not None and snapshot_id != canonical_id:
             msg = "Provided snapshot_id does not match canonical configuration"
             raise ValueError(msg)
+        sourced = groups or {
+            event: tuple((UNSOURCED, group) for group in event_groups)
+            for event, event_groups in config.hooks.items()
+        }
         expanded: dict[HookEvent, tuple[HookHandler, ...]] = {}
         compile_diagnostics: list[HookDiagnostic] = list(diagnostics)
-        for event, groups in config.hooks.items():
+        for event, event_groups in sourced.items():
             matcher_field = get_event_spec(event).matcher_field
             handlers: list[HookHandler] = []
-            for group_index, group in enumerate(groups):
+            for group_index, (source, group) in enumerate(event_groups):
                 if matcher_field is None and group.matcher not in {None, "", "*"}:
                     message = (
                         f"Rejected hook group {event.value}:{group_index}: "
@@ -139,12 +148,21 @@ class HooksSnapshot:
                         HookHandler(
                             id=f"{event.value}:{group_index}:{handler_index}",
                             event=event,
-                            command=spec.command,
+                            command=source.resolve_variables(
+                                spec.command, shell_syntax=True
+                            ),
                             timeout=spec.timeout,
                             status_message=spec.status_message,
                             matcher=matcher,
                             matcher_text=group.matcher,
-                            argv=tuple(spec.argv) if spec.argv is not None else None,
+                            argv=(
+                                tuple(
+                                    source.resolve_variables(part) for part in spec.argv
+                                )
+                                if spec.argv is not None
+                                else None
+                            ),
+                            source=source,
                         )
                     )
             expanded[event] = tuple(handlers)

@@ -13,7 +13,7 @@ from binascii import Error as BinasciiError
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Final, Literal, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NotRequired, cast
 
 import wcmatch.glob as wcglob
 from langchain.agents.middleware.types import (
@@ -47,6 +47,7 @@ from deepagents.backends.protocol import (
     GlobResult,
     GrepMatch,
     GrepResult,
+    LsResult,
     ReadResult,
     SandboxBackendProtocol,
     WriteResult,
@@ -57,6 +58,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import BaseSandbox
 from deepagents.backends.utils import (
+    _EXTENSION_TO_FILE_TYPE,
     _GLOB_WILDCARD_CHARS,
     _VIDEO_EXTRA_EXTENSIONS,
     MAX_VIDEO_INPUT_BYTES,
@@ -86,6 +88,9 @@ from deepagents.middleware._video import (
     video_dependencies_available,
 )
 
+if TYPE_CHECKING:
+    from langchain.chat_models import BaseChatModel
+
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
 """wcmatch flags enabling brace expansion and `**` globstar recursion."""
 
@@ -111,6 +116,26 @@ _READ_FILE_MEDIA_RESULT: Final = "read_file_media_result"
 
 _VIDEO_SAMPLING_RATE: Final = 0.5
 """Seconds between sampled frames when extracting stills from a video."""
+
+_MULTIMODAL_BLOCK_TYPES: Final = frozenset(_EXTENSION_TO_FILE_TYPE.values())
+"""Content block types `read_file` may emit that require multimodal model support.
+
+Derived from `_EXTENSION_TO_FILE_TYPE`'s values (`"text"` never appears there,
+since it's `_get_file_type`'s default for unmapped extensions).
+"""
+
+_PDF_MIME_TYPE: Final = "application/pdf"
+
+_NON_PDF_FILE_TOLERANT_LLM_TYPES: Final = frozenset({"openai-chat", "azure-openai-chat", "chat-google-generative-ai"})
+"""Exact `_llm_type` values for chat models known to accept non-PDF `file`
+blocks (e.g. `.docx`, `.pptx`) today: `ChatOpenAI`, `AzureChatOpenAI`, and
+`ChatGoogleGenerativeAI`.
+
+[`ModelProfile`][langchain_core.language_models.model_profile.ModelProfile] only
+encodes PDF support (`pdf_inputs`/`pdf_tool_message`); it has no field yet for
+other office/document formats. Until it does, these providers get a hard-coded
+pass for non-PDF `file` blocks instead of being blocked by that profile gap.
+"""
 
 
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
@@ -152,6 +177,114 @@ def _move_media_results_after_tool_results(messages: list[AnyMessage]) -> list[A
             reordered.extend(message for message in batch if isinstance(message, ToolMessage))
             reordered.extend(message for message in batch if _is_read_file_media_result(message))
     return reordered
+
+
+_PROFILE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_inputs", "audio": "audio_inputs", "video": "video_inputs", "file": "pdf_inputs"}
+"""`ModelProfile` field gating each block type. `file` only applies to PDF `mime_type`; other
+file types have no field yet and are handled separately via `_NON_PDF_FILE_TOLERANT_LLM_TYPES`."""
+
+_TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message", "file": "pdf_tool_message"}
+"""Extra `ModelProfile` field that can gate a block type specifically within a `ToolMessage`."""
+
+
+def _model_tolerates_non_pdf_files(model: "BaseChatModel | None") -> bool:
+    """Whether `model` is known to accept non-PDF `file` blocks.
+
+    Checks `_llm_type`, a property every `BaseChatModel` implements
+    """
+    if model is None:
+        return False
+    return model._llm_type in _NON_PDF_FILE_TOLERANT_LLM_TYPES
+
+
+def _multimodal_block_supported(
+    block: ContentBlock,
+    *,
+    profile: Mapping[str, Any],
+    tolerates_non_pdf_files: bool,
+    in_tool_message: bool,
+) -> bool:
+    """Check whether `profile` (plus the hard-coded provider exception) accepts `block`.
+
+    Missing `ModelProfile` fields default to supported, since profile coverage is
+    incomplete. Only an explicit `False` rejects a block type.
+    """
+    block_type = block["type"]
+    if block_type == "file" and "base64" not in block:
+        # URL-/file-ID-backed file references are provider-managed and often don't
+        # include a `mime_type`, so leave them untouched.
+        return True
+    if block_type == "file" and block.get("mime_type") != _PDF_MIME_TYPE:
+        # Non-PDF base64 `file` blocks (`.docx`, `.pptx`, ...) aren't described
+        # by any `ModelProfile` field yet; only the hard-coded tolerant
+        # providers pass.
+        return tolerates_non_pdf_files
+
+    field = _PROFILE_FIELD_BY_BLOCK_TYPE.get(block_type)
+    if field is None:
+        return True
+    if in_tool_message:
+        tool_field = _TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE.get(block_type)
+        if tool_field and profile.get(tool_field) is False:
+            return False
+    return profile.get(field) is not False
+
+
+def _unsupported_multimodal_placeholder(block: ContentBlock, message: AnyMessage) -> ContentBlock:
+    """Build the text block replacing a multimodal block the model can't accept."""
+    mime_type = block.get("mime_type", "unknown")
+    path = message.additional_kwargs.get("read_file_path", "the requested file")
+    return cast(
+        "ContentBlock",
+        {
+            "type": "text",
+            "text": f"[read_file: {path} was not attached because this model does not support {block['type']} content ({mime_type}).]",
+        },
+    )
+
+
+def _scrub_message_multimodal_content(message: AnyMessage, *, profile: Mapping[str, Any], tolerates_non_pdf_files: bool) -> AnyMessage:
+    """Return `message` unchanged, or a copy with unsupported blocks replaced by placeholders."""
+    if not isinstance(message, (ToolMessage, HumanMessage)):
+        return message
+
+    in_tool_message = isinstance(message, ToolMessage)
+    blocks = message.content_blocks
+    new_blocks = [
+        block
+        if block["type"] not in _MULTIMODAL_BLOCK_TYPES
+        or _multimodal_block_supported(block, profile=profile, tolerates_non_pdf_files=tolerates_non_pdf_files, in_tool_message=in_tool_message)
+        else _unsupported_multimodal_placeholder(block, message)
+        for block in blocks
+    ]
+    if new_blocks == blocks:
+        return message
+    return message.model_copy(update={"content": new_blocks})
+
+
+def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "BaseChatModel | None") -> list[AnyMessage]:
+    """Replace multimodal content blocks `model.profile` marks unsupported.
+
+    Some providers return a non-retryable 400 when sent a content block they
+    don't support (e.g. a `file` block whose `mime_type` isn't
+    `application/pdf`, produced when `read_file` reads a `.docx`), which would
+    otherwise end the thread. Swapping the unsupported block for a text
+    placeholder here before the request reaches the model.
+
+    A `model` with no `profile` (including `None` `model`, e.g. in tests) is
+    treated as an empty profile rather than skipped: `ModelProfile` is often
+    absent for models `langchain_anthropic` doesn't have a static entry for
+    (e.g. `ChatAnthropic(model="claude-3-5-sonnet-latest")`), and the
+    provider-based non-PDF `file` gate doesn't depend on profile data at all —
+    skipping the whole scrub in that case would silently leave the exact
+    `.docx`-on-Anthropic bug this fixes unfixed for those models. An empty
+    profile still defaults every per-field check to "supported."
+    """
+    profile = model.profile if model is not None else None
+    if not isinstance(profile, dict):
+        profile = {}
+    tolerates_non_pdf_files = _model_tolerates_non_pdf_files(model)
+    return [_scrub_message_multimodal_content(message, profile=profile, tolerates_non_pdf_files=tolerates_non_pdf_files) for message in messages]
 
 
 def _handle_video_read(
@@ -342,15 +475,102 @@ def _wildcard_delete_overlap(pattern: str, anchor: str, target: str) -> bool:
     )
 
 
-def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -> list[str]:
+def _leaf_from_parent_listing(ls_result: LsResult, target: str) -> bool:
+    """Resolve the ambiguous "empty `ls(target)`, no error" case.
+
+    On flat/virtual backends, an exact file and an empty directory produce the
+    same `ls(target)` result. Use `target`'s `FileInfo.is_dir` from the parent
+    listing, which is consistent across backends.
+    """
+    if ls_result.error is not None:
+        return True
+    target_norm = target.rstrip("/")
+    matches = [entry for entry in ls_result.entries or [] if entry["path"].rstrip("/") == target_norm]
+    if not matches:
+        return True
+    return any(entry.get("is_dir") for entry in matches)
+
+
+def _delete_target_may_have_descendants(backend: BackendProtocol, target: str, *, permissions_configured: bool) -> bool:
+    """Whether `delete` should use the conservative recursive permission check.
+
+    Falls back to the conservative check when no permission rules are configured
+    or the backend doesn't implement `ls`. Non-empty `ls(target)` results indicate
+    descendants, and `not_a_directory` confirms a plain file. Only an empty result
+    with no error is ambiguous and requires `_leaf_from_parent_listing`.
+    """
+    if not permissions_configured:
+        return False
+    try:
+        ls_result = backend.ls(target)
+    except NotImplementedError:
+        return True
+    if ls_result.error is not None:
+        return "not_a_directory" not in ls_result.error
+    if ls_result.entries:
+        return True
+    try:
+        parent_result = backend.ls(str(PurePosixPath(target).parent))
+    except NotImplementedError:
+        return True
+    return _leaf_from_parent_listing(parent_result, target)
+
+
+async def _adelete_target_may_have_descendants(backend: BackendProtocol, target: str, *, permissions_configured: bool) -> bool:
+    """Async counterpart to `_delete_target_may_have_descendants`."""
+    if not permissions_configured:
+        return False
+    try:
+        ls_result = await backend.als(target)
+    except NotImplementedError:
+        return True
+    if ls_result.error is not None:
+        return "not_a_directory" not in ls_result.error
+    if ls_result.entries:
+        return True
+    try:
+        parent_result = await backend.als(str(PurePosixPath(target).parent))
+    except NotImplementedError:
+        return True
+    return _leaf_from_parent_listing(parent_result, target)
+
+
+def _find_delete_deny_patterns_for_leaf(rules: list[FilesystemPermission], target: str) -> list[str]:
+    """Resolve delete permission for a confirmed plain file: first matching rule wins.
+
+    Mirrors `_check_fs_permission`'s ordering, but returns the matched
+    pattern(s) so the delete tool's error message can cite them.
+    """
+    for rule in rules:
+        if "write" not in rule.operations:
+            continue
+        matched = [pattern for pattern in rule.paths if wcglob.globmatch(target, pattern, flags=_FS_WCMATCH_FLAGS)]
+        if not matched:
+            continue
+        return matched if rule.mode == "deny" else []
+    return []
+
+
+def _find_delete_deny_patterns(
+    rules: list[FilesystemPermission],
+    target: str,
+    *,
+    has_descendants: bool = True,
+) -> list[str]:
     """Return deny-write patterns that block deleting `target`.
 
-    A recursive delete removes `target` and all descendants, so a deny-write
-    pattern blocks the operation when it could match `target` or anything in
-    its subtree. Sibling file globs that cannot match anything inside the
-    deleted subtree (e.g. deny `/work/*.log` when deleting `/work/notes.txt`)
-    do not block. The check is based only on permission rules and returns all
-    matching patterns.
+    A recursive delete removes `target` and all descendants, so when
+    `has_descendants` is `True` a deny-write pattern blocks the operation
+    when it could match `target` or anything in its subtree, regardless of
+    rule order -- an earlier allow rule can't guarantee every descendant is
+    safe, since a later, more specific deny could still apply to one of them.
+    Sibling file globs that cannot match anything inside the deleted subtree
+    (e.g. deny `/work/*.log` when deleting `/work/notes.txt`) do not block.
+
+    When `has_descendants` is `False` (a confirmed plain file, see
+    `_delete_target_may_have_descendants`), there's no subtree to protect, so
+    `target` is resolved the same way `write_file`/`edit_file` resolve
+    permissions: the first rule (in declaration order) that matches wins.
 
     Literal (wildcard-free) deny patterns use a subtree-overlap check: a deny
     on a directory blocks deleting anything inside it and blocks deleting an
@@ -363,10 +583,15 @@ def _find_delete_deny_patterns(rules: list[FilesystemPermission], target: str) -
     Args:
         rules: Filesystem permission rules.
         target: Absolute, validated path being deleted.
+        has_descendants: Whether `target` may have entries nested under it.
+            Pass `False` only once the backend has confirmed it's a leaf.
 
     Returns:
         Matching deny-write patterns, or an empty list if the delete is allowed.
     """
+    if not has_descendants:
+        return _find_delete_deny_patterns_for_leaf(rules, target)
+
     denying: list[str] = []
     seen: set[str] = set()
     for rule in rules:
@@ -1965,7 +2190,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path)
+            has_descendants = _delete_target_may_have_descendants(resolved_backend, validated_path, permissions_configured=bool(self._permissions))
+            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path, has_descendants=has_descendants)
             if denying_patterns:
                 return ToolMessage(
                     content=f"Error: permission denied for write on {validated_path} (matches deny rule(s): {', '.join(denying_patterns)})",
@@ -2004,7 +2230,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="error",
                 )
 
-            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path)
+            has_descendants = await _adelete_target_may_have_descendants(
+                resolved_backend, validated_path, permissions_configured=bool(self._permissions)
+            )
+            denying_patterns = _find_delete_deny_patterns(self._permissions, validated_path, has_descendants=has_descendants)
             if denying_patterns:
                 return ToolMessage(
                     content=f"Error: permission denied for write on {validated_path} (matches deny rule(s): {', '.join(denying_patterns)})",
@@ -2804,6 +3033,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             eviction threshold, its content is written to the backend and the
             message is tagged in state via `ExtendedModelResponse`.
 
+        It also scrubs unsupported multimodal blocks, replacing them with text
+        placeholders to avoid non-retryable provider errors.
+
         Args:
             request: The model request being processed.
             handler: The handler function to call with the modified request.
@@ -2815,6 +3047,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request = self._filter_unsupported_tools_and_apply_prompt(request)
 
         request_messages = _move_media_results_after_tool_results(list(request.messages))
+        request_messages = _scrub_unsupported_multimodal_content(request_messages, request.model)
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
 
@@ -2850,6 +3083,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request = self._filter_unsupported_tools_and_apply_prompt(request)
 
         request_messages = _move_media_results_after_tool_results(list(request.messages))
+        request_messages = _scrub_unsupported_multimodal_content(request_messages, request.model)
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
 

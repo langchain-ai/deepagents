@@ -279,6 +279,7 @@ class TestInitialPromptOnMount:
         app.query_one = MagicMock(side_effect=NoMatches("welcome-banner"))  # ty: ignore
         app.call_after_refresh = lambda cb: cb()  # ty: ignore
         submitted: list[tuple[str, str, str | None]] = []
+        submitted_event = asyncio.Event()
 
         async def capture(  # noqa: RUF029
             skill_name: str,
@@ -287,6 +288,7 @@ class TestInitialPromptOnMount:
             command: str | None = None,
         ) -> None:
             submitted.append((skill_name, args, command))
+            submitted_event.set()
 
         app._invoke_skill = capture  # ty: ignore
 
@@ -297,10 +299,7 @@ class TestInitialPromptOnMount:
                 mcp_server_info=[],
             )
         )
-        # Server-ready schedules `_run_session_start_sequence` onto the loop.
-        # A few yields keep the test stable across that async handoff.
-        for _ in range(3):
-            await asyncio.sleep(0)
+        await asyncio.wait_for(submitted_event.wait(), timeout=1)
 
         assert submitted == [("code-review", "review this diff", None)]
 

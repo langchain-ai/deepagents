@@ -4673,9 +4673,10 @@ class DeepAgentsApp(App):
                 timeout=10,
             )
             return
-        # Loading stays on the event loop deliberately: it is a cheap config
-        # read, and `to_thread` races server-ready startup tests that only
-        # yield a few event-loop turns.
+        # Loading stays on the event loop deliberately: it reads hook config and
+        # enabled-plugin state from disk, and `to_thread` both races server-ready
+        # startup tests that only yield a few event-loop turns and would need a
+        # lock to keep construction indivisible.
         session_state.hooks = HooksManager.create(
             cwd=Path(self._cwd),
             identity=session_state.hook_identity,
@@ -4714,15 +4715,13 @@ class DeepAgentsApp(App):
             approval_mode=self._approval_mode,
         )
 
-    async def _reload_hooks(self) -> None:
-        """Reload hook configuration after the session working directory moves.
-
-        Trust is re-resolved by the coordinator for the new directory, so hooks
-        from an untrusted project are never picked up on the old grant.
-        """
+    async def _reload_hooks(
+        self, *, plugins: tuple[PluginInstance, ...] | None = None
+    ) -> None:
+        """Reload hooks, reusing plugin discovery when supplied."""
         from pathlib import Path
 
-        await self._hooks.reload(cwd=Path(self._cwd))
+        await self._hooks.reload(cwd=Path(self._cwd), plugins=plugins)
 
     async def _run_session_start_hook(self, cause: SessionStartCause) -> bool:
         """Run `SessionStart`, surfacing a stop as a chat message.
@@ -14051,6 +14050,7 @@ class DeepAgentsApp(App):
 
             # Rediscover plugins and restart the owned server so plugin MCP config
             # is picked up without a separate slash command.
+            from deepagents_code.plugins.adapters.hooks import plugin_hook_event_names
             from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
 
             try:
@@ -14058,32 +14058,37 @@ class DeepAgentsApp(App):
                     self._discover_plugins_with_fingerprints
                 )
             except Exception:
-                # Discovery reads marketplace/plugin config from disk; if it
-                # fails, keep the rest of the reload intact and point the
-                # user at a manual retry rather than aborting the report.
+                # User and project hooks still reload when plugin discovery fails.
+                await self._reload_hooks(plugins=())
                 logger.exception("Failed to discover plugins during /reload")
                 report += "\nCouldn't read plugin state; run /reload to be safe."
             else:
+                # Server-owned events are fixed when the server starts, so refresh
+                # hooks from this same plugin snapshot before any restart.
+                plugins = plugin_result.plugins
+                await self._reload_hooks(plugins=plugins)
                 old_plugin_fingerprints = self._plugin_fingerprints
                 self._plugin_fingerprints = new_plugin_fingerprints
                 discovered_plugin_ids = frozenset(
-                    plugin.plugin_id for plugin in plugin_result.plugins
+                    plugin.plugin_id for plugin in plugins
                 )
-                plugin_count = len(plugin_result.plugins)
-                mcp_configs = plugin_mcp_configs(plugin_result.plugins)
+                plugin_count = len(plugins)
+                mcp_configs = plugin_mcp_configs(plugins)
                 mcp_count = sum(
                     len(servers)
                     for config in mcp_configs
                     if isinstance((servers := config.get("mcpServers")), dict)
                 )
                 plugin_skill_count = sum(1 for name in new_skill_names if ":" in name)
+                hook_count = sum(map(len, map(plugin_hook_event_names, plugins)))
                 report += (
                     f"\nPlugins: {plugin_count} plugin"
                     f"{'s' if plugin_count != 1 else ''} · "
                     f"{plugin_skill_count} skill"
                     f"{'s' if plugin_skill_count != 1 else ''} · "
                     f"{mcp_count} plugin MCP server"
-                    f"{'s' if mcp_count != 1 else ''}"
+                    f"{'s' if mcp_count != 1 else ''} · "
+                    f"{hook_count} hook{'s' if hook_count != 1 else ''}"
                 )
                 if old_plugin_fingerprints is not None:
                     old_ids = set(old_plugin_fingerprints)
@@ -14114,7 +14119,7 @@ class DeepAgentsApp(App):
                     # off the UI thread like the discovery scan above.
                     login_labels = await asyncio.to_thread(
                         self._plugin_login_labels,
-                        plugin_result.plugins,
+                        plugins,
                         new_ids - old_ids,
                     )
                     for label in login_labels:
@@ -21666,7 +21671,11 @@ class DeepAgentsApp(App):
         """
         fingerprints: dict[str, _PluginFingerprint] = {}
         for plugin in plugins:
-            paths = (*plugin.inventory.skills, *plugin.inventory.mcp_files)
+            paths = (
+                *plugin.inventory.skills,
+                *plugin.inventory.mcp_files,
+                *plugin.inventory.hook_files,
+            )
             fingerprints[plugin.plugin_id] = _PluginFingerprint(
                 version=plugin.version,
                 manifest=plugin.manifest,

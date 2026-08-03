@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Self
 import pytest
 
 if TYPE_CHECKING:
+    import urllib.request
     from types import ModuleType
 
 _TEMPLATES = Path(__file__).resolve().parents[2] / "harbor_adapters" / "drbench" / "templates"
@@ -629,9 +630,14 @@ def test_webdav_index_parses_a_realistic_nextcloud_response(
         "</d:multistatus>"
     )
 
+    empty = '<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"/>'
+
     class FakeResponse:
+        def __init__(self, payload: str) -> None:
+            self._payload = payload
+
         def read(self) -> bytes:
-            return body.encode()
+            return self._payload.encode()
 
         def __enter__(self) -> Self:
             return self
@@ -639,11 +645,24 @@ def test_webdav_index_parses_a_realistic_nextcloud_response(
         def __exit__(self, *_args: object) -> bool:
             return False
 
-    monkeypatch.setattr(judge.urllib.request, "urlopen", lambda _req, **_kwargs: FakeResponse())
+    depths: list[str | None] = []
+
+    def fake_urlopen(request: urllib.request.Request, **_kwargs: object) -> FakeResponse:
+        depths.append(request.get_header("Depth"))
+        # Only the root carries entries here; the nested collection answers empty, which
+        # is what terminates the walk.
+        return FakeResponse(empty if request.full_url.endswith("/shared/") else body)
+
+    monkeypatch.setattr(judge.urllib.request, "urlopen", fake_urlopen)
     index = judge._webdav_index(
         "http://drbench:8081", {"username": "emily.patel", "password": "pw"}
     )
 
+    # Nextcloud's DAV layer answers `Depth: infinity` with 400 Bad Request, so the walk
+    # must only ever request one level -- this is what broke the first real trial.
+    assert set(depths) == {"1"}
+    # The nested collection was walked rather than indexed as a document.
+    assert len(depths) == 2
     # Collections are not documents and must not be indexed.
     assert sorted(index) == ["food-safety.pdf", "q3 report.docx"]
     # A citation names the decoded basename, but the fetch URL must stay encoded.

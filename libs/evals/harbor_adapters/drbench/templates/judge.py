@@ -67,6 +67,8 @@ TOP_K = 5
 MAX_CHUNKS = 200
 # Bound on one fetched document, so a large file cannot dominate a judge prompt.
 MAX_DOCUMENT_BYTES = 200_000
+# Ceiling on one-level PROPFINDs when walking the document tree.
+WEBDAV_MAX_REQUESTS = 50
 # Floor per component in the composite, so one zero does not erase all signal.
 EPSILON = 0.01
 
@@ -533,37 +535,67 @@ def _http_get(
         return response.read(MAX_DOCUMENT_BYTES)
 
 
+def _propfind(url: str, credentials: dict[str, str]) -> str:
+    """Run a one-level PROPFIND and return the multistatus body.
+
+    `Depth: 1`, not `Depth: infinity` — Nextcloud's DAV layer rejects infinite depth
+    with `400 Bad Request`, so the tree has to be walked a level at a time.
+    """
+    request = urllib.request.Request(url, method="PROPFIND")  # noqa: S310 - fixed service host
+    request.add_header("Authorization", _basic_auth(credentials))
+    request.add_header("Depth", "1")
+    with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
+        return response.read().decode("utf-8", "replace")
+
+
 def _webdav_index(endpoint: str, credentials: dict[str, str]) -> dict[str, str]:
     """Map each document's lowercased base name to its full WebDAV URL.
 
+    Walks the tree breadth-first with one-level PROPFINDs, bounded so a deep or
+    adversarial tree cannot spin here.
+
     Raises:
-        RuntimeError: If the app stack cannot be listed. Failing loudly matters here — an
-            empty index would mark every cited claim unfactual, which reads as a bad
-            report rather than a broken environment.
+        RuntimeError: If the root cannot be listed. Failing loudly matters — an empty
+            index would mark every cited claim unfactual, which reads as a bad report
+            rather than a broken environment. Failures *below* the root only lose that
+            subtree and are logged.
     """
     user = credentials["username"]
     root = f"{endpoint}/remote.php/dav/files/{urllib.parse.quote(user)}/"
-    request = urllib.request.Request(root, method="PROPFIND")  # noqa: S310 - fixed service host
-    request.add_header("Authorization", _basic_auth(credentials))
-    request.add_header("Depth", "infinity")
+    parsed_endpoint = urllib.parse.urlsplit(endpoint)
+    base = f"{parsed_endpoint.scheme}://{parsed_endpoint.netloc}"
+
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
-            body = response.read().decode("utf-8", "replace")
+        bodies = [(root, _propfind(root, credentials))]
     except Exception as exc:
         msg = f"could not list {root}: {type(exc).__name__}: {exc}"
         raise RuntimeError(msg) from exc
 
-    parsed_endpoint = urllib.parse.urlsplit(endpoint)
     index: dict[str, str] = {}
-    for href in re.findall(r"<[^>]*href>([^<]+)</[^>]*href>", body, re.IGNORECASE):
-        raw = href.strip()
-        if raw.endswith("/"):
-            continue
-        name = urllib.parse.unquote(raw).rsplit("/", 1)[-1]
-        if name:
-            index.setdefault(
-                name.lower(), f"{parsed_endpoint.scheme}://{parsed_endpoint.netloc}{raw}"
-            )
+    visited = {root}
+    requests_made = 1
+    while bodies:
+        current, body = bodies.pop(0)
+        for href in re.findall(r"<[^>]*href>([^<]+)</[^>]*href>", body, re.IGNORECASE):
+            raw = href.strip()
+            full = f"{base}{raw}" if raw.startswith("/") else raw
+            if full in visited:
+                # Depth: 1 echoes the collection itself; don't walk back into it.
+                continue
+            if raw.endswith("/"):
+                visited.add(full)
+                if requests_made >= WEBDAV_MAX_REQUESTS:
+                    print(f"  webdav listing truncated at {WEBDAV_MAX_REQUESTS} requests")
+                    continue
+                try:
+                    bodies.append((full, _propfind(full, credentials)))
+                    requests_made += 1
+                except Exception as exc:  # noqa: BLE001 - lose one subtree, not the run
+                    print(f"  could not list {full}: {type(exc).__name__}")
+                continue
+            name = urllib.parse.unquote(raw).rsplit("/", 1)[-1]
+            if name:
+                index.setdefault(name.lower(), full)
     return index
 
 

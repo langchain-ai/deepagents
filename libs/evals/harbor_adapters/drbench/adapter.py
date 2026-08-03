@@ -69,9 +69,12 @@ _APP_DEFAULT_CREDENTIALS: dict[str, dict[str, str]] = {
 # persona login.
 _APP_GUIDANCE: dict[str, str] = {
     "nextcloud": (
-        "the company cloud drive. HTTP Basic auth. List it with "
-        "`curl -u USER:PASS -X PROPFIND http://drbench:8081/remote.php/dav/files/USER/` "
-        "and download any path under that same prefix."
+        "the company cloud drive. HTTP Basic auth over WebDAV. List one level with "
+        "`curl -u USER:PASS -X PROPFIND -H 'Depth: 1' "
+        "http://drbench:8081/remote.php/dav/files/USER/`, then repeat on any directory "
+        "it returns (they end in `/`) to walk deeper, and GET any file path to download "
+        "it. Note `Depth: 1` — this server answers `400 Bad Request` to "
+        "`Depth: infinity`."
     ),
     "mattermost": (
         "team chat. `POST http://drbench:8082/api/v4/users/login` with a JSON body of "
@@ -816,6 +819,10 @@ timeout_sec = 3600.0
 # Four metrics: one claim-split call, one call per gold insight and per distractor, plus
 # a document fetch and embedding pass for factuality.
 timeout_sec = 2400.0
+
+# Collect the report itself, not just the scores. Without it a low score is
+# undiagnosable: you cannot tell a bad report from a broken environment.
+artifacts = ["/app/report.md"]
 """,
         encoding="utf-8",
     )

@@ -49,3 +49,7 @@ timeout_sec = 3600.0
 # Four metrics: one claim-split call, one call per gold insight and per distractor, plus
 # a document fetch and embedding pass for factuality.
 timeout_sec = 2400.0
+
+# Collect the report itself, not just the scores. Without it a low score is
+# undiagnosable: you cannot tell a bad report from a broken environment.
+artifacts = ["/app/report.md"]

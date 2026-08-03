@@ -7,7 +7,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -29,6 +29,8 @@ from deepagents_code.hooks.trust import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from deepagents_code.app import DeepAgentsApp
 
 
 @pytest.fixture(autouse=True)
@@ -131,6 +133,66 @@ def test_session_grant_does_not_extend_to_other_workspaces(tmp_path: Path) -> No
     assert policy.allows(granted)
     assert not policy.allows(other)
     assert not is_project_hooks_trusted(granted, store_path=store)
+
+
+def test_session_grant_replacements_preserve_policy_posture(tmp_path: Path) -> None:
+    root = _write_project_hooks(tmp_path / "project")
+    store = tmp_path / "state" / "hooks_trust.json"
+    original = WorkspaceTrust(consult_store=False, store_path=store)
+
+    granted = original.with_session_grant(root)
+    revoked = granted.without_session_grant(root)
+
+    assert granted is not original
+    assert granted.consult_store is False
+    assert granted.store_path == store
+    assert granted.allows(root)
+    assert not original.allows(root)
+    assert revoked.consult_store is False
+    assert revoked.store_path == store
+    assert not revoked.allows(root)
+
+
+def test_changed_project_hooks_invalidate_session_grant(tmp_path: Path) -> None:
+    root = _write_project_hooks(tmp_path / "project")
+    policy = WorkspaceTrust.for_session(root, granted=True)
+    assert policy.allows(root)
+
+    config_path = root / ".deepagents" / "hooks.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {"hooks": [{"type": "command", "command": "true"}]}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert not policy.allows(root)
+
+
+def test_persisted_trust_survives_project_hooks_change(tmp_path: Path) -> None:
+    root = _write_project_hooks(tmp_path / "project")
+    store = tmp_path / "state" / "hooks_trust.json"
+    assert trust_project_hooks(root, store_path=store)
+    policy = WorkspaceTrust.for_session(root, granted=True, store_path=store)
+
+    (root / ".deepagents" / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionEnd": [{"hooks": [{"type": "command", "command": "true"}]}]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert policy.allows(root)
 
 
 def test_explicit_only_policy_ignores_persisted_trust(tmp_path: Path) -> None:
@@ -381,3 +443,259 @@ def test_headless_manager_ignores_persisted_trust(
 
     assert not opted_out.has_handlers(HookEvent.STOP)
     assert opted_in.has_handlers(HookEvent.STOP)
+
+
+async def _textual_app(cwd: Path, trust: WorkspaceTrust) -> DeepAgentsApp:
+    from deepagents_code.app import DeepAgentsApp
+
+    app = DeepAgentsApp(
+        agent=MagicMock(),
+        thread_id="thread",
+        cwd=cwd,
+        hook_trust=trust,
+    )
+    await app._init_session_state()
+    return app
+
+
+async def test_cwd_retarget_without_project_hooks_reloads_without_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_hook_config(tmp_path, monkeypatch)
+    current = _write_project_hooks(tmp_path / "current")
+    target = tmp_path / "target"
+    target.mkdir()
+    app = await _textual_app(
+        current,
+        WorkspaceTrust.for_session(current, granted=True),
+    )
+    assert app._hooks.has_handlers(HookEvent.STOP)
+    app._cwd = str(target)
+    prompt = AsyncMock(return_value="deny")
+    monkeypatch.setattr(app, "_push_screen_wait", prompt)
+
+    await app._retarget_hooks_after_cwd_switch()
+
+    assert not app._hooks.has_handlers(HookEvent.STOP)
+    prompt.assert_not_awaited()
+
+
+async def test_launch_cwd_retarget_updates_policy_before_session_state_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.app import DeepAgentsApp
+
+    _isolate_hook_config(tmp_path, monkeypatch)
+    target = _write_project_hooks(tmp_path / "target")
+    app = DeepAgentsApp(
+        agent=MagicMock(),
+        thread_id="thread",
+        cwd=target,
+        hook_trust=WorkspaceTrust(),
+    )
+    monkeypatch.setattr(
+        app,
+        "_push_screen_wait",
+        AsyncMock(return_value="allow_once"),
+    )
+
+    await app._retarget_hooks_after_cwd_switch()
+
+    assert app._session_state is None
+    assert app._hook_trust is not None
+    assert app._hook_trust.allows(target)
+    await app._init_session_state()
+    assert app._hooks.has_handlers(HookEvent.STOP)
+
+
+async def test_cwd_retarget_loads_persisted_project_hooks_without_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_hook_config(tmp_path, monkeypatch)
+    current = tmp_path / "current"
+    current.mkdir()
+    target = _write_project_hooks(tmp_path / "target")
+    store = tmp_path / "state" / "hooks_trust.json"
+    assert trust_project_hooks(target, store_path=store)
+    app = await _textual_app(current, WorkspaceTrust(store_path=store))
+    app._cwd = str(target)
+    prompt = AsyncMock(return_value="deny")
+    monkeypatch.setattr(app, "_push_screen_wait", prompt)
+
+    await app._retarget_hooks_after_cwd_switch()
+
+    assert app._hooks.has_handlers(HookEvent.STOP)
+    prompt.assert_not_awaited()
+
+
+@pytest.mark.parametrize("choice", ["allow_once", "always_allow"])
+async def test_cwd_retarget_grants_project_hooks_from_prompt(
+    choice: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_hook_config(tmp_path, monkeypatch)
+    current = tmp_path / "current"
+    current.mkdir()
+    target = _write_project_hooks(tmp_path / "target")
+    store = tmp_path / "state" / "hooks_trust.json"
+    app = await _textual_app(current, WorkspaceTrust(store_path=store))
+    app._cwd = str(target)
+    monkeypatch.setattr(app, "_push_screen_wait", AsyncMock(return_value=choice))
+
+    await app._retarget_hooks_after_cwd_switch()
+
+    assert app._hooks.has_handlers(HookEvent.STOP)
+    assert app._hooks.trust.allows(target)
+    assert is_project_hooks_trusted(target, store_path=store) is (
+        choice == "always_allow"
+    )
+
+
+async def test_cwd_retarget_deny_revokes_changed_session_grant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_hook_config(tmp_path, monkeypatch)
+    root = _write_project_hooks(tmp_path / "project")
+    app = await _textual_app(
+        root,
+        WorkspaceTrust.for_session(root, granted=True),
+    )
+    assert app._hooks.has_handlers(HookEvent.STOP)
+    (root / ".deepagents" / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionEnd": [{"hooks": [{"type": "command", "command": "true"}]}]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(app, "_push_screen_wait", AsyncMock(return_value="deny"))
+
+    await app._retarget_hooks_after_cwd_switch()
+
+    assert not app._hooks.trust.allows(root)
+    assert not app._hooks.has_handlers(HookEvent.STOP)
+    assert not app._hooks.has_handlers(HookEvent.SESSION_END)
+
+
+async def test_cwd_retarget_rejects_allow_once_when_file_changes_during_prompt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_hook_config(tmp_path, monkeypatch)
+    current = tmp_path / "current"
+    current.mkdir()
+    target = _write_project_hooks(tmp_path / "target")
+    app = await _textual_app(current, WorkspaceTrust())
+    app._cwd = str(target)
+
+    def mutate_before_allow(_screen: object) -> str:
+        (target / ".deepagents" / "hooks.json").write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionEnd": [
+                            {"hooks": [{"type": "command", "command": "true"}]}
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        return "allow_once"
+
+    monkeypatch.setattr(
+        app,
+        "_push_screen_wait",
+        AsyncMock(side_effect=mutate_before_allow),
+    )
+
+    await app._retarget_hooks_after_cwd_switch()
+
+    assert not app._hooks.trust.allows(target)
+    assert not app._hooks.has_handlers(HookEvent.SESSION_END)
+
+
+async def test_cwd_retarget_prompt_failure_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_hook_config(tmp_path, monkeypatch)
+    current = tmp_path / "current"
+    current.mkdir()
+    target = _write_project_hooks(tmp_path / "target")
+    app = await _textual_app(current, WorkspaceTrust())
+    app._cwd = str(target)
+    monkeypatch.setattr(
+        app,
+        "_push_screen_wait",
+        AsyncMock(side_effect=RuntimeError("screen unavailable")),
+    )
+    notify = MagicMock()
+    monkeypatch.setattr(app, "notify", notify)
+
+    await app._retarget_hooks_after_cwd_switch()
+
+    assert not app._hooks.has_handlers(HookEvent.STOP)
+    assert not app._hooks.trust.allows(target)
+    notify.assert_called_once()
+
+
+async def test_cwd_retarget_explicit_only_policy_never_prompts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_hook_config(tmp_path, monkeypatch)
+    current = tmp_path / "current"
+    current.mkdir()
+    target = _write_project_hooks(tmp_path / "target")
+    app = await _textual_app(
+        current,
+        WorkspaceTrust.explicit_only(current, granted=False),
+    )
+    app._cwd = str(target)
+    prompt = AsyncMock(return_value="allow_once")
+    monkeypatch.setattr(app, "_push_screen_wait", prompt)
+
+    await app._retarget_hooks_after_cwd_switch()
+
+    prompt.assert_not_awaited()
+    assert app._hooks.trust.consult_store is False
+    assert not app._hooks.has_handlers(HookEvent.STOP)
+
+
+async def test_cwd_retarget_persistence_failure_keeps_session_grant(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.hooks import trust as trust_module
+
+    _isolate_hook_config(tmp_path, monkeypatch)
+    current = tmp_path / "current"
+    current.mkdir()
+    target = _write_project_hooks(tmp_path / "target")
+    app = await _textual_app(current, WorkspaceTrust())
+    app._cwd = str(target)
+    monkeypatch.setattr(
+        app,
+        "_push_screen_wait",
+        AsyncMock(return_value="always_allow"),
+    )
+    monkeypatch.setattr(
+        trust_module, "trust_project_hooks", lambda *_args, **_kwargs: False
+    )
+    notify = MagicMock()
+    monkeypatch.setattr(app, "notify", notify)
+
+    await app._retarget_hooks_after_cwd_switch()
+
+    assert app._hooks.trust.allows(target)
+    assert app._hooks.has_handlers(HookEvent.STOP)
+    notify.assert_called_once()

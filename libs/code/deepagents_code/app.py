@@ -3043,11 +3043,11 @@ class DeepAgentsApp(App):
 
         self._register_custom_themes()
         self._hook_trust: WorkspaceTrust | None = hook_trust
-        """Project-hook trust policy, forwarded verbatim to `HooksManager`.
+        """Project-hook trust policy used before and during manager construction.
 
-        Carried rather than applied: session state — and therefore the hooks
-        coordinator that owns and resolves this policy — cannot be built until
-        after construction. The app never inspects it.
+        Session state may be built concurrently with a launch-time cwd switch, so
+        in-session trust decisions replace this value as well as the live manager's
+        policy. Whichever path finishes construction then observes the same policy.
         """
 
         self.theme = _load_theme_preference()
@@ -4722,6 +4722,107 @@ class DeepAgentsApp(App):
         from pathlib import Path
 
         await self._hooks.reload(cwd=Path(self._cwd), plugins=plugins)
+
+    def _current_hook_trust(self) -> WorkspaceTrust:
+        """Return the policy owned by the live or not-yet-built hooks manager."""
+        from deepagents_code.hooks.trust import WorkspaceTrust
+
+        if self._session_state is not None:
+            return self._session_state.hooks.trust
+        if self._hook_trust is not None:
+            return self._hook_trust
+        if self._detached_hooks is not None:
+            return self._detached_hooks.trust
+        return WorkspaceTrust.none()
+
+    async def _reload_hooks_with_trust(self, trust: WorkspaceTrust) -> None:
+        """Apply a replacement trust policy and reload the current hooks manager."""
+        self._hook_trust = trust
+        manager = self._hooks
+        manager.trust = trust
+        await self._reload_hooks()
+
+    async def _wait_for_hook_trust_prompt_refresh(self) -> None:
+        """Let the cwd-switch modal unwind before mounting the trust prompt."""
+        if not self.is_running:
+            return
+        refreshed = asyncio.Event()
+        if not self.call_after_refresh(refreshed.set):
+            return
+        await refreshed.wait()
+
+    async def _retarget_hooks_after_cwd_switch(self) -> None:
+        """Reload hooks and gate project commands after a successful cwd switch."""
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+        if not is_env_truthy(EXPERIMENTAL):
+            return
+
+        from deepagents_code.hooks.loading import project_hooks_path
+        from deepagents_code.hooks.trust import (
+            project_root_for,
+            trust_project_hooks,
+        )
+        from deepagents_code.tui.widgets.hook_trust import HookTrustScreen
+
+        trust = self._current_hook_trust()
+        try:
+            root = await asyncio.to_thread(project_root_for, Path(self._cwd))
+            config_path = project_hooks_path(root)
+            has_project_hooks = await asyncio.to_thread(config_path.is_file)
+        except (OSError, ValueError):
+            logger.warning(
+                "Could not inspect project hooks after cwd switch",
+                exc_info=True,
+            )
+            await self._reload_hooks_with_trust(trust)
+            return
+
+        if not has_project_hooks or await asyncio.to_thread(trust.allows, root):
+            await self._reload_hooks_with_trust(trust)
+            return
+
+        trust = await asyncio.to_thread(trust.without_session_grant, root)
+        if not trust.consult_store:
+            await self._reload_hooks_with_trust(trust)
+            return
+        prompt_grant = await asyncio.to_thread(trust.with_session_grant, root)
+        await self._wait_for_hook_trust_prompt_refresh()
+
+        try:
+            choice = await self._push_screen_wait(
+                HookTrustScreen(
+                    project_root=str(root),
+                    config_path=str(config_path),
+                )
+            )
+        except Exception:
+            logger.warning(
+                "Project hooks trust prompt failed after cwd switch",
+                exc_info=True,
+            )
+            self.notify(
+                "Project hooks were not loaded because the trust prompt failed.",
+                severity="warning",
+                markup=False,
+            )
+            choice = None
+
+        if choice in {"allow_once", "always_allow"}:
+            trust = prompt_grant
+            if choice == "always_allow" and not await asyncio.to_thread(
+                trust_project_hooks,
+                root,
+                store_path=trust.store_path,
+            ):
+                self.notify(
+                    "Approved for this session, but the decision could not be "
+                    "saved — you may be asked again next time.",
+                    severity="warning",
+                    markup=False,
+                )
+
+        await self._reload_hooks_with_trust(trust)
 
     async def _run_session_start_hook(self, cause: SessionStartCause) -> bool:
         """Run `SessionStart`, surfacing a stop as a chat message.
@@ -24508,9 +24609,12 @@ class DeepAgentsApp(App):
                             "on the current thread.",
                         )
                     )
+                    return outcome
+                await self._retarget_hooks_after_cwd_switch()
                 return outcome
             self._preserve_launch_relative_server_paths(Path(self._cwd))
             self._switch_process_cwd(target)
+            await self._retarget_hooks_after_cwd_switch()
             return "continue"
 
         self.notify(
@@ -24559,6 +24663,8 @@ class DeepAgentsApp(App):
                     "rollback",
                     previous_cwd,
                 )
+                return
+            await self._reload_hooks()
             return
 
         try:
@@ -24577,6 +24683,8 @@ class DeepAgentsApp(App):
                 timeout=15,
                 markup=False,
             )
+            return
+        await self._reload_hooks()
 
     async def _resume_thread(self, thread_id: str) -> None:
         """Resume a previously saved thread.

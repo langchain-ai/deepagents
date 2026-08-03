@@ -32486,6 +32486,8 @@ class TestResumeThreadCwdSwitch:
         status_bar = MagicMock()
         status_bar.cwd = str(current)
         app._status_bar = status_bar
+        retarget = AsyncMock()
+        monkeypatch.setattr(app, "_retarget_hooks_after_cwd_switch", retarget)
         reload_calls: list[Path | None] = []
 
         def reload_from_environment(*, start_path: Path | None = None) -> list[str]:
@@ -32513,6 +32515,7 @@ class TestResumeThreadCwdSwitch:
         clear_caches.assert_called_once_with()
         screen = push_wait.call_args.args[0]
         assert screen._project_settings_change_detected is True
+        retarget.assert_awaited_once_with()
 
     async def test_offer_switch_preserves_launch_relative_server_paths(
         self,
@@ -32632,6 +32635,41 @@ class TestResumeThreadCwdSwitch:
         notify.assert_called_once()
         assert "Cached local context may be stale" in notify.call_args.args[0]
 
+    async def test_offer_server_switch_retargets_after_success(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
+        monkeypatch.setattr(
+            app,
+            "_push_screen_wait",
+            AsyncMock(return_value="switch"),
+        )
+        monkeypatch.setattr(
+            app,
+            "_preview_project_settings_change",
+            AsyncMock(return_value=False),
+        )
+        replace = AsyncMock(return_value="continue")
+        monkeypatch.setattr(app, "_replace_server_after_cwd_switch", replace)
+        retarget = AsyncMock()
+        monkeypatch.setattr(app, "_retarget_hooks_after_cwd_switch", retarget)
+
+        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
+            outcome = await app._offer_thread_cwd_switch(
+                "thread-1",
+                restart_server=True,
+            )
+
+        assert outcome == "continue"
+        replace.assert_awaited_once_with(target)
+        retarget.assert_awaited_once_with()
+
     async def test_offer_switch_failure_returns_abort(
         self,
         tmp_path: Path,
@@ -32662,6 +32700,8 @@ class TestResumeThreadCwdSwitch:
         app._replace_server_after_cwd_switch = replace  # ty: ignore[invalid-assignment]
         mount = AsyncMock()
         app._mount_message = mount  # ty: ignore[invalid-assignment]
+        retarget = AsyncMock()
+        monkeypatch.setattr(app, "_retarget_hooks_after_cwd_switch", retarget)
 
         with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
             outcome = await app._offer_thread_cwd_switch(
@@ -32670,6 +32710,7 @@ class TestResumeThreadCwdSwitch:
 
         assert outcome == "abort"
         replace.assert_awaited_once()
+        retarget.assert_not_awaited()
         # The failed switch must be surfaced as a durable message, distinct from
         # the transient toast `_replace_server_after_cwd_switch` already raised.
         mount.assert_awaited_once()
@@ -32765,6 +32806,8 @@ class TestResumeThreadCwdSwitch:
         set_spinner = AsyncMock()
         app._set_spinner = set_spinner  # ty: ignore[invalid-assignment]
         app._update_status = MagicMock()  # ty: ignore[invalid-assignment]
+        reload_hooks = AsyncMock()
+        monkeypatch.setattr(app, "_reload_hooks", reload_hooks)
         replace_calls: list[Path] = []
 
         def replace_server(cwd: Path) -> str:
@@ -32786,6 +32829,7 @@ class TestResumeThreadCwdSwitch:
         assert app._lc_thread_id == "old-thread"
         set_spinner.assert_has_awaits([call("Loading thread"), call(None)])
         load_thread_history.assert_not_awaited()
+        reload_hooks.assert_awaited_once_with()
 
     async def test_threads_switch_offers_abort_and_cancels(
         self,

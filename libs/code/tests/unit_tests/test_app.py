@@ -18289,8 +18289,9 @@ class TestUsageSlashCommands:
         assert source.startswith("### 13.5K / 1.1M tokens (1%)")
         assert "Model: gpt-5.5" in source
         assert "| Segment | Tokens |" in source
-        # Spend on the thread appends the cost summary to the same message.
-        assert "### Estimated cost for priced requests: $0.08" in source
+        # Spend on the thread appends a `/cost` pointer to the same message.
+        assert "estimated spend of $0.08" in source
+        assert "run `/cost` for the full breakdown" in source
         rendered = self._display(source)
         assert "13.5K / 1.1M tokens (1%)" in rendered
         assert "Segment" in rendered

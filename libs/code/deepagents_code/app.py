@@ -7542,7 +7542,7 @@ class DeepAgentsApp(App):
 
         Returns:
             User-facing token usage for the active thread, as markdown source,
-                with the cost summary appended once the thread has spend.
+                with a `/cost` pointer appended once the thread has spend.
         """
         from deepagents_code.config import settings
 
@@ -7590,7 +7590,11 @@ class DeepAgentsApp(App):
             if subtitle:
                 blocks.append(" \u00b7 ".join(subtitle))
         if self._displayed_cost_usd > 0:
-            blocks.append(self._format_cost_summary())
+            blocks.append(
+                f"This thread has an estimated spend of "
+                f"{format_cost(self._displayed_cost_usd)} — run `/cost` for "
+                "the full breakdown."
+            )
         return "\n\n".join(blocks)
 
     def _format_cost_summary(self) -> str:

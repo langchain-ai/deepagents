@@ -437,8 +437,11 @@ def _reject_tracked_rows(
     """
     rejected = _pop_rows_not_awaiting_deferred_result(adapter._current_tool_messages)
     for tool_msg in rejected.values():
-        tool_msg.set_rejected(reason=reason)
-        adapter._sync_tool_widget(tool_msg)
+        try:
+            tool_msg.set_rejected(reason=reason)
+            adapter._sync_tool_widget(tool_msg)
+        except Exception:
+            logger.exception("Failed to mark tool row rejected during cleanup")
     return _dispatch_terminal_tool_result_hooks(rejected, "Tool approval rejected")
 
 

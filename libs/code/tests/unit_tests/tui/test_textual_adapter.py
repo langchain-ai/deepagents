@@ -66,6 +66,7 @@ from deepagents_code.tui.textual_adapter import (
     _is_auto_mode_classifier_chunk,
     _is_summarization_chunk,
     _read_mentioned_file,
+    _reject_tracked_rows,
     _session_cost_pricing_ok,
     _session_cost_thread_id,
     _session_cost_total,
@@ -6037,6 +6038,29 @@ def _make_tool_widget(
     widget.deferred_success_output = deferred_success_output
     widget.is_awaiting_deferred_result = deferred_success_output is not None
     return widget
+
+
+class TestRejectTrackedRows:
+    """Tests for best-effort terminal rejection cleanup."""
+
+    def test_widget_failure_does_not_suppress_terminal_hooks(self) -> None:
+        """A widget failure must not suppress its terminal tool hooks."""
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        tool_widget = _make_tool_widget("read_file", {"path": "notes.txt"})
+        tool_widget.set_rejected.side_effect = RuntimeError("widget teardown failed")
+        adapter._current_tool_messages = {"call-1": tool_widget}
+
+        with patch(
+            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
+        ) as dispatch:
+            assert _reject_tracked_rows(adapter) == ["call-1"]
+
+        assert dispatch.call_count == 2
+        assert adapter._current_tool_messages == {}
 
 
 class TestAskUserHookBodySanitization:

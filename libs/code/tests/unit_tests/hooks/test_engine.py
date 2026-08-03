@@ -350,7 +350,7 @@ def test_snapshot_rejects_invalid_matcher_at_compile_time(tmp_path: Path) -> Non
                         "hooks": [{"type": "command", "command": "bad"}],
                     },
                     {
-                        "matcher": "logout",
+                        "matcher": "clear",
                         "hooks": [{"type": "command", "command": "good"}],
                     },
                     {
@@ -415,8 +415,8 @@ def test_snapshot_rejects_matcher_for_unmatchable_event() -> None:
             },
         ),
         (
-            SessionEndEvent(event=HookEvent.SESSION_END, cause=SessionEndCause.LOGOUT),
-            {"hook_event_name": "SessionEnd", "reason": "logout"},
+            SessionEndEvent(event=HookEvent.SESSION_END, cause=SessionEndCause.CLEAR),
+            {"hook_event_name": "SessionEnd", "reason": "clear"},
         ),
         (
             PermissionRequestEvent(

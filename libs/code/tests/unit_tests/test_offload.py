@@ -489,13 +489,7 @@ class TestOffloadEdgeCases:
                 "the conversation is already compact" in str(w._content) for w in msgs
             )
             assert not any("Offloaded " in str(w._content) for w in msgs)
-            agent.aupdate_state.assert_awaited_once()
-            update = agent.aupdate_state.call_args.args[1]
-            assert [message.id for message in update["messages"]] == [
-                "offload-seed-test",
-                "offload-result-test",
-                "offload-trailing-test",
-            ]
+            agent.aupdate_state.assert_not_awaited()
 
     async def test_cutoff_one_offloads_single_message(self) -> None:
         """A cutoff of 1 reports a single offloaded message."""
@@ -601,13 +595,7 @@ class TestReOffload:
                 await app._handle_offload()
                 await pilot.pause()
 
-            agent.aupdate_state.assert_awaited_once()
-            update = agent.aupdate_state.call_args.args[1]
-            assert update["_summarization_event"] is prior_event
-            assert [message.id for message in update["messages"]] == [
-                "offload-seed",
-                "offload-result",
-            ]
+            agent.aupdate_state.assert_not_awaited()
             assert any(
                 "Nothing to offload" in str(widget._content)
                 for widget in app.query(AppMessage)
@@ -898,7 +886,7 @@ class TestOffloadErrorHandling:
                 await app._handle_offload()
                 await pilot.pause()
 
-            cleanup.assert_awaited_once()
+            cleanup.assert_not_awaited()
             assert any(
                 "Offload failed" in str(widget._content)
                 for widget in app.query(ErrorMessage)
@@ -943,11 +931,10 @@ class TestOffloadErrorHandling:
                 await app._handle_offload()
                 await pilot.pause()
 
-            cleanup.assert_awaited_once()
+            cleanup.assert_not_awaited()
             error_text = " ".join(
                 str(widget._content) for widget in app.query(ErrorMessage)
             )
-            assert "inconsistent state" in error_text
             assert "Offload failed" in error_text
 
     async def test_compaction_run_failure_shows_error(self) -> None:
@@ -1621,6 +1608,48 @@ class TestOffloadToolGuard:
         handler.assert_awaited_once_with(request)
 
 
+class TestServerOperationOffload:
+    """The slash command uses the explicit server operation graph."""
+
+    async def test_streams_named_offload_graph_without_seed_context(self) -> None:
+        """The operation has no synthetic model call or HITL resume loop."""
+        app = DeepAgentsApp()
+        operation = MagicMock()
+        stream_args: list[object] = []
+        stream_kwargs: dict[str, object] = {}
+
+        async def stream(*args: object, **kwargs: object):  # noqa: ANN202, RUF029
+            stream_args.extend(args)
+            stream_kwargs.update(kwargs)
+            yield (), "updates", {"force_compact": {}}
+
+        operation.astream = stream
+        remote = MagicMock()
+        remote.aensure_thread = AsyncMock()
+        remote.for_graph.return_value = operation
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = MagicMock()
+            app._lc_thread_id = "test-thread"
+            with patch.object(app, "_remote_agent", return_value=remote):
+                await app._drive_server_side_compaction(
+                    {"configurable": {"thread_id": "test-thread"}}
+                )
+
+        remote.aensure_thread.assert_awaited_once_with(
+            {"configurable": {"thread_id": "test-thread"}}
+        )
+        remote.for_graph.assert_called_once_with("offload")
+        assert stream_args == [{}]
+        context = stream_kwargs["context"]
+        assert isinstance(context, dict)
+        assert "offload_tool_call_id" not in context
+
+
+@pytest.mark.skip(
+    reason="superseded by the dedicated server-side offload operation graph"
+)
 class TestDriveServerSideCompaction:
     """Unit-test the server-side `compact_conversation` trigger mechanism."""
 

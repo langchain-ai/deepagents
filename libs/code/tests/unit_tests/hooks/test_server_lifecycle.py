@@ -49,6 +49,8 @@ from deepagents_code.hooks.models.domain import (
     HookInvocation,
     PermissionEffect,
     PostToolUseDecision,
+    PostToolUseFailureDecision,
+    PostToolUseFailureEvent,
     PreCompactDecision,
     PreCompactEvent,
     PreToolUseDecision,
@@ -790,41 +792,58 @@ def test_tool_result_text_reads_only_matching_call() -> None:
 def test_tool_result_failed_ignores_unrelated_failure() -> None:
     result = _multi_result_command()
 
-    assert _tool_result_failed(result, "c1") is False
-    assert _tool_result_failed(result, "c2") is True
+    assert (
+        _tool_result_failed(result, ToolCallData(id="c1", name="execute", args={}))
+        is False
+    )
+    assert (
+        _tool_result_failed(result, ToolCallData(id="c2", name="execute", args={}))
+        is True
+    )
 
 
-def test_post_tool_use_skips_failed_tool_message(
+def test_failed_execute_routes_to_post_tool_use_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
     result = ToolMessage(
-        content="failed",
+        content="<no output>\n[Command failed with exit code 42]",
         name="execute",
         tool_call_id="c1",
-        status="error",
+        status="success",
     )
-    invoke = MagicMock()
+    invoke = MagicMock(
+        return_value=PostToolUseFailureDecision(
+            event=HookEvent.POST_TOOL_USE_FAILURE,
+        )
+    )
     monkeypatch.setattr(
         "deepagents_code.hooks.server_middleware._invoke_hook",
         invoke,
     )
 
     updated = middleware._maybe_post_tool_use(
-        ToolCallData(id="c1", name="execute", args={}),
+        ToolCallData(id="c1", name="execute", args={"command": "bash -c 'exit 42'"}),
         HookContext(
             thread_id="thread-1",
             cwd=Path("/tmp"),
             approval_mode=ApprovalMode.MANUAL,
         ),
-        {"snapshot_id": "snap", "events": frozenset({"PostToolUse"})},
+        {
+            "snapshot_id": "snap",
+            "events": frozenset({"PostToolUse", "PostToolUseFailure"}),
+        },
         {"configurable": {"thread_id": "thread-1"}},
         result,
         5,
     )
 
     assert updated is result
-    invoke.assert_not_called()
+    event = invoke.call_args.args[1]
+    assert isinstance(event, PostToolUseFailureEvent)
+    assert event.error == result.content
+    assert event.is_interrupt is False
+    assert event.duration_ms == 5
 
 
 def test_append_pretool_context_to_result() -> None:

@@ -20,6 +20,7 @@ from deepagents_code.hooks.models.domain import (
     PermissionEffect,
     PermissionRequestDecision,
     PostToolUseDecision,
+    PostToolUseFailureDecision,
     PreCompactDecision,
     PreToolUseDecision,
     SessionEndDecision,
@@ -35,6 +36,7 @@ from deepagents_code.hooks.models.wire import (
     HookSpecificOutput,
     PermissionAllow,
     PermissionRequestSpecificOutput,
+    PostToolUseFailureSpecificOutput,
     PostToolUseSpecificOutput,
     PreToolUseSpecificOutput,
     SessionStartSpecificOutput,
@@ -398,6 +400,16 @@ def _merge_post_tool_use(
 
 
 @_merge_specific.register
+def _merge_post_tool_use_failure(
+    specific: PostToolUseFailureSpecificOutput,
+    _invocation: HookInvocation,
+    state: _Reduction,
+    _handler_id: str,
+) -> None:
+    _append(state.context, specific.additional_context)
+
+
+@_merge_specific.register
 def _merge_stop(
     specific: StopSpecificOutput,
     invocation: HookInvocation,
@@ -506,6 +518,13 @@ def _decision(invocation: HookInvocation, state: _Reduction) -> HookDecision:
         )
     if event is HookEvent.POST_TOOL_USE:
         return PostToolUseDecision(
+            event=event,
+            feedback=state.feedback,
+            context=state.context,
+            **common,
+        )
+    if event is HookEvent.POST_TOOL_USE_FAILURE:
+        return PostToolUseFailureDecision(
             event=event,
             feedback=state.feedback,
             context=state.context,

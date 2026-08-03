@@ -1,7 +1,7 @@
 """Server-owned Hooks v2 lifecycle middleware.
 
-Emits `PreCompact`, `PreToolUse`, `PostToolUse`, `Stop`, `SubagentStart`, and
-`SubagentStop` through the LangGraph interrupt channel so the client runtime can
+Emits tool, compaction, stop, and subagent lifecycle events through the LangGraph
+interrupt channel so the client runtime can
 execute matching handlers and return typed decisions.
 """
 
@@ -62,6 +62,8 @@ from deepagents_code.hooks.models.domain import (
     PermissionEffect,
     PostToolUseDecision,
     PostToolUseEvent,
+    PostToolUseFailureDecision,
+    PostToolUseFailureEvent,
     PreCompactDecision,
     PreCompactEvent,
     PreToolUseDecision,
@@ -478,22 +480,38 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         result: ToolMessage | Command[Any],
         duration_ms: int,
     ) -> ToolMessage | Command[Any]:
-        if not _event_enabled(gate, HookEvent.POST_TOOL_USE):
+        failed = _tool_result_failed(result, call)
+        event = HookEvent.POST_TOOL_USE_FAILURE if failed else HookEvent.POST_TOOL_USE
+        if not _event_enabled(gate, event):
             return result
-        if _tool_result_failed(result, call.id):
-            return result
-        decision = _invoke_hook(
-            context,
-            PostToolUseEvent.from_tool_result(
-                result,
-                call=call,
-                duration_ms=duration_ms,
-            ),
-            gate=gate,
-            config=config,
-            deadline=self._default_deadline,
-        )
-        decision = _require_decision(decision, PostToolUseDecision)
+        if failed:
+            decision = _invoke_hook(
+                context,
+                PostToolUseFailureEvent(
+                    event=HookEvent.POST_TOOL_USE_FAILURE,
+                    call=call,
+                    error=_tool_result_text(result, call.id),
+                    is_interrupt=False,
+                    duration_ms=duration_ms,
+                ),
+                gate=gate,
+                config=config,
+                deadline=self._default_deadline,
+            )
+            decision = _require_decision(decision, PostToolUseFailureDecision)
+        else:
+            decision = _invoke_hook(
+                context,
+                PostToolUseEvent.from_tool_result(
+                    result,
+                    call=call,
+                    duration_ms=duration_ms,
+                ),
+                gate=gate,
+                config=config,
+                deadline=self._default_deadline,
+            )
+            decision = _require_decision(decision, PostToolUseDecision)
         return _apply_post_tool_use(result, decision, call.id)
 
     def _maybe_subagent_stop(
@@ -653,6 +671,7 @@ def _invoke_hook(
     event: (
         PreToolUseEvent
         | PostToolUseEvent
+        | PostToolUseFailureEvent
         | PreCompactEvent
         | StopEvent
         | SubagentStartEvent
@@ -770,6 +789,7 @@ def _invocation_id(
     event: (
         PreToolUseEvent
         | PostToolUseEvent
+        | PostToolUseFailureEvent
         | PreCompactEvent
         | StopEvent
         | SubagentStartEvent
@@ -797,6 +817,7 @@ def _logical_event_identity(
     event: (
         PreToolUseEvent
         | PostToolUseEvent
+        | PostToolUseFailureEvent
         | PreCompactEvent
         | StopEvent
         | SubagentStartEvent
@@ -805,7 +826,7 @@ def _logical_event_identity(
     *,
     logical_event_id: str | None = None,
 ) -> str:
-    if isinstance(event, PreToolUseEvent | PostToolUseEvent):
+    if isinstance(event, PreToolUseEvent | PostToolUseEvent | PostToolUseFailureEvent):
         return event.call.id
     if isinstance(event, PreCompactEvent):
         if logical_event_id:
@@ -954,7 +975,7 @@ def _append_message_text(
 
 def _apply_post_tool_use(
     result: ToolMessage | Command[Any],
-    decision: PostToolUseDecision,
+    decision: PostToolUseDecision | PostToolUseFailureDecision,
     call_id: str,
 ) -> ToolMessage | Command[Any]:
     extras: list[str] = []
@@ -1006,12 +1027,20 @@ def _append_tool_result_text(
     return replace(result, update={**update, "messages": messages})
 
 
-def _tool_result_failed(result: ToolMessage | Command[Any], call_id: str) -> bool:
-    if isinstance(result, ToolMessage):
-        return result.status == "error"
+def _tool_result_failed(result: ToolMessage | Command[Any], call: ToolCallData) -> bool:
+    messages = (
+        [result] if isinstance(result, ToolMessage) else _command_messages(result)
+    )
     return any(
-        _is_call_result(message, call_id) and message.status == "error"
-        for message in _command_messages(result)
+        _is_call_result(message, call.id)
+        and (
+            message.status == "error"
+            or (
+                call.name == "execute"
+                and "[Command failed with exit code " in str(message.content)
+            )
+        )
+        for message in messages
     )
 
 

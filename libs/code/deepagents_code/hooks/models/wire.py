@@ -287,6 +287,18 @@ class PostToolUseWireInput(BaseHookWireInput):
     duration_ms: int | None = None
 
 
+class PostToolUseFailureWireInput(BaseHookWireInput):
+    """Wire input for `PostToolUseFailure`."""
+
+    hook_event_name: Literal[HookEvent.POST_TOOL_USE_FAILURE]
+    tool_name: str
+    tool_input: JsonObject
+    tool_use_id: str
+    error: str
+    is_interrupt: bool | None = None
+    duration_ms: int | None = None
+
+
 class PreCompactWireInput(BaseHookWireInput):
     """Wire input for `PreCompact`."""
 
@@ -334,6 +346,7 @@ HookWireInput: TypeAlias = Annotated[
     | NotificationWireInput
     | PreToolUseWireInput
     | PostToolUseWireInput
+    | PostToolUseFailureWireInput
     | PreCompactWireInput
     | StopWireInput
     | SubagentStartWireInput
@@ -425,6 +438,13 @@ class PostToolUseSpecificOutput(_WireModel):
     )
 
 
+class PostToolUseFailureSpecificOutput(_WireModel):
+    """Event-specific output for `PostToolUseFailure`."""
+
+    hook_event_name: Literal["PostToolUseFailure"] = Field(alias="hookEventName")
+    additional_context: str | None = Field(default=None, alias="additionalContext")
+
+
 class StopSpecificOutput(_WireModel):
     """Event-specific output for `Stop`."""
 
@@ -452,6 +472,7 @@ HookSpecificOutput: TypeAlias = Annotated[
     | PreToolUseSpecificOutput
     | PermissionRequestSpecificOutput
     | PostToolUseSpecificOutput
+    | PostToolUseFailureSpecificOutput
     | StopSpecificOutput
     | SubagentStartSpecificOutput
     | SubagentStopSpecificOutput,

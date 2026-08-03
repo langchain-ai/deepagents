@@ -69,12 +69,16 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "anthropic:claude-opus-4-8": "Claude Opus 4.8",
     "anthropic:claude-opus-5": "Claude Opus 5",
     "anthropic:claude-sonnet-5": "Claude Sonnet 5",
+    "baseten:deepseek-ai/DeepSeek-V4-Flash-0731": "DeepSeek V4 Flash 0731",
     "baseten:deepseek-ai/DeepSeek-V4-Pro": "DeepSeek V4 Pro",
     "baseten:moonshotai/Kimi-K2.7-Code": "Kimi K2.7 Code",
     "baseten:moonshotai/Kimi-K3": "Kimi K3",
     "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": "Nemotron 3 Ultra 550B A55B",
     "baseten:zai-org/GLM-5.2": "GLM 5.2",
     "baseten:zai-org/GLM-5.2-Fast": "GLM 5.2 Fast",
+    "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731": (
+        "DeepSeek V4 Flash 0731"
+    ),
     "fireworks:accounts/fireworks/models/deepseek-v4-pro": "DeepSeek V4 Pro",
     "fireworks:accounts/fireworks/models/glm-5p2": "GLM 5.2",
     "fireworks:accounts/fireworks/models/kimi-k2p7-code": "Kimi K2.7 Code",
@@ -110,7 +114,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "openrouter:anthropic/claude-opus-4.7-fast": "Claude Opus 4.7 Fast",
     "openrouter:anthropic/claude-opus-4.8": "Claude Opus 4.8",
     "openrouter:anthropic/claude-sonnet-5": "Claude Sonnet 5",
-    "openrouter:deepseek/deepseek-v4-flash": "DeepSeek V4 Flash",
+    "openrouter:deepseek/deepseek-v4-flash-0731": "DeepSeek V4 Flash 0731",
     "openrouter:deepseek/deepseek-v4-flash:free": "DeepSeek V4 Flash (free)",
     "openrouter:deepseek/deepseek-v4-pro": "DeepSeek V4 Pro",
     "openrouter:google/gemini-3.6-flash": "Gemini 3.6 Flash",
@@ -265,7 +269,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             show=False,
             priority=True,
         ),
-        Binding("ctrl+n", "toggle_names", "Model IDs", show=False, priority=True),
+        # Description stays mode-neutral because the footer hint (see
+        # `_help_text`) flips with `_show_specs` while this string cannot.
+        Binding(
+            "ctrl+n", "toggle_names", "Toggle model IDs", show=False, priority=True
+        ),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
     """Key bindings for model navigation, selection, defaulting, and cancel.
@@ -432,6 +440,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # to its raw `provider:model` spec (mirrors the `/theme` picker's
         # label/key toggle) so a user can read or copy the canonical id.
         self._show_specs = False
+        # True while the footer is displaying a Ctrl+S failure notice, so other
+        # footer writers (Ctrl+N) leave it alone until its restore timer fires.
+        self._help_error_shown = False
 
         self._unfiltered_models: list[tuple[str, str]] = []
         self._recent_specs: list[str] = []
@@ -491,6 +502,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         width, so the help `Static` is sized to grow (auto height) and wraps to
         two rows rather than clipping the trailing hints.
 
+        The Ctrl+N hint names what the next press *does* rather than the
+        current mode, so it reads "Ctrl+N IDs" while friendly names are shown
+        and "Ctrl+N names" once rows are flipped to raw `provider:model` specs.
+
         Returns:
             The bullet-separated help line.
         """
@@ -501,7 +516,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             "Enter select",
         ]
         if not self._curated:
-            parts.extend(("Ctrl+S set default", "Ctrl+R recommended", "Ctrl+N IDs"))
+            names_hint = "Ctrl+N names" if self._show_specs else "Ctrl+N IDs"
+            parts.extend(("Ctrl+S set default", "Ctrl+R recommended", names_hint))
         sep = f" {glyphs.bullet} "
         return sep.join(parts)
 
@@ -1889,6 +1905,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                         f"bold {theme.get_theme_colors(self).error}",
                     )
                 )
+                self._help_error_shown = True
                 self.set_timer(3.0, self._restore_help_text)
         elif await asyncio.to_thread(save_default_model, model_spec):
             self._default_spec = model_spec
@@ -1906,10 +1923,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     f"bold {theme.get_theme_colors(self).error}",
                 )
             )
+            self._help_error_shown = True
             self.set_timer(3.0, self._restore_help_text)
 
     def _restore_help_text(self) -> None:
-        """Restore the default help text after a temporary message."""
+        """Restore the default help text after a temporary message.
+
+        Recomputes `_help_text()` rather than replaying a captured string, so
+        a timer scheduled before a Ctrl+N press still restores the hint for the
+        display mode that is current when it fires.
+        """
+        self._help_error_shown = False
         help_widget = self.query_one(".model-selector-help", Static)
         help_widget.update(self._help_text())
 
@@ -1962,11 +1986,24 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         toggle changes neither ordering nor selection, so a full rebuild is
         unnecessary — and stays available in curated/onboarding mode since it
         only affects presentation.
+
+        In standard mode the footer hint is rewritten so it advertises the mode
+        the next press switches to; curated mode omits the hint entirely, so
+        the refresh is a no-op there.
+
+        The refresh is skipped while a Ctrl+S *error* notice is on the footer,
+        since that notice is the only signal a save failed and the user may not
+        have read it yet. Successful Ctrl+S messages are clobbered freely. The
+        pending restore timer is never cancelled, but it is idempotent — it
+        re-renders `_help_text()` for whatever mode is current when it fires,
+        so an orphaned timer cannot resurrect a stale hint.
         """
         if not self._loaded:
             return
         self._show_specs = not self._show_specs
         self._relabel_options()
+        if not self._help_error_shown:
+            self._restore_help_text()
 
     def _relabel_options(self) -> None:
         """Rebuild each mounted row's label for the current display mode.

@@ -574,6 +574,118 @@ class TestNamesToggle:
             help_text = screen.query_one(".model-selector-help", Static)
             assert "Ctrl+N" in str(help_text.content)
 
+    async def test_help_text_names_toggle_hint_follows_display_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The Ctrl+N footer hint advertises what the next press switches to."""
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+N IDs" in str(help_widget.content)
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            assert "Ctrl+N names" in str(help_widget.content)
+            assert "Ctrl+N IDs" not in str(help_widget.content)
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            assert "Ctrl+N IDs" in str(help_widget.content)
+            assert "Ctrl+N names" not in str(help_widget.content)
+
+    async def test_names_toggle_clobbers_ctrl_s_success_message(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pending Ctrl+S restore timer must not resurrect a stale hint.
+
+        Ctrl+N and Ctrl+S both write the footer. Toggling while a success
+        message is up replaces it immediately, and the message's uncancelled
+        3s timer must then restore the hint for the *new* mode — which only
+        holds because `_restore_help_text` recomputes rather than replaying a
+        string captured when the message was set.
+        """
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+        monkeypatch.setattr(model_selector, "save_default_model", lambda _spec: True)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            screen._default_spec = None
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert "Default set to" in str(help_widget.content)
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+            assert "Ctrl+N names" in str(help_widget.content)
+
+            # Stand in for the 3s timer the Ctrl+S message left pending.
+            screen._restore_help_text()
+            assert "Ctrl+N names" in str(help_widget.content)
+
+    async def test_names_toggle_preserves_ctrl_s_error_message(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+N must not wipe the only notice that saving the default failed."""
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+        monkeypatch.setattr(model_selector, "save_default_model", lambda _spec: False)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            screen._default_spec = None
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert "Failed to save default" in str(help_widget.content)
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            # Rows still flip; only the footer refresh is held back.
+            assert screen._show_specs
+            assert "anthropic:claude-sonnet-5" in str(screen._option_widgets[0].content)
+            assert "Failed to save default" in str(help_widget.content)
+
+            screen._restore_help_text()
+            assert "Ctrl+N names" in str(help_widget.content)
+
     async def test_help_text_omits_names_toggle_in_curated_mode(self) -> None:
         """Onboarding's curated help footer should not mention Ctrl+N."""
         app = ModelSelectorTestApp()
@@ -609,6 +721,10 @@ class TestNamesToggle:
 
             assert screen._show_specs
             assert "anthropic:claude-sonnet-5" in str(screen._option_widgets[0].content)
+            # The toggle refreshes the footer, but curated mode advertises no
+            # Ctrl+N hint to begin with — the press must not leak one in.
+            help_widget = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+N" not in str(help_widget.content)
 
     async def test_show_specs_persists_across_filter_rebuild(
         self, monkeypatch: pytest.MonkeyPatch

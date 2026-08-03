@@ -7,13 +7,13 @@ Core compact tool logic tests live in the SDK at
 from __future__ import annotations
 
 import warnings
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from deepagents.backends.protocol import FileDownloadResponse, WriteResult
-from langchain.agents.middleware.types import ModelRequest, ModelResponse
+from langchain.agents.middleware.types import ModelRequest
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.runtime import Runtime
@@ -139,36 +139,38 @@ class TestCLICompactionMiddleware:
         summarization._compute_state_cutoff.return_value = 2
         return summarization
 
-    @staticmethod
-    def _model_request(summarization: MagicMock) -> ModelRequest:
-        """Build a model request whose summarizer crosses the auto threshold."""
-        messages = [HumanMessage("one"), HumanMessage("two")]
+    @pytest.mark.parametrize("overflow", [False, True])
+    async def test_auto_compaction_runs_precompact_hook(self, overflow: bool) -> None:
+        """Every automatic compaction must ask `PreCompact` before summarizing."""
+        from deepagents.middleware.summarization import SummarizationMiddleware
+
+        from deepagents_code.hooks.models.domain import (
+            HookEvent,
+            PreCompactDecision,
+        )
+
+        messages: list[AnyMessage] = [HumanMessage("one"), HumanMessage("two")]
+        summarization = self._summarization()
         summarization._get_effective_messages.return_value = messages
         summarization._count_tokens.return_value = 2
         summarization._truncate_args.return_value = (messages, False)
-        summarization._should_summarize.return_value = True
+        summarization._should_summarize.return_value = not overflow
         summarization._determine_cutoff_index.return_value = 1
-        return ModelRequest(
+        if overflow:
+            summarization.awrap_model_call = MethodType(
+                SummarizationMiddleware.awrap_model_call, summarization
+            )
+
+        middleware = CLICompactionMiddleware(summarization)
+        request: ModelRequest[None] = ModelRequest(
             model=MagicMock(),
             messages=messages,
             state={"messages": messages},
             runtime=Runtime(context=None),
         )
-
-    async def test_auto_compaction_runs_precompact_hook(self) -> None:
-        """Threshold compaction must ask `PreCompact` before summarizing."""
-        from deepagents_code.hooks.models.domain import (
-            HookEvent,
-            PreCompactDecision,
+        handler = AsyncMock(
+            side_effect=ContextOverflowError("too large") if overflow else None
         )
-
-        summarization = self._summarization()
-        middleware = CLICompactionMiddleware(summarization)
-        request = self._model_request(summarization)
-        logical_id = middleware._auto_compaction_id(request)
-        later = request.override(messages=[*request.messages, HumanMessage("three")])
-        expected = ModelResponse(result=[AIMessage(content="ok")])
-        handler = AsyncMock(return_value=expected)
         invoke = MagicMock(
             return_value=PreCompactDecision(
                 event=HookEvent.PRE_COMPACT,
@@ -179,57 +181,23 @@ class TestCLICompactionMiddleware:
 
         with (
             patch(
-                "deepagents_code.offload_middleware._session_gate",
-                return_value={
-                    "snapshot_id": "snapshot",
-                    "events": frozenset({"PreCompact"}),
-                },
+                "deepagents_code.offload_middleware._event_enabled", return_value=True
             ),
             patch("deepagents_code.offload_middleware._invoke_hook", invoke),
         ):
-            result = await middleware.awrap_model_call(request, handler)
+            if overflow:
+                with pytest.raises(ContextOverflowError, match="too large"):
+                    await middleware.awrap_model_call(request, handler)
+            else:
+                await middleware.awrap_model_call(request, handler)
 
         event = invoke.call_args.args[1]
         assert event.trigger.value == "auto"
-        assert invoke.call_args.kwargs["logical_event_id"] == logical_id
-        assert middleware._auto_compaction_id(request) == logical_id
-        assert middleware._auto_compaction_id(later) != logical_id
-        assert result is expected
-        handler.assert_awaited_once_with(request)
-
-    async def test_overflow_compaction_runs_precompact_hook(self) -> None:
-        """Overflow fallback must ask `PreCompact` before summarizing."""
-        from deepagents_code.hooks.models.domain import (
-            HookEvent,
-            PreCompactDecision,
+        logical_id = invoke.call_args.kwargs["logical_event_id"]
+        assert logical_id == middleware._auto_compaction_id(request)
+        assert logical_id != middleware._auto_compaction_id(
+            request.override(messages=[*messages, HumanMessage("three")])
         )
-
-        summarization = self._summarization()
-        middleware = CLICompactionMiddleware(summarization)
-        request = self._model_request(summarization)
-        summarization._should_summarize.return_value = False
-        handler = AsyncMock(side_effect=ContextOverflowError("too large"))
-        invoke = MagicMock(
-            return_value=PreCompactDecision(
-                event=HookEvent.PRE_COMPACT,
-                continue_processing=False,
-                stop_reason="preserve context",
-            )
-        )
-
-        with (
-            patch(
-                "deepagents_code.offload_middleware._session_gate",
-                return_value={
-                    "snapshot_id": "snapshot",
-                    "events": frozenset({"PreCompact"}),
-                },
-            ),
-            patch("deepagents_code.offload_middleware._invoke_hook", invoke),
-            pytest.raises(ContextOverflowError, match="too large"),
-        ):
-            await middleware.awrap_model_call(request, handler)
-
         invoke.assert_called_once()
         handler.assert_awaited_once()
         summarization._aoffload_to_backend.assert_not_awaited()
@@ -646,6 +614,7 @@ class TestCLICompactionMiddleware:
 
         sdk = MagicMock()
         sdk._summarization = MagicMock()
+        sdk._summarization.name = "SummarizationMiddleware"
         sdk.system_prompt = "SYSTEM PROMPT"
         backend: Any = object()
         with patch.object(
@@ -655,6 +624,7 @@ class TestCLICompactionMiddleware:
 
         factory.assert_called_once()
         assert isinstance(result, om.CLICompactionMiddleware)
+        assert result.name == "SummarizationMiddleware"
         assert result.system_prompt == "SYSTEM PROMPT"
         assert result._summarization is sdk._summarization
 

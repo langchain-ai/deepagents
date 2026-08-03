@@ -5,7 +5,12 @@ from __future__ import annotations
 import re
 from typing import NamedTuple
 
-_HUNK_RE = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))?")
+HUNK_RE = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))?")
+"""Matches a hunk header.
+
+Captures, in order: old start line, old line count, new start line, new line
+count. Either count is absent for a single-line range, where it defaults to 1.
+"""
 
 
 class DiffStats(NamedTuple):
@@ -34,9 +39,9 @@ def file_header_indexes(lines: list[str]) -> set[int]:
     old_remaining = new_remaining = 0
     inside_hunk = False
     for index, line in enumerate(lines):
-        if match := _HUNK_RE.match(line):
-            old_remaining = int(match.group(1) or 1)
-            new_remaining = int(match.group(2) or 1)
+        if match := HUNK_RE.match(line):
+            old_remaining = int(match.group(2) or 1)
+            new_remaining = int(match.group(4) or 1)
             inside_hunk = bool(old_remaining or new_remaining)
             continue
         if inside_hunk:
@@ -53,10 +58,31 @@ def file_header_indexes(lines: list[str]) -> set[int]:
             index + 2 < len(lines)
             and line.startswith("--- ")
             and lines[index + 1].startswith("+++ ")
-            and _HUNK_RE.match(lines[index + 2])
+            and HUNK_RE.match(lines[index + 2])
         ):
             indexes.update((index, index + 1))
     return indexes
+
+
+def count_diff_change_lines(lines: list[str]) -> DiffStats:
+    """Count added and removed lines in unified-diff lines.
+
+    Args:
+        lines: Unified-diff lines.
+
+    Returns:
+        Additions and deletions, excluding file headers.
+    """
+    headers = file_header_indexes(lines)
+    additions = deletions = 0
+    for index, line in enumerate(lines):
+        if index in headers:
+            continue
+        if line.startswith("+"):
+            additions += 1
+        elif line.startswith("-"):
+            deletions += 1
+    return DiffStats(additions, deletions)
 
 
 def count_diff_changes(diff: str) -> DiffStats:
@@ -68,12 +94,4 @@ def count_diff_changes(diff: str) -> DiffStats:
     Returns:
         Additions and deletions, excluding file headers.
     """
-    lines = diff.splitlines()
-    headers = file_header_indexes(lines)
-    additions = sum(
-        line.startswith("+") for index, line in enumerate(lines) if index not in headers
-    )
-    deletions = sum(
-        line.startswith("-") for index, line in enumerate(lines) if index not in headers
-    )
-    return DiffStats(additions, deletions)
+    return count_diff_change_lines(diff.splitlines())

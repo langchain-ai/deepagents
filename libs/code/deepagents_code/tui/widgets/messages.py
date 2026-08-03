@@ -37,7 +37,7 @@ from deepagents_code.config import (
     get_glyphs,
     is_ascii_mode,
 )
-from deepagents_code.diff_utils import count_diff_changes
+from deepagents_code.diff_utils import DiffStats, count_diff_changes
 from deepagents_code.file_ops import is_sensitive_file_path
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
@@ -60,6 +60,7 @@ from deepagents_code.tui.widgets._links import (
 )
 from deepagents_code.tui.widgets.diff import (
     compose_diff_lines,
+    format_diff_stats,
     highlight_source_prefixes,
 )
 from deepagents_code.unicode_security import render_with_unicode_markers
@@ -177,11 +178,11 @@ Membership drives three behaviours: the row self-hides via
 empty (so something stands in for the hidden row), and the row stays visible
 when the pre-edit content was unreadable and the diff cannot be trusted.
 
-Members must also appear in `app._TOOL_GROUP_EXCLUSIONS`. The group-reveal
-paths (`ToolGroupSummary._release_all_collapsible`, `_evict_failed`) set
+Members must not be groupable, so `app._TOOL_GROUP_EXCLUSIONS` derives itself
+from this set. The group-reveal paths
+(`ToolGroupSummary._release_all_collapsible`, `_evict_failed`) set
 `display = True` unconditionally and do not consult `_diff_superseded`, so a
-member that were also groupable would have two independent owners of one
-`display` flag.
+groupable member would have two independent owners of one `display` flag.
 """
 
 
@@ -3773,6 +3774,31 @@ _TOOL_SUMMARY_PHRASES: dict[str, tuple[str, str, str, str]] = {
     "task": ("Running", "Ran", "agent", "agents"),
 }
 
+_DIFF_HEADER_CATEGORIES = frozenset({"write", "edit", "delete"})
+"""Summary categories whose past verb heads a `DiffMessage`.
+
+The file-mutating tools — the only ones that produce a diff to head.
+"""
+
+
+def _diff_header_verb(tool_name: str | None) -> str:
+    """Return the past-tense verb naming the change a diff shows.
+
+    Reads the group-summary phrase tables so a newly added file tool picks up a
+    diff header verb from the same place it gets its summary phrasing.
+
+    Args:
+        tool_name: Raw name of the tool that produced the diff.
+
+    Returns:
+        The verb, or empty when the tool does not mutate a file.
+    """
+    category = _TOOL_SUMMARY_CATEGORY.get(tool_name or "", "")
+    if category not in _DIFF_HEADER_CATEGORIES:
+        return ""
+    return _TOOL_SUMMARY_PHRASES[category][1]
+
+
 _Tense = Literal["present", "past"]
 
 
@@ -4311,7 +4337,7 @@ class DiffMessage(Static):
         tool_name: str | None = None,
         before: str = "",
         after: str = "",
-        stats: tuple[int, int] | None = None,
+        stats: DiffStats | None = None,
         changes_unknown: bool = False,
         **kwargs: Any,
     ) -> None:
@@ -4335,7 +4361,8 @@ class DiffMessage(Static):
         self._diff_content = diff_content
         self._file_path = file_path
         self._tool_name = tool_name
-        if is_sensitive_file_path(file_path):
+        self._redacted = is_sensitive_file_path(file_path)
+        if self._redacted:
             self._before = ""
             self._after = ""
         else:
@@ -4351,51 +4378,40 @@ class DiffMessage(Static):
         Yields:
             Widgets displaying the diff header and formatted content.
         """
-        redacted = is_sensitive_file_path(self._file_path)
-        if redacted:
-            additions, deletions = 0, 0
-        else:
-            additions, deletions = self._stats or count_diff_changes(self._diff_content)
-
         parts: list[str | tuple[str, str] | Content] = []
-        if verb := {"edit_file": "Edited", "write_file": "Wrote"}.get(
-            self._tool_name or ""
-        ):
+        if verb := _diff_header_verb(self._tool_name):
             parts.append((f"{verb} ", "bold"))
         parts.append(Content.from_markup("[dim]$path[/dim]", path=self._file_path))
-        if self._changes_unknown and not redacted:
-            # The pre-edit content was lost, so both the counts and an empty
-            # diff would be fiction. Say so rather than assert either.
-            parts.append(("  changes could not be determined", "dim"))
-        elif additions or deletions:
-            colors = theme.get_theme_colors()
-            parts.append("  ")
-            if additions:
-                parts.append((f"+{additions}", colors.success))
-            if deletions:
-                if additions:
-                    parts.append(" ")
-                parts.append((f"-{deletions}", colors.error))
-        elif not redacted and not self._diff_content:
-            parts.append(("  no changes", "dim"))
-        header = Content.assemble(*parts)
-        if header.plain:
-            yield Static(header, classes="diff-header")
 
-        # Never render the contents of credential files (e.g. `.env`) — the diff
-        # would leak secrets into the terminal UI and scrollback.
-        if redacted:
+        # Never render the contents or line counts of credential files (e.g.
+        # `.env`) — the diff would leak secrets into the terminal UI and
+        # scrollback, and the counts would describe them.
+        if self._redacted:
+            yield Static(Content.assemble(*parts), classes="diff-header")
             yield Static(
                 Content.styled("Diff hidden — file may contain credentials", "dim")
             )
-        elif self._diff_content:
-            yield from compose_diff_lines(
-                self._diff_content,
-                max_lines=100,
-                path=self._file_path,
-                before=self._before,
-                after=self._after,
-            )
+        else:
+            additions, deletions = self._stats or count_diff_changes(self._diff_content)
+            if self._changes_unknown:
+                # The pre-edit content was lost, so both the counts and an empty
+                # diff would be fiction. Say so rather than assert either.
+                parts.append(("  changes could not be determined", "dim"))
+            elif additions or deletions:
+                parts += ["  ", format_diff_stats(additions, deletions)]
+            elif not self._diff_content:
+                parts.append(("  no changes", "dim"))
+            header = Content.assemble(*parts)
+            if header.plain:
+                yield Static(header, classes="diff-header")
+            if self._diff_content:
+                yield from compose_diff_lines(
+                    self._diff_content,
+                    max_lines=100,
+                    path=self._file_path,
+                    before=self._before,
+                    after=self._after,
+                )
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""

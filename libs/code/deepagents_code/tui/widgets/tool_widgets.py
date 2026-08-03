@@ -10,9 +10,9 @@ from textual.content import Content
 from textual.widgets import Markdown, Static
 
 from deepagents_code import theme
-from deepagents_code.diff_utils import count_diff_changes
+from deepagents_code.diff_utils import count_diff_change_lines
 from deepagents_code.file_ops import is_sensitive_file_path
-from deepagents_code.tui.widgets.diff import compose_diff_lines
+from deepagents_code.tui.widgets.diff import compose_diff_lines, format_diff_stats
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -43,27 +43,6 @@ def format_display_content(content: object) -> str:
         return str(content)
 
 
-def _format_stats(additions: int, deletions: int) -> Content:
-    """Format addition/deletion stats as styled Content.
-
-    Args:
-        additions: Number of added lines.
-        deletions: Number of removed lines.
-
-    Returns:
-        Styled Content showing additions and deletions.
-    """
-    colors = theme.get_theme_colors()
-    parts: list[str | tuple[str, str] | Content] = []
-    if additions:
-        parts.append((f"+{additions}", colors.success))
-    if deletions:
-        if parts:
-            parts.append(" ")
-        parts.append((f"-{deletions}", colors.error))
-    return Content.assemble(*parts) if parts else Content("")
-
-
 def _file_header(
     file_path: str, additions: int = 0, deletions: int = 0
 ) -> ComposeResult:
@@ -77,7 +56,7 @@ def _file_header(
     Yields:
         Static widgets for the file path header and a spacer line.
     """
-    stats = _format_stats(additions, deletions)
+    stats = format_diff_stats(additions, deletions)
     yield Static(
         Content.assemble(
             Content.from_markup("[bold cyan]File:[/bold cyan] $path  ", path=file_path),
@@ -101,7 +80,7 @@ def _count_diff_stats(
         Tuple of (additions count, deletions count).
     """
     if diff_lines:
-        additions, deletions = count_diff_changes("\n".join(diff_lines))
+        additions, deletions = count_diff_change_lines(diff_lines)
     else:
         additions = new_string.count("\n") + 1 if new_string else 0
         deletions = old_string.count("\n") + 1 if old_string else 0

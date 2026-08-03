@@ -2068,10 +2068,14 @@ async def execute_task_textual(
                                     assistant_message_by_namespace,
                                 )
                                 pending_text_by_namespace[ns_key] = ""
-                            if record.diff or (
+                            # The diff replaces this row, so it mounts even with
+                            # an empty body — something has to stand in for what
+                            # gets hidden.
+                            replaces_row = (
                                 record.tool_name in TOOLS_SUPERSEDED_BY_DIFF
                                 and record.status == "success"
-                            ):
+                            )
+                            if record.diff or replaces_row:
                                 await adapter._mount_message(
                                     DiffMessage(
                                         record.diff or "",
@@ -2093,7 +2097,7 @@ async def execute_task_textual(
                                 # and the row's own output is all the user has.
                                 if (
                                     tool_msg is not None
-                                    and record.status == "success"
+                                    and replaces_row
                                     and not record.before_unreadable
                                 ):
                                     tool_msg.mark_superseded_by_diff()

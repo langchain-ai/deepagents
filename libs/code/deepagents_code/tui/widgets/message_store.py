@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from textual.widget import Widget
 
+    from deepagents_code.diff_utils import DiffStats
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_HEIGHT_HINT = 5
@@ -181,7 +183,7 @@ class MessageData:
     diff_after_content: str | None = None
     """Bounded content prefix after the change, used to highlight DIFF messages."""
 
-    diff_stats: tuple[int, int] | None = None
+    diff_stats: DiffStats | None = None
     """True change counts, which survive a truncated DIFF body."""
 
     # SKILL message fields - only populated for SKILL messages

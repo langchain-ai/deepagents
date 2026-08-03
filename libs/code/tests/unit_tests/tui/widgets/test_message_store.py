@@ -3,6 +3,7 @@
 import pytest
 from textual.widgets import Static
 
+from deepagents_code.diff_utils import DiffStats
 from deepagents_code.tui.widgets.message_store import (
     DEFAULT_HEIGHT_HINT,
     MIN_HEIGHT_HINT,
@@ -406,7 +407,7 @@ class TestMessageData:
             tool_name="edit_file",
             before="a\nunused before\n",
             after="b\nunused after\n",
-            stats=(200, 200),
+            stats=DiffStats(additions=200, deletions=200),
             id="test-diff-highlight",
         )
 

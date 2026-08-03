@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from deepagents.backends.protocol import FILE_NOT_FOUND
 
-from deepagents_code.diff_utils import count_diff_changes
+from deepagents_code.diff_utils import DiffStats, count_diff_change_lines
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ def compute_unified_diff(
     *,
     max_lines: int | None = 800,
     context_lines: int = 3,
-) -> str | None:
+) -> tuple[str | None, DiffStats]:
     """Compute a unified diff between before and after content.
 
     Args:
@@ -73,33 +73,13 @@ def compute_unified_diff(
         context_lines: Number of context lines around changes (default 3)
 
     Returns:
-        Unified diff string or None if no changes
+        The unified diff (None if no changes), and the change counts. The counts
+        are taken before any truncation, so they stay true for a clipped body.
     """
-    diff, _, _ = _compute_unified_diff(
-        before,
-        after,
-        display_path,
-        max_lines=max_lines,
-        context_lines=context_lines,
-    )
-    return diff
-
-
-def _compute_unified_diff(
-    before: str,
-    after: str,
-    display_path: str,
-    *,
-    max_lines: int | None = 800,
-    context_lines: int = 3,
-) -> tuple[str | None, int, int]:
-    """Return a unified diff and pre-truncation change counts."""
-    before_lines = before.splitlines()
-    after_lines = after.splitlines()
     diff_lines = list(
         difflib.unified_diff(
-            before_lines,
-            after_lines,
+            before.splitlines(),
+            after.splitlines(),
             fromfile=f"{display_path} (before)",
             tofile=f"{display_path} (after)",
             lineterm="",
@@ -107,13 +87,11 @@ def _compute_unified_diff(
         )
     )
     if not diff_lines:
-        return None, 0, 0
-    additions, deletions = count_diff_changes("\n".join(diff_lines))
+        return None, DiffStats(0, 0)
+    stats = count_diff_change_lines(diff_lines)
     if max_lines is not None and len(diff_lines) > max_lines:
-        truncated = diff_lines[: max_lines - 1]
-        truncated.append("...")
-        return "\n".join(truncated), additions, deletions
-    return "\n".join(diff_lines), additions, deletions
+        diff_lines = [*diff_lines[: max_lines - 1], "..."]
+    return "\n".join(diff_lines), stats
 
 
 @dataclass
@@ -297,14 +275,10 @@ def build_approval_preview(
             else ""
         )
         after = content
-        diff = compute_unified_diff(before or "", after, display_path, max_lines=100)
-        additions = 0
-        if diff:
-            additions = sum(
-                1
-                for line in diff.splitlines()
-                if line.startswith("+") and not line.startswith("+++")
-            )
+        diff, stats = compute_unified_diff(
+            before or "", after, display_path, max_lines=100
+        )
+        additions = stats.additions
         total_lines = _count_lines(after)
         details = [
             f"File: {path_str}",
@@ -330,7 +304,7 @@ def build_approval_preview(
         before = _safe_read(physical_path)
         diff = None
         if before is not None:
-            diff = compute_unified_diff(before, "", display_path, max_lines=100)
+            diff, _ = compute_unified_diff(before, "", display_path, max_lines=100)
             details.append(f"Lines to delete: {_count_lines(before)}")
         elif physical_path.exists():
             details.append("Contents: directory or unreadable file")
@@ -370,26 +344,13 @@ def build_approval_preview(
                 error=replacement,
             )
         after, occurrences = replacement
-        diff = compute_unified_diff(before, after, display_path, max_lines=None)
-        additions = 0
-        deletions = 0
-        if diff:
-            additions = sum(
-                1
-                for line in diff.splitlines()
-                if line.startswith("+") and not line.startswith("+++")
-            )
-            deletions = sum(
-                1
-                for line in diff.splitlines()
-                if line.startswith("-") and not line.startswith("---")
-            )
+        diff, stats = compute_unified_diff(before, after, display_path, max_lines=None)
         action = "all occurrences" if replace_all else "single occurrence"
         details = [
             f"File: {path_str}",
             f"Action: Replace text ({action})",
             f"Occurrences matched: {occurrences}",
-            f"Lines changed: +{additions} / -{deletions}",
+            f"Lines changed: +{stats.additions} / -{stats.deletions}",
         ]
         return ApprovalPreview(
             title=f"Update {display_path}",
@@ -546,7 +507,7 @@ class FileOpTracker:
                     return record
             record.metrics.lines_written = _count_lines(record.after_content)
             before_lines = _count_lines(record.before_content or "")
-            diff, additions, deletions = _compute_unified_diff(
+            diff, stats = compute_unified_diff(
                 record.before_content or "",
                 record.after_content,
                 record.display_path,
@@ -554,8 +515,8 @@ class FileOpTracker:
             )
             record.diff = diff
             if diff:
-                record.metrics.lines_added = additions
-                record.metrics.lines_removed = deletions
+                record.metrics.lines_added = stats.additions
+                record.metrics.lines_removed = stats.deletions
             elif record.tool_name == "write_file" and not (record.before_content or ""):
                 record.metrics.lines_added = record.metrics.lines_written
             record.metrics.bytes_written = len(record.after_content.encode("utf-8"))
@@ -563,7 +524,7 @@ class FileOpTracker:
                 record.diff is None
                 and (record.before_content or "") != record.after_content
             ):
-                record.diff = compute_unified_diff(
+                record.diff, _ = compute_unified_diff(
                     record.before_content or "",
                     record.after_content,
                     record.display_path,

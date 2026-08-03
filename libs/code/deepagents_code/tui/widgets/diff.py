@@ -18,19 +18,14 @@ from textual.content import Content
 from textual.highlight import highlight
 from textual.widgets import Static
 
+from deepagents_code import theme
 from deepagents_code.config import get_glyphs
-from deepagents_code.diff_utils import file_header_indexes
+from deepagents_code.diff_utils import HUNK_RE, file_header_indexes
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 logger = logging.getLogger(__name__)
-
-_HUNK_RE = re.compile(r"@@ -(\d+)(?:,\d+)? \+(\d+)")
-"""Matches a hunk header, capturing the old and new start lines.
-
-Distinct from `diff_utils._HUNK_RE`, which captures the two *counts* instead.
-"""
 
 _TOKEN_RE = re.compile(r"\w+|\s+|.")
 """Splits a line into word / whitespace / single-character tokens.
@@ -133,6 +128,27 @@ def compose_diff_lines(
         )
 
 
+def format_diff_stats(additions: int, deletions: int) -> Content:
+    """Format addition/deletion counts as styled `+N -M` content.
+
+    Args:
+        additions: Number of added lines.
+        deletions: Number of removed lines.
+
+    Returns:
+        Styled content, empty when both counts are zero.
+    """
+    colors = theme.get_theme_colors()
+    parts: list[str | tuple[str, str] | Content] = []
+    if additions:
+        parts.append((f"+{additions}", colors.success))
+    if deletions:
+        if parts:
+            parts.append(" ")
+        parts.append((f"-{deletions}", colors.error))
+    return Content.assemble(*parts) if parts else Content("")
+
+
 def highlight_source_prefixes(diff: str, before: str, after: str) -> tuple[str, str]:
     """Keep the bounded source prefixes needed to highlight a diff.
 
@@ -232,8 +248,8 @@ def _highlighted_rows(
         wanted = {row.number: i for i, row in enumerate(rows) if row.kind in kinds}
         if not wanted or not code:
             continue
-        head = "\n".join(code.splitlines()[: max(wanted)])
-        if len(head) > _MAX_HIGHLIGHT_CHARS:
+        head = _highlight_source_prefix(code, max(wanted))
+        if not head:
             continue
         lines = _highlight_lines(head, path)
         if lines is None:
@@ -264,8 +280,8 @@ def _parse_rows(lines: list[str]) -> list[_Row]:
     for index, line in enumerate(lines):
         if index in header_indexes:
             continue
-        if match := _HUNK_RE.match(line):
-            old, new = int(match.group(1)), int(match.group(2))
+        if match := HUNK_RE.match(line):
+            old, new = int(match.group(1)), int(match.group(3))
             if seen_hunk:
                 rows.append(_Row("separator", "", 0))
             seen_hunk = True

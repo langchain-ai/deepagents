@@ -50,14 +50,15 @@ Do not run `dcode` in a directory you do not trust without a sandbox backend. Fo
 
 ## 🪟 Running under tmux
 
-A tmux pane is not the terminal you are looking at: tmux owns the pty and decides which escape sequences reach the outer terminal. Four options are off by default and each disables something in `dcode`. Run `dcode doctor` to see which ones apply to your setup.
+A tmux pane is not the terminal you are looking at: tmux owns the pty and decides which escape sequences reach the outer terminal. Several options are off by default and each disables something in `dcode`. Run `dcode doctor` to see which ones apply to your setup.
 
 ```tmux
 # ~/.tmux.conf
-set -g focus-events on              # otherwise unfocused panes keep a blinking cursor
-set -g allow-passthrough on         # otherwise progress, OSC 52, and the cursor guide are dropped
-set -g set-clipboard on             # otherwise /copy cannot reach the outer clipboard
-set -ga update-environment COLORTERM # otherwise themes are quantized to 256 colors
+set -g focus-events on                  # otherwise unfocused panes keep a blinking cursor
+set -g allow-passthrough on             # otherwise progress, OSC 52, and the cursor guide are dropped
+set -g set-clipboard on                 # otherwise /copy cannot reach the outer clipboard
+set -ga update-environment COLORTERM    # otherwise themes are quantized to 256 colors
+set -ga update-environment ITERM_PROFILE # iTerm2 only: otherwise the cursor guide reads a stale profile
 ```
 
 Reload with `tmux source-file ~/.tmux.conf` (a new server is needed for `update-environment` to reach existing panes).

@@ -2,27 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
+
+from deepagents_code.terminal_capabilities import is_iterm2
+
+logger = logging.getLogger(__name__)
 
 # iTerm2's cursor guide (highlight cursor line) causes visual artifacts when
 # Textual takes over the terminal in alternate screen mode. We disable it at
 # module load and restore it on exit only if the active/default iTerm2 profile
 # had cursor guide enabled before launch.
 
-# Detection: check env vars AND that stderr is a TTY (avoids false positives
-# when env vars are inherited but running in non-TTY context like CI).
-# Inherited env vars are the right signal here even inside tmux: the command
-# is forwarded to the outer terminal, which really is iTerm2. Contrast key
-# encodings, where a pane must not trust the terminal it is hosted in.
-_IS_ITERM = (
-    (
-        os.environ.get("LC_TERMINAL", "") == "iTerm2"
-        or os.environ.get("TERM_PROGRAM", "") == "iTerm.app"
-    )
-    and hasattr(os, "isatty")
-    and os.isatty(2)
-)
+_IS_ITERM = is_iterm2()
 
 _CURSOR_GUIDE_OSC = "1337"
 """iTerm2's proprietary OSC command number."""
@@ -148,6 +141,13 @@ def _iterm_profile_cursor_guide_enabled() -> bool:
     name = os.environ.get("ITERM_PROFILE", "").strip()
     guid = str(prefs.get("Default Bookmark Guid", ""))
     profile = _find_iterm_profile(profiles, name=name, guid=guid)
+    # Inside tmux `ITERM_PROFILE` is only as current as the server's start,
+    # so record what was matched; `dcode doctor` reports the same hazard.
+    logger.debug(
+        "cursor guide: ITERM_PROFILE=%r matched profile %r",
+        name,
+        profile.get("Name") if profile else None,
+    )
     if profile is None:
         return False
     return _profile_uses_cursor_guide(profile)

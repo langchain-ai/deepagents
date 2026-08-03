@@ -26,6 +26,31 @@ logger = logging.getLogger(__name__)
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off"})
 _KNOWN_KITTY_KEYBOARD_TERMS = frozenset({"xterm-ghostty", "xterm-kitty"})
+_STDERR_FD = 2
+
+
+def is_iterm2(env: Mapping[str, str] | None = None) -> bool:
+    """Return whether the terminal the user is looking at is iTerm2.
+
+    Unlike the kitty-keyboard check this stays true inside a multiplexer. The
+    callers care about sequences tmux forwards to the outer terminal, and that
+    terminal really is iTerm2, so the inherited markers are the right signal.
+
+    Requiring a TTY keeps the markers from producing a false positive when they
+    are inherited into a non-interactive context such as CI.
+
+    Args:
+        env: Environment mapping to read. Defaults to the process environment.
+
+    Returns:
+        `True` when iTerm2 is hosting this process and stderr is a terminal.
+    """
+    source = env if env is not None else os.environ
+    identified = (
+        source.get("LC_TERMINAL", "") == "iTerm2"
+        or source.get("TERM_PROGRAM", "") == "iTerm.app"
+    )
+    return identified and hasattr(os, "isatty") and os.isatty(_STDERR_FD)
 
 
 def _override_supports_kitty_keyboard_protocol(

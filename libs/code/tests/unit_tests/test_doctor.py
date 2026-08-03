@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 from rich.console import Console
 
+from deepagents_code import terminal_capabilities
 from deepagents_code.doctor import (
     DiagnosticItem,
     DiagnosticSection,
@@ -258,7 +259,9 @@ class TestCollectTerminal:
     def _tmux_status(self, **options: str) -> object:
         from deepagents_code.multiplexer import TmuxStatus
 
-        return TmuxStatus(version="tmux 3.5a", options=options)
+        return TmuxStatus(
+            version="tmux 3.5a", options=options, environment_updates=frozenset()
+        )
 
     def test_outside_tmux_reports_terminal_identity(
         self, monkeypatch: pytest.MonkeyPatch
@@ -333,6 +336,64 @@ class TestCollectTerminal:
             )
         )
         assert section.ok is True
+
+    def test_iterm_profile_row_is_absent_on_other_terminals(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The row would be noise for a pane that is not hosted by iTerm2."""
+        monkeypatch.setattr(terminal_capabilities, "is_iterm2", lambda: False)
+        assert "iTerm2 profile" not in self._labels(self._tmux_status())
+
+    def test_stale_iterm_profile_carries_consequence_and_remedy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unrefreshed `ITERM_PROFILE` silently misreports the cursor guide."""
+        monkeypatch.setattr(terminal_capabilities, "is_iterm2", lambda: True)
+        monkeypatch.setenv("ITERM_PROFILE", "Work")
+
+        value = self._labels(self._tmux_status())["iTerm2 profile"]
+
+        assert value.startswith("Work - ")
+        assert "frozen at server start" in value
+        assert "set -ga update-environment ITERM_PROFILE" in value
+
+    def test_refreshed_iterm_profile_renders_bare(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Listing the variable in `update-environment` is the whole fix."""
+        from deepagents_code.multiplexer import ITERM_PROFILE_VAR, TmuxStatus
+
+        monkeypatch.setattr(terminal_capabilities, "is_iterm2", lambda: True)
+        monkeypatch.setenv("ITERM_PROFILE", "Work")
+        status = TmuxStatus(
+            version="tmux 3.5a",
+            options={},
+            environment_updates=frozenset({ITERM_PROFILE_VAR}),
+        )
+
+        assert self._labels(status)["iTerm2 profile"] == "Work"
+
+    def test_uninherited_iterm_profile_is_named_as_such(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A missing variable is a different fact from a stale one."""
+        monkeypatch.setattr(terminal_capabilities, "is_iterm2", lambda: True)
+        monkeypatch.delenv("ITERM_PROFILE", raising=False)
+
+        value = self._labels(self._tmux_status())["iTerm2 profile"]
+
+        assert value.startswith("not inherited - ")
+
+    def test_iterm_profile_row_reports_a_failed_probe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without an answer from tmux the row must not guess."""
+        from deepagents_code.multiplexer import TmuxStatus
+
+        monkeypatch.setattr(terminal_capabilities, "is_iterm2", lambda: True)
+        labels = self._labels(TmuxStatus(version=None, options=None))
+
+        assert labels["iTerm2 profile"] == "could not query tmux"
 
 
 class TestCollectTracing:

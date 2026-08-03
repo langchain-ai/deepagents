@@ -1912,9 +1912,9 @@ async def run_non_interactive(
             commands without an explicit `--trust-project-hooks` opt-in.
 
     Returns:
-        Exit code: 0 for success, 1 for error, 124 when the `--max-turns`
-            budget was exceeded (matching GNU `timeout`), 130 for keyboard
-            interrupt.
+        Exit code: 0 for success or an intentional hook stop, 1 for error, 124
+            when the `--max-turns` budget was exceeded (matching GNU `timeout`),
+            130 for keyboard interrupt.
     """
     _make_stdio_encoding_safe()
 
@@ -2047,6 +2047,7 @@ async def run_non_interactive(
         console.print(header)
 
     from deepagents_code.client.launch.server_manager import server_session
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
 
     # Launch MCP preload concurrently with server startup
     mcp_task: asyncio.Task[Any] | None = None
@@ -2199,6 +2200,13 @@ async def run_non_interactive(
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")
         return 130
+    except ClientHookStopError as exc:
+        logger.info("Operation stopped by hook: %s", exc)
+        console.print(
+            Text(f"\nOperation stopped by hook: {exc}", style="yellow"),
+            highlight=False,
+        )
+        return 0
     except HITLIterationLimitError as e:
         console.print(f"\n[red]{escape_markup(str(e))}[/red]")
         console.print(

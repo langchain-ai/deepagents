@@ -144,6 +144,19 @@ class FileOperationRecord:
     after_content: str | None = None
     read_output: str | None = None
     hitl_approved: bool = False
+    before_unreadable: bool = False
+    """The pre-operation content could not be read, so `before_content` is a
+    stand-in empty string rather than the file's real prior state.
+
+    Any diff computed against it is unreliable: an unchanged file looks like a
+    no-op, and a changed one looks like a whole-file insertion.
+    """
+    after_unreadable: bool = False
+    """The post-operation content could not be read back.
+
+    Distinct from a tool-reported failure: the operation itself succeeded, only
+    its result could not be displayed.
+    """
 
 
 def resolve_physical_path(
@@ -428,14 +441,36 @@ class FileOpTracker:
                     ):
                         record.before_content = responses[0].content.decode("utf-8")
                     else:
+                        # A missing file is the normal create case, not a
+                        # failure; anything else means we lost the pre-image
+                        # and every downstream diff is suspect.
+                        error = responses[0].error if responses else "no response"
+                        if error is not None:
+                            logger.warning(
+                                "Could not read pre-edit content for %s: %s",
+                                path_str,
+                                error,
+                            )
+                            record.before_unreadable = True
                         record.before_content = ""
                 except (OSError, UnicodeDecodeError, AttributeError) as e:
-                    logger.debug(
-                        "Failed to read before_content for %s: %s", path_str, e
+                    # `AttributeError` covers a backend returning a malformed
+                    # response. That is a contract bug, but this runs unguarded
+                    # on the turn loop, so log it loudly rather than let it
+                    # abort the turn.
+                    logger.warning(
+                        "Could not read pre-edit content for %s: %s", path_str, e
                     )
+                    record.before_unreadable = True
                     record.before_content = ""
             elif record.physical_path:
-                record.before_content = _safe_read(record.physical_path) or ""
+                content = _safe_read(record.physical_path)
+                if content is None and record.physical_path.exists():
+                    logger.warning(
+                        "Could not read pre-edit content for %s", record.physical_path
+                    )
+                    record.before_unreadable = True
+                record.before_content = content or ""
         self.active[tool_call_id] = record
 
     def complete_with_message(self, tool_message: Any) -> FileOperationRecord | None:  # noqa: ANN401  # Tool message type is dynamic
@@ -503,6 +538,7 @@ class FileOpTracker:
                 self._populate_after_content(record)
                 if record.after_content is None:
                     record.status = "error"
+                    record.after_unreadable = True
                     record.error = "Could not read updated file content."
                     self._finalize(record)
                     return record

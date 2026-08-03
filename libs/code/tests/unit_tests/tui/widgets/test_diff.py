@@ -105,6 +105,27 @@ class TestComposeDiffLines:
         assert any(text.endswith("--old value") for text in texts)
         assert any(text.endswith("++new value") for text in texts)
 
+    def test_show_numbers_false_drops_the_gutter(self) -> None:
+        """Callers whose diff is not file-relative can suppress line numbers.
+
+        The approval preview diffs edit *fragments*, so its hunks always start
+        at 1; rendering that gutter would assert wrong file line numbers.
+        """
+        numbered = _texts(_rendered(_SAMPLE_DIFF))
+        plain = _texts(
+            [
+                w
+                for w in compose_diff_lines(_SAMPLE_DIFF, 100, show_numbers=False)
+                if isinstance(w, Static)
+            ]
+        )
+
+        assert any(text.lstrip().startswith("10") for text in numbered)
+        assert not any(text.strip().startswith(("10", "11", "12")) for text in plain)
+        # The marker and body survive; only the gutter is gone.
+        assert any(text.strip() == "- removed" for text in plain)
+        assert any(text.strip() == "+ added1" for text in plain)
+
     def test_file_and_hunk_headers_are_not_rendered_as_rows(self) -> None:
         """File headers and hunk headers don't appear as diff-line widgets."""
         texts = _texts(_rendered(_SAMPLE_DIFF))

@@ -2,6 +2,7 @@ import shutil
 import textwrap
 from pathlib import Path
 from typing import cast
+from unittest import mock
 
 import pytest
 from langchain_core.messages import ToolMessage
@@ -183,6 +184,73 @@ def test_diff_counts_are_computed_before_truncation(tmp_path: Path) -> None:
     assert record.diff is not None
     assert record.diff.endswith("...")
     assert (record.metrics.lines_added, record.metrics.lines_removed) == (1000, 1000)
+
+
+def test_unreadable_before_content_is_flagged(tmp_path: Path) -> None:
+    """A pre-image we could not read must not masquerade as an empty file.
+
+    Otherwise the diff renders the whole file as additions (or, for an
+    unchanged file, as "no changes") with no signal that it is unreliable.
+    """
+    path = tmp_path / "locked.txt"
+    path.write_text("alpha\nbeta\n")
+    tracker = FileOpTracker(assistant_id=None)
+
+    with mock.patch("deepagents_code.file_ops._safe_read", return_value=None):
+        tracker.start_operation("edit_file", {"file_path": str(path)}, "locked-1")
+
+    record = tracker.active["locked-1"]
+    assert record.before_unreadable is True
+    assert record.before_content == ""
+
+
+def test_missing_before_content_is_not_flagged_as_unreadable(tmp_path: Path) -> None:
+    """Creating a new file has no pre-image; that is normal, not a failure."""
+    path = tmp_path / "brand-new.txt"
+    tracker = FileOpTracker(assistant_id=None)
+    tracker.start_operation("write_file", {"file_path": str(path)}, "new-1")
+
+    record = tracker.active["new-1"]
+    assert record.before_unreadable is False
+
+
+def test_unreadable_after_content_sets_its_own_flag(tmp_path: Path) -> None:
+    """Succeeded-but-undisplayable must be distinguishable from a tool error.
+
+    Both set `status == "error"`; only this one means the operation itself
+    landed, so only this one may tell the user it succeeded.
+    """
+    path = tmp_path / "vanishing.txt"
+    path.write_text("alpha\n")
+    tracker = FileOpTracker(assistant_id=None)
+    tracker.start_operation("edit_file", {"file_path": str(path)}, "vanish-1")
+    path.unlink()
+
+    record = tracker.complete_with_message(
+        ToolMessage(content="Updated file", tool_call_id="vanish-1", name="edit_file")
+    )
+
+    assert record is not None
+    assert record.status == "error"
+    assert record.after_unreadable is True
+
+
+def test_tool_reported_error_does_not_set_after_unreadable(tmp_path: Path) -> None:
+    """A genuine tool failure must not be reported as "succeeded, but…"."""
+    path = tmp_path / "f.txt"
+    path.write_text("alpha\n")
+    tracker = FileOpTracker(assistant_id=None)
+    tracker.start_operation("edit_file", {"file_path": str(path)}, "err-1")
+
+    record = tracker.complete_with_message(
+        ToolMessage(
+            content="Error: string not found", tool_call_id="err-1", name="edit_file"
+        )
+    )
+
+    assert record is not None
+    assert record.status == "error"
+    assert record.after_unreadable is False
 
 
 def test_tracker_records_delete_diff(tmp_path: Path) -> None:

@@ -184,10 +184,16 @@ _TOOL_GROUP_EXCLUSIONS = frozenset({"ask_user", "edit_file", "write_todos"})
 """Tools kept out of the collapsing step summaries.
 
 Each surfaces user-facing content worth keeping visible on its own — an
-interactive prompt (`ask_user`), a diff (`edit_file`), or a todo list
-(`write_todos`) — so it renders standalone and acts as a boundary between
-adjacent tool groups. Add a tool here only when its collapsed one-line
-summary would hide something the user needs to see.
+interactive prompt (`ask_user`) or a todo list (`write_todos`) — so it renders
+standalone and acts as a boundary between adjacent tool groups. Add a tool here
+only when its collapsed one-line summary would hide something the user needs to
+see.
+
+`edit_file` is here for a second, load-bearing reason: it is in
+`TOOLS_SUPERSEDED_BY_DIFF`, so a successful row hides itself in favour of the
+`DiffMessage` that replaces it. Group-reveal paths force `display = True`
+without consulting `_diff_superseded`, so removing `edit_file` from this set
+would resurrect rows the diff already stands in for.
 """
 
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
@@ -17347,6 +17353,10 @@ class DeepAgentsApp(App):
             tool_duration=data.tool_duration,
             tool_expanded=data.tool_expanded,
             tool_reject_reason=data.tool_reject_reason,
+            # Set after the row is first stored, when its diff mounts. Without
+            # it the store keeps the mount-time `False` and rehydration
+            # resurrects the row next to the diff that replaced it.
+            tool_diff_superseded=data.tool_diff_superseded,
         )
         if data.tool_status in {ToolStatus.PENDING, ToolStatus.RUNNING}:
             self._message_store.protect_message(widget.id)

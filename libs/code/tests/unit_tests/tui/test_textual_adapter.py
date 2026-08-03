@@ -17,7 +17,7 @@ from langgraph.types import Command
 from pydantic import ValidationError
 from rich.console import Console
 
-from deepagents_code import config as config_module
+from deepagents_code import config as config_module, file_ops as file_ops_module
 from deepagents_code._ask_user_types import (
     ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
     ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY,
@@ -3014,6 +3014,108 @@ class TestExecuteTaskTextualFileOpDiffs:
         assert tool._status == "success"
         assert tool.display is True
         assert not any(isinstance(m, DiffMessage) for m in mounted)
+
+    async def test_unreadable_pre_image_keeps_the_tool_row_visible(
+        self, tmp_path: Path
+    ) -> None:
+        """Hiding the row would leave an untrustworthy diff as the only record.
+
+        With no pre-image the diff cannot be believed, so the tool's own
+        output — the one thing that does report what happened — must stay.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        # Fail only the pre-image read; the read-back must still succeed so
+        # this exercises the before-side failure in isolation.
+        real_safe_read = file_ops_module._safe_read
+        calls = {"n": 0}
+
+        def flaky_read(path: Path) -> str | None:
+            calls["n"] += 1
+            return None if calls["n"] == 1 else real_safe_read(path)
+
+        with patch("deepagents_code.file_ops._safe_read", side_effect=flaky_read):
+            mounted = await self._run_edit(target, "value = 2")
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert tool.display is True, "row hidden behind a diff that cannot be trusted"
+
+        diffs = [m for m in mounted if isinstance(m, DiffMessage)]
+        assert len(diffs) == 1
+        assert diffs[0]._changes_unknown is True
+
+    async def test_unreadable_read_back_reports_success_with_a_caveat(
+        self, tmp_path: Path
+    ) -> None:
+        """The edit landed but its result could not be read; say exactly that."""
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        # Leaves `after_content` at None, which is how a failed read-back looks.
+        with patch(
+            "deepagents_code.file_ops.FileOpTracker._populate_after_content",
+            return_value=None,
+        ):
+            mounted = await self._run_edit(target, "value = 2")
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool.display is True
+        assert "succeeded, but its changes could not be displayed" in (
+            tool._output or ""
+        )
+
+    async def test_tool_reported_error_is_not_called_a_success(
+        self, tmp_path: Path
+    ) -> None:
+        """A tool whose own output reports failure must not be told it worked.
+
+        `record.status` is `"error"` for both this and an unreadable read-back,
+        so gating the "succeeded, but…" message on status alone would state
+        that an edit landed when it did not.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        mounted: list[object] = []
+
+        async def mount_message(widget: object) -> None:
+            await asyncio.sleep(0)
+            mounted.append(widget)
+
+        args = {
+            "file_path": str(target),
+            "old_string": "value = 1",
+            "new_string": "value = 2",
+        }
+        chunks = [
+            ((), "messages", (_tool_call_message("edit_file", args, "tool-1"), {})),
+            (
+                (),
+                "messages",
+                (
+                    ToolMessage(
+                        content="Error: string not found", tool_call_id="tool-1"
+                    ),
+                    {},
+                ),
+            ),
+        ]
+        await execute_task_textual(
+            user_input="edit the file",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=TextualUIAdapter(
+                mount_message=mount_message,
+                update_status=_noop_status,
+                request_approval=_mock_approval,
+            ),
+        )
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert "succeeded" not in (tool._output or "")
 
 
 class TestExecuteTaskTextualToolCallStreaming:

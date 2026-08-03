@@ -157,7 +157,8 @@ Screen {
     color: $text-muted;
 }
 
-/* Diff styling — used by EditFileApprovalWidget (fg + bg + padding) */
+/* Diff styling — used by EditFileApprovalWidget._render_string_lines
+   (fg + bg + padding) */
 .diff-removed {
     height: auto;
     color: $text-error;
@@ -169,12 +170,6 @@ Screen {
     height: auto;
     color: $text-success;
     background: $success 10%;
-    padding: 0 1;
-}
-
-.diff-context {
-    height: auto;
-    color: $text-muted;
     padding: 0 1;
 }
 

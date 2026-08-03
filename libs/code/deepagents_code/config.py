@@ -1190,6 +1190,7 @@ UNICODE_GLYPHS = Glyphs(
     box_vertical="│",
     box_horizontal="─",
     box_double_horizontal="═",
+    # Diff-specific
     hunk_break="⋮",
     git_branch="↗",
 )
@@ -1220,6 +1221,7 @@ ASCII_GLYPHS = Glyphs(
     box_vertical="|",
     box_horizontal="-",
     box_double_horizontal="=",
+    # Diff-specific
     hunk_break=":",
     git_branch="git:",
 )

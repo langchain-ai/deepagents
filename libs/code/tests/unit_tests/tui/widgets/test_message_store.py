@@ -136,6 +136,35 @@ class TestMessageData:
         assert isinstance(restored, ToolCallMessage)
         assert restored._diff_superseded is True
 
+    def test_tool_diff_superseded_reaches_the_store_after_the_row_is_stored(
+        self,
+    ) -> None:
+        """A row is stored before its diff mounts, so the flag arrives late.
+
+        Supersession happens when the diff lands, well after `from_widget`
+        captured the row at mount time. If `update_message` cannot carry the
+        flag, the store keeps `False` and rehydration resurrects the row next
+        to the diff that replaced it.
+        """
+        store = MessageStore()
+        widget = ToolCallMessage("edit_file")
+        widget.id = "msg-superseded"
+        store.append(MessageData.from_widget(widget))
+
+        widget._status = "success"
+        widget.mark_superseded_by_diff()
+        fresh = MessageData.from_widget(widget)
+        assert store.update_message(
+            widget.id, tool_diff_superseded=fresh.tool_diff_superseded
+        )
+
+        stored = store.get_message(widget.id)
+        assert stored is not None
+        assert stored.tool_diff_superseded is True
+        rehydrated = stored.to_widget()
+        assert isinstance(rehydrated, ToolCallMessage)
+        assert rehydrated._diff_superseded is True
+
     def test_error_message_roundtrip(self):
         """Test ErrorMessage serialization and deserialization."""
         original = ErrorMessage("Something went wrong!", id="test-error-1")

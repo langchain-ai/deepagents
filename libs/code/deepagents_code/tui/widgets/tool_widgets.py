@@ -207,12 +207,16 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         elif not diff_lines and not old_string and not new_string:
             yield Static("No changes to display", classes="approval-description")
         elif diff_lines:
+            # This diff is built from the edit's replacement fragments, not the
+            # file, so its hunks always start at line 1. Showing that gutter
+            # would assert wrong file line numbers on an approval prompt.
             yield from compose_diff_lines(
                 "\n".join(diff_lines),
                 max_lines=_MAX_DIFF_LINES,
                 path=file_path,
                 before=old_string,
                 after=new_string,
+                show_numbers=False,
             )
         else:
             yield from self._render_strings_only(old_string, new_string)

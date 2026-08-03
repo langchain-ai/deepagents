@@ -170,6 +170,19 @@ _COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
 
 
 TOOLS_SUPERSEDED_BY_DIFF: frozenset[str] = frozenset({"edit_file"})
+"""Tools whose successful row is replaced by the `DiffMessage` that follows it.
+
+Membership drives three behaviours: the row self-hides via
+`mark_superseded_by_diff`, a `DiffMessage` mounts even when the diff body is
+empty (so something stands in for the hidden row), and the row stays visible
+when the pre-edit content was unreadable and the diff cannot be trusted.
+
+Members must also appear in `app._TOOL_GROUP_EXCLUSIONS`. The group-reveal
+paths (`ToolGroupSummary._release_all_collapsible`, `_evict_failed`) set
+`display = True` unconditionally and do not consult `_diff_superseded`, so a
+member that were also groupable would have two independent owners of one
+`display` flag.
+"""
 
 
 # Tools whose collapsed body is always the formatter's compact preview, no
@@ -1369,6 +1382,12 @@ preference's own class.
 """
 
 _TOOL_SUPERSEDED_ACCESSORY_CLASS = "-tool-superseded-accessory"
+"""Hides a row's decorations when its diff has taken the row's place.
+
+A third, independent hide reason. See `_TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS`
+for why each reason gets its own class (they must release independently) and
+why it is applied with `set_class` rather than `display`.
+"""
 
 
 class ToolCallMessage(Vertical):
@@ -1674,6 +1693,12 @@ class ToolCallMessage(Vertical):
 
         # Restore deferred state if this widget was hydrated from data
         self._restore_deferred_state()
+        # `_diff_superseded` is restored by `to_widget` before mount, and the
+        # status paths that would honour it don't all run (a row with no
+        # deferred status returns early above; `_TIMED_SUCCESS_TOOLS` takes a
+        # branch that never applies visibility). Apply it here so hiding does
+        # not depend on which restore path a tool happens to take.
+        self._apply_own_visibility()
 
     def _restore_deferred_state(self) -> None:
         """Restore state from deferred values (used when hydrating from data)."""
@@ -4275,7 +4300,8 @@ class DiffMessage(Static):
         margin-bottom: 1;
     }
     """
-    """A quiet left rail instead of a full box, so the diff rows carry the color."""
+    """Only a left rail and padding — the per-row gutters and backgrounds
+    carry the diff's color."""
 
     def __init__(
         self,
@@ -4286,6 +4312,7 @@ class DiffMessage(Static):
         before: str = "",
         after: str = "",
         stats: tuple[int, int] | None = None,
+        changes_unknown: bool = False,
         **kwargs: Any,
     ) -> None:
         """Initialize a diff message.
@@ -4294,9 +4321,14 @@ class DiffMessage(Static):
             diff_content: The unified diff content
             file_path: Path to the file being modified
             tool_name: Name of the file tool that produced the diff
-            before: Full file content the diff starts from, for highlighting
-            after: Full file content the diff arrives at, for highlighting
-            stats: Whole-change `(additions, deletions)` for truncated diffs
+            before: Source aligned to the diff's old line numbers. Held as a
+                bounded prefix, not the whole file.
+            after: Source aligned to the diff's new line numbers, same contract.
+            stats: Authoritative `(additions, deletions)`, counted before
+                truncation. Always preferred over recounting the diff body.
+            changes_unknown: The pre-operation content could not be read, so
+                the diff (or its absence) does not reflect what changed. Shown
+                as an explicit caveat instead of a confident "no changes".
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -4311,6 +4343,7 @@ class DiffMessage(Static):
                 diff_content, before, after
             )
         self._stats = stats
+        self._changes_unknown = changes_unknown
 
     def compose(self) -> ComposeResult:
         """Compose the diff message layout.
@@ -4330,7 +4363,11 @@ class DiffMessage(Static):
         ):
             parts.append((f"{verb} ", "bold"))
         parts.append(Content.from_markup("[dim]$path[/dim]", path=self._file_path))
-        if additions or deletions:
+        if self._changes_unknown and not redacted:
+            # The pre-edit content was lost, so both the counts and an empty
+            # diff would be fiction. Say so rather than assert either.
+            parts.append(("  changes could not be determined", "dim"))
+        elif additions or deletions:
             colors = theme.get_theme_colors()
             parts.append("  ")
             if additions:

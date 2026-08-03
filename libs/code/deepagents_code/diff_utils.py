@@ -3,15 +3,29 @@
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 _HUNK_RE = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))?")
+
+
+class DiffStats(NamedTuple):
+    """Line counts for a change, named so the pair cannot be swapped silently."""
+
+    additions: int
+    deletions: int
 
 
 def file_header_indexes(lines: list[str]) -> set[int]:
     """Locate paired file headers immediately preceding a hunk.
 
+    A `---`/`+++` pair is only a file header when it appears *outside* a hunk
+    body — a diff of a file that itself contains such lines would otherwise
+    have its content mistaken for metadata. That is why this walks the hunks'
+    declared old/new line budgets instead of just matching on the prefix.
+
     Args:
-        lines: Unified-diff lines.
+        lines: Unified-diff lines. Handles multi-file diffs, where headers
+            recur between hunks.
 
     Returns:
         Indexes of file-header lines.
@@ -45,14 +59,14 @@ def file_header_indexes(lines: list[str]) -> set[int]:
     return indexes
 
 
-def count_diff_changes(diff: str) -> tuple[int, int]:
+def count_diff_changes(diff: str) -> DiffStats:
     """Count added and removed lines in a unified diff.
 
     Args:
         diff: Unified diff string.
 
     Returns:
-        Tuple of additions and deletions, excluding file headers.
+        Additions and deletions, excluding file headers.
     """
     lines = diff.splitlines()
     headers = file_header_indexes(lines)
@@ -62,4 +76,4 @@ def count_diff_changes(diff: str) -> tuple[int, int]:
     deletions = sum(
         line.startswith("-") for index, line in enumerate(lines) if index not in headers
     )
-    return additions, deletions
+    return DiffStats(additions, deletions)

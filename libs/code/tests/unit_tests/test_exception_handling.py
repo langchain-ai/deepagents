@@ -101,10 +101,14 @@ class TestFileOpsExceptionHandling:
         assert "tool_call_123" in tracker.active
         record = tracker.active["tool_call_123"]
         assert record.before_content == ""
+        # The empty string is a stand-in, not the file's real prior state; the
+        # flag is what stops downstream renderers presenting it as fact.
+        assert record.before_unreadable is True
 
-        # Verify the error was logged
-        assert "Failed to read before_content" in caplog.text
+        # Verify the error was logged loudly enough to notice in the field.
+        assert "Could not read pre-edit content" in caplog.text
         assert "Backend error" in caplog.text
+        assert any(r.levelname == "WARNING" for r in caplog.records)
 
     def test_file_op_tracker_handles_attribute_error(self, caplog):
         """Test that FileOpTracker handles AttributeError properly."""
@@ -125,9 +129,11 @@ class TestFileOpsExceptionHandling:
         assert "tool_call_456" in tracker.active
         record = tracker.active["tool_call_456"]
         assert record.before_content == ""
+        assert record.before_unreadable is True
 
-        # Verify the error was logged
-        assert "Failed to read before_content" in caplog.text
+        # A malformed backend response is a contract bug, but `start_operation`
+        # runs unguarded on the turn loop — so it is logged, not raised.
+        assert "Could not read pre-edit content" in caplog.text
         assert "Missing attribute" in caplog.text
 
     def test_file_op_tracker_handles_unicode_decode_error(self, caplog):
@@ -152,9 +158,12 @@ class TestFileOpsExceptionHandling:
         assert "tool_call_789" in tracker.active
         record = tracker.active["tool_call_789"]
         assert record.before_content == ""
+        # A binary pre-image is unreadable, not empty — the diff must not
+        # present the write as if it created the file from nothing.
+        assert record.before_unreadable is True
 
         # Verify the error was logged
-        assert "Failed to read before_content" in caplog.text
+        assert "Could not read pre-edit content" in caplog.text
 
     def test_safe_read_logs_on_failure(self, caplog, tmp_path):
         """Test that _safe_read logs when file read fails."""

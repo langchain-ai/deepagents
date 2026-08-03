@@ -164,6 +164,33 @@ def test_edit_widget_uses_transcript_diff_rows() -> None:
     assert '"new"' in _widget_texts([added])[0]
 
 
+def test_edit_widget_omits_line_numbers() -> None:
+    """The approval diff covers edit fragments, so its numbers aren't the file's.
+
+    `_generate_diff` builds the diff from `old_string`/`new_string` alone, so
+    every hunk starts at line 1. Rendering that gutter on an approval prompt
+    would tell the user an edit at line 4000 lands at line 1.
+    """
+    widget_class, data = get_renderer("edit_file").get_approval_widget(
+        {
+            "file_path": "data.json",
+            "old_string": '{"value": "old"}',
+            "new_string": '{"value": "new"}',
+        }
+    )
+
+    widgets = list(widget_class(data).compose())
+    rows = [
+        widget
+        for widget in widgets
+        if widget.has_class("diff-line-removed") or widget.has_class("diff-line-added")
+    ]
+
+    assert rows
+    for text in _widget_texts(rows):
+        assert text.lstrip()[0] in "+-", f"row leads with a gutter number: {text!r}"
+
+
 def test_edit_widget_redacts_credential_file_diff() -> None:
     widgets = list(
         EditFileApprovalWidget(

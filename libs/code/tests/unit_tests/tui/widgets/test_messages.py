@@ -770,6 +770,26 @@ class TestDiffMessageNoChanges:
         texts = self._texts(DiffMessage("", "main.py", tool_name="edit_file"))
         assert texts == ["Edited main.py  no changes"]
 
+    def test_unreadable_before_content_does_not_claim_no_changes(self) -> None:
+        """Without the pre-edit content, "no changes" would be a false claim."""
+        texts = self._texts(
+            DiffMessage("", "main.py", tool_name="edit_file", changes_unknown=True)
+        )
+        assert texts == ["Edited main.py  changes could not be determined"]
+
+    def test_unreadable_before_content_suppresses_misleading_counts(self) -> None:
+        """A diff against a lost pre-image reads as a whole-file insertion.
+
+        Reporting `+2` there would present a two-line edit as a rewrite, so the
+        caveat replaces the counts rather than sitting beside them.
+        """
+        diff = "--- a/main.py\n+++ b/main.py\n@@ -0,0 +1,2 @@\n+one\n+two"
+        texts = self._texts(
+            DiffMessage(diff, "main.py", tool_name="edit_file", changes_unknown=True)
+        )
+        assert texts[0] == "Edited main.py  changes could not be determined"
+        assert "+2" not in texts[0]
+
 
 class TestToolCallMessageDuration:
     """Tests for the post-run duration shown on long-running tool calls."""

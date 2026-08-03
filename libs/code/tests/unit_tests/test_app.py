@@ -34734,9 +34734,14 @@ class TestToolGroupCollapse:
             assert isinstance(rendered, Content)
             assert "Read 1 file, ran 1 shell command" in rendered.plain
 
-    @pytest.mark.parametrize("tool_name", ["ask_user", "write_todos"])
+    @pytest.mark.parametrize("tool_name", ["ask_user", "edit_file", "write_todos"])
     async def test_regroup_leaves_excluded_tools_expanded(self, tool_name: str) -> None:
-        """Excluded tools stay visible and split adjacent tool groups."""
+        """Excluded tools stay visible and split adjacent tool groups.
+
+        `edit_file` is included deliberately: a row only self-hides once
+        `mark_superseded_by_diff` runs, so one that never got a diff must still
+        stay visible and act as a group boundary.
+        """
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
 
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t-excluded-history")

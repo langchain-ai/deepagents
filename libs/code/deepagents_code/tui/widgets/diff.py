@@ -1,4 +1,9 @@
-"""Enhanced diff widget for displaying unified diffs."""
+"""Renderers turning a unified diff into one `Static` per row.
+
+Rows carry a line-number gutter, a `+`/`-` marker, syntax highlighting lifted
+from whole-file lexer state, and word-level emphasis on the spans that actually
+changed between a paired removed/added line.
+"""
 
 from __future__ import annotations
 
@@ -22,11 +27,37 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _HUNK_RE = re.compile(r"@@ -(\d+)(?:,\d+)? \+(\d+)")
+"""Matches a hunk header, capturing the old and new start lines.
+
+Distinct from `diff_utils._HUNK_RE`, which captures the two *counts* instead.
+"""
+
 _TOKEN_RE = re.compile(r"\w+|\s+|.")
+"""Splits a line into word / whitespace / single-character tokens.
+
+Total over any string, so `"".join(findall(s)) == s` and token offsets index
+back into the original line.
+"""
 
 _SIMILARITY_FLOOR = 0.4
+"""Minimum word-level similarity before a removed/added pair gets emphasis.
+
+Below this the two lines are treated as unrelated rewrites, where emphasising
+"changed" spans would just tint the whole line and add noise.
+"""
+
 _MAX_EMPHASIS_LEN = 400
+"""Longest line eligible for word emphasis.
+
+`SequenceMatcher` over per-character tokens is quadratic, so minified JS or
+single-line JSON would stall the compose path. Longer lines render unemphasised.
+"""
+
 _MAX_HIGHLIGHT_CHARS = 400_000
+"""Largest source prefix worth lexing for syntax highlighting.
+
+Above this the side is skipped and its rows render as plain text.
+"""
 
 _Range = tuple[int, int]
 _DiffRowKind = Literal["context", "added", "removed"]
@@ -51,7 +82,17 @@ _EMPHASIS: dict[_ChangedRowKind, str] = {
 
 
 class _Row(NamedTuple):
-    """One rendered line of a diff."""
+    """One rendered line of a diff.
+
+    Attributes:
+        kind: What the row represents. `context`/`added`/`removed` are numbered
+            source lines; `separator`/`truncated`/`note` are decorations.
+        text: The line with its diff marker stripped. Empty for `separator` and
+            `truncated`.
+        number: For `added`, the line number in the *new* file; for `context`
+            and `removed`, the line number in the *old* file. `0` for
+            decoration rows, where it carries no meaning.
+    """
 
     kind: _RowKind
     text: str
@@ -65,6 +106,7 @@ def compose_diff_lines(
     path: str = "",
     before: str = "",
     after: str = "",
+    show_numbers: bool = True,
 ) -> ComposeResult:
     """Yield syntax-highlighted widgets for a unified diff.
 
@@ -72,8 +114,13 @@ def compose_diff_lines(
         diff: Unified diff string.
         max_lines: Maximum number of diff lines to show (None for unlimited).
         path: Path of the diffed file, used to pick a syntax highlighter.
-        before: Full file content the diff starts from, for syntax highlighting.
-        after: Full file content the diff arrives at, for syntax highlighting.
+        before: Source aligned to the diff's *old* line numbers. May be a
+            truncated prefix or empty; rows whose text does not match the
+            lexed source are silently left unhighlighted.
+        after: Source aligned to the diff's *new* line numbers, same contract.
+        show_numbers: Whether to render the line-number gutter. Pass `False`
+            when the diff's line numbers are not the file's — e.g. a diff of
+            edit fragments, whose hunks always start at 1.
 
     Yields:
         One `Static` per rendered row.
@@ -81,7 +128,9 @@ def compose_diff_lines(
     if not diff:
         yield Static(Content.styled("No changes detected", "dim"))
     else:
-        yield from _compose_diff_content(diff, max_lines, path, before, after)
+        yield from _compose_diff_content(
+            diff, max_lines, path, before, after, show_numbers=show_numbers
+        )
 
 
 def highlight_source_prefixes(diff: str, before: str, after: str) -> tuple[str, str]:
@@ -124,6 +173,8 @@ def _compose_diff_content(
     path: str,
     before: str,
     after: str,
+    *,
+    show_numbers: bool = True,
 ) -> ComposeResult:
     """Yield styled widgets for a non-empty diff."""
     glyphs = get_glyphs()
@@ -147,14 +198,17 @@ def _compose_diff_content(
         if row.kind == "note":
             yield Static(Content.from_markup("[dim]$text[/dim]", text=row.text))
             continue
-        number = (f"{row.number:>{width}}", _GUTTERS[row.kind])
         body = highlighted.get(index) or Content(row.text)
         marker, marker_style = _MARKERS.get(row.kind, (" ", ""))
         if emphasis_style := _EMPHASIS.get(row.kind):
             for start, end in emphasis.get(index, []):
                 body = body.stylize(emphasis_style, start, end)
+        parts: list[Content | str | tuple[str, str]] = []
+        if show_numbers:
+            parts += [(f"{row.number:>{width}}", _GUTTERS[row.kind]), " "]
+        parts += [(marker, marker_style), " ", body]
         yield Static(
-            Content.assemble(number, " ", (marker, marker_style), " ", body),
+            Content.assemble(*parts),
             classes=f"diff-line-{row.kind}" if row.kind != "context" else "",
         )
     if hidden:
@@ -164,7 +218,13 @@ def _compose_diff_content(
 def _highlighted_rows(
     rows: list[_Row], path: str, before: str, after: str
 ) -> dict[int, Content]:
-    """Return diff rows highlighted with whole-file lexer state."""
+    """Return a `{row index: highlighted content}` map.
+
+    Each side is lexed from the file start through the last referenced line so
+    multi-line constructs (docstrings, block comments) resolve correctly rather
+    than reopening at the hunk boundary. Rows outside that prefix, or whose text
+    has drifted from the source, are omitted and render as plain text.
+    """
     if not path:
         return {}
     highlighted: dict[int, Content] = {}
@@ -257,6 +317,8 @@ def _is_related(old_tokens: list[str], new_tokens: list[str]) -> bool:
     if not old_words or not new_words:
         return False
     matcher = SequenceMatcher(a=old_words, b=new_words, autojunk=False)
+    # `quick_ratio` is a cheap upper bound on `ratio`, so a failure there rules
+    # the pair out without running the full match.
     return (
         matcher.quick_ratio() >= _SIMILARITY_FLOOR
         and matcher.ratio() >= _SIMILARITY_FLOOR
@@ -283,8 +345,7 @@ def _emphasis_ranges(old: str, new: str) -> tuple[list[_Range], list[_Range]]:
             old_ranges.append((old_offsets[i1], old_offsets[i2]))
         if j2 > j1:
             new_ranges.append((new_offsets[j1], new_offsets[j2]))
-    old_covered = sum(end - start for start, end in old_ranges) >= len(old)
-    new_covered = sum(end - start for start, end in new_ranges) >= len(new)
-    if old_covered and new_covered:
-        return [], []
+    # No total-coverage bail-out is needed: `_is_related` has already found
+    # shared word tokens, so `get_opcodes` always yields at least one `equal`
+    # block and the ranges can never span the whole line on both sides.
     return old_ranges, new_ranges

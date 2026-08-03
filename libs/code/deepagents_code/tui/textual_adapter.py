@@ -107,6 +107,7 @@ from deepagents_code._tool_stream import (
     tool_call_buffer_key,
 )
 from deepagents_code.config import build_stream_config, get_glyphs
+from deepagents_code.diff_utils import DiffStats
 from deepagents_code.file_ops import FileOpTracker
 from deepagents_code.hooks import (
     dispatch_hook,
@@ -1960,13 +1961,20 @@ async def execute_task_textual(
                                 if (
                                     tool_status == "success"
                                     and record is not None
-                                    and record.tool_name in TOOLS_SUPERSEDED_BY_DIFF
-                                    and record.status == "error"
+                                    and record.after_unreadable
                                 ):
+                                    # Gate on the dedicated flag, not on
+                                    # `record.status == "error"`: that is also
+                                    # set when the tool's own output reports a
+                                    # failure, where claiming the operation
+                                    # succeeded would be a false statement.
+                                    # Applies to every tracked file tool —
+                                    # `write_file` and `delete` reach the same
+                                    # read-back failure.
                                     detail = record.error or "Diff tracking failed."
                                     tool_msg.set_error(
-                                        f"Edit succeeded, but its changes could not "
-                                        f"be displayed: {detail}"
+                                        f"The {record.tool_name} succeeded, but its "
+                                        f"changes could not be displayed: {detail}"
                                     )
                                 elif tool_status == "success":
                                     tool_msg.set_success(output_str)
@@ -2045,7 +2053,11 @@ async def execute_task_textual(
                                 tool_name, tool_id, {}, tool_status, output_str
                             )
 
-                        # Show file operation results - always show diffs in chat
+                        # Show file operation results - always show diffs in
+                        # chat. For a tool in `TOOLS_SUPERSEDED_BY_DIFF` this
+                        # also mounts on an *empty* diff: the tool row is about
+                        # to hide, so the header ("no changes") has to stand in
+                        # for it.
                         if record:
                             pending_text = pending_text_by_namespace.get(ns_key, "")
                             if pending_text:
@@ -2067,13 +2079,23 @@ async def execute_task_textual(
                                         tool_name=record.tool_name,
                                         before=record.before_content or "",
                                         after=record.after_content or "",
-                                        stats=(
-                                            record.metrics.lines_added,
-                                            record.metrics.lines_removed,
+                                        stats=DiffStats(
+                                            additions=record.metrics.lines_added,
+                                            deletions=record.metrics.lines_removed,
                                         ),
+                                        changes_unknown=record.before_unreadable,
                                     )
                                 )
-                                if tool_msg is not None and record.status == "success":
+                                # Hiding the tool row makes the diff the sole
+                                # record of the edit, so only do it when the
+                                # diff can actually stand in for it. With an
+                                # unreadable pre-image the diff is untrustworthy
+                                # and the row's own output is all the user has.
+                                if (
+                                    tool_msg is not None
+                                    and record.status == "success"
+                                    and not record.before_unreadable
+                                ):
                                     tool_msg.mark_superseded_by_diff()
                                     adapter._sync_tool_widget(tool_msg)
 

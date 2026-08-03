@@ -44,6 +44,7 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "tool_duration",
         "tool_expanded",
         "tool_reject_reason",
+        "tool_diff_superseded",
         "skill_expanded",
         "rubric_expanded",
         "user_expanded",

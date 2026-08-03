@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, cast
 
 from deepagents.backends.protocol import FILE_NOT_FOUND
 from deepagents.middleware.summarization import (
@@ -16,11 +16,12 @@ from deepagents.middleware.summarization import (
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # inspected for runtime injection
 )
-from langchain_core.messages import AnyMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
 from langchain_core.tools import InjectedToolArg, StructuredTool
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code.cost_tracking import CostState, CostTrackingMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -34,14 +35,16 @@ if TYPE_CHECKING:
     from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain.chat_models import BaseChatModel
     from langgraph.prebuilt.tool_node import ToolCallRequest
+    from langgraph.runtime import Runtime
+
+    from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
 logger = logging.getLogger(__name__)
 
 
-class _OffloadState(TypedDict, total=False):
+class _OffloadState(CostState, total=False):
     """Checkpoint fields required by the explicit forced-compaction graph."""
 
-    messages: list[AnyMessage]
     _summarization_event: SummarizationEvent
 
 
@@ -51,9 +54,10 @@ COMPACTION_FAILURE_PREFIX = "Compaction failed"
 `/offload` drives the tool server-side and can only observe the resulting
 `ToolMessage` text across the LangGraph server boundary, so it keys failure
 detection on this prefix. Owning the literal here means the producer
-(`_forced_compact_error`) and both consumers (`app._drive_server_side_compaction`
-live-stream detection and `app._find_compaction_failure` committed-state scan)
-reference one constant instead of re-hardcoding the wording independently.
+(`_forced_compact_error`) and both consumers
+(`app._drive_legacy_seeded_compaction` live-stream detection and
+`app._find_compaction_failure` committed-state scan) reference one constant
+instead of re-hardcoding the wording independently.
 
 Note: this value is deliberately identical to the leading text of the SDK's own
 model-initiated compaction-failure message, so a failure emitted by either path
@@ -501,8 +505,13 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                         context_limit,
                         exc_info=True,
                     )
-        backend = self._guarded_backend()
-        return create_summarization_middleware(model, backend)
+        # Reuse the original composite backend, not the `_ArchiveReadGuard`
+        # wrapper: the summarizer reads `CompositeBackend.artifacts_root` to
+        # prefix the archive path, and the guard would hide that attribute and
+        # rebuild the prefix as `/`, routing the archive write to the default
+        # (read-only) backend. The offload call sites apply the guard
+        # separately when writing.
+        return create_summarization_middleware(model, self._summarization._backend)
 
     def _run_forced_compact(self, runtime: ToolRuntime) -> Command:
         """Synchronously compact without the SDK eligibility gate.
@@ -713,6 +722,8 @@ def _create_cli_compaction_middleware(
 
 def create_forced_compaction_graph(
     middleware: CLICompactionMiddleware,
+    *,
+    hooks_middleware: ServerHooksMiddleware | None = None,
 ) -> object:
     """Create the dedicated server graph used by the `/offload` command.
 
@@ -724,15 +735,54 @@ def create_forced_compaction_graph(
     Args:
         middleware: Compaction implementation configured with the agent's
             composite backend.
+        hooks_middleware: Optional server lifecycle middleware shared with the
+            interactive graph. It is invoked against an in-memory forced tool
+            call so `PreCompact` retains its normal authorization boundary
+            without persisting synthetic conversation messages.
 
     Returns:
         A checkpointable graph that performs one forced compaction attempt.
     """
     from langgraph.graph import END, START, StateGraph
 
-    async def force_compact(state: _OffloadState, runtime: object) -> dict[str, object]:
-        update = await middleware.arun_forced_compaction_update(state, runtime)
-        return update or {}
+    cost_tracking: CostTrackingMiddleware[CLIContextSchema] = CostTrackingMiddleware()
+
+    async def force_compact(
+        state: _OffloadState, runtime: Runtime[CLIContextSchema]
+    ) -> dict[str, object]:
+        if hooks_middleware is not None:
+            hook_update = await hooks_middleware.aafter_model(
+                cast(
+                    "Any",
+                    {
+                        "messages": [
+                            AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "compact_conversation",
+                                        "args": {"force": True},
+                                        "id": "offload-precompact",
+                                    }
+                                ],
+                            )
+                        ]
+                    },
+                ),
+                cast("Runtime[Any]", runtime),
+            )
+            outcomes = hook_update.get("_hooks_pre_tool_outcomes", {})
+            outcome = outcomes.get("offload-precompact", {})
+            if outcome.get("behavior") == "deny":
+                return {}
+        try:
+            update = await middleware.arun_forced_compaction_update(state, runtime)
+        finally:
+            # Summary generation invokes a model outside the normal agent loop.
+            # Drain it even if the archive write or state-update construction
+            # fails, so a later turn cannot be required to persist its spend.
+            cost_update = await cost_tracking.aafter_agent(state, runtime)
+        return {**(update or {}), **(cost_update or {})}
 
     graph = StateGraph(cast("Any", _OffloadState), context_schema=CLIContextSchema)
     graph.add_node("force_compact", force_compact)

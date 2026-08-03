@@ -7,7 +7,7 @@ import stat
 import tempfile
 from contextlib import nullcontext
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -80,13 +80,16 @@ def _state_values(
 
 
 def _setup_server_offload_app(app: DeepAgentsApp) -> MagicMock:
-    """Configure a `DeepAgentsApp` for server-side offload unit tests.
+    """Configure a `DeepAgentsApp` as a server-backed agent for offload tests.
 
-    The server-side path reads state via `_get_thread_state_values` and drives
-    the tool via `_drive_server_side_compaction`; tests patch those seams
-    directly, so only the plain identity/flags are set here.
+    The operation-graph path reads state via `_get_thread_state_values` and
+    drives the graph via `_drive_offload_operation_graph`; tests patch those
+    seams directly, so only the remote identity/flags are set here. The agent
+    is specced as a `RemoteAgent` so `_remote_agent()` narrows to it.
     """
-    agent = MagicMock()
+    from deepagents_code.client.remote_client import RemoteAgent
+
+    agent = MagicMock(spec=RemoteAgent)
     agent.aupdate_state = AsyncMock()
     app._agent = agent
     app._backend = None
@@ -173,7 +176,7 @@ class TestOffloadGuards:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
@@ -256,7 +259,7 @@ class TestOffloadSuccess:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     return_value=None,
                 ) as mock_drive,
@@ -291,7 +294,7 @@ class TestOffloadSuccess:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     side_effect=RuntimeError("stream unavailable"),
                 ),
@@ -327,7 +330,7 @@ class TestOffloadSuccess:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
@@ -378,7 +381,7 @@ class TestOffloadSuccess:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
@@ -407,7 +410,7 @@ class TestOffloadSuccess:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
@@ -429,11 +432,23 @@ class TestOffloadEdgeCases:
     """Test edge cases in the offload logic."""
 
     async def test_noop_does_not_report_offloaded(self) -> None:
-        """A no-op restores history and shows the no-op message, not success."""
+        """A no-op restores history and shows the no-op message, not success.
+
+        The local seeded driver commits its synthetic seed, tool result, and
+        trailing turn on a no-op, so `_handle_offload` removes those artifacts
+        via `aupdate_state`.
+        """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            agent = _setup_server_offload_app(app)
+            # A plain (non-remote) mock agent drives the seeded in-process
+            # path, whose no-op branch restores state via `aupdate_state`.
+            agent = MagicMock()
+            agent.aupdate_state = AsyncMock()
+            app._agent = agent
+            app._backend = None
+            app._lc_thread_id = "test-thread"
+            app._agent_running = False
 
             # Prior event present; after-state cutoff unchanged -> nothing moved.
             event = _summary_event(6)
@@ -476,7 +491,46 @@ class TestOffloadEdgeCases:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_legacy_seeded_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            msgs = app.query(AppMessage)
+            assert any(
+                "the conversation is already compact" in str(w._content) for w in msgs
+            )
+            assert not any("Offloaded " in str(w._content) for w in msgs)
+            # The seeded no-op restores the pre-run conversation by removing
+            # the committed artifacts.
+            agent.aupdate_state.assert_awaited()
+
+    async def test_noop_operation_graph_writes_nothing(self) -> None:
+        """The operation graph commits no synthetic artifacts on a no-op."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            agent = _setup_server_offload_app(app)
+
+            # Prior event present; after-state cutoff unchanged -> nothing moved.
+            event = _summary_event(6)
+            messages = _make_dict_messages(8)
+            before = _state_values(messages, event)
+            after = _state_values(messages, event)
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
@@ -510,7 +564,7 @@ class TestOffloadEdgeCases:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
@@ -549,7 +603,7 @@ class TestReOffload:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
@@ -587,7 +641,7 @@ class TestReOffload:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
@@ -631,7 +685,7 @@ class TestAgentRunningGuard:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     side_effect=capture_running,
                 ),
@@ -664,7 +718,7 @@ class TestAgentRunningGuard:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     side_effect=RuntimeError("stream down"),
                 ),
@@ -706,7 +760,7 @@ class TestOffloadErrorHandling:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
@@ -748,7 +802,7 @@ class TestOffloadErrorHandling:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     return_value=tool_error,
                 ),
@@ -790,7 +844,7 @@ class TestOffloadErrorHandling:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
@@ -836,7 +890,7 @@ class TestOffloadErrorHandling:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
@@ -873,7 +927,7 @@ class TestOffloadErrorHandling:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     side_effect=RuntimeError("stream boom"),
                 ),
@@ -917,7 +971,7 @@ class TestOffloadErrorHandling:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     side_effect=RuntimeError("stream boom"),
                 ),
@@ -955,7 +1009,7 @@ class TestOffloadErrorHandling:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     side_effect=RuntimeError("stream unavailable"),
                 ),
@@ -984,7 +1038,7 @@ class TestOffloadErrorHandling:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     side_effect=RuntimeError("backend down"),
                 ),
@@ -1404,7 +1458,7 @@ class TestOffloadStorageCaveat:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
@@ -1439,7 +1493,7 @@ class TestOffloadStorageCaveat:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_offload_operation_graph",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
@@ -1464,9 +1518,15 @@ class TestNoopArtifactCleanup:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            agent = _setup_server_offload_app(app)
-            # The no-op branch restores state via aupdate_state; make it fail.
+            # A plain (non-remote) mock agent drives the seeded in-process
+            # path, whose no-op branch restores state via `aupdate_state`;
+            # make that write fail.
+            agent = MagicMock()
             agent.aupdate_state = AsyncMock(side_effect=RuntimeError("write failed"))
+            app._agent = agent
+            app._backend = None
+            app._lc_thread_id = "test-thread"
+            app._agent_running = False
 
             before = _state_values(_make_dict_messages(4))
             after = _state_values(_make_dict_messages(6))
@@ -1480,7 +1540,7 @@ class TestNoopArtifactCleanup:
                 ),
                 patch.object(
                     app,
-                    "_drive_server_side_compaction",
+                    "_drive_legacy_seeded_compaction",
                     new_callable=AsyncMock,
                     return_value=None,
                 ),
@@ -1628,30 +1688,34 @@ class TestServerOperationOffload:
         remote.aensure_thread = AsyncMock()
         remote.for_graph.return_value = operation
 
+        state_values = {"messages": [{"type": "human", "content": "hi"}]}
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent = MagicMock()
             app._lc_thread_id = "test-thread"
             with patch.object(app, "_remote_agent", return_value=remote):
-                await app._drive_server_side_compaction(
-                    {"configurable": {"thread_id": "test-thread"}}
+                await app._drive_offload_operation_graph(
+                    {"configurable": {"thread_id": "test-thread"}}, state_values
                 )
 
         remote.aensure_thread.assert_awaited_once_with(
             {"configurable": {"thread_id": "test-thread"}}
         )
         remote.for_graph.assert_called_once_with("offload")
-        assert stream_args == [{}]
+        # The persisted state is replayed as the input so the node sees the
+        # real conversation rather than an emptied message list.
+        assert stream_args == [state_values]
         context = stream_kwargs["context"]
         assert isinstance(context, dict)
         assert "offload_tool_call_id" not in context
 
 
-@pytest.mark.skip(
-    reason="superseded by the dedicated server-side offload operation graph"
-)
-class TestDriveServerSideCompaction:
-    """Unit-test the server-side `compact_conversation` trigger mechanism."""
+class TestDriveLegacySeededCompaction:
+    """Unit-test the seeded in-process `compact_conversation` trigger.
+
+    This driver serves local `Pregel` agents, which have no server operation
+    graph; server-backed agents use the dedicated `offload` operation instead.
+    """
 
     @staticmethod
     def _fake_remote_agent(
@@ -1716,7 +1780,7 @@ class TestDriveServerSideCompaction:
 
             config = {"configurable": {"thread_id": "test-thread"}}
             with patch.object(settings, "model_context_limit", 4096):
-                result = await app._drive_server_side_compaction(config)  # ty: ignore
+                result = await app._drive_legacy_seeded_compaction(config)  # ty: ignore
             await pilot.pause()
 
             assert result is None
@@ -1845,7 +1909,7 @@ class TestDriveServerSideCompaction:
             with patch(
                 "deepagents_code.cost_tracking.estimate_cost", side_effect=_cost
             ):
-                result = await app._drive_server_side_compaction(
+                result = await app._drive_legacy_seeded_compaction(
                     {"configurable": {"thread_id": "test-thread"}}
                 )
             await pilot.pause()
@@ -1934,7 +1998,7 @@ class TestDriveServerSideCompaction:
             with patch(
                 "deepagents_code.cost_tracking.estimate_cost", return_value=0.20
             ):
-                result = await app._drive_server_side_compaction(
+                result = await app._drive_legacy_seeded_compaction(
                     {"configurable": {"thread_id": "test-thread"}}
                 )
             await pilot.pause()
@@ -1992,7 +2056,7 @@ class TestDriveServerSideCompaction:
                 patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.20),
                 pytest.raises(RuntimeError, match="stream failed"),
             ):
-                await app._drive_server_side_compaction(
+                await app._drive_legacy_seeded_compaction(
                     {"configurable": {"thread_id": "test-thread"}}
                 )
             await pilot.pause()
@@ -2070,7 +2134,7 @@ class TestDriveServerSideCompaction:
             app._lc_thread_id = "test-thread"
             fulfill = AsyncMock(return_value={"hook": "approved"})
             with patch("deepagents_code.hooks.client.fulfill_hook_interrupt", fulfill):
-                result = await app._drive_server_side_compaction(
+                result = await app._drive_legacy_seeded_compaction(
                     {"configurable": {"thread_id": "test-thread"}}
                 )
 
@@ -2098,7 +2162,7 @@ class TestDriveServerSideCompaction:
             app._lc_thread_id = "test-thread"
 
             config = {"configurable": {"thread_id": "test-thread"}}
-            result = await app._drive_server_side_compaction(config)  # ty: ignore
+            result = await app._drive_legacy_seeded_compaction(config)  # ty: ignore
             await pilot.pause()
 
             assert result is not None
@@ -2125,7 +2189,7 @@ class TestDriveServerSideCompaction:
                 patch.object(settings, "model_name", "startup-model"),
                 patch.object(settings, "model_context_limit", 4096),
             ):
-                await app._drive_server_side_compaction(config)  # ty: ignore
+                await app._drive_legacy_seeded_compaction(config)  # ty: ignore
             await pilot.pause()
 
         assert contexts
@@ -2176,7 +2240,7 @@ class TestDriveServerSideCompaction:
             app._lc_thread_id = "test-thread"
 
             config = {"configurable": {"thread_id": "test-thread"}}
-            result = await app._drive_server_side_compaction(config)  # ty: ignore
+            result = await app._drive_legacy_seeded_compaction(config)  # ty: ignore
             await pilot.pause()
 
         assert result is None
@@ -2246,7 +2310,7 @@ class TestDriveServerSideCompaction:
             app._lc_thread_id = "test-thread"
 
             config = {"configurable": {"thread_id": "test-thread"}}
-            result = await app._drive_server_side_compaction(config)  # ty: ignore
+            result = await app._drive_legacy_seeded_compaction(config)  # ty: ignore
             await pilot.pause()
 
         assert result is None
@@ -2302,7 +2366,7 @@ class TestDriveServerSideCompaction:
             app._lc_thread_id = "test-thread"
 
             config = {"configurable": {"thread_id": "test-thread"}}
-            result = await app._drive_server_side_compaction(config)  # ty: ignore
+            result = await app._drive_legacy_seeded_compaction(config)  # ty: ignore
             await pilot.pause()
 
         assert result is None
@@ -2346,7 +2410,7 @@ class TestDriveServerSideCompaction:
             app._lc_thread_id = "test-thread"
 
             config = {"configurable": {"thread_id": "test-thread"}}
-            result = await app._drive_server_side_compaction(config)  # ty: ignore
+            result = await app._drive_legacy_seeded_compaction(config)  # ty: ignore
             await pilot.pause()
 
             # No compaction failure was reported, so the run returns cleanly.
@@ -2632,3 +2696,52 @@ class TestOffloadHelpers:
         assert _find_compaction_failure([ok]) is None
         # Serialized-dict tool message form is handled too.
         assert _find_compaction_failure([{"type": "tool", "content": "ok"}]) is None
+
+
+class TestForcedCompactionGraph:
+    """Lifecycle and cost guarantees of the dedicated `/offload` graph."""
+
+    async def test_precompact_denial_skips_forced_compaction(self) -> None:
+        """A configured `PreCompact` hook can deny manual `/offload`."""
+        from deepagents_code._cli_context import CLIContext
+        from deepagents_code.offload_middleware import create_forced_compaction_graph
+
+        middleware = MagicMock()
+        middleware.arun_forced_compaction_update = AsyncMock()
+        hooks = MagicMock()
+        hooks.aafter_model = AsyncMock(
+            return_value={
+                "_hooks_pre_tool_outcomes": {"offload-precompact": {"behavior": "deny"}}
+            }
+        )
+
+        graph = create_forced_compaction_graph(middleware, hooks_middleware=hooks)
+        await cast("Any", graph).ainvoke({"messages": []}, context=CLIContext())
+
+        hooks.aafter_model.assert_awaited_once()
+        middleware.arun_forced_compaction_update.assert_not_awaited()
+
+    async def test_summary_cost_is_drained_into_graph_update(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The graph checkpoints summarizer spend before `/offload` returns."""
+        from deepagents_code import offload_middleware
+        from deepagents_code._cli_context import CLIContext
+
+        cost_tracking = MagicMock()
+        cost_tracking.aafter_agent = AsyncMock(return_value={"_session_cost_usd": 0.25})
+        monkeypatch.setattr(
+            offload_middleware, "CostTrackingMiddleware", lambda: cost_tracking
+        )
+        middleware = MagicMock()
+        middleware.arun_forced_compaction_update = AsyncMock(
+            return_value={"_summarization_event": {"cutoff_index": 2}}
+        )
+
+        graph = offload_middleware.create_forced_compaction_graph(middleware)
+        result = await cast("Any", graph).ainvoke(
+            {"messages": []}, context=CLIContext()
+        )
+
+        cost_tracking.aafter_agent.assert_awaited_once()
+        assert result["_session_cost_usd"] == pytest.approx(0.25)

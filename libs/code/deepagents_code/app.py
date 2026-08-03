@@ -14530,17 +14530,16 @@ class DeepAgentsApp(App):
     async def _handle_offload(self) -> None:
         """Offload older messages to free context window space.
 
-        Runs offload SERVER-SIDE by driving the agent's own
-        `compact_conversation` tool (with `force=True`) instead of
-        reimplementing summarization + persistence client-side. This keeps the
-        offloaded archive in the agent's composite backend so it is readable
-        via `read_file` in every run mode (server, sandbox, in-process). The
-        client only seeds the tool call, drains the run, and renders the
-        persisted `_summarization_event`. The Auto-mode HITL middleware
-        recognizes the seeded call from the run context and lets it through
-        without an approval round trip; if a HITL interrupt still surfaces
-        (e.g. a graph without that middleware), the driver approves the seed
-        itself as a fail-closed fallback.
+        Server-backed agents run the dedicated `offload` operation graph (no
+        model node, no synthetic tool call); local in-process `Pregel` agents
+        drive the agent's own `compact_conversation` tool (with `force=True`)
+        via a seeded tool call instead. Either way the offloaded archive lands
+        in the agent's composite backend so it is readable via `read_file` in
+        every run mode (server, sandbox, in-process). For the seeded path, the
+        Auto-mode HITL middleware recognizes the seeded call from the run
+        context and lets it through without an approval round trip; if a HITL
+        interrupt still surfaces (e.g. a graph without that middleware), the
+        driver approves the seed itself as a fail-closed fallback.
         """
         from langchain_core.messages.utils import count_tokens_approximately
 
@@ -14584,8 +14583,23 @@ class DeepAgentsApp(App):
                 _effective_conversation(before_messages, prior_event)
             )
 
+            # Local `Pregel` agents have no server operation graph, so they
+            # drive the seeded `compact_conversation` tool call in-process
+            # instead.
+            local_seeded = self._remote_agent() is None
+            # Own the seeded tool-call id here so a failed run can clean up the
+            # committed-but-unanswered seed (see `_remove_unanswered_offload_seed`).
+            seed_tool_call_id = str(uuid.uuid4()) if local_seeded else None
+
             try:
-                tool_error = await self._drive_server_side_compaction(config)
+                if seed_tool_call_id is not None:
+                    tool_error = await self._drive_legacy_seeded_compaction(
+                        config, seed_tool_call_id
+                    )
+                else:
+                    tool_error = await self._drive_offload_operation_graph(
+                        config, state_values
+                    )
             except ClientHookStopError:
                 return
             except Exception as stream_error:
@@ -14603,9 +14617,28 @@ class DeepAgentsApp(App):
                         "Failed to reconcile state after offload stream error",
                         exc_info=True,
                     )
+                    if (
+                        seed_tool_call_id is not None
+                        and not await self._remove_unanswered_offload_seed(
+                            config, seed_tool_call_id
+                        )
+                    ):
+                        await self._mount_message(ErrorMessage(_OFFLOAD_WEDGE_WARNING))
                     raise stream_error from state_error
                 reconciled_event = new_state.get("_summarization_event")
                 if _summarization_cutoff(reconciled_event) <= prior_cutoff:
+                    # Compaction did not commit. The seeded driver may have left
+                    # its tool call unanswered; remove it before re-raising so a
+                    # failed `/offload` cannot wedge the thread with a dangling
+                    # `tool_use` that the model API rejects on the next turn.
+                    # The operation graph commits no seed to clean up.
+                    if (
+                        seed_tool_call_id is not None
+                        and not await self._remove_unanswered_offload_seed(
+                            config, seed_tool_call_id
+                        )
+                    ):
+                        await self._mount_message(ErrorMessage(_OFFLOAD_WEDGE_WARNING))
                     raise
             else:
                 if tool_error is not None:
@@ -14637,6 +14670,15 @@ class DeepAgentsApp(App):
                 if failure is not None:
                     await self._mount_message(ErrorMessage(failure))
                     return
+                if local_seeded:
+                    # A no-op seeded run still commits the synthetic assistant
+                    # seed and its tool result. Restore the exact pre-run
+                    # conversation so an operation reported as doing nothing
+                    # truly changes nothing. The operation graph commits no
+                    # such artifacts.
+                    await self._remove_offload_artifacts(
+                        config, current_messages, prior_event
+                    )
                 # `force=True` bypasses the eligibility gate, so this branch is
                 # reached when there is nothing older than the retention window
                 # to summarize (effective cutoff 0). It also absorbs the
@@ -14739,7 +14781,9 @@ class DeepAgentsApp(App):
             except Exception:  # best-effort spinner cleanup
                 logger.exception("Failed to dismiss spinner after offload")
 
-    async def _drive_server_side_compaction(self, config: RunnableConfig) -> None:
+    async def _drive_offload_operation_graph(
+        self, config: RunnableConfig, state_values: dict[str, Any]
+    ) -> str | None:
         """Run the explicit server-side `/offload` operation graph.
 
         The operation graph shares the interactive agent's checkpoint and
@@ -14749,6 +14793,20 @@ class DeepAgentsApp(App):
 
         Args:
             config: Config with `configurable.thread_id`.
+            state_values: Current thread state, replayed as the run input. A
+                bare `{}` would *overwrite* the checkpointed message list with
+                an empty one before the node reads it (and `astream(None)`
+                never starts a run on `RemoteAgent`). `_summarization_event` is
+                stripped: its embedded summary message is a private-shape dict
+                the server cannot deserialize, and the event survives through
+                the checkpoint channels without being replayed.
+
+        Returns:
+            `None` always: the graph has no model or tool nodes, so failure
+                surfaces only as a raised stream error, which the caller
+                reconciles against the checkpointed `_summarization_event`.
+                The `str | None` shape matches the seeded driver so
+                `_handle_offload` handles both paths uniformly.
 
         Raises:
             RuntimeError: If the app is not connected to its server graph.
@@ -14757,14 +14815,12 @@ class DeepAgentsApp(App):
 
         agent = self._agent
         if agent is None:
-            return
+            return None
         remote = self._remote_agent()
-        if remote is not None:
-            await remote.aensure_thread(dict(config))
-            streaming_agent = remote.for_graph("offload")
-        else:
+        if remote is None:
             msg = "The explicit /offload operation requires the server graph."
             raise RuntimeError(msg)
+        await remote.aensure_thread(dict(config))
 
         stream_context = CLIContext(
             model=self._effective_model_spec(),
@@ -14774,14 +14830,20 @@ class DeepAgentsApp(App):
             thread_id=self._lc_thread_id,
         )
         self._hooks.apply_graph_context(stream_context)
-        async for _chunk in streaming_agent.astream(
-            {},
+        stream_input = {
+            key: value
+            for key, value in state_values.items()
+            if key != "_summarization_event"
+        }
+        async for _chunk in remote.for_graph("offload").astream(
+            cast("Any", stream_input),
             stream_mode=["updates"],
             config=config,
             context=stream_context,
             durability="exit",
         ):
             pass
+        return None
 
     async def _drive_legacy_seeded_compaction(
         self, config: RunnableConfig, seed_tool_call_id: str | None = None

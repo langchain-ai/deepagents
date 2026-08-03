@@ -2875,9 +2875,14 @@ def create_cli_agent(
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
         hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
-        agent_middleware.append(
-            ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools)
+        server_hooks_middleware = ServerHooksMiddleware(
+            cwd=hooks_cwd, mcp_tools=mcp_tools
         )
+        # The dedicated `/offload` graph has no model/tool nodes, so retain the
+        # same lifecycle implementation on the shared backend for its explicit
+        # in-memory `PreCompact` dispatch.
+        composite_backend._cli_server_hooks_middleware = server_hooks_middleware  # ty: ignore[unresolved-attribute]
+        agent_middleware.append(server_hooks_middleware)
 
     if fs_tools is not None:
         # `fs_tools` is an explicit allowlist here (`--allow-fs-tools all` and an

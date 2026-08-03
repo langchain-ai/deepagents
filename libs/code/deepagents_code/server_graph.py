@@ -475,7 +475,12 @@ def _build_graph_factories(
                     if not isinstance(middleware, CLICompactionMiddleware):
                         msg = "Agent backend did not expose its compaction middleware."
                         raise RuntimeError(msg)
-                    offload_graph = create_forced_compaction_graph(middleware)
+                    hooks_middleware = getattr(
+                        backend, "_cli_server_hooks_middleware", None
+                    )
+                    offload_graph = create_forced_compaction_graph(
+                        middleware, hooks_middleware=hooks_middleware
+                    )
         return offload_graph
 
     return make_graph, make_offload_graph

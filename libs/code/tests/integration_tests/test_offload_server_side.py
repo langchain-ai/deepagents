@@ -20,7 +20,16 @@ if TYPE_CHECKING:
 
 
 def _write_model_config(home_dir: Path) -> None:
-    """Write a temp config that points the server subprocess at the test model."""
+    """Write a temp config that points the server subprocess at the test model.
+
+    The fake model's 8k-token default profile overflows once the system
+    prompt plus two seeded long turns cross the 85% auto-compaction trigger,
+    so auto-compaction fires during seeding and leaves `/offload` nothing
+    genuine to compact. Widening the window past the seeded size keeps the
+    thread uncompacted until `/offload`, while the fraction-based retention
+    window (~800 tokens) stays smaller than the seeded ~4.4k, so the forced
+    compaction still has real work to do.
+    """
     config_dir = home_dir / ".deepagents"
     config_dir.mkdir(parents=True, exist_ok=True)
     (config_dir / "config.toml").write_text(
@@ -28,6 +37,9 @@ def _write_model_config(home_dir: Path) -> None:
 [models.providers.itest]
 class_path = "deepagents_code._testing_models:DeterministicIntegrationChatModel"
 models = ["fake"]
+
+[models.providers.itest.profile]
+max_input_tokens = 32000
 """.strip()
         + "\n"
     )
@@ -44,15 +56,19 @@ def _build_long_prompt(turn: int) -> str:
 
 async def _run_turn(agent, *, thread_id: str, assistant_id: str, prompt: str) -> None:
     """Execute one real remote agent turn and drain the stream to completion."""
-    from deepagents_code.config import build_stream_config
+    from deepagents_code.config import build_stream_config, settings
 
     config = build_stream_config(thread_id, assistant_id)
     stream_input = {"messages": [{"role": "user", "content": prompt}]}
+    # Send the resolved context limit so the server's compaction/summarization
+    # layers see the same window the model profile was widened to; without it
+    # the server falls back to its own default and auto-compaction fires early.
     async for _chunk in agent.astream(
         stream_input,
         stream_mode=["messages", "updates"],
         subgraphs=True,
         config=config,
+        context={"model_context_limit": settings.model_context_limit},
         durability="exit",
     ):
         pass
@@ -88,14 +104,27 @@ async def _read_file_through_agent(agent, *, thread_id: str, file_path: str) -> 
             {"name": "read_file", "args": {"file_path": file_path}, "id": tool_call_id}
         ],
     )
-    await agent.aensure_thread(config)
-    await agent.aupdate_state(config, {"messages": [seed]}, as_node="model")
+    # The `/offload` run rewrites the thread row's `graph_id` to "offload", so
+    # a plain `aupdate_state(as_node="model")` would resolve against the
+    # operation graph, which has no `model` node. Advance the interactive
+    # `agent` graph once with no new messages to restore the thread's
+    # `graph_id` to "agent" before seeding.
+    agent_graph = agent.for_graph("agent")
+    await agent_graph.aensure_thread(config)
+    async for _chunk in agent_graph.astream(
+        {"messages": []},
+        stream_mode=["updates"],
+        config=config,
+        durability="exit",
+    ):
+        pass
+    await agent_graph.aupdate_state(config, {"messages": [seed]}, as_node="model")
 
     interrupt_ids: list[str] = []
     tool_contents: list[str] = []
 
     async def _drain(stream_input) -> None:
-        async for chunk in agent.astream(
+        async for chunk in agent_graph.astream(
             stream_input,
             stream_mode=["messages", "updates"],
             subgraphs=True,
@@ -201,18 +230,28 @@ async def test_offload_runs_server_side_and_is_agent_readable(
 
             offload_interrupts: list[object] = []
             recorded_chunks = 0
-            plain_astream = agent.astream
+            plain_for_graph = agent.for_graph
 
-            async def _recording_astream(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
-                """Record every interrupt the server surfaces to the client."""
-                nonlocal recorded_chunks
-                async for chunk in plain_astream(*args, **kwargs):
-                    if isinstance(chunk, tuple) and len(chunk) == 3:
-                        recorded_chunks += 1
-                        _ns, mode, data = chunk
-                        if mode == "updates" and isinstance(data, dict):
-                            offload_interrupts.extend(data.get("__interrupt__") or [])
-                    yield chunk
+            def _recording_for_graph(graph_id: str):  # noqa: ANN202
+                """Instrument the `offload` client `/offload` actually streams."""
+                offload_client = plain_for_graph(graph_id)
+                plain_astream = offload_client.astream
+
+                async def _recording_astream(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+                    """Record every interrupt the server surfaces to the client."""
+                    nonlocal recorded_chunks
+                    async for chunk in plain_astream(*args, **kwargs):
+                        if isinstance(chunk, tuple) and len(chunk) == 3:
+                            recorded_chunks += 1
+                            _ns, mode, data = chunk
+                            if mode == "updates" and isinstance(data, dict):
+                                offload_interrupts.extend(
+                                    data.get("__interrupt__") or []
+                                )
+                        yield chunk
+
+                offload_client.astream = _recording_astream  # ty: ignore
+                return offload_client
 
             async with app.run_test() as pilot:
                 for _ in range(120):
@@ -222,7 +261,7 @@ async def test_offload_runs_server_side_and_is_agent_readable(
 
                 assert app._message_store.total_count > 0
 
-                agent.astream = _recording_astream  # ty: ignore
+                agent.for_graph = _recording_for_graph  # ty: ignore
                 try:
                     await app._handle_offload()
 
@@ -234,7 +273,7 @@ async def test_offload_runs_server_side_and_is_agent_readable(
                         ):
                             break
                 finally:
-                    agent.astream = plain_astream  # ty: ignore
+                    agent.for_graph = plain_for_graph  # ty: ignore
 
                 # The seeded compaction is authorized by the per-run context, so
                 # it executes without a human-approval round trip in any

@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from deepagents.backends.protocol import FILE_NOT_FOUND
+
 from deepagents_code.diff_utils import count_diff_changes
 
 logger = logging.getLogger(__name__)
@@ -445,7 +447,7 @@ class FileOpTracker:
                         # failure; anything else means we lost the pre-image
                         # and every downstream diff is suspect.
                         error = responses[0].error if responses else "no response"
-                        if error is not None:
+                        if error is not None and error != FILE_NOT_FOUND:
                             logger.warning(
                                 "Could not read pre-edit content for %s: %s",
                                 path_str,

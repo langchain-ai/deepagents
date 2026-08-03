@@ -214,6 +214,54 @@ def test_missing_before_content_is_not_flagged_as_unreadable(tmp_path: Path) -> 
     assert record.before_unreadable is False
 
 
+def test_backend_file_not_found_is_not_flagged_as_unreadable() -> None:
+    """Backends report a missing pre-image with the `FILE_NOT_FOUND` sentinel.
+
+    Creating a file through a backend (state, store, sandbox) always answers
+    the pre-edit download with `file_not_found`; that is the known empty
+    pre-image of the create case, not a read failure, so the diff of the whole
+    file as additions is trustworthy and must not be suppressed.
+    """
+    from deepagents.backends.protocol import FileDownloadResponse
+
+    backend = mock.Mock()
+    backend.download_files.return_value = [
+        FileDownloadResponse(path="/new.txt", content=None, error="file_not_found")
+    ]
+    tracker = FileOpTracker(assistant_id=None, backend=backend)
+
+    tracker.start_operation(
+        "write_file", {"file_path": "/new.txt", "content": "hello"}, "new-2"
+    )
+
+    record = tracker.active["new-2"]
+    assert record.before_unreadable is False
+    assert record.before_content == ""
+
+
+def test_backend_read_failure_is_flagged_as_unreadable() -> None:
+    """Backend errors other than `FILE_NOT_FOUND` lose the pre-image.
+
+    `permission_denied` means the file may exist and differ from the stand-in
+    empty string, so any diff against it is suspect and must be flagged.
+    """
+    from deepagents.backends.protocol import FileDownloadResponse
+
+    backend = mock.Mock()
+    backend.download_files.return_value = [
+        FileDownloadResponse(
+            path="/locked.txt", content=None, error="permission_denied"
+        )
+    ]
+    tracker = FileOpTracker(assistant_id=None, backend=backend)
+
+    tracker.start_operation("edit_file", {"file_path": "/locked.txt"}, "locked-2")
+
+    record = tracker.active["locked-2"]
+    assert record.before_unreadable is True
+    assert record.before_content == ""
+
+
 def test_unreadable_after_content_sets_its_own_flag(tmp_path: Path) -> None:
     """Succeeded-but-undisplayable must be distinguishable from a tool error.
 

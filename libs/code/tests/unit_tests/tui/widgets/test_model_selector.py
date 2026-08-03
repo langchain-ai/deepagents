@@ -574,6 +574,39 @@ class TestNamesToggle:
             help_text = screen.query_one(".model-selector-help", Static)
             assert "Ctrl+N" in str(help_text.content)
 
+    async def test_help_text_names_toggle_hint_follows_display_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The Ctrl+N footer hint advertises what the next press switches to."""
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+N IDs" in str(help_widget.content)
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            assert "Ctrl+N names" in str(help_widget.content)
+            assert "Ctrl+N IDs" not in str(help_widget.content)
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            assert "Ctrl+N IDs" in str(help_widget.content)
+
     async def test_help_text_omits_names_toggle_in_curated_mode(self) -> None:
         """Onboarding's curated help footer should not mention Ctrl+N."""
         app = ModelSelectorTestApp()

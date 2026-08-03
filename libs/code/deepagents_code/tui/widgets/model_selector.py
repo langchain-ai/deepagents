@@ -491,6 +491,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         width, so the help `Static` is sized to grow (auto height) and wraps to
         two rows rather than clipping the trailing hints.
 
+        The Ctrl+N hint names what the next press *does* rather than the
+        current mode, so it reads "Ctrl+N IDs" while friendly names are shown
+        and "Ctrl+N names" once rows are flipped to raw `provider:model` specs.
+
         Returns:
             The bullet-separated help line.
         """
@@ -501,7 +505,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             "Enter select",
         ]
         if not self._curated:
-            parts.extend(("Ctrl+S set default", "Ctrl+R recommended", "Ctrl+N IDs"))
+            names_hint = "Ctrl+N names" if self._show_specs else "Ctrl+N IDs"
+            parts.extend(("Ctrl+S set default", "Ctrl+R recommended", names_hint))
         sep = f" {glyphs.bullet} "
         return sep.join(parts)
 
@@ -1962,11 +1967,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         toggle changes neither ordering nor selection, so a full rebuild is
         unnecessary — and stays available in curated/onboarding mode since it
         only affects presentation.
+
+        The footer hint is rewritten too so it always advertises the mode the
+        next press switches to. That also clears any transient Ctrl+S status
+        message early, which is harmless — the message is purely informational
+        and its restore timer replays the same help line.
         """
         if not self._loaded:
             return
         self._show_specs = not self._show_specs
         self._relabel_options()
+        self._restore_help_text()
 
     def _relabel_options(self) -> None:
         """Rebuild each mounted row's label for the current display mode.

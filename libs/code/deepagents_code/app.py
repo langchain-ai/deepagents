@@ -4735,12 +4735,18 @@ class DeepAgentsApp(App):
             return self._detached_hooks.trust
         return WorkspaceTrust.none()
 
-    async def _reload_hooks_with_trust(self, trust: WorkspaceTrust) -> None:
-        """Apply a replacement trust policy and reload the current hooks manager."""
+    async def _apply_hook_trust(
+        self,
+        trust: WorkspaceTrust,
+        *,
+        reload_manager: bool,
+    ) -> None:
+        """Apply a replacement trust policy, optionally reloading the manager."""
         self._hook_trust = trust
         manager = self._hooks
         manager.trust = trust
-        await self._reload_hooks()
+        if reload_manager:
+            await self._reload_hooks()
 
     async def _wait_for_hook_trust_prompt_refresh(self) -> None:
         """Let the cwd-switch modal unwind before mounting the trust prompt."""
@@ -4751,8 +4757,18 @@ class DeepAgentsApp(App):
             return
         await refreshed.wait()
 
-    async def _retarget_hooks_after_cwd_switch(self) -> None:
-        """Reload hooks and gate project commands after a successful cwd switch."""
+    async def _retarget_hooks_after_cwd_switch(
+        self,
+        *,
+        reload_manager: bool = True,
+    ) -> None:
+        """Resolve project-hook trust after a successful cwd switch.
+
+        Args:
+            reload_manager: Whether to activate the target workspace's runtime
+                immediately. In-session resumes defer activation until the outgoing
+                runtime has received `SessionEnd`.
+        """
         from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
         if not is_env_truthy(EXPERIMENTAL):
@@ -4775,16 +4791,16 @@ class DeepAgentsApp(App):
                 "Could not inspect project hooks after cwd switch",
                 exc_info=True,
             )
-            await self._reload_hooks_with_trust(trust)
+            await self._apply_hook_trust(trust, reload_manager=reload_manager)
             return
 
         if not has_project_hooks or await asyncio.to_thread(trust.allows, root):
-            await self._reload_hooks_with_trust(trust)
+            await self._apply_hook_trust(trust, reload_manager=reload_manager)
             return
 
         trust = await asyncio.to_thread(trust.without_session_grant, root)
         if not trust.consult_store:
-            await self._reload_hooks_with_trust(trust)
+            await self._apply_hook_trust(trust, reload_manager=reload_manager)
             return
         prompt_grant = await asyncio.to_thread(trust.with_session_grant, root)
         await self._wait_for_hook_trust_prompt_refresh()
@@ -4822,7 +4838,7 @@ class DeepAgentsApp(App):
                     markup=False,
                 )
 
-        await self._reload_hooks_with_trust(trust)
+        await self._apply_hook_trust(trust, reload_manager=reload_manager)
 
     async def _run_session_start_hook(self, cause: SessionStartCause) -> bool:
         """Run `SessionStart`, surfacing a stop as a chat message.
@@ -24049,6 +24065,7 @@ class DeepAgentsApp(App):
                 target.thread_id,
                 restart_server=False,
                 abort="thread_switch",
+                defer_hook_reload=True,
             )
             if cwd_choice == "abort":
                 await self._mount_message(
@@ -24554,6 +24571,7 @@ class DeepAgentsApp(App):
         *,
         restart_server: bool,
         abort: CwdSwitchAbortMode | None = None,
+        defer_hook_reload: bool = False,
     ) -> Literal["continue", "abort"]:
         """Offer to switch to a resumed thread's cwd when it differs.
 
@@ -24566,6 +24584,9 @@ class DeepAgentsApp(App):
             abort: When set, the prompt offers a third "abort" option that
                 declines the resume/switch entirely; the mode selects its
                 wording (see `CwdSwitchAbortMode`). `None` hides the option.
+            defer_hook_reload: Whether a process-only switch should keep the
+                outgoing hook runtime active until its caller finishes the
+                combined transition.
 
         Returns:
             `"continue"` when resume may proceed, or `"abort"` when the user
@@ -24610,11 +24631,13 @@ class DeepAgentsApp(App):
                         )
                     )
                     return outcome
-                await self._retarget_hooks_after_cwd_switch()
+                await self._retarget_hooks_after_cwd_switch(reload_manager=False)
                 return outcome
             self._preserve_launch_relative_server_paths(Path(self._cwd))
             self._switch_process_cwd(target)
-            await self._retarget_hooks_after_cwd_switch()
+            await self._retarget_hooks_after_cwd_switch(
+                reload_manager=not defer_hook_reload
+            )
             return "continue"
 
         self.notify(

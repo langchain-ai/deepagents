@@ -67,6 +67,9 @@ class HooksRuntime:
     """
 
     project_hooks_loaded: bool
+    project_hooks_fingerprint: str | None
+    """SHA-256 fingerprint of the exact project-hook bytes in the snapshot."""
+
     presenter: HookPresenter
     fulfillments: HookFulfillmentLedger
 
@@ -133,6 +136,7 @@ class HooksRuntime:
             cwd=project_context.user_cwd,
             workspace_trusted=workspace_trusted,
             project_hooks_loaded=loaded.project_source_loaded,
+            project_hooks_fingerprint=loaded.project_source_fingerprint,
             presenter=presenter if presenter is not None else HookPresenter(),
             fulfillments=HookFulfillmentLedger(),
         )

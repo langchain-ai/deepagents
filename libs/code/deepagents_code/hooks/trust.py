@@ -506,11 +506,19 @@ class WorkspaceTrust:
             session_grant_fingerprints=frozenset(fingerprints.items()),
         )
 
-    def allows(self, cwd: Path | str) -> bool:
+    def allows(
+        self,
+        cwd: Path | str,
+        *,
+        project_hooks_fingerprint: str | None = None,
+    ) -> bool:
         """Return whether project hooks may run for a working directory.
 
         Args:
             cwd: Directory to resolve trust for.
+            project_hooks_fingerprint: Fingerprint of project-hook bytes already
+                loaded from `cwd`. When omitted, the file is read to resolve a
+                prospective load.
 
         Returns:
             `True` when the enclosing workspace root has an unchanged session
@@ -528,7 +536,12 @@ class WorkspaceTrust:
         key = _project_key(root)
         if key in self.session_grants:
             granted_fingerprint = dict(self.session_grant_fingerprints).get(key)
-            if granted_fingerprint == _project_hooks_fingerprint(root):
+            current_fingerprint = (
+                project_hooks_fingerprint
+                if project_hooks_fingerprint is not None
+                else _project_hooks_fingerprint(root)
+            )
+            if granted_fingerprint == current_fingerprint:
                 return True
         if not self.consult_store:
             return False

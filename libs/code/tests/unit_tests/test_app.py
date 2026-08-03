@@ -32515,7 +32515,7 @@ class TestResumeThreadCwdSwitch:
         clear_caches.assert_called_once_with()
         screen = push_wait.call_args.args[0]
         assert screen._project_settings_change_detected is True
-        retarget.assert_awaited_once_with()
+        retarget.assert_awaited_once_with(reload_manager=True)
 
     async def test_offer_switch_preserves_launch_relative_server_paths(
         self,
@@ -32635,7 +32635,7 @@ class TestResumeThreadCwdSwitch:
         notify.assert_called_once()
         assert "Cached local context may be stale" in notify.call_args.args[0]
 
-    async def test_offer_server_switch_retargets_after_success(
+    async def test_offer_server_switch_defers_hook_reload(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -32668,7 +32668,7 @@ class TestResumeThreadCwdSwitch:
 
         assert outcome == "continue"
         replace.assert_awaited_once_with(target)
-        retarget.assert_awaited_once_with()
+        retarget.assert_awaited_once_with(reload_manager=False)
 
     async def test_offer_switch_failure_returns_abort(
         self,

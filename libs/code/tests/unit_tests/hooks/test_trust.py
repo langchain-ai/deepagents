@@ -338,7 +338,7 @@ async def test_textual_app_forwards_hook_trust(
     )
     with patch(
         "deepagents_code.hooks.runtime.HooksRuntime.create",
-        return_value=MagicMock(),
+        return_value=MagicMock(project_hooks_loaded=False),
     ) as create:
         await app._init_session_state()
 
@@ -360,7 +360,7 @@ async def test_textual_app_defaults_to_untrusted_without_a_policy(
     app = DeepAgentsApp(agent=MagicMock(), thread_id="thread")
     with patch(
         "deepagents_code.hooks.runtime.HooksRuntime.create",
-        return_value=MagicMock(),
+        return_value=MagicMock(project_hooks_loaded=False),
     ) as create:
         await app._init_session_state()
 
@@ -383,6 +383,46 @@ def _manager(cwd: Path, trust: WorkspaceTrust) -> HooksManager:
         identity=lambda: HookSessionIdentity("thread", ApprovalMode.MANUAL),
         trust=trust,
     )
+
+
+def test_manager_rejects_project_hooks_changed_after_trust_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.hooks import trust as trust_module
+
+    _isolate_hook_config(tmp_path, monkeypatch)
+    root = _write_project_hooks(tmp_path / "project")
+    policy = WorkspaceTrust.for_session(root, granted=True)
+    config_path = root / ".deepagents" / "hooks.json"
+    fingerprint = trust_module._project_hooks_fingerprint
+
+    def fingerprint_then_replace(project_root: Path) -> str | None:
+        result = fingerprint(project_root)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "hooks": {
+                        "SessionEnd": [
+                            {"hooks": [{"type": "command", "command": "true"}]}
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        return result
+
+    monkeypatch.setattr(
+        trust_module,
+        "_project_hooks_fingerprint",
+        fingerprint_then_replace,
+    )
+
+    manager = _manager(root, policy)
+
+    assert not manager.has_handlers(HookEvent.STOP)
+    assert not manager.has_handlers(HookEvent.SESSION_END)
 
 
 async def test_reload_drops_project_hooks_when_leaving_trusted_workspace(

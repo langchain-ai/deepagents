@@ -7,15 +7,15 @@ import re
 from difflib import SequenceMatcher
 from functools import lru_cache
 from itertools import accumulate, groupby, pairwise
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple
 
-from textual.containers import Vertical
 from textual.content import Content
 from textual.highlight import highlight
 from textual.widgets import Static
 
 from deepagents_code import theme
-from deepagents_code.config import get_glyphs, is_ascii_mode
+from deepagents_code.config import get_glyphs
+from deepagents_code.diff_utils import file_header_indexes
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -24,9 +24,6 @@ logger = logging.getLogger(__name__)
 
 _HUNK_RE = re.compile(r"@@ -(\d+)(?:,\d+)? \+(\d+)")
 """Matches a unified-diff hunk header, capturing the old and new start lines."""
-
-_HUNK_COUNTS_RE = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))?")
-"""Matches a hunk header, capturing its optional old and new line counts."""
 
 _TOKEN_RE = re.compile(r"\w+|\s+|.")
 """Splits a line into words, whitespace runs, and single other characters."""
@@ -51,26 +48,35 @@ two sides are checked independently, so one may highlight while the other does
 not.
 """
 
-_GUTTERS = {
+_ContentPart = str | tuple[str, str] | Content
+_Range = tuple[int, int]
+_DiffRowKind = Literal["context", "added", "removed"]
+_ChangedRowKind = Literal["added", "removed"]
+_RowKind = Literal["context", "added", "removed", "separator", "truncated", "note"]
+
+_GUTTERS: dict[_DiffRowKind, str] = {
     "added": "$text-success 80% on $success 20%",
     "removed": "$text-error 80% on $error 20%",
     "context": "$foreground 30% on $foreground 3%",
 }
 """Line-number gutter styles, tinted a shade stronger than the row itself."""
 
-_MARKERS = {"added": ("+", "$text-success"), "removed": ("-", "$text-error")}
+_MARKERS: dict[_ChangedRowKind, tuple[str, str]] = {
+    "added": ("+", "$text-success"),
+    "removed": ("-", "$text-error"),
+}
 """Marker glyph and color for changed rows."""
 
-_EMPHASIS = {"added": "on $success 30%", "removed": "on $error 30%"}
+_EMPHASIS: dict[_ChangedRowKind, str] = {
+    "added": "on $success 30%",
+    "removed": "on $error 30%",
+}
 """Tint for changed words, composited over the row's own tint."""
 
-_ContentPart = str | tuple[str, str] | Content
-_Range = tuple[int, int]
-_RowKind = Literal["context", "added", "removed", "separator", "truncated", "note"]
 """Closed set of row kinds, so a typo is a type error rather than a `KeyError`.
 
-`_GUTTERS`, `_MARKERS`, and `_EMPHASIS` are keyed by a subset of these, and a
-new kind must be handled in `_compose_diff_content` before it reaches them.
+The style tables are keyed by the narrower row kinds they support, and a new
+kind must be handled in `_compose_diff_content` before it reaches them.
 """
 
 
@@ -85,73 +91,6 @@ class _Row(NamedTuple):
 
     number: int
     """File line number, or `0` for separator, truncated, and note rows."""
-
-
-def count_diff_changes(diff: str) -> tuple[int, int]:
-    """Count added and removed lines in a unified diff.
-
-    Args:
-        diff: Unified diff string.
-
-    Returns:
-        Tuple of (additions, deletions), excluding `---`/`+++` file headers.
-    """
-    lines = diff.splitlines()
-    header_indexes = _file_header_indexes(lines)
-    additions = 0
-    deletions = 0
-    for index, line in enumerate(lines):
-        if index in header_indexes:
-            continue
-        if line.startswith("+"):
-            additions += 1
-        elif line.startswith("-"):
-            deletions += 1
-    return additions, deletions
-
-
-def _file_header_indexes(lines: list[str]) -> set[int]:
-    """Locate paired file headers immediately preceding a hunk.
-
-    Prefixes alone are ambiguous: removing content that begins with `--` also
-    produces a diff row beginning with `---`. A real unified-diff file header
-    is the paired `---`/`+++` prelude to a hunk, so use that surrounding
-    structure to distinguish metadata from content.
-
-    Args:
-        lines: Lines of a unified diff.
-
-    Returns:
-        Indexes of file-header lines.
-    """
-    indexes: set[int] = set()
-    old_remaining = new_remaining = 0
-    inside_hunk = False
-    for index, line in enumerate(lines):
-        if match := _HUNK_COUNTS_RE.match(line):
-            old_remaining = int(match.group(1) or 1)
-            new_remaining = int(match.group(2) or 1)
-            inside_hunk = bool(old_remaining or new_remaining)
-            continue
-        if inside_hunk:
-            if line.startswith("-"):
-                old_remaining -= 1
-            elif line.startswith("+"):
-                new_remaining -= 1
-            elif line.startswith(" "):
-                old_remaining -= 1
-                new_remaining -= 1
-            inside_hunk = old_remaining > 0 or new_remaining > 0
-            continue
-        if index + 2 >= len(lines):
-            continue
-        if (
-            line.startswith("--- ")
-            and lines[index + 1].startswith("+++ ")
-            and _HUNK_RE.match(lines[index + 2])
-        ):
-            indexes.update((index, index + 1))
-    return indexes
 
 
 def diff_stats_content(additions: int, deletions: int) -> Content:
@@ -209,6 +148,41 @@ def compose_diff_lines(
         yield from _compose_diff_content(diff, max_lines, path, before, after)
 
 
+def highlight_source_prefixes(diff: str, before: str, after: str) -> tuple[str, str]:
+    """Keep only the bounded source prefixes needed to highlight a diff.
+
+    Args:
+        diff: Unified diff string.
+        before: Full content before the change.
+        after: Full content after the change.
+
+    Returns:
+        Before and after prefixes, or an empty side when its prefix exceeds the
+        highlighting limit.
+    """
+    rows = _parse_rows(diff.splitlines())
+    before_line = max(
+        (row.number for row in rows if row.kind in {"removed", "context"}),
+        default=0,
+    )
+    after_line = max(
+        (row.number for row in rows if row.kind == "added"),
+        default=0,
+    )
+    return (
+        _highlight_source_prefix(before, before_line),
+        _highlight_source_prefix(after, after_line),
+    )
+
+
+def _highlight_source_prefix(source: str, line: int) -> str:
+    """Return the highlightable prefix ending at `line`."""
+    if not source or line <= 0:
+        return ""
+    prefix = "\n".join(source.splitlines()[:line])
+    return prefix if len(prefix) <= _MAX_HIGHLIGHT_CHARS else ""
+
+
 def _compose_diff_content(
     diff: str,
     max_lines: int | None,
@@ -254,8 +228,9 @@ def _compose_diff_content(
         number = (f"{row.number:>{width}}", _GUTTERS[row.kind])
         body = highlighted.get(index) or Content(row.text)
         marker, marker_style = _MARKERS.get(row.kind, (" ", ""))
-        for start, end in emphasis.get(index, []):
-            body = body.stylize(_EMPHASIS[row.kind], start, end)
+        if emphasis_style := _EMPHASIS.get(row.kind):
+            for start, end in emphasis.get(index, []):
+                body = body.stylize(emphasis_style, start, end)
         yield Static(
             Content.assemble(number, " ", (marker, marker_style), " ", body),
             classes=f"diff-line-{row.kind}" if row.kind != "context" else "",
@@ -351,7 +326,7 @@ def _parse_rows(lines: list[str]) -> list[_Row]:
         rows and `0` for `separator`, `truncated`, and `note` rows.
     """
     rows: list[_Row] = []
-    header_indexes = _file_header_indexes(lines)
+    header_indexes = file_header_indexes(lines)
     old = new = 0
     seen_hunk = False
     for index, line in enumerate(lines):
@@ -446,10 +421,11 @@ def _is_related(old_tokens: list[str], new_tokens: list[str]) -> bool:
 def _emphasis_ranges(old: str, new: str) -> tuple[list[_Range], list[_Range]]:
     """Find the changed character ranges within a related `-`/`+` pair.
 
-    Returns no ranges — leaving the row its uniform tint — in three cases:
+    Returns no ranges — leaving the row its uniform tint — in four cases:
     either side is blank, either side is longer than `_MAX_EMPHASIS_LEN` (a
     cost bound on the token matcher), or the two are too dissimilar to be a
-    modification of one another (`_is_related`).
+    modification of one another (`_is_related`), or every character on both
+    sides would be emphasized.
 
     Args:
         old: Removed line content.
@@ -483,85 +459,3 @@ def _emphasis_ranges(old: str, new: str) -> tuple[list[_Range], list[_Range]]:
     if old_covered and new_covered:
         return [], []
     return old_ranges, new_ranges
-
-
-class EnhancedDiff(Vertical):
-    """Widget for displaying a unified diff in a titled, bordered box.
-
-    Unused as of this writing — `DiffMessage` is what the transcript mounts.
-    Note it composes without a `path`, so its rows are never syntax
-    highlighted.
-    """
-
-    DEFAULT_CSS = """
-    EnhancedDiff {
-        height: auto;
-        padding: 1;
-        background: $surface-darken-1;
-        border: round $primary;
-    }
-
-    EnhancedDiff .diff-title {
-        color: $primary;
-        text-style: bold;
-        margin-bottom: 1;
-    }
-
-    EnhancedDiff .diff-content {
-        height: auto;
-    }
-
-    EnhancedDiff .diff-stats {
-        color: $text-muted;
-        margin-top: 1;
-    }
-    """
-
-    def __init__(
-        self,
-        diff: str,
-        title: str = "Diff",
-        max_lines: int | None = 100,
-        **kwargs: Any,
-    ) -> None:
-        """Initialize the diff widget.
-
-        Args:
-            diff: Unified diff string
-            title: Title to display above the diff
-            max_lines: Maximum number of diff lines to show
-            **kwargs: Additional arguments passed to parent
-        """
-        super().__init__(**kwargs)
-        self._diff = diff
-        self._title = title
-        self._max_lines = max_lines
-        self._stats = count_diff_changes(diff)
-
-    def on_mount(self) -> None:
-        """Set border style based on charset mode."""
-        if is_ascii_mode():
-            colors = theme.get_theme_colors(self)
-            self.styles.border = ("ascii", colors.primary)
-
-    def compose(self) -> ComposeResult:
-        """Compose the diff widget layout.
-
-        Yields:
-            Widgets for title, formatted diff content, and stats.
-        """
-        colors = theme.get_theme_colors(self)
-        glyphs = get_glyphs()
-        h = glyphs.box_double_horizontal
-        yield Static(
-            Content.styled(
-                f"{h}{h}{h} {self._title} {h}{h}{h}", f"bold {colors.primary}"
-            ),
-            classes="diff-title",
-        )
-
-        yield from compose_diff_lines(self._diff, self._max_lines)
-
-        additions, deletions = self._stats
-        if additions or deletions:
-            yield Static(diff_stats_content(additions, deletions), classes="diff-stats")

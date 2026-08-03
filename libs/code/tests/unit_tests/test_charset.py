@@ -66,7 +66,6 @@ class TestGlyphs:
         assert ord(UNICODE_GLYPHS.box_vertical) > 127
         assert ord(UNICODE_GLYPHS.box_horizontal) > 127
         assert ord(UNICODE_GLYPHS.box_double_horizontal) > 127
-        assert ord(UNICODE_GLYPHS.gutter_bar) > 127
 
     def test_ascii_glyphs_are_ascii(self) -> None:
         """Test that ASCII_GLYPHS contains only ASCII characters.
@@ -110,7 +109,6 @@ class TestGlyphs:
             "box_vertical",
             "box_horizontal",
             "box_double_horizontal",
-            "gutter_bar",
         ]
         for field in required_fields:
             assert hasattr(UNICODE_GLYPHS, field)
@@ -259,14 +257,12 @@ class TestGlyphUsability:
         assert UNICODE_GLYPHS.box_vertical == "│"
         assert UNICODE_GLYPHS.box_horizontal == "─"
         assert UNICODE_GLYPHS.box_double_horizontal == "═"
-        assert UNICODE_GLYPHS.gutter_bar == "▌"
 
     def test_ascii_box_drawing_characters(self) -> None:
         """Test ASCII box-drawing alternatives are simple ASCII."""
         assert ASCII_GLYPHS.box_vertical == "|"
         assert ASCII_GLYPHS.box_horizontal == "-"
         assert ASCII_GLYPHS.box_double_horizontal == "="
-        assert ASCII_GLYPHS.gutter_bar == "|"
 
 
 class TestGetBanner:

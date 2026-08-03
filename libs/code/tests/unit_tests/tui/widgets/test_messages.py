@@ -725,9 +725,16 @@ class TestDiffMessageCredentialRedaction:
 
     def test_env_file_diff_is_hidden(self) -> None:
         diff = "@@ -1 +1 @@\n-API_KEY=old\n+API_KEY=supersecret"
-        texts = self._texts(DiffMessage(diff, file_path=".env"))
+        message = DiffMessage(
+            diff,
+            file_path=".env",
+            before="API_KEY=old",
+            after="API_KEY=supersecret",
+        )
+        texts = self._texts(message)
         assert any("may contain credentials" in text for text in texts)
         assert all("supersecret" not in text for text in texts)
+        assert (message._before, message._after) == ("", "")
 
     def test_regular_file_diff_is_rendered(self) -> None:
         diff = "@@ -1 +1 @@\n-print('a')\n+print('b')"

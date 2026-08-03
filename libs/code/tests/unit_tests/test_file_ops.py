@@ -9,6 +9,7 @@ from langchain_core.messages import ToolMessage
 from deepagents_code.file_ops import (
     FileOpTracker,
     build_approval_preview,
+    compute_unified_diff_with_counts,
     is_sensitive_file_path,
 )
 
@@ -166,6 +167,20 @@ def test_tracker_records_edit_diff(tmp_path: Path) -> None:
     assert record.diff is not None
     assert '-    return "hello"' in record.diff
     assert '+    return "hi"' in record.diff
+
+
+def test_diff_counts_are_computed_before_truncation() -> None:
+    """Large changes retain their true counts when the rendered diff is truncated."""
+    before = "\n".join(f"old {index}" for index in range(300))
+    after = "\n".join(f"new {index}" for index in range(300))
+
+    diff, additions, deletions = compute_unified_diff_with_counts(
+        before, after, "large.txt", max_lines=100
+    )
+
+    assert diff is not None
+    assert diff.endswith("...")
+    assert (additions, deletions) == (300, 300)
 
 
 def test_tracker_records_delete_diff(tmp_path: Path) -> None:

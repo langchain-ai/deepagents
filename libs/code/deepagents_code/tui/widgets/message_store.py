@@ -175,16 +175,13 @@ class MessageData:
     """Name of the file tool that produced the diff (DIFF messages only)."""
 
     diff_before_content: str | None = None
-    """Full content before the change, used to highlight DIFF messages."""
+    """Bounded content prefix before the change, used to highlight DIFF messages."""
 
     diff_after_content: str | None = None
-    """Full content after the change, used to highlight DIFF messages."""
+    """Bounded content prefix after the change, used to highlight DIFF messages."""
 
-    diff_additions: int | None = None
-    """True added-line count, which survives a truncated DIFF body."""
-
-    diff_deletions: int | None = None
-    """True removed-line count, which survives a truncated DIFF body."""
+    diff_stats: tuple[int, int] | None = None
+    """True change counts, which survive a truncated DIFF body."""
 
     # SKILL message fields - only populated for SKILL messages
     skill_name: str | None = None
@@ -353,11 +350,7 @@ class MessageData:
                     tool_name=self.diff_tool_name,
                     before=self.diff_before_content or "",
                     after=self.diff_after_content or "",
-                    stats=(
-                        None
-                        if self.diff_additions is None or self.diff_deletions is None
-                        else (self.diff_additions, self.diff_deletions)
-                    ),
+                    stats=self.diff_stats,
                     id=self.id,
                 )
 
@@ -470,8 +463,7 @@ class MessageData:
                 diff_tool_name=widget._tool_name,
                 diff_before_content=widget._before,
                 diff_after_content=widget._after,
-                diff_additions=None if widget._stats is None else widget._stats[0],
-                diff_deletions=None if widget._stats is None else widget._stats[1],
+                diff_stats=widget._stats,
             )
 
         if isinstance(widget, SummarizationMessage):

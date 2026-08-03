@@ -6,13 +6,13 @@ from typing import TYPE_CHECKING, cast
 
 from textual.widgets import Static
 
+from deepagents_code.diff_utils import count_diff_changes
 from deepagents_code.tui.widgets import diff as diff_module
 from deepagents_code.tui.widgets.diff import (
     _EMPHASIS,
     _MAX_EMPHASIS_LEN,
     _MAX_HIGHLIGHT_CHARS,
     compose_diff_lines,
-    count_diff_changes,
 )
 
 if TYPE_CHECKING:

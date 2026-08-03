@@ -10,8 +10,9 @@ from textual.content import Content
 from textual.widgets import Markdown, Static
 
 from deepagents_code import theme
+from deepagents_code.diff_utils import count_diff_changes
 from deepagents_code.file_ops import is_sensitive_file_path
-from deepagents_code.tui.widgets.diff import compose_diff_lines, count_diff_changes
+from deepagents_code.tui.widgets.diff import compose_diff_lines
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult

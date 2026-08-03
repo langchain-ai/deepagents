@@ -59,6 +59,7 @@ from deepagents_code._version import CHANGELOG_URL, __version__
 from deepagents_code.app import (
     _DEEPAGENTS_IMPORT_LOCK,
     _MIN_TOAST_ROWS,
+    _TOOL_GROUP_EXCLUSIONS,
     _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
     DeferredAction,
@@ -102,6 +103,8 @@ from deepagents_code.tui.widgets.message_store import (
     ToolStatus,
 )
 from deepagents_code.tui.widgets.messages import (
+    _TIMED_SUCCESS_TOOLS,
+    TOOLS_SUPERSEDED_BY_DIFF,
     AppMessage,
     AssistantMessage,
     ErrorMessage,
@@ -112,6 +115,12 @@ from deepagents_code.tui.widgets.messages import (
     UserMessage,
 )
 from deepagents_code.tui.widgets.startup_tip import StartupTip
+
+
+def test_diff_superseded_tool_invariants() -> None:
+    """Diff-replaced tools stay outside grouping and timed success."""
+    assert TOOLS_SUPERSEDED_BY_DIFF <= _TOOL_GROUP_EXCLUSIONS
+    assert TOOLS_SUPERSEDED_BY_DIFF.isdisjoint(_TIMED_SUCCESS_TOOLS)
 
 
 def _pop_goal_state_notice(update: dict[str, Any]) -> HumanMessage:
@@ -34812,6 +34821,7 @@ class TestToolGroupCollapse:
             )
             diff = DiffMessage("-old\n+new", "a.py", tool_name="edit_file")
             await messages.mount(diff)
+            edit.mark_superseded_by_diff()
             await pilot.pause()
 
             await app._regroup_completed_tools()
@@ -34846,8 +34856,7 @@ class TestToolGroupCollapse:
             await pilot.pause()
 
             assert len(list(app.query(ToolGroupSummary))) == 0
-            # The edit row hides itself on success (its diff shows instead).
-            assert edit.display is False
+            assert edit.display is True
             assert todos.display is True
             assert not edit.has_class("-grouped")
             assert not todos.has_class("-grouped")

@@ -360,13 +360,13 @@ class TestMessageData:
         assert restored.id == "test-skill-1"
 
     def test_diff_message_roundtrip_preserves_highlighting_inputs(self) -> None:
-        """Virtualized diffs retain the whole-file lexer inputs and true counts."""
+        """Virtualized diffs retain only the needed lexer prefixes and true counts."""
         original = DiffMessage(
             "@@ -1 +1 @@\n-a\n+b",
             "example.py",
             tool_name="edit_file",
-            before="a\n",
-            after="b\n",
+            before="a\nunused before\n",
+            after="b\nunused after\n",
             stats=(200, 200),
             id="test-diff-highlight",
         )
@@ -374,7 +374,7 @@ class TestMessageData:
         restored = MessageData.from_widget(original).to_widget()
 
         assert isinstance(restored, DiffMessage)
-        assert (restored._before, restored._after) == ("a\n", "b\n")
+        assert (restored._before, restored._after) == ("a", "b")
         assert restored._stats == (200, 200)
 
     def test_unknown_widget_serializes_as_app(self):

@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from deepagents_code.diff_utils import count_diff_changes
+
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -120,11 +122,7 @@ def compute_unified_diff_with_counts(
     )
     if not diff_lines:
         return None, 0, 0
-    # The first two lines are the `---`/`+++` file headers this call just
-    # generated, so skipping them by position needs no prefix guessing.
-    body = diff_lines[2:]
-    additions = sum(1 for line in body if line.startswith("+"))
-    deletions = sum(1 for line in body if line.startswith("-"))
+    additions, deletions = count_diff_changes("\n".join(diff_lines))
     if max_lines is not None and len(diff_lines) > max_lines:
         truncated = diff_lines[: max_lines - 1]
         truncated.append("...")

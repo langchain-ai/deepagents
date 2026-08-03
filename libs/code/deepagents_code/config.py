@@ -1159,7 +1159,6 @@ class Glyphs:
     box_double_horizontal: str  # ═ vs =
 
     # Diff-specific
-    gutter_bar: str  # ▌ vs | — no current caller; kept for compatibility
     hunk_break: str  # ⋮ vs :
 
     # Status bar
@@ -1191,7 +1190,6 @@ UNICODE_GLYPHS = Glyphs(
     box_vertical="│",
     box_horizontal="─",
     box_double_horizontal="═",
-    gutter_bar="▌",
     hunk_break="⋮",
     git_branch="↗",
 )
@@ -1222,7 +1220,6 @@ ASCII_GLYPHS = Glyphs(
     box_vertical="|",
     box_horizontal="-",
     box_double_horizontal="=",
-    gutter_bar="|",
     hunk_break=":",
     git_branch="git:",
 )

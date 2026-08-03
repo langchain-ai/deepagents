@@ -37,6 +37,7 @@ from deepagents_code.config import (
     get_glyphs,
     is_ascii_mode,
 )
+from deepagents_code.diff_utils import count_diff_changes
 from deepagents_code.file_ops import is_sensitive_file_path
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
@@ -59,8 +60,8 @@ from deepagents_code.tui.widgets._links import (
 )
 from deepagents_code.tui.widgets.diff import (
     compose_diff_lines,
-    count_diff_changes,
     diff_stats_content,
+    highlight_source_prefixes,
 )
 from deepagents_code.unicode_security import render_with_unicode_markers
 
@@ -1997,7 +1998,8 @@ class ToolCallMessage(Vertical):
 
         When the call produces visible output it speaks for itself and the
         status stays hidden; otherwise show a "Success!" marker so a completed
-        call isn't left without any outcome indicator.
+        call isn't left without any outcome indicator. A row already marked as
+        replaced by a mounted diff hides entirely.
         """
         if self._status_widget is None:
             return
@@ -4351,8 +4353,13 @@ class DiffMessage(Static):
         self._diff_content = diff_content
         self._file_path = file_path
         self._tool_name = tool_name
-        self._before = before
-        self._after = after
+        if is_sensitive_file_path(file_path):
+            self._before = ""
+            self._after = ""
+        else:
+            self._before, self._after = highlight_source_prefixes(
+                diff_content, before, after
+            )
         self._stats = stats
 
     def compose(self) -> ComposeResult:

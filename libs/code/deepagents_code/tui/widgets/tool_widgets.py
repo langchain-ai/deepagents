@@ -11,6 +11,7 @@ from textual.widgets import Markdown, Static
 
 from deepagents_code import theme
 from deepagents_code.file_ops import is_sensitive_file_path
+from deepagents_code.tui.widgets.diff import compose_diff_lines, count_diff_changes
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -99,16 +100,7 @@ def _count_diff_stats(
         Tuple of (additions count, deletions count).
     """
     if diff_lines:
-        additions = sum(
-            1
-            for line in diff_lines
-            if line.startswith("+") and not line.startswith("+++")
-        )
-        deletions = sum(
-            1
-            for line in diff_lines
-            if line.startswith("-") and not line.startswith("---")
-        )
+        additions, deletions = count_diff_changes("\n".join(diff_lines))
     else:
         additions = new_string.count("\n") + 1 if new_string else 0
         deletions = old_string.count("\n") + 1 if old_string else 0
@@ -214,35 +206,15 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         elif not diff_lines and not old_string and not new_string:
             yield Static("No changes to display", classes="approval-description")
         elif diff_lines:
-            # Render content
-            yield from self._render_diff_lines_only(diff_lines)
+            yield from compose_diff_lines(
+                "\n".join(diff_lines),
+                max_lines=_MAX_DIFF_LINES,
+                path=file_path,
+                before=old_string,
+                after=new_string,
+            )
         else:
             yield from self._render_strings_only(old_string, new_string)
-
-    def _render_diff_lines_only(self, diff_lines: list[str]) -> ComposeResult:
-        """Render unified diff lines without returning stats.
-
-        Yields:
-            Static widgets for each diff line with appropriate styling.
-        """
-        lines_shown = 0
-
-        for line in diff_lines:
-            if lines_shown >= _MAX_DIFF_LINES:
-                yield Static(
-                    Content.styled(
-                        f"... ({len(diff_lines) - lines_shown} more lines)", "dim"
-                    )
-                )
-                break
-
-            if line.startswith(("@@", "---", "+++")):
-                continue
-
-            widget = self._render_diff_line(line)
-            if widget:
-                yield widget
-                lines_shown += 1
 
     def _render_strings_only(self, old_string: str, new_string: str) -> ComposeResult:
         """Render old/new strings without returning stats.
@@ -259,31 +231,6 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         if new_string:
             yield Static(Content.styled("Adding:", f"bold {colors.success}"))
             yield from self._render_string_lines(new_string, is_addition=True)
-
-    @staticmethod
-    def _render_diff_line(line: str) -> Static | None:
-        """Render a single diff line with appropriate styling.
-
-        Returns:
-            Static widget with styled diff line, or None for empty/skipped lines.
-        """
-        raw = line[1:] if len(line) > 1 else ""
-
-        if line.startswith("-"):
-            return Static(
-                Content.from_markup("- $text", text=raw), classes="diff-removed"
-            )
-        if line.startswith("+"):
-            return Static(
-                Content.from_markup("+ $text", text=raw), classes="diff-added"
-            )
-        if line.startswith(" "):
-            return Static(
-                Content.from_markup("  $text", text=raw), classes="diff-context"
-            )
-        if line.strip():
-            return Static(line, markup=False)
-        return None
 
     @staticmethod
     def _render_string_lines(text: str, *, is_addition: bool) -> ComposeResult:

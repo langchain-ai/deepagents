@@ -2947,19 +2947,10 @@ class TestExecuteTaskTextualAutoModeClassifier:
 
 
 class TestExecuteTaskTextualFileOpDiffs:
-    """An `edit_file` row hides itself, so its diff must always take over."""
+    """An `edit_file` row hides only after its diff takes over."""
 
     @staticmethod
     async def _run_edit(target: Path, new_string: str) -> list[object]:
-        """Stream one successful `edit_file` call and collect what it mounts.
-
-        Args:
-            target: File the edit targets.
-            new_string: Replacement for the file's single line.
-
-        Returns:
-            The widgets mounted during the turn, in order.
-        """
         mounted: list[object] = []
 
         async def mount_message(widget: object) -> None:
@@ -2993,13 +2984,7 @@ class TestExecuteTaskTextualFileOpDiffs:
         return mounted
 
     async def test_noop_edit_still_mounts_a_diff_message(self, tmp_path: Path) -> None:
-        """An edit whose replacement matches the original leaves a trace.
-
-        The edit backend accepts an `old_string` identical to `new_string` and
-        reports success, so the file is unchanged and the tracker computes no
-        diff. The tool row hides itself on success, so a diff message must still
-        mount or the call would vanish from the transcript entirely.
-        """
+        """An edit whose replacement matches the original leaves a trace."""
         target = tmp_path / "a.py"
         target.write_text("value = 1\n", encoding="utf-8")
 
@@ -3009,6 +2994,26 @@ class TestExecuteTaskTextualFileOpDiffs:
         assert len(diffs) == 1
         assert diffs[0]._diff_content == ""
         assert diffs[0]._tool_name == "edit_file"
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool.display is False
+
+    async def test_edit_without_tracker_record_keeps_tool_row_visible(
+        self, tmp_path: Path
+    ) -> None:
+        """A successful edit stays visible when no diff can be mounted."""
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        with patch(
+            "deepagents_code.file_ops.FileOpTracker.complete_with_message",
+            return_value=None,
+        ):
+            mounted = await self._run_edit(target, "value = 2")
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert tool.display is True
+        assert not any(isinstance(m, DiffMessage) for m in mounted)
 
     async def test_edit_readback_failure_keeps_a_visible_error_trace(
         self, tmp_path: Path

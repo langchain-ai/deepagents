@@ -1929,6 +1929,7 @@ async def execute_task_textual(
                             hook_output = ASK_USER_FAILED_SUMMARY
                         else:
                             hook_output = deferred_hook.tool_output
+                        tool_msg: ToolCallMessage | None = None
                         if tool_id and tool_id in adapter._current_tool_messages:
                             # Pop before the widget calls so the dict drains even
                             # if set_success/set_error raises.
@@ -2077,6 +2078,9 @@ async def execute_task_textual(
                                         ),
                                     )
                                 )
+                                if tool_msg is not None and record.status == "success":
+                                    tool_msg.mark_superseded_by_diff()
+                                    adapter._sync_tool_widget(tool_msg)
 
                         # Reshow spinner only when all in-flight tools have
                         # completed (avoids premature "Thinking..." when

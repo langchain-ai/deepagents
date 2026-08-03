@@ -4,19 +4,14 @@ from __future__ import annotations
 
 import logging
 import re
-from bisect import bisect_right
 from difflib import SequenceMatcher
 from functools import lru_cache
 from itertools import accumulate, groupby, pairwise
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
-from rich.cells import cell_len
 from textual.containers import Vertical
 from textual.content import Content
 from textual.highlight import highlight
-from textual.strip import Strip
-from textual.visual import Visual
-from textual.widget import Widget
 from textual.widgets import Static
 
 from deepagents_code import theme
@@ -24,13 +19,14 @@ from deepagents_code.config import get_glyphs, is_ascii_mode
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
-    from textual.geometry import Offset, Size
-    from textual.selection import Selection
 
 logger = logging.getLogger(__name__)
 
-_HUNK_RE = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))?")
-"""Matches a hunk header, capturing each side's start line and optional count."""
+_HUNK_RE = re.compile(r"@@ -(\d+)(?:,\d+)? \+(\d+)")
+"""Matches a unified-diff hunk header, capturing the old and new start lines."""
+
+_HUNK_COUNTS_RE = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))?")
+"""Matches a hunk header, capturing its optional old and new line counts."""
 
 _TOKEN_RE = re.compile(r"\w+|\s+|.")
 """Splits a line into words, whitespace runs, and single other characters."""
@@ -68,21 +64,13 @@ _MARKERS = {"added": ("+", "$text-success"), "removed": ("-", "$text-error")}
 _EMPHASIS = {"added": "on $success 30%", "removed": "on $error 30%"}
 """Tint for changed words, composited over the row's own tint."""
 
-_TINTS = {"added": "on $success 10%", "removed": "on $error 10%"}
-"""Whole-row tint for changed lines.
-
-Applied with `stylize_before` so the gutter and word-level tints, which are
-added afterwards, composite on top of it. This lives here rather than in a CSS
-class because the diff body is one widget: a widget has a single background,
-so a per-row tint has to travel with the row's own content.
-"""
-
+_ContentPart = str | tuple[str, str] | Content
 _Range = tuple[int, int]
 _RowKind = Literal["context", "added", "removed", "separator", "truncated", "note"]
 """Closed set of row kinds, so a typo is a type error rather than a `KeyError`.
 
 `_GUTTERS`, `_MARKERS`, and `_EMPHASIS` are keyed by a subset of these, and a
-new kind must be handled in `_row_plain` and `_row_body` before it reaches them.
+new kind must be handled in `_compose_diff_content` before it reaches them.
 """
 
 
@@ -140,9 +128,9 @@ def _file_header_indexes(lines: list[str]) -> set[int]:
     old_remaining = new_remaining = 0
     inside_hunk = False
     for index, line in enumerate(lines):
-        if match := _HUNK_RE.match(line):
-            old_remaining = int(match.group(2) or 1)
-            new_remaining = int(match.group(4) or 1)
+        if match := _HUNK_COUNTS_RE.match(line):
+            old_remaining = int(match.group(1) or 1)
+            new_remaining = int(match.group(2) or 1)
             inside_hunk = bool(old_remaining or new_remaining)
             continue
         if inside_hunk:
@@ -177,7 +165,7 @@ def diff_stats_content(additions: int, deletions: int) -> Content:
         `Content` with the non-zero sides colored, empty when both are zero.
     """
     colors = theme.get_theme_colors()
-    parts: list[str | tuple[str, str] | Content] = []
+    parts: list[_ContentPart] = []
     if additions:
         parts.append((f"+{additions}", colors.success))
     if deletions:
@@ -187,380 +175,93 @@ def diff_stats_content(additions: int, deletions: int) -> Content:
     return Content.assemble(*parts)
 
 
-def _hard_wrap(text: str, width: int) -> list[_Range]:
-    """Split `text` into character spans, each at most `width` cells wide.
-
-    A greedy fold measured in cells, so a double-width character is never split
-    across the boundary. A character wider than the whole column is emitted on a
-    line of its own and overflows, which keeps the walk making progress.
-
-    Textual breaks on word boundaries and restarts every line at column zero,
-    and `line_pad` insets both sides equally, so neither can produce a diff's
-    hanging indent. cc_src and codex hand-roll this same fold for the same
-    reason; there is no framework primitive for it.
-
-    Args:
-        text: Line to wrap.
-        width: Column width in cells.
-
-    Returns:
-        `(start, end)` character offsets, one per visual line. Never empty, so
-        a blank line still occupies a row.
-    """
-    width = max(1, width)
-    if not text:
-        return [(0, 0)]
-    spans: list[_Range] = []
-    start = used = 0
-    for index, char in enumerate(text):
-        size = cell_len(char)
-        if used + size > width and index > start:
-            spans.append((start, index))
-            start, used = index, 0
-        used += size
-    spans.append((start, len(text)))
-    return spans
-
-
-class DiffBody(Widget):
-    """A unified diff rendered as a single widget.
+def compose_diff_lines(
+    diff: str,
+    max_lines: int | None = 100,
+    *,
+    path: str = "",
+    before: str = "",
+    after: str = "",
+) -> ComposeResult:
+    """Yield per-line Static widgets for a unified diff.
 
     Rows render as a tinted line number, a colored `-`/`+` marker, and the
-    syntax-highlighted line content, with only the words that actually changed
-    carrying a stronger tint within a related `-`/`+` pair.
+    syntax-highlighted line content. Added/removed lines get a CSS class
+    (`.diff-line-added`, `.diff-line-removed`) so background colors are driven
+    by CSS variables and update automatically on theme change. Within a related
+    `-`/`+` pair, only the words that actually changed carry a stronger tint.
 
-    The whole body is one widget rather than one widget per row. A Textual
-    widget is a message pump with its own task, style map, and layout node, so
-    a hundred-row diff otherwise costs a hundred of each; and only one widget
-    can own the wrapping, which is what lets a wrapped line keep its gutter
-    column instead of restarting at column zero. Rows are laid out against the
-    current width once and each row's strips are built on first paint, so
-    scrolling past a long diff only pays for the rows actually shown.
+    Args:
+        diff: Unified diff string.
+        max_lines: Maximum number of diff lines to show (None for unlimited).
+        path: Path of the diffed file, used to pick a syntax highlighter.
+        before: Full file content the diff starts from, for syntax highlighting.
+        after: Full file content the diff arrives at, for syntax highlighting.
+
+    Yields:
+        Static widgets, one per rendered row. Not one per input line: file
+        headers and the first hunk header produce nothing, and a truncation
+        footer may be appended. Only added/removed rows carry a CSS class.
     """
+    if not diff:
+        yield Static(Content.styled("No changes detected", "dim"))
+    else:
+        yield from _compose_diff_content(diff, max_lines, path, before, after)
 
-    DEFAULT_CSS = """
-    DiffBody {
-        width: 1fr;
-        height: auto;
-        text-wrap: nowrap;
-        text-overflow: clip;
-    }
+
+def _compose_diff_content(
+    diff: str,
+    max_lines: int | None,
+    path: str,
+    before: str,
+    after: str,
+) -> ComposeResult:
+    """Yield styled diff line widgets for non-empty diff content.
+
+    Args:
+        diff: Non-empty unified diff string.
+        max_lines: Maximum number of diff lines to show (None for unlimited).
+        path: Path of the diffed file, used to pick a syntax highlighter.
+        before: Full file content the diff starts from, for syntax highlighting.
+        after: Full file content the diff arrives at, for syntax highlighting.
+
+    Yields:
+        Static widgets for individual diff lines.
     """
-    """Wrapping is done here, so Textual must not also wrap or fold a row."""
+    glyphs = get_glyphs()
+    rows = _parse_rows(diff.splitlines())
+    hidden = 0 if max_lines is None else max(0, len(rows) - max_lines)
+    rows = rows[: len(rows) - hidden]
+    emphasis = _emphasis_by_row(rows)
+    highlighted = _highlighted_rows(rows, path, before, after)
+    width = max(2, len(str(max((row.number for row in rows), default=0))))
 
-    def __init__(
-        self,
-        diff: str,
-        max_lines: int | None = 100,
-        *,
-        path: str = "",
-        before: str = "",
-        after: str = "",
-        **kwargs: Any,
-    ) -> None:
-        """Initialize the diff body.
-
-        Args:
-            diff: Unified diff string.
-            max_lines: Maximum number of diff rows to show (None for unlimited).
-            path: Path of the diffed file, used to pick a syntax highlighter.
-            before: Full file content the diff starts from, for highlighting.
-            after: Full file content the diff arrives at, for highlighting.
-            **kwargs: Additional arguments passed to parent.
-        """
-        super().__init__(**kwargs)
-        rows = _parse_rows(diff.splitlines()) if diff else []
-        hidden = 0 if max_lines is None else max(0, len(rows) - max_lines)
-        rows = rows[: len(rows) - hidden]
-        # Both are keyed by index into the visible rows, so they have to be
-        # computed before any footer row shifts the indexing.
-        self._emphasis = _emphasis_by_row(rows)
-        self._highlighted = _highlighted_rows(rows, path, before, after)
-        if hidden:
-            note = _Row("note", f"... ({hidden} more lines)", 0)
-            rows = [*rows, _Row("note", "", 0), note]
-        elif not rows:
-            rows = [_Row("note", "No changes detected", 0)]
-        self._rows = rows
-        self._number_width = max(
-            2, len(str(max((row.number for row in rows), default=0)))
-        )
-        self._gutter_width = self._number_width + 3
-        self._layout_width = -1
-        self._spans: list[list[_Range]] = []
-        self._starts: list[int] = []
-        self._strips: dict[int, list[Strip]] = {}
-
-    def notify_style_update(self) -> None:
-        """Drop rendered strips so a theme change repaints in the new colors.
-
-        Every tint is a CSS-variable style string resolved when the row is
-        rendered, so cached strips hold the colors of the theme that was active
-        when they were built.
-        """
-        super().notify_style_update()
-        self._strips.clear()
-
-    def get_content_height(
-        self,
-        container: Size,  # noqa: ARG002
-        viewport: Size,  # noqa: ARG002
-        width: int,
-    ) -> int:
-        """Return the number of visual lines the diff occupies at `width`.
-
-        Args:
-            container: Size of the container widget.
-            viewport: Size of the viewport.
-            width: Width the content will be rendered at.
-
-        Returns:
-            Total visual line count, wrapping included.
-        """
-        return self._layout(width)
-
-    def render_line(self, y: int) -> Strip:
-        """Render one visual line.
-
-        Args:
-            y: Line offset within the widget.
-
-        Returns:
-            The rendered strip, with any selection applied.
-        """
-        self._layout(self.size.width)
-        blank = Strip.blank(self.size.width, self.visual_style.rich_style)
-        index = bisect_right(self._starts, y) - 1
-        if not 0 <= index < len(self._rows):
-            return blank
-        strips = self._row_strips(index)
-        offset = y - self._starts[index]
-        strip = strips[offset] if 0 <= offset < len(strips) else blank
-        return self._select(strip, y)
-
-    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        """Extract the selected source, without the gutter and without wraps.
-
-        Copying a diff should yield something that can be pasted back, so the
-        widget coordinates are mapped to offsets in the original rows rather
-        than read off the rendered lines. Reading the lines would carry the line
-        numbers, the `-`/`+` markers, and the terminal's wrap points into the
-        clipboard.
-
-        Args:
-            selection: Selection in widget coordinates.
-
-        Returns:
-            Tuple of the selected text and its line ending, or `None` before
-            the first layout, when there are no coordinates to map against.
-        """
-        if not self._starts:
-            return None
-        last = len(self._rows) - 1
-        first_index, first_offset = (
-            self._locate(selection.start) if selection.start else (0, 0)
-        )
-        last_index, last_offset = (
-            self._locate(selection.end)
-            if selection.end
-            else (last, len(self._row_plain(last)))
-        )
-        if first_index == last_index:
-            return self._row_plain(first_index)[first_offset:last_offset], "\n"
-        parts = [self._row_plain(first_index)[first_offset:]]
-        parts.extend(
-            self._row_plain(index) for index in range(first_index + 1, last_index)
-        )
-        parts.append(self._row_plain(last_index)[:last_offset])
-        return "\n".join(parts), "\n"
-
-    def _layout(self, width: int) -> int:
-        """Wrap every row to `width`, if that is not already the current layout.
-
-        Args:
-            width: Content width in cells.
-
-        Returns:
-            Total visual line count across all rows.
-        """
-        width = max(1, width)
-        if width == self._layout_width:
-            return self._starts[-1]
-        self._layout_width = width
-        self._strips.clear()
-        self._spans = []
-        self._starts = []
-        total = 0
-        for index, row in enumerate(self._rows):
-            if row.kind == "separator":
-                spans = [(0, 0)]
-            else:
-                gutter = self._gutter_width if row.kind in _GUTTERS else 0
-                spans = _hard_wrap(self._row_plain(index), width - gutter)
-            self._spans.append(spans)
-            self._starts.append(total)
-            total += len(spans)
-        self._starts.append(total)
-        return total
-
-    def _row_plain(self, index: int) -> str:
-        """Return a row's body text, without its gutter.
-
-        Kept separate from `_row_body` because the layout pass needs the text of
-        every row while only the rows actually painted need styling.
-
-        Args:
-            index: Row index.
-
-        Returns:
-            The row's text as it appears after the gutter.
-        """
-        row = self._rows[index]
+    for index, row in enumerate(rows):
         if row.kind == "separator":
-            return get_glyphs().hunk_break
-        if row.kind == "truncated":
-            return "... diff truncated"
-        return row.text
-
-    def _row_body(self, index: int) -> Content:
-        """Return a row's styled body, without its gutter.
-
-        Args:
-            index: Row index.
-
-        Returns:
-            Syntax-highlighted content carrying any word-level emphasis, or
-            plain text for rows that are not diff content.
-        """
-        row = self._rows[index]
-        if row.kind == "separator":
-            return Content.styled(self._row_plain(index), "bold $text-primary")
-        if row.kind in {"truncated", "note"}:
-            return Content.styled(self._row_plain(index), "dim")
-        body = self._highlighted.get(index) or Content(row.text)
-        for start, end in self._emphasis.get(index, []):
-            body = body.stylize(_EMPHASIS[row.kind], start, end)
-        return body
-
-    def _row_lines(self, index: int) -> list[Content]:
-        """Build a row's visual lines at the current layout width.
-
-        The gutter is drawn on the first line and reserved as blank on the rest,
-        so a wrapped line stays in the content column instead of restarting at
-        column zero. Changed rows are padded to the full width before being
-        tinted so the tint reaches the right edge.
-
-        Args:
-            index: Row index.
-
-        Returns:
-            One `Content` per visual line.
-        """
-        row = self._rows[index]
-        body = self._row_body(index)
-        width = self._layout_width
-        if row.kind == "separator":
-            indent = max(0, (width - body.cell_length) // 2)
-            return [Content(" " * indent) + body]
-        spans = self._spans[index]
-        if row.kind not in _GUTTERS:
-            return [body[start:end] for start, end in spans]
-        marker, marker_style = _MARKERS.get(row.kind, (" ", ""))
-        gutter = Content.assemble(
-            (f"{row.number:>{self._number_width}}", _GUTTERS[row.kind]),
-            " ",
-            (marker, marker_style),
-            " ",
-        )
-        blank = Content(" " * self._gutter_width)
-        lines = [
-            (gutter if position == 0 else blank) + body[start:end]
-            for position, (start, end) in enumerate(spans)
-        ]
-        if tint := _TINTS.get(row.kind):
-            lines = [
-                (line + Content(" " * max(0, width - line.cell_length))).stylize_before(
-                    tint
-                )
-                for line in lines
-            ]
-        return lines
-
-    def _row_strips(self, index: int) -> list[Strip]:
-        """Render a row to strips, caching the result for the current width.
-
-        Args:
-            index: Row index.
-
-        Returns:
-            One strip per visual line of the row.
-        """
-        strips = self._strips.get(index)
-        if strips is None:
-            content = Content("\n").join(self._row_lines(index))
-            strips = Visual.to_strips(
-                self,
-                content,
-                self._layout_width,
-                None,
-                self.visual_style,
-                apply_selection=False,
-                pad=True,
+            yield Static(
+                Content.styled(glyphs.hunk_break, "bold $text-primary"),
+                classes="diff-hunk-break",
             )
-            self._strips[index] = strips
-        return strips
-
-    def _select(self, strip: Strip, y: int) -> Strip:
-        """Apply the selection tint to the selected span of a line.
-
-        `Visual.to_strips` resolves a selection against the visual it is given,
-        and each row is rendered as its own visual whose line numbering starts
-        at zero. Selection is tracked in widget coordinates, so it is applied
-        here instead, where `y` is absolute.
-
-        Args:
-            strip: The rendered line.
-            y: Line offset within the widget.
-
-        Returns:
-            The strip, tinted where it is selected.
-        """
-        selection = self.text_selection
-        if selection is None:
-            return strip
-        span = selection.get_span(y)
-        if span is None:
-            return strip
-        start, end = span
-        if end == -1:
-            end = strip.cell_length
-        if start >= end:
-            return strip
-        before, selected, after = strip.divide([start, end])
-        return Strip.join([before, selected.apply_style(self.selection_style), after])
-
-    def _locate(self, offset: Offset) -> tuple[int, int]:
-        """Map a widget coordinate to a row index and offset within that row.
-
-        Args:
-            offset: Coordinate in widget space, with `x` measured in cells.
-
-        Returns:
-            Tuple of row index and character offset into that row's text.
-        """
-        column, y = offset
-        index = min(max(bisect_right(self._starts, y) - 1, 0), len(self._rows) - 1)
-        spans = self._spans[index]
-        start, end = spans[min(max(y - self._starts[index], 0), len(spans) - 1)]
-        if self._rows[index].kind in _GUTTERS:
-            column -= self._gutter_width
-        text = self._row_plain(index)
-        cursor = start
-        used = 0
-        while cursor < end and used < column:
-            used += cell_len(text[cursor])
-            cursor += 1
-        return index, cursor
+            continue
+        if row.kind == "truncated":
+            # Distinct from a hunk break: the rest of the diff is missing, not
+            # merely skipped. The header's counts still report the full change.
+            yield Static(Content.styled("... diff truncated", "dim"))
+            continue
+        if row.kind == "note":
+            yield Static(Content.from_markup("[dim]$text[/dim]", text=row.text))
+            continue
+        number = (f"{row.number:>{width}}", _GUTTERS[row.kind])
+        body = highlighted.get(index) or Content(row.text)
+        marker, marker_style = _MARKERS.get(row.kind, (" ", ""))
+        for start, end in emphasis.get(index, []):
+            body = body.stylize(_EMPHASIS[row.kind], start, end)
+        yield Static(
+            Content.assemble(number, " ", (marker, marker_style), " ", body),
+            classes=f"diff-line-{row.kind}" if row.kind != "context" else "",
+        )
+    if hidden:
+        yield Static(Content.styled(f"\n... ({hidden} more lines)", "dim"))
 
 
 def _highlighted_rows(
@@ -657,7 +358,7 @@ def _parse_rows(lines: list[str]) -> list[_Row]:
         if index in header_indexes:
             continue
         if match := _HUNK_RE.match(line):
-            old, new = int(match.group(1)), int(match.group(3))
+            old, new = int(match.group(1)), int(match.group(2))
             if seen_hunk:
                 rows.append(_Row("separator", "", 0))
             seen_hunk = True
@@ -787,8 +488,9 @@ def _emphasis_ranges(old: str, new: str) -> tuple[list[_Range], list[_Range]]:
 class EnhancedDiff(Vertical):
     """Widget for displaying a unified diff in a titled, bordered box.
 
-    Unused as of this writing — the transcript mounts `DiffMessage` instead —
-    and it composes without a `path`, so its rows are never highlighted.
+    Unused as of this writing — `DiffMessage` is what the transcript mounts.
+    Note it composes without a `path`, so its rows are never syntax
+    highlighted.
     """
 
     DEFAULT_CSS = """
@@ -858,7 +560,7 @@ class EnhancedDiff(Vertical):
             classes="diff-title",
         )
 
-        yield DiffBody(self._diff, self._max_lines)
+        yield from compose_diff_lines(self._diff, self._max_lines)
 
         additions, deletions = self._stats
         if additions or deletions:

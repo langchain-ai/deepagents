@@ -163,6 +163,9 @@ class MessageData:
     tool_reject_reason: str | None = None
     """User-supplied reason attached to a HITL reject decision (if any)."""
 
+    tool_diff_superseded: bool = False
+    """Whether a mounted diff replaces this successful tool row."""
+
     # ---
 
     diff_file_path: str | None = None
@@ -310,6 +313,7 @@ class MessageData:
                 widget._deferred_duration = self.tool_duration
                 widget._deferred_expanded = self.tool_expanded
                 widget._deferred_reject_reason = self.tool_reject_reason
+                widget._diff_superseded = self.tool_diff_superseded
                 return widget
 
             case MessageType.SKILL:
@@ -444,6 +448,7 @@ class MessageData:
                 tool_duration=widget._duration,
                 tool_expanded=widget._expanded,
                 tool_reject_reason=widget._reject_reason,
+                tool_diff_superseded=widget._diff_superseded,
             )
 
         if isinstance(widget, ErrorMessage):

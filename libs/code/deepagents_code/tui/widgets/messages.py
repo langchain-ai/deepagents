@@ -58,7 +58,7 @@ from deepagents_code.tui.widgets._links import (
     open_style_link,
 )
 from deepagents_code.tui.widgets.diff import (
-    DiffBody,
+    compose_diff_lines,
     count_diff_changes,
     diff_stats_content,
 )
@@ -171,22 +171,16 @@ _COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
 
 # Past-tense verbs for the `DiffMessage` header, keyed by producing tool. Tools
 # absent here render the header without a leading verb — the path and the
-# change counts still appear.
+# change counts still appear. `write_file` has a verb but is deliberately not
+# in `TOOLS_SUPERSEDED_BY_DIFF`: creating a file is worth its own visible row.
 _DIFF_VERBS: dict[str, str] = {
     "edit_file": "Edited",
     "write_file": "Wrote",
 }
 
 
-# Tools whose successful row is hidden because the `DiffMessage` mounted for the
-# same call says everything the row would. Two-sided contract: `textual_adapter`
-# must mount a diff for *every* successful call to these tools — including no-op
-# edits that produce an empty diff — or the call vanishes from the transcript.
-#
-# A member must also be in `app._TOOL_GROUP_EXCLUSIONS` (so group expansion
-# can't un-hide the row), stay out of `_TIMED_SUCCESS_TOOLS` (whose branch
-# bypasses the hide), and persist its diff through `message_store` (rehydration
-# recreates the row and the `DiffMessage` independently).
+# Tools whose successful row hides after a replacement `DiffMessage` mounts.
+# Members must stay excluded from tool groups and timed-success rendering.
 TOOLS_SUPERSEDED_BY_DIFF: frozenset[str] = frozenset({"edit_file"})
 
 
@@ -1604,6 +1598,7 @@ class ToolCallMessage(Vertical):
         # Transcript decorations that must follow approval visibility without
         # losing their independent user-controlled visibility state.
         self._visibility_accessories: list[Widget] = []
+        self._diff_superseded: bool = False
         # Whether this row's own `display` was last driven by a self-hide
         # reason, so `_apply_own_visibility` knows the row is its to restore
         # (see that method for why group folding must not be disturbed).
@@ -2023,6 +2018,13 @@ class ToolCallMessage(Vertical):
         self._status_widget.add_class("success")
         self._status_widget.update(Content.styled(f"{glyph} Success!", colors.success))
         self._status_widget.display = True
+
+    def mark_superseded_by_diff(self) -> None:
+        """Hide a successful file-tool row after its diff has mounted."""
+        if self._tool_name not in TOOLS_SUPERSEDED_BY_DIFF:
+            return
+        self._diff_superseded = True
+        self._apply_own_visibility()
 
     def set_error(self, error: str) -> None:
         """Mark the tool call as failed.
@@ -3541,7 +3543,7 @@ class ToolCallMessage(Vertical):
     @property
     def _superseded_by_diff(self) -> bool:
         """Whether this row hides because its `DiffMessage` says it all."""
-        return self.is_success and self._tool_name in TOOLS_SUPERSEDED_BY_DIFF
+        return self.is_success and self._diff_superseded
 
     @property
     def is_failed(self) -> bool:
@@ -4392,7 +4394,7 @@ class DiffMessage(Static):
             # Gated on the diff text, not the counts: a body we failed to
             # classify must still render rather than silently disappear behind
             # a "no changes" claim.
-            yield DiffBody(
+            yield from compose_diff_lines(
                 self._diff_content,
                 max_lines=100,
                 path=self._file_path,

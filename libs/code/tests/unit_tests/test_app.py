@@ -13655,8 +13655,8 @@ class TestMessageTimestampFooters:
             with pytest.raises(NoMatches):
                 app.query_one("#hist-app-timestamp-footer", Static)
 
-    async def test_restored_superseded_tool_hides_its_footer(self) -> None:
-        """Initial history links an `edit_file` footer before state restore."""
+    async def test_restored_edit_without_diff_stays_visible(self) -> None:
+        """A resumed edit row remains when checkpoint history has no diff."""
         app = DeepAgentsApp()
         app._message_timestamps_visible = True
 
@@ -13685,8 +13685,8 @@ class TestMessageTimestampFooters:
 
             tool = app.query_one("#restored-edit", ToolCallMessage)
             footer = app.query_one("#restored-edit-timestamp-footer", Static)
-            assert tool.display is False
-            assert footer.display is False
+            assert tool.display is True
+            assert footer.display is True
 
     async def test_resumed_history_populates_hook_transcript(self) -> None:
         from langchain_core.messages import HumanMessage
@@ -34460,6 +34460,7 @@ class TestToolGroupCollapse:
             assert footer.display is True
 
             tool.set_success("Updated file")
+            tool.mark_superseded_by_diff()
             await pilot.pause()
             assert tool.display is False
             assert footer.display is False
@@ -34485,6 +34486,7 @@ class TestToolGroupCollapse:
             footer = app.query_one(f"#{tool.id}-timestamp-footer", Static)
 
             tool.set_success("Updated file")
+            tool.mark_superseded_by_diff()
             await pilot.pause()
             assert tool.display is False
 

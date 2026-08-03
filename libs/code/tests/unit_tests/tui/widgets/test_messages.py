@@ -26,7 +26,6 @@ from deepagents_code.tool_display import (
     EXECUTE_HEADER_MAX_LENGTH,
     JS_EVAL_HEADER_MAX_LENGTH,
 )
-from deepagents_code.tui.widgets.diff import DiffBody
 from deepagents_code.tui.widgets.message_store import MessageData
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
@@ -711,45 +710,28 @@ class TestToolCallMessageMarkupSafety:
         assert msg.has_expandable_args is True
 
 
-def _diff_texts(widget: DiffMessage, width: int = 80) -> list[str]:
-    """Flatten a `DiffMessage` into one plain-text entry per rendered row.
-
-    `DiffBody` paints itself line by line instead of returning a renderable,
-    so it is laid out here and its rows are read back individually.
-
-    Args:
-        widget: The message to render.
-        width: Layout width in cells for the diff body.
-
-    Returns:
-        The header text followed by one entry per diff row.
-    """
-    texts: list[str] = []
-    for child in widget.compose():
-        if isinstance(child, DiffBody):
-            child._layout(width)
-            texts.extend(
-                Content("\n").join(child._row_lines(index)).plain.rstrip()
-                for index in range(len(child._rows))
-            )
-            continue
-        rendered = child.render()
-        texts.append(rendered.plain if isinstance(rendered, Content) else str(rendered))
-    return texts
-
-
 class TestDiffMessageCredentialRedaction:
     """`DiffMessage` must not render the contents of credential files."""
 
+    @staticmethod
+    def _texts(widget: DiffMessage) -> list[str]:
+        texts: list[str] = []
+        for child in widget.compose():
+            rendered = child.render()
+            texts.append(
+                rendered.plain if isinstance(rendered, Content) else str(rendered)
+            )
+        return texts
+
     def test_env_file_diff_is_hidden(self) -> None:
         diff = "@@ -1 +1 @@\n-API_KEY=old\n+API_KEY=supersecret"
-        texts = _diff_texts(DiffMessage(diff, file_path=".env"))
+        texts = self._texts(DiffMessage(diff, file_path=".env"))
         assert any("may contain credentials" in text for text in texts)
         assert all("supersecret" not in text for text in texts)
 
     def test_regular_file_diff_is_rendered(self) -> None:
         diff = "@@ -1 +1 @@\n-print('a')\n+print('b')"
-        texts = _diff_texts(DiffMessage(diff, file_path="main.py"))
+        texts = self._texts(DiffMessage(diff, file_path="main.py"))
         assert all("may contain credentials" not in text for text in texts)
         assert any("print('b')" in text for text in texts)
 
@@ -760,22 +742,32 @@ class TestDiffMessageCredentialRedaction:
         not "credential"; it must not surface the redaction notice.
         """
         diff = "@@ -1 +1 @@\n-print('a')\n+print('b')"
-        texts = _diff_texts(DiffMessage(diff, file_path=""))
+        texts = self._texts(DiffMessage(diff, file_path=""))
         assert all("may contain credentials" not in text for text in texts)
         assert any("print('b')" in text for text in texts)
 
 
-class TestDiffMessageHeader:
-    """The header is the only summary for a tool row that hides itself."""
+class TestDiffMessageNoChanges:
+    """An edit that changed nothing still has to leave a trace."""
+
+    @staticmethod
+    def _texts(widget: DiffMessage) -> list[str]:
+        texts: list[str] = []
+        for child in widget.compose():
+            rendered = child.render()
+            texts.append(
+                rendered.plain if isinstance(rendered, Content) else str(rendered)
+            )
+        return texts
 
     def test_empty_diff_renders_single_no_changes_row(self) -> None:
         """The header reports the no-op; no empty diff body follows it."""
-        texts = _diff_texts(DiffMessage("", "main.py", tool_name="edit_file"))
+        texts = self._texts(DiffMessage("", "main.py", tool_name="edit_file"))
         assert texts == ["Edited main.py  no changes"]
 
     def test_empty_diff_for_credential_file_stays_redacted(self) -> None:
         """Credential files report neither counts nor a no-op."""
-        texts = _diff_texts(DiffMessage("", ".env", tool_name="edit_file"))
+        texts = self._texts(DiffMessage("", ".env", tool_name="edit_file"))
         assert all("no changes" not in text for text in texts)
         assert any("may contain credentials" in text for text in texts)
 
@@ -788,13 +780,13 @@ class TestDiffMessageHeader:
         # Every changed line looks like a file header to a prefix-only
         # counter, which is exactly the case that used to count as (0, 0).
         diff = "@@ -1,2 +1,2 @@\n----\n++++"
-        texts = _diff_texts(DiffMessage(diff, "front.md", tool_name="edit_file"))
+        texts = self._texts(DiffMessage(diff, "front.md", tool_name="edit_file"))
         assert texts == ["Edited front.md  +1 -1", " 1 - ---", " 1 + +++"]
 
     def test_supplied_stats_beat_counting_a_truncated_body(self) -> None:
         """A truncated diff still reports the size of the whole change."""
         diff = "@@ -1,200 +1,200 @@\n-line0\n+CH0\n..."
-        texts = _diff_texts(
+        texts = self._texts(
             DiffMessage(diff, "big.txt", tool_name="edit_file", stats=(200, 200))
         )
         assert texts[0] == "Edited big.txt  +200 -200"

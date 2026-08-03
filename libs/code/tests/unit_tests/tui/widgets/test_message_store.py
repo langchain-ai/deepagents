@@ -95,33 +95,36 @@ class TestMessageData:
     def test_tool_message_roundtrip(self):
         """Test ToolCallMessage serialization and deserialization."""
         original = ToolCallMessage(
-            tool_name="read_file",
-            args={"path": "/test/file.txt"},
+            tool_name="edit_file",
+            args={"file_path": "/test/file.txt"},
             id="test-tool-1",
         )
         # Simulate tool completion
         original._status = "success"
         original._output = "File contents here"
         original._expanded = True
+        original.mark_superseded_by_diff()
 
         # Serialize
         data = MessageData.from_widget(original)
         assert data.type == MessageType.TOOL
-        assert data.tool_name == "read_file"
-        assert data.tool_args == {"path": "/test/file.txt"}
+        assert data.tool_name == "edit_file"
+        assert data.tool_args == {"file_path": "/test/file.txt"}
         assert data.tool_status == ToolStatus.SUCCESS
         assert data.tool_output == "File contents here"
         assert data.tool_expanded is True
+        assert data.tool_diff_superseded is True
 
         # Deserialize
         restored = data.to_widget()
         assert isinstance(restored, ToolCallMessage)
-        assert restored._tool_name == "read_file"
-        assert restored._args == {"path": "/test/file.txt"}
+        assert restored._tool_name == "edit_file"
+        assert restored._args == {"file_path": "/test/file.txt"}
         # Deferred state should be set
         assert restored._deferred_status == ToolStatus.SUCCESS
         assert restored._deferred_output == "File contents here"
         assert restored._deferred_expanded is True
+        assert restored._diff_superseded is True
 
     def test_error_message_roundtrip(self):
         """Test ErrorMessage serialization and deserialization."""

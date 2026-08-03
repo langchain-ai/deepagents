@@ -144,6 +144,26 @@ def test_edit_widget_formats_non_string_content() -> None:
     assert widgets
 
 
+def test_edit_widget_uses_transcript_diff_rows() -> None:
+    """Approval previews use the same styled rows as transcript diffs."""
+    widget_class, data = get_renderer("edit_file").get_approval_widget(
+        {
+            "file_path": "data.json",
+            "old_string": '{"value": "old"}',
+            "new_string": '{"value": "new"}',
+        }
+    )
+
+    widgets = list(widget_class(data).compose())
+    removed = next(
+        widget for widget in widgets if widget.has_class("diff-line-removed")
+    )
+    added = next(widget for widget in widgets if widget.has_class("diff-line-added"))
+
+    assert '"old"' in _widget_texts([removed])[0]
+    assert '"new"' in _widget_texts([added])[0]
+
+
 def test_edit_widget_redacts_credential_file_diff() -> None:
     widgets = list(
         EditFileApprovalWidget(

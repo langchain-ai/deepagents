@@ -14,6 +14,7 @@ import sys
 from typing import TYPE_CHECKING, Self
 from unittest.mock import MagicMock, patch
 
+import pytest
 from textual.app import App, ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import Static
@@ -27,6 +28,8 @@ from deepagents_code.clipboard import (
 )
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     from textual.pilot import Pilot
 
 _BASE_TEXT = "hello base world"
@@ -291,62 +294,74 @@ class TestCopyTextWithFeedback:
 class TestCopyOsc52:
     """Direct coverage of the OSC 52 escape sequence (`_copy_osc52`)."""
 
+    class _FakeTTY(io.StringIO):
+        """`StringIO` whose context manager does not truncate on close."""
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc_val: BaseException | None,
+            exc_tb: TracebackType | None,
+        ) -> None:
+            pass
+
+    def _capture(self, monkeypatch) -> _FakeTTY:
+        """Point the escape writer at an in-memory tty and return it."""
+        from deepagents_code import terminal_escape
+
+        fake = self._FakeTTY()
+        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
+        monkeypatch.delenv(terminal_escape.NO_TERMINAL_ESCAPE, raising=False)
+        return fake
+
     def test_emits_escape_envelope(self, monkeypatch) -> None:
-        r"""Emits `\x1b]52;c;<base64>\a` written to `/dev/tty`."""
-        captured = io.StringIO()
-
-        class _DummyTTY:
-            def __init__(self) -> None:
-                self.buffer = captured
-
-            def __enter__(self) -> Self:
-                return self
-
-            def __exit__(self, *_: object) -> None:
-                pass
-
-            def write(self, s: str) -> int:
-                self.buffer.write(s)
-                return len(s)
-
-            def flush(self) -> None:
-                pass
-
+        r"""Emits `\x1b]52;c;<base64>\a` to the terminal."""
         monkeypatch.delenv("TMUX", raising=False)
+        fake = self._capture(monkeypatch)
+
         text = "hello world"
-        with patch("pathlib.Path.open", return_value=_DummyTTY()):
-            _copy_osc52(text)
+        _copy_osc52(text)
 
         encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
-        assert captured.getvalue() == f"\033]52;c;{encoded}\a"
+        assert fake.getvalue() == f"\033]52;c;{encoded}\a"
 
     def test_wraps_envelope_for_tmux_passthrough(self, monkeypatch) -> None:
         """Inside tmux, the OSC 52 sequence must be wrapped in DCS passthrough."""
-        captured = io.StringIO()
-
-        class _DummyTTY:
-            def __enter__(self) -> Self:
-                return self
-
-            def __exit__(self, *_: object) -> None:
-                pass
-
-            def write(self, s: str) -> int:
-                captured.write(s)
-                return len(s)
-
-            def flush(self) -> None:
-                pass
-
         monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1234,0")
+        fake = self._capture(monkeypatch)
+
         text = "hi"
-        with patch("pathlib.Path.open", return_value=_DummyTTY()):
-            _copy_osc52(text)
+        _copy_osc52(text)
 
         encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
         inner = f"\033]52;c;{encoded}\a"
-        expected = f"\033Ptmux;\033{inner}\033\\"
-        assert captured.getvalue() == expected
+        assert fake.getvalue() == f"\033Ptmux;\033{inner}\033\\"
+
+    def test_raises_when_no_terminal_is_reachable(self, monkeypatch) -> None:
+        """A failed write must raise so the backend chain reports it."""
+        from deepagents_code import terminal_escape
+
+        monkeypatch.delenv("TMUX", raising=False)
+        monkeypatch.delenv(terminal_escape.NO_TERMINAL_ESCAPE, raising=False)
+        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: None)
+        monkeypatch.setattr(terminal_escape.sys, "__stderr__", None)
+
+        with pytest.raises(RuntimeError, match="OSC 52"):
+            _copy_osc52("hello")
+
+    def test_respects_terminal_escape_opt_out(self, monkeypatch) -> None:
+        """`DEEPAGENTS_CODE_NO_TERMINAL_ESCAPE` now covers the clipboard too."""
+        from deepagents_code import terminal_escape
+
+        monkeypatch.delenv("TMUX", raising=False)
+        monkeypatch.setenv(terminal_escape.NO_TERMINAL_ESCAPE, "1")
+        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: self._FakeTTY())
+
+        with pytest.raises(RuntimeError, match="OSC 52"):
+            _copy_osc52("hello")
 
 
 class TestCopySelectionToClipboard:

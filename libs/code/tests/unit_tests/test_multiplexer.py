@@ -9,8 +9,10 @@ from deepagents_code import multiplexer
 from deepagents_code.multiplexer import (
     ALLOW_PASSTHROUGH,
     FOCUS_EVENTS,
+    ITERM_PROFILE_VAR,
     SET_CLIPBOARD,
     inside_tmux,
+    parse_tmux_environment_updates,
     parse_tmux_options,
     query_tmux_status,
 )
@@ -24,6 +26,8 @@ focus-events off
 set-clipboard external
 default-command ''
 allow-passthrough off
+update-environment[0] DISPLAY
+update-environment[1] SSH_AUTH_SOCK
 """
 
 
@@ -67,6 +71,37 @@ class TestParseTmuxOptions:
         """An empty answer is a valid answer with nothing in it."""
         assert parse_tmux_options("") == {}
 
+    def test_array_entries_are_not_mistaken_for_options(self) -> None:
+        """`update-environment[0]` is an array entry, not an option value."""
+        assert "update-environment" not in parse_tmux_options(_SHOW_OPTIONS_OUTPUT)
+
+
+class TestParseTmuxEnvironmentUpdates:
+    """Tests for reading which variables tmux refreshes on attach."""
+
+    def test_collects_array_entries(self) -> None:
+        """Tmux 3.x prints one indexed line per variable."""
+        assert parse_tmux_environment_updates(_SHOW_OPTIONS_OUTPUT) == frozenset(
+            {"DISPLAY", "SSH_AUTH_SOCK"}
+        )
+
+    def test_accepts_the_older_single_line_form(self) -> None:
+        """An older server prints the whole quoted list on one line."""
+        parsed = parse_tmux_environment_updates(
+            'update-environment "DISPLAY ITERM_PROFILE"\n'
+        )
+        assert parsed == frozenset({"DISPLAY", ITERM_PROFILE_VAR})
+
+    def test_absent_option_yields_nothing(self) -> None:
+        """No `update-environment` means no variable is refreshed."""
+        assert parse_tmux_environment_updates("focus-events on\n") == frozenset()
+
+    def test_ignores_similarly_named_options(self) -> None:
+        """A prefix match would wrongly harvest an unrelated option's value."""
+        assert parse_tmux_environment_updates("update-environment-x FOO\n") == (
+            frozenset()
+        )
+
 
 class TestQueryTmuxStatus:
     """Tests for the end-to-end probe."""
@@ -93,6 +128,7 @@ class TestQueryTmuxStatus:
             SET_CLIPBOARD: "external",
             ALLOW_PASSTHROUGH: "off",
         }
+        assert status.environment_updates == frozenset({"DISPLAY", "SSH_AUTH_SOCK"})
 
     def test_failed_probe_reports_none_options(
         self, monkeypatch: pytest.MonkeyPatch
@@ -105,6 +141,7 @@ class TestQueryTmuxStatus:
         assert status is not None
         assert status.version is None
         assert status.options is None
+        assert status.environment_updates is None
 
 
 class TestRunTmux:

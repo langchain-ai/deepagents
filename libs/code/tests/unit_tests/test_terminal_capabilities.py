@@ -12,6 +12,7 @@ from deepagents_code._env_vars import KITTY_KEYBOARD
 from deepagents_code.terminal_capabilities import (
     _override_supports_kitty_keyboard_protocol,
     _terminal_identity_supports_kitty_keyboard_protocol,
+    is_iterm2,
     supports_kitty_keyboard_protocol,
 )
 
@@ -123,6 +124,44 @@ class TestTerminalIdentitySupportsKittyKeyboardProtocol:
             )
             is False
         )
+
+
+class TestIsIterm2:
+    """Tests for iTerm2 terminal identification."""
+
+    def test_detects_lc_terminal(self) -> None:
+        """`LC_TERMINAL` survives an SSH hop, so it is checked first."""
+        with patch.object(os, "isatty", return_value=True):
+            assert is_iterm2({"LC_TERMINAL": "iTerm2"}) is True
+
+    def test_detects_term_program(self) -> None:
+        """A local iTerm2 window exports `TERM_PROGRAM`."""
+        with patch.object(os, "isatty", return_value=True):
+            assert is_iterm2({"TERM_PROGRAM": "iTerm.app"}) is True
+
+    def test_rejects_other_terminals(self) -> None:
+        """Another terminal must not inherit iTerm2's workarounds."""
+        with patch.object(os, "isatty", return_value=True):
+            assert is_iterm2({"TERM_PROGRAM": "Ghostty"}) is False
+
+    def test_requires_a_tty(self) -> None:
+        """Inherited markers in CI would otherwise look like a live iTerm2."""
+        with patch.object(os, "isatty", return_value=False):
+            assert is_iterm2({"TERM_PROGRAM": "iTerm.app"}) is False
+
+    def test_stays_true_inside_a_multiplexer(self) -> None:
+        """A forwarded escape is interpreted by the outer terminal, not the pane."""
+        with patch.object(os, "isatty", return_value=True):
+            assert (
+                is_iterm2(
+                    {
+                        "TERM_PROGRAM": "iTerm.app",
+                        "TERM": "tmux-256color",
+                        "TMUX": "/tmp/tmux-0/default,1,0",
+                    }
+                )
+                is True
+            )
 
 
 class TestSupportsKittyKeyboardProtocolShortCircuits:

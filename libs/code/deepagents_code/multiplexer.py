@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -35,19 +36,37 @@ REPORTED_OPTIONS: tuple[str, ...] = (FOCUS_EVENTS, ALLOW_PASSTHROUGH, SET_CLIPBO
 - `focus-events` gates `FocusIn`/`FocusOut` delivery, without which an
   unfocused pane keeps drawing a blinking cursor.
 - `allow-passthrough` gates the `DCS tmux;` wrapper, without which terminal
-  progress and OSC 52 clipboard writes are dropped.
+  progress, OSC 52 clipboard writes, and the iTerm2 cursor guide are dropped.
 - `set-clipboard` must be `on` for an application's OSC 52 to reach the
   outer terminal's clipboard.
 """
 
-_SHOW_OPTIONS_ARGS: tuple[str, ...] = ("show-options", "-s", ";", "show-options", "-gw")
-"""Read both scopes in one invocation.
+UPDATE_ENVIRONMENT = "update-environment"
+"""Session option naming the variables tmux refreshes from the client."""
 
-`focus-events` and `set-clipboard` are server options while
-`allow-passthrough` is a window option, so a single `show-options -g` (session
-scope) returns none of them. `;` is passed as its own argument, which tmux
-reads as a command separator.
+ITERM_PROFILE_VAR = "ITERM_PROFILE"
+"""Variable iTerm2 exports to name the profile a window is using."""
+
+_SHOW_OPTIONS_ARGS: tuple[str, ...] = (
+    "show-options",
+    "-s",
+    ";",
+    "show-options",
+    "-gw",
+    ";",
+    "show-options",
+    "-g",
+)
+"""Read all three scopes in one invocation.
+
+`focus-events` and `set-clipboard` are server options, `allow-passthrough` is
+a window option, and `update-environment` is a session option, so no single
+scope returns them all. `;` is passed as its own argument, which tmux reads as
+a command separator.
 """
+
+_UPDATE_ENVIRONMENT_ENTRY = re.compile(rf"{UPDATE_ENVIRONMENT}(?:\[\d+\])?")
+"""Matches both the array form tmux 3.x prints and the older single-line form."""
 
 
 @dataclass(frozen=True)
@@ -63,6 +82,13 @@ class TmuxStatus:
     A present mapping missing a key means tmux answered but does not know that
     option — an older server without `allow-passthrough`, say. That is a
     different fact from a failed probe, so the two must not collapse.
+    """
+
+    environment_updates: frozenset[str] | None = None
+    """Variables `update-environment` refreshes, or `None` when the query failed.
+
+    Anything absent here is frozen at whatever value the tmux server started
+    with, however long ago that was.
     """
 
 
@@ -134,6 +160,30 @@ def parse_tmux_options(output: str) -> dict[str, str]:
     return options
 
 
+def parse_tmux_environment_updates(output: str) -> frozenset[str]:
+    """Extract the variables `update-environment` refreshes on attach.
+
+    tmux 3.x prints an array option one index per line
+    (`update-environment[0] DISPLAY`); older servers print the whole list on a
+    single quoted line. Both shapes are accepted so the answer does not depend
+    on the server's age.
+
+    Args:
+        output: Raw stdout from `tmux show-options`.
+
+    Returns:
+        The variable names tmux copies from the attaching client. Empty when
+        the option is absent from `output`.
+    """
+    names: set[str] = set()
+    for line in output.splitlines():
+        name, separator, value = line.partition(" ")
+        if not separator or not _UPDATE_ENVIRONMENT_ENTRY.fullmatch(name):
+            continue
+        names.update(value.strip().strip("'\"").split())
+    return frozenset(names)
+
+
 def query_tmux_status() -> TmuxStatus | None:
     """Probe the tmux server hosting this pane.
 
@@ -150,6 +200,9 @@ def query_tmux_status() -> TmuxStatus | None:
     return TmuxStatus(
         version=version_output.strip() if version_output else None,
         options=parse_tmux_options(options_output)
+        if options_output is not None
+        else None,
+        environment_updates=parse_tmux_environment_updates(options_output)
         if options_output is not None
         else None,
     )

@@ -564,7 +564,21 @@ def _annotated_item(
     """
     if value == healthy:
         return DiagnosticItem(label, value)
-    return DiagnosticItem(label, f"{value} - {consequence}; {remedy}")
+    return DiagnosticItem(label, _annotated_value(value, consequence, remedy))
+
+
+def _annotated_value(value: str, consequence: str, remedy: str) -> str:
+    """Render a value alongside what it costs and the line that fixes it.
+
+    Args:
+        value: The state tmux or the terminal reported.
+        consequence: What breaks while `value` stands.
+        remedy: The `~/.tmux.conf` line that fixes it.
+
+    Returns:
+        The annotated value shown in a diagnostic row.
+    """
+    return f"{value} - {consequence}; {remedy}"
 
 
 def _tmux_option_item(
@@ -598,6 +612,46 @@ def _tmux_option_item(
     )
 
 
+def _iterm_profile_item(status: TmuxStatus) -> DiagnosticItem | None:
+    """Build the row describing whether the inherited iTerm2 profile is current.
+
+    The cursor-guide workaround reads `ITERM_PROFILE` to decide whether the
+    guide was on before launch. tmux does not refresh that variable on attach
+    unless it is listed in `update-environment`, so a pane inherits whichever
+    profile the window that started the server happened to be using — and the
+    workaround then reads the wrong profile's preference.
+
+    Args:
+        status: Facts probed from the tmux server hosting this pane.
+
+    Returns:
+        A diagnostic item, or `None` when iTerm2 is not the outer terminal and
+        the row would be noise.
+    """
+    import os
+
+    from deepagents_code.multiplexer import ITERM_PROFILE_VAR, UPDATE_ENVIRONMENT
+    from deepagents_code.terminal_capabilities import is_iterm2
+
+    label = "iTerm2 profile"
+    if not is_iterm2():
+        return None
+    updates = status.environment_updates
+    if updates is None:
+        return DiagnosticItem(label, "could not query tmux")
+    value = os.environ.get(ITERM_PROFILE_VAR, "").strip() or "not inherited"
+    if ITERM_PROFILE_VAR in updates:
+        return DiagnosticItem(label, value)
+    return DiagnosticItem(
+        label,
+        _annotated_value(
+            value,
+            "frozen at server start, so the cursor guide may read the wrong one",
+            f"set -ga {UPDATE_ENVIRONMENT} {ITERM_PROFILE_VAR}",
+        ),
+    )
+
+
 def _tmux_items(status: TmuxStatus) -> list[DiagnosticItem]:
     """Build the tmux-specific rows of the `Terminal` section.
 
@@ -614,7 +668,7 @@ def _tmux_items(status: TmuxStatus) -> list[DiagnosticItem]:
     )
 
     options = status.options
-    return [
+    items = [
         DiagnosticItem("Multiplexer", status.version or "tmux (version unknown)"),
         _tmux_option_item(
             "Focus events",
@@ -627,7 +681,7 @@ def _tmux_items(status: TmuxStatus) -> list[DiagnosticItem]:
             "Passthrough",
             options,
             ALLOW_PASSTHROUGH,
-            consequence="terminal progress and OSC 52 are dropped",
+            consequence="progress, OSC 52, and the cursor guide are dropped",
             remedy="set -g allow-passthrough on",
         ),
         _tmux_option_item(
@@ -646,6 +700,10 @@ def _tmux_items(status: TmuxStatus) -> list[DiagnosticItem]:
         ),
         _kitty_keyboard_item(),
     ]
+    profile = _iterm_profile_item(status)
+    if profile is not None:
+        items.append(profile)
+    return items
 
 
 def _collect_terminal() -> DiagnosticSection:

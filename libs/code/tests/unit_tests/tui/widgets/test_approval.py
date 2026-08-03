@@ -661,16 +661,22 @@ class TestAutoOptionEligibility:
 class TestRejectWithReason:
     """Tests for the free-text reject mode (`action_reject_with_reason`)."""
 
-    def test_help_hides_tab_amend_until_reject_selected(self) -> None:
-        """The Tab amendment hint should only appear on the Reject option."""
+    def test_help_shows_feedback_hint_on_every_option(self) -> None:
+        """The Tab hint is unconditional so quick-key users can discover it."""
         menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
-        menu._selected = 0
-        assert "Tab amend" not in menu._compose_help_text()
+        for selected in range(menu._num_options):
+            menu._selected = selected
+            assert "Tab reject with feedback" in menu._compose_help_text()
 
-        menu._selected = 2
+    def test_help_drops_menu_hints_while_reason_input_active(self) -> None:
+        """The reason-input footer replaces the menu hints entirely."""
+        menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
+        menu._reason_input_active = True
+
         help_text = menu._compose_help_text()
-        assert "Tab amend" in help_text
-        assert "reject with reason" not in help_text
+
+        assert "Tab reject with feedback" not in help_text
+        assert "Enter submit" in help_text
 
     def test_update_options_refreshes_help_for_selected_option(self) -> None:
         """Moving between options should refresh the footer hint state."""
@@ -682,7 +688,7 @@ class TestRejectWithReason:
         menu._update_options()
 
         menu._help_widget.update.assert_called_once()
-        assert "Tab amend" in menu._help_widget.update.call_args.args[0]
+        assert "Tab reject with feedback" in menu._help_widget.update.call_args.args[0]
 
     def test_move_actions_no_op_while_input_mode_active(self) -> None:
         """Arrow-key bindings should not move the menu while amending a reject."""
@@ -697,19 +703,28 @@ class TestRejectWithReason:
         assert menu._selected == 2
         menu._update_options.assert_not_called()  # ty: ignore
 
-    def test_no_op_when_reject_not_selected(self) -> None:
-        """Tab is a no-op unless cursor is on the Reject option."""
+    def test_moves_cursor_to_reject_from_another_option(self) -> None:
+        """Tab from Approve switches to Reject instead of doing nothing."""
         menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
-        menu._reason_input = MagicMock(value="", display=False)
+        reason_input = MagicMock(value="", display=False)
+        menu._reason_input = reason_input
+        menu._option_widgets = [MagicMock(), MagicMock(), MagicMock()]
+        menu._help_widget = MagicMock()
         menu._selected = 0
+
         menu.action_reject_with_reason()
-        assert menu._reason_input_active is False
+
+        assert menu._selected == menu._reject_index
+        assert menu._reason_input_active is True
+        assert reason_input.display is True
+        reason_input.focus.assert_called_once()
 
     def test_activates_input_mode_when_reject_selected(self) -> None:
         """Tab on Reject flips the menu into reason-input mode."""
         menu = ApprovalMenu({"name": "execute", "args": {"command": "echo hello"}})
         reason_input = MagicMock(value="existing", display=False)
         menu._reason_input = reason_input
+        menu._option_widgets = [MagicMock(), MagicMock(), MagicMock()]
         menu._help_widget = MagicMock()
         menu._selected = 2
         menu.action_reject_with_reason()
@@ -800,6 +815,39 @@ class TestRejectWithReason:
         assert decision_received == {
             "type": "reject",
             "message": "dry run first",
+        }
+
+    async def test_tab_from_approve_row_submits_reason(self) -> None:
+        """Tab works from the default Approve selection, without arrowing down."""
+        from textual.app import App, ComposeResult
+
+        decision_received: dict[str, str] | None = None
+
+        class ApprovalTestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ApprovalMenu(
+                    {"name": "execute", "args": {"command": "echo hello"}}
+                )
+
+            def on_approval_menu_decided(self, event: ApprovalMenu.Decided) -> None:
+                nonlocal decision_received
+                decision_received = event.decision
+
+        async with ApprovalTestApp().run_test() as pilot:
+            await pilot.pause()
+            menu = pilot.app.query_one(ApprovalMenu)
+            assert menu._selected == 0
+            await pilot.press("tab")
+            await pilot.pause()
+            assert menu._selected == menu._reject_index
+            for ch in "use a dry run":
+                await pilot.press(ch if ch != " " else "space")
+            await pilot.press("enter")
+            await pilot.pause()
+
+        assert decision_received == {
+            "type": "reject",
+            "message": "use a dry run",
         }
 
     async def test_blank_reason_submits_plain_reject(self) -> None:

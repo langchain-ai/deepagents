@@ -357,15 +357,18 @@ class ApprovalMenu(Container):
                 "leave blank to reject without a reason"
             )
         quick_keys = "y/a/n" if self._show_auto_option else "y/n"
+        # The Tab hint shows from every option, not just Reject: the quick keys
+        # are the fast path, so a hint gated on the Reject row stays invisible to
+        # the users most likely to want it. `Tab` moves the cursor to Reject
+        # itself, so the hint is live wherever it is read.
         help_parts = [
             (
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate "
                 f"{glyphs.bullet} Enter select {glyphs.bullet} {quick_keys} quick keys"
             ),
+            "Tab reject with feedback",
+            "Esc reject",
         ]
-        if self._selected == self._reject_index:
-            help_parts.append("Tab amend")
-        help_parts.append("Esc reject")
         help_text = f" {glyphs.bullet} ".join(help_parts)
         if self._has_expandable_command:
             help_text += f" {glyphs.bullet} e expand"
@@ -557,14 +560,14 @@ class ApprovalMenu(Container):
         self.post_message(self.Decided(decision))
 
     def action_reject_with_reason(self) -> None:
-        """Enter free-text reject mode if Reject is currently selected.
+        """Enter free-text reject mode from any option.
 
-        No-op unless the cursor is on the Reject option. Mounts an inline
-        `Input` whose value is sent as `RejectDecision.message` on submit.
+        Moves the cursor to Reject first, so the highlighted option always
+        matches the decision the input will submit. Mounts an inline `Input`
+        whose value is sent as `RejectDecision.message` on submit; it can only
+        ever produce a reject, never an approval.
         """
         if self._reason_input_active:
-            return
-        if self._selected != self._reject_index:
             return
         if self._reason_input is None:
             # Lifecycle bug: Tab fired before `compose()` populated the Input ref.
@@ -575,10 +578,10 @@ class ApprovalMenu(Container):
             )
             return
         self._reason_input_active = True
+        self._selected = self._reject_index
         self._reason_input.value = ""
         self._reason_input.display = True
-        if self._help_widget is not None:
-            self._help_widget.update(self._compose_help_text())
+        self._update_options()
         self._reason_input.focus()
 
     def _exit_reason_input_mode(self) -> None:

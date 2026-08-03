@@ -47,7 +47,6 @@ from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_co
 from deepagents_code.hooks.client_lifecycle import ClientHookStopError
 from deepagents_code.hooks.manager import HooksManager, PromptOutcome
 from deepagents_code.hooks.models.domain import (
-    DcodeNotificationKind,
     HookEvent,
     PermissionEffect,
     PermissionRequestDecision,
@@ -1838,41 +1837,20 @@ class _FailingApprovalStoreAgent(_SequencedAgent):
 class TestExecuteTaskTextualStreamCompletion:
     """Report only clean stream endings to the app."""
 
-    async def test_clean_stream_calls_completion_callback(self) -> None:
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        callback = MagicMock()
-        adapter._on_stream_complete = callback
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent([]),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=False),
-            adapter=adapter,
-        )
-
-        callback.assert_called_once_with()
-
-    async def test_completed_notification_stop_is_not_an_agent_error(self) -> None:
+    async def test_hook_stop_after_clean_stream_calls_completion_callback(self) -> None:
         mounted: list[object] = []
-        mount_message = AsyncMock(side_effect=mounted.append)
-
         adapter = TextualUIAdapter(
-            mount_message=mount_message,
+            mount_message=AsyncMock(side_effect=mounted.append),
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
         callback = MagicMock()
         adapter._on_stream_complete = callback
-        notify = AsyncMock(side_effect=ClientHookStopError("intentional stop"))
 
-        with (
-            _handlers_for(HookEvent.NOTIFICATION),
-            patch.object(HooksManager, "notify", notify),
+        with patch.object(
+            HooksManager,
+            "notify",
+            AsyncMock(side_effect=ClientHookStopError("intentional stop")),
         ):
             await execute_task_textual(
                 user_input="hello",
@@ -1882,10 +1860,6 @@ class TestExecuteTaskTextualStreamCompletion:
                 adapter=adapter,
             )
 
-        notify.assert_awaited_once_with(
-            DcodeNotificationKind.AGENT_COMPLETED,
-            "Agent completed",
-        )
         assert [
             str(widget._content) for widget in mounted if isinstance(widget, AppMessage)
         ] == ["Operation stopped by hook: intentional stop"]

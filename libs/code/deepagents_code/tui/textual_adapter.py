@@ -820,26 +820,6 @@ class TextualUIAdapter:
         if self._set_active_message:
             self._set_active_message(None)
 
-    def finalize_pending_tools_as_rejected(self, reason: str) -> None:
-        """Reject pending tool widgets after an intentional hook stop.
-
-        Args:
-            reason: Hook stop reason rendered in each pending tool widget.
-        """
-        _dispatch_terminal_tool_result_hooks(self._current_tool_messages, reason)
-        for tool_msg in list(self._current_tool_messages.values()):
-            try:
-                tool_msg.set_rejected(reason=reason)
-                self._sync_tool_widget(tool_msg)
-            except Exception:
-                logger.exception(
-                    "Failed to finalize pending %s row as rejected",
-                    tool_msg.tool_name,
-                )
-        self._current_tool_messages.clear()
-        if self._set_active_message:
-            self._set_active_message(None)
-
 
 def _build_interrupted_ai_message(
     pending_text_by_namespace: dict[tuple, str],
@@ -1212,7 +1192,6 @@ async def execute_task_textual(
     from deepagents_code.auto_mode import USER_PROMPT_METADATA_KEY, user_prompt_metadata
     from deepagents_code.hooks.client_lifecycle import ClientHookStopError
     from deepagents_code.hooks.models.domain import HookEvent
-    from deepagents_code.hooks.presenter import format_hook_stop_message
 
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
     ask_user_adapter = _get_ask_user_adapter()
@@ -3073,14 +3052,14 @@ async def execute_task_textual(
                     )
                 except ClientHookStopError as exc:
                     await adapter._mount_message(
-                        AppMessage(format_hook_stop_message(exc))
+                        AppMessage(f"Operation stopped by hook: {exc}")
                     )
                 if not hooks.has_handlers(HookEvent.NOTIFICATION):
                     await dispatch_hook("task.complete", {"thread_id": thread_id})
                 break
 
-    except ClientHookStopError as exc:
-        adapter.finalize_pending_tools_as_rejected(str(exc))
+    except ClientHookStopError:
+        _reject_tracked_rows(adapter)
         raise
     except (asyncio.CancelledError, KeyboardInterrupt):
         await _handle_interrupt_cleanup(

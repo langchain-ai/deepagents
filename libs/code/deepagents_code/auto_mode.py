@@ -2164,10 +2164,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         started with a separate classifier back to the main agent model.
 
         A blank spec from the *construction-time* tier means "inherit", matching
-        `ServerConfig.from_env`. A blank value on the runtime context is instead
-        treated as "no preference" — the same as absent — because only
-        `INHERIT_CLASSIFIER_MODEL` expresses inherit for a per-run value; a bare
-        blank must not silently override a startup classifier.
+        `ServerConfig.from_env`. The construction-time tier may also carry
+        `INHERIT_CLASSIFIER_MODEL` itself: `--auto-classifier-model ""` resolves
+        to it in the launch path so an explicit blank flag overrides a
+        configured env / `config.toml` classifier. A blank value on the runtime
+        context is instead treated as "no preference" — the same as absent —
+        because a bare blank must not silently override a startup classifier.
 
         Either way a blank value never reaches `create_model`, which treats an
         empty spec as "use the default model spec" (`[models].default`, then
@@ -2188,6 +2190,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 return context_spec.strip()
         configured = self._configured_classifier_model
         if isinstance(configured, str):
+            if configured == INHERIT_CLASSIFIER_MODEL:
+                return None
             return configured.strip() or None
         return configured
 

@@ -3430,6 +3430,40 @@ async def test_inherit_context_marker_overrides_construction_classifier(
     assert metadata["classifier_model"] == "inherited"
 
 
+async def test_inherit_sentinel_at_construction_means_inherit(
+    tmp_path: Path,
+) -> None:
+    """A construction-time inherit marker must not read as a real spec.
+
+    `--auto-classifier-model ""` resolves to `INHERIT_CLASSIFIER_MODEL` in the
+    launch path so an explicit blank flag overrides an env / `config.toml`
+    classifier; the middleware must map that marker to "inherit the main model"
+    rather than try to build a model named `__dcode_inherit_classifier__`.
+    """
+    primary = _StructuredModel(_allow_result())
+    middleware = _middleware(
+        tmp_path, classifier_model=cast("Any", INHERIT_CLASSIFIER_MODEL)
+    )
+    request, _store, _key = _request(
+        tmp_path,
+        model=primary,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+    assert len(primary.calls) == 1
+    metadata = cast("dict[str, Any]", primary.call_kwargs[0]["config"])["metadata"]
+    assert metadata["classifier_model"] == "inherited"
+
+
 async def test_absent_context_classifier_keeps_construction_classifier(
     tmp_path: Path,
 ) -> None:

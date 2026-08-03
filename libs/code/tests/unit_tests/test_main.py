@@ -1714,6 +1714,46 @@ class TestRunTextualCliAsyncMcp:
         resolve_classifier.assert_not_called()
         assert captured_kwargs["server_kwargs"]["auto_classifier_model"] == classifier
 
+    async def test_blank_auto_classifier_flag_overrides_configured_classifier(
+        self,
+    ) -> None:
+        """`--auto-classifier-model ""` inherits the main model, not env/TOML.
+
+        An explicit blank flag means "review with the main agent model", so it
+        must override a classifier configured via env var or `config.toml` —
+        collapsing the blank to `None` would defer to those sources and leave
+        the weaker configured classifier authorizing actions. The TUI receives
+        the `INHERIT_CLASSIFIER_MODEL` sentinel so the server resolves inherit
+        instead of re-reading env/TOML.
+        """
+        from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+
+        app_result = AppResult(return_code=0, thread_id="thread-123")
+        captured_kwargs: dict[str, Any] = {}
+
+        async def _run_textual_app_stub(**kwargs: Any) -> AppResult:
+            captured_kwargs.update(kwargs)
+            await asyncio.sleep(0)
+            return app_result
+
+        with (
+            patch("deepagents_code.app.run_textual_app", new=_run_textual_app_stub),
+            patch(
+                "deepagents_code.config.resolve_auto_classifier_model_with_problem"
+            ) as resolve_classifier,
+        ):
+            await run_textual_cli_async(
+                "agent",
+                model_name="openai:gpt-5.5",
+                auto_classifier_model="",
+            )
+
+        resolve_classifier.assert_not_called()
+        assert (
+            captured_kwargs["server_kwargs"]["auto_classifier_model"]
+            == INHERIT_CLASSIFIER_MODEL
+        )
+
     async def test_onboarding_trigger_reaches_textual_app(self) -> None:
         """First-run onboarding state should control the app launch flag."""
         app_result = AppResult(return_code=0, thread_id="thread-123")

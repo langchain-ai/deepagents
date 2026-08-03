@@ -416,6 +416,26 @@ class TestServerConfigEdgeCases:
 
         assert restored.auto_classifier_model is None
 
+    def test_inherit_classifier_sentinel_round_trips(self) -> None:
+        """The inherit sentinel must reach the server subprocess intact.
+
+        `--auto-classifier-model ""` resolves to `INHERIT_CLASSIFIER_MODEL` in
+        the launch path so an explicit blank overrides a configured classifier;
+        the env serialization must not collapse it to `None` the way a bare
+        empty string does.
+        """
+        from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+
+        original = ServerConfig(auto_classifier_model=INHERIT_CLASSIFIER_MODEL)
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.auto_classifier_model == INHERIT_CLASSIFIER_MODEL
+
     def test_malformed_rubric_max_iterations_env_uses_sdk_default(self) -> None:
         """Bad optional rubric iteration config must fall back to SDK default."""
         with patch.dict(

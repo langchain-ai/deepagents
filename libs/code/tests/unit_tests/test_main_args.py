@@ -386,13 +386,13 @@ class TestAutoApproveHeadlessValidation:
         assert "--auto-classifier-model is only supported" in err
         assert "it runs headlessly" in err
 
-    def test_blank_auto_classifier_model_normalizes_to_unset(self) -> None:
-        """A blank flag means "inherit", so it must not read as configured.
+    def test_blank_auto_classifier_model_stays_distinct_from_absent(self) -> None:
+        """An explicit blank flag means "inherit" and must not collapse to `None`.
 
-        `argparse` yields `""`, which every downstream `is not None` gate would
-        treat as a configured classifier: the sandbox/headless guards would
-        reject the run, and the TUI would announce a distinct reviewer that does
-        not exist.
+        `parse_args` collapsing `--auto-classifier-model ""` to `None` would make
+        it indistinguishable from an absent flag, so the env var / `config.toml`
+        classifier it was meant to override would silently stay in charge. Blank
+        normalizes to `""`; absence stays `None`.
         """
         from deepagents_code.main import parse_args
 
@@ -400,7 +400,10 @@ class TestAutoApproveHeadlessValidation:
             with patch.object(
                 sys, "argv", ["deepagents", "--auto-classifier-model", value]
             ):
-                assert parse_args().auto_classifier_model is None
+                assert parse_args().auto_classifier_model == ""
+
+        with patch.object(sys, "argv", ["deepagents"]):
+            assert parse_args().auto_classifier_model is None
 
         with patch.object(
             sys,

@@ -18839,10 +18839,24 @@ class DeepAgentsApp(App):
                 await self._auto_accept_pending_goal_rubric()
         return True
 
+    def _auto_classifier_display_spec(self) -> str | None:
+        """Return the configured classifier spec for display, or `None` to inherit.
+
+        `--auto-classifier-model ""` stores `INHERIT_CLASSIFIER_MODEL` here so the
+        server resolves inherit over an env / `config.toml` classifier; that
+        sentinel is not a real spec and must never surface as one.
+        """
+        if (
+            not self._auto_classifier_model
+            or self._auto_classifier_model == INHERIT_CLASSIFIER_MODEL
+        ):
+            return None
+        return self._auto_classifier_model
+
     def _auto_classifier_model_label(self) -> str:
         """Return how the Auto classifier model should be described to the user."""
-        if self._auto_classifier_model:
-            return self._auto_classifier_model
+        if display := self._auto_classifier_display_spec():
+            return display
         return self._effective_model_spec() or "the main agent model"
 
     def _auto_classifier_review_model_spec(self) -> str | None:
@@ -18852,7 +18866,9 @@ class DeepAgentsApp(App):
         spec: callers that describe the *role* separately need to know whether
         they have a real model name to show.
         """
-        return self._auto_classifier_model or self._effective_model_spec() or None
+        return (
+            self._auto_classifier_display_spec() or self._effective_model_spec() or None
+        )
 
     def _auto_classifier_is_distinct(self) -> bool:
         """Return whether reviews run on a different model than the coding one.
@@ -18861,9 +18877,10 @@ class DeepAgentsApp(App):
             `True` when a configured classifier differs from the effective main
                 model, so user-facing copy can distinguish the two roles.
         """
-        if not self._auto_classifier_model:
+        display = self._auto_classifier_display_spec()
+        if not display:
             return False
-        return self._auto_classifier_model != self._effective_model_spec()
+        return display != self._effective_model_spec()
 
     def _notify_auto_classifier_active(self) -> None:
         """Disclose a distinct authorization classifier on Auto activation."""
@@ -18888,8 +18905,9 @@ class DeepAgentsApp(App):
         model" instruction `/auto model clear` needs, which a bare `None` cannot
         express.
         """
-        if self._auto_classifier_model:
-            return self._auto_classifier_model
+        display = self._auto_classifier_display_spec()
+        if display:
+            return display
         if self._auto_classifier_model_cleared:
             return INHERIT_CLASSIFIER_MODEL
         return None
@@ -18946,16 +18964,16 @@ class DeepAgentsApp(App):
 
         current_provider = settings.model_provider
         current_model = settings.model_name
-        if self._auto_classifier_model:
-            parsed = ModelSpec.try_parse(self._auto_classifier_model)
+        if display := self._auto_classifier_display_spec():
+            parsed = ModelSpec.try_parse(display)
             if parsed:
                 current_provider = parsed.provider
                 current_model = parsed.model
             else:
-                provider = detect_provider(self._auto_classifier_model)
+                provider = detect_provider(display)
                 if provider:
                     current_provider = provider
-                    current_model = self._auto_classifier_model
+                    current_model = display
 
         current_spec = (
             f"{current_provider}:{current_model}"

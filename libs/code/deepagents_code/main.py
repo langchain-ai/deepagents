@@ -2238,12 +2238,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
-    # `--auto-classifier-model ""` yields the empty string, not `None`. Collapse
-    # it to unset here so every downstream `is not None` gate — the ACP and
-    # headless/sandbox rejections, and the value passed to the TUI — agrees that
-    # a blank spec means "inherit the main agent model".
+    # `--auto-classifier-model ""` yields the empty string, not `None`. Keep it
+    # distinct from an absent flag (just trimmed): an explicit blank is the
+    # "inherit the main agent model" instruction and must override a classifier
+    # configured via env var or `config.toml`, which collapsing it to `None`
+    # here would silently re-enable.
     if getattr(args, "auto_classifier_model", None) is not None:
-        args.auto_classifier_model = args.auto_classifier_model.strip() or None
+        args.auto_classifier_model = args.auto_classifier_model.strip()
     _resolve_and_validate_sandbox(args, parser)
     return args
 
@@ -2482,7 +2483,9 @@ async def run_textual_cli_async(
             with, from `--auto-classifier-model`.
 
             `None` resolves from env / `config.toml` and then reuses the main
-            agent model.
+            agent model. A blank string means the flag was explicitly supplied
+            with no value: it overrides any env / `config.toml` classifier so
+            reviews inherit the main agent model.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from env / `config.toml` / default at agent-build time.
 
@@ -2542,20 +2545,32 @@ async def run_textual_cli_async(
         settings.model_provider = ""
         settings.model_name = ""
 
-    # Normalize a blank flag to "unset" here so exactly one representation of
-    # "inherit the main model" reaches the app. `argparse` yields `""` for
-    # `--auto-classifier-model ""`, which would otherwise both suppress the
-    # env/TOML lookup and read as a configured classifier downstream.
+    # Distinguish "flag absent" from "flag explicitly blank": `--auto-classifier-
+    # model ""` is the "inherit the main agent model" instruction and overrides
+    # any env / `config.toml` classifier, while an absent flag defers to those
+    # sources. Map the explicit blank to `INHERIT_CLASSIFIER_MODEL`, the sentinel
+    # the server and Auto middleware already understand as inherit, so the
+    # override survives the trip to the agent server (a bare `""` would collapse
+    # to `None` in `ServerConfig.from_env` and silently re-enable a configured
+    # classifier there).
+    from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+
+    flag_supplied = auto_classifier_model is not None
     flag_classifier_model = (auto_classifier_model or "").strip() or None
     auto_classifier_problem: str | None = None
     if flag_classifier_model is not None:
         resolved_auto_classifier_model = flag_classifier_model
+    elif flag_supplied:
+        resolved_auto_classifier_model = INHERIT_CLASSIFIER_MODEL
     else:
         (
             resolved_auto_classifier_model,
             auto_classifier_problem,
         ) = resolve_auto_classifier_model_with_problem()
-    if resolved_auto_classifier_model is not None:
+    if (
+        resolved_auto_classifier_model is not None
+        and resolved_auto_classifier_model != INHERIT_CLASSIFIER_MODEL
+    ):
         auto_classifier_problem = _auto_classifier_spec_problem(
             resolved_auto_classifier_model
         )

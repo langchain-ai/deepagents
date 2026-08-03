@@ -2201,10 +2201,7 @@ async def run_non_interactive(
         console.print("\n[yellow]Interrupted[/yellow]")
         return 130
     except ClientHookStopError as exc:
-        console.print(
-            Text(f"\nOperation stopped by hook: {exc}", style="yellow"),
-            highlight=False,
-        )
+        console.print(Text(f"\nOperation stopped by hook: {exc}", style="yellow"))
         return 0
     except HITLIterationLimitError as e:
         console.print(f"\n[red]{escape_markup(str(e))}[/red]")

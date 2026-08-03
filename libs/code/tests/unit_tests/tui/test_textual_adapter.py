@@ -66,7 +66,6 @@ from deepagents_code.tui.textual_adapter import (
     _is_auto_mode_classifier_chunk,
     _is_summarization_chunk,
     _read_mentioned_file,
-    _reject_tracked_rows,
     _session_cost_pricing_ok,
     _session_cost_thread_id,
     _session_cost_total,
@@ -1839,20 +1838,17 @@ class TestExecuteTaskTextualStreamCompletion:
     """Report only clean stream endings to the app."""
 
     async def test_hook_stop_after_clean_stream_calls_completion_callback(self) -> None:
-        mounted: list[object] = []
+        mount_message = AsyncMock()
         adapter = TextualUIAdapter(
-            mount_message=AsyncMock(side_effect=mounted.append),
+            mount_message=mount_message,
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
         callback = MagicMock()
         adapter._on_stream_complete = callback
 
-        with patch.object(
-            HooksManager,
-            "notify",
-            AsyncMock(side_effect=ClientHookStopError("intentional stop")),
-        ):
+        stop = ClientHookStopError("intentional stop")
+        with patch.object(HooksManager, "notify", side_effect=stop):
             await execute_task_textual(
                 user_input="hello",
                 agent=_FakeAgent([]),
@@ -1861,9 +1857,8 @@ class TestExecuteTaskTextualStreamCompletion:
                 adapter=adapter,
             )
 
-        assert [
-            str(widget._content) for widget in mounted if isinstance(widget, AppMessage)
-        ] == ["Operation stopped by hook: intentional stop"]
+        message = mount_message.await_args_list[0].args[0]
+        assert str(message._content) == f"Operation stopped by hook: {stop}"
         callback.assert_called_once_with()
 
     async def test_interrupted_stream_skips_completion_callback(self) -> None:
@@ -6040,29 +6035,6 @@ def _make_tool_widget(
     return widget
 
 
-class TestRejectTrackedRows:
-    """Tests for best-effort terminal rejection cleanup."""
-
-    def test_widget_failure_does_not_suppress_terminal_hooks(self) -> None:
-        """A widget failure must not suppress its terminal tool hooks."""
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        tool_widget = _make_tool_widget("read_file", {"path": "notes.txt"})
-        tool_widget.set_rejected.side_effect = RuntimeError("widget teardown failed")
-        adapter._current_tool_messages = {"call-1": tool_widget}
-
-        with patch(
-            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-        ) as dispatch:
-            assert _reject_tracked_rows(adapter) == ["call-1"]
-
-        assert dispatch.call_count == 2
-        assert adapter._current_tool_messages == {}
-
-
 class TestAskUserHookBodySanitization:
     """`tool.result` for `ask_user` can never carry the answer transcript.
 
@@ -7282,6 +7254,7 @@ class TestToolHooksTextual:
         )
 
         with (
+            patch.object(ToolCallMessage, "set_rejected", side_effect=RuntimeError),
             patch(
                 "deepagents_code.tui.textual_adapter.dispatch_hook",
                 new_callable=AsyncMock,

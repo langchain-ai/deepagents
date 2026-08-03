@@ -265,7 +265,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             show=False,
             priority=True,
         ),
-        Binding("ctrl+n", "toggle_names", "Model IDs", show=False, priority=True),
+        # Description stays mode-neutral because the footer hint (see
+        # `_help_text`) flips with `_show_specs` while this string cannot.
+        Binding(
+            "ctrl+n", "toggle_names", "Toggle model IDs", show=False, priority=True
+        ),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
     """Key bindings for model navigation, selection, defaulting, and cancel.
@@ -432,6 +436,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # to its raw `provider:model` spec (mirrors the `/theme` picker's
         # label/key toggle) so a user can read or copy the canonical id.
         self._show_specs = False
+        # True while the footer is displaying a Ctrl+S failure notice, so other
+        # footer writers (Ctrl+N) leave it alone until its restore timer fires.
+        self._help_error_shown = False
 
         self._unfiltered_models: list[tuple[str, str]] = []
         self._recent_specs: list[str] = []
@@ -1894,6 +1901,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                         f"bold {theme.get_theme_colors(self).error}",
                     )
                 )
+                self._help_error_shown = True
                 self.set_timer(3.0, self._restore_help_text)
         elif await asyncio.to_thread(save_default_model, model_spec):
             self._default_spec = model_spec
@@ -1911,10 +1919,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     f"bold {theme.get_theme_colors(self).error}",
                 )
             )
+            self._help_error_shown = True
             self.set_timer(3.0, self._restore_help_text)
 
     def _restore_help_text(self) -> None:
-        """Restore the default help text after a temporary message."""
+        """Restore the default help text after a temporary message.
+
+        Recomputes `_help_text()` rather than replaying a captured string, so
+        a timer scheduled before a Ctrl+N press still restores the hint for the
+        display mode that is current when it fires.
+        """
+        self._help_error_shown = False
         help_widget = self.query_one(".model-selector-help", Static)
         help_widget.update(self._help_text())
 
@@ -1968,16 +1983,23 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         unnecessary — and stays available in curated/onboarding mode since it
         only affects presentation.
 
-        The footer hint is rewritten too so it always advertises the mode the
-        next press switches to. That also clears any transient Ctrl+S status
-        message early, which is harmless — the message is purely informational
-        and its restore timer replays the same help line.
+        In standard mode the footer hint is rewritten so it advertises the mode
+        the next press switches to; curated mode omits the hint entirely, so
+        the refresh is a no-op there.
+
+        The refresh is skipped while a Ctrl+S *error* notice is on the footer,
+        since that notice is the only signal a save failed and the user may not
+        have read it yet. Successful Ctrl+S messages are clobbered freely. The
+        pending restore timer is never cancelled, but it is idempotent — it
+        re-renders `_help_text()` for whatever mode is current when it fires,
+        so an orphaned timer cannot resurrect a stale hint.
         """
         if not self._loaded:
             return
         self._show_specs = not self._show_specs
         self._relabel_options()
-        self._restore_help_text()
+        if not self._help_error_shown:
+            self._restore_help_text()
 
     def _relabel_options(self) -> None:
         """Rebuild each mounted row's label for the current display mode.

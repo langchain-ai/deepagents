@@ -59,6 +59,7 @@ from deepagents_code.tui.textual_adapter import (
     _dispatch_tool_result_hook,
     _format_rubric_details,
     _format_rubric_event,
+    _frame_reject_reason,
     _handle_interrupt_cleanup,
     _interrupt_owned_tool_rows,
     _is_auto_mode_classifier_chunk,
@@ -5510,7 +5511,12 @@ class TestExecuteTaskTextualAskUser:
         assert isinstance(resume_cmd, Command)
         resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
         decisions = resume_payload["interrupt-1"]["decisions"]
-        assert decisions == [{"type": "reject", "message": "use a safer command"}]
+        assert decisions == [
+            {
+                "type": "reject",
+                "message": _frame_reject_reason("use a safer command"),
+            }
+        ]
         app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
         assert not any("Command rejected" in str(msg._content) for msg in app_messages)
 
@@ -7501,6 +7507,130 @@ class TestToolHooksTextual:
         assert len(execute_widgets) == 1
         # Stayed rejected despite the resumed error ToolMessage driving set_error.
         assert execute_widgets[0]._status == "rejected"
+
+    async def test_hitl_reasoned_reject_frames_reason_for_model(self) -> None:
+        """The model gets framed rejection text; the row keeps the raw reason."""
+        mounted: list[ToolCallMessage] = []
+
+        async def capture_mount(widget: object) -> None:
+            await asyncio.sleep(0)
+            if isinstance(widget, ToolCallMessage):
+                mounted.append(widget)
+
+        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    (
+                        (),
+                        "messages",
+                        (
+                            _tool_call_message(
+                                "execute", {"command": "echo hi"}, "tool-1"
+                            ),
+                            {},
+                        ),
+                    ),
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": action_requests,
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    ),
+                ],
+                [],
+            ]
+        )
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "reject", "message": "use another command"})
+            return future
+
+        adapter = TextualUIAdapter(
+            mount_message=capture_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+        )
+
+        resume_cmd = agent.stream_inputs[1]
+        assert isinstance(resume_cmd, Command)
+        resume_payload = cast("dict[str, dict[str, Any]]", resume_cmd.resume)
+        expected_message = (
+            "User rejected the tool call with reason: use another command"
+        )
+        assert resume_payload["interrupt-1"]["decisions"] == [
+            {"type": "reject", "message": expected_message}
+        ]
+        execute_widgets = [w for w in mounted if w.tool_name == "execute"]
+        assert len(execute_widgets) == 1
+        assert execute_widgets[0]._reject_reason == "use another command"
+
+    async def test_hitl_blank_reject_reason_stays_bare(self) -> None:
+        """A whitespace-only reason must not synthesize an empty framed reason."""
+        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
+        agent = _SequencedAgent(
+            streams_by_call=[
+                [
+                    _hitl_interrupt_chunk(
+                        {
+                            "action_requests": action_requests,
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    )
+                ],
+                [],
+            ]
+        )
+
+        async def request_approval(
+            _action_requests: list[dict[str, Any]],
+            _assistant_id: str | None,
+        ) -> asyncio.Future[object]:
+            await asyncio.sleep(0)
+            future: asyncio.Future[object] = asyncio.Future()
+            future.set_result({"type": "reject", "message": "   "})
+            return future
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=request_approval,
+        )
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+        )
+
+        # A blank reason is a bare reject: the turn aborts instead of resuming,
+        # so the upstream canned rejection wording is what the model would see.
+        assert len(agent.stream_inputs) == 1
 
     async def test_tool_use_dispatched_after_streaming_fragments(self) -> None:
         """tool.use reassembles streamed arg fragments and fires exactly once."""

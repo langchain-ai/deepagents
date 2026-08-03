@@ -1454,6 +1454,15 @@ class TestIsAutoModeClassifierChunk:
         metadata = {"lc_source": "auto_mode_classifier"}
         assert _is_auto_mode_classifier_chunk(metadata) is True
 
+    def test_returns_true_for_distinct_classifier_model(self) -> None:
+        """Filtering keys on the source, so a separate classifier stays hidden."""
+        metadata = {
+            "lc_source": "auto_mode_classifier",
+            "classifier_model": "openai:gpt-5.5-mini",
+            "ls_model_name": "gpt-5.5-mini",
+        }
+        assert _is_auto_mode_classifier_chunk(metadata) is True
+
     def test_returns_false_for_unrelated_metadata(self) -> None:
         """Regular and missing metadata remain visible."""
         assert _is_auto_mode_classifier_chunk(None) is False

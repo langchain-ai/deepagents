@@ -11,6 +11,25 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
+INHERIT_CLASSIFIER_MODEL = "__dcode_inherit_classifier__"
+"""Per-run `classifier_model` value meaning "review with the main agent model".
+
+An absent (or `None`) `classifier_model` only says the run carries no
+preference, so the classifier keeps whatever the server resolved at startup
+(`--auto-classifier-model`, `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL`,
+`[models].auto_classifier`). `/auto model clear` needs the stronger statement
+that reviews go back to the main agent model, which this sentinel carries.
+
+It cannot collide with a real spec: `create_model` resolves `provider:model`
+(or a bare model name) and has no provider or model named `__dcode_...`. A
+control character such as a leading NUL would also be collision-proof, but this
+value has to survive the trip to a remote deployment intact — the context is
+serialized to JSON and may be persisted, and Postgres `text`/`jsonb` rejects NUL
+outright. A stripped sentinel would silently read as "no preference" and leave a
+startup classifier authorizing actions after the UI reported the clear, so the
+sentinel stays plain ASCII.
+"""
+
 
 @dataclass
 class CLIContextSchema:
@@ -38,6 +57,8 @@ class CLIContextSchema:
     profile_overrides: dict[str, Any] = field(default_factory=dict)
 
     model_context_limit: int | None = None
+
+    classifier_model: str | None = None
 
     approval_mode: str = "manual"
 
@@ -80,6 +101,17 @@ class CLIContext(TypedDict, total=False):
 
     model_context_limit: int | None
     """Effective context-window limit for profile-aware middleware."""
+
+    classifier_model: str | None
+    """Model spec the Auto approval classifier should use for this run.
+
+    `None` (or absent) expresses no per-run preference, so the classifier keeps
+    whatever the graph was built with — normally the main agent model, but a
+    separate model when the session was launched with one.
+    `INHERIT_CLASSIFIER_MODEL` overrides that startup value back to the main
+    agent model. Set by `/auto model` so the switch takes effect without
+    restarting the agent server.
+    """
 
     approval_mode: str
     """`manual`, classifier-backed `auto`, or unrestricted `yolo`."""

@@ -30,6 +30,25 @@ import os
 # Keep alphabetically sorted by constant name.
 # ---------------------------------------------------------------------------
 
+AUTO_CLASSIFIER_MODEL = "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL"
+"""Model spec (`provider:model`) used by the Auto approval-mode classifier.
+
+Unset (the default) reuses the main agent model, preserving the historical
+behavior. A `provider:model` value points the authorization classifier at a
+separate — typically faster and cheaper — model without changing the model that
+writes code. The classifier is a security control: a model that cannot be
+resolved (bad spec, missing credentials, uninstalled provider package) never
+falls back to the main model — reviewed actions are denied, and repeated
+failures escalate to your approval. Also settable via `[models].auto_classifier`
+in config.toml and `--auto-classifier-model`.
+
+This is user-controlled process env, not a repo file: a committed *project*
+`.env` cannot set it (see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`), so a cloned
+repository cannot point the review that authorizes its own tool calls at a weaker
+model. Only the shell, the launch environment, or the global `~/.deepagents/.env`
+can.
+"""
+
 AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
 """Toggle automatic app updates. Enabled by default; set to a falsy value
 ('0', 'false', 'no', 'off', or empty) to opt out."""

@@ -1115,6 +1115,19 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STR,
         toml_keys=("models", "recent"),
     ),
+    ConfigOption(
+        key="models.auto_classifier",
+        group="Models",
+        summary=(
+            "Model spec ('provider:model') used by the Auto approval classifier; "
+            "unset reuses the main agent model. A weaker model weakens Auto's "
+            "review of gated actions."
+        ),
+        kind=OptionKind.STR,
+        env_var=_env_vars.AUTO_CLASSIFIER_MODEL,
+        toml_keys=("models", "auto_classifier"),
+        cli_flag="--auto-classifier-model",
+    ),
     # --- Tracing -------------------------------------------------------
     ConfigOption(
         key="tracing.langsmith_project",

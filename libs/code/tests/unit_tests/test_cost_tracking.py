@@ -10,7 +10,7 @@ import sys
 import warnings
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -337,6 +337,118 @@ class TestEstimateCost:
 
     def test_codex_subscription_usage_is_not_priced_as_openai_api(self) -> None:
         assert estimate_cost(_usage(), "gpt-5.4", "openai_codex") is None
+
+
+class TestPriceUpdater:
+    """Process-wide background refresh of the genai-prices catalog."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_updater_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Isolate the process-wide start latch and snapshot between tests.
+
+        `monkeypatch.setattr` restores `_PRICE_UPDATER_ATTEMPTED` after each
+        test, but an earlier test in the same process may already have started
+        the real updater -- `UpdatePrices.start` refuses a second instance
+        process-wide, and a real one left running would keep fetching hourly.
+        Roll back genai-prices' module-level updater handle and custom snapshot
+        as well so a leak cannot fail or reorder later tests.
+        """
+        monkeypatch.setattr(cost_tracking, "_PRICE_UPDATER_ATTEMPTED", False)
+        import genai_prices.data_snapshot
+        import genai_prices.update_prices
+
+        monkeypatch.setattr(genai_prices.update_prices, "_global_update_prices", None)
+        monkeypatch.setattr(genai_prices.data_snapshot, "_custom_snapshot", None)
+
+    def _patch_update_prices(
+        self, monkeypatch: pytest.MonkeyPatch, instance: MagicMock
+    ) -> MagicMock:
+        """Bind `genai_prices.UpdatePrices` to a constructor returning *instance*."""
+        import genai_prices
+
+        constructor = MagicMock(return_value=instance)
+        monkeypatch.setattr(genai_prices, "UpdatePrices", constructor)
+        return constructor
+
+    def test_first_pricing_call_starts_updater_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import genai_prices
+
+        from deepagents_code._env_vars import PRICES_AUTO_UPDATE
+
+        monkeypatch.delenv(PRICES_AUTO_UPDATE, raising=False)
+        updater = MagicMock()
+        constructor = self._patch_update_prices(monkeypatch, updater)
+
+        # Price with a stubbed `calc_price` so repeated calls keep exercising
+        # the real `_load_pricing` import path without catalog work.
+        monkeypatch.setattr(
+            genai_prices,
+            "calc_price",
+            lambda *_args, **_kwargs: SimpleNamespace(total_price=0.01),
+        )
+
+        for _ in range(3):
+            assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is not None
+
+        constructor.assert_called_once_with()
+        updater.start.assert_called_once_with(wait=False)
+
+    def test_disabled_env_var_never_starts_updater(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import genai_prices
+
+        from deepagents_code._env_vars import PRICES_AUTO_UPDATE
+
+        monkeypatch.setenv(PRICES_AUTO_UPDATE, "false")
+        updater = MagicMock()
+        constructor = self._patch_update_prices(monkeypatch, updater)
+        monkeypatch.setattr(
+            genai_prices,
+            "calc_price",
+            lambda *_args, **_kwargs: SimpleNamespace(total_price=0.01),
+        )
+
+        assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is not None
+
+        constructor.assert_not_called()
+        updater.start.assert_not_called()
+
+    def test_failed_start_prices_with_bundled_data_and_logs_once(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A broken updater API must not break pricing or spam the log.
+
+        The failure is latched because retrying every request cannot fix an
+        incompatible genai-prices release -- it would only repeat the warning
+        on every model call while the bundled catalog prices fine.
+        """
+        import genai_prices
+
+        from deepagents_code._env_vars import PRICES_AUTO_UPDATE
+
+        monkeypatch.delenv(PRICES_AUTO_UPDATE, raising=False)
+        updater = MagicMock()
+        updater.start.side_effect = RuntimeError("unexpected genai-prices API")
+        self._patch_update_prices(monkeypatch, updater)
+        monkeypatch.setattr(
+            genai_prices,
+            "calc_price",
+            lambda *_args, **_kwargs: SimpleNamespace(total_price=0.01),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            for _ in range(3):
+                assert estimate_cost(
+                    _usage(), KNOWN_MODEL, KNOWN_PROVIDER
+                ) == pytest.approx(0.01)
+
+        updater.start.assert_called_once_with(wait=False)
+        warning = "Could not start the genai-prices background updater"
+        assert caplog.text.count(warning) == 1
+        assert cost_tracking.pricing_data_available()
 
     def test_cache_read_is_priced_separately(self) -> None:
         uncached = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)

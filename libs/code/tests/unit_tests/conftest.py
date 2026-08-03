@@ -275,6 +275,22 @@ def _pin_invoked_name(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, 
 
 
 @pytest.fixture(autouse=True)
+def _disable_prices_auto_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep cost-pricing tests from starting the genai-prices updater thread.
+
+    The first `estimate_cost` call of a process starts the `UpdatePrices`
+    daemon thread, whose hourly catalog fetch hits the network — pytest-socket
+    reports it under `--disable-socket`, and the thread would otherwise linger
+    for the whole test session. Set the production opt-out env var by default
+    so subprocess tests inherit the same no-network behavior. Tests that cover
+    the updater mock `UpdatePrices` and override this env var themselves.
+    """
+    from deepagents_code._env_vars import PRICES_AUTO_UPDATE
+
+    monkeypatch.setenv(PRICES_AUTO_UPDATE, "0")
+
+
+@pytest.fixture(autouse=True)
 def _clear_update_env(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,

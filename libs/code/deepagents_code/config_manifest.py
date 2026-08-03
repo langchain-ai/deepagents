@@ -1430,6 +1430,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("update", "check"),
         invert_toml_bool=True,
     ),
+    ConfigOption(
+        key="update.prices_auto_update",
+        group="Updates",
+        summary=(
+            "Refresh the model pricing catalog from upstream hourly in the background."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.PRICES_AUTO_UPDATE,
+    ),
     # --- Runtime --------------------------------------------------------
     ConfigOption(
         key="runtime.recursion_limit",

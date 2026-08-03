@@ -315,6 +315,15 @@ PLUGIN_CACHE_DIR = "DEEPAGENTS_CODE_PLUGIN_CACHE_DIR"
 When unset, plugins are stored under `DEFAULT_CONFIG_DIR / "plugins"`.
 """
 
+PRICES_AUTO_UPDATE = "DEEPAGENTS_CODE_PRICES_AUTO_UPDATE"
+"""Toggle hourly background refresh of the `genai-prices` pricing catalog.
+
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to keep using only the pricing data bundled with the installed `genai-prices`
+package. Parsed by `is_env_truthy` at first pricing use, so the updater
+thread is never started when disabled.
+"""
+
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
 """Override the main agent's LangGraph `recursion_limit` (graph step budget).
 

@@ -29,8 +29,11 @@ the private total itself remains isolated between graphs.
 
 Every caller uses `estimate_cost`, the only function that imports or calls
 `genai-prices`. The import is lazy so the package and its bundled pricing data
-stay off the CLI startup path. Unsupported models and malformed usage return
-`None`; pricing must never interrupt a model turn.
+stay off the CLI startup path. On that first successful import a daemon-thread
+updater starts refreshing the catalog from upstream hourly (see
+`_start_price_updater`); `DEEPAGENTS_CODE_PRICES_AUTO_UPDATE` opts out.
+Unsupported models and malformed usage return `None`; pricing must never
+interrupt a model turn.
 """
 
 from __future__ import annotations
@@ -56,6 +59,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables.config import ensure_config
 from langgraph.types import Overwrite
 
+from deepagents_code._env_vars import PRICES_AUTO_UPDATE, is_env_truthy
 from deepagents_code.resume_state import ResumeState
 
 if TYPE_CHECKING:
@@ -305,6 +309,50 @@ request would fire on every audio request for the models that price the
 intersection, which is noise rather than news.
 """
 
+_PRICE_UPDATER_ATTEMPTED = False
+"""Whether starting the genai-prices background updater has been attempted.
+
+Latched rather than cleared like the health flags above: `UpdatePrices`
+raises when a second instance is started, and a failed start attempt is most
+plausibly an API incompatibility that retrying on every request cannot fix,
+so the attempt happens exactly once per process either way.
+"""
+
+
+def _start_price_updater() -> None:
+    """Start the genai-prices background catalog refresh once per process.
+
+    `UpdatePrices` fetches the upstream `data.json` from
+    `raw.githubusercontent.com` hourly and installs it via
+    `set_custom_snapshot`, after which every `calc_price` call transparently
+    uses the fresher catalog. Fetch failures are logged by genai-prices and
+    pricing falls back to the bundled data. A fetched snapshot
+    wholesale-replaces the bundled catalog, which is safe because the fetched
+    file is the complete upstream catalog rather than a patch.
+
+    There is deliberately no `stop()`/context-manager pairing: the updater
+    thread is a daemon and dcode sessions are process-scoped, so the thread
+    simply exits with the process.
+    """
+    global _PRICE_UPDATER_ATTEMPTED  # noqa: PLW0603
+    if _PRICE_UPDATER_ATTEMPTED or not is_env_truthy(PRICES_AUTO_UPDATE, default=True):
+        return
+    _PRICE_UPDATER_ATTEMPTED = True
+    try:
+        from genai_prices import UpdatePrices
+
+        UpdatePrices().start(wait=False)
+    except Exception:
+        # A raise here is a genai-prices API change, not something a caller can
+        # fix -- and pricing with the bundled catalog keeps working regardless,
+        # so this must never propagate into a model turn.
+        logger.warning(
+            "Could not start the genai-prices background updater; cost "
+            "estimates will use the pricing data bundled with the installed "
+            "package.",
+            exc_info=True,
+        )
+
 
 def pricing_data_available() -> bool:
     """Report whether `genai-prices` is currently able to price a request.
@@ -333,7 +381,9 @@ def _load_pricing() -> tuple[Any, Any] | None:
 
     The pair is deliberately re-imported rather than cached: `sys.modules` makes
     that cheap, and holding a reference would pin the first-seen `calc_price`,
-    defeating any later patch of it.
+    defeating any later patch of it. A successful import is also where the
+    background catalog updater kicks off, so the updater only runs once pricing
+    is actually used -- never at CLI startup or import time.
 
     Returns:
         The `(Usage, calc_price)` pair, or `None` when the package is
@@ -355,6 +405,7 @@ def _load_pricing() -> tuple[Any, Any] | None:
     # A success clears the flag: the earlier failure was transient, and leaving
     # it set would keep telling the user to reinstall a working package.
     _PRICING_UNAVAILABLE = False
+    _start_price_updater()
     return Usage, calc_price
 
 

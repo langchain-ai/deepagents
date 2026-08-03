@@ -256,6 +256,16 @@ class TestSlashCommandController:
         suggestions = mock_view.render_completion_suggestions.call_args[0][0]
         assert any("/threads" in s[0] for s in suggestions)
 
+    def test_resume_ranks_threads_first(self, mock_view) -> None:
+        """Typing 'resume' puts /threads above /goal, which also claims the term."""
+        controller = SlashCommandController(get_slash_commands(), mock_view)
+
+        controller.on_text_changed("/resume", 7)
+
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert suggestions[0][0] == "/threads"
+        assert any(name == "/goal" for name, _ in suggestions)
+
     def test_substring_description_match_exit(self, controller, mock_view):
         """Typing 'exit' surfaces /quit via substring match on 'Exit app'."""
         controller.on_text_changed("/exit", 5)
@@ -428,6 +438,24 @@ class TestScoreCommand:
         assert (
             self.score("hist", "/threads", "Browse threads", "continue history") == 120
         )
+
+    def test_keyword_and_description_match_beats_keyword_only(self):
+        """A description that corroborates the keyword outranks a keyword-only hit."""
+        both = self.score(
+            "resume", "/threads", "Browse and resume past threads", "resume"
+        )
+        keyword_only = self.score(
+            "resume", "/goal", "Manage a persistent objective", "resume"
+        )
+        assert both > keyword_only
+        assert both == keyword_only + 15
+
+    def test_corroborated_match_stays_below_name_substring(self):
+        """The corroboration bonus never lifts a match above a name-substring hit."""
+        corroborated = self.score(
+            "resume", "/threads", "Browse and resume past threads", "resume"
+        )
+        assert corroborated < self.score("omp", "/compact", "Offload conversation")
 
     def test_hidden_keyword_ignored_when_empty(self):
         assert self.score("cont", "/threads", "Browse threads", "") == 0

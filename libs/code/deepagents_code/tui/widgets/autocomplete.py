@@ -112,6 +112,68 @@ _MIN_SLASH_FUZZY_SCORE = 25
 _MIN_DESC_SEARCH_LEN = 2
 """Minimum query length to search command descriptions (avoids single-char noise)."""
 
+_KEYWORD_SCORE = 120.0
+"""Score for a hidden keyword match — treated like a word-boundary description match."""
+
+_DESC_BOUNDARY_SCORE = 110.0
+"""Score for a description match at the start of a word."""
+
+_DESC_MIDWORD_SCORE = 90.0
+"""Score for a description match inside a word."""
+
+_CORROBORATED_MATCH_BONUS = 15.0
+"""Bonus when the query matches a hidden keyword *and* the visible description.
+
+Hidden keywords are invisible, so unrelated commands routinely claim the same
+term: both `/goal` (which has a `resume` subcommand) and `/threads` list
+`resume`. When the description the user can actually read also carries the
+term, the command is the more obvious answer to the query — otherwise the tie
+is broken by registry order alone. The bonus stays small enough that a
+corroborated match never outranks a match on the command name itself.
+"""
+
+
+def _keyword_score(search: str, keywords: str) -> float:
+    """Score a query against a command's space-separated hidden keywords.
+
+    Args:
+        search: Lowercase search string (without leading `/`).
+        keywords: Space-separated hidden keywords for matching.
+
+    Returns:
+        `_KEYWORD_SCORE` when any keyword matches, otherwise `0.0`.
+    """
+    if not keywords or len(search) < _MIN_DESC_SEARCH_LEN:
+        return 0.0
+    for keyword in keywords.lower().split():
+        if keyword.startswith(search) or search in keyword:
+            return _KEYWORD_SCORE
+    return 0.0
+
+
+def _description_score(search: str, lower_desc: str) -> float:
+    """Score a query against a command's lowercased description.
+
+    Requires at least `_MIN_DESC_SEARCH_LEN` characters so single letters
+    don't match nearly every description.
+
+    Args:
+        search: Lowercase search string (without leading `/`).
+        lower_desc: Lowercased command description.
+
+    Returns:
+        `_DESC_BOUNDARY_SCORE` for a match at the start of a word,
+            `_DESC_MIDWORD_SCORE` for a match inside a word, else `0.0`.
+    """
+    if len(search) < _MIN_DESC_SEARCH_LEN:
+        return 0.0
+    idx = lower_desc.find(search)
+    if idx < 0:
+        return 0.0
+    if idx == 0 or lower_desc[idx - 1] == " ":
+        return _DESC_BOUNDARY_SCORE
+    return _DESC_MIDWORD_SCORE
+
 
 class SlashCommandController:
     """Controller for / slash command completion."""
@@ -187,6 +249,11 @@ class SlashCommandController:
     def _score_command(search: str, cmd: str, desc: str, keywords: str = "") -> float:
         """Score a command against a search string. Higher = better match.
 
+        Tiers, best first: name prefix, name substring, hidden keyword,
+        word-boundary description, mid-word description, fuzzy ratio. A query
+        that matches both a hidden keyword and the description earns
+        `_CORROBORATED_MATCH_BONUS` on top of its tier.
+
         Args:
             search: Lowercase search string (without leading `/`).
             cmd: Command name (e.g. `'/help'`).
@@ -206,18 +273,13 @@ class SlashCommandController:
         # Substring match on command name
         if search in name:
             return 150.0
-        # Hidden keyword match — treated like a word-boundary description match
-        if keywords and len(search) >= _MIN_DESC_SEARCH_LEN:
-            for kw in keywords.lower().split():
-                if kw.startswith(search) or search in kw:
-                    return 120.0
-        # Substring match on description (require ≥2 chars to avoid single-letter noise)
-        if len(search) >= _MIN_DESC_SEARCH_LEN and search in lower_desc:
-            idx = lower_desc.find(search)
-            # Word-boundary bonus: match at start of description or after a space
-            if idx == 0 or lower_desc[idx - 1] == " ":
-                return 110.0
-            return 90.0
+        keyword = _keyword_score(search, keywords)
+        description = _description_score(search, lower_desc)
+        if keyword or description:
+            corroborated = bool(keyword) and bool(description)
+            return max(keyword, description) + (
+                _CORROBORATED_MATCH_BONUS if corroborated else 0.0
+            )
         # Fuzzy match via SequenceMatcher on name + desc
         name_ratio = SequenceMatcher(None, search, name).ratio()
         desc_ratio = SequenceMatcher(None, search, lower_desc).ratio()

@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from deepagents.backends.protocol import FileDownloadResponse, WriteResult
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.runtime import Runtime
 
@@ -164,6 +165,8 @@ class TestCLICompactionMiddleware:
         summarization = self._summarization()
         middleware = CLICompactionMiddleware(summarization)
         request = self._model_request(summarization)
+        logical_id = middleware._auto_compaction_id(request)
+        later = request.override(messages=[*request.messages, HumanMessage("three")])
         expected = ModelResponse(result=[AIMessage(content="ok")])
         handler = AsyncMock(return_value=expected)
         invoke = MagicMock(
@@ -188,8 +191,49 @@ class TestCLICompactionMiddleware:
 
         event = invoke.call_args.args[1]
         assert event.trigger.value == "auto"
+        assert invoke.call_args.kwargs["logical_event_id"] == logical_id
+        assert middleware._auto_compaction_id(request) == logical_id
+        assert middleware._auto_compaction_id(later) != logical_id
         assert result is expected
         handler.assert_awaited_once_with(request)
+
+    async def test_overflow_compaction_runs_precompact_hook(self) -> None:
+        """Overflow fallback must ask `PreCompact` before summarizing."""
+        from deepagents_code.hooks.models.domain import (
+            HookEvent,
+            PreCompactDecision,
+        )
+
+        summarization = self._summarization()
+        middleware = CLICompactionMiddleware(summarization)
+        request = self._model_request(summarization)
+        summarization._should_summarize.return_value = False
+        handler = AsyncMock(side_effect=ContextOverflowError("too large"))
+        invoke = MagicMock(
+            return_value=PreCompactDecision(
+                event=HookEvent.PRE_COMPACT,
+                continue_processing=False,
+                stop_reason="preserve context",
+            )
+        )
+
+        with (
+            patch(
+                "deepagents_code.offload_middleware._session_gate",
+                return_value={
+                    "snapshot_id": "snapshot",
+                    "events": frozenset({"PreCompact"}),
+                },
+            ),
+            patch("deepagents_code.offload_middleware._invoke_hook", invoke),
+            pytest.raises(ContextOverflowError, match="too large"),
+        ):
+            await middleware.awrap_model_call(request, handler)
+
+        invoke.assert_called_once()
+        handler.assert_awaited_once()
+        summarization._aoffload_to_backend.assert_not_awaited()
+        summarization._acreate_summary.assert_not_awaited()
 
     async def test_force_bypasses_sdk_eligibility_gate(self) -> None:
         """Forced compaction partitions directly even below the proactive gate."""

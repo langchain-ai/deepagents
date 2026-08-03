@@ -808,7 +808,10 @@ def _logical_event_identity(
     if isinstance(event, PreToolUseEvent | PostToolUseEvent):
         return event.call.id
     if isinstance(event, PreCompactEvent):
-        return logical_event_id or event.trigger.value
+        if logical_event_id:
+            return logical_event_id
+        msg = "PreCompact requires a stable tool-call identity"
+        raise ValueError(msg)
     if isinstance(event, SubagentStartEvent):
         return event.agent.id
     if isinstance(event, SubagentStopEvent):

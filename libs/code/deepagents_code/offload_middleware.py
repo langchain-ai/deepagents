@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from datetime import timedelta
 from pathlib import Path
@@ -17,6 +18,7 @@ from deepagents.middleware.summarization import (
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # inspected for runtime injection
 )
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolArg, StructuredTool
 from langgraph.types import Command
@@ -71,6 +73,14 @@ Only the *prefix position* is load-bearing; wording after it is free to change.
 """
 
 _OFFLOAD_SEED_ID_PREFIX = "offload-seed-"
+
+
+class _AutoCompactionBlockedError(Exception):
+    """Carry a blocked provider overflow past the SDK fallback handler."""
+
+    def __init__(self, overflow: ContextOverflowError) -> None:
+        super().__init__(str(overflow))
+        self.overflow = overflow
 
 
 def _offload_seed_message_id(tool_call_id: str) -> str:
@@ -346,6 +356,24 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         except RuntimeError:
             return None
 
+    @staticmethod
+    def _auto_compaction_id(request: ModelRequest) -> str:
+        """Identify one model-input snapshot across interrupt replays.
+
+        Returns:
+            A stable identity that changes when the model input advances.
+        """
+        messages = request.messages
+        if not messages:
+            return "0"
+        last = messages[-1]
+        identity = (
+            str(last.id)
+            if last.id
+            else hashlib.sha256(last.model_dump_json().encode()).hexdigest()
+        )
+        return f"{len(messages)}:{identity}"
+
     def _pre_auto_compact(self, request: ModelRequest) -> bool:
         """Run `PreCompact` before automatic summarization.
 
@@ -366,6 +394,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             gate=gate,
             config=config,
             deadline=timedelta(seconds=600),
+            logical_event_id=self._auto_compaction_id(request),
         )
         decision = _require_decision(decision, PreCompactDecision)
         return decision.continue_processing
@@ -388,35 +417,86 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             return None
         return request.override(messages=messages)
 
+    def _pre_overflow_compact(
+        self,
+        request: ModelRequest,
+        overflow: ContextOverflowError,
+    ) -> None:
+        """Gate the SDK fallback when the overflowing input can be compacted.
+
+        Raises:
+            _AutoCompactionBlockedError: If `PreCompact` blocks the fallback.
+        """
+        if self._summarization._determine_cutoff_index(
+            request.messages
+        ) > 0 and not self._pre_auto_compact(request):
+            raise _AutoCompactionBlockedError(overflow) from overflow
+
     def wrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Run `PreCompact` before synchronous threshold summarization.
+        """Run `PreCompact` before synchronous automatic summarization.
 
         Returns:
             The model response from the handler.
         """
         prepared = self._auto_compaction_request(request)
-        if prepared is not None and not self._pre_auto_compact(request):
-            return handler(prepared)
-        return super().wrap_model_call(request, handler)
+        if prepared is not None:
+            if not self._pre_auto_compact(prepared):
+                return handler(prepared)
+            return super().wrap_model_call(request, handler)
+
+        overflow_gated = False
+
+        def gated_handler(next_request: ModelRequest) -> ModelResponse:
+            nonlocal overflow_gated
+            try:
+                return handler(next_request)
+            except ContextOverflowError as overflow:
+                if not overflow_gated:
+                    overflow_gated = True
+                    self._pre_overflow_compact(next_request, overflow)
+                raise
+
+        try:
+            return super().wrap_model_call(request, gated_handler)
+        except _AutoCompactionBlockedError as blocked:
+            raise blocked.overflow from None
 
     async def awrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """Run `PreCompact` before asynchronous threshold summarization.
+        """Run `PreCompact` before asynchronous automatic summarization.
 
         Returns:
             The model response from the handler.
         """
         prepared = self._auto_compaction_request(request)
-        if prepared is not None and not self._pre_auto_compact(request):
-            return await handler(prepared)
-        return await super().awrap_model_call(request, handler)
+        if prepared is not None:
+            if not self._pre_auto_compact(prepared):
+                return await handler(prepared)
+            return await super().awrap_model_call(request, handler)
+
+        overflow_gated = False
+
+        async def gated_handler(next_request: ModelRequest) -> ModelResponse:
+            nonlocal overflow_gated
+            try:
+                return await handler(next_request)
+            except ContextOverflowError as overflow:
+                if not overflow_gated:
+                    overflow_gated = True
+                    self._pre_overflow_compact(next_request, overflow)
+                raise
+
+        try:
+            return await super().awrap_model_call(request, gated_handler)
+        except _AutoCompactionBlockedError as blocked:
+            raise blocked.overflow from None
 
     @staticmethod
     def _offload_rejection(request: ToolCallRequest) -> ToolMessage | None:

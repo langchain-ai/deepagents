@@ -44,6 +44,7 @@ from deepagents_code.hooks.models.config import HooksConfig
 from deepagents_code.hooks.models.domain import (
     CompactTrigger,
     HookContext,
+    HookDecision,
     HookEvent,
     HookInvocation,
     PermissionEffect,
@@ -464,6 +465,59 @@ def test_hook_resume_value_validates_identity() -> None:
             invocation_id=uuid4(),
             snapshot_id=request.snapshot_id,
         )
+
+
+def _invoke_pre_tool_hook(
+    monkeypatch: pytest.MonkeyPatch,
+    request: HookInvocationRequest,
+    resume: object,
+) -> HookDecision:
+    monkeypatch.setattr(
+        "deepagents_code.hooks.server_middleware.interrupt", lambda _payload: resume
+    )
+    event = request.invocation.event
+    assert isinstance(event, PreToolUseEvent)
+    gate = _session_gate(
+        {
+            "hooks_snapshot_id": request.snapshot_id,
+            "hooks_server_events": [HookEvent.PRE_TOOL_USE.value],
+        }
+    )
+    assert gate is not None
+    return _invoke_hook(
+        request.invocation.context,
+        event,
+        gate=gate,
+        config={"configurable": {"thread_id": request.invocation.context.thread_id}},
+        deadline=timedelta(seconds=1),
+    )
+
+
+def test_malformed_hook_resume_fails_open(monkeypatch: pytest.MonkeyPatch) -> None:
+    decision = _invoke_pre_tool_hook(monkeypatch, _request(), {"invalid": True})
+
+    assert isinstance(decision, PreToolUseDecision)
+    assert decision.permission.behavior == "none"
+    assert [item.code for item in decision.diagnostics] == ["invalid_resume"]
+
+
+def test_mismatched_hook_resume_stays_fatal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A well-formed response for another request must not fail open."""
+    request = _request()
+    resume = build_hook_resume_value(
+        HookInvocationResponse(
+            protocol_version=1,
+            invocation_id=uuid4(),
+            snapshot_id=request.snapshot_id,
+            decision=PreToolUseDecision(
+                event=HookEvent.PRE_TOOL_USE,
+                permission=PermissionEffect(behavior="allow"),
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError, match="invocation_id mismatch"):
+        _invoke_pre_tool_hook(monkeypatch, request, resume)
 
 
 def test_real_checkpointer_resume_replays_stable_hook_identity() -> None:

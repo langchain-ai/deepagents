@@ -21,6 +21,7 @@ _TIPS: dict[str, int] = {
     "Try /threads to resume a previous conversation": 2,
     "Use /offload when your conversation gets long": 2,
     "Use /copy to copy the latest message": 3,
+    "Use /cost to see a breakdown of estimated spend": 1,
     "Use /tools to list the tools available to the agent": 1,
     "Use dcode install <name> for optional providers": 1,
     "Use /mcp login <server> to authenticate MCP servers": 1,

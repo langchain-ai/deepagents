@@ -1263,9 +1263,9 @@ def _get_deepagents_version() -> str | None:
     """Resolve the installed Deep Agents SDK version for diagnostics.
 
     Editable installs can leave package metadata behind the source checkout, so
-    this uses the shared resolver that prefers the editable source marker. A
-    sibling monorepo workspace whose marker trails dcode's exact pin reports the
-    pinned release baseline with a `+editable` suffix.
+    this uses the shared resolver that prefers the editable source marker and
+    appends an `+editable` suffix. A sibling monorepo workspace whose marker
+    trails dcode's exact pin reports the pinned release baseline instead.
 
     Returns:
         The resolved Deep Agents SDK version, or `None` when unavailable.
@@ -1753,9 +1753,10 @@ def build_stream_config(
 
     Also records `dcode_client_deepagents_version` as a dcode-client diagnostic.
     This describes the Deep Agents package installed alongside the TUI, which
-    can differ from a remote graph's Deep Agents runtime version. For sibling
-    monorepo packages, a `+editable` suffix identifies workspace HEAD relative
-    to the pinned published SDK baseline.
+    can differ from a remote graph's Deep Agents runtime version. Editable
+    installs carry an `+editable` suffix, matching how the SDK stamps
+    `lc_versions["deepagents"]`; for sibling monorepo packages that suffix
+    identifies workspace HEAD relative to the pinned published SDK baseline.
 
     Also records `dcode_experimental=True` when `DEEPAGENTS_CODE_EXPERIMENTAL`
     is enabled, so experimental runs are filterable in trace metadata.
@@ -4312,9 +4313,9 @@ def _get_default_model_spec() -> str:
     # list, switch to checking `state` against the relevant
     # `ProviderAuthState` members directly.
     if get_provider_auth_status("openai").as_legacy_bool() is True:
-        return "openai:gpt-5.5"
+        return "openai:gpt-5.6-terra"
     if get_provider_auth_status("anthropic").as_legacy_bool() is True:
-        return "anthropic:claude-opus-4-7"
+        return "anthropic:claude-opus-5"
     if get_provider_auth_status("google_genai").as_legacy_bool() is True:
         return "google_genai:gemini-3.1-pro-preview"
 
@@ -4993,6 +4994,9 @@ def create_model(
         model = _create_model_via_init(model_name, provider, kwargs)
 
     resolved_provider = provider or getattr(model, "_model_provider", provider)
+    from deepagents_code.cost_tracking import _set_configured_provider_metadata
+
+    _set_configured_provider_metadata(model, resolved_provider)
 
     # Apply profile overrides from config.toml (e.g., max_input_tokens)
     if provider:

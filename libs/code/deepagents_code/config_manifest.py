@@ -1439,6 +1439,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.BOOL,
         default=True,
         env_var=_env_vars.PRICES_AUTO_UPDATE,
+        empty_env_is_false=True,
     ),
     # --- Runtime --------------------------------------------------------
     ConfigOption(

@@ -1219,6 +1219,17 @@ def test_no_update_check_resolves_inverted_persisted_check() -> None:
     )
 
 
+def test_prices_auto_update_empty_env_disables(monkeypatch) -> None:
+    """An explicitly empty env value opts out, matching `_start_price_updater`."""
+    opt = get_option("update.prices_auto_update")
+    assert opt is not None
+    monkeypatch.setenv(_env_vars.PRICES_AUTO_UPDATE, "")
+    assert resolve_scalar(opt, toml_data={}) == (
+        False,
+        f"env ({_env_vars.PRICES_AUTO_UPDATE})",
+    )
+
+
 def test_resolve_ptc_delegates_to_parser() -> None:
     """The PTC kind routes through the dedicated allowlist parser."""
     opt = get_option("interpreter.ptc")

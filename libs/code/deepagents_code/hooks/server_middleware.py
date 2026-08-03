@@ -1,8 +1,8 @@
 """Server-owned Hooks v2 lifecycle middleware.
 
-Emits tool, compaction, stop, and subagent lifecycle events through the LangGraph
-interrupt channel so the client runtime can
-execute matching handlers and return typed decisions.
+Emits `PreCompact`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`,
+`SubagentStart`, and `SubagentStop` through the LangGraph interrupt channel so the
+client runtime can execute matching handlers and return typed decisions.
 """
 
 from __future__ import annotations
@@ -485,33 +485,30 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         if not _event_enabled(gate, event):
             return result
         if failed:
-            decision = _invoke_hook(
-                context,
-                PostToolUseFailureEvent(
-                    event=HookEvent.POST_TOOL_USE_FAILURE,
-                    call=call,
-                    error=_tool_result_text(result, call.id),
-                    is_interrupt=False,
-                    duration_ms=duration_ms,
-                ),
-                gate=gate,
-                config=config,
-                deadline=self._default_deadline,
+            event = PostToolUseFailureEvent(
+                event=HookEvent.POST_TOOL_USE_FAILURE,
+                call=call,
+                error=_tool_result_text(result, call.id),
+                duration_ms=duration_ms,
             )
-            decision = _require_decision(decision, PostToolUseFailureDecision)
+            expected = PostToolUseFailureDecision
         else:
-            decision = _invoke_hook(
+            event = PostToolUseEvent.from_tool_result(
+                result,
+                call=call,
+                duration_ms=duration_ms,
+            )
+            expected = PostToolUseDecision
+        decision = _require_decision(
+            _invoke_hook(
                 context,
-                PostToolUseEvent.from_tool_result(
-                    result,
-                    call=call,
-                    duration_ms=duration_ms,
-                ),
+                event,
                 gate=gate,
                 config=config,
                 deadline=self._default_deadline,
-            )
-            decision = _require_decision(decision, PostToolUseDecision)
+            ),
+            expected,
+        )
         return _apply_post_tool_use(result, decision, call.id)
 
     def _maybe_subagent_stop(

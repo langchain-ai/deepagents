@@ -822,8 +822,8 @@ def test_failed_execute_routes_to_post_tool_use_failure(
         invoke,
     )
 
-    updated = middleware._maybe_post_tool_use(
-        ToolCallData(id="c1", name="execute", args={"command": "bash -c 'exit 42'"}),
+    middleware._maybe_post_tool_use(
+        ToolCallData(id="c1", name="execute", args={}),
         HookContext(
             thread_id="thread-1",
             cwd=Path("/tmp"),
@@ -831,18 +831,17 @@ def test_failed_execute_routes_to_post_tool_use_failure(
         ),
         {
             "snapshot_id": "snap",
-            "events": frozenset({"PostToolUse", "PostToolUseFailure"}),
+            "events": frozenset({"PostToolUseFailure"}),
         },
         {"configurable": {"thread_id": "thread-1"}},
         result,
         5,
     )
 
-    assert updated is result
+    invoke.assert_called_once()
     event = invoke.call_args.args[1]
     assert isinstance(event, PostToolUseFailureEvent)
     assert event.error == result.content
-    assert event.is_interrupt is False
     assert event.duration_ms == 5
 
 

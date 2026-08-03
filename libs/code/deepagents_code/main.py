@@ -1920,7 +1920,7 @@ def parse_args() -> argparse.Namespace:
         dest="auto_classifier_model",
         metavar="MODEL",
         help="Model the Auto approval classifier reviews actions with "
-        "(e.g. anthropic:claude-haiku-4-5). Defaults to "
+        "(e.g. anthropic:claude-haiku-4-5). Interactive TUI only. Defaults to "
         "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL, then [models].auto_classifier, "
         "then the main agent model. A weaker model weakens Auto's review.",
     )
@@ -2238,6 +2238,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
+    # `--auto-classifier-model ""` yields the empty string, not `None`. Collapse
+    # it to unset here so every downstream `is not None` gate — the ACP and
+    # headless/sandbox rejections, and the value passed to the TUI — agrees that
+    # a blank spec means "inherit the main agent model".
+    if getattr(args, "auto_classifier_model", None) is not None:
+        args.auto_classifier_model = args.auto_classifier_model.strip() or None
     _resolve_and_validate_sandbox(args, parser)
     return args
 
@@ -2324,6 +2330,55 @@ def _resolve_and_validate_sandbox(
         and not metadata.supports_sandbox_id
     ):
         parser.error(f"--sandbox-id is not supported by provider '{args.sandbox}'")
+
+
+def _auto_classifier_spec_problem(spec: str) -> str | None:
+    """Return why a configured Auto classifier spec looks unusable, if it does.
+
+    `/auto model` validates by constructing the model and refuses a spec it
+    cannot build. The startup surfaces — `--auto-classifier-model`, the env var,
+    `[models].auto_classifier` — reached the middleware unchecked, so a typo was
+    announced as the active reviewer and only surfaced as a denied tool call
+    mid-turn.
+
+    This is the cheap half of what the slash command does: parse the spec and
+    check the provider's credentials. It deliberately does not call
+    `create_model`, which would pull LangChain onto the launch path (see
+    `AGENTS.md`), so it catches the two common mistakes — unknown provider and
+    missing credential — and leaves the rest to the middleware's fail-closed
+    path.
+
+    Args:
+        spec: Resolved `provider:model` specification.
+
+    Returns:
+        A one-line problem description, or `None` when the spec looks usable.
+    """
+    from deepagents_code.config import detect_provider
+    from deepagents_code.model_config import ModelSpec, get_provider_auth_status
+
+    parsed = ModelSpec.try_parse(spec)
+    provider = parsed.provider if parsed else detect_provider(spec)
+    if not provider:
+        return (
+            f"Auto classifier model {spec!r} has no recognizable provider; "
+            "Auto will deny gated actions until it is fixed. Use "
+            "provider:model, e.g. anthropic:claude-haiku-4-5."
+        )
+    try:
+        status = get_provider_auth_status(provider)
+    except Exception:
+        # Advisory check only — a probe failure must never block startup.
+        logger.debug("Auto classifier provider auth probe failed", exc_info=True)
+        return None
+    if status.blocks_start:
+        env_var = f" Set {status.env_var}." if status.env_var else ""
+        return (
+            f"Auto classifier model {spec!r} has no credentials for provider "
+            f"{provider!r}; Auto will deny gated actions until it is "
+            f"fixed.{env_var}"
+        )
+    return None
 
 
 async def run_textual_cli_async(
@@ -2441,7 +2496,7 @@ async def run_textual_cli_async(
     from deepagents_code.config import (
         _get_default_model_spec,
         detect_provider,
-        resolve_auto_classifier_model,
+        resolve_auto_classifier_model_with_problem,
         settings,
     )
     from deepagents_code.model_config import (
@@ -2487,11 +2542,30 @@ async def run_textual_cli_async(
         settings.model_provider = ""
         settings.model_name = ""
 
-    resolved_auto_classifier_model = (
-        auto_classifier_model
-        if auto_classifier_model is not None
-        else resolve_auto_classifier_model()
-    )
+    # Normalize a blank flag to "unset" here so exactly one representation of
+    # "inherit the main model" reaches the app. `argparse` yields `""` for
+    # `--auto-classifier-model ""`, which would otherwise both suppress the
+    # env/TOML lookup and read as a configured classifier downstream.
+    flag_classifier_model = (auto_classifier_model or "").strip() or None
+    auto_classifier_problem: str | None = None
+    if flag_classifier_model is not None:
+        resolved_auto_classifier_model = flag_classifier_model
+    else:
+        (
+            resolved_auto_classifier_model,
+            auto_classifier_problem,
+        ) = resolve_auto_classifier_model_with_problem()
+    if resolved_auto_classifier_model is not None:
+        auto_classifier_problem = _auto_classifier_spec_problem(
+            resolved_auto_classifier_model
+        )
+    if auto_classifier_problem is not None:
+        from rich.console import Console as _WarnConsole
+        from rich.markup import escape
+
+        _WarnConsole(stderr=True).print(
+            f"[bold yellow]Warning:[/bold yellow] {escape(auto_classifier_problem)}"
+        )
 
     model_kwargs: dict[str, Any] | None = None
     if not defer_server_start:

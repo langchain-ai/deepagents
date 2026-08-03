@@ -1749,7 +1749,7 @@ class TestFilteredModelsWidgetSync:
         to match so that _update_footer looks up the correct model for the
         highlighted widget index.
         """
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         # Simulate score-sorted filtered list that interleaves providers
         screen._filtered_models = [
             ("openai:gpt-5", "openai"),
@@ -1799,7 +1799,7 @@ class TestAvailabilityOrdering:
 
     def test_provider_availability_rank_orders_states(self) -> None:
         """Usable < unknown < missing < not-installed, regardless of auth."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._install_extras = {"baseten": "baseten"}
         rank = screen._provider_availability_rank
 
@@ -2439,7 +2439,7 @@ class TestGetModelStatus:
 
     def test_returns_status_when_present(self) -> None:
         """Status is returned when profile entry has the key."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {
             "anthropic:old-model": ModelProfileEntry(
                 profile={"status": "deprecated"},
@@ -2450,13 +2450,13 @@ class TestGetModelStatus:
 
     def test_returns_none_when_no_profile_entry(self) -> None:
         """None is returned when model spec is not in profiles."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {}
         assert screen._get_model_status("anthropic:missing") is None
 
     def test_returns_none_when_no_status_key(self) -> None:
         """None is returned when profile exists but has no status key."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {
             "anthropic:model": ModelProfileEntry(
                 profile={"max_input_tokens": 200000},
@@ -2467,7 +2467,7 @@ class TestGetModelStatus:
 
     def test_returns_none_when_profile_empty(self) -> None:
         """None is returned when profile dict is empty."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {
             "anthropic:model": ModelProfileEntry(
                 profile={},
@@ -2477,12 +2477,45 @@ class TestGetModelStatus:
         assert screen._get_model_status("anthropic:model") is None
 
 
+def _bare_selector() -> ModelSelectorScreen:
+    """Build an uninitialized selector with just the display-name dependencies.
+
+    `_get_model_display_name` is a pure lookup over `_profiles` and
+    `_recommended_models`, so these tests skip `__init__` (which needs a running
+    app). Both attributes are set explicitly: the screen must not carry a
+    fallback to the *main-model* recommendation set, since the classifier
+    selector passes its own and would otherwise be labelled from the wrong one.
+    """
+    from deepagents_code.tui.widgets import model_selector
+
+    screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+    screen._recommended_models = model_selector._RECOMMENDED_MODELS
+    return screen
+
+
 class TestGetModelDisplayName:
     """Tests for _get_model_display_name resolution."""
 
+    def test_uses_the_injected_recommendation_set(self) -> None:
+        """A caller-supplied set is used, not the main-model default.
+
+        `/auto model` passes `_AUTO_CLASSIFIER_RECOMMENDED_MODELS`, so falling
+        back to the main-model set would label classifier rows from the wrong
+        catalog.
+        """
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {}
+        screen._recommended_models = {"openai:tiny": "Tiny Reviewer"}
+
+        assert screen._get_model_display_name("openai:tiny") == "Tiny Reviewer"
+        # A spec only in the main-model catalog must not resolve here.
+        assert screen._get_model_display_name("anthropic:claude-opus-5") == (
+            "claude-opus-5"
+        )
+
     def test_returns_profile_name_when_present(self) -> None:
         """The human-readable profile name wins over the raw model id."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {
             "anthropic:claude-sonnet-4-5": ModelProfileEntry(
                 profile={"name": "Claude Sonnet 4.5"},
@@ -2496,7 +2529,7 @@ class TestGetModelDisplayName:
 
     def test_falls_back_to_model_id_when_no_name(self) -> None:
         """A profile without a `name` key falls back to the model portion."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {
             "anthropic:claude-sonnet-4-5": ModelProfileEntry(
                 profile={"max_input_tokens": 200000},
@@ -2526,7 +2559,7 @@ class TestGetModelDisplayName:
         """Uninstalled recommendations use the hardcoded name, not the raw id."""
         from deepagents_code.tui.widgets import model_selector
 
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {}
         assert spec in model_selector._RECOMMENDED_MODELS
         assert screen._get_model_display_name(spec) == name
@@ -2537,7 +2570,7 @@ class TestGetModelDisplayName:
 
         spec = "openai:gpt-5.5"
         assert spec in model_selector._RECOMMENDED_MODELS
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {
             spec: ModelProfileEntry(
                 profile={"name": "GPT-5.5 (from profile)"},
@@ -2548,7 +2581,7 @@ class TestGetModelDisplayName:
 
     def test_falls_back_to_model_id_when_not_recommended(self) -> None:
         """A non-recommended spec absent from profiles falls back to the model."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {}
         assert (
             screen._get_model_display_name("openai:some-unlisted-model")
@@ -2557,7 +2590,7 @@ class TestGetModelDisplayName:
 
     def test_ignores_empty_name(self) -> None:
         """An empty `name` string falls back rather than rendering blank."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {
             "openai:some-unlisted-model": ModelProfileEntry(
                 profile={"name": ""},
@@ -2571,7 +2604,7 @@ class TestGetModelDisplayName:
 
     def test_preserves_colon_in_model_id_fallback(self) -> None:
         """Only the leading `provider:` is stripped in the fallback path."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {}
         assert (
             screen._get_model_display_name("ollama:some-model:cloud")
@@ -2580,7 +2613,7 @@ class TestGetModelDisplayName:
 
     def test_returns_bare_spec_unchanged(self) -> None:
         """A spec without a `provider:` prefix is returned as-is."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {}
         assert screen._get_model_display_name("gpt-5.5") == "gpt-5.5"
 

@@ -12,6 +12,7 @@ import shlex
 import shutil
 import sys
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
@@ -271,7 +272,8 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
                 continue
             if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # Mirror `_load_dotenv`: a project `.env` cannot preview-set a
-                # user-level MCP trust decision (the global `.env`/shell can).
+                # user-level trust decision — MCP trust lists or the Auto
+                # classifier model (the global `.env`/shell can).
                 logger.debug(
                     "Ignoring project-denied env key %r from %s", key, dotenv_path
                 )
@@ -378,8 +380,10 @@ def _load_dotenv(
                 logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
                 continue
             if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
-                # A committed project `.env` must not set a user-level MCP trust
-                # decision; the global `.env` and shell may (is_project=False).
+                # A committed project `.env` must not set a user-level trust
+                # decision — MCP trust lists or the Auto classifier model that
+                # authorizes this repo's own tool calls; the global `.env` and
+                # shell may (is_project=False).
                 logger.debug(
                     "Ignoring project-denied env key %r from %s", key, dotenv_path
                 )
@@ -3327,15 +3331,23 @@ def is_openai_prompt_cache_key_enabled() -> bool:
     return bool(value)
 
 
-def resolve_auto_classifier_model() -> str | None:
-    """Resolve the model spec the Auto approval classifier should use.
+def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None]:
+    """Resolve the Auto classifier spec and any reason it was ignored.
 
     Reads the `models.auto_classifier` option from env/`config.toml`. `None`
     means the classifier inherits the main agent model, which is the historical
     behavior and the default.
 
+    A configured-but-unusable value (blank, or a non-string such as
+    `auto_classifier = 3`, which `resolve_scalar` drops to the default) silently
+    reverts authorization review to the main agent model — the agent grading its
+    own actions. The caller gets a description so it can say so on a surface the
+    user actually reads; a log line alone is not that surface.
+
     Returns:
-        A `provider:model` spec, or `None` when the classifier should inherit.
+        `(spec, problem)`. `spec` is a `provider:model` spec, or `None` when the
+            classifier should inherit. `problem` is a one-line description when a
+            configured value was ignored, else `None`.
     """
     from deepagents_code.config_manifest import (
         get_option,
@@ -3345,20 +3357,49 @@ def resolve_auto_classifier_model() -> str | None:
 
     option = get_option("models.auto_classifier")
     if option is None:
-        return None
-    value, source = resolve_scalar(option, toml_data=load_config_toml())
+        return None, None
+    toml_data = load_config_toml()
+    value, source = resolve_scalar(option, toml_data=toml_data)
     if isinstance(value, str) and value.strip():
-        return value.strip()
+        return value.strip(), None
     if isinstance(value, str) and source != "default":
-        # A blank value is a configured security control being ignored, so it
-        # gets the same audible treatment as a malformed one rather than
-        # reverting to the main agent model in silence.
-        logger.warning(
-            "Ignoring blank %s auto_classifier model; the Auto approval "
-            "classifier will review with the main agent model",
-            source,
+        problem = (
+            f"Ignoring blank {source} auto_classifier model; the Auto approval "
+            "classifier will review with the main agent model."
         )
-    return None
+        logger.warning("%s", problem)
+        return None, problem
+    # `resolve_scalar` coerces a wrong-typed TOML value to the option default, so
+    # a malformed entry is indistinguishable here from an absent one. Re-read the
+    # raw table to tell them apart rather than reverting in silence.
+    raw = _raw_toml_auto_classifier(toml_data)
+    if raw is not None and not isinstance(raw, str):
+        problem = (
+            f"Ignoring malformed config.toml auto_classifier model {raw!r} "
+            "(expected a provider:model string); the Auto approval classifier "
+            "will review with the main agent model."
+        )
+        logger.warning("%s", problem)
+        return None, problem
+    return None, None
+
+
+def _raw_toml_auto_classifier(toml_data: Mapping[str, Any]) -> object | None:
+    """Return the raw `[models].auto_classifier` entry, or `None` if absent."""
+    models = toml_data.get("models")
+    if not isinstance(models, Mapping):
+        return None
+    return models.get("auto_classifier")
+
+
+def resolve_auto_classifier_model() -> str | None:
+    """Resolve the model spec the Auto approval classifier should use.
+
+    Returns:
+        A `provider:model` spec, or `None` when the classifier should inherit.
+    """
+    spec, _problem = resolve_auto_classifier_model_with_problem()
+    return spec
 
 
 def resolve_goal_auto_accept_criteria() -> tuple[bool, str]:

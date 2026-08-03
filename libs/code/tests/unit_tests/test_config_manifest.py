@@ -270,6 +270,68 @@ def test_resolve_auto_classifier_model_warns_on_blank_value(
     )
 
 
+def test_resolve_auto_classifier_model_reports_blank_problem(monkeypatch) -> None:
+    """A blank value is returned as a problem, not just logged.
+
+    A `logger.warning` lands in the debug log, which is not a surface the user
+    reads; the caller needs the description to show it at startup.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model_with_problem
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "   "}},
+    )
+
+    spec, problem = resolve_auto_classifier_model_with_problem()
+
+    assert spec is None
+    assert problem is not None
+    assert "blank" in problem
+    assert "main agent model" in problem
+
+
+def test_resolve_auto_classifier_model_reports_malformed_problem(monkeypatch) -> None:
+    """A wrong-typed value must not silently revert to self-review.
+
+    `resolve_scalar` coerces a non-string to the option default, making a
+    malformed entry indistinguishable from an absent one — so the agent resumed
+    grading its own actions with nothing logged at all.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model_with_problem
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": 3}},
+    )
+
+    spec, problem = resolve_auto_classifier_model_with_problem()
+
+    assert spec is None
+    assert problem is not None
+    assert "malformed" in problem
+    assert "main agent model" in problem
+
+
+def test_resolve_auto_classifier_model_reports_no_problem_when_absent(
+    monkeypatch,
+) -> None:
+    """An unconfigured classifier is the default, not a problem to report."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model_with_problem
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+
+    assert resolve_auto_classifier_model_with_problem() == (None, None)
+
+
 def test_goal_auto_accept_criteria_defaults_to_review(monkeypatch) -> None:
     """Auto mode reviews generated goal criteria when no preference is set."""
     option = get_option("goals.auto_accept_criteria")

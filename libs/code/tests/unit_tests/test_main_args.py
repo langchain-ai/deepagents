@@ -350,6 +350,65 @@ class TestAutoApproveHeadlessValidation:
         assert exc_info.value.code == 2
         assert "--auto-classifier-model is only supported" in capsys.readouterr().err
 
+    def test_rejects_auto_classifier_model_when_headless(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A headless run has no Auto mode, so its classifier flag is a no-op.
+
+        The mirror of the sandbox case, and the likelier user mistake. Without
+        the `args.non_interactive_message` conjunct in the guard, `dcode -n ...
+        --auto-classifier-model X` silently accepts a setting that governs action
+        authorization and then discards it.
+        """
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "-n",
+                    "do something",
+                    "--auto-classifier-model",
+                    "anthropic:claude-haiku-4-5",
+                ],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "--auto-classifier-model is only supported" in err
+        assert "it runs headlessly" in err
+
+    def test_blank_auto_classifier_model_normalizes_to_unset(self) -> None:
+        """A blank flag means "inherit", so it must not read as configured.
+
+        `argparse` yields `""`, which every downstream `is not None` gate would
+        treat as a configured classifier: the sandbox/headless guards would
+        reject the run, and the TUI would announce a distinct reviewer that does
+        not exist.
+        """
+        from deepagents_code.main import parse_args
+
+        for value in ("", "   "):
+            with patch.object(
+                sys, "argv", ["deepagents", "--auto-classifier-model", value]
+            ):
+                assert parse_args().auto_classifier_model is None
+
+        with patch.object(
+            sys,
+            "argv",
+            ["deepagents", "--auto-classifier-model", " anthropic:claude-haiku-4-5 "],
+        ):
+            assert parse_args().auto_classifier_model == "anthropic:claude-haiku-4-5"
+
     def test_accepts_auto_approve_in_interactive_mode(self) -> None:
         """`--auto-approve` must still be honored on an interactive launch.
 

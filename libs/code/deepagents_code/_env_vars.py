@@ -41,6 +41,12 @@ resolved (bad spec, missing credentials, uninstalled provider package) never
 falls back to the main model — reviewed actions are denied, and repeated
 failures escalate to your approval. Also settable via `[models].auto_classifier`
 in config.toml and `--auto-classifier-model`.
+
+This is user-controlled process env, not a repo file: a committed *project*
+`.env` cannot set it (see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`), so a cloned
+repository cannot point the review that authorizes its own tool calls at a weaker
+model. Only the shell, the launch environment, or the global `~/.deepagents/.env`
+can.
 """
 
 AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"

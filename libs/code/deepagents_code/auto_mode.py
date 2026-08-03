@@ -79,11 +79,33 @@ AUTO_MODE_COUNTERS_NAMESPACE: tuple[str, str] = (
 USER_PROMPT_METADATA_KEY = "deepagents_code_user_prompt"
 AUTO_MODE_EVENT_TYPE = "auto_mode"
 _CLASSIFIER_TIMEOUT_SECONDS = 20.0
+# Building a classifier is a different kind of wait than asking one for a
+# verdict: a cold provider-package import, profile resolution, and credential
+# bootstrap all land on the first review. Sharing one budget made that first
+# batch the likeliest to be denied, and reported it as "the classifier did not
+# respond" for a model that was never built.
+_CLASSIFIER_CONSTRUCTION_TIMEOUT_SECONDS = 30.0
 _REASON_LIMIT = 512
 _TOTAL_DENIAL_FALLBACK = 20
 _CONSECUTIVE_DENIAL_FALLBACK = 3
 _CONSECUTIVE_UNAVAILABLE_FALLBACK = 2
 _MIN_SECRET_LENGTH = 8
+_FALLBACK_REASON_CODES = frozenset(
+    {
+        "approval_mode_unavailable",
+        "control_state_unavailable",
+        "consecutive_policy_denials",
+        "classifier_unavailable",
+        "repeated_batch",
+        "total_policy_denials",
+    }
+)
+"""Internal `AutoDecisionPlan.fallback_reason` codes, as opposed to prose.
+
+The field carries both: short codes that routing branches on, and — for a
+latched classifier configuration fault — a user-facing sentence that must reach
+the approval prompt verbatim. Membership here is what tells the two apart.
+"""
 # One middleware instance serves every thread in the process, so these bound the
 # shared emission ledger. A thread suspended at `interrupt()` cannot propose
 # another batch, so one resolved scope per concurrently active thread is ample;
@@ -126,6 +148,23 @@ class _ClassifierDeadlineExceededError(TimeoutError):
         )
 
 
+class _ClassifierConstructionDeadlineExceededError(TimeoutError):
+    """Raised when building a configured classifier outlives its own budget.
+
+    Separate from `_ClassifierDeadlineExceededError` so the reason can say the
+    model could not be *built* in time rather than that it did not respond —
+    the latter sends the user looking for a provider outage when the model was
+    never constructed.
+    """
+
+    def __init__(self, spec: str, timeout_seconds: float) -> None:
+        self.spec = spec
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            f"classifier model {spec!r} construction exceeded {timeout_seconds:g}s"
+        )
+
+
 class _ClassifierModelUnavailableError(RuntimeError):
     """Raised when a configured classifier model cannot be constructed.
 
@@ -137,10 +176,13 @@ class _ClassifierModelUnavailableError(RuntimeError):
     indistinguishable from a bad setting here.
 
     Auto never silently falls back to the main agent model: the classifier is an
-    authorization control, so an unusable one fails closed. The batch is
-    *denied* — every call in it gets a `classifier unavailable` error and does
-    not execute — and only after `_CONSECUTIVE_UNAVAILABLE_FALLBACK` consecutive
-    failing batches does Auto escalate to human approval.
+    authorization control, so an unusable one fails closed. The first failing
+    batch is *denied* — every call in it gets a `classifier unavailable` error
+    and does not execute — and the spec is latched in
+    `AutoModeCounters.classifier_config_failed_spec`. Because a construction
+    fault is permanent, every later batch for that spec escalates straight to
+    human approval instead of denying again; the latch clears on the first
+    review that succeeds.
     """
 
     def __init__(self, spec: str) -> None:
@@ -158,8 +200,18 @@ def _consume_classifier_task_exception(task: asyncio.Task[BaseChatModel]) -> Non
     Args:
         task: Completed classifier-construction task.
     """
-    if not task.cancelled():
-        task.exception()
+    if task.cancelled():
+        return
+    exc = task.exception()
+    # `_ClassifierModelUnavailableError` is the expected outcome and was already
+    # logged with a traceback at the raise site. Anything else escaped the
+    # construction handler itself — the cache insert or the `finally` cleanup —
+    # and would otherwise vanish with the construction entry still leaked.
+    if exc is not None and not isinstance(exc, _ClassifierModelUnavailableError):
+        logger.warning(
+            "Detached Auto classifier construction failed unexpectedly",
+            exc_info=exc,
+        )
 
 
 class AutoDecisionCategory(StrEnum):
@@ -219,6 +271,17 @@ class AutoModeCounters(TypedDict):
     last_batch_id: str | None
     last_turn_id: str | None
     last_mode: str
+    classifier_config_failed_spec: str | None
+    """Spec of a classifier model that failed to build, once seen before.
+
+    A bad spec or missing credential never fixes itself, so retrying it forever
+    would deny most batches without ever asking the user (approving a fallback
+    resets `consecutive_unavailable`, so a counter alone oscillates
+    deny/deny/ask). Latching the spec routes every later batch straight to human
+    approval instead. Construction is still retried each batch, so fixing the
+    setting — or pointing `/auto model` at a different spec — clears the latch
+    on the next successful review without a restart.
+    """
 
 
 DecisionDisposition = Literal[
@@ -567,16 +630,24 @@ def classifier_unavailable_reason(
     Args:
         exc: Failure raised while invoking or validating the classifier.
         timeout_seconds: Configured local wait budget for one batch.
-        spec: Spec of the distinct classifier model that failed, when one is in
-            use. Naming it points the user at the setting to change; a cached
+        spec: Label of the distinct classifier model that failed, when one is in
+            use — its spec, or its model name when a chat model instance was
+            supplied programmatically (in which case there is no setting to
+            change). Naming it points the user at the setting to fix; a cached
             model built against a since-rotated credential fails here rather
-            than at construction, so an unnamed reason would send them back to
-            `/auth` instead of restarting. `None` when reviews inherit the main
-            agent model and the spec would say nothing.
+            than at construction. `None` when reviews inherit the main agent
+            model and the spec would say nothing.
 
     Returns:
         Compact single-line reason for tool messages and TUI events.
     """
+    if isinstance(exc, _ClassifierConstructionDeadlineExceededError):
+        # Checked before the plain deadline error: this one means the model was
+        # never built, so "did not respond" would misdirect the fix.
+        return (
+            f"configured classifier model {exc.spec} could not be built "
+            f"within {exc.timeout_seconds:g}s"
+        )
     if isinstance(exc, _ClassifierDeadlineExceededError):
         return f"classifier did not respond within {timeout_seconds:g}s"
     if isinstance(exc, _ClassifierModelUnavailableError):
@@ -596,6 +667,7 @@ def _default_counters(mode: ApprovalMode) -> AutoModeCounters:
         "last_batch_id": None,
         "last_turn_id": None,
         "last_mode": mode.value,
+        "classifier_config_failed_spec": None,
     }
 
 
@@ -632,6 +704,11 @@ def _validate_counters(value: object) -> AutoModeCounters | None:
         mode.value for mode in ApprovalMode
     }:
         return None
+    # Absent on counters written before the latch existed, so a missing key is
+    # "no latch" rather than corrupt state.
+    failed_spec = value.get("classifier_config_failed_spec")
+    if failed_spec is not None and not isinstance(failed_spec, str):
+        return None
     return {
         "consecutive_denials": cast("int", consecutive_denials),
         "total_denials": cast("int", total_denials),
@@ -639,6 +716,7 @@ def _validate_counters(value: object) -> AutoModeCounters | None:
         "last_batch_id": last_batch_id,
         "last_turn_id": last_turn_id,
         "last_mode": last_mode,
+        "classifier_config_failed_spec": failed_spec,
     }
 
 
@@ -1728,6 +1806,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         worktree_root: str | Path,
         shell_allow_list: Sequence[str] = (),
         classifier_timeout_seconds: float = _CLASSIFIER_TIMEOUT_SECONDS,
+        classifier_construction_timeout_seconds: float = (
+            _CLASSIFIER_CONSTRUCTION_TIMEOUT_SECONDS
+        ),
         classifier_model: str | BaseChatModel | None = None,
         trusted_ask_user_tool: BaseTool | None = None,
         trusted_compaction_tool: BaseTool | None = None,
@@ -1739,6 +1820,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             worktree_root: Trusted repository boundary for deterministic writes.
             shell_allow_list: Restrictive configured shell entries.
             classifier_timeout_seconds: Timeout for one structured decision batch.
+            classifier_construction_timeout_seconds: Separate timeout for lazily
+                building a configured classifier model, so a cold provider
+                import does not consume the inference budget.
             classifier_model: Model the authorization classifier reviews with.
 
                 A `provider:model` spec is resolved lazily (and cached) on the
@@ -1784,6 +1868,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         }
         self._shell_allow_list = tuple(shell_allow_list)
         self._classifier_timeout_seconds = classifier_timeout_seconds
+        self._classifier_construction_timeout_seconds = (
+            classifier_construction_timeout_seconds
+        )
         self._configured_classifier_model = classifier_model
         self._classifier_model_cache: OrderedDict[str, BaseChatModel] = OrderedDict()
         self._classifier_model_lock = asyncio.Lock()
@@ -2076,9 +2163,15 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         instead sends `INHERIT_CLASSIFIER_MODEL`, which does override a session
         started with a separate classifier back to the main agent model.
 
-        A blank spec from either tier means "inherit", matching
-        `ServerConfig.from_env`. Passing it through would reach `create_model`,
-        which treats an empty spec as "use `[models].default`" and would build a
+        A blank spec from the *construction-time* tier means "inherit", matching
+        `ServerConfig.from_env`. A blank value on the runtime context is instead
+        treated as "no preference" — the same as absent — because only
+        `INHERIT_CLASSIFIER_MODEL` expresses inherit for a per-run value; a bare
+        blank must not silently override a startup classifier.
+
+        Either way a blank value never reaches `create_model`, which treats an
+        empty spec as "use the default model spec" (`[models].default`, then
+        `[models].recent`, then credential auto-detection) and would build a
         model nobody selected for authorization review.
 
         Returns:
@@ -2154,6 +2247,22 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 if active is task:
                     del self._classifier_model_constructions[selected]
 
+    async def _evict_classifier_model(self, spec: str) -> None:
+        """Drop a cached classifier so the next batch rebuilds it.
+
+        Construction succeeds once and the model is cached for the process, so a
+        credential that is later revoked or rotated fails at *invoke* time
+        forever — `/auth` runs in the client and cannot reach this cache. Evicting
+        on any invoke-time failure keeps the session recoverable; rebuilding is
+        cheap next to a denied batch, and a spec that is genuinely broken just
+        fails construction and latches instead.
+
+        Args:
+            spec: Configured `provider:model` specification to forget.
+        """
+        async with self._classifier_model_lock:
+            self._classifier_model_cache.pop(spec, None)
+
     async def _classifier_model(
         self, request: ModelRequest
     ) -> tuple[BaseChatModel, str | None]:
@@ -2195,14 +2304,26 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         dispositions: Mapping[str, str],
         tools: Mapping[str, BaseTool],
     ) -> AutoDecisionBatch:
-        # The deadline bounds how long this batch waits for lazy construction
-        # and inference. Constructor threads cannot be cancelled, so resolution
-        # retains one shielded task per spec that later batches reuse instead of
-        # spawning more work for that spec after the first wait expires.
+        # Construction and inference get separate budgets: a cold provider
+        # import must not eat the time reserved for the verdict, and the two
+        # failures need different reasons. Constructor threads cannot be
+        # cancelled, so resolution retains one shielded task per spec that later
+        # batches reuse instead of spawning more work for that spec after the
+        # first wait expires.
+        construction_cm = asyncio.timeout(self._classifier_construction_timeout_seconds)
+        try:
+            async with construction_cm:
+                model, spec = await self._classifier_model(request)
+        except TimeoutError:
+            if construction_cm.expired():
+                raise _ClassifierConstructionDeadlineExceededError(
+                    self._distinct_classifier_label(request) or "inherited",
+                    self._classifier_construction_timeout_seconds,
+                ) from None
+            raise
         timeout_cm = asyncio.timeout(self._classifier_timeout_seconds)
         try:
             async with timeout_cm:
-                model, spec = await self._classifier_model(request)
                 structured = model.with_structured_output(AutoDecisionBatch)
                 messages = [
                     SystemMessage(content=_CLASSIFIER_POLICY),
@@ -2454,7 +2575,32 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         # Providers expose heterogeneous error types; all failures block review.
         except Exception as exc:
             latency_ms = int((time.monotonic() - started) * 1000)
-            counters["consecutive_unavailable"] += 1
+            # A construction failure is a permanent configuration fault, so it
+            # latches instead of feeding the transient counter: the counter is
+            # reset whenever the user approves a fallback, which would otherwise
+            # leave a bad spec denying two batches for every one it asks about,
+            # forever. The first occurrence still denies; once latched, every
+            # later batch escalates to human approval. Construction is retried
+            # each batch either way, so the latch clears as soon as a review
+            # succeeds.
+            config_fault = (
+                exc if isinstance(exc, _ClassifierModelUnavailableError) else None
+            )
+            classifier_label = self._distinct_classifier_label(request)
+            if config_fault is None and classifier_label is not None:
+                # Invoke-time failure against a distinct classifier: the cached
+                # model may have been built against a since-revoked credential,
+                # so forget it rather than failing identically every batch until
+                # the process restarts.
+                await self._evict_classifier_model(classifier_label)
+            latched = (
+                config_fault is not None
+                and counters["classifier_config_failed_spec"] == config_fault.spec
+            )
+            if config_fault is not None:
+                counters["classifier_config_failed_spec"] = config_fault.spec
+            else:
+                counters["consecutive_unavailable"] += 1
             counters["last_batch_id"] = batch_id
             counters_saved = await _write_counters(
                 request.runtime.store, thread_key, counters
@@ -2471,7 +2617,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 classifier_unavailable_reason(
                     exc,
                     timeout_seconds=self._classifier_timeout_seconds,
-                    spec=self._distinct_classifier_label(request),
+                    spec=classifier_label,
                 ),
                 known_secrets=self._known_secrets,
             )
@@ -2486,18 +2632,43 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 "human approval is required.",
                 known_secrets=self._known_secrets,
             )
+            # A repeat construction failure for the same spec will not fix
+            # itself, so stop denying silently and ask instead. Names the spec
+            # *and* the commands that fix it: without the remediation the prompt
+            # tells the user something is wrong but not what to do about it, and
+            # `/auth` alone does not help if the spec itself is the mistake.
+            latched_reason = sanitize_auto_reason(
+                f"{reason}; Auto asks for approval until it is fixed. Switch "
+                "with `/auto model <provider:model>`, review with the main "
+                "agent model via `/auto model clear`, or add credentials with "
+                "`/auth`.",
+                known_secrets=self._known_secrets,
+            )
+            if not counters_saved:
+                disposition: DecisionDisposition = "require_human"
+                decision_reason = unavailable_reason
+                path: Literal["classifier", "fallback"] = "fallback"
+            elif latched:
+                disposition = "require_human"
+                decision_reason = latched_reason
+                path = "fallback"
+                # Also the batch-level fallback reason: the approval prompt
+                # renders that, not each decision's own reason, so without this
+                # the user gets the generic "human approval threshold reached"
+                # and never learns the classifier spec is broken.
+                plan["fallback_reason"] = latched_reason
+            else:
+                disposition = "classifier_unavailable"
+                decision_reason = reason
+                path = "classifier"
             for call in review_calls:
                 plan["decisions"].append(
                     {
                         "tool_call_id": _tool_call_id(call),
-                        "disposition": (
-                            "classifier_unavailable"
-                            if counters_saved
-                            else "require_human"
-                        ),
+                        "disposition": disposition,
                         "category": AutoDecisionCategory.OTHER_POLICY.value,
-                        "reason": (reason if counters_saved else unavailable_reason),
-                        "path": "classifier" if counters_saved else "fallback",
+                        "reason": decision_reason,
+                        "path": path,
                     }
                 )
             plan["counters_applied"] = True
@@ -2518,6 +2689,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         latency_ms = int((time.monotonic() - started) * 1000)
         counters["consecutive_unavailable"] = 0
+        # A completed review proves the configured classifier builds and answers,
+        # so any latched construction fault is genuinely resolved.
+        counters["classifier_config_failed_spec"] = None
         by_id = {decision.tool_call_id: decision for decision in classified.decisions}
         for call in review_calls:
             decision = by_id[_tool_call_id(call)]
@@ -3106,11 +3280,21 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         approved_fallback = False
         if human_ids:
             manual_fallback = plan["fallback_reason"] == "control_state_unavailable"
-            fallback_reason = (
-                "Auto control state was unavailable; using Manual approval."
-                if manual_fallback
-                else None
-            )
+            raw_fallback = plan["fallback_reason"]
+            if manual_fallback:
+                fallback_reason = (
+                    "Auto control state was unavailable; using Manual approval."
+                )
+            elif (
+                raw_fallback is not None and raw_fallback not in _FALLBACK_REASON_CODES
+            ):
+                # Not one of the internal threshold codes, so it is already a
+                # user-facing diagnostic (a latched classifier fault, which
+                # carries the commands that fix it). Passing it through is the
+                # only way it reaches the approval prompt.
+                fallback_reason = raw_fallback
+            else:
+                fallback_reason = None
             revised_ai, human_messages, approved_fallback = self._human_review(
                 state,
                 runtime,
@@ -3125,6 +3309,10 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             )
             artificial.extend(human_messages)
         if approved_fallback and counters is not None and thread_key is not None:
+            # Deliberately does not clear `classifier_config_failed_spec`: an
+            # approval says the user accepted *this* batch, not that a broken
+            # classifier spec now builds. Only a successful review clears it,
+            # so a bad spec keeps asking instead of resuming silent denials.
             counters["consecutive_denials"] = 0
             counters["consecutive_unavailable"] = 0
             await _write_counters(runtime.store, thread_key, counters)

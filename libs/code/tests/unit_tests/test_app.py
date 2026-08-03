@@ -18312,14 +18312,14 @@ class TestToolsSlashCommand:
         assert "Reads *any* file | prints `__init__`" in rendered
 
     def test_render_escapes_every_markdown_metacharacter(self) -> None:
-        r"""Each character in `_MARKDOWN_ESCAPES` must round-trip verbatim.
+        r"""Each character in `MARKDOWN_ESCAPES` must round-trip verbatim.
 
         Guards the escape table itself: dropping any single character from it
         silently changes what the user sees — unescaped `<b>` is swallowed as
         HTML, `[d](u)` collapses to its link text, `~~x~~` to struck text, and a
         `\` before punctuation disappears — so each needs a live assertion.
         """
-        from deepagents_code.app import _MARKDOWN_ESCAPES
+        from deepagents_code._markdown import MARKDOWN_ESCAPES as _MARKDOWN_ESCAPES
         from deepagents_code.tool_catalog import (
             ToolEntry,
             build_catalog_from_server_info,
@@ -22481,6 +22481,21 @@ class TestDeferredActions:
             await pilot.pause()
             assert app._can_bypass_queue("/model gpt-4") is False
             assert app._can_bypass_queue("/model --default foo") is False
+
+    async def test_can_bypass_queue_bare_auto_bypasses(self) -> None:
+        """Bare `/auto` must bypass the queue; `/auto model ...` must not.
+
+        `/auto` is the mid-turn approval-mode switch, so parking it behind a busy
+        queue would break the "stop auto-approving right now" escape. Its
+        argument form resolves a classifier model and can wait for idle. Pins
+        both sides of `BypassTier.IMMEDIATE_UI` for this command.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._can_bypass_queue("/auto") is True
+            assert app._can_bypass_queue("/auto model openai:gpt-5.5-mini") is False
+            assert app._can_bypass_queue("/auto model clear") is False
 
     async def test_model_with_args_still_queues(self) -> None:
         """/model gpt-4 should be queued when busy, not bypass."""
@@ -27670,8 +27685,17 @@ class TestLiveApprovalModeWrites:
                 await pilot.pause()
                 assert app._approval_mode is ApprovalMode.AUTO
                 assert isinstance(app.screen, AutoModeNoticeScreen)
-                assert app.screen._body == build_auto_mode_notice_body(classifier)
-                assert f"**active model** ({classifier})" in app.screen._body
+                assert app.screen._body == build_auto_mode_notice_body(
+                    classifier, distinct_from_main_model=True
+                )
+                # Names the classifier *and* separates it from the coding model.
+                # "active model" reads as the latter, so it was the wrong label.
+                assert (
+                    f"a separate **classifier model** ({classifier})"
+                    in app.screen._body
+                )
+                assert "not the model writing your code" in app.screen._body
+                assert "active model" not in app.screen._body
                 save_notice.assert_not_called()
                 await pilot.press("enter")
                 await pilot.pause()
@@ -28242,7 +28266,9 @@ class TestLiveApprovalModeWrites:
                 await pilot.pause()
                 assert app._approval_mode is ApprovalMode.AUTO
                 assert isinstance(app.screen, AutoModeNoticeScreen)
-                assert app.screen._body == build_auto_mode_notice_body(classifier)
+                assert app.screen._body == build_auto_mode_notice_body(
+                    classifier, distinct_from_main_model=True
+                )
                 save_notice.assert_not_called()
                 await pilot.press("enter")
                 await pilot.pause()
@@ -28310,7 +28336,9 @@ class TestLiveApprovalModeWrites:
             async with app.run_test() as pilot:
                 await pilot.pause()
                 assert isinstance(app.screen, AutoModeNoticeScreen)
-                assert app.screen._body == build_auto_mode_notice_body(classifier)
+                assert app.screen._body == build_auto_mode_notice_body(
+                    classifier, distinct_from_main_model=True
+                )
                 assert AUTO_MODE_DOCS_URL in app.screen._body
                 save_notice.assert_not_called()
                 await pilot.press("enter")

@@ -148,7 +148,10 @@ def show_help() -> None:
     console.print(
         "                             Model the Auto classifier reviews actions with"
     )
-    console.print("                             Defaults to the main agent model")
+    console.print(
+        "                             Interactive TUI only; defaults to the "
+        "main agent model"
+    )
     console.print(
         "  --yolo                     Run gated actions without review after "
         "acknowledgement"

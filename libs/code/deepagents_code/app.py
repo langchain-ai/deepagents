@@ -68,6 +68,7 @@ from deepagents_code._git import (
     read_git_branch_via_subprocess,
 )
 from deepagents_code._invocation import invoked_name
+from deepagents_code._markdown import escape_markdown as _escape_markdown
 from deepagents_code._session_stats import (
     SessionStats,
     SpinnerStatus,
@@ -2022,30 +2023,6 @@ def _truncate(text: str, *, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[: limit - 1].rstrip() + "…"
-
-
-_MARKDOWN_ESCAPES = str.maketrans({char: f"\\{char}" for char in "\\&`*_[]<>|~"})
-"""Translation table backing `_escape_markdown`.
-
-Covers the inline constructs Rich's markdown parser acts on (emphasis, code
-spans, links, autolinks/HTML, HTML entities, strikethrough) plus the `|`
-table-cell separator. Block-level punctuation (`#`, `-`, `>`) only has meaning
-at the start of a line; line breaks are normalized before translation, and `>`
-is escaped anyway because it is cheap.
-"""
-
-
-def _escape_markdown(text: str) -> str:
-    """Normalize line breaks and escape markdown syntax in external text.
-
-    Args:
-        text: Display string that may contain markdown punctuation.
-
-    Returns:
-        `text` on one line with markdown-significant characters escaped.
-    """
-    normalized = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
-    return normalized.translate(_MARKDOWN_ESCAPES)
 
 
 def _markdown_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
@@ -8169,7 +8146,8 @@ class DeepAgentsApp(App):
         try:
             self.push_screen(
                 AutoModeNoticeScreen(
-                    model_label=self._auto_classifier_model_label(),
+                    model_label=self._auto_classifier_review_model_spec(),
+                    distinct_from_main_model=self._auto_classifier_is_distinct(),
                 ),
                 handle_result,
             )
@@ -18228,9 +18206,32 @@ class DeepAgentsApp(App):
             return self._auto_classifier_model
         return self._effective_model_spec() or "the main agent model"
 
+    def _auto_classifier_review_model_spec(self) -> str | None:
+        """Return the spec of the model that reviews gated actions, if known.
+
+        Unlike `_auto_classifier_model_label`, this never substitutes prose for a
+        spec: callers that describe the *role* separately need to know whether
+        they have a real model name to show.
+        """
+        return self._auto_classifier_model or self._effective_model_spec() or None
+
+    def _auto_classifier_is_distinct(self) -> bool:
+        """Return whether reviews run on a different model than the coding one.
+
+        Returns:
+            `True` when a configured classifier differs from the effective main
+                model, so user-facing copy can distinguish the two roles.
+        """
+        if not self._auto_classifier_model:
+            return False
+        return self._auto_classifier_model != self._effective_model_spec()
+
     def _notify_auto_classifier_active(self) -> None:
         """Disclose a distinct authorization classifier on Auto activation."""
-        if self._auto_classifier_model is None:
+        # Truthiness, not `is None`: every other reader of this attribute treats
+        # a blank spec as "inherit", and disagreeing here announced a distinct
+        # reviewer when there was none.
+        if not self._auto_classifier_model:
             return
         if self._auto_classifier_model == self._effective_model_spec():
             return
@@ -18265,7 +18266,9 @@ class DeepAgentsApp(App):
             "Auto reviews gated actions with a classifier model. It currently "
             f"uses {self._auto_classifier_model_label()}. A weaker model makes "
             "that review weaker; actions it cannot review are denied, and "
-            "repeated review failures fall back to your approval."
+            "repeated review failures fall back to your approval.\n\n"
+            "Changes here apply to this session only. Set "
+            "`[models].auto_classifier` in config.toml for a persistent choice."
         )
 
     async def _handle_auto_command(self, command: str) -> None:
@@ -18387,6 +18390,7 @@ class DeepAgentsApp(App):
         from deepagents_code.model_config import ModelSpec, get_provider_auth_status
 
         display: str | None = None
+        unchanged = False
         if model_spec is not None:
             model_spec = model_spec.removeprefix(":")
             if not model_spec:
@@ -18403,11 +18407,11 @@ class DeepAgentsApp(App):
             display = (
                 model_spec if parsed or not provider else f"{provider}:{model_name}"
             )
-            if display == self._auto_classifier_model:
-                await self._mount_message(
-                    AppMessage(f"Auto classifier model already set to {display}.")
-                )
-                return
+            # Deliberately no early return when the spec is unchanged: re-issuing
+            # the same spec is how a user retries after fixing credentials, and
+            # short-circuiting made that a no-op that reported success. The
+            # checks below re-run, so they get a real answer either way.
+            unchanged = display == self._auto_classifier_model
             auth_status = get_provider_auth_status(provider) if provider else None
             if auth_status is not None and auth_status.blocks_start:
                 await self._mount_message(
@@ -18429,8 +18433,17 @@ class DeepAgentsApp(App):
                 )
             except Exception as exc:
                 logger.exception("Failed to resolve Auto classifier model %s", display)
+                # This check runs in the client; the classifier is built in the
+                # agent server, which may be a separate process or a remote
+                # deployment with different credentials and provider packages. Say
+                # so rather than asserting the model is broken everywhere.
                 await self._mount_message(
-                    ErrorMessage(_build_model_switch_error_body(exc))
+                    ErrorMessage(
+                        f"{_build_model_switch_error_body(exc)}\n\n"
+                        "This check ran in the client. If the agent server has "
+                        "credentials or provider packages this machine lacks, set "
+                        "`[models].auto_classifier` in config.toml instead."
+                    )
                 )
                 return
             # Profiles are incomplete, and the classifier already fails closed
@@ -18463,17 +18476,21 @@ class DeepAgentsApp(App):
             self._server_kwargs["auto_classifier_model"] = display
 
         if display:
+            revalidated = " (revalidated)" if unchanged else ""
             await self._mount_message(
                 AppMessage(
-                    f"Auto classifier model set to {display}; it reviews gated "
-                    "actions from the next turn."
+                    f"Auto classifier model set to {display}{revalidated}; it "
+                    "reviews gated actions from the next turn, for this session. "
+                    "Set `[models].auto_classifier` in config.toml to make it "
+                    "the default."
                 )
             )
         else:
             await self._mount_message(
                 AppMessage(
-                    "Auto classifier model cleared; reviews use the main agent "
-                    "model again."
+                    "Auto classifier model cleared for this session; reviews use "
+                    "the main agent model again. A classifier in config.toml or "
+                    "the environment applies again next launch."
                 )
             )
 

@@ -65,7 +65,9 @@ from deepagents_code.auto_mode import (
     HeadlessMCPGuardMiddleware,
     _active_user_directives,
     _batch_id,
+    _ClassifierConstructionDeadlineExceededError,
     _ClassifierDeadlineExceededError,
+    _ClassifierModelUnavailableError,
     _default_counters,
     _fixed_repo_command_allowed,
     _merge_temp_artifacts,
@@ -292,6 +294,7 @@ def _middleware(
     *,
     classifier_model: str | BaseChatModel | None = None,
     classifier_timeout_seconds: float = 1,
+    classifier_construction_timeout_seconds: float = 1,
     trusted_ask_user_tool: BaseTool | None = None,
     trusted_compaction_tool: BaseTool | None = None,
 ) -> AutoModeHITLMiddleware:
@@ -309,6 +312,9 @@ def _middleware(
         },
         worktree_root=tmp_path,
         classifier_timeout_seconds=classifier_timeout_seconds,
+        classifier_construction_timeout_seconds=(
+            classifier_construction_timeout_seconds
+        ),
         classifier_model=classifier_model,
         trusted_ask_user_tool=trusted_ask_user_tool,
         trusted_compaction_tool=trusted_compaction_tool,
@@ -2938,6 +2944,105 @@ def test_classifier_unavailable_reason_specializes_timeouts() -> None:
         )
         == "failed (RuntimeError)"
     )
+    # A construction deadline must not read as "the model did not respond": the
+    # model was never built, so that would point at a nonexistent outage.
+    assert classifier_unavailable_reason(
+        _ClassifierConstructionDeadlineExceededError("openai:slow", 30.0),
+        timeout_seconds=20.0,
+    ) == ("configured classifier model openai:slow could not be built within 30s")
+    # A distinct classifier that fails at *invoke* time names the spec, so the
+    # user changes the setting instead of chasing the main model.
+    assert classifier_unavailable_reason(
+        RuntimeError("401"), timeout_seconds=20.0, spec="openai:gpt-5.5-mini"
+    ) == ("configured classifier model openai:gpt-5.5-mini failed (RuntimeError)")
+    # Construction failures name the spec from the exception itself, so they do
+    # not depend on the caller passing one.
+    assert classifier_unavailable_reason(
+        _ClassifierModelUnavailableError("openai:missing"), timeout_seconds=20.0
+    ) == ("configured classifier model openai:missing is unavailable")
+
+
+async def test_invoke_failure_names_distinct_classifier_spec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An invoke-time failure names the configured spec, not just the type.
+
+    Construction succeeds and the model is cached, so this — not a build error —
+    is the likeliest classifier failure in a long session (a rotated credential,
+    a rate limit, a provider outage). Without the spec the reason reads
+    `failed (RuntimeError)` and points nowhere.
+    """
+    classifier = _StructuredModel(error=RuntimeError("401 unauthorized"))
+    factory = _RecordingModelFactory(classifier)
+    _install_model_factory(monkeypatch, factory)
+    middleware = _middleware(tmp_path, classifier_model="openai:gpt-5.5-mini")
+    request, store, key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    decision = plan["decisions"][0]
+    assert decision["disposition"] == "classifier_unavailable"
+    assert decision["reason"] == (
+        "configured classifier model openai:gpt-5.5-mini failed (RuntimeError)"
+    )
+    counters = cast("dict[str, Any]", store.items[AUTO_MODE_COUNTERS_NAMESPACE, key])
+    # An invoke failure is transient, so it feeds the counter rather than the
+    # permanent-configuration latch.
+    assert counters["consecutive_unavailable"] == 1
+    assert counters["classifier_config_failed_spec"] is None
+
+
+async def test_invoke_failure_evicts_cached_classifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failing cached classifier is rebuilt, so a fixed credential recovers.
+
+    `/auth` runs in the client and cannot reach this cache, so without eviction a
+    model built against a since-revoked credential fails identically every batch
+    until the process restarts.
+    """
+    failing = _StructuredModel(error=RuntimeError("401 unauthorized"))
+    working = _StructuredModel(_allow_result("call-2"))
+    factory = _RecordingModelFactory(failing, working)
+    _install_model_factory(monkeypatch, factory)
+    middleware = _middleware(tmp_path, classifier_model="openai:gpt-5.5-mini")
+    request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    first = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    assert first["decisions"][0]["disposition"] == "classifier_unavailable"
+    assert "openai:gpt-5.5-mini" not in middleware._classifier_model_cache
+
+    second = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "older.py"},
+        call_id="call-2",
+    )
+
+    # Rebuilt rather than reusing the poisoned model, so the retry can succeed.
+    assert factory.specs == ["openai:gpt-5.5-mini", "openai:gpt-5.5-mini"]
+    assert second["decisions"][0]["disposition"] == "classifier_allow"
 
 
 async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> None:
@@ -3141,7 +3246,7 @@ async def test_classifier_model_construction_respects_deadline(
     middleware = _middleware(
         tmp_path,
         classifier_model="openai:gpt-5.5-mini",
-        classifier_timeout_seconds=0.01,
+        classifier_construction_timeout_seconds=0.01,
     )
     request, _store, _key = _request(
         tmp_path,
@@ -3174,7 +3279,12 @@ async def test_classifier_model_construction_respects_deadline(
     assert started.is_set()
     assert middleware._classifier_model_lock.locked() is False
     assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
-    assert plan["decisions"][0]["reason"] == ("classifier did not respond within 0.01s")
+    # Names construction, not response: the model was never built, so "did not
+    # respond" would send the user looking for a provider outage.
+    assert plan["decisions"][0]["reason"] == (
+        "configured classifier model openai:gpt-5.5-mini could not be built "
+        "within 0.01s"
+    )
     model = await construction
     assert middleware._classifier_model_constructions == {}
     resolved, spec = await middleware._classifier_model(request)
@@ -3457,7 +3567,67 @@ async def test_unresolvable_classifier_model_fails_closed(
         "configured classifier model openai:missing-model is unavailable"
     )
     counters = cast("dict[str, Any]", store.items[AUTO_MODE_COUNTERS_NAMESPACE, key])
-    assert counters["consecutive_unavailable"] == 1
+    # A construction fault latches the spec instead of feeding the transient
+    # counter, which an approved fallback resets. See
+    # `test_repeated_classifier_config_failure_escalates_to_human`.
+    assert counters["classifier_config_failed_spec"] == "openai:missing-model"
+    assert counters["consecutive_unavailable"] == 0
+
+
+async def test_repeated_classifier_config_failure_escalates_to_human(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A latched construction fault asks the user instead of denying forever.
+
+    Regression test: `consecutive_unavailable` is reset whenever the user
+    approves a human fallback, so counting construction failures made an
+    unbuildable spec deny two batches for every one it asked about, forever.
+    """
+    primary = _FailIfClassifiedModel()
+    factory = _RecordingModelFactory(error=RuntimeError("no credentials"))
+    _install_model_factory(monkeypatch, factory)
+    middleware = _middleware(tmp_path, classifier_model="openai:missing-model")
+    request, store, key = _request(
+        tmp_path,
+        model=primary,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    first = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    assert first["decisions"][0]["disposition"] == "classifier_unavailable"
+
+    # Simulate the user approving the fallback, which clears the transient
+    # counters but must not clear the configuration latch.
+    counters = cast("dict[str, Any]", store.items[AUTO_MODE_COUNTERS_NAMESPACE, key])
+    counters["consecutive_denials"] = 0
+    counters["consecutive_unavailable"] = 0
+
+    # A distinct call id makes this a new action batch, so replay detection does
+    # not pre-empt the latch we are asserting on.
+    second = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "older.py"},
+        call_id="call-2",
+    )
+
+    decision = second["decisions"][0]
+    assert decision["disposition"] == "require_human"
+    assert "openai:missing-model" in decision["reason"]
+    # Actionable, not just diagnostic: the prompt has to say how to fix it.
+    assert "/auto model <provider:model>" in decision["reason"]
+    assert "/auto model clear" in decision["reason"]
+    assert "/auth" in decision["reason"]
+    # The approval prompt renders the batch-level reason, so the diagnostic has
+    # to be there too or the user sees only "human approval threshold reached".
+    assert second["fallback_reason"] == decision["reason"]
 
 
 async def test_classifier_model_logged_alongside_primary(
@@ -3997,6 +4167,158 @@ async def test_human_fallback_resets_counters_only_when_approved(
     assert saved["consecutive_unavailable"] == expected_unavailable
     assert saved["total_denials"] == 7
     assert store.items[APPROVAL_MODE_NAMESPACE, key] == {"mode": "auto"}
+
+
+async def test_latched_classifier_fault_reaches_the_approval_prompt(
+    tmp_path: Path,
+) -> None:
+    """The approval event must carry the fix, not a generic threshold message.
+
+    `_human_review` renders the batch-level `fallback_reason`, not each
+    decision's own reason, so a diagnostic stored only on the decision is
+    invisible to the user being asked to approve.
+    """
+    middleware = _middleware(tmp_path)
+    call = {
+        "name": "delete",
+        "args": {"file_path": "old.py"},
+        "id": "call-1",
+        "type": "tool_call",
+    }
+    ai_message = AIMessage(content="", tool_calls=[call])
+    key = approval_mode_key("thread-1")
+    store = _Store()
+    store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": "auto"})
+    store.put(AUTO_MODE_COUNTERS_NAMESPACE, key, _default_counters(ApprovalMode.AUTO))
+    events: list[dict[str, object]] = []
+    runtime = SimpleNamespace(
+        context={"approval_mode_key": key, "thread_id": "thread-1"},
+        store=store,
+        stream_writer=events.append,
+    )
+    latched = (
+        "configured classifier model openai:missing-model is unavailable; Auto "
+        "asks for approval until it is fixed. Switch with `/auto model "
+        "<provider:model>`, review with the main agent model via `/auto model "
+        "clear`, or add credentials with `/auth`."
+    )
+    plan = {
+        "batch_id": _batch_id(ai_message.tool_calls),
+        "thread_key": key,
+        "mode_at_proposal": "auto",
+        "phase": "planned",
+        "manual_gated_ids": ["call-1"],
+        "decisions": [
+            {
+                "tool_call_id": "call-1",
+                "disposition": "require_human",
+                "category": "other_policy",
+                "reason": latched,
+                "path": "fallback",
+            }
+        ],
+        "pending_result_ids": [],
+        "processed_result_ids": [],
+        "counters_applied": True,
+        "fallback_reason": latched,
+    }
+
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}]},
+    ):
+        await middleware.aafter_model(
+            cast(
+                "AgentState[Any]",
+                {"messages": [ai_message], "_auto_decision_plan": plan},
+            ),
+            cast("Runtime[Any]", runtime),
+        )
+
+    fallback_events = [
+        event
+        for event in events
+        if isinstance(event, dict) and event.get("event") == "fallback"
+    ]
+    assert fallback_events, events
+    reason = fallback_events[0]["reason"]
+    assert reason == latched
+    assert "human approval threshold reached" not in str(reason)
+
+
+async def test_fallback_approval_keeps_classifier_config_latch(
+    tmp_path: Path,
+) -> None:
+    """Approving a fallback must not clear a latched classifier config fault.
+
+    Regression test for the deny/deny/ask oscillation: the approval path resets
+    the transient counters, and clearing the latch here too would let an
+    unbuildable spec resume silently denying two batches for every one it asks
+    about. Only a review that actually succeeds proves the spec works.
+    """
+    middleware = _middleware(tmp_path)
+    call = {
+        "name": "delete",
+        "args": {"file_path": "old.py"},
+        "id": "call-1",
+        "type": "tool_call",
+    }
+    ai_message = AIMessage(content="", tool_calls=[call])
+    key = approval_mode_key("thread-1")
+    store = _Store()
+    store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": "auto"})
+    counters = _default_counters(ApprovalMode.AUTO)
+    counters["consecutive_denials"] = 3
+    counters["consecutive_unavailable"] = 2
+    counters["classifier_config_failed_spec"] = "openai:missing-model"
+    store.put(AUTO_MODE_COUNTERS_NAMESPACE, key, counters)
+    runtime = SimpleNamespace(
+        context={"approval_mode_key": key, "thread_id": "thread-1"},
+        store=store,
+        stream_writer=lambda _event: None,
+    )
+    plan = {
+        "batch_id": _batch_id(ai_message.tool_calls),
+        "thread_key": key,
+        "mode_at_proposal": "auto",
+        "phase": "planned",
+        "manual_gated_ids": ["call-1"],
+        "decisions": [
+            {
+                "tool_call_id": "call-1",
+                "disposition": "require_human",
+                "category": "other_policy",
+                "reason": (
+                    "configured classifier model openai:missing-model is "
+                    "unavailable; human approval is required until it is fixed."
+                ),
+                "path": "fallback",
+            }
+        ],
+        "pending_result_ids": [],
+        "processed_result_ids": [],
+        "counters_applied": True,
+        "fallback_reason": None,
+    }
+
+    with patch(
+        "deepagents_code.auto_mode.interrupt",
+        return_value={"decisions": [{"type": "approve"}]},
+    ):
+        await middleware.aafter_model(
+            cast(
+                "AgentState[Any]",
+                {"messages": [ai_message], "_auto_decision_plan": plan},
+            ),
+            cast("Runtime[Any]", runtime),
+        )
+
+    saved = cast("dict[str, Any]", store.items[AUTO_MODE_COUNTERS_NAMESPACE, key])
+    # Transient counters reset, as before.
+    assert saved["consecutive_denials"] == 0
+    assert saved["consecutive_unavailable"] == 0
+    # The permanent fault does not.
+    assert saved["classifier_config_failed_spec"] == "openai:missing-model"
 
 
 async def test_fallback_switch_to_manual_requests_a_second_decision(

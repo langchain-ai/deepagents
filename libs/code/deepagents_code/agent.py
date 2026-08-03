@@ -2332,8 +2332,10 @@ def create_cli_agent(
 
             When `None`, `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` is consulted,
             then `[models].auto_classifier`, and the main `model` is reused when
-            both are unset. A blank string means the same as `None`. Only
-            meaningful when `auto_mode_enabled` is `True`.
+            both are unset. A blank string is *not* the same as `None`: it means
+            "inherit the main model" directly and, unlike `None`, does not
+            consult the env var or `config.toml`. Only meaningful when
+            `auto_mode_enabled` is `True`.
         recursion_limit: Explicit LangGraph `recursion_limit` (graph step budget)
             for the main agent. When `None`, it is resolved from the
             `DEEPAGENTS_CODE_RECURSION_LIMIT` env var, `[runtime].recursion_limit`

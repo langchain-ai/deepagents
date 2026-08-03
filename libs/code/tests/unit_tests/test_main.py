@@ -1676,8 +1676,8 @@ class TestRunTextualCliAsyncMcp:
         with (
             patch("deepagents_code.app.run_textual_app", new=_run_textual_app_stub),
             patch(
-                "deepagents_code.config.resolve_auto_classifier_model",
-                return_value=classifier,
+                "deepagents_code.config.resolve_auto_classifier_model_with_problem",
+                return_value=(classifier, None),
             ) as resolve_classifier,
         ):
             await run_textual_cli_async(
@@ -1702,7 +1702,7 @@ class TestRunTextualCliAsyncMcp:
         with (
             patch("deepagents_code.app.run_textual_app", new=_run_textual_app_stub),
             patch(
-                "deepagents_code.config.resolve_auto_classifier_model"
+                "deepagents_code.config.resolve_auto_classifier_model_with_problem"
             ) as resolve_classifier,
         ):
             await run_textual_cli_async(

@@ -1610,8 +1610,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 name = profile.get("name")
                 if isinstance(name, str) and name:
                     return name
-        recommendations = getattr(self, "_recommended_models", _RECOMMENDED_MODELS)
-        recommended = recommendations.get(model_spec)
+        recommended = self._recommended_models.get(model_spec)
         if recommended:
             return recommended
         parsed = ModelSpec.try_parse(model_spec)

@@ -2711,75 +2711,6 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             return None
         return cast("AutoDecisionPlan", dict(raw))
 
-    def _seeded_offload_compaction_ids(
-        self, runtime: Runtime[Any], ai_message: AIMessage
-    ) -> set[str]:
-        """Return the tool-call IDs authorized by the current `/offload` run.
-
-        `/offload` compacts server-side by injecting a synthetic assistant message
-        that already carries a forced `compact_conversation` call, so no model call
-        — and therefore no decision plan — exists for it. Rather than interrupting
-        for an action the user just requested, recognize that seed from trust
-        signals the model cannot forge: `offload_tool_call_id` is set by the client
-        on the run context (never graph state), and the seed's message ID is the
-        deterministic ID the compaction tool's own execution guard requires.
-
-        Args:
-            runtime: LangGraph runtime carrying the per-run client context.
-            ai_message: Assistant message whose tool calls are being routed.
-
-        Returns:
-            The seeded tool-call IDs, or an empty set outside an `/offload` run.
-        """
-        from deepagents_code.offload_middleware import (
-            _offload_seed_message_id,
-            _offload_tool_call_id,
-        )
-
-        seeded_id = _offload_tool_call_id(_runtime_context(runtime))
-        if seeded_id is None:
-            return set()
-        if self._trusted_compaction_tool is None:
-            logger.warning(
-                "Ignoring the /offload seed signal for tool call %s: no trusted "
-                "compaction tool is wired, so there is nothing trusted to bypass "
-                "for",
-                seeded_id,
-            )
-            return set()
-        if ai_message.id != _offload_seed_message_id(seeded_id):
-            return set()
-        # The seed message must contain the authorized forced compaction, and
-        # every call reusing the authorized ID must itself be that forced
-        # compaction: a same-ID call to another gated tool never bypasses.
-        seeded: set[str] = set()
-        for call in ai_message.tool_calls:
-            if call.get("id") != seeded_id:
-                continue
-            is_forced_compaction = (
-                call["name"] == "compact_conversation"
-                and isinstance(call.get("args"), dict)
-                and call["args"].get("force") is True
-            )
-            if not is_forced_compaction:
-                logger.warning(
-                    "Ignoring the /offload seed signal for tool call %s: the "
-                    "authorized ID is attached to a %r call, not a forced "
-                    "compact_conversation",
-                    seeded_id,
-                    call["name"],
-                )
-                return set()
-            seeded.add(seeded_id)
-        if not seeded:
-            logger.warning(
-                "Ignoring the /offload seed message %s: it carries no forced "
-                "compact_conversation call with id %s",
-                ai_message.id,
-                seeded_id,
-            )
-        return seeded
-
     async def aafter_model(
         self, state: AgentState[Any], runtime: Runtime[Any]
     ) -> dict[str, Any] | None:
@@ -2825,13 +2756,6 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         if plan is None:
             if not manual_ids:
                 return {"_auto_decision_plan": None}
-            seeded_ids = self._seeded_offload_compaction_ids(runtime, ai_message)
-            if seeded_ids and manual_ids <= seeded_ids:
-                logger.debug(
-                    "Approval bypassed for the /offload seeded compaction call %s",
-                    sorted(seeded_ids),
-                )
-                return {"messages": [ai_message], "_auto_decision_plan": None}
             logger.warning(
                 "Auto decision plan was missing or invalid; routing to Manual"
             )

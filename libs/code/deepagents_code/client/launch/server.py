@@ -181,7 +181,10 @@ def generate_langgraph_json(
     """
     config: dict[str, Any] = {
         "dependencies": ["."],
-        "graphs": {"agent": graph_ref},
+        "graphs": {
+            "agent": graph_ref,
+            "offload": "deepagents_code.server_graph:make_offload_graph",
+        },
     }
     if env_file:
         config["env"] = env_file

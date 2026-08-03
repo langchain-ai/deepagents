@@ -38,7 +38,9 @@ class TestServerGraph:
         module = _import_fresh_server_graph()
 
         with patch.object(
-            module, "_make_graph", new=AsyncMock(return_value=graph_obj)
+            module,
+            "_make_graphs",
+            new=AsyncMock(return_value=(graph_obj, object())),
         ) as make_graph:
             assert await module.make_graph() is graph_obj
             assert await module.make_graph() is graph_obj
@@ -120,7 +122,7 @@ class TestServerGraph:
         with (
             patch.object(
                 module,
-                "_make_graph",
+                "_make_graphs",
                 new=AsyncMock(side_effect=ValueError("boom: bad model")),
             ),
             pytest.raises(SystemExit) as exc_info,

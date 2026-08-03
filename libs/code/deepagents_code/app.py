@@ -14584,14 +14584,8 @@ class DeepAgentsApp(App):
                 _effective_conversation(before_messages, prior_event)
             )
 
-            # Own the seeded tool-call id here so a failed run can clean up the
-            # committed-but-unanswered seed (see `_remove_unanswered_offload_seed`).
-            seed_tool_call_id = str(uuid.uuid4())
-
             try:
-                tool_error = await self._drive_server_side_compaction(
-                    config, seed_tool_call_id
-                )
+                tool_error = await self._drive_server_side_compaction(config)
             except ClientHookStopError:
                 return
             except Exception as stream_error:
@@ -14609,21 +14603,9 @@ class DeepAgentsApp(App):
                         "Failed to reconcile state after offload stream error",
                         exc_info=True,
                     )
-                    if not await self._remove_unanswered_offload_seed(
-                        config, seed_tool_call_id
-                    ):
-                        await self._mount_message(ErrorMessage(_OFFLOAD_WEDGE_WARNING))
                     raise stream_error from state_error
                 reconciled_event = new_state.get("_summarization_event")
                 if _summarization_cutoff(reconciled_event) <= prior_cutoff:
-                    # Compaction did not commit, so the seeded tool call was
-                    # never answered. Remove it before re-raising so a failed
-                    # `/offload` cannot wedge the thread with a dangling
-                    # `tool_use` that the model API rejects on the next turn.
-                    if not await self._remove_unanswered_offload_seed(
-                        config, seed_tool_call_id
-                    ):
-                        await self._mount_message(ErrorMessage(_OFFLOAD_WEDGE_WARNING))
                     raise
             else:
                 if tool_error is not None:
@@ -14655,12 +14637,6 @@ class DeepAgentsApp(App):
                 if failure is not None:
                     await self._mount_message(ErrorMessage(failure))
                     return
-                # A no-op still commits the synthetic assistant seed and its
-                # tool result. Restore the exact pre-run conversation so an
-                # operation reported as doing nothing truly changes nothing.
-                await self._remove_offload_artifacts(
-                    config, current_messages, prior_event
-                )
                 # `force=True` bypasses the eligibility gate, so this branch is
                 # reached when there is nothing older than the retention window
                 # to summarize (effective cutoff 0). It also absorbs the
@@ -14763,7 +14739,51 @@ class DeepAgentsApp(App):
             except Exception:  # best-effort spinner cleanup
                 logger.exception("Failed to dismiss spinner after offload")
 
-    async def _drive_server_side_compaction(
+    async def _drive_server_side_compaction(self, config: RunnableConfig) -> None:
+        """Run the explicit server-side `/offload` operation graph.
+
+        The operation graph shares the interactive agent's checkpoint and
+        composite backend but has no model node or HITL middleware. The slash
+        command is the user's authorization, so it persists only the resulting
+        summarization event and cannot create a synthetic assistant tool call.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Raises:
+            RuntimeError: If the app is not connected to its server graph.
+        """
+        from deepagents_code.config import settings
+
+        agent = self._agent
+        if agent is None:
+            return
+        remote = self._remote_agent()
+        if remote is not None:
+            await remote.aensure_thread(dict(config))
+            streaming_agent = remote.for_graph("offload")
+        else:
+            msg = "The explicit /offload operation requires the server graph."
+            raise RuntimeError(msg)
+
+        stream_context = CLIContext(
+            model=self._effective_model_spec(),
+            model_params=self._model_params_override or {},
+            profile_overrides=self._profile_override or {},
+            model_context_limit=settings.model_context_limit,
+            thread_id=self._lc_thread_id,
+        )
+        self._hooks.apply_graph_context(stream_context)
+        async for _chunk in streaming_agent.astream(
+            {},
+            stream_mode=["updates"],
+            config=config,
+            context=stream_context,
+            durability="exit",
+        ):
+            pass
+
+    async def _drive_legacy_seeded_compaction(
         self, config: RunnableConfig, seed_tool_call_id: str | None = None
     ) -> str | None:
         """Trigger the server-side `compact_conversation` tool with `force=True`.

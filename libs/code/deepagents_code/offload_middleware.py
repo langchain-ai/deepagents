@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, TypedDict, cast
 
 from deepagents.backends.protocol import FILE_NOT_FOUND
 from deepagents.middleware.summarization import (
+    SummarizationEvent,
     SummarizationToolMiddleware,
     create_summarization_middleware,
     create_summarization_tool_middleware,
@@ -15,14 +16,14 @@ from deepagents.middleware.summarization import (
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # inspected for runtime injection
 )
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AnyMessage, ToolMessage
 from langchain_core.tools import InjectedToolArg, StructuredTool
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
 
     from deepagents.backends.protocol import (
         BackendProtocol,
@@ -35,6 +36,13 @@ if TYPE_CHECKING:
     from langgraph.prebuilt.tool_node import ToolCallRequest
 
 logger = logging.getLogger(__name__)
+
+
+class _OffloadState(TypedDict, total=False):
+    """Checkpoint fields required by the explicit forced-compaction graph."""
+
+    messages: list[AnyMessage]
+    _summarization_event: SummarizationEvent
 
 
 COMPACTION_FAILURE_PREFIX = "Compaction failed"
@@ -518,32 +526,26 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         Returns:
             The compaction state update or an error tool message.
         """
-        tool_call_id = runtime.tool_call_id or ""
         try:
             summarization = self._summarization_for_runtime(runtime)
             messages = runtime.state.get("messages", [])
             event = runtime.state.get("_summarization_event")
             effective = summarization._apply_event_to_messages(messages, event)
-            effective = _without_offload_seed(effective, tool_call_id)
+            effective = _without_offload_seed(effective, runtime.tool_call_id or "")
             cutoff = summarization._determine_cutoff_index(effective)
             if cutoff == 0:
-                return self._nothing_to_compact(tool_call_id)
-
+                return self._nothing_to_compact(runtime.tool_call_id or "")
             to_summarize, _ = summarization._partition_messages(effective, cutoff)
             summary = summarization._create_summary(to_summarize)
-            backend = self._guarded_backend()
-            file_path = summarization._offload_to_backend(backend, to_summarize)
-            # The inherited `_build_compact_result` produces the same event and
-            # tool message as the SDK's gated path via model-independent helpers
-            # (string formatting + a staticmethod), so the runtime-selected
-            # summarizer is not needed to build it. Kept inside the `try` so a
-            # failure here still returns a ToolMessage rather than raising.
+            file_path = summarization._offload_to_backend(
+                self._guarded_backend(), to_summarize
+            )
             return self._build_compact_result(
                 runtime, to_summarize, summary, file_path, event, cutoff
             )
         except Exception as exc:  # tool errors must surface as ToolMessages
             logger.exception("forced compact_conversation failed")
-            return self._forced_compact_error(tool_call_id, exc)
+            return self._forced_compact_error(runtime.tool_call_id or "", exc)
 
     async def _arun_forced_compact(self, runtime: ToolRuntime) -> Command:
         """Asynchronously compact without the SDK eligibility gate.
@@ -551,7 +553,6 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         Returns:
             The compaction state update or an error tool message.
         """
-        tool_call_id = runtime.tool_call_id or ""
         try:
             summarization = await asyncio.to_thread(
                 self._summarization_for_runtime, runtime
@@ -559,23 +560,95 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             messages = runtime.state.get("messages", [])
             event = runtime.state.get("_summarization_event")
             effective = summarization._apply_event_to_messages(messages, event)
-            effective = _without_offload_seed(effective, tool_call_id)
+            effective = _without_offload_seed(effective, runtime.tool_call_id or "")
             cutoff = summarization._determine_cutoff_index(effective)
             if cutoff == 0:
-                return self._nothing_to_compact(tool_call_id)
-
+                return self._nothing_to_compact(runtime.tool_call_id or "")
             to_summarize, _ = summarization._partition_messages(effective, cutoff)
             summary = await summarization._acreate_summary(to_summarize)
-            backend = self._guarded_backend()
-            file_path = await summarization._aoffload_to_backend(backend, to_summarize)
-            # See `_run_forced_compact` for why the inherited builder is reused
-            # and why it stays inside the `try`.
+            file_path = await summarization._aoffload_to_backend(
+                self._guarded_backend(), to_summarize
+            )
             return self._build_compact_result(
                 runtime, to_summarize, summary, file_path, event, cutoff
             )
         except Exception as exc:  # tool errors must surface as ToolMessages
             logger.exception("forced compact_conversation failed")
-            return self._forced_compact_error(tool_call_id, exc)
+            return self._forced_compact_error(runtime.tool_call_id or "", exc)
+
+    def _run_forced_compaction_update(
+        self, state: Mapping[str, object], runtime: object
+    ) -> dict[str, object] | None:
+        """Run forced compaction as a server operation without a tool message.
+
+        Returns:
+            The state update, or `None` when nothing can be compacted.
+        """
+        summarization = self._summarization_for_runtime(cast("ToolRuntime", runtime))
+        messages = cast("list[AnyMessage]", state.get("messages", []))
+        event = cast("SummarizationEvent | None", state.get("_summarization_event"))
+        effective = summarization._apply_event_to_messages(messages, event)
+        cutoff = summarization._determine_cutoff_index(effective)
+        if cutoff == 0:
+            return None
+        to_summarize, _ = summarization._partition_messages(effective, cutoff)
+        summary = summarization._create_summary(to_summarize)
+        file_path = summarization._offload_to_backend(
+            self._guarded_backend(), to_summarize
+        )
+        return self._forced_compaction_update(
+            summarization, summary, file_path, event, cutoff
+        )
+
+    async def arun_forced_compaction_update(
+        self, state: Mapping[str, object], runtime: object
+    ) -> dict[str, object] | None:
+        """Run forced compaction as a server operation without a tool message.
+
+        Returns:
+            The state update, or `None` when nothing can be compacted.
+        """
+        summarization = await asyncio.to_thread(
+            self._summarization_for_runtime, cast("ToolRuntime", runtime)
+        )
+        messages = cast("list[AnyMessage]", state.get("messages", []))
+        event = cast("SummarizationEvent | None", state.get("_summarization_event"))
+        effective = summarization._apply_event_to_messages(messages, event)
+        cutoff = summarization._determine_cutoff_index(effective)
+        if cutoff == 0:
+            return None
+        to_summarize, _ = summarization._partition_messages(effective, cutoff)
+        summary = await summarization._acreate_summary(to_summarize)
+        file_path = await summarization._aoffload_to_backend(
+            self._guarded_backend(), to_summarize
+        )
+        return self._forced_compaction_update(
+            summarization, summary, file_path, event, cutoff
+        )
+
+    @staticmethod
+    def _forced_compaction_update(
+        summarization: SummarizationMiddleware,
+        summary: str,
+        file_path: str | None,
+        event: SummarizationEvent | None,
+        cutoff: int,
+    ) -> dict[str, object]:
+        """Build the state-only result used by the dedicated `/offload` graph.
+
+        Returns:
+            The summarization-event state update.
+        """
+        summary_message = summarization._build_new_messages_with_path(
+            summary, file_path
+        )[0]
+        return {
+            "_summarization_event": {
+                "cutoff_index": summarization._compute_state_cutoff(event, cutoff),
+                "summary_message": summary_message,
+                "file_path": file_path,
+            }
+        }
 
     @staticmethod
     def _forced_compact_error(tool_call_id: str, exc: Exception) -> Command:
@@ -636,3 +709,33 @@ def _create_cli_compaction_middleware(
         sdk_middleware._summarization,
         system_prompt=sdk_middleware.system_prompt,
     )
+
+
+def create_forced_compaction_graph(
+    middleware: CLICompactionMiddleware,
+) -> object:
+    """Create the dedicated server graph used by the `/offload` command.
+
+    This operation updates only the persisted summarization event. Unlike the
+    model-facing `compact_conversation` tool, it does not manufacture an
+    assistant tool call or a tool result: the slash command itself is the
+    explicit user authorization boundary.
+
+    Args:
+        middleware: Compaction implementation configured with the agent's
+            composite backend.
+
+    Returns:
+        A checkpointable graph that performs one forced compaction attempt.
+    """
+    from langgraph.graph import END, START, StateGraph
+
+    async def force_compact(state: _OffloadState, runtime: object) -> dict[str, object]:
+        update = await middleware.arun_forced_compaction_update(state, runtime)
+        return update or {}
+
+    graph = StateGraph(cast("Any", _OffloadState), context_schema=CLIContextSchema)
+    graph.add_node("force_compact", force_compact)
+    graph.add_edge(START, "force_compact")
+    graph.add_edge("force_compact", END)
+    return graph.compile()

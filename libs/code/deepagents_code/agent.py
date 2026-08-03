@@ -2842,6 +2842,9 @@ def create_cli_agent(
         )
 
     compaction_middleware = _create_cli_compaction_middleware(model, composite_backend)
+    # The dedicated server-side `/offload` graph reuses this exact middleware
+    # through the composite backend, avoiding a second summarizer/backend setup.
+    composite_backend._cli_compaction_middleware = compaction_middleware  # ty: ignore[unresolved-attribute]
     if auto_mode_config is not None and resolved_interrupt_on is not None:
         from deepagents_code.auto_mode import AutoModeHITLMiddleware
 

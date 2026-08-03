@@ -859,8 +859,10 @@ def _offload_request(
     return request
 
 
-async def test_seeded_offload_compaction_skips_human_review(tmp_path: Path) -> None:
-    """The seeded `/offload` call has no plan yet must not raise an interrupt."""
+async def test_seeded_offload_compaction_is_reviewed_without_operation_graph(
+    tmp_path: Path,
+) -> None:
+    """A synthetic compaction call is not an approval bypass."""
     compact_tool = _tool("compact_conversation")
     middleware = _middleware(tmp_path, trusted_compaction_tool=compact_tool)
     request = _offload_request(tmp_path, compact_tool)
@@ -868,11 +870,11 @@ async def test_seeded_offload_compaction_skips_human_review(tmp_path: Path) -> N
 
     with patch(
         "deepagents_code.auto_mode.interrupt",
-        side_effect=AssertionError("unexpected human approval"),
-    ):
-        update = await _after_model_without_plan(middleware, request, ai_message)
+        return_value={"decisions": [{"type": "approve"}]},
+    ) as review:
+        await _after_model_without_plan(middleware, request, ai_message)
 
-    assert update == {"messages": [ai_message], "_auto_decision_plan": None}
+    assert review.called
 
 
 async def test_seeded_offload_batch_with_extra_gated_call_is_reviewed(

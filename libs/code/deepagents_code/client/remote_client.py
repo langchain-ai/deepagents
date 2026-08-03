@@ -154,6 +154,22 @@ class RemoteAgent:
             )
         return self._graph
 
+    def for_graph(self, graph_name: str) -> RemoteAgent:
+        """Return a client for another graph served by the same runtime.
+
+        Args:
+            graph_name: Registered LangGraph graph name.
+
+        Returns:
+            A fresh client that preserves this connection's URL and credentials.
+        """
+        return RemoteAgent(
+            self._url,
+            graph_name=graph_name,
+            api_key=self._api_key,
+            headers=self._headers,
+        )
+
     async def astream(
         self,
         input: dict | Any,  # noqa: A002, ANN401

@@ -185,8 +185,11 @@ def test_enumerate_step_gated_on_full_profile() -> None:
     assert "if: ${{ inputs.profile == 'full' }}" in enumerate_step
     assert "ENUM_DATASET" in enumerate_step
     assert "ENUM_DATASET_PATH" in enumerate_step
-    assert "harbor_adapters.contextbench.main" in enumerate_step
-    assert "--populate" in enumerate_step
+    # Populate goes through the shared dispatcher, which resolves each dataset to ITS
+    # adapter. A hardcoded module here silently ran the wrong adapter for every local
+    # dataset but the first, leaving the rest unpopulated.
+    assert "prepare_local_dataset.py" in enumerate_step
+    assert "harbor_adapters." not in enumerate_step
     assert "UNIFIED_TASKS_JSON" in enumerate_step
 
     p_step = _indented_block(
@@ -275,15 +278,55 @@ def test_unified_dispatch_forwards_retry_and_timeout_controls() -> None:
     assert "Actual retries" in summary
 
 
+def test_runner_label_is_an_input_constrained_to_known_labels() -> None:
+    """Only the container-running job takes the label, and callers can't invent one."""
+    reusable = HARBOR_WORKFLOW.read_text()
+    unified = UNIFIED_WORKFLOW.read_text()
+
+    # Defaulted in the reusable workflow so its other caller (harbor.yml) is unaffected.
+    assert "runner_label:" in reusable
+    assert 'default: "ubuntu-latest"' in reusable
+    assert "runs-on: ${{ inputs.runner_label }}" in reusable
+
+    harbor = _indented_block(reusable, "  harbor:")
+    assert "runs-on: ${{ inputs.runner_label }}" in harbor
+    # prep and aggregate run no containers, so they stay on the default runner.
+    for job in ("  prep:", "  aggregate:"):
+        assert "runs-on: ubuntu-latest" in _indented_block(reusable, job)
+
+    # A closed choice at the dispatch boundary: `runs-on` is evaluated before any
+    # step could validate it, so the input itself has to be constrained.
+    runner_input = _indented_block(unified, "      runner_label:")
+    assert "type: choice" in runner_input
+    assert "ubuntu-24.04-arm" in runner_input
+    assert "runner_label: ${{ inputs.runner_label }}" in unified
+
+
+def test_jobs_dir_is_derived_per_suite_not_hardcoded() -> None:
+    """Every suite gets its own jobs dir, so `terminal-bench` can't label a DRBench run."""
+    reusable = HARBOR_WORKFLOW.read_text()
+
+    assert 'HARBOR_JOBS_DIR="harbor-jobs/${HARBOR_CATEGORY}"' in reusable
+    assert '--jobs-dir "$HARBOR_JOBS_DIR"' in reusable
+    # No suite name may remain hardcoded as a path.
+    assert "harbor-jobs/terminal-bench" not in reusable
+    # The category becomes a path component, and the category pattern admits "."
+    # and "..", so those must be rejected explicitly.
+    assert '"$HARBOR_CATEGORY" == ".."' in reusable
+
+
 def test_latest_harbor_job_reports_actual_retry_count(tmp_path: Path) -> None:
     reusable = HARBOR_WORKFLOW.read_text()
     harbor = _indented_block(reusable, "  harbor:")
     latest_job = _indented_block(harbor, '      - name: "🔍 Find latest Harbor job"')
-    job = tmp_path / "harbor-jobs" / "terminal-bench" / "2026-07-21__12-00-00"
+    # The jobs dir is per-suite now, derived from HARBOR_CATEGORY by an earlier step
+    # and exported via GITHUB_ENV, so this step reads it from the environment.
+    jobs_dir = "harbor-jobs/research"
+    job = tmp_path / jobs_dir / "2026-07-21__12-00-00"
     job.mkdir(parents=True)
     (job / "result.json").write_text('{"stats":{"n_retries":2}}')
     output = tmp_path / "github-output"
-    env = {**os.environ, "GITHUB_OUTPUT": str(output)}
+    env = {**os.environ, "GITHUB_OUTPUT": str(output), "HARBOR_JOBS_DIR": jobs_dir}
 
     subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c", _step_script(latest_job)],
@@ -524,8 +567,7 @@ def test_leaf_aggregation_requires_every_expected_shard() -> None:
     # run can't collide on the same shard index's marker basename (aggregate_shards.py
     # counts markers by basename alone).
     assert (
-        'touch "harbor-jobs/terminal-bench/empty-shard-${HARBOR_CATEGORY}-${HARBOR_SHARD_INDEX}"'
-        in harbor
+        'touch "$HARBOR_JOBS_DIR/empty-shard-${HARBOR_CATEGORY}-${HARBOR_SHARD_INDEX}"' in harbor
     )
     assert "    needs: [prep, harbor]" in aggregate
     # expected_shards now flows per-category via aggregate_matrix (derived in prep

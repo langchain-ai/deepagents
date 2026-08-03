@@ -59,6 +59,10 @@ on:
       sandbox_env:
         type: string
         default: "langsmith"
+      runner_label:
+        description: "Runner label for the harbor job. Defaults to ubuntu-latest (amd64). Use an arm64 label (e.g. ubuntu-24.04-arm) for a category whose task images are arm64-only, which only matters with sandbox_env=docker — with sandbox_env=langsmith the containers run in LangSmith's infrastructure, not on the runner, so the runner's architecture has no effect. Callers should constrain this to known GitHub-hosted labels."
+        type: string
+        default: "ubuntu-latest"
       n_retries:
         type: string
         default: "0"
@@ -250,7 +254,9 @@ jobs:
   harbor:
     name: "📊 Evals - Harbor (${{ matrix.model }} / ${{ inputs.sandbox_env }} / ${{ inputs.agent_impl }})"
     needs: prep
-    runs-on: ubuntu-latest
+    # Only this job runs task containers, so it is the only one whose architecture
+    # matters; prep and aggregate stay on the default runner.
+    runs-on: ${{ inputs.runner_label }}
     environment: evals
     timeout-minutes: ${{ inputs.timeout_minutes }}
     permissions:
@@ -444,6 +450,14 @@ jobs:
             echo "HARBOR_LANGSMITH_DATASET_NAME=tau3-subset"
           } >> "$GITHUB_ENV"
 
+      - name: "🎯 Name the research LangSmith dataset"
+        # Without this, a local dataset is tracked under `local/datasets-drbench-evals`,
+        # derived from its path. Name it for the benchmark instead, so DRBench results
+        # are legible and can never be blended with a differently-scored run of the same
+        # directory (app mode and local mode are not comparable).
+        if: env.HARBOR_CATEGORY == 'research'
+        run: echo "HARBOR_LANGSMITH_DATASET_NAME=drbench-app" >> "$GITHUB_ENV"
+
       - name: "✂️ Prune agent provider deps to selected model"
         # The agent loads its model via init_chat_model, which lazily imports
         # only the provider matching HARBOR_MODEL. langgraph.json ships every
@@ -462,21 +476,17 @@ jobs:
         working-directory: libs/evals
         env:
           HARBOR_DATASET_PATH: ${{ matrix.dataset_path || inputs.dataset_path }}
-        # The per-task corpus is single-sourced (git-ignored) and regenerated from
-        # the vendored copy so each task's build context has its files/ before
-        # Harbor builds the task images. Each local dataset has its own adapter, so
-        # dispatch on the dataset directory rather than assuming one — running the
-        # wrong adapter would leave every task without a corpus.
+        # Local datasets do not commit everything Harbor needs (git-ignored corpora
+        # and invariant verifier files). prepare_local_dataset.py maps the dataset
+        # path to its adapter (explicit allowlist) and runs that adapter's
+        # --populate, so each task's build context is complete before Harbor builds
+        # the task images. An unregistered path fails loudly rather than silently
+        # running the wrong adapter and leaving every task empty.
         run: |
           if ! [[ "$HARBOR_DATASET_PATH" =~ ^datasets/[A-Za-z0-9._/-]+$ ]] || [[ "$HARBOR_DATASET_PATH" == *".."* ]] || [[ "$HARBOR_DATASET_PATH" == *"~"* ]]; then
             echo "::error::Invalid local Harbor dataset path: $HARBOR_DATASET_PATH"; exit 1
           fi
-          case "${HARBOR_DATASET_PATH#datasets/}" in
-            context-retrieval-evals) adapter=contextbench ;;
-            drbench-evals)           adapter=drbench ;;
-            *) echo "::error::No corpus adapter registered for local dataset: $HARBOR_DATASET_PATH"; exit 1 ;;
-          esac
-          uv run python -m "harbor_adapters.${adapter}.main" --populate "$HARBOR_DATASET_PATH"
+          uv run python "$GITHUB_WORKSPACE/.github/scripts/prepare_local_dataset.py" "$HARBOR_DATASET_PATH"
 
       - name: "🌿 Overlay branch agent source"
         if: ${{ inputs.branch != '' && inputs.branch != 'current' }}
@@ -600,6 +610,17 @@ jobs:
             echo "::error::Invalid Harbor category: $HARBOR_CATEGORY"
             exit 1
           fi
+          # The category becomes a path component below, and the pattern above admits
+          # "." and ".." — which would resolve outside harbor-jobs/. Reject them.
+          if [[ "$HARBOR_CATEGORY" == "." || "$HARBOR_CATEGORY" == ".." ]]; then
+            echo "::error::Harbor category may not be '.' or '..': $HARBOR_CATEGORY"
+            exit 1
+          fi
+          # One jobs dir per suite. Harbor writes every trial under it, and the
+          # artifact upload and job-discovery steps below read it back, so export it
+          # rather than repeating the literal in five places.
+          HARBOR_JOBS_DIR="harbor-jobs/${HARBOR_CATEGORY}"
+          echo "HARBOR_JOBS_DIR=$HARBOR_JOBS_DIR" >> "$GITHUB_ENV"
           # Positive decimal only; reject all-zero (0, 0.0, ...) which would mean a 0s timeout.
           if ! [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^[0-9]+(\.[0-9]+)?$ ]] || [[ "$HARBOR_AGENT_TIMEOUT_MULTIPLIER" =~ ^0+(\.0+)?$ ]]; then
             echo "::error::Invalid agent_timeout_multiplier (must be a positive decimal): $HARBOR_AGENT_TIMEOUT_MULTIPLIER"
@@ -749,10 +770,10 @@ jobs:
               # Fewer selected tasks than shards (e.g. n_tasks < n_shards): this
               # shard's slice is legitimately empty. Upload a marker so aggregation
               # can distinguish this successful no-op from a missing shard artifact.
-              mkdir -p harbor-jobs/terminal-bench
+              mkdir -p "$HARBOR_JOBS_DIR"
               # Category-scoped so a flat multi-category run's independently-sharded
               # categories can't collide on the same shard index's marker name.
-              touch "harbor-jobs/terminal-bench/empty-shard-${HARBOR_CATEGORY}-${HARBOR_SHARD_INDEX}"
+              touch "$HARBOR_JOBS_DIR/empty-shard-${HARBOR_CATEGORY}-${HARBOR_SHARD_INDEX}"
               echo "Shard $HARBOR_SHARD_INDEX/$HARBOR_N_SHARDS has no tasks (selection smaller than shard count); skipping."
               echo "SHARD_EMPTY=true" >> "$GITHUB_ENV"
               exit 0
@@ -877,7 +898,7 @@ jobs:
             "${include_args[@]}" \
             "${agent_env_args[@]}" \
             "${verifier_env_args[@]}" \
-            --jobs-dir harbor-jobs/terminal-bench \
+            --jobs-dir "$HARBOR_JOBS_DIR" \
             $env_flag \
             --model "$HARBOR_MODEL" \
             --plugin langsmith \
@@ -890,9 +911,10 @@ jobs:
         if: ${{ env.SHARD_EMPTY != 'true' }}
         run: |
           latest_job=$(python - <<'PY'
+          import os
           from pathlib import Path
 
-          jobs_dir = Path("harbor-jobs/terminal-bench")
+          jobs_dir = Path(os.environ["HARBOR_JOBS_DIR"])
           job_dirs = sorted(path for path in jobs_dir.iterdir() if path.is_dir())
           if not job_dirs:
               raise SystemExit("No Harbor job directory found")
@@ -1019,7 +1041,7 @@ jobs:
           # only this run's own shards, grouped per (branch, agent config, category).
           name: shard-${{ env.HARBOR_BRANCH_SAFE }}-${{ env.HARBOR_AGENT_SAFE }}-${{ env.HARBOR_CATEGORY_SAFE }}-${{ env.LEAF_SLUG }}-${{ strategy.job-index }}
           path: |
-            libs/evals/harbor-jobs/terminal-bench
+            libs/evals/${{ env.HARBOR_JOBS_DIR }}
           if-no-files-found: warn
 
   aggregate:

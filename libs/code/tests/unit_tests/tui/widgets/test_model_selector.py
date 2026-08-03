@@ -2009,21 +2009,23 @@ class TestCuratedModelSelection:
         [
             ("baseten:deepseek-ai/DeepSeek-V4-Flash-0731", "baseten"),
             (
-                "fireworks:accounts/fireworks/models/deepseek-v4-flash",
+                "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731",
                 "fireworks",
             ),
-            ("openrouter:deepseek/deepseek-v4-flash", "openrouter"),
+            ("openrouter:deepseek/deepseek-v4-flash-0731", "openrouter"),
         ],
     )
-    def test_deepseek_v4_flash_is_recommended(self, spec: str, provider: str) -> None:
-        """DeepSeek V4 Flash should be recommended through supported hosts."""
+    def test_deepseek_v4_flash_0731_is_recommended(
+        self, spec: str, provider: str
+    ) -> None:
+        """DeepSeek V4 Flash 0731 should be recommended through supported hosts."""
         from deepagents_code.tui.widgets import model_selector
 
         all_models = [(spec, provider), ("openai:gpt-4o", "openai")]
 
         curated = ModelSelectorScreen._curate_models(all_models)
 
-        assert model_selector._RECOMMENDED_MODELS[spec] == "DeepSeek V4 Flash"
+        assert model_selector._RECOMMENDED_MODELS[spec] == "DeepSeek V4 Flash 0731"
         assert curated == all_models[:1]
 
     def test_opus_5_is_recommended(self) -> None:

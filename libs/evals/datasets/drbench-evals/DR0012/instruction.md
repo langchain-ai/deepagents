@@ -35,7 +35,7 @@ Your company's systems are running and reachable over the network. **Nothing is 
 machine's filesystem** — you have to query the applications. Each one has its own login:
 
 - **file_system** (log in as `ethan.smith` / `my_drbench_pwd`) — local and shared drives, exposed through a file browser at `http://drbench:8090`.
-- **nextcloud** (log in as `ethan.smith` / `my_drbench_pwd`) — the company cloud drive. HTTP Basic auth over WebDAV. List one level with `curl -u ethan.smith:my_drbench_pwd -X PROPFIND -H 'Depth: 1' http://drbench:8081/remote.php/dav/files/ethan.smith/`, then repeat on any directory it returns (they end in `/`) to walk deeper, and GET any file path to download it. Note `Depth: 1` — this server answers `400 Bad Request` to `Depth: infinity`.
+- **nextcloud** (log in as `ethan.smith` / `my_drbench_pwd`) — the company cloud drive. HTTP Basic auth over WebDAV. List one level with `curl -u ethan.smith:my_drbench_pwd -X PROPFIND -H 'Depth: 1' -H 'Host: localhost' http://drbench:8081/remote.php/dav/files/ethan.smith/`, then repeat on any directory it returns (they end in `/`) to walk deeper, and GET any file path to download it. Both extra headers matter: this server answers `400 Bad Request` to `Depth: infinity`, and it only trusts the Host `localhost`, so a request addressed to `drbench:8081` is rejected without the `Host` override.
 
 Documents are PDF, DOCX, XLSX, PPTX, and JSONL mail exports, so anything you download is
 binary. Convert it with `extract-text <path>`. Not every document is relevant — the

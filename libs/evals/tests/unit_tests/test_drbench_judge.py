@@ -646,9 +646,11 @@ def test_webdav_index_parses_a_realistic_nextcloud_response(
             return False
 
     depths: list[str | None] = []
+    hosts: list[str | None] = []
 
     def fake_urlopen(request: urllib.request.Request, **_kwargs: object) -> FakeResponse:
         depths.append(request.get_header("Depth"))
+        hosts.append(request.get_header("Host"))
         # Only the root carries entries here; the nested collection answers empty, which
         # is what terminates the walk.
         return FakeResponse(empty if request.full_url.endswith("/shared/") else body)
@@ -661,6 +663,9 @@ def test_webdav_index_parses_a_realistic_nextcloud_response(
     # Nextcloud's DAV layer answers `Depth: infinity` with 400 Bad Request, so the walk
     # must only ever request one level -- this is what broke the first real trial.
     assert set(depths) == {"1"}
+    # And it only trusts the Host `localhost`, so addressing it by compose service name
+    # without this override is a 400 regardless of depth -- what broke the second trial.
+    assert set(hosts) == {judge.NEXTCLOUD_HOST_HEADER}
     # The nested collection was walked rather than indexed as a document.
     assert len(depths) == 2
     # Collections are not documents and must not be indexed.

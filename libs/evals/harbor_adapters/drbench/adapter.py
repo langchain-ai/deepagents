@@ -70,11 +70,12 @@ _APP_DEFAULT_CREDENTIALS: dict[str, dict[str, str]] = {
 _APP_GUIDANCE: dict[str, str] = {
     "nextcloud": (
         "the company cloud drive. HTTP Basic auth over WebDAV. List one level with "
-        "`curl -u USER:PASS -X PROPFIND -H 'Depth: 1' "
+        "`curl -u USER:PASS -X PROPFIND -H 'Depth: 1' -H 'Host: localhost' "
         "http://drbench:8081/remote.php/dav/files/USER/`, then repeat on any directory "
         "it returns (they end in `/`) to walk deeper, and GET any file path to download "
-        "it. Note `Depth: 1` — this server answers `400 Bad Request` to "
-        "`Depth: infinity`."
+        "it. Both extra headers matter: this server answers `400 Bad Request` to "
+        "`Depth: infinity`, and it only trusts the Host `localhost`, so a request "
+        "addressed to `drbench:8081` is rejected without the `Host` override."
     ),
     "mattermost": (
         "team chat. `POST http://drbench:8082/api/v4/users/login` with a JSON body of "

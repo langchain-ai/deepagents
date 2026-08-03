@@ -69,6 +69,14 @@ MAX_CHUNKS = 200
 MAX_DOCUMENT_BYTES = 200_000
 # Ceiling on one-level PROPFINDs when walking the document tree.
 WEBDAV_MAX_REQUESTS = 50
+
+# Nextcloud refuses any request whose Host header is not in its `trusted_domains`, and the
+# image is configured for `localhost` because upstream runs it with published ports. Reached
+# by compose service name the Host would be `drbench:8081`, which it answers with
+# 400 Bad Request no matter what else the request does. Overriding the header keeps the
+# connection pointed at the right container while satisfying that check. The agent has to
+# do the same thing, and the task prompt says so.
+NEXTCLOUD_HOST_HEADER = "localhost"
 # Floor per component in the composite, so one zero does not erase all signal.
 EPSILON = 0.01
 
@@ -525,12 +533,18 @@ def _basic_auth(credentials: dict[str, str]) -> str:
 
 
 def _http_get(
-    url: str, *, credentials: dict[str, str] | None = None, timeout: int = 60
+    url: str,
+    *,
+    credentials: dict[str, str] | None = None,
+    host_header: str | None = None,
+    timeout: int = 60,
 ) -> bytes:
     """GET a URL, returning at most MAX_DOCUMENT_BYTES."""
     request = urllib.request.Request(url, method="GET")  # noqa: S310 - scheme checked by callers
     if credentials is not None:
         request.add_header("Authorization", _basic_auth(credentials))
+    if host_header is not None:
+        request.add_header("Host", host_header)
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
         return response.read(MAX_DOCUMENT_BYTES)
 
@@ -544,8 +558,16 @@ def _propfind(url: str, credentials: dict[str, str]) -> str:
     request = urllib.request.Request(url, method="PROPFIND")  # noqa: S310 - fixed service host
     request.add_header("Authorization", _basic_auth(credentials))
     request.add_header("Depth", "1")
-    with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
-        return response.read().decode("utf-8", "replace")
+    request.add_header("Host", NEXTCLOUD_HOST_HEADER)
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
+            return response.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        # Include the server's reason. Without it a 400 is indistinguishable between a
+        # rejected Depth, an untrusted Host, and a bad path -- which cost two trials.
+        detail = exc.read().decode("utf-8", "replace")[:300]
+        msg = f"HTTP {exc.code} from PROPFIND {url}: {detail}"
+        raise RuntimeError(msg) from exc
 
 
 def _webdav_index(endpoint: str, credentials: dict[str, str]) -> dict[str, str]:
@@ -647,9 +669,11 @@ def _resolve_citation(
     if url is None:
         return None
     try:
-        payload = _http_get(url, credentials=credentials)
+        payload = _http_get(
+            url, credentials=credentials, host_header=NEXTCLOUD_HOST_HEADER
+        )
     except Exception as exc:  # noqa: BLE001
-        print(f"  could not download {name}: {type(exc).__name__}")
+        print(f"  could not download {name}: {type(exc).__name__}: {exc}")
         return None
     return _extract_text(payload, name)
 

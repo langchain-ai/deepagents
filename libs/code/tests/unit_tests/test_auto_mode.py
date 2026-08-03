@@ -3621,10 +3621,8 @@ async def test_repeated_classifier_config_failure_escalates_to_human(
     decision = second["decisions"][0]
     assert decision["disposition"] == "require_human"
     assert "openai:missing-model" in decision["reason"]
-    # Actionable, not just diagnostic: the prompt has to say how to fix it.
+    # Actionable, not just diagnostic: the prompt has to say how to switch.
     assert "/auto model <provider:model>" in decision["reason"]
-    assert "/auto model clear" in decision["reason"]
-    assert "/auth" in decision["reason"]
     # The approval prompt renders the batch-level reason, so the diagnostic has
     # to be there too or the user sees only "human approval threshold reached".
     assert second["fallback_reason"] == decision["reason"]
@@ -4198,9 +4196,8 @@ async def test_latched_classifier_fault_reaches_the_approval_prompt(
     )
     latched = (
         "configured classifier model openai:missing-model is unavailable; Auto "
-        "asks for approval until it is fixed. Switch with `/auto model "
-        "<provider:model>`, review with the main agent model via `/auto model "
-        "clear`, or add credentials with `/auth`."
+        "asks for approval until it is fixed. Switch it with `/auto model "
+        "<provider:model>`."
     )
     plan = {
         "batch_id": _batch_id(ai_message.tool_calls),

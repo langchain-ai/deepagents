@@ -2634,14 +2634,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             )
             # A repeat construction failure for the same spec will not fix
             # itself, so stop denying silently and ask instead. Names the spec
-            # *and* the commands that fix it: without the remediation the prompt
-            # tells the user something is wrong but not what to do about it, and
-            # `/auth` alone does not help if the spec itself is the mistake.
+            # and how to change it — the reason appears in an approval prompt, so
+            # it stays one short sentence rather than enumerating every remedy.
             latched_reason = sanitize_auto_reason(
-                f"{reason}; Auto asks for approval until it is fixed. Switch "
-                "with `/auto model <provider:model>`, review with the main "
-                "agent model via `/auto model clear`, or add credentials with "
-                "`/auth`.",
+                f"{reason}; Auto asks for approval until it is fixed. Switch it "
+                "with `/auto model <provider:model>`.",
                 known_secrets=self._known_secrets,
             )
             if not counters_saved:

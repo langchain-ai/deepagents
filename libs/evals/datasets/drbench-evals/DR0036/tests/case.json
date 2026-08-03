@@ -1,6 +1,30 @@
 {
   "task_id": "DR0036",
   "question": "With the reported slowdown in the sales of electric vehicles (EV), how can after sales products and customer service strategies help our company remain successful in 2026?",
+  "persona": {
+    "name": "Ryan Thompson",
+    "role": "Customer Service Team Lead"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "email": {
+      "username": "current.user",
+      "password": "current_user_pwd"
+    },
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -18,6 +42,56 @@
       "id": "IN0003",
       "question": "Do returning customers cite warranty length as a reason for their repeat purchases from Elexion?",
       "answer": "Based on our 2025 tracking data of 20,132 customers who purchased another vehicle from Elexion within five years of purchasing their first, 16,562 cited the warranty length as a reason for doing so.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "When was the Customer Experience team created at Elexion Automotive?",
+      "answer": "The Customer Experience team was created at Elexion Automotive on May 20, 2015, one year before the arrival of current team lead Ryan Thompson.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "As of first quarter 2025, what percentage of incoming calls were found to be automated?",
+      "answer": "During recent audits, 3.7% of customer service calls were found to be from automated callers.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "Can customers call Elexion to speak to a live customer service representative at any time?",
+      "answer": "A global network of 50 call services ensures each call is handled by a Customer Service Specialist in under one hour at any time of the day during the entire week.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "How many total service calls did Elexion have in 2024?",
+      "answer": "Based on the 2024 Customer Service Internal Report, Elexion recorded 1265 service calls in the field and 2824 in-house services.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "What is Elexion's average turnaround time for scheduling service appointments for customers?",
+      "answer": "Per the 2024 Customer Service team annual review, customer service specialists typically needed between 1 and 3 hours to coordinate service appointments for customers.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "What percentage of active customers respond to customer service surveys are collected each month?",
+      "answer": "An average of 40% of active customers per month respond to customer service surveys.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "How many staff retreats did the Customer Service Team have in 2024?",
+      "answer": "In 2024, the Customer Service Team had 3 staff retreats, in March, July, and November. During these all-day meetings, the team focused on strategizing new initiatives to increase sales and customer retention for the 2025 year.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "Do Elexion Automotive's customer service representatives work more efficiently when they have the weekend off?",
+      "answer": "Yes. According to our end-of-year 2024 data, all 42 of our customer service representatives work more efficiently after having a day or two off. We know that if we overwork our employees, we lose productivity. The data shows a 21% increase in productivity for rested employees.",
       "type": "enterprise_fact"
     }
   ]

@@ -1,6 +1,30 @@
 {
   "task_id": "DR0028",
   "question": "With the rapid increase in virtual consultations for healthcare visits reported since 2023, what marketing strategies can MediConn Solutions adopt to continue attracting new customers?",
+  "persona": {
+    "name": "Ryan Thompson",
+    "role": "Content Marketing Manager"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "mattermost": {
+      "username": "admin@drbench.com",
+      "password": "mm_admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -18,6 +42,68 @@
       "id": "IN0003",
       "question": "How effective are social media campaigns at encouraging new patients to sign up for MediConn accounts?",
       "answer": "During our last Facebook ad push, there was an increase of 10% in new patient sign-ups, 6% of which were referred directly to the MediConn site through Facebook ad links.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "Do inactive customers cite concerns about cybersecurity as a reason for not continuing to use MediConn's services?",
+      "answer": "Yes, over 28% of inactive customers who responded to our March 2025 customer survey have referred to cybersecurity concerns about their personal data as a reason for stopping usage of MediConn's services.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "Do MediConn's customers compare its services favorably or unfavorably to its competitors?",
+      "answer": "80% of MediConn's customers state that they prefer using its services to its competitors.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "How much do patients pay out of pocket for prescriptions through MediConn compared to directly working with pharmacies?",
+      "answer": "Patients typically save 10-25% on prescriptions using MediConn's prescription management service.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "How long is the typical wait for the virtual appointments?",
+      "answer": "Appointment wait times varies. Our statistics show in the last 6 months of 2024, that wait time is three days to 1 month on average.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "How did MediConn do on meeting the sales budget expectations from 2024?",
+      "answer": "The MediConn sales teams stayed 5% under budget in 2024 and still met its sales goals.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "When was the last time MediConn employed an outside consultant to analyze the effectiveness of its marketing efforts?",
+      "answer": "MediConn's last marketing review by an outside consultant was performed in 2023.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "How many doctors does MediConn currently partner with to provide healthcare services?",
+      "answer": "As of July 1, 2025, there are 4,342 doctors in MediConn's Virtual Healthcare system.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "How much do doctors who work with MediConn earn from a virtual healthcare appointment?",
+      "answer": "Rates vary depending on the appointment type as well as the specialization and experience level of the doctor. In general, rates can range from $20 CAD to over $2,000 CAD.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0009",
+      "question": "Does MediConn expect to grow its sales or marketing departments in 2026?",
+      "answer": "No, MediConn has a company-wide hiring freeze until 2027.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0010",
+      "question": "How many patients did MediConn Solutions refer to doctors for in-person consultations based on their virtual pre-screening interviews in 2024, and did that number grow from 2023?",
+      "answer": "In 2024, 24,800 patients were referred to doctors for in-person consultations due to their cases being determined as too complex or risky for a virtual appointment. This was an increase of 21% over 2023.",
       "type": "enterprise_fact"
     }
   ]

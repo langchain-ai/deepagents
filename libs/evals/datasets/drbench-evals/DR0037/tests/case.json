@@ -1,6 +1,35 @@
 {
   "task_id": "DR0037",
   "question": "Between 2025 and 2027, what are the strategies that Andrew Park needs to put into place for Lee's Market to reduce reputational risk associated with corporate social responsibility communication and at the same time leverage the opportunities to position itself as an ethical alternative to large retailers across Canada and the United States?",
+  "persona": {
+    "name": "Andrew Park",
+    "role": "Public Relations Director"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "email": {
+      "username": "current.user",
+      "password": "current_user_pwd"
+    },
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "mattermost": {
+      "username": "admin@drbench.com",
+      "password": "mm_admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -18,6 +47,56 @@
       "id": "IN0003",
       "question": "Do Lee's Market employees perceive the corporation as ethical, and how does this compare to general public perception?",
       "answer": "On an internal survey conducted by the public relations research team during Q3 of 2024, only 35% of Lee's Market employees agreed that Lee's Market \"is an ethical alternative to large retailers.\" This contrasts with 65% of the general public who agreed, in a parallel external survey conducted by the public relations research team.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "What media relations strategy is currently planned for implementation in 2026 to increase Lee's Market visibility in mainstream business publications?",
+      "answer": "An aggressive media outreach is currently scheduled to begin in Q1 of 2026, targeting up to 25 mainstream business and lifestyle publications, including Forbes, Bloomberg, Businessweek and regional business journals, in order to secure 40-50 feature placements that highlight the story of Lee's Market's financial growth over the last year.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "What is the budget for customer engagement communication strategies related to the launch of the new Lee's Market loyalty program in 2026?",
+      "answer": "For 2026, $25,000 of the total Public Relations budget has been earmarked for customer engagement communication strategies focused on the new Lee's Market loyalty program. These strategies are part of a multi-phased plan, including email and text campaigns, in-store signage and promotions, and digital advertising.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "How many feature articles on Lee's Market did the Public Relations team secure in 2023, and how does this compare to numbers from the year prior?",
+      "answer": "In 2023, Andrew Park and his team secured 45 feature articles in mainstream North America news outlets, which is a 20% increase from 2022.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "How has Lee's Market online presence grown on X from January to June 2024?",
+      "answer": "Lee's Market corporate X account gained 25,000 new followers in the first half of 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "How many media inquiries did the Public Relations team for Lee's Market manage on average in 2024, and what was their response rate?",
+      "answer": "Andrew Park's office handled an average of 25 media inquiries about Lee's Market per week in 2024, with a 98% response rate within 4 business hours.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "How is Lee's Market's brand message consistency measured?",
+      "answer": "Brand message consistency is measured by internal auditors in the Public Relations department who review all press releases, feature articles, and other official media content for consistency of messaging. For example, their internal 2024 Brand Consistency Audit Report showed \"High Consistency,\" with 92% of all Lee's Market press releases containing all three core brand keywords: authentic, quality, and community.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "What was the budget allocation for the Corporate Communications Department in Lee's Market in 2024?",
+      "answer": "The corporate communicarions department in Lee's Market, led by Andrew Park operated with an annual budget of $1.5 million in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "Do Lee's Market employees perceive the corporation as fun, and how does this compare to general public perception?",
+      "answer": "On an internal survey conducted by the public relations research team during Q3 of 2024, 55% of Lee's Market employees agreed that Lee's Market \"is a fun place to work/shop.\" This aligns with 58% of the general public who agreed, in a parallel external survey conducted by the public relations research team.",
       "type": "enterprise_fact"
     }
   ]

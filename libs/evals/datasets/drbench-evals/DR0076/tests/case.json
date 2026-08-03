@@ -1,6 +1,35 @@
 {
   "task_id": "DR0076",
   "question": "By Q2 2026, how can Elexion Automotive leverage the integration of digital engineering methodologies with digital twins to optimize EV battery performance and lifecycle management, while ensuring regulatory compliance across North American markets?",
+  "persona": {
+    "name": "Olivia Martinez",
+    "role": "Asset Lifecycle Manager"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "email": {
+      "username": "current.user",
+      "password": "current_user_pwd"
+    },
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "mattermost": {
+      "username": "admin@drbench.com",
+      "password": "mm_admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -24,6 +53,80 @@
       "id": "IN0004",
       "question": "Between April 1 and December 31, 2025, how many cross-departmental design reviews did Elexion Automotive conduct using its new digital engineering and digital twin integration platform?",
       "answer": "According to internal collaboration logs, Elexion conducted 22 cross-departmental design reviews between April 1 and December 31, 2025 using its digital engineering and digital twin integration platform.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "As of May 31, 2025, did Elexion Automotive’s asset management platform auto-generate warranty renewal reminders for critical production equipment?",
+      "answer": "Yes. An internal Elexion Automotive update dated May 12, 2025 confirmed that Olivia Martinez’s asset management team enabled automated warranty renewal alerts for 146 production-line assets.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "Between January 1 and September 30, 2025, how many preventive-maintenance schedules did Olivia Martinez’s team update in Elexion Automotive’s digital asset ledger?",
+      "answer": "Internal Elexion records show that Olivia Martinez’s lifecycle team updated 512 preventive-maintenance schedules between Q1 and Q3, 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "In 2024, how many non-battery production assets did Olivia Martinez’s team audit for asset utilization at Elexion Automotive?",
+      "answer": "According to internal Elexion Automotive audit reports, Olivia Martinez’s team completed utilization audits for 11 non-battery production assets across Elexion's North American facilities between January 1 and December 31, 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "By July 1, 2025, did Elexion Automotive integrate supplier audit data into its central asset lifecycle system?",
+      "answer": "Yes. A system integration log dated June 28, 2025 confirms that supplier audit data was successfully incorporated into Elexion Automotive’s lifecycle management platform.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "Between March 1 and December 31, 2024, how many unused assets did Elexion Automotive’s lifecycle team decommission from its digital asset registry?",
+      "answer": "Internal decommissioning records show that Olivia Martinez’s team removed 327 inactive assets from Elexion Automotive’s registry between March 1 and December 31, 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "Between April 1 and September 30, 2025, how many total physical and digital assets did Elexion Automotive log into its lifecycle management platform?",
+      "answer": "According to asset tracking summaries, 4,850 assets were logged into Elexion Automotive’s lifecycle system between Q2 and Q3, 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "By October 31, 2025, did Elexion Automotive implement predictive alerts for expiring software licenses across its manufacturing divisions?",
+      "answer": "Yes. A software management update issued on September 30, 2025 confirmed that predictive alerts were activated across all Elexion Automotive divisions.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "In 2024, how many cost-recovery reports did the asset lifecycle management team submit for depreciated Elexion Automotive production assets?",
+      "answer": "Internal finance records show that Olivia Martinez’s team filed 19 cost-recovery reports for depreciated production assets between January 1 and December 31, 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0009",
+      "question": "Between January 1 and September 30, 2025, how many lifecycle compliance audits did Olivia Martinez oversee across Elexion Automotive’s regional plants?",
+      "answer": "According to internal Elexion Automotive compliance records, Olivia Martinez oversaw 14 lifecycle compliance audits across the company's North American plants between Q1 and Q3, 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0010",
+      "question": "Between July 1 and December 31, 2024, how many internal training workshops did Olivia Martinez organize on lifecycle documentation standards for Elexion staff?",
+      "answer": "Training logs show that Olivia Martinez conducted 9 internal workshops on documentation standards between Q3 and Q4, 2024 for Elexion staff.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0011",
+      "question": "How many EV motor prototypes did Elexion Automotive’s digital engineering team simulate using digital twins between January 1 and September 30, 2025?",
+      "answer": "According to internal testing records, Elexion’s digital engineering team simulated 24 EV motor prototypes between Q1 and Q3 2025 to test material durability and assembly procedures.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0012",
+      "question": "Between April 1 and December 31, 2025, how many cross-departmental workflow planning reviews did Elexion Automotive conduct using its internal collaboration logs?",
+      "answer": "According to internal collaboration logs, Elexion conducted 18 cross-departmental workflow planning reviews between April 1 and December 31, 2025 using its internal collaboration logs.",
       "type": "enterprise_fact"
     }
   ]

@@ -1,6 +1,35 @@
 {
   "task_id": "DR0039",
   "question": "What carbon footprint metrics and methods of communication did online grocery retailers share about their delivery operations throughout 2024, and how did being open about these environmental impacts affect customer perception in competitive markets across Canada and the US?",
+  "persona": {
+    "name": "Andrew Park",
+    "role": "Public Relations Director"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "email": {
+      "username": "current.user",
+      "password": "current_user_pwd"
+    },
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "mattermost": {
+      "username": "admin@drbench.com",
+      "password": "mm_admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -18,6 +47,56 @@
       "id": "IN0003",
       "question": "When did Andrew's team initiate research on customer attitude towards sustainability transparency?",
       "answer": "Andrew's team initiated research on customer attitudes towards sustainability transparency in January 2024, measuring how disclosure of delivery carbon footprints would influence shopping behaviors.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "How many media outlets received Lee's Market's updated brand guidelines in Q1 2024?",
+      "answer": "Lee's Market's updated brand and media guidelines were distributed to 47 local media outlets across Vancouver, Toronto, Seattle and Los Angeles in March 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "What is the media reach of the Lee's Market's new store opening in Toronto, Canada?",
+      "answer": "The grand opening of Lee's Market in Toronto in February 2025 generated nearly 1.1 million media impressions across print and digital channels.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "How many cultural festivals did Lee's Market sponsor in 2024?",
+      "answer": "In 2024, Lee's Market sponsored 23 Asian cultural festivals and 41 community events across North America, with an average of 8400 attendees per event.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "What was the growth in Lee's Market's Instagram followers throughout 2024?",
+      "answer": "Lee's Market's Instagram following gained 120,000 followers between January and December 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "How many press releases did the PR department of Lee's Market issue in 2023?",
+      "answer": "Lee's Market PR department issued 31 press releases in 2023, covering new product launches and store openings.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "How many social media influencers partnered with Lee's Market in 2024?",
+      "answer": "Lee's Market partnered with 34 Asian food and lifestyle influencers in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "Were there any executive interviews secured in major publications by Andrew's PR team in 2025?",
+      "answer": "Andrew's team were able to secure only 2 interviews for the CEO of Lee's Market in major publications in the second quarter of 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "According to Lee's Market's 2024 Product Analysis Report, in which market, Canada or the US, did product quality transparency have a greater impact on customer perception?",
+      "answer": "Lee's Market 2024 product analysis report revealed that product quality transparency generated stronger customer perception impact in the Canadian markets, in which 89% stated transparency influenced positive perception compared to the 71% coming from the U.S.",
       "type": "enterprise_fact"
     }
   ]

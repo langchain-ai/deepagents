@@ -1,6 +1,25 @@
 {
   "task_id": "DR0083",
   "question": "How can Elexion use virtual healthcare-style remote diagnostics to reduce warranty repair downtime?",
+  "persona": {
+    "name": "Ryan Thompson",
+    "role": "Competitive Intelligence Manager"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "file_system": "http://drbench:8090",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -24,6 +43,68 @@
       "id": "IN0005",
       "question": "Which geographic markets show rising EV demand?",
       "answer": "Colorado and Arizona dealerships recorded 12–15% YoY growth in mid‑range EV inquiries.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "How many employees attended last quarter’s wellness seminar?",
+      "answer": "Attendance was 310 employees.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "What is the cafeteria’s revised meal rotation schedule?",
+      "answer": "Meal rotation adjusted to a 3‑week cycle.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "How many branded hats were distributed at the 2024 summer fair?",
+      "answer": "4,200 units were distributed.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "What percentage of employees updated their ID photos this year?",
+      "answer": "79% completed photo updates.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "What changes were made to parking allocation at HQ?",
+      "answer": "EV‑charging-only spots increased by 12.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "How many HR onboarding sessions were held in Q2?",
+      "answer": "Nine sessions were completed.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "What color theme was chosen for the annual brand day?",
+      "answer": "Silver Horizon was selected.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "How many internal newsletters were sent in Q3?",
+      "answer": "Five newsletters were released.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0009",
+      "question": "How many plant maintenance work orders were closed?",
+      "answer": "284 orders were closed.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0010",
+      "question": "How many internship applications were received this year?",
+      "answer": "1,480 applications were submitted.",
       "type": "enterprise_fact"
     }
   ]

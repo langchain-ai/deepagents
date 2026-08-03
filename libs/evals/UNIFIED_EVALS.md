@@ -32,11 +32,18 @@ A "deep agent" is not one skill, so a single benchmark can't score one. We split
 | **autonomous** | End-to-end task execution in a real, sandboxed computer/terminal environment | [`harbor-index/harbor-index-1.0`](https://github.com/laude-institute/harbor) (Harbor registry) | bare · dcode |
 | **conversation** | Multi-turn, tool-using dialogue against a simulated user, following a policy | [`tau3-subset`](https://github.com/sierra-research/tau2-bench) (τ³-bench) | tau3 |
 | **context** | Retrieval + reasoning over a large, multi-file corpus | [`context-retrieval-evals`](https://github.com/letta-ai/letta-evals) (Context-Bench) | bare · dcode |
-| **research** | Open-ended research across a heterogeneous private corpus **and** the open web, synthesized into a cited report | [`drbench-evals`](https://github.com/ServiceNow/drbench) (DRBench, local mode) | bare · dcode |
+| **research** | Open-ended research across a live enterprise app stack **and** the open web, synthesized into a cited report | [`drbench-evals`](https://github.com/ServiceNow/drbench) (DRBench, app mode) | bare · dcode |
 
 The default run exercises the first three (`categories: "autonomous,conversation,context"`). A radar chart needs at least three axes to be meaningful, so it is emitted only once that many categories run.
 
-**`research`** is opt-in rather than default. It differs from the other categories in two ways worth knowing before dispatching it: its tasks run with `network_mode = "public"` (DRBench's ground truth includes facts that exist only on the open web, so an allowlist would make them unreachable), and it is the only category granted `TAVILY_API_KEY`, which is what activates the agent's `web_search` tool. Its reward is DRBench's `insights_recall` — the fraction of the benchmark's expected findings the agent's report actually recovers — so scores are continuous rather than pass/fail per task. See [`datasets/drbench-evals/README.md`](datasets/drbench-evals/README.md) for the runtime contract and scoring detail.
+**`research`** is opt-in, and it is the odd one out in four ways worth knowing before dispatching it:
+
+- **It needs two non-default settings**: `sandbox_env: docker` and `runner_label: ubuntu-24.04-arm`. Upstream publishes DRBench's per-task images for arm64 only, and a runner's architecture only matters when the containers run *on* the runner — with the default LangSmith sandbox they run off-runner and the label has no effect.
+- **`network_mode = "public"`**, because DRBench's ground truth includes facts that exist only on the open web. It is also the only category granted `TAVILY_API_KEY`, which is what activates the agent's `web_search` tool.
+- **Scores are continuous, and there are five of them.** Rather than pass/fail, each trial emits `insights_recall`, `distractor_recall`, `factuality`, and `report_quality`, plus a composite under `reward` (what pass@k / avg@k are computed from). The composite is a harmonic mean of the first three plus `1 − distractor_recall`. **Upstream defines no combined score, so that number is ours and is not comparable to the DRBench paper** — publish the components beside it.
+- **Disk-bound, so run it at `concurrency: 1`.** Each trial runs a full Nextcloud/Mattermost/Postgres/Roundcube stack from a ~1.22 GiB image on a runner with ~14 GB free.
+
+See [`datasets/drbench-evals/README.md`](datasets/drbench-evals/README.md) for the runtime contract, the two credential regimes, and scoring detail.
 
 The `autonomous`, `context`, and `research` categories run a deep-agents graph: by default the **bare** `create_deep_agent` — the SDK agent with no product scaffolding, which keeps the score a measure of the *model* rather than of a harness wrapped around it — with **`dcode`** (deep-agents-code, the full product agent) selectable as an option. The `conversation` category runs the τ³ runtime, which supplies a **user simulator** the agent must converse with rather than a static prompt.
 

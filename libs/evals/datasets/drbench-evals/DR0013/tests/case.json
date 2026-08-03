@@ -1,6 +1,30 @@
 {
   "task_id": "DR0013",
   "question": "How can Elexion Automotive effectively implement a cybersecurity strategy for its electric vehicles, considering the risks and challenges posed by connected and autonomous technologies?",
+  "persona": {
+    "name": "Ethan Thompson",
+    "role": "Cybersecurity Specialist"
+  },
+  "credential_regime": "persona",
+  "credentials": {
+    "email": {
+      "username": "ethan.thompson",
+      "password": "my_drbench_pwd"
+    },
+    "mattermost": {
+      "username": "ethan.thompson",
+      "password": "my_drbench_pwd"
+    },
+    "nextcloud": {
+      "username": "ethan.thompson",
+      "password": "my_drbench_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "EX0000",
@@ -54,6 +78,80 @@
       "id": "qa_1755714060",
       "question": "How many cybersecurity incidents occurred in our V2X systems in Q2 2024?",
       "answer": "Two cybersecurity incidents were reported in our V2X systems in Q2 2024.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "qa_1755628546",
+      "question": "What were the facility costs in Q1 2024?",
+      "answer": "Facility costs totaled $1.8 million in Q1 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755634695",
+      "question": "How much did we spend on marketing in Q2 2024?",
+      "answer": "Marketing expenditure reached $5 million in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755628489",
+      "question": "How many training hours per employee in Q3 2024?",
+      "answer": "Each employee completed an average of 12 training hours.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755714339",
+      "question": "How many new manufacturing equipment were purchased in Q2 2024?",
+      "answer": "Elexion purchased 15 new manufacturing equipment totaling $1.5 million.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755714219",
+      "question": "What was the employee turnover rate in Q3 2024?",
+      "answer": "Employee turnover rate was 8% with an average tenure of 3 years.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755635069",
+      "question": "What are our manufacturing facility operational costs in Q2 2024?",
+      "answer": "Operational costs for the facility were $8 million in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755634742",
+      "question": "What is our average production cost per vehicle in Q2 2024?",
+      "answer": "Average production cost per vehicle was $32,000 in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755635200",
+      "question": "How much did we spend on employee training in Q2 2024?",
+      "answer": "Employee training expenses totaled $1.2 million during Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755714717",
+      "question": "What was the average customer satisfaction rating in Q1 2024?",
+      "answer": "Average customer satisfaction rating was 85% with 90% recommending Elexion.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755628605",
+      "question": "How many new IT hires in Q3 2023?",
+      "answer": "Elexion hired 15 new IT staff in Q3 2023.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755718551",
+      "question": "What was our research and development budget in Q2 2024?",
+      "answer": "Research and development budget was $8 million in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755628424",
+      "question": "What was our office space utilization rate in Q2 2024?",
+      "answer": "Office space utilization averaged 65% with peak usage reaching 80%.",
       "type": "enterprise_fact"
     }
   ]

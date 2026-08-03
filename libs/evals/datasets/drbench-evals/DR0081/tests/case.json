@@ -1,6 +1,35 @@
 {
   "task_id": "DR0081",
   "question": "Given the evolving battery price trends, supply chain dynamics, and regional material availability highlighted in the 2024 IEA report \"Trends in Electric Cars\", how can Elexion Automotive optimize its battery sourcing and procurement strategy to maintain cost efficiency and production resilience by Q1 2026?",
+  "persona": {
+    "name": "Ryan Thompson",
+    "role": "Competitive Intelligence Manager"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "email": {
+      "username": "current.user",
+      "password": "current_user_pwd"
+    },
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "mattermost": {
+      "username": "admin@drbench.com",
+      "password": "mm_admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -30,6 +59,92 @@
       "id": "IN0005",
       "question": "How many used Elexion EVs were sold or transferred into secondary markets by Q3 2025, and what percentage underwent battery refurbishment?",
       "answer": "According to internal analytics, 1,148 used Elexion EVs were sold or leased into secondary markets in North America, with 35% receiving battery refurbishment prior to resale.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "By August 1, 2025, had Elexion Automotive expanded its competitive intelligence dashboard to include real-time sales data from North American EV competitors?",
+      "answer": "Yes. As of August 1, 2025, the Elexion Automotive competitive intelligence team had integrated real-time competitor sales feeds from 10 major EV brands into its analytics dashboard.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "How many competitor EV models did Elexion Automotive benchmark for range performance during Q3 2025?",
+      "answer": "Between July 1 and September 30, 2025, the Elexion Automotive Competitive Intelligence Manager benchmarked 12 EV models from 6 rival EV manufacturers to compare range and energy efficiency.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "By June 15, 2025, had Elexion Automotive implemented an AI-based tool to track EV competitors' marketing campaigns across North America?",
+      "answer": "Yes. As of June 15, 2025, Elexion Automotive's market insights unit used an AI dashboard to monitor EV-brand advertising frequency and messaging trends.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "How many market intelligence briefs did the CIM deliver to senior leadership during Q2 2025?",
+      "answer": "Between April 1 and June 30, 2025, the CIM produced 14 competitive intelligence briefs covering market entry risks, pricing shifts, and policy updates.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "By May 12, 2025, had Elexion Automotive launched a tracker to monitor global EV software innovations?",
+      "answer": "Yes. According to company data, as of May 12, 2025, Elexion Automotive's intelligence platform tracked over 200 new EV software patents from major competitors.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "How many new EV-related policy updates did Elexion Automotive's intelligence team record across its operating markets between January 1 and September 30, 2025",
+      "answer": "Between January 1 and September 30, 2025, the intelligence team at Elexion Automotive logged 26 policy and regulatory updates covering EV subsidies, safety standards, and import duties.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "By July 10, 2025, had Elexion Automotive completed its analysis of competitor factory expansion in North America?",
+      "answer": "Yes. The CIM finalized a Q2 2025 report covering five major competitor plant expansions in Ontario, Las Vegas, and Florida.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "How many consumer sentiment data points did Elexion Automotive's market intelligence dashboard collect in Q2 2025?",
+      "answer": "Between April 1 and June 30, 2025, the Elexion Automotive market intelligence dashboard collected over 1,000 consumer feedback entries from online reviews and surveys.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0009",
+      "question": "By September 5, 2025, had Elexion Automotive automated its competitor pricing tracker for the North American EV market?",
+      "answer": "Yes. As of September 5, 2025, the CIM's analytics system automatically updates competitor pricing data every 24 hours.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0010",
+      "question": "How many predictive models did Elexion Automotive's intelligence team run to forecast EV demand in Q1 2025?",
+      "answer": "Internal records show that the competitive intelligence team at Elexion Automotive ran eight predictive models covering market growth, brand share, and regional adoption rates.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0011",
+      "question": "By November 1, 2025, had Elexion Automotive completed a review of its joint innovation programs with tech partners?",
+      "answer": "Yes. As of November 1, 2025, the CIM finalized evaluations for four ongoing R&D collaborations focused on autonomous driving and software systems.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0012",
+      "question": "How many interactive dashboards did the Competitive Intelligence Manager oversee for internal business units at Elexion Automotive as of October 17, 2025?",
+      "answer": "As of October 17, 2025, the CIM maintained six active dashboards displaying competitor trends, policy updates, and market forecasts.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0013",
+      "question": "By how much has Elexion Automotive reduced its market research procurement costs between Q1 and Q3, 2025?",
+      "answer": "According to internal financial reports, Elexion Automotive reduced its market research procurement costs by 6% between January 1 and September 30, 2025, through vendor consolidation and improved data-sharing systems.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0014",
+      "question": "How many active supplier partnerships does Elexion Automotive maintain for its electronic sensor components as of November 1, 2025?",
+      "answer": "According to internal documentation, as of November 1, 2025, Elexion Automotive works with 20 certified suppliers for electronic sensor units and related control modules.",
       "type": "enterprise_fact"
     }
   ]

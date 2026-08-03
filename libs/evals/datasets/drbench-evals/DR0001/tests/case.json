@@ -1,6 +1,25 @@
 {
   "task_id": "DR0001",
   "question": "How can Lee's Market leverage FSMA 204 regulations to enhance food safety and customer trust?",
+  "persona": {
+    "name": "Emily Patel",
+    "role": "Regulatory Affairs Manager"
+  },
+  "credential_regime": "persona",
+  "credentials": {
+    "email": {
+      "username": "emily.patel",
+      "password": "my_drbench_pwd"
+    },
+    "nextcloud": {
+      "username": "emily.patel",
+      "password": "my_drbench_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "EX0000",
@@ -36,6 +55,50 @@
       "id": "IN011_roundcube",
       "question": "What is Lee's Market's FSMA 204 compliance rate among high-risk food suppliers as of Q2 2025?",
       "answer": "85% of high-risk food suppliers are FSMA 204 compliant, totaling 270 vendors.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI001_pdf",
+      "question": "What was Lee's Market employee turnover rate in Q3 2024?",
+      "answer": "Employee turnover rate averaged 12% with 150 new hires in Q3 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI003_pdf",
+      "question": "What was the total energy consumption of Lee's Market stores in Q1 2024?",
+      "answer": "Total energy consumption was 15 million kWh with a cost of $1.8M in Q1 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI002_roundcube",
+      "question": "What was Lee's Market employee onboarding time in Q1 2025?",
+      "answer": "Employee onboarding averaged 30 days with a 90% completion rate.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI002_pdf",
+      "question": "What was the average IT system downtime in Q2 2024?",
+      "answer": "Average IT system downtime was 2 hours with 95% uptime in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI005_pdf",
+      "question": "What was the average store renovation cost for Lee's Market in Q2 2024?",
+      "answer": "Average store renovation cost was $250,000 with 10 stores renovated in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI004_pdf",
+      "question": "What was Lee's Market's employee training hours per employee in Q3 2024?",
+      "answer": "Employee training hours averaged 12 hours per employee with a total cost of $750,000.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI001_roundcube",
+      "question": "How many hours of training did Lee's Market employees receive in Q1 2024?",
+      "answer": "Employees received an average of 12 hours of training with a 90% completion rate.",
       "type": "enterprise_fact"
     }
   ]

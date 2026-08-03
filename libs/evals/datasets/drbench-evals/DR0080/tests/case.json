@@ -1,6 +1,30 @@
 {
   "task_id": "DR0080",
   "question": "Based on the 2024 report \"Trends in electric cars\" on iea.org, which developments in battery technology and EV supply chains are likely to impact global production and delivery dynamics by Q2 2026?",
+  "persona": {
+    "name": "Ryan Thompson",
+    "role": "Competitive Intelligence Manager"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "email": {
+      "username": "current.user",
+      "password": "current_user_pwd"
+    },
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -30,6 +54,92 @@
       "id": "IN0005",
       "question": "What is the current average EV battery inventory level across Elexion’s North American distribution centers?",
       "answer": "As of October 2025, Elexion internal logistics tracking indicates that an average of 78% of planned battery inventory is in stock across all distribution centers, with the lowest levels at the Midwest and Northeast hubs.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "How many new Elexion Automotive marketing campaigns were launched across North America in Q1 2025?",
+      "answer": "According to Elexion internal reports, five new marketing campaigns were launched in Q1 2025, targeting urban EV buyers with promotions focused on interior features, financing options, and dealership experiences.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "How many interactions did competitor EV lifestyle campaigns generate across social media platforms in Q1 2025?",
+      "answer": "According to Elexion's competitive insights dashboard, competitive EV lifestyle campaigns received 130,000 interactions in Q1 2025, with Tesla accounting for 70% engagement.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "Which North American region had the highest concentration of competitor-sponsored events in Q1 2025?",
+      "answer": "According to Elexion's competitor intelligence report, California hosted the largest number of competitor-sponsored EV events , accounting for 40% of all activity in North America.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "Which EV manufacturer adjusted their vehicle pricing strategies in North America during Q3 2025?",
+      "answer": "Elexion's market summary states that Ford implemented an average price reduction of 3-5% across EV models in Q3 2025",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "What competing EV manufacturer received a major industry award in Q4 2025?",
+      "answer": "According to Elexion's competitor intelligence summary, Hyundai received top honors at the 2025 North American Innovators Awards for advancement in EV digital dashboards.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "Which Elexion Automotive North American offices had the highest employee participation in internal EV sales strategy workshops in Q1 2026?",
+      "answer": "According to Elexion's internal HR reports, the New York and Los Angeles offices had the highest participation in internal EV sales strategy workshops during Q1 2026, with 87% and 82% of employees, respectively, attending.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "How many industry research collaborations did Elexion participate in during Q4 2025 to gather data on EV market trends?",
+      "answer": "According to Elexion's market intelligence division, the company participated in three research collaboration projects in Q4 2025, contributing pricing data on EV market trends with external analytics partners.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "How did competitor sustainability initiatives across North American EV sector evolve in Q4 2025",
+      "answer": "According to competitor sustainability reports, several major competitors, including Ford and Tesla, expanded sustainability initiatives in Q4 2025, publishing joint environmental targets aligned with Science-Based Target Initiative standards.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0009",
+      "question": "What were the leading EV accessories trends across the North American aftermarket sector in  Q4 2025?",
+      "answer": "According to Elexion's internal market summary, EV custom charging cables and interior add-ons were the top sellers across North America in Q4 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0010",
+      "question": "What universities partnered with Elexion on research initiatives in Q1 2025?",
+      "answer": "According to Elexion internal partnership reports, the University of California (Los Angeles), the University of Michigan, and Massachusetts Institute of Technology partnered in research initiatives in Q1 2025, focusing on EV design and innovation.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0011",
+      "question": "How many external brands collaborated with Elexion Automotive on Q4 2025 co-branded EV accessory promotions?",
+      "answer": "According to Elexion internal marketing reports, three lifestyle and tech brands partnered with Elexion in Q4 2025 to promote co-branded EV accessories, including charging stations, seat covers, and interior lighting kits.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0012",
+      "question": "How many EV technology patents were filed by major manufacturers in Q4 2025?",
+      "answer": "According to Elexion internal reports, 142  patents were filed by major manufacturers in the Q4 2025, focusing on design, infotainment, and user experience improvements.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0013",
+      "question": "What were the shifts in average EV battery inventory level across Elexion's North American distribution centers in Q1 2024?",
+      "answer": "Elexion internal logistics reports from Q1 2024 showed that Midwest distribution centers reported a 15% rise in available EV battery replacement components, while the West Coast showed a 7% decline, reflecting regional demand.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0014",
+      "question": "Which regions supplied by Elexion experienced the highest customer satisfaction scores in Q1 2025?",
+      "answer": "Elexion's internal performance from Q1 2025 reported that Midwestern customers had the highest satisfaction levels at 92%, followed by the Pacific Northwest at 86%.",
       "type": "enterprise_fact"
     }
   ]

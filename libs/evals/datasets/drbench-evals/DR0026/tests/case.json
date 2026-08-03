@@ -1,6 +1,30 @@
 {
   "task_id": "DR0026",
   "question": "How can Lee’s Market use conversational AI and data-driven chatbots to capture the growing Centennial market by providing them with instant feedback and responding to cultural and linguistic nuances among its diverse customer base by May 2026?",
+  "persona": {
+    "name": "David Thompson",
+    "role": "Customer Service Manager"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "mattermost": {
+      "username": "admin@drbench.com",
+      "password": "mm_admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -30,6 +54,98 @@
       "id": "IN0005",
       "question": "How will Lee’s Market use chatbots to lower refund rates and checkout mistakes by the first quarter of 2026?",
       "answer": "By the first quarter of 2026, Lee’s Market will have chatbots that confirm items, flag duplicates, and guide customers through final order checks. These steps are expected to lower refunds by about 15% and cut order mistakes by 18% within twelve months.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "In March 2025, how many customers requested assistance from Lee’s Market staff with finding specific products in-store?",
+      "answer": "Across all 45 Lee’s Market locations, 2,350 customers requested in-person assistance to locate specific products between March 1 and March 31, 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "In the second quarter of 2025, how many loyalty card transactions were recorded across Lee's Market stores, and does this represent a change in usage?",
+      "answer": "Between April and June 2025, 1,240 loyalty card transactions were logged across all Lee’s Market stores, representing a 10% increase from the previous quarter and averaging 42 per store.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "In September 2024, how many internal service feedback reports did Lee’s Market staff submit to the CSM team?",
+      "answer": "Lee’s Market staff across all 45 store locations submitted 185 internal feedback reports between September 1 and 30, 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "In Q1 2025, how many in-store customer surveys did Lee’s Market collect across all its locations?",
+      "answer": "3,450 surveys were collected from January to March 2025 in the 45 Lee's Market locations.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "How many customer complaints were escalated to a manager across all Lee's Market locations in the first 15 days of February 2025?",
+      "answer": "In the first 15 days of February 2025, 180 customer complaints were escalated to managers across the 45 Lee's Market stores.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "In the last quarter of 2024, how many customers requested gift wrapping at Lee’s Market stores?",
+      "answer": "Between October and November 2024, 1,050 gift-wrapping requests were fulfilled across all Lee's Market stores.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "During the 2024 calendar year, how many Lee's Market store staff completed customer service training sessions?",
+      "answer": "600 of the total 900 store staff members across all 45 Lee's Market locations completed customer service training between January 1 and December 31, 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "In Q4 2024, how many customers used the in-store self-checkout kiosks at Lee’s Market?",
+      "answer": "Across the different Lee's Market branches, 7,820 self-checkout sessions were logged between October and December 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0009",
+      "question": "In the last quarter of 2024, how many Lee's Market customers asked for refunds due to incorrect pricing?",
+      "answer": "95 refund requests due to pricing errors were recorded from October to December 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0010",
+      "question": "Between May 1 and May 15, 2025, how many customers requested home deliveries from Lee’s Market?",
+      "answer": "60 home delivery requests were logged across all 45 Lee's Market stores during the first half of May 2025 (May 1–15).",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0011",
+      "question": "Between February 1 and February 28, 2025, how many customers asked for allergen information from store staff at Lee's Market outlets?",
+      "answer": "In February 2025, Lee's Market staff handled 1,200 allergen inquiries at the different store locations.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0012",
+      "question": "Between January and March 2025, how many in-store assistance requests were made for mobile app order pickups?",
+      "answer": "A total of 1,125 requests for help with mobile app order pickups were recorded across all 45 Lee’s Market stores in Q1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0013",
+      "question": "In April 2025, how many customers asked Lee's Market staff to explain promotions or discounts in detail?",
+      "answer": "Across all 45 Lee's Market stores, 920 customers requested detailed promotion explanations between April 1 and April 30, 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0014",
+      "question": "How will Lee’s Market ensure customers receive timely store inventory updates through regular mail by November 10, 2025?",
+      "answer": "Lee’s Market sends weekly flyers to inform customers of store inventory updates through regular mail. The goal is for at least 50% of customers to receive and acknowledge the reminders by November 10, 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0015",
+      "question": "How will Lee’s Market use chatbots to lower stocking and reorder-level mistakes by the first quarter of 2026?",
+      "answer": "By the first quarter of 2026, Lee’s Market will use chatbots to monitor stock and reorder levels internally. The goal is to reduce stocking and reorder-level mistakes by at least 20% and improve the accuracy of inventory reporting by 30%.",
       "type": "enterprise_fact"
     }
   ]

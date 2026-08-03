@@ -1,6 +1,35 @@
 {
   "task_id": "DR0008",
   "question": "What is the impact of third-party data breaches on MediConn's virtual healthcare platforms and patient data, and what new regulations can be implemented to defend against these breaches?",
+  "persona": {
+    "name": "Brian Smith",
+    "role": "Cybersecurity Specialist"
+  },
+  "credential_regime": "persona",
+  "credentials": {
+    "email": {
+      "username": "brian.smith",
+      "password": "my_drbench_pwd"
+    },
+    "file_system": {
+      "username": "brian.smith",
+      "password": "my_drbench_pwd"
+    },
+    "mattermost": {
+      "username": "brian.smith",
+      "password": "my_drbench_pwd"
+    },
+    "nextcloud": {
+      "username": "brian.smith",
+      "password": "my_drbench_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "EX0000",
@@ -60,6 +89,92 @@
       "id": "qa_1755632294",
       "question": "What is the average cost of a data breach to MediConn in the last 2 years?",
       "answer": "The average cost of a data breach to MediConn in the last 2 years is $450,000, with 80% of those breaches occurring on third-party servers.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "qa_1755625657",
+      "question": "How many new employees were hired in Q3 2025?",
+      "answer": "MediConn hired 30 new employees in Q3 2025 to support growth.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143302",
+      "question": "What was patient satisfaction rate in Q1 2025?",
+      "answer": "Patient satisfaction rate was 89% in Q1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755632445",
+      "question": "How many training sessions were conducted in Q3 2024?",
+      "answer": "Conducted 15 training sessions in Q3 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143239",
+      "question": "What was facility cost in Q3 2025?",
+      "answer": "Facility costs totaled $350,000 in Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755632546",
+      "question": "What was the training budget for Q2 2024?",
+      "answer": "Training budget was $200,000 in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI001",
+      "question": "How many IT infrastructure upgrades were completed by Q3 2025?",
+      "answer": "A total of 12 IT infrastructure upgrades were completed by Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755625808",
+      "question": "What were the facility costs in Q2 2024?",
+      "answer": "Facility costs for Q2 2024 totaled $300,000, up from $250,000.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755632483",
+      "question": "What was the IT infrastructure cost in Q1 2024?",
+      "answer": "IT infrastructure cost was $2.5 million in Q1 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143286",
+      "question": "What was the IT training budget in Q3 2024?",
+      "answer": "The IT training budget was $300,000 in Q3 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143202",
+      "question": "What was employee turnover rate in Q1 2025?",
+      "answer": "Employee turnover rate was 10% in Q1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755632377",
+      "question": "What is the employee turnover rate in Q2 2024?",
+      "answer": "Employee turnover rate was 12% in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI002",
+      "question": "What was the patient satisfaction rate in Q2 2024?",
+      "answer": "Patient satisfaction rate stood at 87%, improving from 82% last year.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143175",
+      "question": "How many HR training sessions in Q2 2025?",
+      "answer": "Conducted 10 HR training sessions in Q2 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143187",
+      "question": "What were IT infrastructure costs in Q3 2024?",
+      "answer": "IT infrastructure costs were $1.8 million in Q3 2024.",
       "type": "enterprise_fact"
     }
   ]

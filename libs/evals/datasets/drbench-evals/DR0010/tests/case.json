@@ -1,6 +1,35 @@
 {
   "task_id": "DR0010",
   "question": "What are the most critical elements of a robust digital presence for a telehealth provider such as MediConn Solutions, and how can we optimize our website and content marketing strategy to attract digital-first patients?",
+  "persona": {
+    "name": "Ryan Thompson",
+    "role": "Content Marketing Manager"
+  },
+  "credential_regime": "persona",
+  "credentials": {
+    "email": {
+      "username": "ryan.thompson",
+      "password": "my_drbench_pwd"
+    },
+    "file_system": {
+      "username": "ryan.thompson",
+      "password": "my_drbench_pwd"
+    },
+    "mattermost": {
+      "username": "ryan.thompson",
+      "password": "my_drbench_pwd"
+    },
+    "nextcloud": {
+      "username": "ryan.thompson",
+      "password": "my_drbench_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "EX0000",
@@ -114,6 +143,188 @@
       "id": "qa_1755633384",
       "question": "What is the average time-to-lead for our content marketing efforts, broken down by channel (blog, social media, email)?",
       "answer": "Our email marketing efforts have an average time-to-lead of 2 hours, while social media takes 6 hours, and blog content takes 12 hours, as of Q1 of 2025.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "qa_1755620545",
+      "question": "What is our patient demographic breakdown for Q2 2024?",
+      "answer": "Patient demographics show 60% female and 40% male participation.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755713021",
+      "question": "What was our facility water consumption cost in Q2 2024?",
+      "answer": "Facility water consumption cost totaled $8,000 with an average cost of $0.05 per gallon.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755711940",
+      "question": "What was our employee benefits cost as a percentage of payroll in Q3 2025?",
+      "answer": "Employee benefits cost averaged 12% of payroll with a total spend of $750,000.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633501",
+      "question": "What was our IT infrastructure upgrade cycle length in 2023?",
+      "answer": "Average IT infrastructure upgrade cycle length was 15 months.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755712757",
+      "question": "What was our internal audit frequency in Q1 2025?",
+      "answer": "Internal audits occurred bi-annually with an average duration of 2.5 days.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755712284",
+      "question": "What was our employee onboarding time in Q3 2025?",
+      "answer": "Employee onboarding time averaged 4.5 weeks with a 90% completion rate.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755620205",
+      "question": "What is our employee turnover rate for Q3 2024?",
+      "answer": "Employee turnover rate was 12%, showing stable workforce retention this quarter.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755634000",
+      "question": "What was our facility maintenance cost in Q3 2024?",
+      "answer": "Facility maintenance cost was $35,000 in Q3 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633877",
+      "question": "What was the employee satisfaction score in Q4 2024?",
+      "answer": "Employee satisfaction score was 78 out of 100.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633444",
+      "question": "What was our training budget allocation for Q2 2025?",
+      "answer": "Training budget allocation was $80,000 with a focus on compliance training for new hires.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143883",
+      "question": "What is our average IT support cost in Q1 2025?",
+      "answer": "IT support costs were $120,000 in Q1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633468",
+      "question": "What was our employee turnover rate for Q1 2025?",
+      "answer": "Employee turnover rate was 12% with an average tenure of 2.5 years.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633460",
+      "question": "What was our average IT infrastructure upgrade cycle length in 2024?",
+      "answer": "Average IT infrastructure upgrade cycle length was 18 months with a budget allocation of $250,000.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633838",
+      "question": "What was our IT support cost in Q1 2025?",
+      "answer": "IT support costs were $150,000 in Q1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143807",
+      "question": "What was our employee satisfaction score for the facilities team in Q3 2025?",
+      "answer": "Employee satisfaction score for facilities team was 92%",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143831",
+      "question": "What percentage of our employee onboarding time is spent on training in Q2 2025?",
+      "answer": "44% of employee onboarding time is spent on training",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755712721",
+      "question": "What were our facility energy costs in Q2 2024?",
+      "answer": "Facility energy costs totaled $18,000 with an average cost of $0.12 per kWh.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755713057",
+      "question": "What was our server hardware upgrade budget allocation in Q1 2025?",
+      "answer": "Server hardware upgrade budget allocation was $180,000 with a focus on storage expansion.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755620300",
+      "question": "What is our training completion rate for Q3 2024?",
+      "answer": "Training completion rate for staff was 90%, indicating strong participation.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143762",
+      "question": "What was our average employee commuting distance in Q3 2025?",
+      "answer": "Average employee commuting distance was 15 miles with 75% using public transportation.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633533",
+      "question": "What was our facility rental cost per square foot in Q3 2024?",
+      "answer": "Facility rental cost per square foot averaged $25.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633954",
+      "question": "What was the legal compliance audit cost in Q3 2025?",
+      "answer": "Legal compliance audit cost was $50,000 in Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755712211",
+      "question": "What was our server downtime percentage in Q2 2024?",
+      "answer": "Server downtime averaged 2.5% with a longest outage lasting 4 hours.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143817",
+      "question": "What was our IT infrastructure upgrade budget allocation for Q1 2024?",
+      "answer": "IT infrastructure upgrade budget allocation was $220,000",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755620068",
+      "question": "What is our patient retention rate for Q3 2025?",
+      "answer": "Our patient retention rate stands at 78%, showing stable engagement levels.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143868",
+      "question": "What was our facility energy costs in Q2 2024?",
+      "answer": "Facility energy costs totaled $12,000 with an average cost of $0.10 per kWh.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755712983",
+      "question": "What was our average employee sick leave duration in Q3 2025?",
+      "answer": "Average employee sick leave duration was 4.5 days with 12% staff affected.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633519",
+      "question": "What was our employee training budget allocation for Q1 2024?",
+      "answer": "Training budget allocation was $90,000 with a focus on compliance training for new hires.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755620131",
+      "question": "What is our average compliance audit score in Q2 2024?",
+      "answer": "Our average compliance audit score was 85%, indicating strong adherence.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755620392",
+      "question": "How much did we spend on compliance audits in Q2 2024?",
+      "answer": "Compliance audit expenses totaled $300,000 for the quarter, ensuring regulations met.",
       "type": "enterprise_fact"
     }
   ]

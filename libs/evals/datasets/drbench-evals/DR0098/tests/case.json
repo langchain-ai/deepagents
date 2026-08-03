@@ -1,6 +1,35 @@
 {
   "task_id": "DR0098",
   "question": "Given the drop in Canadian retail sales brought on by US tariffs in 2025, what insights should Lee’s Market derive from product-level sales trends across tariff-exposed and tariff-insulated categories to update sales forecasts by 2027?",
+  "persona": {
+    "name": "Andrew Chang",
+    "role": "Regional Sales Manager"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "email": {
+      "username": "current.user",
+      "password": "current_user_pwd"
+    },
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "mattermost": {
+      "username": "admin@drbench.com",
+      "password": "mm_admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -36,6 +65,98 @@
       "id": "IN0006",
       "question": "What sales uplift (in %) from promotional campaigns (like discounts, loyalty bonuses) on tariff-affected product categories is targeted by Lee's Market between Q3 2025 and Q4 2027?",
       "answer": "Lee's Market is targeting a 6.5% sales uplift from promotional campaigns on tariff-affected product categories between Q3 2025 and Q4 2027.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "What percentage of transactions were processed by self-checkout kiosks across Lee's Market's stores in Q1 2025?",
+      "answer": "Approximately 48% of transactions were processed by self-checkout kiosks across Lee's Market's stores in Q1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "What was the reduction in energy consumption (in %) after Lee's Market upgraded refrigeration systems in 20 stores in Q1 2025?",
+      "answer": "Lee's Market reduced energy consumption by 28% after upgrading refrigeration systems across 20 stores in Q1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "What was the reduction in Lee's Market's energy costs (in %) after replacing lighting systems with LED technology, across 22 stores in 2025?",
+      "answer": "Lee's Market's energy costs reduced by approximately 34% after it replaced lighting systems in 22 stores in 2025 with LED technology.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "What was the store manager retention rate of Lee's Market as compared to the industry average of 72% in 2025?",
+      "answer": "Lee's Market achieved a 91% store manager retention rate in 2025, thus greater than the industry average of 72%, through competitive compensation and career development.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "How many new employees did Lee's Market hire across finance, HR, and IT departments to support business growth and digital transformation initiatives in December 2024?",
+      "answer": "Lee's Market hired 35 new corporate staff in December 2024 across finance, HR, and IT departments to support business growth and digital transformation initiatives.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "What investment was made by Lee's Market to complete a system upgrade across 35 stores in 2025?",
+      "answer": "Lee's Market invested $6.5 million for a POS system upgrade across all 35 stores in 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "What was the reduction in IT operational costs after Lee's Market completed a $3.5 million cloud infrastructure migration in 2025?",
+      "answer": "Lee's Market reduced IT operational costs by 24% after completing a $3.5 million cloud infrastructure migration in 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "How many parking spaces did Lee's Market add to increase the parking capacity of 5 high-traffic locations in 2024?",
+      "answer": "Lee's Market added 450 additional parking spaces to expand parking capacity at 5 high-traffic locations in 2024, reducing congestion and improving customer convenience.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0009",
+      "question": "What was the worth of food donated by Lee's Market to local food banks in 2025 to prevent food wastage?",
+      "answer": "Lee's Market donated $720,000 worth of food to local food banks in 2025, diverting tonnes from waste while supporting communities.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0010",
+      "question": "How many social media followers did Lee's Market have across different social media platforms by June 2025?",
+      "answer": "Lee's Market's social media following reached 450,000 followers in June 2025 across different platforms.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0011",
+      "question": "How many single-use plastic bags were eliminated by Lee's Market in 2025 by adopting reusable bags?",
+      "answer": "Lee's Market eliminated 4.2 million single-use plastic bags in 2025 by adopting reusable bags and receiving environmental recognition.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0012",
+      "question": "What reduction in carbon footprint (in %) was achieved by Lee's Market in 2024?",
+      "answer": "Lee's Market reduced its carbon footprint by 26% in 2024 by increasing its focus on renewable energy, efficient logistics, and refrigeration upgrades.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0013",
+      "question": "What percentage of Lee's Market's stores offered same-day home delivery options in June 2025?",
+      "answer": "Approximately 90% of Lee's Market's stores offered same-day home delivery options in June 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0014",
+      "question": "What was the average rent reduction secured by Lee's Market after renegotiating leases for 12 locations in March 2025?",
+      "answer": "Lee's Market secured an average 7% rent reduction after renegotiating leases for 12 locations in March 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0015",
+      "question": "What was the increase (in %) in Lee's Market's aided brand awareness among Asian-Canadian households from 2024 to 2025?",
+      "answer": "Lee's Market increased its aided brand awareness among Asian-Canadian households from 61% in 2024 to 68% in 2025, thus noting a 7% increase.",
       "type": "enterprise_fact"
     }
   ]

@@ -67,6 +67,18 @@ def vendor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         (task_root / "info.json").write_text(
             json.dumps({"industry": "retail", "domain": "compliance", "difficulty": "easy"})
         )
+    # Task generation pins the image by digest, so the record must exist offline.
+    (vendor_dir / "image_digests.json").write_text(
+        json.dumps(
+            {
+                "registry": adapter.IMAGE_REGISTRY,
+                "digests": {
+                    task_id: f"sha256:{index:064x}"
+                    for index, task_id in enumerate(("DR0001", "DR0002", "DR0003"), 1)
+                },
+            }
+        )
+    )
     monkeypatch.setattr(adapter, "vendor_dir", lambda: vendor_dir)
     return vendor_dir
 
@@ -139,6 +151,11 @@ def test_main_populate_is_exclusive(argv: list[str]) -> None:
 def test_main_selection_flags_are_exclusive(tmp_path: Path, argv: list[str]) -> None:
     with pytest.raises(ValueError, match="mutually exclusive"):
         main(["--output-dir", str(tmp_path / "dataset"), *argv])
+
+
+def test_main_refresh_digests_is_exclusive(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        main(["--refresh-digests", "--output-dir", str(tmp_path / "d"), "--all"])
 
 
 def test_main_rejects_an_unknown_task_id(tmp_path: Path) -> None:

@@ -1,6 +1,35 @@
 {
   "task_id": "DR0091",
   "question": "Considering companies achieve superior financial results by focusing on enhancing the experience of existing customers, what CS service improvements could be implemented by 2026 to make customers feel more recognized and valued during interactions?",
+  "persona": {
+    "name": "Sophie Liu",
+    "role": "Customer Service Manager"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "email": {
+      "username": "current.user",
+      "password": "current_user_pwd"
+    },
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "mattermost": {
+      "username": "admin@drbench.com",
+      "password": "mm_admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -36,6 +65,98 @@
       "id": "IN0006",
       "question": "What percentage of Lee's Market's customers consistently rate us as \"Very Satisfied\" (CSAT 5/5) after a service interaction that was resolved in under 5 minutes?",
       "answer": "65% of customers who had their issue resolved in under 5 minutes via chat or phone in 2025 rated the experience a 5/5 (Very Satisfied).",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "What is Lee's Market's annual expenditure on store lighting upgrades in FY2025?",
+      "answer": "Lee's Market spent $1.8 million CAD on energy-efficient lighting installations in FY2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "How many refrigerated trucks were operational in Lee's Market's logistics fleet in Q4 2025?",
+      "answer": "A total of 120 refrigerated trucks were in use for regional deliveries in Lee's Market in Q4 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "What was the average daily foot traffic at Lee's Market's Richmond flagship store during Q2 2025?",
+      "answer": "Around 2,700 customers per day visited Lee's Market's Richmond flagship location during Q2 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "What is the total retail floor space occupied by Lee's Market across Canada as of FY2025?",
+      "answer": "Approximately 1.4 million square feet of retail space is the retail floor space occupied by Lee's Market across Canada as of FY2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "What percentage of Lee's Market's workforce was part-time during Q4 2025?",
+      "answer": "Roughly 48% of Lee's Market's employees were part-time during Q4 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "What were Lee's Market's total seafood sales during Q3 2025?",
+      "answer": "Lee's Market seafood sales totaled $38 million CAD during Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "What is Lee's Market's fiscal year-end date for FY2025?",
+      "answer": "Lee's Market's fiscal year ended on December 31, 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "What was the average temperature maintained in refrigerated produce sections during Q1 2026 at Lee's Market?",
+      "answer": "Temperatures were kept between 3°C and 5°C during Q1 2026 at Lee's Market.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0009",
+      "question": "How many new stores did Lee's Market plan to open in Q4 2026?",
+      "answer": "In Q4 2026, Lee's Market planned to open three new urban stores - two in Ontario and one in British Columbia.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0010",
+      "question": "How many checkout counters does the average Lee's Market location operate as of FY2026?",
+      "answer": "Each Lee's Market store operates an average of 14 checkout counters as of FY2026.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0011",
+      "question": "What percentage of Lee's Market employees were unionized as of Q2 2026?",
+      "answer": "Approximately 22% of Lee's Market employees were union members as of Q2 2026.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0012",
+      "question": "What was Lee's Market's total expenditure on store maintenance and facility repairs in FY2025?",
+      "answer": "Lee's Market spent approximately $4.6 million CAD on store maintenance and facility repairs in FY2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0013",
+      "question": "How many supplier contracts did Lee's Market renew during Q3 2025?",
+      "answer": "During Q3 2025, Lee's Market renewed 56 supplier contracts across various product categories.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0014",
+      "question": "What was the average energy consumption per store location at Lee's Market in FY2025?",
+      "answer": "Each Lee's Market store consumed an average of 420,000 kWh of electricity during FY2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0015",
+      "question": "How many packaging design changes did Lee's Market's product development team implement in FY2025?",
+      "answer": "Lee's Market implemented 12 packaging redesigns across different private-label product lines in FY2025.",
       "type": "enterprise_fact"
     }
   ]

@@ -1,6 +1,35 @@
 {
   "task_id": "DR0003",
   "question": "How can we leverage data-driven loyalty programs to enhance customer engagement?",
+  "persona": {
+    "name": "David Lee",
+    "role": "Marketing Manager"
+  },
+  "credential_regime": "persona",
+  "credentials": {
+    "email": {
+      "username": "david.lee",
+      "password": "my_drbench_pwd"
+    },
+    "file_system": {
+      "username": "david.lee",
+      "password": "my_drbench_pwd"
+    },
+    "mattermost": {
+      "username": "david.lee",
+      "password": "my_drbench_pwd"
+    },
+    "nextcloud": {
+      "username": "david.lee",
+      "password": "my_drbench_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "EX0000",
@@ -60,6 +89,98 @@
       "id": "IN008_roundcube",
       "question": "What percentage of sales revenue comes from loyalty program redemptions in Q3 2023?",
       "answer": "Loyalty program redemptions accounted for 18% of sales revenue with a 5% increase annually.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI003_roundcube",
+      "question": "How many IT security incidents occurred in Q2 2024?",
+      "answer": "IT security incidents totaled 12 cases with a 20% decrease annually.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI011_xlsx",
+      "question": "What percentage of our supply chain operations were automated in Q2 2024?",
+      "answer": "About 40% of our supply chain operations were automated in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI007_xlsx",
+      "question": "What is our employee turnover rate as of Q3 2024?",
+      "answer": "Lee's Market has a 12% employee turnover rate as of Q3 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI010_xlsx",
+      "question": "What was our employee training program completion rate in Q3 2024?",
+      "answer": "Employee training program completion rate was 85% in Q3 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI001_pdf",
+      "question": "What was turnover rate in Q2 2024?",
+      "answer": "Turnover rate was 12% in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI003_pdf",
+      "question": "What were facility maintenance costs in Q2 2024?",
+      "answer": "Facility maintenance costs totaled $1.5M in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI001",
+      "question": "What was our employee retention rate in Q3 2023?",
+      "answer": "Employee retention averaged 85% with a 5% increase year-over-year.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI002_pdf",
+      "question": "What was IT budget in Q2 2024?",
+      "answer": "IT budget was $12M in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI006_pdf",
+      "question": "What was the IT system downtime rate in Q2 2024?",
+      "answer": "IT system downtime rate averaged 2% with a maximum of 4%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI005_pdf",
+      "question": "What were total warehouse rental costs in Q1 2024?",
+      "answer": "Total warehouse rental costs totaled $850,000 for the quarter.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI004_roundcube",
+      "question": "What percentage of our energy usage is renewable as of Q1 2024?",
+      "answer": "Renewable energy usage reached 25% with a 15% increase annually.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI004_pdf",
+      "question": "What was employee absenteeism rate in Q3 2024?",
+      "answer": "Employee absenteeism rate averaged 5% with a peak of 7%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI009_xlsx",
+      "question": "What percentage of our IT infrastructure is cloud-based as of Q2 2024?",
+      "answer": "About 70% of our IT infrastructure is cloud-based as of Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI002",
+      "question": "What percentage of our supply chain partners are minority-owned as of Q2 2024?",
+      "answer": "Minority-owned supply chain partners reached 18% with a 12% increase annually.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI008_xlsx",
+      "question": "How much did we spend on facility maintenance in Q1 2024?",
+      "answer": "Facility maintenance costs totaled $1.2M in Q1 2024, averaging $300K monthly.",
       "type": "enterprise_fact"
     }
   ]

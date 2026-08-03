@@ -1,6 +1,35 @@
 {
   "task_id": "DR0022",
   "question": "Lee's Market is getting a high number of service desk emails across our stores, so how could we reduce the number of these emails by Q2 2026?",
+  "persona": {
+    "name": "Kevin Wong",
+    "role": "IT Service Manager"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "email": {
+      "username": "current.user",
+      "password": "current_user_pwd"
+    },
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "mattermost": {
+      "username": "admin@drbench.com",
+      "password": "mm_admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -18,6 +47,68 @@
       "id": "IN0003",
       "question": "Are there specific days or times when Lee’s Market service desk emails spike across all stores?",
       "answer": "According to Lee’s Market IT tracking in October 2025, service desk emails peak Monday mornings and Friday afternoons, especially within two hours after system updates. Identifying these spikes helps plan workflow improvements to reduce overall email volume.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "Which loyalty program feature generated the most IT support tickets due to access or login errors in September 2025?",
+      "answer": "Internal analytics show that the “Free Bubble Tea with $50 Purchase” perk caused 42 support tickets related to login and access issues during September 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "Which online payment integration experienced the most transaction errors on Lee’s Market’s website in August 2025?",
+      "answer": "Internal tracking shows that PayPal transactions failed 1,275 times in August 2025 due to intermittent API connection issues affecting urban U.S. stores.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "Which store location logs the most IT help requests for scanner malfunctions in Q2 2025?",
+      "answer": "IT tracking shows that the Seattle store reported 42 scanner-related issues in Q2 2025, more than any other urban location in the U.S.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "Which online feature experienced the most performance issues for mobile shoppers in August 2025?",
+      "answer": "Internal app analytics indicate that the “Saved Recipes” feature had intermittent loading delays in August 2025, affecting 6% of mobile sessions despite being prominently promoted on the Lee’s Market site.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "Which specialty product category generated the highest search system load on Lee’s Market’s website during September 2025?",
+      "answer": "Internal system analytics show that imported kimchi varieties accounted for 18% of all search queries in September 2025, occasionally slowing the site’s autocomplete response time for users in San Francisco and Toronto.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "Which Lee's Market app notification feature caused the highest number of error reports or crashes in Q2 2025?",
+      "answer": "Internal app metrics indicate that the “Daily FUN-FUN Promo Push” notification triggered the most error reports and minor crashes among first-time users in Q2 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "Which product category caused the most search system errors or failed autocomplete suggestions on Lee's Market’s site in August 2025?",
+      "answer": "Internal search analytics show that bok choy snacks triggered the highest number of failed autocomplete suggestions in August 2025, resulting in multiple extra search attempts.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "Which online promotion caused the most website performance or server load issues in September 2025?",
+      "answer": "Internal site performance logs show that the “Jocko's Pepper Hot Sauce Challenge” banner generated the highest number of server requests in September 2025, causing occasional slowdowns in Vermont and New Hampshire.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0009",
+      "question": "During the week of September 14–20, 2025, which demographic segment generated the most support tickets related to prepared food orders on the Lee’s Market site?",
+      "answer": "Internal IT support logs show that millennials aged 25–34 in the U.S. submitted the highest number of service desk tickets for issues with prepared food orders during the week of September 14–20, 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0010",
+      "question": "Which catalog items generated the most praise from Lee’s Market employees in Q3 2025 via internal emails?",
+      "answer": "Lee’s Market internal tracking shows that shrimp crisp products received 47 positive mentions across stores during Q3 2025.",
       "type": "enterprise_fact"
     }
   ]

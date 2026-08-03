@@ -1,6 +1,25 @@
 {
   "task_id": "DR0002",
   "question": "How can personalization drive sales in the retail industry and what strategies can be used for Lee's Market in action?",
+  "persona": {
+    "name": "Michael Lee",
+    "role": "Sales Team Lead"
+  },
+  "credential_regime": "persona",
+  "credentials": {
+    "file_system": {
+      "username": "michael.lee",
+      "password": "my_drbench_pwd"
+    },
+    "mattermost": {
+      "username": "michael.lee",
+      "password": "my_drbench_pwd"
+    }
+  },
+  "endpoints": {
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082"
+  },
   "insights": [
     {
       "id": "EX0000",
@@ -42,6 +61,68 @@
       "id": "IN001_xlsx",
       "question": "What was Lee's Market online sales growth Q2 2024 versus Q2 2023?",
       "answer": "Lee's Market online sales grew 12% in Q2 2024 compared to Q2 2023.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI003_docx",
+      "question": "What is the total facility cost for our company's HQ building in Q2 2024?",
+      "answer": "The total facility cost for our company's HQ building is $1.2 million.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI002_docx",
+      "question": "What is the average cost of training an HR representative in Q3 2025?",
+      "answer": "The average training cost per HR representative is $8,000.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI001_xlsx",
+      "question": "What was Lee's Market employee turnover rate in Q3 2024?",
+      "answer": "Lee's Market employee turnover rate was 15% in Q3 2024, down 3%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI001",
+      "question": "What was our employee turnover rate in Q3 2023?",
+      "answer": "Employee turnover rate averaged 12% with a peak of 15%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI003_xlsx",
+      "question": "What percentage of Lee's Market employees completed compliance training in Q1 2024?",
+      "answer": "92% of Lee's Market employees completed compliance training in Q1 2024, exceeding targets.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI002_xlsx",
+      "question": "How much did Lee's Market spend on IT infrastructure in Q2 2024?",
+      "answer": "Lee's Market spent $2.5 million on IT infrastructure upgrades in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI001_docx",
+      "question": "What is our average time-to-fill for open positions in Q3 2025?",
+      "answer": "Our average time-to-fill for open positions is 60 days.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI005_xlsx",
+      "question": "How many facility maintenance requests were resolved in Q2 2024?",
+      "answer": "Lee's Market resolved 85% of 540 facility maintenance requests in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI002",
+      "question": "How much did we spend on IT infrastructure in Q2 2024?",
+      "answer": "We spent $1.2 million on IT infrastructure upgrades and maintenance.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI004_xlsx",
+      "question": "What was Lee's Market employee training budget in Q3 2024?",
+      "answer": "Lee's Market allocated $750,000 for employee training in Q3 2024.",
       "type": "enterprise_fact"
     }
   ]

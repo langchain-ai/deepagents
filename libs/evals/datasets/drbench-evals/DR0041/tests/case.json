@@ -1,6 +1,35 @@
 {
   "task_id": "DR0041",
   "question": "According to an article in WTT Solutions from March 2025, Customer Relationship Management (CRM) software is trending. What kind of business data can this software analyze, which would aid in the growth of Mediconn Solutions' virtual healthcare clientele going into the year 2026?",
+  "persona": {
+    "name": "Liam Patel",
+    "role": "Business Development Representative"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "email": {
+      "username": "current.user",
+      "password": "current_user_pwd"
+    },
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "mattermost": {
+      "username": "admin@drbench.com",
+      "password": "mm_admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -24,6 +53,80 @@
       "id": "IN0004",
       "question": "Does MediConn Solutions' marketing department currently use the CRM system to analyze data to enhance its marketing campaigns, and how has it enhanced results?",
       "answer": "Yes. The marketing department at MediConn Solutions uses the company's CRM to analyze data on lead generation and to track campaign success. Thanks to the utilization of CRM, the marketing department has predicted a 20% increase in patient volume going into the year 2026.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "How much did the earnings of employees working at MediConn Solutions grow from 2020 to 2024?",
+      "answer": "The average earnings of employees of Mediconn Solutions increased by  21.8% from 2020 to 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "Did MediConn Solution send any of its marketing representatives to the Society for Health Care Strategy and Market Development Conference in March 2025?",
+      "answer": "Yes. 5 members of MediConn Solutions' business department participated in the Society for Health Care Strategy and Market Development Conference in March 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "When is MediConn Solutions next in house meeting with business development representatives and executives from across the greater Toronto region?",
+      "answer": "The next in-house meeting for business development representatives and executives from across the greater Toronto area will take place on January 14, 2026.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "When was the last time that MediConn Solutions was subject to an audit on sales-related expenditures?",
+      "answer": "The most recent audit of sales-related expenditures at MediConn Solutions was performed in December 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "As of January 2025, what is the percentage of the business development team at MediConn Solutions that holds a Certified Healthcare Financial Professional certificate?",
+      "answer": "As of January 2025, 80% of MediConn Solutions' business development team holds a Certified Healthcare Financial Professional certificate.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "What was the turnover rate of employees of Mediconn Solutions from 2020 to 2024?",
+      "answer": "According to the MediConn Solutions' human resources department, the overall turnover rate for MediConn employees was less than 5% from 2020 to 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "How many social media healthcare influencers is MediConn Solutions currently partnered with as of September 2025?",
+      "answer": "As of September 2025, MediConn Solutions is only partnered with 2 Canadian social media healthcare influencers.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "What percentage of MediConn Solutions CRM system employees are actively utilizing the integrated AI?",
+      "answer": "MediConn Solution's AI department conducted a survey of all employees in March 2025 and discovered that 80% said they are actively using the AI function of the CRM.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0009",
+      "question": "What is the biggest complaint from the sales representatives at MediConn Solutions?",
+      "answer": "According to a survey conducted by MediConn Solutions' financial department in September 2024, 70% of sales representatives reported that their biggest complaint was being required to spend a significant amount of time on non-sales related task.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0010",
+      "question": "How many sales representatives at MediConn Solutions don't expect to meet their sales quotas for the year 2025?",
+      "answer": "According to an informal survey of MediConn Solution sales representatives conducted by MediConn Solution financial executives, 65% of sales reps do not expect to make their quota by January 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0011",
+      "question": "How do business representatives of MediConn Solutions currently use the Revenue Cycle Software system as of January 2025?",
+      "answer": "As of January 2025, MediConn Solution's business representatives use the Revenue Cycle Software system to ensure that the financial workflow of the company is organized and up-to-date. Representatives also use it to collect data on  payments and cash flow, which they use to predict MediConn Solutions' revenue for the year.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0012",
+      "question": "Where does Mediconn Solutions store its insurance claim data as of September 2025?",
+      "answer": "As of September 2025, MediConn Solutions relies on Data Unlimited, a third-party provider, to store its insurance claims data. This company also provides reports on risk management and how it compares to similar healthcare providers like MediConn Solutions.",
       "type": "enterprise_fact"
     }
   ]

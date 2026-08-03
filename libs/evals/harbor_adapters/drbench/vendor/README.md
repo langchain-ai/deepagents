@@ -13,13 +13,23 @@ benchmark, pinned at commit `0d699ecf6aa96b1de378595b432e9b16a82f0ed9`:
 - `tasks/<TASK_ID>/info.json` — industry, domain, and the upstream difficulty label
 - `tasks/<TASK_ID>/dr_question.json` — question provenance and sub-questions
 
-Reproduced verbatim so our verifier scores the same insights the upstream
-`insights_recall` metric does — see `../adapter.py` and `../templates/judge.py`.
+Reproduced verbatim so our verifier scores the same ground truth the upstream
+metrics do — see `../adapter.py` and `../templates/judge.py`.
 
-The document corpus itself (`files/`, ~87 MB of PDF/DOCX/XLSX/PPTX/JSONL) is
-**not** vendored. It is fetched from the pinned upstream tree by
-`python -m harbor_adapters.drbench.main --populate <dataset_dir>`, which writes
-it to each task's git-ignored `environment/files/`.
+Also here:
+
+- `image_digests.json` — each task's upstream image resolved to an immutable
+  `sha256:` digest. The tasks run in **app mode**, so the documents are served by
+  upstream's per-task container rather than laid down on disk, and there is no
+  corpus to vendor or fetch. Pinning by digest matters because the upstream tags
+  are mutable, live in a personal namespace (`ghcr.io/mmunozm`), and upstream
+  publishes no version tags at all — so a re-push would otherwise change eval
+  results with no change on our side. Regenerate with
+  `python -m harbor_adapters.drbench.main --refresh-digests`.
+
+Note the images are published for **arm64 only** ("amd64 images are coming soon"
+per upstream's README), which is why this category needs an arm64 runner and
+`sandbox_env: docker`.
 
 The source repository is licensed under Apache-2.0. Its unmodified `LICENSE`
 file is included alongside this attribution. The upstream repository does not

@@ -2,10 +2,15 @@
 
 DRBench ships each task as a company/persona profile, a deep-research question, a
 manifest of enterprise documents spread across four apps, and a set of ground-truth
-insights. This adapter targets DRBench's *local* mode: the document corpus is laid
-down on the task filesystem rather than served from the upstream Nextcloud /
-Mattermost / Roundcube container, so the agent researches over files plus the open
-web. See `README.md` in the generated dataset for the runtime contract.
+insights. This adapter targets DRBench's *app* mode: each task runs upstream's
+per-task container image, which serves the documents from Nextcloud, Mattermost,
+Roundcube/IMAP, and a file browser, and the agent researches by navigating those apps
+over the network rather than by reading files off disk.
+
+Two compose services per task. `main` is where Harbor installs the agent and where the
+verifier runs; it holds no task data. `drbench` is upstream's image, which boots its own
+supervisord with this task's documents already loaded. See `README.md` in the generated
+dataset for the runtime contract.
 """
 
 from __future__ import annotations
@@ -14,27 +19,79 @@ import json
 import re
 import shlex
 import shutil
-import tarfile
-import tempfile
 import urllib.request
-from collections import Counter
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 UPSTREAM_REPO = "ServiceNow/drbench"
+# The vendored task configs come from this commit. The images are pinned separately, by
+# digest, in vendor/image_digests.json.
 UPSTREAM_SHA = "0d699ecf6aa96b1de378595b432e9b16a82f0ed9"
-_CORPUS_URL = f"https://codeload.github.com/{UPSTREAM_REPO}/tar.gz/{UPSTREAM_SHA}"
 
-# Apps a DRBench file can be served from upstream. Local mode keeps the app as the
-# top-level corpus directory so a report can cite a document by its origin, which is
-# what the upstream citation extractor expects.
-_KNOWN_APPS = frozenset({"nextcloud", "email", "mattermost", "file_system"})
+IMAGE_REGISTRY = "ghcr.io/mmunozm/drbench-services"
+# Upstream publishes the per-task images for arm64 only ("amd64 images are coming
+# soon"), so these tasks need an arm64 runner with `sandbox_env: docker`.
+IMAGE_PLATFORM = "linux/arm64"
+
+_MANIFEST_ACCEPT = ",".join(
+    (
+        "application/vnd.oci.image.index.v1+json",
+        "application/vnd.oci.image.manifest.v1+json",
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+        "application/vnd.docker.distribution.manifest.v2+json",
+    )
+)
 
 _TASK_ID_RE = re.compile(r"^(?:DR\d{4}|SANITY\d+)$")
-_SOURCE_RE = re.compile(r"^drbench/data/tasks/(?P<task_id>[A-Za-z0-9]+)/files/(?P<rest>.+)$")
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
-# The verifier scores recall over the insight-bearing ground truth only; upstream's
-# `QASimilarityV2` filters `qa_type == "insight"` and ignores distractor entries.
+# Apps a DRBench document can be served from, and where the agent reaches each inside
+# the compose network. The host is the compose service name, so DNS resolves it with no
+# port publishing.
+_APP_ENDPOINTS: dict[str, str] = {
+    "nextcloud": "http://drbench:8081",
+    "mattermost": "http://drbench:8082",
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+}
+
+# Upstream's built-in per-app logins, before any persona override. These are the
+# credentials that actually work for the 85 tasks whose persona carries no password —
+# verified by unpacking DR0016's image, whose documents sit under Nextcloud's `admin`
+# user and whose mailbox is `current.user`, not the persona.
+_APP_DEFAULT_CREDENTIALS: dict[str, dict[str, str]] = {
+    "nextcloud": {"username": "admin", "password": "admin_pwd"},
+    "mattermost": {"username": "admin@drbench.com", "password": "mm_admin_pwd"},
+    "email": {"username": "current.user", "password": "current_user_pwd"},
+    "file_system": {"username": "admin", "password": "admin_pwd"},
+}
+
+# Per-app access notes for the prompt. `USER`/`PASS` are substituted with the task's
+# persona login.
+_APP_GUIDANCE: dict[str, str] = {
+    "nextcloud": (
+        "the company cloud drive. HTTP Basic auth. List it with "
+        "`curl -u USER:PASS -X PROPFIND http://drbench:8081/remote.php/dav/files/USER/` "
+        "and download any path under that same prefix."
+    ),
+    "mattermost": (
+        "team chat. `POST http://drbench:8082/api/v4/users/login` with a JSON body of "
+        "`login_id` and `password` returns a session token in the `Token` response "
+        "header; send it back as `Authorization: Bearer <token>`."
+    ),
+    "email": (
+        "the mailbox for this login, over IMAP on `drbench:1143` (Python's `imaplib` "
+        "works well). The same mail is browsable at `http://drbench:8085`."
+    ),
+    "file_system": (
+        "local and shared drives, exposed through a file browser at `http://drbench:8090`."
+    ),
+}
+
+# Returns 200 only once every service is up, 503 otherwise.
+HEALTH_URL = "http://drbench:8099/health"
+
 _INSIGHT_QA_TYPE = "insight"
+_DISTRACTOR_QA_TYPE = "distractor"
 
 _CONFIG_FILENAMES = ("task.json", "env.json", "eval.json", "info.json")
 
@@ -52,7 +109,7 @@ def vendor_dir() -> Path:
 
 
 def _templates_dir() -> Path:
-    """Return the directory holding the verifier templates (`test.sh`, `judge.py`)."""
+    """Return the directory holding the task-invariant files."""
     return Path(__file__).resolve().parent / "templates"
 
 
@@ -66,9 +123,9 @@ def parse_task_id(task_id: str) -> str:
         The validated `task_id`.
 
     Raises:
-        ValueError: If `task_id` is not a bare DRBench id. Rejecting anything that
-            is not a single path component keeps the id safe to join onto an
-            output directory.
+        ValueError: If `task_id` is not a bare DRBench id. Rejecting anything that is
+            not a single path component keeps the id safe to join onto an output
+            directory and to interpolate into an image tag.
     """
     if _TASK_ID_RE.match(task_id) is None or Path(task_id).name != task_id:
         msg = f"`task_id` {task_id!r} must be a DRBench id such as `DR0001` or `SANITY0`"
@@ -79,10 +136,10 @@ def parse_task_id(task_id: str) -> str:
 def available_task_ids() -> list[str]:
     """Return the benchmark's task ids, sorted.
 
-    Upstream also ships `SANITY0`, a single-document smoke task used to check a
-    local install. It is excluded here so `--all` yields exactly the 100 scored
-    DRBench tasks and cannot skew a dataset average; generate it explicitly with
-    `--task-ids SANITY0` when debugging.
+    Upstream also ships `SANITY0`, a single-document smoke task used to check a local
+    install. It is excluded here so `--all` yields exactly the 100 scored DRBench tasks
+    and cannot skew a dataset average; generate it explicitly with `--task-ids SANITY0`
+    when debugging.
 
     Returns:
         Sorted `DR<nnnn>` task ids that have a vendored config.
@@ -97,9 +154,7 @@ def available_task_ids() -> list[str]:
     return sorted(
         entry.name
         for entry in tasks_root.iterdir()
-        if entry.is_dir()
-        and entry.name.startswith("DR")
-        and (entry / "task.json").is_file()
+        if entry.is_dir() and entry.name.startswith("DR") and (entry / "task.json").is_file()
     )
 
 
@@ -134,106 +189,216 @@ def record_for_task_id(task_id: str) -> dict[str, dict]:
     return record
 
 
-def corpus_layout(env_config: dict) -> list[tuple[str, str]]:
-    """Map a task's upstream file manifest to its local-mode corpus layout.
+def _digests_path() -> Path:
+    """Return the path of the vendored image-digest record."""
+    return vendor_dir() / "image_digests.json"
 
-    Each entry becomes `<app>/<name>` under the task's `environment/files/`. Only
-    files named in `env.json` are laid down, which keeps the sibling `qa_dict.json`
-    ground-truth sidecars and plaintext `.md` twins of the binary documents out of
-    the agent's reach.
 
-    Upstream declares the same destination more than once in some tasks, pointing at
-    genuinely different documents; upstream's own loader overwrites, dropping content
-    that may carry an insight. Duplicates therefore get a `-N` suffix on the stem, in
-    manifest order, so every declared document survives.
+def load_image_digests() -> dict[str, str]:
+    """Return the vendored `task_id -> image digest` mapping.
 
-    Duplicates are detected case-insensitively. Some tasks declare two documents whose
-    names differ only in case (`EV-Battery-Analysis.docx` and `ev-battery-analysis.docx`),
-    which a case-insensitive filesystem would silently collapse into one file — making
-    the generated corpus depend on the host the adapter ran on. Case-folding the key
-    keeps the layout identical on macOS and Linux.
+    Returns:
+        A mapping of task id to `sha256:...` digest.
+
+    Raises:
+        FileNotFoundError: If the digest record is missing.
+        ValueError: If the record is malformed or holds a malformed digest.
+    """
+    path = _digests_path()
+    if not path.is_file():
+        msg = (
+            f"No vendored image digests at {path}. Generate them with "
+            "`python -m harbor_adapters.drbench.main --refresh-digests`."
+        )
+        raise FileNotFoundError(msg)
+    digests = json.loads(path.read_text(encoding="utf-8")).get("digests")
+    if not isinstance(digests, dict):
+        msg = f"{path} must hold a `digests` object"
+        raise ValueError(msg)
+    for task_id, digest in digests.items():
+        if not isinstance(digest, str) or _DIGEST_RE.match(digest) is None:
+            msg = f"Malformed image digest for {task_id!r} in {path}: {digest!r}"
+            raise ValueError(msg)
+    return digests
+
+
+def image_reference(task_id: str) -> str:
+    """Return the digest-pinned image reference for one task.
+
+    Pinning by digest rather than tag matters here: the upstream tags are mutable and
+    published under a personal namespace, so a re-push would otherwise change eval
+    results with no change on our side.
+
+    Args:
+        task_id: Identifier of the form `DR0001`.
+
+    Returns:
+        An image reference of the form `<registry>@sha256:...`.
+
+    Raises:
+        KeyError: If no digest is vendored for `task_id`.
+    """
+    digest = load_image_digests().get(task_id)
+    if digest is None:
+        msg = (
+            f"No vendored image digest for {task_id!r}. Run "
+            "`python -m harbor_adapters.drbench.main --refresh-digests` to add it."
+        )
+        raise KeyError(msg)
+    return f"{IMAGE_REGISTRY}@{digest}"
+
+
+def refresh_image_digests(task_ids: list[str] | None = None) -> int:
+    """Resolve each task's image tag to an immutable digest and vendor the result.
+
+    Args:
+        task_ids: Task ids to resolve. Defaults to every vendored task.
+
+    Returns:
+        The number of digests written.
+
+    Raises:
+        RuntimeError: If the registry returns no usable digest for a tag.
+    """
+    token = _registry_pull_token()
+    resolved = {
+        parse_task_id(task_id): _resolve_tag_digest(task_id, token)
+        for task_id in (task_ids or available_task_ids())
+    }
+    _digests_path().write_text(
+        json.dumps(
+            {
+                "_comment": (
+                    "Per-task DRBench image digests, pinned so a re-push of a mutable "
+                    "tag cannot silently change eval results. Regenerate with "
+                    "`python -m harbor_adapters.drbench.main --refresh-digests`."
+                ),
+                "registry": IMAGE_REGISTRY,
+                "digests": dict(sorted(resolved.items())),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return len(resolved)
+
+
+def _registry_repository() -> str:
+    """Return the registry path portion of the image reference."""
+    return IMAGE_REGISTRY.split("/", 1)[1]
+
+
+def _registry_pull_token() -> str:
+    """Fetch an anonymous pull token for the DRBench image repository."""
+    url = (
+        f"https://ghcr.io/token?scope=repository:{_registry_repository()}:pull"
+        "&service=ghcr.io"
+    )
+    with urllib.request.urlopen(url, timeout=60) as response:  # noqa: S310 - fixed https host
+        token = json.load(response).get("token")
+    if not isinstance(token, str) or not token:
+        msg = "ghcr.io did not return a pull token"
+        raise RuntimeError(msg)
+    return token
+
+
+def _resolve_tag_digest(tag: str, token: str) -> str:
+    """Return the immutable digest ghcr.io reports for one already-validated tag."""
+    request = urllib.request.Request(  # noqa: S310 - fixed https host, validated tag
+        f"https://ghcr.io/v2/{_registry_repository()}/manifests/{tag}",
+        headers={"Accept": _MANIFEST_ACCEPT, "Authorization": f"Bearer {token}"},
+        method="HEAD",
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
+        digest = response.headers.get("Docker-Content-Digest")
+    if not isinstance(digest, str) or _DIGEST_RE.match(digest) is None:
+        msg = f"ghcr.io returned no usable digest for tag {tag!r}: {digest!r}"
+        raise RuntimeError(msg)
+    return digest
+
+
+def _env_files(env_config: dict) -> list[dict]:
+    """Return a task's validated document manifest."""
+    env_files = env_config.get("env_files")
+    if not isinstance(env_files, list):
+        msg = "DRBench `env.json` must hold an `env_files` list"
+        raise TypeError(msg)
+    for entry in env_files:
+        if not isinstance(entry, dict):
+            msg = "Each DRBench `env_files` entry must be a mapping"
+            raise TypeError(msg)
+    return env_files
+
+
+def task_apps(env_config: dict) -> list[str]:
+    """Return the apps this task's documents are served from, in a stable order.
 
     Args:
         env_config: Parsed `env.json` for one task.
 
     Returns:
-        A list of `(source, relative_destination)` pairs. `source` is the
-        repo-relative upstream path; `relative_destination` is POSIX-style and
-        contains no `..` components.
+        Sorted app names, restricted to the apps this task actually uses.
 
     Raises:
         TypeError: If `env.json` has an unexpected shape.
-        ValueError: If an entry names an unknown app or an unusable source path.
+        ValueError: If an entry names an app with no known endpoint.
     """
-    env_files = env_config.get("env_files")
-    if not isinstance(env_files, list):
-        msg = "DRBench `env.json` must hold an `env_files` list"
-        raise TypeError(msg)
-
-    layout: list[tuple[str, str]] = []
-    seen: Counter[str] = Counter()
-    for entry in env_files:
-        if not isinstance(entry, dict):
-            msg = "Each DRBench `env_files` entry must be a mapping"
-            raise TypeError(msg)
-        source = entry.get("source")
-        destination = entry.get("destination")
+    apps = set()
+    for entry in _env_files(env_config):
         app = entry.get("app")
-        if not isinstance(source, str) or not isinstance(destination, str):
-            msg = "DRBench `env_files` entry must declare string `source` and `destination`"
-            raise TypeError(msg)
-        if app not in _KNOWN_APPS:
+        if app not in _APP_ENDPOINTS:
             msg = f"DRBench `env_files` entry declares unknown app {app!r}"
             raise ValueError(msg)
-        if _SOURCE_RE.match(source) is None:
-            msg = f"DRBench `env_files` source {source!r} is not under a task's `files/`"
-            raise ValueError(msg)
-
-        name = PurePosixPath(destination).name
-        if not name or name in {".", ".."}:
-            msg = f"DRBench `env_files` destination {destination!r} has no usable file name"
-            raise ValueError(msg)
-
-        key = f"{app}/{name}".lower()
-        seen[key] += 1
-        if seen[key] > 1:
-            stem, dot, suffix = name.partition(".")
-            name = f"{stem}-{seen[key]}{dot}{suffix}"
-        layout.append((source, f"{app}/{name}"))
-    return layout
+        apps.add(app)
+    return sorted(apps)
 
 
-def insight_ground_truth(eval_config: dict) -> list[dict[str, str]]:
-    """Extract the insight-bearing ground truth the verifier scores recall against.
+def document_count(env_config: dict) -> int:
+    """Return how many documents this task's manifest declares."""
+    return len(_env_files(env_config))
 
-    Mirrors upstream `QASimilarityV2.compute`, which keeps only `qa_type == "insight"`
-    entries and scores one LLM judgement per entry.
+
+def qa_ground_truth(eval_config: dict, qa_type: str) -> list[dict[str, str]]:
+    """Extract one class of ground truth from a task's eval config.
+
+    Mirrors upstream `QASimilarityV2.compute`, which selects entries by `qa_type` and
+    scores one LLM judgement per entry. `insight` entries are the findings a report
+    should contain; `distractor` entries are the planted facts it should not.
 
     Args:
         eval_config: Parsed `eval.json` for one task.
+        qa_type: Either `insight` or `distractor`.
 
     Returns:
-        One `{id, question, answer, type}` mapping per gold insight, in upstream order.
+        One `{id, question, answer, type}` mapping per entry, in upstream order.
 
     Raises:
         TypeError: If `eval.json` has an unexpected shape.
+        ValueError: If `qa_type` is not a known class.
     """
+    if qa_type not in {_INSIGHT_QA_TYPE, _DISTRACTOR_QA_TYPE}:
+        msg = (
+            f"`qa_type` must be `{_INSIGHT_QA_TYPE}` or `{_DISTRACTOR_QA_TYPE}`, "
+            f"not {qa_type!r}"
+        )
+        raise ValueError(msg)
     qa_list = eval_config.get("dr_report_evaluation_qa")
     if not isinstance(qa_list, list):
         msg = "DRBench `eval.json` must hold a `dr_report_evaluation_qa` list"
         raise TypeError(msg)
 
-    insights: list[dict[str, str]] = []
+    entries: list[dict[str, str]] = []
     for qa in qa_list:
         if not isinstance(qa, dict):
             msg = "Each DRBench `dr_report_evaluation_qa` entry must be a mapping"
             raise TypeError(msg)
-        if qa.get("qa_type") != _INSIGHT_QA_TYPE:
+        if qa.get("qa_type") != qa_type:
             continue
         answer = qa.get("answer")
         if not isinstance(answer, str) or not answer.strip():
             continue
-        insights.append(
+        entries.append(
             {
                 "id": str(qa.get("id", "")),
                 "question": str(qa.get("question", "")),
@@ -241,7 +406,75 @@ def insight_ground_truth(eval_config: dict) -> list[dict[str, str]]:
                 "type": str(qa.get("type", "")),
             }
         )
-    return insights
+    return entries
+
+
+def insight_ground_truth(eval_config: dict) -> list[dict[str, str]]:
+    """Return the insight-bearing ground truth recall is scored against."""
+    return qa_ground_truth(eval_config, _INSIGHT_QA_TYPE)
+
+
+def credential_regime(task_config: dict) -> str:
+    """Return which credential regime a task falls into.
+
+    The dataset has two, and it is upstream's doing rather than a choice of ours:
+
+    * `persona` — the persona carries a password, so DRBench rewrote every app's login
+      to the persona's. 15 of the 100 tasks. DR0001's documents sit under Nextcloud's
+      `emily.patel` user.
+    * `default` — the persona's `password` is `null`, so DRBench's credential override
+      returns early and every app keeps its built-in login. The remaining 85 tasks.
+      DR0016's documents sit under Nextcloud's `admin` user and its mailbox is
+      `current.user`.
+
+    Args:
+        task_config: Parsed `task.json` for one task.
+
+    Returns:
+        Either `"persona"` or `"default"`.
+
+    Raises:
+        ValueError: If `task.json` holds no persona object.
+    """
+    persona = task_config.get("persona")
+    if not isinstance(persona, dict):
+        msg = "DRBench `task.json` must hold a `persona` object"
+        raise ValueError(msg)
+    password = persona.get("password")
+    return "persona" if isinstance(password, str) and password else "default"
+
+
+def app_credentials(task_config: dict) -> dict[str, dict[str, str]]:
+    """Return the per-app login that actually works for this task.
+
+    These are what the agent must use, and what the verifier uses to re-fetch cited
+    documents when scoring factuality. They are synthetic benchmark logins baked into a
+    public image, not secrets.
+
+    Args:
+        task_config: Parsed `task.json` for one task.
+
+    Returns:
+        A mapping of app name to `{username, password}`.
+
+    Raises:
+        ValueError: If `task.json` holds no persona object.
+    """
+    if credential_regime(task_config) == "default":
+        return {app: dict(creds) for app, creds in _APP_DEFAULT_CREDENTIALS.items()}
+
+    persona = task_config["persona"]
+    username = persona.get("username")
+    if not username:
+        # Upstream's fallback when a persona omits `username`.
+        first = persona.get("first_name", "current")
+        last = persona.get("last_name", "user")
+        username = f"{first}.{last}".lower()
+    password = persona["password"]
+    return {
+        app: {"username": str(username), "password": password}
+        for app in _APP_DEFAULT_CREDENTIALS
+    }
 
 
 def generate_task(*, output_dir: Path, task_id: str) -> Path:
@@ -255,13 +488,15 @@ def generate_task(*, output_dir: Path, task_id: str) -> Path:
         Path to the generated Harbor task directory.
 
     Raises:
-        ValueError: If `task_id` is not a bare DRBench id, or the record declares
-            an unusable file manifest.
+        ValueError: If `task_id` is not a bare DRBench id, or the record declares an
+            unusable manifest or persona.
         FileNotFoundError: If no vendored config exists for `task_id`.
+        KeyError: If no image digest is vendored for `task_id`.
         TypeError: If a vendored config has an unexpected shape.
     """
     parse_task_id(task_id)
     record = record_for_task_id(task_id)
+    image = image_reference(task_id)
 
     task_dir = output_dir / task_id
     if task_dir.exists():
@@ -271,39 +506,30 @@ def generate_task(*, output_dir: Path, task_id: str) -> Path:
         shutil.rmtree(task_dir)
     (task_dir / "environment").mkdir(parents=True)
 
-    layout = corpus_layout(record["env"])
-    insights = insight_ground_truth(record["eval"])
-    _write_task_files(task_dir, record=record, layout=layout, insights=insights)
+    _write_task_files(task_dir, record=record, image=image)
     return task_dir
 
 
-def populate_corpus(dataset_dir: Path, *, archive: Path | None = None) -> int:
+def populate_corpus(dataset_dir: Path) -> int:
     """Regenerate each DRBench task's single-sourced, git-ignored files.
 
-    Two kinds of per-task files are not committed:
+    App mode needs no document corpus on disk — upstream's per-task image already
+    serves the documents — so the only single-sourced files are the ones that are
+    byte-identical across every task: the `main` service's build inputs and the
+    verifier. They live in `templates/` and are laid down here so Harbor can build and
+    grade each task. Run before `harbor run --path <dataset_dir>`.
 
-    * the document corpus under `environment/files/` (~87 MB across the dataset),
-      fetched from the pinned upstream tree;
-    * the invariant build and verifier files `environment/extract_text.py` and
-      `tests/{test.sh,judge.py}` (single-sourced in `templates/`).
-
-    This regenerates both so Harbor can build and grade each task — run it before
-    `harbor run --path <dataset_dir>`. The committed per-task `tests/case.json`
-    (question + ground-truth insights) is left untouched.
+    The name is retained because it is the contract the workflow's shared dispatcher
+    calls (`--populate`), alongside the other local datasets.
 
     Args:
         dataset_dir: Dataset directory containing generated task directories.
-        archive: Optional pre-downloaded upstream tarball. Downloads the pinned
-            archive when omitted.
 
     Returns:
         The number of DRBench task directories populated.
-
-    Raises:
-        FileNotFoundError: If a task's corpus is missing from the archive.
     """
     dataset_root = dataset_dir.resolve()
-    wanted: dict[str, Path] = {}
+    populated = 0
     for task_toml in sorted(dataset_root.glob("*/task.toml")):
         task_dir = task_toml.parent
         # Containment: only populate direct children of the dataset directory.
@@ -311,115 +537,30 @@ def populate_corpus(dataset_dir: Path, *, archive: Path | None = None) -> int:
             continue
         if 'source = "drbench"' not in task_toml.read_text(encoding="utf-8"):
             continue
-        wanted[task_dir.name] = task_dir
-
-    if not wanted:
-        return 0
-
-    with tempfile.TemporaryDirectory() as scratch:
-        archive_path = archive if archive is not None else _download_corpus(Path(scratch))
-        for task_id, task_dir in wanted.items():
-            files_dir = task_dir / "environment" / "files"
-            if files_dir.exists():
-                shutil.rmtree(files_dir)
-            files_dir.mkdir(parents=True)
-        _extract_corpus(archive_path, wanted)
-
-    for task_dir in wanted.values():
         _copy_environment_invariants(task_dir / "environment")
         _copy_verifier_invariants(task_dir / "tests")
-    return len(wanted)
-
-
-def _download_corpus(destination_dir: Path) -> Path:
-    """Download the pinned upstream tarball into `destination_dir`."""
-    archive_path = destination_dir / f"drbench-{UPSTREAM_SHA}.tar.gz"
-    # Fixed https URL built from a pinned commit SHA; no caller-supplied input.
-    with urllib.request.urlopen(_CORPUS_URL, timeout=600) as response:  # noqa: S310
-        with archive_path.open("wb") as handle:
-            shutil.copyfileobj(response, handle)
-    return archive_path
-
-
-def _extract_corpus(archive_path: Path, wanted: dict[str, Path]) -> None:
-    """Copy each wanted task's declared documents out of the upstream tarball.
-
-    Members are streamed and written to destinations this module computes, so no
-    archive-controlled path is ever used to open a file: a member name only ever
-    selects a precomputed destination. Non-regular members (links, devices) are
-    ignored.
-
-    Args:
-        archive_path: Upstream `tar.gz` archive.
-        wanted: Map of task id to generated task directory.
-
-    Raises:
-        FileNotFoundError: If a task's declared documents are absent from the archive.
-    """
-    # source path -> (destination file, ...). A single upstream document can back
-    # more than one destination when a task declares it under several apps.
-    destinations: dict[str, list[Path]] = {}
-    for task_id, task_dir in wanted.items():
-        files_dir = task_dir / "environment" / "files"
-        for source, relative in corpus_layout(record_for_task_id(task_id)["env"]):
-            destinations.setdefault(source, []).append(files_dir / relative)
-
-    remaining = set(destinations)
-    # Upstream's manifest disagrees with the tree on filename case for one distractor
-    # (DR0038 declares `PR-engagements-overview.docx`; the file is
-    # `PR-Engagements-Overview.docx`). Upstream only loads it on a case-insensitive
-    # filesystem, so resolve case-only mismatches the same way rather than dropping a
-    # document the task is supposed to include. Consulted only for sources no exact
-    # member matched, so it cannot shadow an exact hit.
-    case_insensitive = {source.lower(): source for source in destinations}
-
-    with tarfile.open(archive_path, "r:gz") as tar:
-        for member in tar:
-            if not member.isreg():
-                continue
-            # Upstream archives nest everything under a single `<repo>-<sha>/` root.
-            _, _, repo_relative = member.name.partition("/")
-            targets = destinations.get(repo_relative)
-            if targets is None:
-                aliased = case_insensitive.get(repo_relative.lower())
-                if aliased is None or aliased not in remaining:
-                    continue
-                repo_relative = aliased
-                targets = destinations[aliased]
-            extracted = tar.extractfile(member)
-            if extracted is None:
-                continue
-            payload = extracted.read()
-            for target in targets:
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(payload)
-            remaining.discard(repo_relative)
-
-    if remaining:
-        missing = ", ".join(sorted(remaining)[:5])
-        msg = f"Upstream archive {archive_path.name} is missing {len(remaining)} file(s): {missing}"
-        raise FileNotFoundError(msg)
+        populated += 1
+    return populated
 
 
 def _copy_environment_invariants(environment_dir: Path) -> None:
     """Copy the task-invariant build inputs into `environment_dir`.
 
-    `extract_text.py` is a `COPY` input of the committed Dockerfile and is identical
-    across every task, so it is single-sourced in `templates/` and git-ignored per
-    task alongside the corpus it exists to read.
+    `main.Dockerfile` and the `extract_text.py` it copies in are identical across every
+    task, so they are single-sourced in `templates/` and git-ignored per task.
     """
     environment_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(_templates_dir() / "extract_text.py", environment_dir / "extract_text.py")
+    templates_dir = _templates_dir()
+    shutil.copy2(templates_dir / "main.Dockerfile", environment_dir / "main.Dockerfile")
+    shutil.copy2(templates_dir / "extract_text.py", environment_dir / "extract_text.py")
 
 
 def _copy_verifier_invariants(tests_dir: Path) -> None:
     """Copy the task-invariant verifier files into `tests_dir`.
 
     `test.sh` and `judge.py` are byte-identical across every task, so they are
-    single-sourced in `templates/` and git-ignored per task. Both task generation
-    and `populate_corpus` lay them down from the single copy, mirroring how the
-    corpus is handled. Only `case.json` (the per-task question + ground-truth
-    insights) is committed per task.
+    single-sourced in `templates/` and git-ignored per task. Only `case.json` (the
+    per-task question, ground truth, and app access) is committed per task.
     """
     tests_dir.mkdir(parents=True, exist_ok=True)
     templates_dir = _templates_dir()
@@ -471,23 +612,33 @@ def _persona_brief(persona: dict) -> str:
     return "\n".join(lines)
 
 
-def _instruction(record: dict[str, dict], layout: list[tuple[str, str]]) -> str:
-    """Compose the task prompt: persona, company, question, and output contract."""
+def _instruction(
+    record: dict[str, dict], apps: list[str], credentials: dict[str, dict[str, str]]
+) -> str:
+    """Compose the task prompt: persona, company, question, apps, output contract."""
     task_config = record["task"]
     question = str(task_config.get("dr_question", "")).strip()
     date = str(task_config.get("date", "")).strip()
     company = task_config.get("company_info") or {}
     persona = task_config.get("persona") or {}
-    app_dirs = sorted({relative.split("/", 1)[0] for _, relative in layout})
 
+    # Credentials differ per app, and in the `default` regime they are not the persona's
+    # at all, so each line carries its own login rather than one shared pair.
     app_lines = "\n".join(
-        f"- `/app/files/{app}/` — {_APP_DESCRIPTIONS[app]}" for app in app_dirs
+        f"- **{app}** (log in as `{credentials[app]['username']}` / "
+        f"`{credentials[app]['password']}`) — "
+        + _APP_GUIDANCE[app]
+        .replace("USER", credentials[app]["username"])
+        .replace("PASS", credentials[app]["password"])
+        for app in apps
     )
     return f"""# Deep research request
 
 {question}
 
-## Who is asking
+## Who you are
+
+You are working on behalf of:
 
 {_persona_brief(persona)}
 
@@ -499,17 +650,21 @@ def _instruction(record: dict[str, dict], layout: list[tuple[str, str]]) -> str:
 
 ## Where to research
 
-Your company's internal documents have been exported to `/app/files/`, grouped by the
-system they came from:
+Your company's systems are running and reachable over the network. **Nothing is on this
+machine's filesystem** — you have to query the applications. Each one has its own login:
 
 {app_lines}
 
-Formats include PDF, DOCX, XLSX, PPTX, and JSONL email exports. Run
-`extract-text <path>` to convert any of them to plain text. Not every document is
-relevant — the export contains unrelated material alongside what you need.
+Documents are PDF, DOCX, XLSX, PPTX, and JSONL mail exports, so anything you download is
+binary. Convert it with `extract-text <path>`. Not every document is relevant — the
+systems hold unrelated material alongside what you need.
 
-You also have internet access. Some of what this question needs is public information
-that is not in the export at all, so research the open web as well as the files.
+You also have internet access and a `web_search` tool. Some of what this question needs
+is public information that exists nowhere in the company's systems, so research the open
+web as well.
+
+If a service seems unreachable, check `{HEALTH_URL}` — it returns 200 only when every
+application is up.
 
 ## What to deliver
 
@@ -518,51 +673,53 @@ Write a research report to `/app/report.md` as Markdown.
 - Ground every factual claim in a source, cited inline with a bracketed number
   (`[1]`, `[2]`, ...).
 - End the report with a `## References` section listing each number against the
-  document file name or the URL it came from. Cite the file name, not the number,
-  in that list.
-- Report only what your sources support. Uncited assertions and claims you cannot
-  trace back to a document or web page do not count in your favour.
+  document's file name or the URL it came from. Use the file name, not the number, in
+  that list.
+- Report only what your sources support. Uncited assertions, and claims you cannot trace
+  back to a document or web page, do not count in your favour.
 - Cover the question thoroughly: the report is scored on how many of the findings a
-  domain expert would consider essential you actually surface.
+  domain expert would consider essential you actually surface, and on whether you kept
+  the irrelevant material out.
 """
 
 
-_APP_DESCRIPTIONS = {
-    "nextcloud": "files shared on the company's cloud drive",
-    "email": "mailbox exports (JSONL, one message per line)",
-    "mattermost": "exported team chat conversations",
-    "file_system": "documents from local and shared drives",
-}
-
-
-def _write_task_files(
-    task_dir: Path,
-    *,
-    record: dict[str, dict],
-    layout: list[tuple[str, str]],
-    insights: list[dict[str, str]],
-) -> None:
+def _write_task_files(task_dir: Path, *, record: dict[str, dict], image: str) -> None:
     """Write every generated file for one Harbor task."""
     task_config = record["task"]
     info = record["info"]
     task_id = str(task_config["task_id"])
     question = str(task_config.get("dr_question", "")).strip()
+    persona = task_config.get("persona") or {}
+
+    apps = task_apps(record["env"])
+    documents = document_count(record["env"])
+    credentials = app_credentials(task_config)
+    regime = credential_regime(task_config)
+    insights = insight_ground_truth(record["eval"])
+    distractors = qa_ground_truth(record["eval"], _DISTRACTOR_QA_TYPE)
 
     environment_dir = task_dir / "environment"
-    (environment_dir / "Dockerfile").write_text(_DOCKERFILE, encoding="utf-8")
-    _copy_environment_invariants(environment_dir)
+    compose_template = (_templates_dir() / "docker-compose.yaml.tmpl").read_text(
+        encoding="utf-8"
+    )
+    (environment_dir / "docker-compose.yaml").write_text(
+        compose_template.format(image=image, platform=IMAGE_PLATFORM),
+        encoding="utf-8",
+    )
     (environment_dir / ".dockerignore").write_text(
         ".env\n.env.*\n*.pem\n*.key\n*.crt\ncredentials.json\n.git\n__pycache__/\n.venv/\n.DS_Store\n",
         encoding="utf-8",
     )
+    _copy_environment_invariants(environment_dir)
+
     (task_dir / "instruction.md").write_text(
-        _instruction(record, layout),
+        _instruction(record, apps, credentials),
         encoding="utf-8",
     )
 
-    # The oracle writes every gold insight straight into the report, so a passing
-    # oracle run proves the judge wires up (corpus, case.json, reward channel) rather
-    # than proving anything about research ability.
+    # The oracle writes every gold insight straight into the report, so a passing oracle
+    # run proves the judge wires up (app access, case.json, reward channel) rather than
+    # proving anything about research ability.
     solution_dir = task_dir / "solution"
     solution_dir.mkdir()
     oracle_report = "# Reference report\n\n" + "\n\n".join(
@@ -573,16 +730,29 @@ def _write_task_files(
         encoding="utf-8",
     )
 
-    # `case.json` is the only per-task verifier input, so it is committed; the
-    # invariant verifier files are single-sourced and git-ignored (regenerated by
-    # `populate_corpus`), like the corpus. Ground truth lives only here, under
-    # `tests/`, which Harbor copies to the verifier and never to the agent workdir.
+    # `case.json` is the only per-task verifier input, so it is committed; the invariant
+    # verifier files are single-sourced and git-ignored (regenerated by
+    # `populate_corpus`). Ground truth lives only here, under `tests/`, which Harbor
+    # copies to the verifier and never into the agent's workdir. The persona login is
+    # included because factuality re-fetches cited documents from the app stack.
     tests_dir = task_dir / "tests"
     tests_dir.mkdir()
     _copy_verifier_invariants(tests_dir)
     (tests_dir / "case.json").write_text(
         json.dumps(
-            {"task_id": task_id, "question": question, "insights": insights},
+            {
+                "task_id": task_id,
+                "question": question,
+                "persona": {
+                    "name": str(persona.get("name", "")),
+                    "role": str(persona.get("role", "")),
+                },
+                "credential_regime": regime,
+                "credentials": {app: credentials[app] for app in apps},
+                "endpoints": {app: _APP_ENDPOINTS[app] for app in apps},
+                "insights": insights,
+                "distractors": distractors,
+            },
             ensure_ascii=False,
             indent=2,
         )
@@ -599,72 +769,53 @@ def _write_task_files(
 
 [metadata]
 source = "drbench"
+mode = "app"
 task_id = "{task_id}"
 industry = "{industry}"
 domain = "{domain}"
 difficulty = "{difficulty}"
+# Which login the app stack actually accepts. `persona` tasks scope documents to the
+# persona's user; `default` tasks (the majority, because upstream leaves their persona
+# password null) keep each app's built-in login.
+credential_regime = "{regime}"
 insight_count = {len(insights)}
 external_insight_count = {external}
-document_count = {len(layout)}
+distractor_count = {len(distractors)}
+document_count = {documents}
+apps = {json.dumps(apps)}
 
 [environment]
-# Public egress, unlike the context-retrieval tasks: DRBench splits its ground truth
-# into enterprise facts (in the corpus) and external facts that only exist on the open
-# web, so an allowlist would make the external insights unreachable by construction.
+# Public egress, unlike the context-retrieval tasks. DRBench splits its ground truth
+# into enterprise facts (served by the app stack) and external facts that exist only on
+# the open web, so an allowlist would make the external insights unreachable. It also
+# keeps Harbor's egress sidecar out of the picture: that sidecar puts every service into
+# one network namespace, which would collide the app stack's ports and drop the UDP DNS
+# the services use to find each other.
 network_mode = "public"
-build_timeout_sec = 900.0
+# Covers pulling the ~1.2 GiB task image, building `main`, and `compose up --wait`, all
+# inside this one budget. Harbor's 600s default does not survive a cold pull.
+build_timeout_sec = 2400.0
+
+# `compose up --wait` only waits for containers to be *running*, and this image declares
+# no HEALTHCHECK, so it returns long before the app stack is usable. Harbor runs this
+# check in `main` before it even installs the agent, so this is the real readiness gate.
+[environment.healthcheck]
+command = "curl -fsS {HEALTH_URL} >/dev/null"
+start_period_sec = 300.0
+start_interval_sec = 5.0
+interval_sec = 10.0
+timeout_sec = 15.0
+retries = 5
 
 [agent]
-# Deep research over a multi-format corpus plus open-web search; the scorecard scales
-# this with `agent_timeout_multiplier`.
+# Deep research across four applications plus open-web search; the scorecard scales this
+# with `agent_timeout_multiplier`.
 timeout_sec = 3600.0
 
 [verifier]
-# One judge call to split the report into claims, then one per gold insight.
-timeout_sec = 1800.0
+# Four metrics: one claim-split call, one call per gold insight and per distractor, plus
+# a document fetch and embedding pass for factuality.
+timeout_sec = 2400.0
 """,
         encoding="utf-8",
     )
-
-
-_DOCKERFILE = """FROM python:3.12-slim
-
-# Installed at build time (the build phase has network) so the in-sandbox agent's
-# runtime bootstrap skips apt. `poppler-utils` provides pdftotext for the corpus'
-# PDFs; curl lets the agent fetch web pages it finds.
-RUN apt-get update \\
-    && apt-get install -y --no-install-recommends \\
-        ca-certificates \\
-        curl \\
-        poppler-utils \\
-    && rm -rf /var/lib/apt/lists/*
-
-# DRBench's corpus is PDF/DOCX/XLSX/PPTX/JSONL. The benchmark scores research and
-# synthesis, not container-format parsing, so the task ships the same extraction
-# libraries upstream's own agent uses, behind one `extract-text` entry point.
-#
-# Both the install and the launcher name the interpreter by absolute path. Harbor's
-# LangGraph agent builds its own uv venv inside this container, so a bare `python3`
-# would resolve to whichever interpreter is first on the agent's PATH -- likely that
-# venv, which does not have these libraries.
-RUN /usr/local/bin/python3 -m pip install --no-cache-dir \\
-        openpyxl==3.1.5 \\
-        pypdf==6.1.1 \\
-        python-docx==1.2.0 \\
-        python-pptx==1.0.2
-
-COPY extract_text.py /usr/local/lib/extract_text.py
-RUN printf '#!/bin/sh\\nexec /usr/local/bin/python3 /usr/local/lib/extract_text.py "$@"\\n' \\
-        > /usr/local/bin/extract-text \\
-    && chmod 0755 /usr/local/bin/extract-text
-
-# Fail the build, not the run, if the launcher's interpreter cannot import an
-# extractor: at runtime this surfaces as an unreadable corpus and a zero score.
-RUN printf 'x' > /tmp/probe.txt \\
-    && extract-text /tmp/probe.txt > /dev/null \\
-    && /usr/local/bin/python3 -c "import openpyxl, pypdf, docx, pptx" \\
-    && rm /tmp/probe.txt
-
-COPY files/ /app/files/
-WORKDIR /app
-"""

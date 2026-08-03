@@ -1,6 +1,30 @@
 {
   "task_id": "DR0045",
   "question": "Given the CHG Healthcare article from June 2025, in which the firm of McKinsey and Company estimates that more than 50 million in-person visits could be converted to virtual visits, how could MediConn Solution's marketing department promote this virtual service to their current patients through Q4 2026?",
+  "persona": {
+    "name": "Emily Chen",
+    "role": "Market Research Analyst"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "mattermost": {
+      "username": "admin@drbench.com",
+      "password": "mm_admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -30,6 +54,92 @@
       "id": "IN0005",
       "question": "What percentage of MediConn Solutions' users would recommend the service to others?",
       "answer": "According to Mediconn's marketing specialist Emily Chen's patient satisfaction survey, completed in April 2024, showed that 78% of MediConn Solutions users would recommend the service to others.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "How has MediConn Solutions' website performance changed recently?",
+      "answer": "As of 2025, MediConn Solutions' website showed a 32% increase in website traffic after launching its redesigned user interface.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "How effective was MediConn Solutions' 2024 marketing campaign in terms of brand awareness?",
+      "answer": "MediConn Solutions reported a significant 28% increase in brand awareness after its marketing campaign in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "How significant is prescription delivery in Canada's virtual healthcare market?",
+      "answer": "Market research from April 2024 prescription delivery services account for 18% of interactions in the virtual healthcare platform in Canada.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "What is the growth trajectory of MediConn Solutions' mental health service line?",
+      "answer": "Mental health counseling service through MediConn Solutions' platform generated up to 12% of the total revenue in the second quarter of 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "How effective is MediConn Solutions' email marketing performance compared to the industry's benchmark?",
+      "answer": "MediConn Solutions' newsletter has an open rate of 34%, which is 4% above the healthcare industry average.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "How prevalent is AI assisted prescription management among virtual healthcare competitors?",
+      "answer": "A November 2024 competitor analysis showed that AI assisted prescription management is offered by 5 out of 8 major virtual healthcare competitors.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "What is the rate of patients not showing up for in-person appointments?",
+      "answer": "A recent analysis conducted by MediConn Solutions' marketing department in September 2022 discovered that the rate of patients not showing up for in-person appointments was 15%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "Which group of patients is most valuable for MediConn Solutions' prescription service?",
+      "answer": "A report from the marketing department of MediConn Solutions conducted in the second quarter of 2023 revealed that 25% of prescription delivery requests come from chronic condition patients, which is significantly higher than acute care patients.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0009",
+      "question": "How effective was MediConn Solutions' platform redesign in attracting potential new patients?",
+      "answer": "After the redesign of MediConn Solutions' platform in 2024, it achieved a 58% increase in marketing qualified leads.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0010",
+      "question": "What is the growth trend for MediConn Solutions' app adoption?",
+      "answer": "MediConn Solutions' mobile app reached 150,000 downloads by August 2025 from 95,000 the previous year.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0011",
+      "question": "How much will MediConn Solutions' marketing budget increase by 2027?",
+      "answer": "According to MediConn Solutions' financial executives, the marketing budget for the company is expected to increase by 31% by the year 2027.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0012",
+      "question": "How has MediConn Solutions' online presence on LinkedIn evolved from 2022 to 2024?",
+      "answer": "MediConn Solutions' LinkedIn following significantly grew by 45% between 2022 and 2024, reaching 25,000 followers.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0013",
+      "question": "What percentage of MediConn Solutions' marketing campaign is expected to be assisted by AI by 2027?",
+      "answer": "According to a study completed by MediConn Solutions' marketing department, by 2027, approximately 35% of MediConn Solutions' market campaigns are expected to be AI-assisted.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0014",
+      "question": "What was the effect of MediConn Solutions' platform redesign on it's ability to attract new healthcare providers?",
+      "answer": "MediConn Solutions achieved a 58% increase in the sign-up rate of providers after its platform was redesigned.",
       "type": "enterprise_fact"
     }
   ]

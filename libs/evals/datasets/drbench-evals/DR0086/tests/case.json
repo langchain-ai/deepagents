@@ -1,6 +1,35 @@
 {
   "task_id": "DR0086",
   "question": "As the CPPA Act (Bill C-27) awaits parliamentary decision, how can MediConn build preparedness measures to ensure a smooth transition in the event the Act comes into effect by Q2 2026?",
+  "persona": {
+    "name": "Ryan Cooper",
+    "role": "Senior Systems Administrator"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "email": {
+      "username": "current.user",
+      "password": "current_user_pwd"
+    },
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "mattermost": {
+      "username": "admin@drbench.com",
+      "password": "mm_admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -36,6 +65,98 @@
       "id": "IN0006",
       "question": "What measurable improvement in MediConn's overall compliance readiness index is expected by Q2 2026 after implementing the new frameworks and systems required under CPPA?",
       "answer": "MediConn's overall compliance readiness index is projected to improve from 60% in Q4 2025 to nearly 95% by Q2 2026, following the implementation of the new frameworks and systems required under CPPA.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "What was the total number of physical meetings conducted by MediConn staff in 2024?",
+      "answer": "A total of 1500 physical meetings were conducted by MediConn staff in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "How many coffee makers were installed in MediConn's Vancouver office in 2024?",
+      "answer": "A total of 2 coffee makers were installed in MediConn's Vancouver office in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "What was the total revenue generated from virtual consultations for MediConn Solutions in 2024?",
+      "answer": "The total revenue generated from virtual consultations for MediConn Solutions was 45 million CAD in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "How many corporate wellness programs were launched by MediConn Solutions in 2024?",
+      "answer": "A total of 12 corporate wellness programs were launched by MediConn Solutions in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "How many parking spaces are available at MediConn headquarters in 2024?",
+      "answer": "A total of 50 parking spaces are available at MediConn headquarters in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "How many new hires joined the marketing department at MediConn Solutions in 2024?",
+      "answer": "A total of 3 new hires joined the marketing department at MediConn Solutions in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "What was the total number of patient appointments booked with MediConn Solutions in 2024?",
+      "answer": "The total number of patient appointments booked with MediConn Solutions was nearly 500,000 in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "How many company-branded mobile devices were distributed to employees by MediConn Solutions in 2024?",
+      "answer": "Around 50 company-branded mobile devices were distributed to employees by MediConn Solutions in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0009",
+      "question": "How many software licenses were purchased for productivity applications by MediConn Solutions in 2024?",
+      "answer": "Around 200 software licenses were purchased for productivity applications by MediConn Solutions in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0010",
+      "question": "How many elevators are present in MediConn's Vancouver office as of Q4 2025?",
+      "answer": "As of Q4 2025, four elevators are present in MediConn's Vancouver office.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0011",
+      "question": "What was the annual spend on office furniture by MediConn Solutions in 2024?",
+      "answer": "The annual spend on office furniture by MediConn Solutions was 140,000 CAD in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0012",
+      "question": "How many corporate team-building events were held by MediConn Solutions in 2024?",
+      "answer": "There were around 8 corporate team-building events held by MediConn Solutions in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0013",
+      "question": "How many new customers above the age of 65 enrolled in MediConn's healthcare premium plan?",
+      "answer": "Around 5000 new customers above the age of 65 enrolled in MediConn's healthcare premium plan.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0014",
+      "question": "What was the annual spend on stationery items by MediConn Solutions in 2024?",
+      "answer": "The annual spend on stationery items was approximately 80,000 CAD by MediConn Solutions in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0015",
+      "question": "What was the electricity consumption in MediConn's Vancouver office in 2024?",
+      "answer": "The electricity consumption at MediConn headquarters was approximately 500,000 kWh in 2024.",
       "type": "enterprise_fact"
     }
   ]

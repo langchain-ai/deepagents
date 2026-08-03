@@ -1,6 +1,35 @@
 {
   "task_id": "DR0092",
   "question": "What additional compliance controls should be integrated into MediConn’s platform by Q2 2026 to ensure secure authentication and patient verification for Indigenous patients in low-connectivity environments?",
+  "persona": {
+    "name": "Emma Martinez",
+    "role": "Healthcare Compliance Specialist"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "email": {
+      "username": "current.user",
+      "password": "current_user_pwd"
+    },
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "mattermost": {
+      "username": "admin@drbench.com",
+      "password": "mm_admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -42,6 +71,104 @@
       "id": "IN0007",
       "question": "What internal compliance Key Performance Indicator (KPI) has MediConn introduced to measure readiness for Indigenous reporting by FY2026?",
       "answer": "MediConn introduced an internal KPI called the \"Indigenous Reporting Readiness Index (IRRI)\", targeting 85% framework compliance and 100% staff retraining completion by Q4 2026.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "What was MediConn's total internal spending on employee wellness incentives in FY2025?",
+      "answer": "Approximately $85,000 CAD was allocated to employee wellness initiatives, including mental health support and virtual fitness reimbursements.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "What is the average consultation duration per virtual patient session in FY2025?",
+      "answer": "Average consultation time is 15 minutes per session.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "What is MediConn's internal marketing department budget for FY2025?",
+      "answer": "The internal marketing budget for FY2025 was $3.2 million CAD, covering advertising, digital campaigns, and brand development.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "How many new technical hires did MediConn's IT engineering team onboard during FY2025?",
+      "answer": "The IT division hired 12 new software engineers to support product development and infrastructure scaling.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "What internal customer satisfaction rating was achieved for MediConn's virtual consultations in Q4 2025?",
+      "answer": "Internal CX reports show an average satisfaction score of 4.7 out of 5 across all patient interactions.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "What percentage of MediConn's internal revenue came from corporate wellness contracts in FY2025?",
+      "answer": "Corporate wellness accounted for 12% of annual revenue.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "What was MediConn's total internal office lease expenditure in FY2025?",
+      "answer": "MediConn spent $460,000 CAD on office leases for its Vancouver headquarters and satellite workspaces.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "What is MediConn's annual internal employee turnover rate for FY2025?",
+      "answer": "MediConn recorded an 11% annual turnover rate across all departments in FY2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0009",
+      "question": "How many third-party wellness app integrations were added to MediConn's virtual health platform in FY2025?",
+      "answer": "MediConn added five new third-party wellness app integrations, including fitness tracking and nutrition logging tools, to enhance user engagement.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0010",
+      "question": "What is MediConn's internal fiscal year-end date?",
+      "answer": "The fiscal year ends on December 31, 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0011",
+      "question": "What is the internal average session duration for MediConn's virtual mental health consultations as of Q2 2025?",
+      "answer": "The average session length is 42 minutes per consultation.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0012",
+      "question": "What percentage of MediConn's IT infrastructure budget in FY2025 was dedicated to upgrading telemedicine user interfaces and video quality?",
+      "answer": "Approximately 35% of MediConn's FY2025 IT infrastructure budget was spent improving user interface design and enhancing video call quality for patients and clinicians.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0013",
+      "question": "What was MediConn's internal staff satisfaction index score from the FY2025 engagement survey?",
+      "answer": "MediConn achieved an 86% staff satisfaction rate, reflecting strong employee engagement levels.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0014",
+      "question": "How many internal virtual team engagement events were hosted by MediConn in FY2025?",
+      "answer": "The HR team organized 14 virtual engagement events, including wellness challenges and digital town halls.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0015",
+      "question": "What was MediConn's internal IT helpdesk ticket resolution rate in Q4 2025?",
+      "answer": "Internal IT performance reports show a 94% issue resolution rate within 48 hours.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0016",
+      "question": "How many internal product demos did MediConn conduct for potential enterprise clients during FY2025?",
+      "answer": "MediConn's sales and product teams conducted 36 virtual demos for enterprise clients exploring corporate health solutions.",
       "type": "enterprise_fact"
     }
   ]

@@ -1,6 +1,35 @@
 {
   "task_id": "DR0005",
   "question": "How can Lee's Market leverage chatbots to enhance the consumer experience for centennial shoppers?",
+  "persona": {
+    "name": "David Thompson",
+    "role": "Customer Service Manager"
+  },
+  "credential_regime": "persona",
+  "credentials": {
+    "email": {
+      "username": "david.thompson",
+      "password": "my_drbench_pwd"
+    },
+    "file_system": {
+      "username": "david.thompson",
+      "password": "my_drbench_pwd"
+    },
+    "mattermost": {
+      "username": "david.thompson",
+      "password": "my_drbench_pwd"
+    },
+    "nextcloud": {
+      "username": "david.thompson",
+      "password": "my_drbench_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "EX0000",
@@ -114,6 +143,206 @@
       "id": "IN007_xlsx",
       "question": "What was Lee's Market customer satisfaction rating for phone support in Q3 2023?",
       "answer": "Customer satisfaction rating for phone support averaged 80% with a 5% drop in Q3 2023.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI011_xlsx",
+      "question": "How many employees attended compliance training in Q1 2024?",
+      "answer": "Around 300 employees completed compliance training in Q1 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI010_xlsx",
+      "question": "What was Lee's Market IT budget in Q2 2024?",
+      "answer": "IT budget was $2.5M, with $1M allocated to cybersecurity.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI008_roundcube",
+      "question": "What was Lee's Market workers' compensation claims rate in Q1 2024?",
+      "answer": "The workers' compensation claims rate decreased to 2.1% from 2.5%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI004_pptx",
+      "question": "What were compliance training hours in Q1 2024?",
+      "answer": "Compliance training totaled 1,200 hours in Q1 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI003_pptx",
+      "question": "Annual facility maintenance cost 2024?",
+      "answer": "Total maintenance cost was $3.5 million in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI009_docx",
+      "question": "How many IT infrastructure upgrades were completed in Q4 2024?",
+      "answer": "Four IT infrastructure upgrades were completed in Q4 2024, with an average cost of $75,000 per upgrade.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI001_pdf",
+      "question": "What was Lee's Market employee turnover rate in Q2 2024?",
+      "answer": "Employee turnover rate averaged 12% with a 5% increase from Q1 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI003_pdf",
+      "question": "How many Lee's Market employees completed IT security training in Q1 2024?",
+      "answer": "85% of employees completed IT security training with a 95% pass rate.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI001",
+      "question": "How many new store locations did Lee's Market open in Q3 2024?",
+      "answer": "Lee's Market opened 12 new store locations across the US in Q3 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI005_docx",
+      "question": "What was our employee headcount in Q1 2025?",
+      "answer": "We had 5,100 employees as of January 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI002_pdf",
+      "question": "What was Lee's Market average store energy cost in Q3 2023?",
+      "answer": "Average store energy cost was $3,500 per month with a 10% reduction.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI006_pdf",
+      "question": "What was Lee's Market average store maintenance cost in Q2 2024?",
+      "answer": "Average store maintenance cost was $2,000 per month with a 5% reduction.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI009_roundcube",
+      "question": "What was Lee's Market employee training budget in Q3 2023?",
+      "answer": "Lee's Market allocated $450,000 for employee training, a 15% increase.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI007_pdf",
+      "question": "What was Lee's Market employee turnover rate in Q3 2024?",
+      "answer": "Employee turnover rate averaged 12% with a high of 15%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI005_pdf",
+      "question": "How many Lee's Market employees participated in leadership training in Q1 2024?",
+      "answer": "120 employees completed leadership training with a 90% satisfaction rate.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI008_docx",
+      "question": "What is the average employee tenure in Q1 2025?",
+      "answer": "Average employee tenure was 2.5 years, with 35% of employees having 1-2 years of service.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI002_pptx",
+      "question": "Facility maintenance expenses Q4 2023?",
+      "answer": "Maintenance expenses totaled $1.2 million in Q4 2023.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI004_pdf",
+      "question": "What was Lee's Market warehouse storage capacity in Q3 2023?",
+      "answer": "Warehouse storage capacity was 80,000 sqft with 75% utilization.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI009_pdf",
+      "question": "What percentage of Lee's Market employees completed IT training in Q1 2024?",
+      "answer": "About 85% of employees completed IT training with a 90% pass rate.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI015_xlsx",
+      "question": "What was employee turnover rate in Q1 2025?",
+      "answer": "Employee turnover was 10%, maintaining a stable workforce.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI001_pptx",
+      "question": "Employee training hours Q3 2024?",
+      "answer": "Average training hours per employee were 15 in Q3 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI008_pdf",
+      "question": "What were Lee's Market facility maintenance costs in Q2 2024?",
+      "answer": "Facility maintenance costs totaled $1.2M with an average of $100,000 monthly.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI007_docx",
+      "question": "What was our IT infrastructure cost in Q2 2024?",
+      "answer": "IT infrastructure costs were $8.5 million in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI010_docx",
+      "question": "What was the average time to resolve HR-related issues in Q1 2025?",
+      "answer": "Average time to resolve HR-related issues in Q1 2025 was 5.3 days.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI006_docx",
+      "question": "What was our facility maintenance cost in Q4 2024?",
+      "answer": "Facility maintenance costs totaled $1.8 million in Q4 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI007_roundcube",
+      "question": "How many Lee's Market stores underwent renovations in Q2 2024?",
+      "answer": "Twenty-five stores were renovated, with an average cost of $200,000.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI014_xlsx",
+      "question": "How many employees completed safety training in Q1 2025?",
+      "answer": "Around 250 employees completed the safety training program.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI004",
+      "question": "What was our average employee tenure in Q3 2024?",
+      "answer": "Average employee tenure was 3.5 years with a 10% increase.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI003",
+      "question": "What was our workers' compensation claims rate in Q2 2025?",
+      "answer": "Workers' compensation claims rate was 2.5% with a total payout of $120,000.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI013_xlsx",
+      "question": "What were Lee's Market IT costs in Q4 2024?",
+      "answer": "IT costs totaled $3.4M, with $1.2M on new hardware.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI002",
+      "question": "What was Lee's Market energy consumption cost in Q2 2024?",
+      "answer": "Lee's Market energy consumption cost totaled $850,000 in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI012_xlsx",
+      "question": "What were Lee's Market marketing expenses in Q3 2024?",
+      "answer": "Marketing expenses totaled $3M with digital ads accounting for $1.2M.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI006_roundcube",
+      "question": "What was Lee's Market employee training budget in Q3 2023?",
+      "answer": "Lee's Market allocated $450,000 for employee training, a 15% increase.",
       "type": "enterprise_fact"
     }
   ]

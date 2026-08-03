@@ -1,6 +1,25 @@
 {
   "task_id": "DR0012",
   "question": "How can Elexion Automotive’s quality assurance processes be optimized to address the unique challenges of electric vehicle production, such as software and user experience issues, compared to gasoline cars?",
+  "persona": {
+    "name": "Ethan Smith",
+    "role": "Quality Assurance Engineer"
+  },
+  "credential_regime": "persona",
+  "credentials": {
+    "file_system": {
+      "username": "ethan.smith",
+      "password": "my_drbench_pwd"
+    },
+    "nextcloud": {
+      "username": "ethan.smith",
+      "password": "my_drbench_pwd"
+    }
+  },
+  "endpoints": {
+    "file_system": "http://drbench:8090",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "EX0000",
@@ -36,6 +55,44 @@
       "id": "qa_1755626868",
       "question": "What percentage of our software bugs are attributed to user experience and interface issues in Q3 2024?",
       "answer": "In Q3 2024, 60% of our software bugs were related to user experience and interface issues, highlighting the need for improved testing and quality assurance.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "qa_1755626972",
+      "question": "What was our employee volunteer program participation rate in Q1 2025?",
+      "answer": "75% of employees participated in at least one volunteer activity, with 40 hours average volunteering per employee.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143963",
+      "question": "What was our energy consumption cost for our data center in Q2 2024?",
+      "answer": "Data center energy consumption cost was $90,000 with a carbon footprint reduction of 30%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755626952",
+      "question": "What was our facility energy consumption cost in Q2 2025?",
+      "answer": "Facility energy consumption cost was $120,000 with electricity usage accounting for 70% of total energy expenses.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755626937",
+      "question": "What was our average IT infrastructure maintenance cost per vehicle in Q3 2024?",
+      "answer": "Average IT infrastructure maintenance cost per vehicle was $230 with total maintenance costs reaching $450,000.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755626924",
+      "question": "What was our employee engagement survey response rate in Q1 2025?",
+      "answer": "Employee engagement survey response rate was 85% with 75%+ responses indicating high job satisfaction.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143978",
+      "question": "What was our compliance audit cost as a percentage of annual revenue in Q3 2025?",
+      "answer": "Compliance audit cost was 1.5% of annual revenue with a total cost of $4.5 million.",
       "type": "enterprise_fact"
     }
   ]

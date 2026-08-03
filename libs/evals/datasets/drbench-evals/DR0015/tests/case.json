@@ -1,6 +1,35 @@
 {
   "task_id": "DR0015",
   "question": "How can Elexion Automotive increase customer trust through after-sales support while balancing the need for exceptional customer care with efficient and cost-effective service?",
+  "persona": {
+    "name": "Ryan Thompson",
+    "role": "Customer Service Team Lead"
+  },
+  "credential_regime": "persona",
+  "credentials": {
+    "email": {
+      "username": "ryan.thompson",
+      "password": "my_drbench_pwd"
+    },
+    "file_system": {
+      "username": "ryan.thompson",
+      "password": "my_drbench_pwd"
+    },
+    "mattermost": {
+      "username": "ryan.thompson",
+      "password": "my_drbench_pwd"
+    },
+    "nextcloud": {
+      "username": "ryan.thompson",
+      "password": "my_drbench_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "EX0000",
@@ -108,6 +137,188 @@
       "id": "qa_1756144531",
       "question": "What is Q3 2025 warranty claim resolution rate?",
       "answer": "70% of warranty claims resolved within one week.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "qa_1755719789",
+      "question": "What was our employee benefits enrollment rate in Q3 2025?",
+      "answer": "Employee benefits enrollment rate reached 90% with 85% opting for premium plans.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755638320",
+      "question": "What was our facility maintenance budget in Q2 2024?",
+      "answer": "The facility maintenance budget was $500,000 for this quarter.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756144587",
+      "question": "What was our recruitment cost in Q3 2024?",
+      "answer": "Recruitment cost totaled $90,000 with 10 new hires.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755720659",
+      "question": "What was our server downtime frequency in Q1 2025?",
+      "answer": "Server downtime averaged 2.5 hours with 95% resolved within 4 hours.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755637757",
+      "question": "What is our employee retention rate in Q2 2024?",
+      "answer": "Our employee retention rate stands at 90%, consistent with previous quarters.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755721205",
+      "question": "What were our annual software licensing costs in Q2 2024?",
+      "answer": "Software licensing costs totaled $1.2 million with 15% allocated to CRM tools.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756144603",
+      "question": "What was our training budget in Q3 2024?",
+      "answer": "Training budget was $100,000 with a 5% increase.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755637800",
+      "question": "What is the average time for compliance audits in Q2 2024?",
+      "answer": "Compliance audits averaged 45 days, with a maximum of 60 days.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756144619",
+      "question": "What were our logistics costs in Q1 2025?",
+      "answer": "Logistics costs were $1.5 million, showing a 10% decrease.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755719848",
+      "question": "What were our total research and development costs in Q2 2024?",
+      "answer": "Research and development costs totaled $1.8 million, a 10% increase.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755720559",
+      "question": "What were our annual marketing costs in Q2 2024?",
+      "answer": "Annual marketing costs totaled $850,000 with 35% allocated online.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755631193",
+      "question": "What were IT support costs in Q3 2025?",
+      "answer": "IT support costs were $150,000 in Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755638190",
+      "question": "What were our training costs in Q2 2024?",
+      "answer": "Training costs totaled $1.2 million, reflecting a 15% increase.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755631231",
+      "question": "What was the recruitment cost in Q2 2024?",
+      "answer": "Recruitment costs totaled $85,000 in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755719913",
+      "question": "What was our average time-to-hire for new engineering positions in Q1 2025?",
+      "answer": "Average time-to-hire for engineering positions was 45 days, with 80% hired within 60 days.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755721147",
+      "question": "What was our employee referral rate for new hires in Q3 2025?",
+      "answer": "Employee referrals accounted for 25% of new hires with 40 referrals total.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755631057",
+      "question": "What is the employee turnover rate in Q3 2025?",
+      "answer": "Employee turnover rate was 15% in Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755631262",
+      "question": "What was the compliance audit frequency in Q1 2025?",
+      "answer": "Compliance audits conducted quarterly, four times in Q1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755638376",
+      "question": "What are our logistics costs in Q2 of 2024?",
+      "answer": "Logistics costs totaled $2 million, reflecting a 5% increase this quarter.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755629835",
+      "question": "What is the average annual training budget for our customer service representatives?",
+      "answer": "The average annual training budget is $12,000 per representative.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755629857",
+      "question": "What is the average employee tenure at our company as of Q3 2024?",
+      "answer": "The average employee tenure is 2.5 years.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755631115",
+      "question": "What are the IT infrastructure costs in Q2 2024?",
+      "answer": "IT infrastructure costs totaled $200,000 in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756144662",
+      "question": "What is our facility maintenance budget in Q4 2025?",
+      "answer": "Facility maintenance budget is $600,000, with 10% for green initiatives.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755638229",
+      "question": "What is our IT support response time in Q2 2024?",
+      "answer": "Our IT support response time averaged 3 hours this quarter.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755631136",
+      "question": "What was the facility maintenance cost in Q4 2025?",
+      "answer": "Facility maintenance cost was $50,000 in Q4 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755638425",
+      "question": "What is our employee training completion rate in Q2 2024?",
+      "answer": "Employee training completion rate reached 92%, consistent with previous quarters.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755637407",
+      "question": "What were our IT infrastructure costs in Q2 2024?",
+      "answer": "IT infrastructure costs totaled $2.5 million, showing a 10% increase.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755629888",
+      "question": "What was the total departmental training budget for our customer service representatives in Q1 2025?",
+      "answer": "The total departmental training budget was $75,000.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755721394",
+      "question": "What was our average data center downtime in Q1 2025?",
+      "answer": "Data center downtime averaged 1.5 hours with 95% resolved within 3 hours.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755629844",
+      "question": "What is the total monthly electricity cost for our facilities in Q1 2025?",
+      "answer": "The total monthly electricity cost is $10,000.",
       "type": "enterprise_fact"
     }
   ]

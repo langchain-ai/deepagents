@@ -92,7 +92,7 @@ def test_format_claims_handles_empty_report(judge: ModuleType) -> None:
 
 
 def test_scoring_prompt_substitutes_and_unescapes_braces(judge: ModuleType) -> None:
-    prompt = judge._INSIGHT_SCORING_PROMPT.format(
+    prompt = judge._QA_SCORING_PROMPT.format(
         claims_text="Insight 1: a claim", gold_insight="the gold"
     )
     assert "Insight 1: a claim" in prompt
@@ -112,7 +112,7 @@ def test_claim_split_prompt_embeds_report(judge: ModuleType) -> None:
 def _score(judge: ModuleType, monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> float:
     """Drive `_score_insight` with canned judge answers."""
     monkeypatch.setattr(judge, "_call_judge", lambda _prompt, _model: answers.pop(0))
-    return judge._score_insight("Insight 1: x", "gold", "gpt-4o")["score"]
+    return judge._score_one_entry("Insight 1: x", "gold", "gpt-4o")["score"]
 
 
 def test_score_insight_maps_yes_to_one(judge: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -137,7 +137,7 @@ def test_score_insight_retries_then_scores_zero(
         raise RuntimeError(msg)
 
     monkeypatch.setattr(judge, "_call_judge", failing)
-    result = judge._score_insight("Insight 1: x", "gold", "gpt-4o")
+    result = judge._score_one_entry("Insight 1: x", "gold", "gpt-4o")
     assert result["score"] == 0.0
     assert len(calls) == judge.MAX_RETRIES
     assert "Failed to parse model response" in result["justification"]
@@ -173,10 +173,14 @@ def test_grade_is_fraction_of_recalled_insights(
         lambda _prompt, _model: json.dumps({"answer": next(verdicts)}),
     )
 
-    reward, breakdown = judge._grade()
-    assert reward == pytest.approx(2 / 3)
+    rewards, breakdown = judge._grade()
+    assert rewards["insights_recall"] == pytest.approx(2 / 3)
     assert breakdown["insight_count"] == 3
-    assert [entry["id"] for entry in breakdown["per_insight"]] == ["IN1", "IN2", "EX1"]
+    assert [e["id"] for e in breakdown["insights_recall"]["per_insight"]] == [
+        "IN1",
+        "IN2",
+        "EX1",
+    ]
 
 
 def test_grade_scores_zero_without_a_report(
@@ -186,8 +190,9 @@ def test_grade_scores_zero_without_a_report(
     case.write_text(json.dumps({"task_id": "DR0001", "insights": [{"id": "IN1", "answer": "one"}]}))
     monkeypatch.setattr(judge, "_CASE_PATH", case)
     monkeypatch.setattr(judge, "_REPORT_PATH", tmp_path / "absent.md")
-    reward, breakdown = judge._grade()
-    assert reward == 0.0
+    rewards, breakdown = judge._grade()
+    assert set(rewards) == {"reward", *judge._METRIC_NAMES}
+    assert all(value == 0.0 for value in rewards.values())
     assert breakdown["error"] == "report missing"
 
 
@@ -315,3 +320,294 @@ def test_extract_text_main_survives_one_bad_file(
     status = extract_text.main([str(tmp_path / "absent.pdf"), str(good)])
     assert status == 1
     assert "readable" in capsys.readouterr().out
+
+
+# --- distractor_recall, report_quality, factuality, and the composite -------------------
+
+
+def test_distractor_recall_uses_the_same_judge_loop(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Upstream's DistractorRecall subclasses QASimilarityV2, so scoring is identical."""
+    verdicts = iter(["yes", "no"])
+    monkeypatch.setattr(judge, "_call_judge", lambda _p, _m: json.dumps({"answer": next(verdicts)}))
+    score, details = judge._score_qa_set(
+        "Insight 1: x",
+        [{"id": "DI1", "answer": "planted"}, {"id": "DI2", "answer": "other"}],
+        "gpt-4o",
+    )
+    assert score == pytest.approx(0.5)
+    assert [d["id"] for d in details] == ["DI1", "DI2"]
+
+
+def test_empty_ground_truth_scores_zero(judge: ModuleType) -> None:
+    """Matches upstream's overall_score, which is 0.0 for an empty entry list."""
+    score, details = judge._score_qa_set("Insight 1: x", [], "gpt-4o")
+    assert score == 0.0
+    assert details == []
+
+
+def test_report_quality_averages_five_criteria(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    response = "<evaluation>" + "".join(
+        f"<{c}><score>{score}</score><justification>j</justification></{c}>"
+        for c, score in zip(judge._QUALITY_CRITERIA, (10, 8, 6, 4, 2), strict=True)
+    )
+    monkeypatch.setattr(judge, "_call_judge", lambda _p, _m: response)
+    score, details = judge._report_quality("report", "q?", {"name": "Dana"}, "gpt-4o")
+    # Mean of the five per-criterion scores, each divided by 10.
+    assert score == pytest.approx(0.6)
+    assert len(details["per_criterion"]) == 5
+
+
+@pytest.mark.parametrize(("raw", "expected"), [(99, 1.0), (0, 0.1), (-5, 0.1)])
+def test_report_quality_clamps_out_of_range_scores(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, raw: int, expected: float
+) -> None:
+    response = "".join(f"<{c}><score>{raw}</score></{c}>" for c in judge._QUALITY_CRITERIA)
+    monkeypatch.setattr(judge, "_call_judge", lambda _p, _m: response)
+    score, _ = judge._report_quality("report", "q?", {}, "gpt-4o")
+    assert score == pytest.approx(expected)
+
+
+def test_report_quality_scores_zero_when_criteria_are_missing(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(judge, "_call_judge", lambda _p, _m: "<depth_quality><score>9</score>")
+    score, details = judge._report_quality("report", "q?", {}, "gpt-4o")
+    assert score == 0.0
+    assert "report_quality failed" in details["error"]
+
+
+def test_factuality_counts_uncited_claims_as_unsupported(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        judge, "_webdav_index", lambda _e, _c: {"report.pdf": "http://x/report.pdf"}
+    )
+    monkeypatch.setattr(judge, "_resolve_citation", lambda _c, _i, _cr: "supporting text")
+    monkeypatch.setattr(judge, "_relevant_chunks", lambda _q, content: [content])
+    monkeypatch.setattr(
+        judge, "_call_judge", lambda _p, _m: json.dumps({"is_factual": True, "explanation": "ok"})
+    )
+    case = {
+        "endpoints": {"nextcloud": "http://drbench:8081"},
+        "credentials": {"nextcloud": {"username": "u", "password": "p"}},
+    }
+    score, details = judge._factuality(
+        [
+            {"claim": "cited", "citations": ["report.pdf"]},
+            {"claim": "uncited", "citations": []},
+        ],
+        case,
+        "gpt-4o",
+    )
+    assert score == pytest.approx(0.5)
+    assert details["per_claim"][1]["explanation"].startswith("No citations")
+
+
+def test_factuality_fails_loudly_when_the_app_stack_is_unreachable(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken environment must not be reported as an unfactual report."""
+
+    def unreachable(_endpoint: str, _credentials: dict) -> dict:
+        msg = "could not list http://drbench:8081/...: URLError"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(judge, "_webdav_index", unreachable)
+    case = {
+        "endpoints": {"nextcloud": "http://drbench:8081"},
+        "credentials": {"nextcloud": {"username": "u", "password": "p"}},
+    }
+    with pytest.raises(RuntimeError, match="could not list"):
+        judge._factuality([{"claim": "c", "citations": ["a.pdf"]}], case, "gpt-4o")
+
+
+def _stub_resolver(monkeypatch: pytest.MonkeyPatch, judge: ModuleType, address: str) -> None:
+    """Make host resolution deterministic and offline."""
+    monkeypatch.setattr(
+        judge.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [(2, 1, 6, "", (address, 0))],
+    )
+
+
+@pytest.mark.parametrize(
+    ("address", "public"),
+    [
+        ("93.184.216.34", True),
+        ("169.254.169.254", False),  # cloud instance metadata
+        ("127.0.0.1", False),
+        ("10.0.0.5", False),
+        ("192.168.1.1", False),
+    ],
+)
+def test_is_public_host_rejects_internal_addresses(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, address: str, public: bool
+) -> None:
+    _stub_resolver(monkeypatch, judge, address)
+    assert judge._is_public_host("example.test") is public
+
+
+def test_is_public_host_rejects_an_unresolvable_host(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(*_args: object, **_kwargs: object) -> list:
+        raise OSError
+
+    monkeypatch.setattr(judge.socket, "getaddrinfo", fail)
+    assert judge._is_public_host("nope.invalid") is False
+
+
+def test_factuality_never_fetches_a_citation_pointing_at_internal_metadata(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Citations come from the agent's report, so a cited URL is untrusted input."""
+    fetched: list[str] = []
+    monkeypatch.setattr(judge, "_http_get", lambda url, **_: fetched.append(url) or b"")
+    _stub_resolver(monkeypatch, judge, "169.254.169.254")
+    assert judge._resolve_citation("http://metadata.example/latest/meta-data/", {}, None) is None
+    assert fetched == []
+
+
+def test_relevant_chunks_skips_embeddings_for_small_documents(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Upstream returns every chunk when there are at most TOP_K, with no embedding call."""
+
+    def fail(_texts: list[str]) -> list[list[float]]:
+        msg = "embeddings must not be called"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(judge, "_embed", fail)
+    chunks = judge._relevant_chunks("q", "a" * (judge.CHUNK_SIZE * judge.TOP_K))
+    assert len(chunks) == judge.TOP_K
+
+
+def test_relevant_chunks_ranks_by_similarity_when_there_are_many(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = "".join(f"{marker}" * judge.CHUNK_SIZE for marker in "abcdefg")
+
+    def fake_embed(texts: list[str]) -> list[list[float]]:
+        # The query matches the chunk made of "d" exactly.
+        return [[1.0, 0.0] if "d" in text else [0.0, 1.0] for text in texts]
+
+    monkeypatch.setattr(judge, "_embed", fake_embed)
+    chunks = judge._relevant_chunks("d", content)
+    assert len(chunks) == judge.TOP_K
+    assert chunks[0].startswith("d")
+
+
+def test_relevant_chunks_falls_back_when_embedding_fails(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(_texts: list[str]) -> list[list[float]]:
+        msg = "upstream down"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(judge, "_embed", fail)
+    content = "".join(f"{m}" * judge.CHUNK_SIZE for m in "abcdefg")
+    assert len(judge._relevant_chunks("q", content)) == judge.TOP_K
+
+
+def test_composite_is_a_harmonic_mean() -> None:
+    module = _load("judge")
+    perfect = module.composite(dict.fromkeys(("a", "b", "c", "d"), 1.0))
+    assert perfect == pytest.approx(1.0)
+    # Harmonic means sit below the arithmetic mean whenever components differ.
+    mixed = module.composite({"a": 1.0, "b": 0.5, "c": 1.0, "d": 0.5})
+    assert mixed < 0.75
+
+
+def test_composite_floors_a_zero_component_instead_of_erasing_the_score() -> None:
+    """A strict harmonic mean would return exactly 0.0 and lose all ranking signal."""
+    module = _load("judge")
+    score = module.composite(
+        {"insights_recall": 0.9, "distractor_avoidance": 0.9, "factuality": 0.0, "quality": 0.9}
+    )
+    assert 0.0 < score < 0.05
+
+
+def test_grade_inverts_distractor_recall_for_the_composite(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Recalling a distractor is a failure, so the composite must use avoidance."""
+    case = tmp_path / "case.json"
+    case.write_text(
+        json.dumps(
+            {
+                "task_id": "DR0001",
+                "question": "q?",
+                "persona": {"name": "Dana"},
+                "insights": [{"id": "IN1", "answer": "one"}],
+                "distractors": [{"id": "DI1", "answer": "planted"}],
+            }
+        )
+    )
+    report = tmp_path / "report.md"
+    report.write_text("# Report\n")
+    monkeypatch.setattr(judge, "_CASE_PATH", case)
+    monkeypatch.setattr(judge, "_REPORT_PATH", report)
+    monkeypatch.setattr(judge, "_split_report", lambda _t, _m: [{"claim": "c", "citations": []}])
+    # Perfect recall, but the report also swallowed the distractor.
+    monkeypatch.setattr(judge, "_score_qa_set", lambda _c, entries, _m: (1.0, list(entries)))
+    monkeypatch.setattr(judge, "_report_quality", lambda *_a: (1.0, {}))
+    monkeypatch.setattr(judge, "_factuality", lambda *_a: (1.0, {}))
+
+    rewards, breakdown = judge._grade()
+    assert rewards["distractor_recall"] == 1.0
+    assert rewards["distractor_avoidance"] == 0.0
+    assert "distractor_recall" not in breakdown["components"]
+    assert breakdown["components"]["distractor_avoidance"] == 0.0
+    # Full marks everywhere else cannot hide a fully-swallowed distractor set.
+    assert rewards["reward"] < 0.05
+
+
+def test_main_writes_named_rewards_with_the_headline_under_reward(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`reward` is the key the deepagents aggregation reads for pass@k / avg@k."""
+    reward_json = tmp_path / "logs" / "verifier" / "reward.json"
+    breakdown_path = tmp_path / "logs" / "verifier" / "drbench_metrics.json"
+    monkeypatch.setattr(judge, "_REWARD_JSON_PATH", reward_json)
+    monkeypatch.setattr(judge, "_BREAKDOWN_PATH", breakdown_path)
+    monkeypatch.setattr(
+        judge,
+        "_grade",
+        lambda: (
+            {
+                "reward": 0.5,
+                "insights_recall": 0.6,
+                "distractor_recall": 0.2,
+                "distractor_avoidance": 0.8,
+                "factuality": 0.4,
+                "report_quality": 0.7,
+            },
+            {"task_id": "DR0001"},
+        ),
+    )
+    judge.main()
+
+    written = json.loads(reward_json.read_text())
+    assert written["reward"] == 0.5
+    assert set(written) == {"reward", *judge._METRIC_NAMES}
+    assert json.loads(breakdown_path.read_text())["task_id"] == "DR0001"
+
+
+def test_main_still_writes_a_reward_when_grading_crashes(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    reward_json = tmp_path / "logs" / "verifier" / "reward.json"
+    monkeypatch.setattr(judge, "_REWARD_JSON_PATH", reward_json)
+    monkeypatch.setattr(judge, "_BREAKDOWN_PATH", tmp_path / "logs" / "verifier" / "b.json")
+
+    def boom() -> None:
+        msg = "app stack unreachable"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(judge, "_grade", boom)
+    judge.main()
+    assert json.loads(reward_json.read_text())["reward"] == 0.0

@@ -1,6 +1,30 @@
 {
   "task_id": "DR0014",
   "question": "Can we leverage AI-enhanced battery management to improve EV battery lifespan by 15%?",
+  "persona": {
+    "name": "Liam Chen",
+    "role": "Advanced Technology Engineer"
+  },
+  "credential_regime": "persona",
+  "credentials": {
+    "file_system": {
+      "username": "liam.chen",
+      "password": "my_drbench_pwd"
+    },
+    "mattermost": {
+      "username": "liam.chen",
+      "password": "my_drbench_pwd"
+    },
+    "nextcloud": {
+      "username": "liam.chen",
+      "password": "my_drbench_pwd"
+    }
+  },
+  "endpoints": {
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "EX0000",
@@ -60,6 +84,92 @@
       "id": "qa_1755629244",
       "question": "What is the average EV battery lifespan of our current fleet as of Q3 2025?",
       "answer": "Our current fleet's average EV battery lifespan is 6.8 years as of Q3 2025.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "qa_1755628926",
+      "question": "How many compliance audits conducted in Q2 2024?",
+      "answer": "Seven compliance audits conducted in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755629380",
+      "question": "How many compliance audits did we conduct in Q2 2024?",
+      "answer": "Seven compliance audits were conducted in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756144256",
+      "question": "What was our total spent on employee wellness programs in Q3 2025?",
+      "answer": "$350,000 was allocated for employee wellness programs, focusing on mental health",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755629350",
+      "question": "How many employee retention bonuses were issued in Q1 2025?",
+      "answer": "Twenty-five employee retention bonuses were issued, totaling $250,000.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755629357",
+      "question": "What was our average IT infrastructure cost per employee in Q2 2024?",
+      "answer": "$1,200 was the average IT infrastructure cost per employee, with a total of $2.3 million spent.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756144150",
+      "question": "What was our employee turnover rate in Q1 2025?",
+      "answer": "Employee turnover averaged 12% with 30 employees leaving the company.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756144167",
+      "question": "What was our average IT infrastructure cost per employee in Q2 2024?",
+      "answer": "$1,200 was the average IT infrastructure cost per employee, with a total of $2.3 million spent.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755635619",
+      "question": "What percentage of training sessions were completed by Q4 2024?",
+      "answer": "75% of training sessions were completed, totaling 300 participants this year.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756144178",
+      "question": "How many employee bonuses were issued in Q3 2024?",
+      "answer": "Twenty employee bonuses were issued, totaling $200,000.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756144224",
+      "question": "How many employee retention bonuses were issued in Q1 2023?",
+      "answer": "Twenty-five employee retention bonuses were issued, totaling $250,000.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755635750",
+      "question": "How many compliance audits were completed by Q4 2024?",
+      "answer": "Fifteen compliance audits were completed, ensuring 100% regulatory adherence.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755628888",
+      "question": "What was IT infrastructure cost in Q3 2024?",
+      "answer": "IT infrastructure cost was $2.3 million in Q3 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755629338",
+      "question": "What was our total training budget in Q3 2024?",
+      "answer": "$750,000 was allocated for training and development programs.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756144303",
+      "question": "What was our employee wellness program budget in Q1 2025?",
+      "answer": "$500,000 was allocated for employee wellness programs, focusing on mental health",
       "type": "enterprise_fact"
     }
   ]

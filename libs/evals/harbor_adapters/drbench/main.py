@@ -34,19 +34,20 @@ def _build_parser() -> argparse.ArgumentParser:
         type=Path,
         metavar="DATASET_DIR",
         help=(
-            "Populate each generated DRBench task's environment/files/ from the pinned "
-            "upstream tree, plus the single-sourced build and verifier files (the "
-            "per-task corpus is git-ignored). Run before `harbor run --path DATASET_DIR`. "
-            "Mutually exclusive with --task-ids/--limit."
+            "Lay down each generated DRBench task's single-sourced, git-ignored files: "
+            "the `main` service's build inputs and the verifier. App mode needs no "
+            "document corpus on disk — the per-task image serves the documents. Run "
+            "before `harbor run --path DATASET_DIR`. Mutually exclusive with "
+            "--task-ids/--limit/--all."
         ),
     )
     parser.add_argument(
-        "--archive",
-        type=Path,
-        metavar="TARBALL",
+        "--refresh-digests",
+        action="store_true",
         help=(
-            "Optional pre-downloaded upstream tarball for --populate, so a rerun can "
-            "skip the download."
+            "Re-resolve every task's upstream image tag to an immutable digest and "
+            "rewrite vendor/image_digests.json. Requires network. Run this when "
+            "upstream republishes images; it is the only step that is not offline."
         ),
     )
     parser.add_argument(
@@ -97,12 +98,20 @@ def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    if args.refresh_digests:
+        if args.populate is not None or args.task_ids or args.limit is not None or args.all:
+            msg = "`--refresh-digests` is mutually exclusive with the other modes"
+            raise ValueError(msg)
+        count = adapter.refresh_image_digests()
+        print(f"Refreshed {count} DRBench image digest(s)")
+        return
+
     if args.populate is not None:
         if args.task_ids or args.limit is not None or args.all:
             msg = "`--populate` is mutually exclusive with `--task-ids`/`--limit`/`--all`"
             raise ValueError(msg)
-        count = adapter.populate_corpus(args.populate, archive=args.archive)
-        print(f"Populated corpus for {count} DRBench task(s) in {args.populate}")
+        count = adapter.populate_corpus(args.populate)
+        print(f"Populated {count} DRBench task(s) in {args.populate}")
         return
 
     if args.output_dir is None:

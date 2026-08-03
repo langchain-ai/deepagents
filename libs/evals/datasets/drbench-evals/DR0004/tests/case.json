@@ -1,6 +1,30 @@
 {
   "task_id": "DR0004",
   "question": "What are the new trends in the grocery retail market and what strategies can Lee's Market adopt to remain competitive?",
+  "persona": {
+    "name": "Sofia Patel",
+    "role": "Market Research Analyst"
+  },
+  "credential_regime": "persona",
+  "credentials": {
+    "email": {
+      "username": "sofia.patel",
+      "password": "my_drbench_pwd"
+    },
+    "file_system": {
+      "username": "sofia.patel",
+      "password": "my_drbench_pwd"
+    },
+    "nextcloud": {
+      "username": "sofia.patel",
+      "password": "my_drbench_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "EX0000",
@@ -54,6 +78,92 @@
       "id": "IN003_docx",
       "question": "What percentage of our online transactions were made using mobile devices in Q3 2024?",
       "answer": "60% of our online transactions were made using mobile devices, with an average order value of $50.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI003_roundcube",
+      "question": "What percentage of Lee's Market's facilities are solar-powered as of Q3 2024?",
+      "answer": "About 25% of Lee's Market's facilities use solar power, reducing energy costs.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI005_pptx",
+      "question": "How many training hours were completed in Q2 2024?",
+      "answer": "Employees completed 3,500 training hours in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI004_pptx",
+      "question": "What were compliance costs in Q4 2024?",
+      "answer": "Compliance costs totaled $750,000 in Q4 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI003_pptx",
+      "question": "What was IT downtime in Q3 2024?",
+      "answer": "IT systems experienced 15 hours of downtime in Q3 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI009_docx",
+      "question": "What was our employee turnover rate in Q1 2025?",
+      "answer": "Employee turnover rate remained at 12% with a 3-month average tenure.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI002_roundcube",
+      "question": "What percentage of Lee's Market employees completed compliance training in Q2 2024?",
+      "answer": "92% of employees completed compliance training, exceeding the 90% target.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI008_docx",
+      "question": "What percentage of our IT infrastructure was outsourced in Q3 2024?",
+      "answer": "55% of our IT infrastructure was outsourced, with plans to increase to 60% by Q2 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI002_pptx",
+      "question": "What were facility maintenance costs in Q3 2024?",
+      "answer": "Facility maintenance costs totaled $1.2M, slightly increasing from $1.1M.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI004_roundcube",
+      "question": "What was Lee's Market's employee benefits cost in Q3 2024?",
+      "answer": "Employee benefits cost totaled $4.5 million, a 10% increase from Q3 2023.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI001_pptx",
+      "question": "What was employee turnover rate in Q2 2024?",
+      "answer": "Employee turnover was 12%, down from 14% in previous quarter.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI007_docx",
+      "question": "What was the average cost of a single facility maintenance issue in Q2 2024?",
+      "answer": "Average cost of a single issue was $1,200, with a 10% increase from Q1 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI001_roundcube",
+      "question": "What was Lee's Market employee turnover rate in Q3 2024?",
+      "answer": "Employee turnover rate was 12% with an average tenure of 2.5 years.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI010_docx",
+      "question": "What was the average cost of labor per square foot in Q4 2024?",
+      "answer": "Average cost of labor per square foot was $23.50 with a 5% increase YoY.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI006_docx",
+      "question": "What was our employee engagement survey score in Q4 2024?",
+      "answer": "Employee engagement score was 82%, with a 5% increase from Q3 2024.",
       "type": "enterprise_fact"
     }
   ]

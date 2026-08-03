@@ -1,6 +1,35 @@
 {
   "task_id": "DR0064",
   "question": "How will Elexion Automotive's adoption of a complete direct-to-customer sales model by 2026 affect sales cycle duration, conversion rates, and average revenue per customer across the United States with franchise laws?",
+  "persona": {
+    "name": "Amanda Lee",
+    "role": "Director of Sales Operations"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "email": {
+      "username": "current.user",
+      "password": "current_user_pwd"
+    },
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "mattermost": {
+      "username": "admin@drbench.com",
+      "password": "mm_admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -78,6 +107,188 @@
       "id": "IN0013",
       "question": "What was Elexion Automotive lead to sale conversion rate through dealerships in 2024?",
       "answer": "As of December 2024, Elexion Automotive lead to sale conversion rate through the dealership network in 2024 was 12%.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "What is the current response time of the Elexion Automotive CRS system as of 2025?",
+      "answer": "Elexion Automotive salesforce CRM system has an average page load time of 3.3 seconds as of 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "What was the turnover rate in the Elexion Automotive sales department in 2011?",
+      "answer": "The turnover rate in the Elexion Automotive sales department was 15% in 2011.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "How many sales managers actively use the Elexion Automotive sales analytic dashboard in 2025?",
+      "answer": "As of October 2025, 15 out of 31 sales managers actively use the Elexion Automotive sales analytic dashboard.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "How many sales territories were restructured in 2024?",
+      "answer": "24 sales territories across the U.S. were restructured to balance workload distribution in January 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "When was the last sales commission structure of Elexion Automotive updated?",
+      "answer": "Elexion Automotive implemented an updated commission structure in April 2025 that increased base commission rates by 1.5%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "What is the average number of cold calls made daily by the sales department of Elexion Automotive in 2025?",
+      "answer": "As of August 2025, the sales department averaged 50 cold calls per day with a contact rate of 17%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "What percentage of customer records are complete in the CRM as of 2025?",
+      "answer": "An audit report in Q1 2025 showed that 76% of customer records in Elexion Automotive's CRM are complete.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "What percentage of Elexion Automotive sales representatives use the Elexion Automotive sales mobile app in 2025?",
+      "answer": "As of March 31, 2025, 89% of Elexion Automotive field sales representatives use the company's sales mobile app.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0009",
+      "question": "What was the average customer satisfaction score for Elexion Automotive during the first 5 years of operation?",
+      "answer": "Elexion Automotive achieved an average customer satisfaction score of 7.5 out of 10 between 2010 and 2016.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0010",
+      "question": "How many people attended the Elexion Automotive annual 2025 sales kickoff?",
+      "answer": "220 sales professionals across various states attended the Elexion Automotive sales kickoff event in Austin, Texas, in May 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0011",
+      "question": "What percentage of sales representatives met their quota in the second quarter of 2025?",
+      "answer": "70% of Elexion sales representatives met their quarterly quota in the second quarter of 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0012",
+      "question": "As of 2025, what is the gender breakdown of the Elexion sales department?",
+      "answer": "As of January 2025, the Elexion sales department consists of 34% male and 66% female sales professionals across all levels.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0013",
+      "question": "How much has the sales department spent on software licensing in the last fiscal year?",
+      "answer": "The sales department has spent $75,000 on software licensing across 7 different sales software in 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0014",
+      "question": "How many software licenses does the sales team use in 2024?",
+      "answer": "Elexion Automotive uses 20 licenses across 7 different sales software platforms as of January 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0015",
+      "question": "How often are sales performance reviews conducted in the sales department of Elexion Automotive?",
+      "answer": "Amanda successfully launched structured quarterly performance reviews for all sales team members starting in January 2024. In the initial review, 85% of team members scoring 50points or higher out of 100 possible points.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0016",
+      "question": "What is the average LinkedIn engagement per sales representative in 2025?",
+      "answer": "Elexion Automotive sales representatives averaged 23 LinkedIn posts per quarter with an engagement rate of 4.2% in Q2 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0017",
+      "question": "As of 2025, how many physical offices does Elexion Automotive operate in?",
+      "answer": "Elexion Automotive maintains 28 regional sales offices across the United States as of October 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0018",
+      "question": "Which Elexion Automotive vehicle has the highest close rate in 2025?",
+      "answer": "The Elexion Automotive mid-range sedan model achieved a 34% win rate in Q2 2025, outperforming the SUV model at 29%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0019",
+      "question": "How much customer data does the Elexion Automotive sales department process annually since the start of 2023?",
+      "answer": "The Elexion Automotive sales department has managed over 105,000 customer data entries annually since the start of 2023.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0020",
+      "question": "Is there a correlation between deal closing time and deal size?",
+      "answer": "The sales analytics report conducted by Amanda and her team in 2024 revealed that sales deals that were closed between 6-8 PM local time have a 15% higher average revenue than those closed during standard business hours.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0021",
+      "question": "How many sales reps qualified for the annual incentive trip in 2025?",
+      "answer": "In December 2025, 23 sales representatives qualified for Elexion's 2025 President's Club incentive trip by exceeding 120% of their annual quota.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0022",
+      "question": "What percentage of sales transactions follow proper documentation procedures as of 2025?",
+      "answer": "An internal audit in August 2025 found that 96% of sales transactions adhered to Elexion Automotive's mandatory documentation and compliance procedures.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0023",
+      "question": "What is the average cost of sales representative turnover?",
+      "answer": "Amanda's analysis in May 2025 indicates that the average cost of replacing a single sales representative at Elexion Automotive is approximately $21,500, including recruitment, training, and lost productivity.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0024",
+      "question": "How many custom fields have been added to the CRM system since its last update in June 2025?",
+      "answer": "Since June 2025, 87 custom fields have been added to the CRM system to track Elexion Automotive's specific data points.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0025",
+      "question": "How long does it take for the sales department to generate a monthly sales report in 2025?",
+      "answer": "The sales department reduced monthly sales report generation time from 12.5 hours to 6.2 hours.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0026",
+      "question": "What is the performance difference between top and bottom sales territories in 2025?",
+      "answer": "The highest-performing sales territory at Elexion Automotive achieved 186% of quota in Q3 2025, while the lowest-performing territory reached only 64% of quota.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0027",
+      "question": "What percentage of sales team members work remotely as of September 2025?",
+      "answer": "As of September 2025, 30% of Elexion's sales team works in a fully remote capacity, with 20% in hybrid roles and 50% onsite.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0028",
+      "question": "How much data storage does the Elexion CRM system use as of 2025?",
+      "answer": "As of September 2025, the Elexion Automotive CRM system consumes 2.1 terabytes of storage.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0029",
+      "question": "What was the average cost per customer for the Elexion Automotive dealership in Q3 2024?",
+      "answer": "The average cost per customer under the dealership model in Q3 2024 was $127,000.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0030",
+      "question": "What is the average time Elexion Automotive car batteries spent in showrooms before being sold to customers in 2024?",
+      "answer": "During the year 2024, Elexion Automotive car batteries spent an average of 54 days in showrooms before being sold.",
       "type": "enterprise_fact"
     }
   ]

@@ -1,6 +1,35 @@
 {
   "task_id": "DR0097",
   "question": "How can MediConn streamline its IT workflows in Q4 2025 to boost clinician efficiency and manage per-consultation costs, given that virtual healthcare expansion has improved access but increased overall expenses?",
+  "persona": {
+    "name": "Laura Singh",
+    "role": "IT Operations Manager"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "email": {
+      "username": "current.user",
+      "password": "current_user_pwd"
+    },
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "mattermost": {
+      "username": "admin@drbench.com",
+      "password": "mm_admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -48,6 +77,98 @@
       "id": "IN0008",
       "question": "What was the outcome of MediConn's Q3 2025 pilot for automated lab result annotation for clinicians?",
       "answer": "The automated lab result annotation pilot, designed to reduce clinician review time by automatically flagging abnormal values and generating preliminary notes, instead led to a 20% increase in documentation errors and added workflow complexity.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "What is the average time-to-hire for a senior software engineer in MediConn's Vancouver office as of mid-2025?",
+      "answer": "The average time to hire a senior software engineer in MediConn's Vancouver office as of mid-2025 is 60 days.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "What percentage of MediConn's revenue in 2025 came from its corporate clients versus individual patients?",
+      "answer": "Approximately 40% of revenue came from corporate clients, while 60% came from individual patients.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "What is the average score on post-training assessments for new corporate sales hires at MediConn in 2025?",
+      "answer": "The average score for new corporate sales hires at MediConn was 87%.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "What percentage of MediConn's employees worked remotely full-time in Q3 2025?",
+      "answer": "74% of MediConn's employees worked remotely full-time.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "What was the MediConn's total marketing spend on its corporate wellness programs in fiscal year 2025?",
+      "answer": "The total marketing spend was approximately 5,000,000 CAD in fiscal year 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "How many cloud vendors does MediConn use for data storage and backup services?",
+      "answer": "MediConn uses two primary cloud vendors.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "What is the most common internet browser among MediConn users in 2025?",
+      "answer": "Google Chrome is the most common internet browser among MediConn users in 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "What year did MediConn Solutions first launch its employee stock ownership plan (ESOP)?",
+      "answer": "MediConn launched its ESOP in 2020.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0009",
+      "question": "What was the median age of patients using MediConn's platforms in Q3 2025?",
+      "answer": "The median patient age was 39 years.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0010",
+      "question": "What was the average employee satisfaction score (eNPS) for MediConn's non-technical staff in the 2025 annual survey?",
+      "answer": "The average eNPS score was +40.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0011",
+      "question": "What was the average customer lifetime value (CLV) for an individual patient using MediConn's services in 2025?",
+      "answer": "The average CLV for an individual patient was estimated at 650 CAD.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0012",
+      "question": "What is the uptime guarantee offered by MediConn's HR payroll software provider?",
+      "answer": "The provider offers a 99.9% uptime guarantee.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0013",
+      "question": "What percentage of MediConn's employees participated in the annual wellness challenge in 2025?",
+      "answer": "About 68% of MediConn's employees participated in the annual wellness challenge in 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0014",
+      "question": "What was MediConn's average helpdesk response time for employee HR queries in 2024?",
+      "answer": "The average helpdesk response time for employee HR queries was 6 hours.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0015",
+      "question": "How many virtual reality (VR) training sessions were conducted for MediConn's onboarding programs in 2025?",
+      "answer": "A total of 12 VR training sessions were conducted in 2025.",
       "type": "enterprise_fact"
     }
   ]

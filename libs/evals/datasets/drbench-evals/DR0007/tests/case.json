@@ -1,6 +1,30 @@
 {
   "task_id": "DR0007",
   "question": "How can we leverage ISTM and AI-driven analytics to minimize IT service desk workload and improve response times in MediConn Solutions?",
+  "persona": {
+    "name": "Emily Patel",
+    "role": "IT Service Desk Manager"
+  },
+  "credential_regime": "persona",
+  "credentials": {
+    "email": {
+      "username": "emily.patel",
+      "password": "my_drbench_pwd"
+    },
+    "file_system": {
+      "username": "emily.patel",
+      "password": "my_drbench_pwd"
+    },
+    "nextcloud": {
+      "username": "emily.patel",
+      "password": "my_drbench_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "EX0000",
@@ -54,6 +78,80 @@
       "id": "IN002",
       "question": "What is our average service desk response time as of Q2 2024?",
       "answer": "Our average service desk response time is currently 48 hours.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "qa_1755632107",
+      "question": "How much did we spend on facility maintenance and repairs in Q1 2024?",
+      "answer": "We spent $120,000 on facility maintenance and repairs in Q1 2024, a 10% increase from Q4 2023.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755632100",
+      "question": "What was the median employee tenure in Q3 2025?",
+      "answer": "Median employee tenure was 2.5 years with 75% of employees having less than 3 years of service.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI001",
+      "question": "What were our employee turnover rates in Q3 2025?",
+      "answer": "Employee turnover rate was 15%, with 40 hires this quarter.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755703148",
+      "question": "How many new healthcare provider partnerships were formed in Q2 2024?",
+      "answer": "We formed 12 new partnerships with a 20% increase from Q1.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755625336",
+      "question": "What is our average patient wait time as of Q3 2024?",
+      "answer": "The average patient wait time is currently 20 minutes.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756142865",
+      "question": "What was our training completion rate in Q2 2024?",
+      "answer": "Training completion rate was 85% with 300 employees participating.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755625265",
+      "question": "What was our training budget allocation in Q1 2024?",
+      "answer": "The training budget allocation was $300,000 for Q1 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756142930",
+      "question": "What was our network uptime percentage in Q2 2024?",
+      "answer": "Network uptime was 99.8%, maintaining optimal operations.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756142978",
+      "question": "What was our training budget in Q2 2025?",
+      "answer": "Training budget was $350,000 with a 5% increase.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755702293",
+      "question": "What was our employee benefits expenditure in Q3 2025?",
+      "answer": "Employee benefits expenditure totaled $425,000 with a 5% increase from Q2.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755703202",
+      "question": "What was our marketing budget allocation for social media in Q1 2024?",
+      "answer": "The social media marketing budget allocation was $120,000 with a 10% ROI.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756142856",
+      "question": "What were our compliance audit costs in Q3 2024?",
+      "answer": "Compliance audit costs totaled $150,000 with a 5% increase.",
       "type": "enterprise_fact"
     }
   ]

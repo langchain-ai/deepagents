@@ -1,6 +1,35 @@
 {
   "task_id": "DR0059",
   "question": "By Q4 2025, how can MediConn Solutions integrate the HHS Cybersecurity Performance Goals (CPGs) into its virtual healthcare platform to ensure compliance for both internal systems and third-party vendors, while effectively mitigating emerging cyber threats?",
+  "persona": {
+    "name": "Brian Smith",
+    "role": "Cybersecurity Specialist"
+  },
+  "credential_regime": "default",
+  "credentials": {
+    "email": {
+      "username": "current.user",
+      "password": "current_user_pwd"
+    },
+    "file_system": {
+      "username": "admin",
+      "password": "admin_pwd"
+    },
+    "mattermost": {
+      "username": "admin@drbench.com",
+      "password": "mm_admin_pwd"
+    },
+    "nextcloud": {
+      "username": "admin",
+      "password": "admin_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "IN0001",
@@ -24,6 +53,80 @@
       "id": "IN0004",
       "question": "How many CPG-aligned incident response playbooks did the cybersecurity specialist update for MediConn’s virtual healthcare platform between July 1 and September 30, 2025?",
       "answer": "Between July 1 and September 30, 2025, the cybersecurity specialist updated 3 incident response playbooks to align with HHS CPG requirements for security events affecting MediConn’s virtual healthcare platform.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "DI0001",
+      "question": "In Q2 2025, did the cybersecurity specialist at MediConn update the malware signature database across all internal endpoints supporting MediConn’s virtual healthcare platform?",
+      "answer": "Yes. Between April 1 and June 30, 2025, the cybersecurity specialist at MediConn deployed automated updates to the malware signature database across 1,200 internal endpoints supporting MediConn's virtual healthcare platform.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0002",
+      "question": "How many penetration tests did the cybersecurity specialist at MediConn conduct on the firm's virtual healthcare platform in Q1 2025?",
+      "answer": "According to internal logs, the cybersecurity specialist conducted 7 penetration tests on the MediConn virtual healthcare platform between January 1 and March 31, 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0003",
+      "question": "How many API authentication log entries did the cybersecurity specialist at MediConn manually review on July 15, 2025?",
+      "answer": "On July 15, 2025, the cybersecurity specialist manually reviewed 180 API authentication log entries across MediConn’s virtual healthcare platform as part of a high-level spot check to verify that no third-party integrations were using expired or duplicated access tokens.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0004",
+      "question": "How many secure coding guideline review sessions did the cybersecurity specialist at MediConn conduct with the development team in Q3 2025?",
+      "answer": "Internal engineering updates show that the cybersecurity specialist led 4 secure coding review sessions between July 1 and September 30, 2025, focusing on encryption handling and API request validation.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0005",
+      "question": "In the first two quarters of 2025, how many high-severity vulnerabilities in MediConn’s virtual care platform were remediated after vulnerability assessments performed by the cybersecurity specialist?",
+      "answer": "Vulnerability tracking dashboards show that the cybersecurity specialist remediated 11 high-severity vulnerabilities between January 1 and June 30, 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0006",
+      "question": "In August 2025, did the cybersecurity specialist at MediConn deploy a new alert rule for detecting malformed authentication headers?",
+      "answer": "Yes. On August 22, 2025, the cybersecurity specialist configured a targeted alert within MediConn’s SIEM system to detect malformed authentication headers that could indicate exploit attempts.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0007",
+      "question": "How many internal phishing simulation attempts did the cybersecurity specialist at MediConn evaluate during the September 2025 employee training exercise?",
+      "answer": "Security training participation reports show that the cybersecurity specialist evaluated 100 phishing simulation responses submitted by MediConn employees between September 1 and September 30, 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0008",
+      "question": "How many new encryption policies did the cybersecurity specialist at MediConn propose for protecting patient files stored in the virtual consultation system in Q2 2025?",
+      "answer": "During compliance reviews between April 1 and June 30, 2025, the cybersecurity specialist at MediConn submitted 2 new encryption policy proposals for securing patient file storage within MediConn’s virtual consultation system. These proposals were then forwarded to the IT compliance committee for approval.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0009",
+      "question": "In May 2025, did the cybersecurity specialist at MediConn conduct a risk-scoring analysis on the legacy authentication modules used within the MediConn virtual healthcare platform?",
+      "answer": "Yes. Between May 1 and May 31, 2025, the cybersecurity specialist completed a risk-scoring assessment on outdated authentication modules within MediConn’s virtual healthcare platform to evaluate potential exploit paths, according to an internal cybersecurity report.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0010",
+      "question": "How many new firewall rules did the cybersecurity specialist at MediConn deploy to protect telehealth session routing within MediConn’s virtual healthcare platform between April 1 and September 30, 2025?",
+      "answer": "Between Q2 and Q3 2025, the cybersecurity specialist deployed 19 new firewall rules to protect telehealth session routing within MediConn’s virtual healthcare platform from malicious packet injection attempts.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0011",
+      "question": "How many compliance checkpoints did the cybersecurity specialist at MediConn define for software developers connecting to MediConn’s virtual healthcare platform in September, 2025?",
+      "answer": "Between September 1 and September 30, 2025, the cybersecurity specialist defined 4 aligned compliance checkpoints to verify cybersecurity standards before software developers could access MediConn’s virtual healthcare platform.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "DI0012",
+      "question": "Does MediConn Solutions currently have a cross-functional working team to review cybersecurity practices within MediConn’s virtual healthcare platform?",
+      "answer": "Yes. Between January 1 and March 31, 2025, the cybersecurity specialist at MediConn began coordinating a working group with IT operations and compliance leaders to review internal cybersecurity practices affecting the company's virtual healthcare platform.",
       "type": "enterprise_fact"
     }
   ]

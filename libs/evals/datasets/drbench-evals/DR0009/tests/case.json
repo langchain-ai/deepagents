@@ -1,6 +1,35 @@
 {
   "task_id": "DR0009",
   "question": "How can MediConn Solutions leverage trendy new CRM solutions to improve patient engagement and retention, and what new CRM solutions are expected in 2025?",
+  "persona": {
+    "name": "Liam Patel",
+    "role": "Business Development Representative"
+  },
+  "credential_regime": "persona",
+  "credentials": {
+    "email": {
+      "username": "liam.patel",
+      "password": "my_drbench_pwd"
+    },
+    "file_system": {
+      "username": "liam.patel",
+      "password": "my_drbench_pwd"
+    },
+    "mattermost": {
+      "username": "liam.patel",
+      "password": "my_drbench_pwd"
+    },
+    "nextcloud": {
+      "username": "liam.patel",
+      "password": "my_drbench_pwd"
+    }
+  },
+  "endpoints": {
+    "email": "imap://drbench:1143",
+    "file_system": "http://drbench:8090",
+    "mattermost": "http://drbench:8082",
+    "nextcloud": "http://drbench:8081"
+  },
   "insights": [
     {
       "id": "EX0000",
@@ -90,6 +119,152 @@
       "id": "qa_1755633127",
       "question": "What percentage of our patients are currently engaged with our CRM solution?",
       "answer": "35% of our patients are actively utilizing our CRM solution, with a 20% increase expected by Q2 2025.",
+      "type": "enterprise_fact"
+    }
+  ],
+  "distractors": [
+    {
+      "id": "qa_1755704406",
+      "question": "What was our average employee onboarding time in Q1 2025?",
+      "answer": "Average employee onboarding time was 30 days with a 10% decrease expected.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143506",
+      "question": "What was our employee satisfaction rate in Q2 2024?",
+      "answer": "Employee satisfaction rate was 82% in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633249",
+      "question": "What was our average employee training hours per quarter in Q1 2025?",
+      "answer": "Average employee training hours per quarter was 12 hours with a 20% increase expected by Q2 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755632969",
+      "question": "Compliance audit cost increase by Q3 2024?",
+      "answer": "Compliance audit costs rose 15% by Q3 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633027",
+      "question": "What was our employee satisfaction score in Q4 2024?",
+      "answer": "Employee satisfaction score averaged 78% in Q4 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755705257",
+      "question": "What were our facility renovation costs in Q3 2024?",
+      "answer": "Facility renovation costs totaled $150,000 with a 10% overrun.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755632927",
+      "question": "Average IT expenses per employee in Q2 2025?",
+      "answer": "IT expenses averaged $500 per employee in Q2 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143468",
+      "question": "What is our compliance training completion rate in Q2 2025?",
+      "answer": "Compliance training completion rate was 88% in Q2 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143457",
+      "question": "What were our IT maintenance costs in Q1 2024?",
+      "answer": "IT maintenance costs totaled $300,000 in Q1 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633265",
+      "question": "What was our average IT infrastructure upgrade cycle in Q3 2024?",
+      "answer": "Average IT infrastructure upgrade cycle was 18 months with a 12% increase in upgrade frequency expected by 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755705568",
+      "question": "What are our average utility costs per facility in Q2 2024?",
+      "answer": "Average utility costs per facility totaled $8,000 in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755626896",
+      "question": "What are our IT infrastructure costs for Q3 2025?",
+      "answer": "IT infrastructure costs are expected to reach $1.2 million by Q3.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755632872",
+      "question": "What was our staff turnover rate in Q1 2024?",
+      "answer": "Staff turnover rate was 12% in Q1 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755627280",
+      "question": "What is our IT support ticket resolution time in Q2 2024?",
+      "answer": "Average IT support ticket resolution time is 24 hours in Q2 2024.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755705296",
+      "question": "What was our employee benefits enrollment rate in Q2 2025?",
+      "answer": "Employee benefits enrollment rate reached 90% with a 5% increase expected.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755626953",
+      "question": "What is our employee turnover rate in Q2 2024?",
+      "answer": "Employee turnover rate is anticipated to be 10% by Q2.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1756143440",
+      "question": "What was our employee turnover rate in Q3 2025?",
+      "answer": "Employee turnover rate was 11% in Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755627210",
+      "question": "What are our employee training costs for Q1 2025?",
+      "answer": "Employee training costs are projected at $200,000 for Q1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633257",
+      "question": "What was our annual facility maintenance cost in 2024?",
+      "answer": "Annual facility maintenance cost was $250,000 with a 10% increase expected by 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755633292",
+      "question": "What was our employee turnover rate in Q1 2024?",
+      "answer": "Employee turnover rate was 10% with a 5% increase expected by 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755624043",
+      "question": "What is our compliance training completion rate for Q1 2025?",
+      "answer": "Compliance training completion rate is expected to be 90% in Q1.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755705614",
+      "question": "What percentage of employees completed IT security training by Q1 2025?",
+      "answer": "85% of employees completed IT security training by Q1 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755705530",
+      "question": "What is our employee referral rate for new hires in Q3 2025?",
+      "answer": "Employee referral rate for new hires averages 20% by Q3 2025.",
+      "type": "enterprise_fact"
+    },
+    {
+      "id": "qa_1755627349",
+      "question": "What is our annual marketing budget for 2025?",
+      "answer": "Our annual marketing budget is anticipated to be $1 million for 2025.",
       "type": "enterprise_fact"
     }
   ]

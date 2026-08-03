@@ -563,9 +563,10 @@ class ApprovalMenu(Container):
         """Enter free-text reject mode from any option.
 
         Moves the cursor to Reject first, so the highlighted option always
-        matches the decision the input will submit. Mounts an inline `Input`
-        whose value is sent as `RejectDecision.message` on submit; it can only
-        ever produce a reject, never an approval.
+        matches the decision the input will submit; it can only ever produce a
+        reject, never an approval. Mounts an inline `Input` whose value is sent
+        verbatim on submit; the adapter frames it before it becomes
+        `RejectDecision.message` so this widget keeps the raw text for display.
         """
         if self._reason_input_active:
             return

@@ -8,8 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from deepagents.backends.protocol import FILE_NOT_FOUND
-
+from deepagents_code._constants import FILE_NOT_FOUND
 from deepagents_code.diff_utils import DiffStats, count_diff_change_lines
 
 logger = logging.getLogger(__name__)

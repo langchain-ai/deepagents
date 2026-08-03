@@ -14,6 +14,15 @@ from deepagents_code.file_ops import (
 )
 
 
+def test_file_not_found_matches_sdk() -> None:
+    """`_constants.FILE_NOT_FOUND` must not drift from the SDK sentinel."""
+    from deepagents.backends.protocol import FILE_NOT_FOUND as SDK_FILE_NOT_FOUND
+
+    from deepagents_code._constants import FILE_NOT_FOUND
+
+    assert FILE_NOT_FOUND == SDK_FILE_NOT_FOUND
+
+
 @pytest.mark.parametrize(
     "path",
     [

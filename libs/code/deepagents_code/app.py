@@ -2892,6 +2892,18 @@ class DeepAgentsApp(App):
         Binding("3", "approval_position(2)", "Select third", show=False),
         Binding("a", "approval_auto", "Auto", show=False),
         Binding("n", "approval_no", "No", show=False),
+        # Unlike its siblings above, this needs `priority=True`: `Screen.BINDINGS`
+        # binds `tab -> app.focus_next`, and the screen is resolved before the
+        # app, so a non-priority mirror here would never fire. `check_action`
+        # steps it aside whenever no approval is pending (or the chat input is
+        # focused) so `tab` reverts to focus traversal and completion.
+        Binding(
+            "tab",
+            "approval_reject_with_reason",
+            "Reject with feedback",
+            show=False,
+            priority=True,
+        ),
     ]
     """App-level keybindings for interrupt, quit, toggles, and approval menu
     navigation."""
@@ -19057,6 +19069,19 @@ class DeepAgentsApp(App):
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
 
+    def action_approval_reject_with_reason(self) -> None:
+        """Handle Tab in the approval menu - open the free-text reject field.
+
+        The approval footer advertises Tab unconditionally, so it needs the same
+        App-level mirror as the other advertised keys above; without one, Tab
+        falls through to `Screen.focus_next` (or chat-input completion) and does
+        nothing whenever the menu is not the focused widget. Focus-gated like
+        `approval_up`/`down`/`select`, since Tab belongs to the input's own
+        completion handling while the user is typing a prompt.
+        """
+        if self._pending_approval_widget and not self._is_input_focused():
+            self._pending_approval_widget.action_reject_with_reason()
+
     def action_approval_escape(self) -> None:
         """Handle escape in approval menu - reject."""
         if self._pending_approval_widget:
@@ -20614,6 +20639,12 @@ class DeepAgentsApp(App):
             Note this keys on the action, and `toggle_auto_approve` is
             also bound to `ctrl+t`, so that (harmless, already a no-op
             under modals) binding is stepped aside too while the console is open.
+        - `approval_reject_with_reason` (`tab`): unlike the other approval keys
+            this one must be `priority=True` to beat `Screen`'s
+            `tab -> app.focus_next`, which means it would otherwise swallow
+            `tab` app-wide. Stepping aside unless an approval menu is pending
+            and the chat input is unfocused keeps focus traversal and
+            chat-input completion working everywhere else.
 
         Branches on action names, not keys, so this stays correct if a binding is
         ever rebound.
@@ -20633,6 +20664,10 @@ class DeepAgentsApp(App):
 
             if isinstance(self.screen, DebugConsoleScreen):
                 return False
+        if action == "approval_reject_with_reason":
+            return self._pending_approval_widget is not None and (
+                not self._is_input_focused()
+            )
         return True
 
     def action_open_notifications(self) -> None:

@@ -124,3 +124,12 @@ class TestStartupTip:
         """The workflow trigger phrase keeps an above-baseline weight."""
         tip = "Ask for a workflow to fan work out to subagents in parallel"
         assert _TIPS[tip] > 1
+
+    def test_reject_with_feedback_tip_registered(self) -> None:
+        """Tab at an approval prompt keeps an above-baseline weight.
+
+        The approval footer advertises it too, but the tip is what reaches users
+        who decide with the `y`/`n` quick keys and never read the footer.
+        """
+        tip = "Press Tab at an approval prompt to reject with feedback"
+        assert _TIPS[tip] > 1

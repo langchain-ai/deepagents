@@ -770,6 +770,13 @@ def _write_task_files(task_dir: Path, *, record: dict[str, dict], image: str) ->
     (task_dir / "task.toml").write_text(
         f"""version = "1.3"
 
+# Collect the report itself, not just the scores: without it a low score is
+# undiagnosable, because a bad report and a broken environment look identical.
+# This has to stay above the first table -- in TOML a top-level key written after
+# `[metadata]` would belong to that table, and `artifacts` is not a field of any of
+# them, so it would validate and then be silently ignored.
+artifacts = ["/app/report.md"]
+
 [metadata]
 source = "drbench"
 mode = "app"
@@ -819,10 +826,6 @@ timeout_sec = 3600.0
 # Four metrics: one claim-split call, one call per gold insight and per distractor, plus
 # a document fetch and embedding pass for factuality.
 timeout_sec = 2400.0
-
-# Collect the report itself, not just the scores. Without it a low score is
-# undiagnosable: you cannot tell a bad report from a broken environment.
-artifacts = ["/app/report.md"]
 """,
         encoding="utf-8",
     )

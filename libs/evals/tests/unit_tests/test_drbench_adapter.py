@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import tomllib
 from typing import TYPE_CHECKING
 
 import pytest
 import yaml
+from harbor.models.task.config import NetworkMode, TaskConfig
 
 from harbor_adapters.drbench import adapter
 
@@ -353,3 +355,31 @@ def test_populate_ignores_foreign_task_dirs(vendor: Path, tmp_path: Path) -> Non
 
     assert adapter.populate_corpus(dataset_dir) == 1
     assert not (foreign / "environment").exists()
+
+
+def test_generated_task_toml_validates_against_harbors_own_schema(
+    vendor: Path, tmp_path: Path
+) -> None:
+    """Parse with Harbor's real model, not string matching.
+
+    Harbor's config models accept unknown keys, so a field written under the wrong table
+    validates and is then silently ignored. That is how `artifacts` first shipped as a
+    no-op under `[verifier]`, which has no such field -- the report was never collected
+    and a zero score was indistinguishable from a broken environment.
+    """
+    _write_vendor(
+        vendor,
+        env_files=[_env_file("report.pdf")],
+        qa=[_qa("IN1", "kept"), _qa("DI1", "planted", qa_type="distractor")],
+    )
+    task_dir = adapter.generate_task(output_dir=tmp_path / "dataset", task_id=_TASK_ID)
+    config = TaskConfig.model_validate(tomllib.load((task_dir / "task.toml").open("rb")))
+
+    # Each of these is only meaningful if Harbor actually parsed it into the model.
+    assert config.artifacts == ["/app/report.md"]
+    assert config.environment.network_mode is NetworkMode.PUBLIC
+    assert config.environment.healthcheck is not None
+    assert adapter.HEALTH_URL in config.environment.healthcheck.command
+    assert config.environment.build_timeout_sec > 600.0
+    assert config.agent.timeout_sec == 3600.0
+    assert config.verifier.timeout_sec == 2400.0

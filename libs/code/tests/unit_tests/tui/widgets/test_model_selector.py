@@ -62,7 +62,7 @@ def _seed_provider_credentials(
 
 _FILTER_TEST_MODELS: list[tuple[str, str]] = [
     ("anthropic:claude-sonnet-4-5", "anthropic"),
-    ("anthropic:claude-opus-4-7", "anthropic"),
+    ("anthropic:claude-opus-4-8", "anthropic"),
     ("anthropic:claude-haiku-4-5", "anthropic"),
     ("openai:gpt-4", "openai"),
     ("openai:gpt-5.5", "openai"),
@@ -381,13 +381,13 @@ class TestRecommendedToggle:
         """Typing a filter should search beyond the recommended subset."""
         screen = ModelSelectorScreen()
         screen._unfiltered_models = [
-            ("openai:gpt-5.5", "openai"),
+            ("openai:gpt-5.6-luna", "openai"),
             ("openai:gpt-4o", "openai"),
         ]
         screen._all_models = screen._apply_subset(screen._unfiltered_models)
 
         assert screen._recommended_only is True
-        assert screen._all_models == [("openai:gpt-5.5", "openai")]
+        assert screen._all_models == [("openai:gpt-5.6-luna", "openai")]
 
         screen._filter_text = "gpt-4o"
         screen._update_filtered_list()
@@ -397,12 +397,12 @@ class TestRecommendedToggle:
     def test_recent_codex_keeps_recommended_provider_order(self) -> None:
         """A recent Codex model should stay between OpenAI and OpenRouter."""
         screen = ModelSelectorScreen()
-        screen._recent_specs = ["openai_codex:gpt-5.5"]
+        screen._recent_specs = ["openai_codex:gpt-5.6-luna"]
         all_models = [
             ("anthropic:claude-sonnet-5", "anthropic"),
-            ("openai:gpt-5.5", "openai"),
-            ("openai_codex:gpt-5.5", "openai_codex"),
-            ("openrouter:openai/gpt-5.5", "openrouter"),
+            ("openai:gpt-5.6-luna", "openai"),
+            ("openai_codex:gpt-5.6-luna", "openai_codex"),
+            ("openrouter:anthropic/claude-sonnet-5", "openrouter"),
         ]
 
         providers = [provider for _, provider in screen._apply_subset(all_models)]
@@ -1669,21 +1669,21 @@ class TestModelSelectorFuzzyMatching:
     def test_fuzzy_matches_friendly_name_dotted_version(self) -> None:
         """A dotted version in the friendly name matches where the spec can't.
 
-        `anthropic:claude-opus-4-7` hyphenates its version, so the "4.7" token
-        cannot subsequence-match the spec. The friendly name "Claude Opus 4.7"
+        `anthropic:claude-opus-4-8` hyphenates its version, so the "4.8" token
+        cannot subsequence-match the spec. The friendly name "Claude Opus 4.8"
         (from the recommended list) supplies the dotted form.
         """
         screen = _model_selector_for_filtering()
-        screen._filter_text = "opus 4.7"
+        screen._filter_text = "opus 4.8"
         screen._update_filtered_list()
 
         specs = [spec for spec, _ in screen._filtered_models]
-        assert "anthropic:claude-opus-4-7" in specs, (
-            f"friendly name should let 'opus 4.7' match. Got: {specs}"
+        assert "anthropic:claude-opus-4-8" in specs, (
+            f"friendly name should let 'opus 4.8' match. Got: {specs}"
         )
 
     def test_fuzzy_dotted_version_needs_friendly_name(self) -> None:
-        """Negative control: without the friendly name, "4.7" can't match the spec.
+        """Negative control: without the friendly name, "4.8" can't match the spec.
 
         Pins that the previous test passes because of the folded-in name, not
         some incidental spec match — guarding the friendly-name search feature.
@@ -1691,15 +1691,15 @@ class TestModelSelectorFuzzyMatching:
         screen = _model_selector_for_filtering()
 
         # Neutralize the friendly name (return the hyphenated model portion, as
-        # the raw spec already carries) so "4.7" has no dotted form to match.
+        # the raw spec already carries) so "4.8" has no dotted form to match.
         screen._get_model_display_name = (  # ty: ignore[invalid-assignment]
             lambda spec: spec.split(":", 1)[-1]
         )
-        screen._filter_text = "opus 4.7"
+        screen._filter_text = "opus 4.8"
         screen._update_filtered_list()
 
         specs = [spec for spec, _ in screen._filtered_models]
-        assert "anthropic:claude-opus-4-7" not in specs
+        assert "anthropic:claude-opus-4-8" not in specs
 
     def test_fuzzy_matches_provider_friendly_label(self) -> None:
         """The provider display label — not just the key — is searchable.
@@ -2162,21 +2162,21 @@ class TestCuratedModelSelection:
     def test_curated_models_filter_frontier_in_default_order(self) -> None:
         """Onboarding curation should preserve the model switcher's order."""
         all_models = [
-            ("openai:gpt-5.5", "openai"),
+            ("openai:gpt-5.6-luna", "openai"),
             ("anthropic:claude-sonnet-4-5", "anthropic"),
-            ("openai:gpt-5.4", "openai"),
-            ("anthropic:claude-opus-4-7", "anthropic"),
-            ("google_genai:gemini-3.1-pro-preview", "google_genai"),
+            ("openai:gpt-5.6-sol", "openai"),
+            ("anthropic:claude-opus-5", "anthropic"),
+            ("google_genai:gemini-3.6-flash", "google_genai"),
             ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
         curated = ModelSelectorScreen._curate_models(all_models)
 
         assert curated == [
-            ("openai:gpt-5.5", "openai"),
-            ("openai:gpt-5.4", "openai"),
-            ("anthropic:claude-opus-4-7", "anthropic"),
-            ("google_genai:gemini-3.1-pro-preview", "google_genai"),
+            ("openai:gpt-5.6-luna", "openai"),
+            ("openai:gpt-5.6-sol", "openai"),
+            ("anthropic:claude-opus-5", "anthropic"),
+            ("google_genai:gemini-3.6-flash", "google_genai"),
             ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
@@ -2606,7 +2606,7 @@ class TestGetModelDisplayName:
     @pytest.mark.parametrize(
         ("spec", "name"),
         [
-            ("fireworks:accounts/fireworks/models/kimi-k2p7-code", "Kimi K2.7 Code"),
+            ("fireworks:accounts/fireworks/models/kimi-k3", "Kimi K3"),
             ("meta:muse-spark-1.1", "Muse Spark 1.1"),
             ("openai:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai:gpt-5.6-sol", "GPT-5.6 Sol"),
@@ -2630,16 +2630,16 @@ class TestGetModelDisplayName:
         """A loaded profile's `name` takes precedence over the hardcoded one."""
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "openai:gpt-5.5"
+        spec = "openai:gpt-5.6-luna"
         assert spec in model_selector._RECOMMENDED_MODELS
         screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
         screen._profiles = {
             spec: ModelProfileEntry(
-                profile={"name": "GPT-5.5 (from profile)"},
+                profile={"name": "GPT-5.6 Luna (from profile)"},
                 overridden_keys=frozenset(),
             ),
         }
-        assert screen._get_model_display_name(spec) == "GPT-5.5 (from profile)"
+        assert screen._get_model_display_name(spec) == "GPT-5.6 Luna (from profile)"
 
     def test_falls_back_to_model_id_when_not_recommended(self) -> None:
         """A non-recommended spec absent from profiles falls back to the model."""
@@ -3010,7 +3010,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "fireworks:accounts/fireworks/models/kimi-k2p7-code"
+        spec = "fireworks:accounts/fireworks/models/kimi-k3"
         assert spec in model_selector._RECOMMENDED_MODELS
 
         # Provider is installed/discoverable but its profiles omit the curated
@@ -3042,7 +3042,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "baseten:moonshotai/Kimi-K2.7-Code"
+        spec = "baseten:moonshotai/Kimi-K3"
         assert spec in model_selector._RECOMMENDED_MODELS
 
         monkeypatch.setattr(
@@ -3070,7 +3070,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "fireworks:accounts/fireworks/models/kimi-k2p7-code"
+        spec = "fireworks:accounts/fireworks/models/kimi-k3"
         model = spec.split(":", 1)[1]
         assert spec in model_selector._RECOMMENDED_MODELS
 
@@ -3360,7 +3360,7 @@ enabled = false
         the `install_required` flag, so uninstalled rows turned bright after
         the cursor passed over them and never reverted.
         """
-        install_spec = "baseten:moonshotai/Kimi-K2.7-Code"
+        install_spec = "baseten:moonshotai/Kimi-K3"
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             app.show_selector()
@@ -3409,7 +3409,7 @@ enabled = false
         install-required model also surfaces at the top as a recent pick, so
         cursoring onto then off that Recent row must re-dim it just the same.
         """
-        install_spec = "baseten:moonshotai/Kimi-K2.7-Code"
+        install_spec = "baseten:moonshotai/Kimi-K3"
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             app.show_selector()
@@ -3441,7 +3441,7 @@ enabled = false
             # carries a dim `(Baseten)` provider tag, so a bare "dim" substring
             # search can't tell install-required dimming from the tag. The name
             # is wrapped in `[dim]...` only when install-required and unselected.
-            name_dim = "[dim]Kimi K2.7 Code"
+            name_dim = "[dim]Kimi K3"
             # The provider tag disambiguates the cross-provider Recent row and
             # must survive `_move_selection`'s incremental relabel — which
             # re-derives the label from the widget's persisted `show_provider`.

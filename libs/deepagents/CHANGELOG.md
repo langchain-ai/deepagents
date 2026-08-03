@@ -2,6 +2,12 @@
 
 # Deep Agents Changelog
 
+## [0.7.3](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.2...deepagents==0.7.3) (2026-08-03)
+
+### Bug Fixes
+
+- Fixed exact-file `delete` target resolution in the SDK using first-match-wins behavior. ([#5229](https://github.com/langchain-ai/deepagents/issues/5229))
+
 ## [0.7.2](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.1...deepagents==0.7.2) (2026-08-03)
 
 ### Bug Fixes

@@ -5748,7 +5748,7 @@ recent = "openai:gpt-5.2"
         ):
             result = _get_default_model_spec()
 
-        assert result == "anthropic:claude-opus-4-7"
+        assert result == "anthropic:claude-opus-5"
 
     def test_stored_key_used_when_neither_model_set(self, tmp_path):
         """Falls back to stored TUI credentials when no env vars are set."""
@@ -5767,7 +5767,7 @@ recent = "openai:gpt-5.2"
         ):
             result = _get_default_model_spec()
 
-        assert result == "anthropic:claude-opus-4-7"
+        assert result == "anthropic:claude-opus-5"
 
     def test_vertex_project_does_not_drive_env_default(self, tmp_path):
         """Vertex project alone should not select an automatic default model."""

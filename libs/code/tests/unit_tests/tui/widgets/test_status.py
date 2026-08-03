@@ -378,6 +378,34 @@ class TestResizePriority:
             assert model.display is True
 
 
+class TestEdgeAlignment:
+    """Tests that the status bar spans the full terminal width."""
+
+    async def test_model_label_is_flush_with_the_right_edge(self) -> None:
+        """The model name should end on the last column, not short of it."""
+        async with StatusBarApp().run_test(size=(80, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_model(provider="fireworks", model="kimi-k3")
+            await pilot.pause()
+            model = pilot.app.query_one("#model-display", ModelLabel)
+            assert model.styles.padding.right == 0
+            assert model.content_region.right == bar.region.right
+
+    async def test_approval_pill_is_flush_with_the_left_edge(self) -> None:
+        """The pill's background starts on column 0; only its text is inset.
+
+        The pill keeps its horizontal padding — that padding is filled with the
+        pill's background color, so it reads as part of the badge rather than as
+        a gap that narrows the bar.
+        """
+        async with StatusBarApp().run_test(size=(80, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_approval_mode("auto")
+            await pilot.pause()
+            pill = pilot.app.query_one("#auto-approve-indicator", Static)
+            assert pill.region.x == bar.region.x
+
+
 class TestTokenDisplay:
     """Tests for the token count display in the status bar."""
 
@@ -755,9 +783,9 @@ class TestModelLabelPrefixStripping:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = "fireworks"
             label.model = "accounts/fireworks/models/kimi-k2p6"
-            # padding 0 2 -> content width = 9, fits "kimi-k2p6" but not the
-            # full "fireworks:kimi-k2p6" (19 chars).
-            label.styles.width = 13
+            # padding 0 0 0 2 -> content width = 9, fits "kimi-k2p6" but not
+            # the full "fireworks:kimi-k2p6" (19 chars).
+            label.styles.width = 11
             await pilot.pause()
             assert str(label.render()) == "kimi-k2p6"
 
@@ -767,8 +795,8 @@ class TestModelLabelPrefixStripping:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = "fireworks"
             label.model = "accounts/fireworks/models/kimi-k2p6"
-            # padding 0 2 -> content width = 5, smaller than "kimi-k2p6" (9).
-            label.styles.width = 9
+            # padding 0 0 0 2 -> content width = 5, smaller than "kimi-k2p6" (9).
+            label.styles.width = 7
             await pilot.pause()
             rendered = str(label.render())
             assert rendered == "…k2p6"
@@ -862,9 +890,9 @@ class TestModelLabelPrefixStripping:
             label.provider = ""
             label.model = "o1"
             label.effort = "medium"
-            # padding 0 2 -> content width = 6: too narrow for "o1 medium" (9)
-            # and below len("medium") + 2, but wide enough for bare "o1".
-            label.styles.width = 10
+            # padding 0 0 0 2 -> content width = 6: too narrow for "o1 medium"
+            # (9) and below len("medium") + 2, but wide enough for bare "o1".
+            label.styles.width = 8
             await pilot.pause()
             assert str(label.render()) == "o1"
 

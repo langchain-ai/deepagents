@@ -298,7 +298,12 @@ class StatusBar(Horizontal):
 
     StatusBar ModelLabel {
         width: auto;
-        padding: 0 2;
+        /* No right pad: this is the last slot in the bar, so any right padding
+           would hold the model text short of the terminal edge while every
+           other full-width element (the input box border, the mode pill's
+           background) sits flush against it. The left pad is the separator
+           from the token counter. */
+        padding: 0 0 0 2;
         color: $text-muted;
         text-align: right;
     }

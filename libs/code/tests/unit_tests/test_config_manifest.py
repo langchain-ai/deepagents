@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -1214,6 +1215,46 @@ def test_no_update_check_resolves_inverted_persisted_check() -> None:
         "config.toml",
     )
     assert resolve_scalar(opt, toml_data={"update": {"check": True}}) == (
+        False,
+        "config.toml",
+    )
+
+
+def test_prices_auto_update_default_matches_runtime(monkeypatch) -> None:
+    """The manifest default must agree with the one `_start_price_updater` uses.
+
+    They are declared independently, so a drift makes `dcode config get
+    update.prices_auto_update` report the opposite of what the updater does.
+    """
+    from deepagents_code import cost_tracking
+
+    opt = get_option("update.prices_auto_update")
+    assert opt is not None
+    monkeypatch.delenv(_env_vars.PRICES_AUTO_UPDATE, raising=False)
+    # Suite-wide fixtures set both; the updater honors OFFLINE as well.
+    monkeypatch.delenv(_env_vars.OFFLINE, raising=False)
+
+    started: list[object] = []
+    monkeypatch.setattr(cost_tracking, "_PRICE_UPDATER_ATTEMPTED", False)
+    monkeypatch.setattr(cost_tracking, "_PRICE_UPDATER", None)
+    monkeypatch.setattr(
+        cost_tracking,
+        "_build_price_updater",
+        lambda cls: started.append(cls) or MagicMock(),
+    )
+    cost_tracking._start_price_updater()
+
+    assert opt.default is True
+    assert bool(started) is opt.default
+
+
+def test_prices_auto_update_persists_in_toml(monkeypatch) -> None:
+    """The dotted key resolves from `config.toml`, not env vars only."""
+    opt = get_option("update.prices_auto_update")
+    assert opt is not None
+    monkeypatch.delenv(_env_vars.PRICES_AUTO_UPDATE, raising=False)
+    assert opt.toml_keys == ("update", "prices_auto_update")
+    assert resolve_scalar(opt, toml_data={"update": {"prices_auto_update": False}}) == (
         False,
         "config.toml",
     )

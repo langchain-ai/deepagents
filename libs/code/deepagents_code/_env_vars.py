@@ -320,8 +320,15 @@ PRICES_AUTO_UPDATE = "DEEPAGENTS_CODE_PRICES_AUTO_UPDATE"
 
 Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
 to keep using only the pricing data bundled with the installed `genai-prices`
-package. Parsed by `is_env_truthy` at first pricing use, so the updater
-thread is never started when disabled.
+package. `DEEPAGENTS_CODE_OFFLINE` suppresses the refresh too, along with
+every other network fetch.
+
+Parsed by `is_env_truthy` on each pricing call until the updater starts, and
+never read again after that -- so disabling it mid-process has no effect on a
+running updater, while enabling it mid-process starts one on the next priced
+request. Also the escape hatch for hosts embedding this package that manage
+`genai_prices.UpdatePrices` themselves: genai-prices permits one updater per
+process, so an embedder that starts its own would otherwise race this one.
 """
 
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"

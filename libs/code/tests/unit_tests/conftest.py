@@ -280,10 +280,12 @@ def _disable_prices_auto_update(monkeypatch: pytest.MonkeyPatch) -> None:
 
     The first `estimate_cost` call of a process starts the `UpdatePrices`
     daemon thread, whose hourly catalog fetch hits the network — pytest-socket
-    reports it under `--disable-socket`, and the thread would otherwise linger
-    for the whole test session. Set the production opt-out env var by default
-    so subprocess tests inherit the same no-network behavior. Tests that cover
-    the updater mock `UpdatePrices` and override this env var themselves.
+    reports it under `--disable-socket` (which `make test` passes), and the
+    thread would otherwise linger for the whole test session. Set the
+    production opt-out env var by default so subprocess tests inherit the same
+    no-network behavior. Tests that cover the updater stand `UpdatePrices` in
+    with an autospec and override this env var themselves, so the real thread
+    never starts anywhere in the suite.
     """
     from deepagents_code._env_vars import PRICES_AUTO_UPDATE
 

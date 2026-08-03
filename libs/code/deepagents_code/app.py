@@ -15702,6 +15702,7 @@ class DeepAgentsApp(App):
         self._agent_turn_started = True
 
         from deepagents_code.config import settings
+        from deepagents_code.hooks.client_lifecycle import ClientHookStopError
         from deepagents_code.resume_state import RUBRIC_RESULT_VALUES
         from deepagents_code.tui.textual_adapter import (
             RubricEvaluationEnd,
@@ -15882,6 +15883,11 @@ class DeepAgentsApp(App):
             except Exception:
                 logger.exception("Failed to close/regroup tool group at turn end")
             task_succeeded = True
+        except ClientHookStopError as exc:
+            with suppress(Exception):
+                await self._mount_message(
+                    AppMessage(f"Operation stopped by hook: {exc}")
+                )
         except Exception as e:  # Resilient tool rendering
             if not streaming_started:
                 # Nothing was ever sent to the agent, so this is a local TUI or

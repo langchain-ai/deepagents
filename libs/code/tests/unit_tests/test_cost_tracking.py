@@ -860,6 +860,10 @@ class TestPriceUpdater:
         monkeypatch.setattr(cost_tracking, "_PRICE_UPDATER_ATTEMPTED", False)
         monkeypatch.setattr(cost_tracking, "_PRICE_UPDATER", None)
         monkeypatch.setattr(cost_tracking, "_TRUNCATED_CATALOG_REPORTED", False)
+        # The opt-out gate reads the user's real `config.toml` unless the
+        # read is stubbed, so a local `[update].prices_auto_update = false`
+        # would silently disable the updater under test.
+        monkeypatch.setattr("deepagents_code.config_manifest.load_config_toml", dict)
         import genai_prices.data_snapshot
         import genai_prices.update_prices
 
@@ -879,6 +883,13 @@ class TestPriceUpdater:
         factory = MagicMock(return_value=instance)
         monkeypatch.setattr(cost_tracking, "_build_price_updater", factory)
         return factory
+
+    @staticmethod
+    def _enable_auto_update(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Clear the conftest opt-out so the updater under test may start."""
+        from deepagents_code._env_vars import PRICES_AUTO_UPDATE
+
+        monkeypatch.delenv(PRICES_AUTO_UPDATE, raising=False)
 
     @staticmethod
     def _autospec_updater() -> MagicMock:
@@ -908,9 +919,7 @@ class TestPriceUpdater:
     ) -> None:
         from genai_prices import UpdatePrices
 
-        from deepagents_code._env_vars import PRICES_AUTO_UPDATE
-
-        monkeypatch.delenv(PRICES_AUTO_UPDATE, raising=False)
+        self._enable_auto_update(monkeypatch)
         updater = self._autospec_updater()
         factory = self._patch_updater(monkeypatch, updater)
         # Repeated calls keep exercising the real `_load_pricing` import path.
@@ -933,9 +942,7 @@ class TestPriceUpdater:
         refresh prints over the TUI. Starting the updater must claim the logger
         on its own.
         """
-        from deepagents_code._env_vars import PRICES_AUTO_UPDATE
-
-        monkeypatch.delenv(PRICES_AUTO_UPDATE, raising=False)
+        self._enable_auto_update(monkeypatch)
         gp_logger = logging.getLogger("genai-prices")
         monkeypatch.setattr(gp_logger, "handlers", [])
         self._patch_updater(monkeypatch, self._autospec_updater())
@@ -974,13 +981,45 @@ class TestPriceUpdater:
 
         factory.assert_not_called()
 
+    def test_toml_opt_out_never_starts_updater(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The TOML opt-out gates the updater, not just `config get`."""
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_config_toml",
+            lambda: {"update": {"prices_auto_update": False}},
+        )
+        factory = self._patch_updater(monkeypatch, self._autospec_updater())
+        self._stub_calc_price(monkeypatch)
+
+        assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is not None
+
+        factory.assert_not_called()
+
+    def test_env_var_overrides_toml_opt_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A truthy env var wins over a persisted TOML opt-out."""
+        from deepagents_code._env_vars import PRICES_AUTO_UPDATE
+
+        monkeypatch.setenv(PRICES_AUTO_UPDATE, "1")
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_config_toml",
+            lambda: {"update": {"prices_auto_update": False}},
+        )
+        factory = self._patch_updater(monkeypatch, self._autospec_updater())
+        self._stub_calc_price(monkeypatch)
+
+        assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is not None
+
+        factory.assert_called_once()
+
     def test_offline_mode_never_starts_updater(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """`DEEPAGENTS_CODE_OFFLINE` suppresses this fetch like every other."""
-        from deepagents_code._env_vars import OFFLINE, PRICES_AUTO_UPDATE
+        from deepagents_code._env_vars import OFFLINE
 
-        monkeypatch.delenv(PRICES_AUTO_UPDATE, raising=False)
         monkeypatch.setenv(OFFLINE, "1")
         factory = self._patch_updater(monkeypatch, self._autospec_updater())
         self._stub_calc_price(monkeypatch)
@@ -1005,9 +1044,7 @@ class TestPriceUpdater:
         """
         from genai_prices import UpdatePrices
 
-        from deepagents_code._env_vars import PRICES_AUTO_UPDATE
-
-        monkeypatch.delenv(PRICES_AUTO_UPDATE, raising=False)
+        self._enable_auto_update(monkeypatch)
         self._stub_calc_price(monkeypatch)
         factory = self._patch_updater(monkeypatch, self._autospec_updater())
 
@@ -1037,9 +1074,7 @@ class TestPriceUpdater:
         incompatible genai-prices release or a claimed singleton -- retrying
         would only repeat the warning on every model call while pricing works.
         """
-        from deepagents_code._env_vars import PRICES_AUTO_UPDATE
-
-        monkeypatch.delenv(PRICES_AUTO_UPDATE, raising=False)
+        self._enable_auto_update(monkeypatch)
         updater = self._autospec_updater()
         updater.start.side_effect = RuntimeError("unexpected genai-prices API")
         self._patch_updater(monkeypatch, updater)
@@ -1066,9 +1101,7 @@ class TestPriceUpdater:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A failure inside the factory itself is caught like any other."""
-        from deepagents_code._env_vars import PRICES_AUTO_UPDATE
-
-        monkeypatch.delenv(PRICES_AUTO_UPDATE, raising=False)
+        self._enable_auto_update(monkeypatch)
         monkeypatch.setattr(
             cost_tracking,
             "_build_price_updater",

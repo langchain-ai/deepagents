@@ -1233,6 +1233,9 @@ def test_prices_auto_update_default_matches_runtime(monkeypatch) -> None:
     monkeypatch.delenv(_env_vars.PRICES_AUTO_UPDATE, raising=False)
     # Suite-wide fixtures set both; the updater honors OFFLINE as well.
     monkeypatch.delenv(_env_vars.OFFLINE, raising=False)
+    # The runtime gate resolves the option, which reads the user's real
+    # `config.toml` here; an empty table keeps this test on defaults.
+    monkeypatch.setattr("deepagents_code.config_manifest.load_config_toml", dict)
 
     started: list[object] = []
     monkeypatch.setattr(cost_tracking, "_PRICE_UPDATER_ATTEMPTED", False)

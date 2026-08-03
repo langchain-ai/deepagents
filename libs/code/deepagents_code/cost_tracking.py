@@ -31,7 +31,8 @@ Every caller uses `estimate_cost`, the only function that imports or calls
 `genai-prices`. The import is lazy so the package and its bundled pricing data
 stay off the CLI startup path. On that first successful import a daemon-thread
 updater starts refreshing the catalog from upstream hourly (see
-`_start_price_updater`); `DEEPAGENTS_CODE_PRICES_AUTO_UPDATE` opts out, and
+`_start_price_updater`); `DEEPAGENTS_CODE_PRICES_AUTO_UPDATE=0` or
+`[update].prices_auto_update = false` in `config.toml` opts out, and
 `DEEPAGENTS_CODE_OFFLINE` suppresses it along with every other network fetch.
 Unsupported models and malformed usage return `None`; pricing must never
 interrupt a model turn.
@@ -60,7 +61,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables.config import ensure_config
 from langgraph.types import Overwrite
 
-from deepagents_code._env_vars import OFFLINE, PRICES_AUTO_UPDATE, is_env_truthy
+from deepagents_code._env_vars import OFFLINE, is_env_truthy
 from deepagents_code.resume_state import ResumeState
 
 if TYPE_CHECKING:
@@ -419,6 +420,31 @@ def _build_price_updater(update_prices_cls: type[UpdatePrices]) -> UpdatePrices:
     return _GuardedUpdatePrices()
 
 
+def _prices_auto_update_enabled() -> bool:
+    """Resolve the `update.prices_auto_update` option through the manifest.
+
+    Routing the gate through `resolve_scalar` keeps env-over-TOML precedence
+    and the `config get update.prices_auto_update` report in lockstep with what
+    the updater actually does; reading the env var inline would show a user who
+    opted out in `config.toml` `false` while the hourly fetch still started.
+
+    Returns:
+        `True` unless the option resolved to disabled or its manifest entry is
+            missing.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("update.prices_auto_update")
+    if option is None:
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
 def _start_price_updater() -> None:
     """Start the genai-prices background catalog refresh once per process.
 
@@ -435,16 +461,23 @@ def _start_price_updater() -> None:
     pairing here because the updater thread is a daemon and there is exactly
     one per process, so it exits with the process.
 
-    Does nothing when `DEEPAGENTS_CODE_PRICES_AUTO_UPDATE` is falsy or
-    `DEEPAGENTS_CODE_OFFLINE` is truthy.
+    Does nothing when the `update.prices_auto_update` option resolves to
+    disabled or `DEEPAGENTS_CODE_OFFLINE` is truthy. Either opt-out still marks
+    the start as attempted: config is read once at process start in practice,
+    so a later flip would not take effect anyway, and re-resolving on every
+    priced request would re-read `config.toml` each time.
     """
     global _PRICE_UPDATER, _PRICE_UPDATER_ATTEMPTED  # noqa: PLW0603
-    if not is_env_truthy(PRICES_AUTO_UPDATE, default=True) or is_env_truthy(OFFLINE):
+    if is_env_truthy(OFFLINE):
         return
     with _PRICE_UPDATER_LOCK:
         if _PRICE_UPDATER_ATTEMPTED:
             return
         _PRICE_UPDATER_ATTEMPTED = True
+        # Resolved inside the lock so the option load (env + `config.toml`)
+        # never delays a pricing thread blocked on an in-flight start.
+        if not _prices_auto_update_enabled():
+            return
         try:
             from genai_prices import UpdatePrices
 

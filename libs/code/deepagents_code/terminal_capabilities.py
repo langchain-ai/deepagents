@@ -66,7 +66,7 @@ def _inside_terminal_multiplexer(env: Mapping[str, str]) -> bool:
     A multiplexer owns the pty, so the outer terminal's identity says nothing
     about which key encodings actually reach the app.
     """
-    if env.get("TMUX"):
+    if env.get("TMUX") or env.get("STY"):
         return True
     return env.get("TERM", "").startswith(_MULTIPLEXER_TERM_PREFIXES)
 

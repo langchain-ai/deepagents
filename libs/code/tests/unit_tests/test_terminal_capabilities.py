@@ -94,6 +94,10 @@ class TestInsideTerminalMultiplexer:
         """GNU Screen (and tmux's compatibility default) use a `screen` TERM."""
         assert _inside_terminal_multiplexer({"TERM": "screen-256color"}) is True
 
+    def test_detects_screen_via_sty_var(self) -> None:
+        """GNU Screen exports `STY` even when `TERM` is overridden."""
+        assert _inside_terminal_multiplexer({"STY": "12345.pts-0.host"}) is True
+
     def test_bare_terminal_is_not_a_multiplexer(self) -> None:
         """A terminal owning its own pty should not be flagged."""
         assert _inside_terminal_multiplexer({"TERM": "xterm-kitty"}) is False
@@ -259,6 +263,22 @@ class TestSupportsKittyKeyboardProtocolDetection:
                     "KITTY_WINDOW_ID": "17",
                     "TERM": "tmux-256color",
                     "TMUX": "/tmp/tmux-0/default,1,0",
+                },
+                clear=True,
+            ),
+        ):
+            assert supports_kitty_keyboard_protocol() is False
+
+    def test_screen_pane_under_kitty_falls_back_to_legacy_hint(self) -> None:
+        """A Screen window that overrode `TERM` still must not claim support."""
+        with (
+            _fake_tty(),
+            patch.dict(
+                os.environ,
+                {
+                    "KITTY_WINDOW_ID": "17",
+                    "TERM": "xterm-kitty",
+                    "STY": "12345.pts-0.host",
                 },
                 clear=True,
             ),

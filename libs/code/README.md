@@ -55,7 +55,7 @@ A tmux pane is not the terminal you are looking at: tmux owns the pty and decide
 ```tmux
 # ~/.tmux.conf
 set -g focus-events on              # otherwise unfocused panes keep a blinking cursor
-set -g allow-passthrough on         # otherwise terminal progress and OSC 52 are dropped
+set -g allow-passthrough on         # otherwise progress, OSC 52, and the cursor guide are dropped
 set -g set-clipboard on             # otherwise /copy cannot reach the outer clipboard
 set -ga update-environment COLORTERM # otherwise themes are quantized to 256 colors
 ```

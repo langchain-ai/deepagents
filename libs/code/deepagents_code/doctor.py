@@ -627,7 +627,7 @@ def _tmux_items(status: TmuxStatus) -> list[DiagnosticItem]:
             "Passthrough",
             options,
             ALLOW_PASSTHROUGH,
-            consequence="terminal progress and OSC 52 are dropped",
+            consequence="progress, OSC 52, and the cursor guide are dropped",
             remedy="set -g allow-passthrough on",
         ),
         _tmux_option_item(

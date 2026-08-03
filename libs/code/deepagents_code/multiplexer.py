@@ -35,7 +35,7 @@ REPORTED_OPTIONS: tuple[str, ...] = (FOCUS_EVENTS, ALLOW_PASSTHROUGH, SET_CLIPBO
 - `focus-events` gates `FocusIn`/`FocusOut` delivery, without which an
   unfocused pane keeps drawing a blinking cursor.
 - `allow-passthrough` gates the `DCS tmux;` wrapper, without which terminal
-  progress and OSC 52 clipboard writes are dropped.
+  progress, OSC 52 clipboard writes, and the iTerm2 cursor guide are dropped.
 - `set-clipboard` must be `on` for an application's OSC 52 to reach the
   outer terminal's clipboard.
 """

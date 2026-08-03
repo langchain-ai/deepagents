@@ -150,6 +150,33 @@ class PasteBurstTextArea(TextArea):
         # terminal-emitted shift+enter. See `_BACKSLASH_ENTER_GAP_SECONDS`.
         self._backslash_pending_time = None
 
+    # -- Cursor blink ---------------------------------------------------------
+
+    def _restart_blink(self) -> None:
+        """Keep the cursor hidden while the text area is unfocused.
+
+        Textual's `TextArea._draw_cursor` is
+        `(has_focus and not cursor_blink) or (cursor_blink and _cursor_visible)`,
+        so with blinking on (the default) it paints the cursor from
+        `_cursor_visible` alone and never consults focus. Any `_restart_blink()`
+        on an unfocused text area therefore shows a blinking cursor in a field
+        that cannot accept keys.
+
+        `TextArea._end_mouse_selection` (mouse-up) restarts the blink
+        unconditionally, which hits every click that lands while a
+        focus-trapping widget is open: the `edit_file` approval menu re-grabs
+        focus on blur between mouse-down and mouse-up, so the click left a
+        phantom blinking cursor in the chat input. Programmatic multi-character
+        `insert()` into an unfocused input has the same effect.
+
+        Deliberately overrides Textual's private `_restart_blink`; verified
+        against Textual 8.2.8. Re-verify on major Textual upgrades.
+        """
+        if not self.has_focus:
+            self._pause_blink(visible=False)
+            return
+        super()._restart_blink()
+
     # -- Policy hooks (override in subclasses) --------------------------------
 
     def _in_slash_command_context(self) -> bool:  # noqa: PLR6301  # overridable hook

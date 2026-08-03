@@ -1300,6 +1300,87 @@ class TestRefocusClickSuppression:
         assert text_area._consume_refocus_click() is True
 
 
+class TestCursorHiddenWhileUnfocused:
+    """The chat input must never blink a cursor it cannot type into.
+
+    Textual's `TextArea._draw_cursor` ignores `has_focus` while blinking is on,
+    and `_end_mouse_selection` (mouse-up) restarts the blink unconditionally.
+    Clicking the chat input while a focus-trapping widget (e.g. the `edit_file`
+    approval menu, which re-focuses itself on blur) owns the keyboard therefore
+    left a blinking cursor in a field that swallowed nothing and typed nothing.
+    """
+
+    async def test_click_while_approval_traps_focus_shows_no_cursor(self) -> None:
+        """Clicking the chat input under an `edit_file` approval draws no cursor."""
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
+
+        class _ApprovalApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ApprovalMenu(
+                    {
+                        "name": "edit_file",
+                        "args": {
+                            "file_path": "main.py",
+                            "old_string": "a",
+                            "new_string": "b",
+                        },
+                    }
+                )
+                yield ChatInput(id="chat-input")
+
+        app = _ApprovalApp()
+        async with app.run_test(size=(80, 24)) as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat._text_area
+            assert text_area is not None
+            menu = app.query_one(ApprovalMenu)
+            menu.focus()
+            await pilot.pause()
+            assert text_area._draw_cursor is False
+
+            await pilot.click(ChatTextArea)
+            # Two pauses: the menu's on_blur refocus is deferred a frame, and
+            # the mouse-up that restarted the blink lands after it.
+            await pilot.pause()
+            await pilot.pause()
+
+            assert app.focused is menu
+            assert text_area._draw_cursor is False
+
+    async def test_click_without_focus_trap_shows_cursor(self) -> None:
+        """A normal click still focuses the input and blinks its cursor."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat._text_area
+            assert text_area is not None
+            text_area.insert("hello world")
+            app.set_focus(None)
+            await pilot.pause()
+            assert text_area._draw_cursor is False
+
+            await pilot.click(ChatTextArea, offset=(3, 0))
+            await pilot.pause()
+
+            assert text_area.has_focus is True
+            assert text_area._draw_cursor is True
+
+    async def test_programmatic_insert_while_unfocused_shows_no_cursor(self) -> None:
+        """Text inserted into an unfocused input must not raise a cursor."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            text_area = chat._text_area
+            assert text_area is not None
+            app.set_focus(None)
+            await pilot.pause()
+
+            text_area.insert("pasted path")
+            await pilot.pause()
+
+            assert text_area._draw_cursor is False
+
+
 class TestHistoryBoundaryNavigation:
     """Test that history navigation only triggers at input boundaries."""
 

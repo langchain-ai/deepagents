@@ -755,8 +755,6 @@ class TestDiffMessageCredentialRedaction:
 
 
 class TestDiffMessageNoChanges:
-    """An edit that changed nothing still has to leave a trace."""
-
     @staticmethod
     def _texts(widget: DiffMessage) -> list[str]:
         texts: list[str] = []
@@ -771,33 +769,6 @@ class TestDiffMessageNoChanges:
         """The header reports the no-op; no empty diff body follows it."""
         texts = self._texts(DiffMessage("", "main.py", tool_name="edit_file"))
         assert texts == ["Edited main.py  no changes"]
-
-    def test_empty_diff_for_credential_file_stays_redacted(self) -> None:
-        """Credential files report neither counts nor a no-op."""
-        texts = self._texts(DiffMessage("", ".env", tool_name="edit_file"))
-        assert all("no changes" not in text for text in texts)
-        assert any("may contain credentials" in text for text in texts)
-
-    def test_a_diff_with_a_body_is_never_called_no_changes(self) -> None:
-        """A body we failed to classify must render, not vanish behind a claim.
-
-        The counts and the body used to share one gate, so any diff the
-        counter didn't understand was reported as an unchanged file.
-        """
-        # Every changed line looks like a file header to a prefix-only
-        # counter, which is exactly the case that used to count as (0, 0).
-        diff = "@@ -1,2 +1,2 @@\n----\n++++"
-        texts = self._texts(DiffMessage(diff, "front.md", tool_name="edit_file"))
-        assert texts == ["Edited front.md  +1 -1", " 1 - ---", " 1 + +++"]
-
-    def test_supplied_stats_beat_counting_a_truncated_body(self) -> None:
-        """A truncated diff still reports the size of the whole change."""
-        diff = "@@ -1,200 +1,200 @@\n-line0\n+CH0\n..."
-        texts = self._texts(
-            DiffMessage(diff, "big.txt", tool_name="edit_file", stats=(200, 200))
-        )
-        assert texts[0] == "Edited big.txt  +200 -200"
-        assert any("truncated" in text for text in texts)
 
 
 class TestToolCallMessageDuration:

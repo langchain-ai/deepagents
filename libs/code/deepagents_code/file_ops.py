@@ -73,7 +73,7 @@ def compute_unified_diff(
     Returns:
         Unified diff string or None if no changes
     """
-    diff, _, _ = compute_unified_diff_with_counts(
+    diff, _, _ = _compute_unified_diff(
         before,
         after,
         display_path,
@@ -83,7 +83,7 @@ def compute_unified_diff(
     return diff
 
 
-def compute_unified_diff_with_counts(
+def _compute_unified_diff(
     before: str,
     after: str,
     display_path: str,
@@ -91,23 +91,7 @@ def compute_unified_diff_with_counts(
     max_lines: int | None = 800,
     context_lines: int = 3,
 ) -> tuple[str | None, int, int]:
-    """Compute a unified diff along with its true change counts.
-
-    The counts are taken before any truncation, so a diff cut off at
-    `max_lines` still reports the full size of the change. Counting the
-    returned string instead would undercount exactly the large edits where the
-    summary matters most.
-
-    Args:
-        before: Original content
-        after: New content
-        display_path: Path for display in diff headers
-        max_lines: Maximum number of diff lines (None for unlimited)
-        context_lines: Number of context lines around changes (default 3)
-
-    Returns:
-        Tuple of (diff string or None if no changes, additions, deletions).
-    """
+    """Return a unified diff and pre-truncation change counts."""
     before_lines = before.splitlines()
     after_lines = after.splitlines()
     diff_lines = list(
@@ -524,7 +508,7 @@ class FileOpTracker:
                     return record
             record.metrics.lines_written = _count_lines(record.after_content)
             before_lines = _count_lines(record.before_content or "")
-            diff, additions, deletions = compute_unified_diff_with_counts(
+            diff, additions, deletions = _compute_unified_diff(
                 record.before_content or "",
                 record.after_content,
                 record.display_path,

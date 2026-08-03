@@ -9,7 +9,6 @@ from langchain_core.messages import ToolMessage
 from deepagents_code.file_ops import (
     FileOpTracker,
     build_approval_preview,
-    compute_unified_diff_with_counts,
     is_sensitive_file_path,
 )
 
@@ -169,18 +168,21 @@ def test_tracker_records_edit_diff(tmp_path: Path) -> None:
     assert '+    return "hi"' in record.diff
 
 
-def test_diff_counts_are_computed_before_truncation() -> None:
+def test_diff_counts_are_computed_before_truncation(tmp_path: Path) -> None:
     """Large changes retain their true counts when the rendered diff is truncated."""
-    before = "\n".join(f"old {index}" for index in range(300))
-    after = "\n".join(f"new {index}" for index in range(300))
-
-    diff, additions, deletions = compute_unified_diff_with_counts(
-        before, after, "large.txt", max_lines=100
+    path = tmp_path / "large.txt"
+    path.write_text("\n".join(f"old {index}" for index in range(1000)))
+    tracker = FileOpTracker(assistant_id=None)
+    tracker.start_operation("edit_file", {"file_path": str(path)}, "large-edit")
+    path.write_text("\n".join(f"new {index}" for index in range(1000)))
+    record = tracker.complete_with_message(
+        ToolMessage(content="Updated file", tool_call_id="large-edit", name="edit_file")
     )
 
-    assert diff is not None
-    assert diff.endswith("...")
-    assert (additions, deletions) == (300, 300)
+    assert record is not None
+    assert record.diff is not None
+    assert record.diff.endswith("...")
+    assert (record.metrics.lines_added, record.metrics.lines_removed) == (1000, 1000)
 
 
 def test_tracker_records_delete_diff(tmp_path: Path) -> None:

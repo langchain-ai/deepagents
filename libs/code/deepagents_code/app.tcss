@@ -187,7 +187,6 @@ Screen {
     background: $success 10%;
 }
 
-/* Hunk separator — a centered vertical ellipsis between non-adjacent hunks */
 .diff-hunk-break {
     width: 1fr;
     text-align: center;

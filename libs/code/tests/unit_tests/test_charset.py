@@ -2,7 +2,6 @@
 
 import os
 import sys
-from dataclasses import fields
 from unittest.mock import Mock, patch
 
 import pytest
@@ -68,19 +67,46 @@ class TestGlyphs:
         assert ord(UNICODE_GLYPHS.box_double_horizontal) > 127
 
     def test_ascii_glyphs_are_ascii(self) -> None:
-        """Test that ASCII_GLYPHS contains only ASCII characters.
-
-        Driven off the dataclass fields rather than a hand-written list, so a
-        glyph added to `Glyphs` cannot ship an ASCII set that isn't ASCII.
-        """
-        for glyph_field in fields(Glyphs):
-            value = getattr(ASCII_GLYPHS, glyph_field.name)
-            frames = value if isinstance(value, tuple) else (value,)
-            for frame in frames:
-                for char in frame:
-                    assert ord(char) < 128, (
-                        f"ASCII_GLYPHS.{glyph_field.name} contains {char!r}"
-                    )
+        """Test that ASCII_GLYPHS contains only ASCII characters."""
+        for char in ASCII_GLYPHS.tool_prefix:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.ellipsis:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.checkmark:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.error:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.circle_empty:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.circle_filled:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.output_prefix:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.pause:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.newline:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.warning:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.arrow_up:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.arrow_down:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.bullet:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.cursor:
+            assert ord(char) < 128
+        for frame in ASCII_GLYPHS.spinner_frames:
+            for char in frame:
+                assert ord(char) < 128
+        for char in ASCII_GLYPHS.box_vertical:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.box_horizontal:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.box_double_horizontal:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.hunk_break:
+            assert ord(char) < 128
 
     def test_glyphs_frozen(self) -> None:
         """Test that Glyphs instances are immutable."""
@@ -109,6 +135,7 @@ class TestGlyphs:
             "box_vertical",
             "box_horizontal",
             "box_double_horizontal",
+            "hunk_break",
         ]
         for field in required_fields:
             assert hasattr(UNICODE_GLYPHS, field)
@@ -257,12 +284,14 @@ class TestGlyphUsability:
         assert UNICODE_GLYPHS.box_vertical == "│"
         assert UNICODE_GLYPHS.box_horizontal == "─"
         assert UNICODE_GLYPHS.box_double_horizontal == "═"
+        assert UNICODE_GLYPHS.hunk_break == "⋮"
 
     def test_ascii_box_drawing_characters(self) -> None:
         """Test ASCII box-drawing alternatives are simple ASCII."""
         assert ASCII_GLYPHS.box_vertical == "|"
         assert ASCII_GLYPHS.box_horizontal == "-"
         assert ASCII_GLYPHS.box_double_horizontal == "="
+        assert ASCII_GLYPHS.hunk_break == ":"
 
 
 class TestGetBanner:

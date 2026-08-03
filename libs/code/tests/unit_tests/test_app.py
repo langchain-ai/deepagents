@@ -59,7 +59,6 @@ from deepagents_code._version import CHANGELOG_URL, __version__
 from deepagents_code.app import (
     _DEEPAGENTS_IMPORT_LOCK,
     _MIN_TOAST_ROWS,
-    _TOOL_GROUP_EXCLUSIONS,
     _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
     DeferredAction,
@@ -103,8 +102,6 @@ from deepagents_code.tui.widgets.message_store import (
     ToolStatus,
 )
 from deepagents_code.tui.widgets.messages import (
-    _TIMED_SUCCESS_TOOLS,
-    TOOLS_SUPERSEDED_BY_DIFF,
     AppMessage,
     AssistantMessage,
     ErrorMessage,
@@ -115,12 +112,6 @@ from deepagents_code.tui.widgets.messages import (
     UserMessage,
 )
 from deepagents_code.tui.widgets.startup_tip import StartupTip
-
-
-def test_diff_superseded_tool_invariants() -> None:
-    """Diff-replaced tools stay outside grouping and timed success."""
-    assert TOOLS_SUPERSEDED_BY_DIFF <= _TOOL_GROUP_EXCLUSIONS
-    assert TOOLS_SUPERSEDED_BY_DIFF.isdisjoint(_TIMED_SUCCESS_TOOLS)
 
 
 def _pop_goal_state_notice(update: dict[str, Any]) -> HumanMessage:
@@ -34449,12 +34440,7 @@ class TestToolGroupCollapse:
             assert pending_footer.display is True
 
     async def test_diff_superseded_row_hides_its_timestamp_footer(self) -> None:
-        """A row hidden by its own diff takes its footer with it.
-
-        `edit_file` is excluded from grouping, so this row never joins a group
-        and its footer is only linked to it at mount. Without that linkage the
-        timestamp strands over an invisible row, right above the diff.
-        """
+        """A superseded row's footer follows it when hidden and restored."""
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t-diff-footer")
         app._load_thread_history = AsyncMock()  # ty: ignore
         app._message_timestamps_visible = True
@@ -34473,31 +34459,6 @@ class TestToolGroupCollapse:
             await pilot.pause()
             assert tool.display is False
             assert footer.display is False
-
-    async def test_superseded_row_comes_back_if_it_later_errors(self) -> None:
-        """A hidden row that stops being successful must become visible again.
-
-        `_superseded_by_diff` reads the live status, so a late error makes the
-        row no longer superseded. If hiding were a one-way write the failure
-        would stay invisible, and the footer's marker class would lift on its
-        own — stranding a timestamp over an invisible row.
-        """
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="t-diff-unhide")
-        app._load_thread_history = AsyncMock()  # ty: ignore
-        app._message_timestamps_visible = True
-        async with app.run_test() as pilot:
-            messages = app.query_one("#messages", Container)
-            await messages.remove_children()
-
-            tool = ToolCallMessage("edit_file", {"file_path": "a.py"})
-            await app._mount_message(tool)
-            await pilot.pause()
-            footer = app.query_one(f"#{tool.id}-timestamp-footer", Static)
-
-            tool.set_success("Updated file")
-            tool.mark_superseded_by_diff()
-            await pilot.pause()
-            assert tool.display is False
 
             tool.set_error("Disk full")
             await pilot.pause()

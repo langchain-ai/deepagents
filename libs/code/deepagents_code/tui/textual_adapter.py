@@ -2056,11 +2056,6 @@ async def execute_task_textual(
                                     assistant_message_by_namespace,
                                 )
                                 pending_text_by_namespace[ns_key] = ""
-                            # Mount a diff whenever there is one, and also for a
-                            # successful call whose tool row hides itself — a
-                            # no-op edit produces no diff, and without this the
-                            # call would leave no trace at all. `DiffMessage`
-                            # renders an empty diff as a "no changes" header.
                             if record.diff or (
                                 record.tool_name in TOOLS_SUPERSEDED_BY_DIFF
                                 and record.status == "success"

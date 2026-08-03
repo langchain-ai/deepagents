@@ -188,10 +188,6 @@ interactive prompt (`ask_user`), a diff (`edit_file`), or a todo list
 (`write_todos`) — so it renders standalone and acts as a boundary between
 adjacent tool groups. Add a tool here only when its collapsed one-line
 summary would hide something the user needs to see.
-
-`edit_file` earns its place indirectly: its row hides itself on success (see
-`TOOLS_SUPERSEDED_BY_DIFF`) and the separate `DiffMessage` is what stays
-visible, so excluding the row keeps group folding from fighting that hiding.
 """
 
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
@@ -16832,17 +16828,9 @@ class DeepAgentsApp(App):
 
     @staticmethod
     def _link_message_timestamp_footer(widget: Widget, footer: Static | None) -> None:
-        """Make a tool footer follow visibility changes of its owning row.
-
-        Linking before mount lets deferred successful state hide both nodes
-        together when restored history is mounted.
-
-        Args:
-            widget: Message widget that owns the footer.
-            footer: Timestamp footer built for the message, if eligible.
-        """
+        """Make a tool footer follow its owning row's visibility."""
         if footer is not None and isinstance(widget, ToolCallMessage):
-            widget.register_visibility_accessories(footer)
+            widget._register_visibility_accessories(footer)
 
     def _sync_message_timestamps_display(self) -> None:
         """Apply the current visibility to every mounted timestamp footer.

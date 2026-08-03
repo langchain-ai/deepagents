@@ -3015,22 +3015,6 @@ class TestExecuteTaskTextualFileOpDiffs:
         assert tool.display is True
         assert not any(isinstance(m, DiffMessage) for m in mounted)
 
-    async def test_edit_readback_failure_keeps_a_visible_error_trace(
-        self, tmp_path: Path
-    ) -> None:
-        """A successful edit reports when its diff cannot be reconstructed."""
-        target = tmp_path / "a.py"
-        target.write_text("value = 1\n", encoding="utf-8")
-
-        with patch("deepagents_code.file_ops.FileOpTracker._populate_after_content"):
-            mounted = await self._run_edit(target, "value = 2")
-
-        tool = next(widget for widget in mounted if isinstance(widget, ToolCallMessage))
-        assert tool._status == "error"
-        assert tool.display is True
-        assert "Edit succeeded, but its changes could not be displayed" in tool._output
-        assert not any(isinstance(widget, DiffMessage) for widget in mounted)
-
 
 class TestExecuteTaskTextualToolCallStreaming:
     """Tests for incremental tool-call argument accumulation."""

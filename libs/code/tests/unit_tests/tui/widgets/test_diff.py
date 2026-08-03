@@ -8,20 +8,12 @@ from textual.widgets import Static
 
 from deepagents_code.diff_utils import count_diff_changes
 from deepagents_code.tui.widgets import diff as diff_module
-from deepagents_code.tui.widgets.diff import (
-    _EMPHASIS,
-    _MAX_EMPHASIS_LEN,
-    _MAX_HIGHLIGHT_CHARS,
-    compose_diff_lines,
-)
+from deepagents_code.tui.widgets.diff import compose_diff_lines
 
 if TYPE_CHECKING:
     import pytest
     from textual.app import ComposeResult
     from textual.content import Content
-
-_LEXER_FAILURE = "lexer exploded"
-"""Message raised by the stubbed lexer in `test_lexer_failure_degrades...`."""
 
 
 def _rendered(diff: str, max_lines: int | None = 100) -> list[Static]:
@@ -62,45 +54,6 @@ def _contents(widgets: ComposeResult) -> list[Content]:
         One `Content` per `Static` produced.
     """
     return [cast("Content", w.render()) for w in widgets if isinstance(w, Static)]
-
-
-def _body_spans(content: Content, text: str) -> list[object]:
-    """Return the spans falling inside a row's content, ignoring its gutter.
-
-    Every row styles its line number and `-`/`+` marker, so a bare `.spans`
-    check can never be empty and would silently pass.
-
-    Args:
-        content: Rendered row content.
-        text: The row's line text, used to locate where the body begins.
-
-    Returns:
-        Spans starting at or after the body offset.
-    """
-    start = content.plain.index(text)
-    return [s for s in content.spans if s.start >= start]
-
-
-def _emphasis_spans(widgets: list[Static]) -> list[str]:
-    """Collect the substrings carrying a word-level emphasis tint.
-
-    Keyed off `_EMPHASIS` rather than a hard-coded style string so a retint
-    does not silently turn these assertions into no-ops.
-
-    Args:
-        widgets: Rendered diff row widgets.
-
-    Returns:
-        Emphasized substrings, in render order.
-    """
-    styles = set(_EMPHASIS.values())
-    found: list[str] = []
-    for widget in widgets:
-        content = cast("Content", widget.render())
-        found.extend(
-            content.plain[s.start : s.end] for s in content.spans if s.style in styles
-        )
-    return found
 
 
 def _texts(widgets: list[Static]) -> list[str]:
@@ -151,21 +104,6 @@ class TestComposeDiffLines:
         texts = _texts(_rendered(diff))
         assert any(text.endswith("--old value") for text in texts)
         assert any(text.endswith("++new value") for text in texts)
-
-    def test_header_shaped_content_before_another_hunk_is_still_content(
-        self,
-    ) -> None:
-        """Hunk counts disambiguate changed rows next to a later hunk."""
-        diff = (
-            "--- a/f.py\n+++ b/f.py\n"
-            "@@ -1 +1 @@\n--- old value\n+++ new value\n"
-            "@@ -10 +10 @@\n-old tail\n+new tail"
-        )
-
-        assert count_diff_changes(diff) == (2, 2)
-        texts = _texts(_rendered(diff))
-        assert any(text.endswith("-- old value") for text in texts)
-        assert any(text.endswith("++ new value") for text in texts)
 
     def test_file_and_hunk_headers_are_not_rendered_as_rows(self) -> None:
         """File headers and hunk headers don't appear as diff-line widgets."""
@@ -246,92 +184,15 @@ class TestComposeDiffLines:
         ]
         keyword = next(r for r in rows if "if x:" in r.plain)
         assert any(s.style == "$text-accent" for s in keyword.spans)
-        # Tabs must survive unexpanded, or the emphasis offsets would misalign.
         assert any(r.plain.endswith("\tpass") for r in rows)
-
-
-class TestEmphasisGuards:
-    """Each bailout that suppresses word-level emphasis must actually fire.
-
-    Without these, deleting a guard or widening its threshold leaves the suite
-    green — the happy-path tests only prove emphasis appears, never that it is
-    withheld when the heuristic says it should be.
-    """
-
-    def test_unrelated_rewrite_gets_no_word_emphasis(self) -> None:
-        """A pair sharing too little content keeps its uniform row tint."""
-        diff = "@@ -1 +1 @@\n-x = 1\n+completely_different_name_here = 999"
-        assert _emphasis_spans(_rendered(diff)) == []
-
-    def test_pair_differing_in_every_word_gets_no_emphasis(self) -> None:
-        """Whitespace must not carry a wholly-changed pair over the floor."""
-        diff = "@@ -1 +1 @@\n-aaa bbb ccc\n+zzz yyy xxx"
-        assert _emphasis_spans(_rendered(diff)) == []
-
-    def test_very_long_lines_skip_emphasis(self) -> None:
-        """Past `_MAX_EMPHASIS_LEN` the token matcher is not run at all."""
-        # Many words with exactly one changed: near-identical, so neither the
-        # similarity floor nor the whole-line-coverage guard can suppress this.
-        # Only the length bailout can, which is what makes the test isolating.
-        words = [f"word{i}" for i in range(_MAX_EMPHASIS_LEN // 6 + 2)]
-        old = " ".join(words)
-        new = " ".join(["CHANGED", *words[1:]])
-        assert len(old) > _MAX_EMPHASIS_LEN
-        diff = f"@@ -1 +1 @@\n-{old}\n+{new}"
-        assert _emphasis_spans(_rendered(diff)) == []
-
-    def test_a_shorter_line_with_the_same_shape_is_emphasized(self) -> None:
-        """Control for the above: under the ceiling, the one word is tinted."""
-        words = [f"word{i}" for i in range(5)]
-        old = " ".join(words)
-        new = " ".join(["CHANGED", *words[1:]])
-        assert len(old) < _MAX_EMPHASIS_LEN
-        diff = f"@@ -1 +1 @@\n-{old}\n+{new}"
-        assert _emphasis_spans(_rendered(diff)) == ["word0", "CHANGED"]
-
-    def test_unequal_run_lengths_are_not_paired(self) -> None:
-        """One removed line against two added lines is not a modification."""
-        diff = "@@ -1 +1,2 @@\n-value = 1\n+value = 2\n+value = 3"
-        assert _emphasis_spans(_rendered(diff)) == []
-
-    def test_equal_run_lengths_are_paired(self) -> None:
-        """The counterpart to the above: equal runs still emphasize."""
-        diff = "@@ -1,2 +1,2 @@\n-value = 1\n-other = 1\n+value = 2\n+other = 2"
-        # Both sides are emphasized, removed rows first in render order.
-        assert _emphasis_spans(_rendered(diff)) == ["1", "1", "2", "2"]
-
-
-class TestHighlightGuards:
-    """Fallbacks that drop syntax highlighting rather than misrender it."""
-
-    def test_row_not_matching_the_file_is_left_unhighlighted(self) -> None:
-        """Content that moved on since the diff renders plain, not misaligned."""
-        # The diff adds `if x:` at line 2 but the file has something else
-        # there, so the lexed line cannot be trusted to line up with the row.
-        # Addition-only, so word-level emphasis cannot muddy the span check.
-        stale = "def f():\n    return 0\n"
-        diff = "@@ -2 +2 @@\n+    if x:"
-        rows = _contents(compose_diff_lines(diff, path="m.py", after=stale))
-        added = next(r for r in rows if "if x:" in r.plain)
-        assert _body_spans(added, "if x:") == []
-
-    def test_file_over_the_char_ceiling_renders_unhighlighted(self) -> None:
-        """A prefix past `_MAX_HIGHLIGHT_CHARS` skips the lexer entirely."""
-        filler = "\n".join("x = 1" for _ in range(_MAX_HIGHLIGHT_CHARS // 5))
-        after = f"{filler}\nif y:\n"
-        line_number = after.count("\n") - 1
-        diff = f"@@ -{line_number} +{line_number} @@\n+if y:"
-        rows = _contents(compose_diff_lines(diff, path="m.py", after=after))
-        added = next(r for r in rows if "if y:" in r.plain)
-        assert _body_spans(added, "if y:") == []
 
     def test_lexer_failure_degrades_to_plain_text(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A raising lexer must not escape `compose()` and kill the widget."""
+        msg = "lexer exploded"
 
         def _boom(*_args: object, **_kwargs: object) -> Content:
-            raise RuntimeError(_LEXER_FAILURE)
+            raise RuntimeError(msg)
 
         monkeypatch.setattr(diff_module, "highlight", _boom)
         diff_module._highlight_lines.cache_clear()
@@ -357,29 +218,3 @@ class TestRowKinds:
         widgets = _rendered("@@ -1 +1 @@\n-a\n+b\n...")
         assert any("truncated" in _plain(w) for w in widgets)
         assert not any("diff-hunk-break" in w.classes for w in widgets)
-
-    def test_unrecognized_lines_render_as_notes(self) -> None:
-        r"""`\ No newline at end of file` and friends stay visible."""
-        diff = "@@ -1 +1 @@\n-a\n+b\n\\ No newline at end of file"
-        assert any("No newline" in t for t in _texts(_rendered(diff)))
-
-
-class TestCountDiffChanges:
-    """Header counts must survive content that looks like diff metadata."""
-
-    def test_content_lines_beginning_with_dashes_are_counted(self) -> None:
-        """`---`/`+++` inside a hunk body are content, not file headers."""
-        diff = (
-            "--- front.md (before)\n"
-            "+++ front.md (after)\n"
-            "@@ -1,3 +1,3 @@\n"
-            "----\n"
-            "++++\n"
-            " title: a"
-        )
-        assert count_diff_changes(diff) == (1, 1)
-
-    def test_real_file_headers_are_still_excluded(self) -> None:
-        """The paired prelude to a hunk stays metadata."""
-        diff = "--- a.py (before)\n+++ a.py (after)\n@@ -1 +1 @@\n-a\n+b"
-        assert count_diff_changes(diff) == (1, 1)

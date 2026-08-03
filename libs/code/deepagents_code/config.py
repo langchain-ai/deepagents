@@ -4227,9 +4227,9 @@ def _get_default_model_spec() -> str:
     # list, switch to checking `state` against the relevant
     # `ProviderAuthState` members directly.
     if get_provider_auth_status("openai").as_legacy_bool() is True:
-        return "openai:gpt-5.5"
+        return "openai:gpt-5.6-terra"
     if get_provider_auth_status("anthropic").as_legacy_bool() is True:
-        return "anthropic:claude-opus-4-7"
+        return "anthropic:claude-opus-5"
     if get_provider_auth_status("google_genai").as_legacy_bool() is True:
         return "google_genai:gemini-3.1-pro-preview"
 

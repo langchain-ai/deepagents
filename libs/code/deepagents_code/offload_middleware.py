@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, cast
 
 from deepagents.backends.protocol import FILE_NOT_FOUND
@@ -20,9 +22,22 @@ from langchain_core.tools import InjectedToolArg, StructuredTool
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code.hooks.models.domain import (
+    CompactTrigger,
+    HookEvent,
+    PreCompactDecision,
+    PreCompactEvent,
+)
+from deepagents_code.hooks.server_middleware import (
+    _event_enabled,
+    _hook_context,
+    _invoke_hook,
+    _require_decision,
+    _session_gate,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
 
     from deepagents.backends.protocol import (
         BackendProtocol,
@@ -31,6 +46,7 @@ if TYPE_CHECKING:
         WriteResult,
     )
     from deepagents.middleware.summarization import SummarizationMiddleware
+    from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.chat_models import BaseChatModel
     from langgraph.prebuilt.tool_node import ToolCallRequest
 
@@ -319,6 +335,88 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
     which must compact whenever messages exceed the retention window even when
     the conversation has not reached the SDK's proactive eligibility gate.
     """
+
+    @staticmethod
+    def _hook_config() -> Mapping[str, Any] | None:
+        """Return the current runnable config when available."""
+        from langgraph.config import get_config
+
+        try:
+            return get_config()
+        except RuntimeError:
+            return None
+
+    def _pre_auto_compact(self, request: ModelRequest) -> bool:
+        """Run `PreCompact` before automatic summarization.
+
+        Returns:
+            Whether automatic summarization may continue.
+        """
+        runtime = request.runtime
+        gate = _session_gate(runtime.context)
+        if not _event_enabled(gate, HookEvent.PRE_COMPACT):
+            return True
+        config = self._hook_config()
+        decision = _invoke_hook(
+            _hook_context(runtime.context, config, Path.cwd()),
+            PreCompactEvent(
+                event=HookEvent.PRE_COMPACT,
+                trigger=CompactTrigger.AUTO,
+            ),
+            gate=gate,
+            config=config,
+            deadline=timedelta(seconds=600),
+        )
+        decision = _require_decision(decision, PreCompactDecision)
+        return decision.continue_processing
+
+    def _auto_compaction_request(self, request: ModelRequest) -> ModelRequest | None:
+        """Return the prepared request when threshold compaction will run."""
+        summarization = self._summarization
+        messages = summarization._get_effective_messages(request)
+        tokens = summarization._count_tokens(
+            messages, request.system_message, request.tools
+        )
+        messages, modified = summarization._truncate_args(messages, tokens)
+        if modified:
+            tokens = summarization._count_tokens(
+                messages, request.system_message, request.tools
+            )
+        if not summarization._should_summarize(messages, tokens):
+            return None
+        if summarization._determine_cutoff_index(messages) <= 0:
+            return None
+        return request.override(messages=messages)
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        """Run `PreCompact` before synchronous threshold summarization.
+
+        Returns:
+            The model response from the handler.
+        """
+        prepared = self._auto_compaction_request(request)
+        if prepared is not None and not self._pre_auto_compact(request):
+            return handler(prepared)
+        return super().wrap_model_call(request, handler)
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        """Run `PreCompact` before asynchronous threshold summarization.
+
+        Returns:
+            The model response from the handler.
+        """
+        prepared = self._auto_compaction_request(request)
+        if prepared is not None and not self._pre_auto_compact(request):
+            return await handler(prepared)
+        return await super().awrap_model_call(request, handler)
 
     @staticmethod
     def _offload_rejection(request: ToolCallRequest) -> ToolMessage | None:

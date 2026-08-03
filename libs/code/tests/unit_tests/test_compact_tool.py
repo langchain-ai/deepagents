@@ -13,7 +13,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from deepagents.backends.protocol import FileDownloadResponse, WriteResult
+from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.offload_middleware import (
@@ -135,6 +137,59 @@ class TestCLICompactionMiddleware:
         ]
         summarization._compute_state_cutoff.return_value = 2
         return summarization
+
+    @staticmethod
+    def _model_request(summarization: MagicMock) -> ModelRequest:
+        """Build a model request whose summarizer crosses the auto threshold."""
+        messages = [HumanMessage("one"), HumanMessage("two")]
+        summarization._get_effective_messages.return_value = messages
+        summarization._count_tokens.return_value = 2
+        summarization._truncate_args.return_value = (messages, False)
+        summarization._should_summarize.return_value = True
+        summarization._determine_cutoff_index.return_value = 1
+        return ModelRequest(
+            model=MagicMock(),
+            messages=messages,
+            state={"messages": messages},
+            runtime=Runtime(context=None),
+        )
+
+    async def test_auto_compaction_runs_precompact_hook(self) -> None:
+        """Threshold compaction must ask `PreCompact` before summarizing."""
+        from deepagents_code.hooks.models.domain import (
+            HookEvent,
+            PreCompactDecision,
+        )
+
+        summarization = self._summarization()
+        middleware = CLICompactionMiddleware(summarization)
+        request = self._model_request(summarization)
+        expected = ModelResponse(result=[AIMessage(content="ok")])
+        handler = AsyncMock(return_value=expected)
+        invoke = MagicMock(
+            return_value=PreCompactDecision(
+                event=HookEvent.PRE_COMPACT,
+                continue_processing=False,
+                stop_reason="preserve context",
+            )
+        )
+
+        with (
+            patch(
+                "deepagents_code.offload_middleware._session_gate",
+                return_value={
+                    "snapshot_id": "snapshot",
+                    "events": frozenset({"PreCompact"}),
+                },
+            ),
+            patch("deepagents_code.offload_middleware._invoke_hook", invoke),
+        ):
+            result = await middleware.awrap_model_call(request, handler)
+
+        event = invoke.call_args.args[1]
+        assert event.trigger.value == "auto"
+        assert result is expected
+        handler.assert_awaited_once_with(request)
 
     async def test_force_bypasses_sdk_eligibility_gate(self) -> None:
         """Forced compaction partitions directly even below the proactive gate."""

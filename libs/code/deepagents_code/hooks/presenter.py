@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
     from deepagents_code.hooks.models.domain import (
         HookDecision,
         HookDiagnostic,
@@ -27,6 +28,18 @@ logger = logging.getLogger(__name__)
 
 HookNoticeSeverity: TypeAlias = Literal["information", "warning", "error"]
 DiagnosticKey: TypeAlias = tuple[str, str, str, str | None, str | None]
+
+
+def format_hook_stop_message(error: ClientHookStopError) -> str:
+    """Distinguish an intentional hook stop from an agent failure.
+
+    Args:
+        error: Hook stop carrying the user-facing reason.
+
+    Returns:
+        Neutral hook-stop text shared by interactive and headless clients.
+    """
+    return f"Operation stopped by hook: {error}"
 
 
 class HookNoticeCallback(Protocol):

@@ -2048,6 +2048,7 @@ async def run_non_interactive(
 
     from deepagents_code.client.launch.server_manager import server_session
     from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+    from deepagents_code.hooks.presenter import format_hook_stop_message
 
     # Launch MCP preload concurrently with server startup
     mcp_task: asyncio.Task[Any] | None = None
@@ -2201,11 +2202,9 @@ async def run_non_interactive(
         console.print("\n[yellow]Interrupted[/yellow]")
         return 130
     except ClientHookStopError as exc:
-        logger.info("Operation stopped by hook: %s", exc)
-        console.print(
-            Text(f"\nOperation stopped by hook: {exc}", style="yellow"),
-            highlight=False,
-        )
+        message = format_hook_stop_message(exc)
+        logger.info("%s", message)
+        console.print(Text(f"\n{message}", style="yellow"), highlight=False)
         return 0
     except HITLIterationLimitError as e:
         console.print(f"\n[red]{escape_markup(str(e))}[/red]")

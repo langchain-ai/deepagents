@@ -1212,6 +1212,7 @@ async def execute_task_textual(
     from deepagents_code.auto_mode import USER_PROMPT_METADATA_KEY, user_prompt_metadata
     from deepagents_code.hooks.client_lifecycle import ClientHookStopError
     from deepagents_code.hooks.models.domain import HookEvent
+    from deepagents_code.hooks.presenter import format_hook_stop_message
 
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
     ask_user_adapter = _get_ask_user_adapter()
@@ -3072,7 +3073,7 @@ async def execute_task_textual(
                     )
                 except ClientHookStopError as exc:
                     await adapter._mount_message(
-                        AppMessage(f"Operation stopped by hook: {exc}")
+                        AppMessage(format_hook_stop_message(exc))
                     )
                 if not hooks.has_handlers(HookEvent.NOTIFICATION):
                     await dispatch_hook("task.complete", {"thread_id": thread_id})

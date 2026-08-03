@@ -15703,6 +15703,7 @@ class DeepAgentsApp(App):
 
         from deepagents_code.config import settings
         from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+        from deepagents_code.hooks.presenter import format_hook_stop_message
         from deepagents_code.resume_state import RUBRIC_RESULT_VALUES
         from deepagents_code.tui.textual_adapter import (
             RubricEvaluationEnd,
@@ -15884,8 +15885,8 @@ class DeepAgentsApp(App):
                 logger.exception("Failed to close/regroup tool group at turn end")
             task_succeeded = True
         except ClientHookStopError as exc:
-            message = f"Operation stopped by hook: {exc}"
-            logger.info("Operation stopped by hook: %s", exc)
+            message = format_hook_stop_message(exc)
+            logger.info("%s", message)
             if self._ui_adapter:
                 self._ui_adapter.finalize_pending_tools_as_rejected(str(exc))
             with suppress(Exception):

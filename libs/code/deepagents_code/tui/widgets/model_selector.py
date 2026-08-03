@@ -65,13 +65,11 @@ from the per-provider sections below.
 
 
 _RECOMMENDED_MODELS: dict[str, str] = {
-    "anthropic:claude-opus-4-7": "Claude Opus 4.7",
     "anthropic:claude-opus-4-8": "Claude Opus 4.8",
     "anthropic:claude-opus-5": "Claude Opus 5",
     "anthropic:claude-sonnet-5": "Claude Sonnet 5",
     "baseten:deepseek-ai/DeepSeek-V4-Flash-0731": "DeepSeek V4 Flash 0731",
     "baseten:deepseek-ai/DeepSeek-V4-Pro": "DeepSeek V4 Pro",
-    "baseten:moonshotai/Kimi-K2.7-Code": "Kimi K2.7 Code",
     "baseten:moonshotai/Kimi-K3": "Kimi K3",
     "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": "Nemotron 3 Ultra 550B A55B",
     "baseten:zai-org/GLM-5.2": "GLM 5.2",
@@ -81,52 +79,29 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     ),
     "fireworks:accounts/fireworks/models/deepseek-v4-pro": "DeepSeek V4 Pro",
     "fireworks:accounts/fireworks/models/glm-5p2": "GLM 5.2",
-    "fireworks:accounts/fireworks/models/kimi-k2p7-code": "Kimi K2.7 Code",
     "fireworks:accounts/fireworks/models/kimi-k3": "Kimi K3",
     "fireworks:accounts/fireworks/models/minimax-m3": "MiniMax-M3",
     "fireworks:accounts/fireworks/models/qwen3p7-plus": "Qwen 3.7 Plus",
     "google_genai:gemini-3.6-flash": "Gemini 3.6 Flash",
-    "google_genai:gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
     "meta:muse-spark-1.1": "Muse Spark 1.1",
     "ollama:deepseek-v4-flash:cloud": "DeepSeek V4 Flash",
     "ollama:deepseek-v4-pro:cloud": "DeepSeek V4 Pro",
     "ollama:glm-5.2:cloud": "GLM 5.2",
-    "ollama:kimi-k2.7-code:cloud": "Kimi K2.7 Code",
     "ollama:minimax-m3:cloud": "MiniMax-M3",
-    "openai:gpt-5.4": "GPT-5.4",
-    "openai:gpt-5.4-mini": "GPT-5.4 mini",
-    "openai:gpt-5.4-pro": "GPT-5.4 Pro",
-    "openai:gpt-5.5": "GPT-5.5",
-    "openai:gpt-5.5-pro": "GPT-5.5 Pro",
     "openai:gpt-5.6-luna": "GPT-5.6 Luna",
     "openai:gpt-5.6-sol": "GPT-5.6 Sol",
     "openai:gpt-5.6-terra": "GPT-5.6 Terra",
-    "openai_codex:gpt-5.2": "GPT-5.2",
-    "openai_codex:gpt-5.3-codex": "GPT-5.3 Codex",
-    "openai_codex:gpt-5.4": "GPT-5.4",
-    "openai_codex:gpt-5.4-mini": "GPT-5.4 mini",
-    "openai_codex:gpt-5.5": "GPT-5.5",
     "openai_codex:gpt-5.6-luna": "GPT-5.6 Luna",
     "openai_codex:gpt-5.6-sol": "GPT-5.6 Sol",
     "openai_codex:gpt-5.6-terra": "GPT-5.6 Terra",
-    "openrouter:anthropic/claude-opus-4.6": "Claude Opus 4.6",
-    "openrouter:anthropic/claude-opus-4.7": "Claude Opus 4.7",
-    "openrouter:anthropic/claude-opus-4.7-fast": "Claude Opus 4.7 Fast",
     "openrouter:anthropic/claude-opus-4.8": "Claude Opus 4.8",
     "openrouter:anthropic/claude-sonnet-5": "Claude Sonnet 5",
     "openrouter:deepseek/deepseek-v4-flash-0731": "DeepSeek V4 Flash 0731",
     "openrouter:deepseek/deepseek-v4-flash:free": "DeepSeek V4 Flash (free)",
     "openrouter:deepseek/deepseek-v4-pro": "DeepSeek V4 Pro",
     "openrouter:google/gemini-3.6-flash": "Gemini 3.6 Flash",
-    "openrouter:google/gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
-    "openrouter:moonshotai/kimi-k2.7-code": "Kimi K2.7 Code",
     "openrouter:moonshotai/kimi-k3": "Kimi K3",
     "openrouter:nvidia/nemotron-3-ultra-550b-a55b": "Nemotron 3 Ultra 550B A55B",
-    "openrouter:openai/gpt-5.4": "GPT-5.4",
-    "openrouter:openai/gpt-5.4-mini": "GPT-5.4 mini",
-    "openrouter:openai/gpt-5.4-pro": "GPT-5.4 Pro",
-    "openrouter:openai/gpt-5.5": "GPT-5.5",
-    "openrouter:openai/gpt-5.5-pro": "GPT-5.5 Pro",
     "openrouter:openrouter/fusion": "OpenRouter Fusion",
     "openrouter:qwen/qwen3.7-plus": "Qwen 3.7 Plus",
     "openrouter:z-ai/glm-5.2": "GLM 5.2",
@@ -140,11 +115,11 @@ Used by the onboarding picker (`curated=True`) and by the in-`/model`
 the spec keys; the names are a display fallback for `_get_model_display_name`
 when a provider package (and thus its profile `name`) is not installed — the
 common case for uninstalled recommendations and onboarding, where the raw
-model id (e.g. `accounts/fireworks/models/kimi-k2p7-code`) would otherwise
+model id (e.g. `accounts/fireworks/models/kimi-k3`) would otherwise
 show. When a profile is available its upstream `name` wins, so these stay a
 safety net rather than a second source of truth.
 
-Same model IDs may appear under multiple providers (e.g. Kimi K2.7 Code via
+Same model IDs may appear under multiple providers (e.g. GLM 5.2 via
 `baseten`, `fireworks`, `ollama`, and `openrouter`) and are listed under each
 provider intentionally so the user can pick whichever provider they have
 credentials for.

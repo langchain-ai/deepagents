@@ -27,7 +27,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.errors import GraphInterrupt
+from langgraph.errors import GraphInterrupt, NodeCancelledError
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.types import Command, Interrupt
 from langsmith import Client
@@ -3298,6 +3298,45 @@ class TestSubAgentFailureIsolation:
                 subagent_type="canceller",
                 runtime=_make_tool_runtime("call_cancel"),
             )
+
+    def test_self_cancelled_node_is_isolated_as_failure(self) -> None:
+        """`NodeCancelledError` is a node failure, not framework control flow.
+
+        LangGraph wraps a node body that raises `asyncio.CancelledError` itself
+        in `NodeCancelledError` so the run reports an error; real
+        framework-initiated cancellation stays a raw `CancelledError`. The
+        wrapper must therefore take the isolation path like any other execution
+        exception, so a self-cancelled subagent cannot abort its parallel
+        siblings.
+        """
+
+        def self_cancel(_state: dict) -> dict:
+            node = "self_canceller"
+            raise NodeCancelledError(node)
+
+        task_tool = _build_task_tool(
+            [
+                CompiledSubAgent(
+                    name="self_canceller",
+                    description="Cancels itself.",
+                    runnable=RunnableLambda(self_cancel),
+                )
+            ]
+        )
+
+        result = task_tool.func(
+            description="do work",
+            subagent_type="self_canceller",
+            runtime=_make_tool_runtime("call_self_cancel"),
+        )
+
+        assert isinstance(result, Command)
+        tool_message = result.update["messages"][0]
+        assert isinstance(tool_message, ToolMessage)
+        assert tool_message.status == "error"
+        assert tool_message.tool_call_id == "call_self_cancel"
+        assert "self_canceller" in tool_message.content
+        assert "NodeCancelledError" in tool_message.content
 
     async def test_parallel_batch_isolates_single_failure(self) -> None:
         """A failing subagent must not discard sibling results in the batch.

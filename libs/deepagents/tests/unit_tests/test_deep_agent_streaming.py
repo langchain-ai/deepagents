@@ -8,7 +8,6 @@ async paths.
 
 import asyncio
 from collections.abc import Callable, Sequence
-from contextlib import suppress
 from typing import Any
 
 import pytest
@@ -18,7 +17,7 @@ from langchain.agents._subagent_transformer import (
 )
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
-from langchain_core.messages import AIMessage, HumanMessage, ToolCall
+from langchain_core.messages import AIMessage, HumanMessage, ToolCall, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
@@ -272,11 +271,14 @@ class TestCreateDeepAgentAstreamV2:
         assert parent_message_count > 0
 
     async def test_subagent_error_surfaces_failed_status(self) -> None:
-        """A subagent whose model raises mid-run lands as `status='failed'`.
+        """A subagent whose model raises mid-run is isolated to an error `ToolMessage`.
 
-        The error propagates up through Pregel into the parent stream, so
-        every projection drain may raise — that's fine. The handle should
-        still surface on `run.subagents` and reach the failed terminal state.
+        The `task` tool catches the exception and converts it into an error
+        `ToolMessage` for that tool call, so nothing raises through Pregel into
+        the parent stream: the subagent handle still surfaces on `run.subagents`
+        and reaches the completed terminal state, the parent receives the error
+        result and recovers, and sibling task calls in the same batch are not
+        discarded.
         """
         agent = _build_agent_with_failing_subagent()
         run = await agent.astream_events({"messages": [HumanMessage(content="go")]}, version="v3")
@@ -284,28 +286,33 @@ class TestCreateDeepAgentAstreamV2:
         handles: list[AsyncSubagentRunStream] = []
 
         async def collect_subagents() -> None:
-            with suppress(RuntimeError):
-                async for sub in run.subagents:
-                    handles.append(sub)
-                    with suppress(RuntimeError):
-                        async for _ in sub.messages:
-                            pass
-
-        async def drain_parent() -> None:
-            with suppress(RuntimeError):
-                async for _ in run.messages:
+            async for sub in run.subagents:
+                handles.append(sub)
+                async for _ in sub.messages:
                     pass
 
-        # Drive both projections concurrently so the pump can advance
-        # past the subagent's terminal event before the error escapes.
+        async def drain_parent() -> None:
+            async for _ in run.messages:
+                pass
+
+        # Drive both projections concurrently so the pump can advance.
         await asyncio.gather(collect_subagents(), drain_parent())
 
         assert len(handles) == 1
         (sub,) = handles
         assert isinstance(sub, AsyncSubagentRunStream)
         assert sub.name == "researcher"
-        assert sub.status == "failed"
-        assert sub.error is not None
+        assert sub.status == "completed"
+        assert sub.error is None
+
+        # The parent receives the isolated error ToolMessage and recovers.
+        output = await run.output()
+        tool_messages = [msg for msg in output["messages"] if isinstance(msg, ToolMessage)]
+        assert len(tool_messages) == 1
+        assert tool_messages[0].status == "error"
+        assert "researcher" in tool_messages[0].content
+        assert "RuntimeError" in tool_messages[0].content
+        assert output["messages"][-1].content == "parent recovered"
 
 
 class TestCreateDeepAgentStreamV2:

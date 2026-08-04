@@ -22,7 +22,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
-from langgraph.errors import GraphBubbleUp, NodeCancelledError
+from langgraph.errors import GraphBubbleUp
 from langgraph.types import Command
 from langsmith.run_helpers import get_tracing_context, tracing_context
 from pydantic import BaseModel, Field
@@ -36,17 +36,19 @@ logger = logging.getLogger(__name__)
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
 
-_TASK_CONTROL_FLOW_EXCEPTIONS: tuple[type[BaseException], ...] = (
-    GraphBubbleUp,
-    NodeCancelledError,
-)
+_TASK_CONTROL_FLOW_EXCEPTIONS: tuple[type[BaseException], ...] = (GraphBubbleUp,)
 """LangGraph control-flow exceptions that must never be converted into a
 task-tool error result.
 
-`GraphBubbleUp` covers graph interrupts and parent commands; `NodeCancelledError`
-covers explicit node cancellation. Process-level signals (`KeyboardInterrupt`,
-`SystemExit`) and `asyncio.CancelledError` derive from `BaseException` rather than
-`Exception`, so an `except Exception` guard already lets them propagate.
+`GraphBubbleUp` covers graph interrupts and parent commands. Process-level
+signals (`KeyboardInterrupt`, `SystemExit`) and `asyncio.CancelledError` derive
+from `BaseException` rather than `Exception`, so an `except Exception` guard
+already lets them propagate.
+
+`NodeCancelledError` is deliberately absent: it marks a node body that raised
+`asyncio.CancelledError` itself, which LangGraph treats as an ordinary node
+failure. Isolating it keeps a self-cancelled subagent from aborting its
+parallel siblings.
 """
 
 
@@ -660,8 +662,8 @@ def _build_task_tool(  # noqa: C901, PLR0915
             with _subagent_tracing_context():
                 result = await subagent.ainvoke(subagent_state, subagent_config)
         except _TASK_CONTROL_FLOW_EXCEPTIONS:
-            # Interrupts, parent commands, and cancellation are control flow, not
-            # subagent failures. Let them bubble up so the graph handles them.
+            # Interrupts and parent commands are control flow, not subagent
+            # failures. Let them bubble up so the graph handles them.
             raise
         except Exception as exc:
             logger.exception("Subagent '%s' raised during task execution", subagent_type)

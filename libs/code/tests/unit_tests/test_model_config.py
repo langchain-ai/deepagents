@@ -2448,6 +2448,79 @@ recent = "openai:gpt-5.2"
         assert result is True
 
 
+class TestAutoClassifierModelPersistence:
+    """Tests for the `[models].auto_classifier` writer/reader pair."""
+
+    def test_saves_without_touching_default(self, tmp_path: Path) -> None:
+        """The classifier key must not retarget the main agent model."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\ndefault = "anthropic:claude-opus-4-8"\n',
+            encoding="utf-8",
+        )
+
+        assert (
+            model_config.save_auto_classifier_model(
+                "anthropic:claude-sonnet-5", config_path
+            )
+            is True
+        )
+
+        with config_path.open("rb") as handle:
+            data = tomllib.load(handle)
+        assert data["models"]["auto_classifier"] == "anthropic:claude-sonnet-5"
+        assert data["models"]["default"] == "anthropic:claude-opus-4-8"
+
+    def test_clear_removes_only_the_classifier_key(self, tmp_path: Path) -> None:
+        """Clearing the classifier leaves the main default in place."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            "[models]\n"
+            'default = "anthropic:claude-opus-4-8"\n'
+            'auto_classifier = "anthropic:claude-sonnet-5"\n',
+            encoding="utf-8",
+        )
+
+        assert model_config.clear_auto_classifier_model(config_path) is True
+
+        with config_path.open("rb") as handle:
+            data = tomllib.load(handle)
+        assert "auto_classifier" not in data["models"]
+        assert data["models"]["default"] == "anthropic:claude-opus-4-8"
+
+    def test_clear_is_noop_when_absent(self, tmp_path: Path) -> None:
+        """A missing key (or file) still reports success."""
+        config_path = tmp_path / "config.toml"
+
+        assert model_config.clear_auto_classifier_model(config_path) is True
+
+        config_path.write_text('[models]\ndefault = "openai:gpt-5.6-sol"\n')
+
+        assert model_config.clear_auto_classifier_model(config_path) is True
+        assert 'default = "openai:gpt-5.6-sol"' in config_path.read_text()
+
+    def test_load_exposes_stored_spec(self, tmp_path: Path) -> None:
+        """`ModelConfig` surfaces the stored spec for the selector's marker."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nauto_classifier = "openai:gpt-5.6-luna"\n',
+            encoding="utf-8",
+        )
+
+        config = model_config.ModelConfig.load(config_path)
+
+        assert config.auto_classifier_model == "openai:gpt-5.6-luna"
+
+    def test_load_drops_non_string_spec(self, tmp_path: Path) -> None:
+        """A malformed entry resolves to `None` instead of a non-spec value."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[models]\nauto_classifier = 3\n", encoding="utf-8")
+
+        config = model_config.ModelConfig.load(config_path)
+
+        assert config.auto_classifier_model is None
+
+
 class TestEffortPersistence:
     """Tests for per-model reasoning effort persistence."""
 

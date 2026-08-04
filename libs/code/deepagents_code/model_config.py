@@ -2548,6 +2548,13 @@ class ModelConfig:
     recent_model: str | None = None
     """The most recently switched-to model (from config file `[models].recent`)."""
 
+    auto_classifier_model: str | None = None
+    """The stored Auto classifier model (from config file `[models].auto_classifier`).
+
+    Non-string entries resolve to `None`; `config.resolve_auto_classifier_model`
+    owns reporting a malformed value, so this field only carries a usable spec.
+    """
+
     providers: Mapping[str, ProviderConfig] = field(default_factory=dict)
     """Read-only mapping of provider names to their configurations."""
 
@@ -2590,9 +2597,13 @@ class ModelConfig:
             with config_path.open("rb") as f:
                 data = tomllib.load(f)
             models_section = data.get("models", {})
+            stored_classifier = models_section.get("auto_classifier")
             config = cls(
                 default_model=models_section.get("default"),
                 recent_model=models_section.get("recent"),
+                auto_classifier_model=(
+                    stored_classifier if isinstance(stored_classifier, str) else None
+                ),
                 providers=models_section.get("providers", {}),
             )
         except tomllib.TOMLDecodeError as e:
@@ -3104,6 +3115,27 @@ def save_default_model(model_spec: str, config_path: Path | None = None) -> bool
     return _save_model_field("default", model_spec, config_path)
 
 
+def save_auto_classifier_model(
+    model_spec: str, config_path: Path | None = None
+) -> bool:
+    """Persist the model the Auto approval classifier reviews actions with.
+
+    Writes `[models].auto_classifier`, the persistent counterpart of the
+    session-only `/auto model` switch. A `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL`
+    export still wins over the stored value at launch.
+
+    Args:
+        model_spec: The classifier model in `provider:model` format.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if save succeeded, False if it failed due to I/O errors.
+    """
+    return _save_model_field("auto_classifier", model_spec, config_path)
+
+
 def clear_default_model(config_path: Path | None = None) -> bool:
     """Remove the default model from the config file.
 
@@ -3111,6 +3143,38 @@ def clear_default_model(config_path: Path | None = None) -> bool:
     `[models].recent` or environment auto-detection.
 
     Args:
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if the key was removed (or was already absent), False on I/O error.
+    """
+    return _clear_model_field("default", config_path)
+
+
+def clear_auto_classifier_model(config_path: Path | None = None) -> bool:
+    """Remove the stored Auto classifier model from the config file.
+
+    Deletes the `[models].auto_classifier` key so future launches review gated
+    actions with the main agent model, unless the environment sets one.
+
+    Args:
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if the key was removed (or was already absent), False on I/O error.
+    """
+    return _clear_model_field("auto_classifier", config_path)
+
+
+def _clear_model_field(field: str, config_path: Path | None = None) -> bool:
+    """Delete a `[models].<field>` key from the config file.
+
+    Args:
+        field: Key name under the `[models]` table (e.g., `'default'`).
         config_path: Path to config file.
 
             Defaults to `~/.deepagents/config.toml`.
@@ -3130,10 +3194,10 @@ def clear_default_model(config_path: Path | None = None) -> bool:
                 data = tomllib.load(f)
 
             models_section = data.get("models")
-            if not isinstance(models_section, dict) or "default" not in models_section:
+            if not isinstance(models_section, dict) or field not in models_section:
                 return True  # Already absent
 
-            del models_section["default"]
+            del models_section[field]
 
             fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
             try:
@@ -3147,7 +3211,7 @@ def clear_default_model(config_path: Path | None = None) -> bool:
     except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
         # See `_save_toml_field` for why `TypeError` / `ValueError` are
         # folded into the bool return contract.
-        logger.exception("Could not clear default model preference")
+        logger.exception("Could not clear models.%s preference", field)
         return False
     else:
         global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement

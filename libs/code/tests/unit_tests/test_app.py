@@ -13097,6 +13097,19 @@ class TestAutoClassifierModelCommand:
         assert screen._recommended_models == _AUTO_CLASSIFIER_RECOMMENDED_MODELS
         assert screen._include_recent_models is False
 
+    async def test_auto_model_selector_persists_to_auto_classifier_key(self) -> None:
+        """Ctrl+S in the classifier picker must not retarget the agent's model."""
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        app = DeepAgentsApp(agent=MagicMock())
+        with patch.object(app, "push_screen") as push:
+            await app._show_auto_classifier_model_selector()
+
+        screen = push.call_args.args[0]
+        assert screen._default_scope == AUTO_CLASSIFIER_DEFAULT_SCOPE
+
     async def test_bare_auto_still_switches_approval_mode(self) -> None:
         """`/auto` without arguments keeps switching approval mode."""
         from deepagents_code.approval_mode import ApprovalMode

@@ -1,5 +1,6 @@
 """Tests for ModelSelectorScreen."""
 
+import tomllib
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
@@ -539,6 +540,141 @@ class TestRecommendedToggle:
             assert "Ctrl+R" not in str(help_text.content)
 
 
+class TestDefaultModelScope:
+    """Tests for which stored preference Ctrl+S writes.
+
+    The selector is shared by `/model` and the `/auto model` classifier picker,
+    so a scope mix-up would let the classifier picker retarget the model the
+    agent itself runs on.
+    """
+
+    @staticmethod
+    def _stub_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Reduce the catalog to a single deterministic row."""
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+    async def test_ctrl_s_writes_default_for_main_scope(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """`/model`'s Ctrl+S still stores `[models].default`."""
+        self._stub_catalog(monkeypatch)
+        config_path = tmp_path / "config.toml"
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+S set default" in str(help_widget.content)
+
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert "Default set to anthropic:claude-sonnet-5" in str(
+                help_widget.content
+            )
+
+        with config_path.open("rb") as handle:
+            data = tomllib.load(handle)
+        assert data["models"]["default"] == "anthropic:claude-sonnet-5"
+        assert "auto_classifier" not in data["models"]
+
+    async def test_ctrl_s_writes_auto_classifier_for_classifier_scope(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The `/auto model` picker stores `[models].auto_classifier`."""
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        config_path = tmp_path / "config.toml"
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+S set classifier default" in str(help_widget.content)
+
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert "Default classifier model set to anthropic:claude-sonnet-5" in str(
+                help_widget.content
+            )
+
+        with config_path.open("rb") as handle:
+            data = tomllib.load(handle)
+        assert data["models"]["auto_classifier"] == "anthropic:claude-sonnet-5"
+        assert "default" not in data["models"]
+
+    async def test_second_ctrl_s_clears_classifier_default(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Pressing Ctrl+S on the stored classifier removes it."""
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        config_path = tmp_path / "config.toml"
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert "Default classifier model cleared" in str(help_widget.content)
+
+        with config_path.open("rb") as handle:
+            data = tomllib.load(handle)
+        assert "auto_classifier" not in data.get("models", {})
+
+    async def test_classifier_scope_marks_stored_model_as_default(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The `(default)` marker reflects the stored classifier, not `default`."""
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        (tmp_path / "config.toml").write_text(
+            "[models]\n"
+            'default = "openai:gpt-5.6-luna"\n'
+            'auto_classifier = "anthropic:claude-sonnet-5"\n',
+            encoding="utf-8",
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert screen._default_spec == "anthropic:claude-sonnet-5"
+            assert "(default)" in str(screen._option_widgets[0].content)
+
+
 class TestNamesToggle:
     """Tests for the Ctrl+N names/raw-spec toggle in `/model`."""
 
@@ -648,7 +784,6 @@ class TestNamesToggle:
             lambda: {"anthropic": ["claude-sonnet-5"]},
         )
         monkeypatch.setattr(model_selector, "load_recent_models", list)
-        monkeypatch.setattr(model_selector, "save_default_model", lambda _spec: True)
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
@@ -682,11 +817,16 @@ class TestNamesToggle:
             lambda: {"anthropic": ["claude-sonnet-5"]},
         )
         monkeypatch.setattr(model_selector, "load_recent_models", list)
-        monkeypatch.setattr(model_selector, "save_default_model", lambda _spec: False)
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            # Inject a failing writer through the screen's scope, since that is
+            # the only path `action_set_default` saves through.
+            screen = ModelSelectorScreen(
+                default_scope=model_selector.MAIN_MODEL_DEFAULT_SCOPE._replace(
+                    save=lambda _spec: False
+                )
+            )
             app.push_screen(screen)
             await pilot.pause()
             screen._default_spec = None
@@ -2966,8 +3106,11 @@ class TestModelSelectorInstallRouting:
             include_uninstalled: bool = True,
             include_recent: bool = True,
             recommended_models: Mapping[str, str] | None = None,
+            default_scope: model_selector.DefaultModelScope = (
+                model_selector.MAIN_MODEL_DEFAULT_SCOPE
+            ),
         ) -> model_selector._ModelData:
-            del recommended_models
+            del recommended_models, default_scope
             captured["include_uninstalled"] = include_uninstalled
             captured["include_recent"] = include_recent
             return model_selector._ModelData(

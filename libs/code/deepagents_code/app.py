@@ -19066,8 +19066,9 @@ class DeepAgentsApp(App):
             f"uses {self._auto_classifier_model_label()}. A weaker model makes "
             "that review weaker; actions it cannot review are denied, and "
             "repeated review failures fall back to your approval.\n\n"
-            "Changes here apply to this session only. Set "
-            "`[models].auto_classifier` in config.toml for a persistent choice."
+            "Changes here apply to this session only. For a persistent choice, "
+            "press Ctrl+S in the `/auto model` picker or set "
+            "`[models].auto_classifier` in config.toml."
         )
 
     async def _handle_auto_command(self, command: str) -> None:
@@ -19102,7 +19103,10 @@ class DeepAgentsApp(App):
         """Open the model selector for choosing the Auto classifier model."""
         from deepagents_code.config import detect_provider, settings
         from deepagents_code.model_config import ModelSpec
-        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+            ModelSelectorScreen,
+        )
 
         current_provider = settings.model_provider
         current_model = settings.model_name
@@ -19166,9 +19170,11 @@ class DeepAgentsApp(App):
             description=(
                 "Recommended models favor lower latency and cost for repeated "
                 "reviews. A faster, cheaper model may review actions less "
-                "carefully. Clear it with `/auto model clear` to reuse the main "
-                "agent model."
+                "carefully. Enter applies the pick to this session; Ctrl+S "
+                "stores it as `[models].auto_classifier`. Clear it with `/auto "
+                "model clear` to reuse the main agent model."
             ),
+            default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE,
         )
         self.push_screen(screen, handle_result)
 
@@ -19280,8 +19286,9 @@ class DeepAgentsApp(App):
                 AppMessage(
                     f"Auto classifier model set to {display}{revalidated}; it "
                     "reviews gated actions from the next turn, for this session. "
-                    "Set `[models].auto_classifier` in config.toml to make it "
-                    "the default."
+                    "Press Ctrl+S in the `/auto model` picker, or set "
+                    "`[models].auto_classifier` in config.toml, to make it the "
+                    "default."
                 )
             )
         else:

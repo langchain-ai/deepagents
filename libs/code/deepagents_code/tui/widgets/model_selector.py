@@ -33,12 +33,14 @@ from deepagents_code.model_config import (
     ModelSpec,
     ProviderAuthState,
     ProviderAuthStatus,
+    clear_auto_classifier_model,
     clear_default_model,
     get_available_models,
     get_credential_env_var,
     get_model_profiles,
     get_provider_auth_status,
     load_recent_models,
+    save_auto_classifier_model,
     save_default_model,
 )
 
@@ -126,13 +128,65 @@ credentials for.
 """
 
 
+class DefaultModelScope(NamedTuple):
+    """Which stored preference Ctrl+S toggles, and how the footer names it.
+
+    The selector is reused for pickers that choose something other than the
+    main agent model (for example the `/auto` classifier), where persisting
+    `[models].default` would silently retarget the model the agent itself runs
+    on. Each caller supplies the config key its Ctrl+S owns.
+
+    Attributes:
+        noun: Sentence-initial name of the preference, used to build the
+            success/failure notices (e.g. `'default'` renders "Default set
+            to …" and "Failed to save default").
+        hint: Footer hint text following `'Ctrl+S '`.
+        load: Reads the currently stored spec, for the `(default)` marker.
+        save: Persists a spec, returning `False` on I/O failure.
+        clear: Removes the stored spec, returning `False` on I/O failure.
+    """
+
+    noun: str
+    hint: str
+    load: Callable[[], str | None]
+    save: Callable[[str], bool]
+    clear: Callable[[], bool]
+
+
+MAIN_MODEL_DEFAULT_SCOPE = DefaultModelScope(
+    noun="default",
+    hint="set default",
+    load=lambda: ModelConfig.load().default_model,
+    save=save_default_model,
+    clear=clear_default_model,
+)
+"""Ctrl+S target for `/model`: the main agent model (`[models].default`)."""
+
+AUTO_CLASSIFIER_DEFAULT_SCOPE = DefaultModelScope(
+    noun="default classifier model",
+    hint="set classifier default",
+    load=lambda: ModelConfig.load().auto_classifier_model,
+    save=save_auto_classifier_model,
+    clear=clear_auto_classifier_model,
+)
+"""Ctrl+S target for `/auto model`: the Auto approval classifier
+(`[models].auto_classifier`).
+
+Persisting is validation-free, like `/model`'s Ctrl+S. A stored classifier that
+cannot be built fails closed at review time — those actions are denied and
+repeated failures escalate to human approval — rather than quietly reverting to
+the main agent model.
+"""
+
+
 class _ModelData(NamedTuple):
     """Model discovery data returned by `ModelSelectorScreen._load_model_data`.
 
     Attributes:
         all_models: `(provider:model spec, provider)` pairs for every model to
             surface, including install-required recommended models.
-        default_spec: The configured default model spec, or `None`.
+        default_spec: The stored spec for the screen's `DefaultModelScope`, or
+            `None`.
         profiles: Spec string to profile entry mapping.
         recent_specs: Most-recent-first `provider:model` specs read from
             `~/.deepagents/.state/recent_models.json`.
@@ -380,6 +434,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         include_recent_models: bool = True,
         title: str | None = None,
         description: str | Content | None = None,
+        default_scope: DefaultModelScope = MAIN_MODEL_DEFAULT_SCOPE,
         result_callback: Callable[[tuple[str, str] | None], None] | None = None,
     ) -> None:
         """Initialize the ModelSelectorScreen.
@@ -401,6 +456,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 included in the recommended view.
             title: Optional title override for the selector.
             description: Optional description shown below the title.
+            default_scope: Preference Ctrl+S toggles. Defaults to the main agent
+                model; pickers that choose a different model (e.g. the `/auto`
+                classifier) must pass their own so Ctrl+S does not retarget the
+                agent's model.
             result_callback: Optional callback for selector results when the
                 screen is displayed without a `push_screen` result callback.
         """
@@ -417,6 +476,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._include_recent_models = include_recent_models
         self._title = title
         self._description = description
+        self._default_scope = default_scope
         self._result_callback = result_callback
         # Standard /model defaults to the curated recommended subset so users
         # face less decision fatigue; onboarding (`curated=True`) already
@@ -492,6 +552,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         The Ctrl+N hint names what the next press *does* rather than the
         current mode, so it reads "Ctrl+N IDs" while friendly names are shown
         and "Ctrl+N names" once rows are flipped to raw `provider:model` specs.
+        The Ctrl+S hint comes from the screen's `DefaultModelScope`, so a picker
+        that stores something other than the main agent model says so.
 
         Returns:
             The bullet-separated help line.
@@ -504,7 +566,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         ]
         if not self._curated:
             names_hint = "Ctrl+N names" if self._show_specs else "Ctrl+N IDs"
-            parts.extend(("Ctrl+S set default", "Ctrl+R recommended", names_hint))
+            parts.extend(
+                (
+                    f"Ctrl+S {self._default_scope.hint}",
+                    "Ctrl+R recommended",
+                    names_hint,
+                )
+            )
         sep = f" {glyphs.bullet} "
         return sep.join(parts)
 
@@ -583,6 +651,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         include_uninstalled: bool = True,
         include_recent: bool = True,
         recommended_models: Mapping[str, str] | None = None,
+        default_scope: DefaultModelScope = MAIN_MODEL_DEFAULT_SCOPE,
     ) -> _ModelData:
         """Gather model discovery data synchronously.
 
@@ -605,6 +674,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 "Recent" entry the user never chose.
             recommended_models: Recommendation set whose missing provider models
                 should be surfaced. `None` uses the standard model shortlist.
+            default_scope: Preference whose stored spec is read for the
+                `(default)` marker.
 
         Returns:
             A `_ModelData` bundle of the discovered models, default spec,
@@ -678,7 +749,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         recent_specs = load_recent_models() if include_recent else []
         return _ModelData(
             all_models,
-            config.default_model,
+            default_scope.load(),
             profiles,
             recent_specs,
             install_extras,
@@ -781,6 +852,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 include_uninstalled=True,
                 include_recent=self._include_recent_models and not self._curated,
                 recommended_models=self._recommended_models,
+                default_scope=self._default_scope,
             )
         except Exception:
             logger.exception("Failed to load model data for /model selector")
@@ -1891,46 +1963,53 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self.app.push_screen(CodexAuthScreen(), _on_codex_done)
 
     async def action_set_default(self) -> None:
-        """Toggle the highlighted model as the default.
+        """Toggle the highlighted model as the screen's stored default.
 
-        If the highlighted model is already the default, clears it.
-        Otherwise sets it as the new default.
+        If the highlighted model is already stored, clears it. Otherwise stores
+        it. Which preference is written — and how the footer names it — comes
+        from the screen's `DefaultModelScope`, so the `/auto` classifier picker
+        cannot silently retarget the main agent model.
         """
         if not self._filtered_models or not self._option_widgets:
             return
 
+        scope = self._default_scope
         model_spec, _provider = self._filtered_models[self._selected_index]
         help_widget = self.query_one(".model-selector-help", Static)
+        noun = scope.noun
+        sentence_noun = noun[0].upper() + noun[1:]
 
         if model_spec == self._default_spec:
-            # Already default — clear it
-            if await asyncio.to_thread(clear_default_model):
+            # Already stored — clear it
+            if await asyncio.to_thread(scope.clear):
                 self._default_spec = None
                 self.call_after_refresh(self._update_display)
-                help_widget.update(Content.styled("Default cleared", "bold"))
+                help_widget.update(Content.styled(f"{sentence_noun} cleared", "bold"))
                 self.set_timer(3.0, self._restore_help_text)
             else:
                 help_widget.update(
                     Content.styled(
-                        "Failed to clear default",
+                        f"Failed to clear {noun}",
                         f"bold {theme.get_theme_colors(self).error}",
                     )
                 )
                 self._help_error_shown = True
                 self.set_timer(3.0, self._restore_help_text)
-        elif await asyncio.to_thread(save_default_model, model_spec):
+        elif await asyncio.to_thread(scope.save, model_spec):
             self._default_spec = model_spec
             self.call_after_refresh(self._update_display)
             help_widget.update(
                 Content.from_markup(
-                    "[bold]Default set to $spec[/bold]", spec=model_spec
+                    "[bold]$noun set to $spec[/bold]",
+                    noun=sentence_noun,
+                    spec=model_spec,
                 )
             )
             self.set_timer(3.0, self._restore_help_text)
         else:
             help_widget.update(
                 Content.styled(
-                    "Failed to save default",
+                    f"Failed to save {noun}",
                     f"bold {theme.get_theme_colors(self).error}",
                 )
             )

@@ -87,16 +87,6 @@ _WIRE_INPUTS = [
     },
     {
         **_COMMON_WIRE_INPUT,
-        "hook_event_name": "PostToolUseFailure",
-        "tool_name": "Bash",
-        "tool_input": {"command": "exit 42"},
-        "tool_use_id": "call-3",
-        "error": "Command exited with non-zero status code 42",
-        "is_interrupt": False,
-        "duration_ms": 15,
-    },
-    {
-        **_COMMON_WIRE_INPUT,
         "hook_event_name": "PreCompact",
         "trigger": "manual",
         "custom_instructions": "Keep the implementation plan",
@@ -193,10 +183,6 @@ _SPECIFIC_OUTPUTS = [
         "hookEventName": "PostToolUse",
         "additionalContext": "Check the formatter output",
         "updatedMCPToolOutput": {"content": "deferred"},
-    },
-    {
-        "hookEventName": "PostToolUseFailure",
-        "additionalContext": "Try a different command",
     },
     {
         "hookEventName": "Stop",

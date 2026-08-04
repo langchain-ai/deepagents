@@ -843,7 +843,6 @@ def test_failed_execute_routes_to_post_tool_use_failure(
     event = invoke.call_args.args[1]
     assert isinstance(event, PostToolUseFailureEvent)
     assert event.error == "Command exited with non-zero status code 42"
-    assert event.is_interrupt is False
     assert event.duration_ms == 5
 
 

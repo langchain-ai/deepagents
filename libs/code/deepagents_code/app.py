@@ -15388,15 +15388,29 @@ class DeepAgentsApp(App):
                 if self._chat_input:
                     self._chat_input.set_cursor_active(active=False)
 
+                from functools import partial
+
                 # Use run_worker to avoid blocking the main event loop
                 # This allows the UI to remain responsive during agent execution
-                self._agent_worker = self.run_worker(
-                    self._run_agent_task(
-                        message,
-                        message_kwargs=message_kwargs,
-                        goal_notice_current=resuming_blocked,
-                    ),
-                    exclusive=False,
+                #
+                # Passed as a callable rather than a coroutine: a worker
+                # cancelled before its first event-loop step never runs its
+                # work, and an already-built coroutine would then be finalized
+                # unawaited (`RuntimeWarning`, plus an unraisable exception when
+                # the interpreter is far enough into teardown). Building it
+                # inside the worker means nothing exists to strand.
+                turn: Callable[[], Coroutine[None, None, None]] = partial(
+                    self._run_agent_task,
+                    message,
+                    message_kwargs=message_kwargs,
+                    goal_notice_current=resuming_blocked,
+                )
+                # Cast because Textual's `WorkType` alias admits both a
+                # coroutine factory and a plain callable, so the result type
+                # infers as the union rather than the `None` the turn returns.
+                self._agent_worker = cast(
+                    "Worker[None]",
+                    self.run_worker(turn, name="_run_agent_task", exclusive=False),
                 )
                 worker_started = True
             finally:

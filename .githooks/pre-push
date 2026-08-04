@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# pre-push hook: enforce the repo branch naming convention
+#   <github-username>/<scope>/<short-description>
+# on branches pushed to this repo. See the "Branch naming" section of AGENTS.md.
+#
+# Install (wires core.hooksPath to the committed .githooks/ directory):
+#   git config core.hooksPath .githooks
+#
+# This is a local convenience only — it can be skipped with `git push --no-verify`.
+# Server-side enforcement lives in .github/workflows/branch_name_check.yml.
+
+set -euo pipefail
+
+# Protected branches and automation branch prefixes that never carry a
+# <github-username>/ prefix.
+ALLOWED_RE='^(main|master|v[0-9]+\.[0-9]+.*)$'
+ALLOWED_PREFIX_RE='^(release-please--|dependabot/|copilot/)'
+
+# Scopes mirror the allowed scopes in .github/workflows/pr_lint.yml plus `docs`,
+# which AGENTS.md lists as a valid branch scope. Keep this list in sync with the
+# CI check in .github/workflows/branch_name_check.yml.
+SCOPES_RE='(acp|ci|cli|code|dcode-gha|daytona|deepagents|deepagents-acp|deepagents-cli|deepagents-code|deepagents-talon|deps|deps-dev|docs|evals|examples|harbor|infra|langchain-daytona|langchain-modal|langchain-quickjs|langchain-runloop|langchain-vercel-sandbox|langsmith-sandbox|modal|quickjs|repo|runloop|sdk|talon|vercel)'
+
+# Resolve the expected GitHub login. `github.user` is not set by default; the
+# cleanest fallback is the GitHub login recorded by the GitHub CLI (`gh`), then
+# the local part of the committer email (a common personal convention).
+github_user="$(git config --get github.user || true)"
+if [ -z "$github_user" ] && command -v gh >/dev/null 2>&1; then
+    github_user="$(gh api user --jq .login 2>/dev/null || true)"
+fi
+if [ -z "$github_user" ]; then
+    email="$(git config --get user.email || true)"
+    github_user="${email%@*}"
+fi
+
+fail=0
+# pre-push receives "<local ref> <local sha> <remote ref> <remote sha>" per line
+# on stdin. A local sha of all zeros means the branch is being deleted remotely;
+# nothing to validate in that case.
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+
+    branch="${remote_ref#refs/heads/}"
+    [ "$branch" = "$remote_ref" ] && continue  # not a branch push (e.g. a tag)
+
+    if [[ "$branch" =~ $ALLOWED_RE ]] || [[ "$branch" =~ $ALLOWED_PREFIX_RE ]]; then
+        continue
+    fi
+
+    if [ -z "$github_user" ]; then
+        cat >&2 <<'EOF'
+error: could not determine your GitHub username to validate the branch name.
+Set it with: git config github.user <your-github-login>
+EOF
+        fail=1
+        continue
+    fi
+
+    if [[ ! "$branch" =~ ^${github_user}/${SCOPES_RE}/[a-z0-9][a-z0-9-]*[a-z0-9]$ ]]; then
+        cat >&2 <<EOF
+error: branch '$branch' does not follow the repo naming convention.
+
+  expected: <github-username>/<scope>/<short-description>
+  example:  ${github_user}/cli/startup-cmd-flag
+
+Your resolved GitHub username is '$github_user' (override with: git config github.user <login>).
+Scopes: $(echo "$SCOPES_RE" | tr -d '()' | tr '|' ' ') (see pr_lint.yml for the authoritative list).
+
+Rename with: git branch -m <new-name>
+Bypass with: git push --no-verify
+EOF
+        fail=1
+    fi
+done
+
+exit "$fail"

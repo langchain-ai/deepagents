@@ -104,6 +104,22 @@ pre-commit install --install-hooks
 
 The hooks run `make format lint` for changed packages and validate commit messages, so most CI lint failures are caught before you push.
 
+### Branch-name pre-push hook
+
+The repo also commits a `pre-push` hook under `.githooks/` that rejects pushes of branches that don't follow the `<github-username>/<scope>/<short-description>` convention (e.g. `mdrxy/cli/startup-cmd-flag`). To enable it, point git at that directory once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+The hook resolves your GitHub login from `git config github.user`, falling back to `gh api user` and then the local part of `user.email`. If the fallback is wrong, set it explicitly:
+
+```bash
+git config github.user <your-github-login>
+```
+
+Protected branches (`main`, `vX.Y`) and automation branches (`release-please--*`, `dependabot/*`, `copilot/*`) are always allowed. The hook is a local convenience and can be skipped with `git push --no-verify`; CI surfaces the same rule as a non-blocking warning on PR head branches (see `.github/workflows/branch_name_check.yml`).
+
 ## Contributing conventions
 
 The full conventions live in [`AGENTS.md`](../AGENTS.md) at the repo root. The points most likely to trip up a first PR:

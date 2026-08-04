@@ -62,9 +62,8 @@ class TestGlyphs:
         for frame in UNICODE_GLYPHS.spinner_frames:
             assert ord(frame) > 127
         # Box-drawing characters
-        assert ord(UNICODE_GLYPHS.box_vertical) > 127
         assert ord(UNICODE_GLYPHS.box_horizontal) > 127
-        assert ord(UNICODE_GLYPHS.box_double_horizontal) > 127
+        assert ord(UNICODE_GLYPHS.hunk_break) > 127
 
     def test_ascii_glyphs_are_ascii(self) -> None:
         """Test that ASCII_GLYPHS contains only ASCII characters."""
@@ -99,11 +98,7 @@ class TestGlyphs:
         for frame in ASCII_GLYPHS.spinner_frames:
             for char in frame:
                 assert ord(char) < 128
-        for char in ASCII_GLYPHS.box_vertical:
-            assert ord(char) < 128
         for char in ASCII_GLYPHS.box_horizontal:
-            assert ord(char) < 128
-        for char in ASCII_GLYPHS.box_double_horizontal:
             assert ord(char) < 128
         for char in ASCII_GLYPHS.hunk_break:
             assert ord(char) < 128
@@ -132,9 +127,7 @@ class TestGlyphs:
             "bullet",
             "cursor",
             # Box-drawing characters
-            "box_vertical",
             "box_horizontal",
-            "box_double_horizontal",
             "hunk_break",
         ]
         for field in required_fields:
@@ -281,16 +274,12 @@ class TestGlyphUsability:
 
     def test_unicode_box_drawing_characters(self) -> None:
         """Test Unicode box-drawing characters are the expected characters."""
-        assert UNICODE_GLYPHS.box_vertical == "│"
         assert UNICODE_GLYPHS.box_horizontal == "─"
-        assert UNICODE_GLYPHS.box_double_horizontal == "═"
         assert UNICODE_GLYPHS.hunk_break == "⋮"
 
     def test_ascii_box_drawing_characters(self) -> None:
         """Test ASCII box-drawing alternatives are simple ASCII."""
-        assert ASCII_GLYPHS.box_vertical == "|"
         assert ASCII_GLYPHS.box_horizontal == "-"
-        assert ASCII_GLYPHS.box_double_horizontal == "="
         assert ASCII_GLYPHS.hunk_break == ":"
 
 

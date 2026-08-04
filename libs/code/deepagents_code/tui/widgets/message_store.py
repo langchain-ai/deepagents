@@ -316,7 +316,11 @@ class MessageData:
                 widget._deferred_duration = self.tool_duration
                 widget._deferred_expanded = self.tool_expanded
                 widget._deferred_reject_reason = self.tool_reject_reason
-                widget._diff_superseded = self.tool_diff_superseded
+                if self.tool_diff_superseded:
+                    # Go through the widget's own setter so a rehydrated row
+                    # passes the same tool-name guard as the live path; writing
+                    # the flag directly could hide a row no diff can replace.
+                    widget.mark_superseded_by_diff()
                 return widget
 
             case MessageType.SKILL:

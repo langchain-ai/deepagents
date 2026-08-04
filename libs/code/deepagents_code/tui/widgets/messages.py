@@ -2162,8 +2162,24 @@ class ToolCallMessage(Vertical):
                 self._visibility_accessories.append(accessory)
         self._sync_own_hide_accessories()
 
+    @property
+    def has_own_hide_reason(self) -> bool:
+        """Whether this row hides itself, regardless of any group collapse.
+
+        Group code must consult this before revealing a row: the two mechanisms
+        are independent, so an unconditional `display = True` would reveal a row
+        that is hiding for its own reasons.
+        """
+        return self._awaiting_approval or self._superseded_by_diff
+
     def _apply_own_visibility(self) -> None:
-        """Apply self-hide reasons without disturbing group visibility."""
+        """Apply self-hide reasons without disturbing group visibility.
+
+        Only touches `display` when a self-hide reason applies or is being
+        released, so a row the group has collapsed stays collapsed. The other
+        direction is `has_own_hide_reason`, which group code checks before
+        revealing.
+        """
         if self._awaiting_approval or self._superseded_by_diff:
             self.display = False
             self._self_hidden = True
@@ -3778,19 +3794,27 @@ The file-mutating tools — the only ones that produce a diff to head.
 def _diff_header_verb(tool_name: str | None) -> str:
     """Return the past-tense verb naming the change a diff shows.
 
-    Reads the group-summary phrase tables so a newly added file tool picks up a
-    diff header verb from the same place it gets its summary phrasing.
+    The verb text is shared with the group-summary tables, but eligibility is
+    not: a newly added file tool needs an entry in `_DIFF_HEADER_CATEGORIES` as
+    well, or it heads its diff with no verb at all.
 
     Args:
         tool_name: Raw name of the tool that produced the diff.
 
     Returns:
-        The verb, or empty when the tool does not mutate a file.
+        The verb, or empty when the tool does not mutate a file or has no
+        phrasing registered for its category.
     """
     category = _TOOL_SUMMARY_CATEGORY.get(tool_name or "", "")
     if category not in _DIFF_HEADER_CATEGORIES:
         return ""
-    return _TOOL_SUMMARY_PHRASES[category][1]
+    phrases = _TOOL_SUMMARY_PHRASES.get(category)
+    if phrases is None:
+        # A category listed as diff-eligible but never given phrasing. Losing
+        # the verb beats raising inside `compose` and killing the whole diff.
+        logger.warning("No summary phrasing registered for category %r", category)
+        return ""
+    return phrases[1]
 
 
 _Tense = Literal["present", "past"]
@@ -3907,6 +3931,16 @@ _TOOL_GROUP_COLLAPSED_ACCESSORY_CLASS = "-tool-group-collapsed-accessory"
 See `_TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS` for why the two hide reasons carry
 separate classes and why neither may be replaced by assigning `display`.
 """
+
+
+def _hides_itself(widget: Widget) -> bool:
+    """Whether a widget is hiding itself for reasons a group must not override.
+
+    Returns:
+        `True` when the widget tracks its own hide reasons and one applies. Only
+        `ToolCallMessage` does; anything else is governed by its group alone.
+    """
+    return isinstance(widget, ToolCallMessage) and widget.has_own_hide_reason
 
 
 class ToolGroupSummary(Static):
@@ -4103,7 +4137,7 @@ class ToolGroupSummary(Static):
         """
         for widget in list(self._collapsible):
             self._release_collapsible(widget)
-            if widget.is_attached:
+            if widget.is_attached and not _hides_itself(widget):
                 widget.display = True
 
     def reveal_pending(self) -> None:
@@ -4114,7 +4148,7 @@ class ToolGroupSummary(Static):
         for tool in pending:
             self._tools.remove(tool)
             self._release_collapsible(tool)
-            if tool.is_attached and not tool._awaiting_approval:
+            if tool.is_attached and not _hides_itself(tool):
                 tool.display = True
         self._present_text = self._past_text = self._present_key = None
         in_progress = self._sync_lifecycle()
@@ -4181,7 +4215,7 @@ class ToolGroupSummary(Static):
         for tool in failed:
             self._tools.remove(tool)
             self._release_collapsible(tool)
-            if tool.is_attached:
+            if tool.is_attached and not _hides_itself(tool):
                 tool.display = True
         self._present_text = self._past_text = self._present_key = None
 
@@ -4244,9 +4278,14 @@ class ToolGroupSummary(Static):
         and nothing revisits a skipped accessory, so guarding on `is_attached`
         here would leave a late-mounted footer stranded visible over a hidden
         row.
+
+        Expanding the group does not reveal a widget hiding for its own reasons
+        (`_hides_itself`); its accessories still follow the group, since their
+        self-hide reasons carry their own independent classes.
         """
-        if widget.is_attached and widget.display != visible:
-            widget.display = visible
+        target = visible and not _hides_itself(widget)
+        if widget.is_attached and widget.display != target:
+            widget.display = target
         for accessory in self._accessories.get(widget, []):
             accessory.set_class(not visible, _TOOL_GROUP_COLLAPSED_ACCESSORY_CLASS)
 
@@ -4320,8 +4359,8 @@ class DiffMessage(Static):
         margin-bottom: 1;
     }
     """
-    """Only a left rail and padding — the per-row gutters and backgrounds
-    carry the diff's color."""
+    """Deliberately carries no per-line color: the row gutters and the
+    `.diff-line-*` backgrounds supply it."""
 
     def __init__(
         self,
@@ -4386,13 +4425,17 @@ class DiffMessage(Static):
                 Content.styled("Diff hidden — file may contain credentials", "dim")
             )
         else:
-            additions, deletions = self._stats or count_diff_changes(self._diff_content)
+            stats = (
+                self._stats
+                if self._stats is not None
+                else count_diff_changes(self._diff_content)
+            )
             if self._changes_unknown:
                 # The pre-edit content was lost, so both the counts and an empty
                 # diff would be fiction. Say so rather than assert either.
                 parts.append(("  changes could not be determined", "dim"))
-            elif additions or deletions:
-                parts += ["  ", format_diff_stats(additions, deletions)]
+            elif stats.additions or stats.deletions:
+                parts += ["  ", format_diff_stats(stats)]
             elif not self._diff_content:
                 parts.append(("  no changes", "dim"))
             header = Content.assemble(*parts)

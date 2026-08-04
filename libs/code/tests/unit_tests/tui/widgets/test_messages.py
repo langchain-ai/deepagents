@@ -20,6 +20,7 @@ from textual.widgets import Markdown, Static
 
 from deepagents_code import theme
 from deepagents_code._ask_user_types import ASK_USER_ANSWERED_SUMMARY
+from deepagents_code.diff_utils import DiffStats
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import (
@@ -769,6 +770,39 @@ class TestDiffMessageNoChanges:
         """The header reports the no-op; no empty diff body follows it."""
         texts = self._texts(DiffMessage("", "main.py", tool_name="edit_file"))
         assert texts == ["Edited main.py  no changes"]
+
+    def test_header_counts_come_from_stats_not_the_truncated_body(self) -> None:
+        """Counting the rendered body would undercount a clipped diff.
+
+        The whole reason `stats` is threaded through the adapter and the store is
+        that the body may be truncated, so the header must report the counts
+        taken before truncation.
+        """
+        diff = "--- a/m.py\n+++ b/m.py\n@@ -1,1 +1,1 @@\n-old\n+new\n..."
+        texts = self._texts(
+            DiffMessage(
+                diff, "m.py", tool_name="edit_file", stats=DiffStats(1000, 1000)
+            )
+        )
+        assert texts[0] == "Edited m.py  +1000 -1000"
+
+    def test_header_counts_fall_back_to_the_body_without_stats(self) -> None:
+        """An untruncated diff carries its own counts."""
+        diff = "--- a/m.py\n+++ b/m.py\n@@ -1,1 +1,1 @@\n-old\n+new"
+        texts = self._texts(DiffMessage(diff, "m.py", tool_name="edit_file"))
+        assert texts[0] == "Edited m.py  +1 -1"
+
+    def test_zero_stats_do_not_suppress_a_recount(self) -> None:
+        """`DiffStats(0, 0)` is a truthy tuple, so `or` would let it win.
+
+        A stored all-zero pair reaching a non-empty body must not blank the
+        header: the counts are wrong, not absent.
+        """
+        diff = "--- a/m.py\n+++ b/m.py\n@@ -1,1 +1,1 @@\n-old\n+new"
+        texts = self._texts(
+            DiffMessage(diff, "m.py", tool_name="edit_file", stats=DiffStats(0, 0))
+        )
+        assert texts[0] == "Edited m.py"
 
     def test_unreadable_before_content_does_not_claim_no_changes(self) -> None:
         """Without the pre-edit content, "no changes" would be a false claim."""

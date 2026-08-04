@@ -1968,10 +1968,15 @@ async def execute_task_textual(
                                     # set when the tool's own output reports a
                                     # failure, where claiming the operation
                                     # succeeded would be a false statement.
-                                    # Applies to every tracked file tool —
-                                    # `write_file` and `delete` reach the same
-                                    # read-back failure.
-                                    detail = record.error or "Diff tracking failed."
+                                    # Reachable for `write_file` and `edit_file`
+                                    # only; `delete` synthesizes an empty
+                                    # post-image instead of reading one back, so
+                                    # it has no read to fail.
+                                    detail = (
+                                        record.after_read_error
+                                        or record.error
+                                        or "Diff tracking failed."
+                                    )
                                     tool_msg.set_error(
                                         f"The {record.tool_name} succeeded, but its "
                                         f"changes could not be displayed: {detail}"
@@ -2054,10 +2059,7 @@ async def execute_task_textual(
                             )
 
                         # Show file operation results - always show diffs in
-                        # chat. For the superseded-by-diff tool (`edit_file`)
-                        # this also mounts on an *empty* diff: the tool row is
-                        # about to hide, so the header ("no changes") has to
-                        # stand in for it.
+                        # chat.
                         if record:
                             pending_text = pending_text_by_namespace.get(ns_key, "")
                             if pending_text:

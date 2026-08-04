@@ -136,6 +136,13 @@ class FileOperationRecord:
     Distinct from a tool-reported failure: the operation itself succeeded, only
     its result could not be displayed.
     """
+    after_read_error: str | None = None
+    """Why the post-operation read failed, as reported by the backend or OS.
+
+    Carried separately from `error`, which holds the fixed caller-facing summary;
+    without this the user is told only that the content could not be read, which
+    restates the problem instead of explaining it.
+    """
     change_invisible_to_line_diff: bool = False
     """The file's bytes changed, but `diff` is empty because the change lives
     entirely in line terminators — a trailing newline added or removed, or a
@@ -411,19 +418,20 @@ class FileOpTracker:
                     ):
                         record.before_content = responses[0].content.decode("utf-8")
                     else:
-                        # A missing file is the normal create case, not a
-                        # failure; anything else means we lost the pre-image
-                        # and every downstream diff is suspect. A response
-                        # carrying neither content nor an error violates the
-                        # backend contract, so it counts as "anything else" —
-                        # never as an absent file.
+                        # A missing file is the normal create case only for
+                        # `write_file`; for an edit or a delete that reports
+                        # success it means we lost the pre-image. Anything else
+                        # means the same, and a response carrying neither
+                        # content nor an error violates the backend contract,
+                        # so it never counts as an absent file either. Every
+                        # such case leaves a diff that cannot be trusted.
                         if not responses:
                             error = "no response"
                         else:
                             error = (
                                 responses[0].error or "no content and no error reported"
                             )
-                        if error != FILE_NOT_FOUND:
+                        if error != FILE_NOT_FOUND or tool_name != "write_file":
                             logger.warning(
                                 "Could not read pre-edit content for %s: %s",
                                 path_str,
@@ -580,15 +588,32 @@ class FileOpTracker:
                     ):
                         record.after_content = responses[0].content.decode("utf-8")
                     else:
+                        # Keep the backend's reason: it is the only thing that
+                        # can tell the user *why* a successful write cannot be
+                        # shown, and the caller's own message is a tautology
+                        # without it.
+                        if not responses:
+                            reason = "no response"
+                        else:
+                            reason = (
+                                responses[0].error or "no content and no error reported"
+                            )
+                        logger.warning(
+                            "Could not read post-edit content for %s: %s",
+                            file_path,
+                            reason,
+                        )
+                        record.after_read_error = reason
                         record.after_content = None
                 else:
                     record.after_content = None
             except (OSError, UnicodeDecodeError, AttributeError) as e:
-                logger.debug(
-                    "Failed to read after_content for %s: %s",
+                logger.warning(
+                    "Could not read post-edit content for %s: %s",
                     record.args.get("file_path") or record.args.get("path"),
                     e,
                 )
+                record.after_read_error = str(e)
                 record.after_content = None
         else:
             # Fallback: direct filesystem read when no backend provided

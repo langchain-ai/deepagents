@@ -20,7 +20,7 @@ from textual.widgets import Static
 
 from deepagents_code import theme
 from deepagents_code.config import get_glyphs
-from deepagents_code.diff_utils import HUNK_RE, file_header_indexes
+from deepagents_code.diff_utils import HUNK_RE, DiffStats, file_header_indexes
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -48,10 +48,19 @@ _MAX_EMPHASIS_LEN = 400
 single-line JSON would stall the compose path. Longer lines render unemphasised.
 """
 
-_MAX_HIGHLIGHT_CHARS = 400_000
+_MAX_HIGHLIGHT_CHARS = 200_000
 """Largest source prefix worth lexing for syntax highlighting.
 
 Above this the side is skipped and its rows render as plain text.
+
+The prefix has to start at line 1 — the lexer needs the preceding source to know
+whether the changed lines sit inside a string or comment — so its size is set by
+how far into the file the edit is, not by how much of it is rendered. That makes
+this constant the bound on two separate costs: lexing runs synchronously in
+`compose`, measured at roughly 0.34 ms per 1,000 characters (~70 ms here, plus a
+one-off ~150 ms to build the lexer on the session's first diff), and the prefix
+is retained per message by `MessageData` so a rehydrated diff can re-highlight.
+Raising it slows the diff mount and grows the transcript's memory in step.
 """
 
 _Range = tuple[int, int]
@@ -59,20 +68,30 @@ _DiffRowKind = Literal["context", "added", "removed"]
 _ChangedRowKind = Literal["added", "removed"]
 _RowKind = Literal["context", "added", "removed", "separator", "truncated", "note"]
 
+# A changed row's color builds up in three tiers of the same hue, each darker
+# than the last: the row background from `.diff-line-added`/`.diff-line-removed`
+# in `app.tcss` (10%), the gutter below (20%), and the words that actually
+# changed (30%, applied per-span in `_compose_diff_content`). Keep them ordered
+# that way — equal tiers flatten the row and lose the distinction.
+#
+# All three maps are keyed over a total row kind so a new one fails type-checking
+# here rather than silently rendering with no marker or emphasis.
 _GUTTERS: dict[_DiffRowKind, str] = {
     "added": "$text-success 80% on $success 20%",
     "removed": "$text-error 80% on $error 20%",
     "context": "$foreground 30% on $foreground 3%",
 }
 
-_MARKERS: dict[_ChangedRowKind, tuple[str, str]] = {
+_MARKERS: dict[_DiffRowKind, tuple[str, str]] = {
     "added": ("+", "$text-success"),
     "removed": ("-", "$text-error"),
+    "context": (" ", ""),
 }
 
-_EMPHASIS: dict[_ChangedRowKind, str] = {
+_EMPHASIS: dict[_DiffRowKind, str] = {
     "added": "on $success 30%",
     "removed": "on $error 30%",
+    "context": "",
 }
 
 
@@ -107,7 +126,11 @@ def compose_diff_lines(
 
     Args:
         diff: Unified diff string.
-        max_lines: Maximum number of diff lines to show (None for unlimited).
+        max_lines: Maximum number of *rendered rows* to show (None for
+            unlimited). Rows are not diff lines: file and hunk headers are
+            dropped and hunk separators added, so this does not correspond to a
+            line count in `diff`. Rows are dropped from the end, which can split
+            a removed/added run and drop word emphasis on the surviving half.
         path: Path of the diffed file, used to pick a syntax highlighter.
         before: Source aligned to the diff's *old* line numbers. May be a
             truncated prefix or empty; rows whose text does not match the
@@ -118,7 +141,8 @@ def compose_diff_lines(
             edit fragments, whose hunks always start at 1.
 
     Yields:
-        One `Static` per rendered row.
+        One `Static` per rendered row, plus a trailing count when rows were
+        dropped to fit `max_lines`.
     """
     if not diff:
         yield Static(Content.styled("No changes detected", "dim"))
@@ -128,24 +152,26 @@ def compose_diff_lines(
         )
 
 
-def format_diff_stats(additions: int, deletions: int) -> Content:
+def format_diff_stats(stats: DiffStats) -> Content:
     """Format addition/deletion counts as styled `+N -M` content.
 
+    Takes the pair as a `DiffStats` rather than two ints so the counts cannot be
+    transposed on the way to the one place the user reads them.
+
     Args:
-        additions: Number of added lines.
-        deletions: Number of removed lines.
+        stats: Line counts for the change.
 
     Returns:
         Styled content, empty when both counts are zero.
     """
     colors = theme.get_theme_colors()
     parts: list[str | tuple[str, str] | Content] = []
-    if additions:
-        parts.append((f"+{additions}", colors.success))
-    if deletions:
+    if stats.additions:
+        parts.append((f"+{stats.additions}", colors.success))
+    if stats.deletions:
         if parts:
             parts.append(" ")
-        parts.append((f"-{deletions}", colors.error))
+        parts.append((f"-{stats.deletions}", colors.error))
     return Content.assemble(*parts) if parts else Content("")
 
 
@@ -215,8 +241,8 @@ def _compose_diff_content(
             yield Static(Content.from_markup("[dim]$text[/dim]", text=row.text))
             continue
         body = highlighted.get(index) or Content(row.text)
-        marker, marker_style = _MARKERS.get(row.kind, (" ", ""))
-        if emphasis_style := _EMPHASIS.get(row.kind):
+        marker, marker_style = _MARKERS[row.kind]
+        if emphasis_style := _EMPHASIS[row.kind]:
             for start, end in emphasis.get(index, []):
                 body = body.stylize(emphasis_style, start, end)
         parts: list[Content | str | tuple[str, str]] = []
@@ -240,6 +266,10 @@ def _highlighted_rows(
     multi-line constructs (docstrings, block comments) resolve correctly rather
     than reopening at the hunk boundary. Rows outside that prefix, or whose text
     has drifted from the source, are omitted and render as plain text.
+
+    Assumes a single-file diff, as `before`/`after` are one file's contents: rows
+    are matched to source by line number, which restarts per file in a multi-file
+    diff and would collide.
     """
     if not path:
         return {}
@@ -256,18 +286,46 @@ def _highlighted_rows(
             continue
         for number, index in wanted.items():
             line = lines[number - 1] if 0 < number <= len(lines) else None
-            if line is not None and line.plain == rows[index].text:
-                highlighted[index] = line
+            if line is None:
+                continue
+            if line.plain != rows[index].text:
+                # The source no longer matches the diff it came with — a stale
+                # rehydration, or `before`/`after` belonging to another file.
+                # Rendering plain is right, but it also hides a real
+                # misalignment, so leave a trace.
+                logger.debug(
+                    "Highlight source drifted from diff at %s line %d", path, number
+                )
+                continue
+            highlighted[index] = line
     return highlighted
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=16)
 def _highlight_lines(code: str, path: str) -> tuple[Content, ...] | None:
-    """Return highlighted source lines, or `None` if lexing fails."""
+    """Return highlighted source lines, or `None` if lexing fails.
+
+    Cached because scrolling rebuilds a `DiffMessage` from `MessageData` on every
+    pass, and each mount would otherwise re-lex both sides. Two entries per diff,
+    so this holds the last eight — enough that paging through recent history
+    stays free, bounded by `_MAX_HIGHLIGHT_CHARS` per entry.
+
+    Failures are cached too: a file whose lexer cannot parse it will not parse on
+    the next scroll either, and retrying would pay the cost to fail again.
+    """
     try:
         return tuple(highlight(code, path=path, tab_size=0).split("\n"))
+    except (ValueError, LookupError) as e:
+        # No usable lexer for this path — expected for unknown extensions.
+        logger.debug("No usable lexer for %s: %s", path, e)
+        return None
     except Exception:
-        logger.debug("Syntax highlighting failed for %s", path, exc_info=True)
+        # Anything else is a bug here or a Textual API change, not a missing
+        # lexer. Highlighting is cosmetic, so still degrade to plain text, but
+        # say so at a level that will actually be seen.
+        logger.warning(
+            "Syntax highlighting failed unexpectedly for %s", path, exc_info=True
+        )
         return None
 
 

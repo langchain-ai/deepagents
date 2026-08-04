@@ -10,7 +10,7 @@ from textual.content import Content
 from textual.widgets import Markdown, Static
 
 from deepagents_code import theme
-from deepagents_code.diff_utils import count_diff_change_lines
+from deepagents_code.diff_utils import DiffStats, count_diff_change_lines
 from deepagents_code.file_ops import is_sensitive_file_path
 from deepagents_code.tui.widgets.diff import compose_diff_lines, format_diff_stats
 
@@ -24,6 +24,9 @@ _MAX_VALUE_LEN = 200
 _MAX_LINES = 30
 _MAX_DIFF_LINES = 50
 _MAX_PREVIEW_LINES = 20
+
+_NO_STATS = DiffStats(0, 0)
+"""Stand-in for a header with no counts to show."""
 
 
 def format_display_content(content: object) -> str:
@@ -43,24 +46,21 @@ def format_display_content(content: object) -> str:
         return str(content)
 
 
-def _file_header(
-    file_path: str, additions: int = 0, deletions: int = 0
-) -> ComposeResult:
+def _file_header(file_path: str, stats: DiffStats = _NO_STATS) -> ComposeResult:
     """Yield the `File:` path header with optional `+N -M` stats.
 
     Args:
         file_path: Path to the file being modified.
-        additions: Number of added lines.
-        deletions: Number of removed lines.
+        stats: Line counts for the change; zeros render no counts.
 
     Yields:
         Static widgets for the file path header and a spacer line.
     """
-    stats = format_diff_stats(additions, deletions)
+    stats_content = format_diff_stats(stats)
     yield Static(
         Content.assemble(
             Content.from_markup("[bold cyan]File:[/bold cyan] $path  ", path=file_path),
-            stats,
+            stats_content,
         )
     )
     yield Static("")
@@ -68,7 +68,7 @@ def _file_header(
 
 def _count_diff_stats(
     diff_lines: list[str], old_string: str, new_string: str
-) -> tuple[int, int]:
+) -> DiffStats:
     """Count additions and deletions from diff data.
 
     Args:
@@ -77,14 +77,14 @@ def _count_diff_stats(
         new_string: Replacement text (fallback when no diff).
 
     Returns:
-        Tuple of (additions count, deletions count).
+        Line counts for the change.
     """
     if diff_lines:
-        additions, deletions = count_diff_change_lines(diff_lines)
-    else:
-        additions = new_string.count("\n") + 1 if new_string else 0
-        deletions = old_string.count("\n") + 1 if old_string else 0
-    return additions, deletions
+        return count_diff_change_lines(diff_lines)
+    return DiffStats(
+        additions=new_string.count("\n") + 1 if new_string else 0,
+        deletions=old_string.count("\n") + 1 if old_string else 0,
+    )
 
 
 class ToolApprovalWidget(Vertical):
@@ -148,7 +148,9 @@ class WriteFileApprovalWidget(ToolApprovalWidget):
             total_lines = len(lines)
 
             # File header with line count
-            yield from _file_header(file_path, additions=total_lines if content else 0)
+            yield from _file_header(
+                file_path, DiffStats(total_lines if content else 0, 0)
+            )
 
             if total_lines > _MAX_LINES:
                 # Truncate for display
@@ -176,8 +178,8 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         old_string = format_display_content(self.data.get("old_string", ""))
         new_string = format_display_content(self.data.get("new_string", ""))
 
-        additions, deletions = _count_diff_stats(diff_lines, old_string, new_string)
-        yield from _file_header(file_path, additions, deletions)
+        stats = _count_diff_stats(diff_lines, old_string, new_string)
+        yield from _file_header(file_path, stats)
 
         # Never render the diff of credential files (e.g. `.env`); the stats
         # above still convey that a change happened without exposing content.
@@ -186,9 +188,10 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         elif not diff_lines and not old_string and not new_string:
             yield Static("No changes to display", classes="approval-description")
         elif diff_lines:
-            # This diff is built from the edit's replacement fragments, not the
-            # file, so its hunks always start at line 1. Showing that gutter
-            # would assert wrong file line numbers on an approval prompt.
+            # Neither caller has file line numbers worth showing: an edit's
+            # diff is built from the replacement fragments rather than the
+            # file, and a delete's covers the whole file from line 1. Showing
+            # the gutter would assert wrong numbers on an approval prompt.
             yield from compose_diff_lines(
                 "\n".join(diff_lines),
                 max_lines=_MAX_DIFF_LINES,

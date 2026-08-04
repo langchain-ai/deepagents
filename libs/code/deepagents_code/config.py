@@ -1154,9 +1154,7 @@ class Glyphs:
     disclosure_expanded: str  # ▾ vs v
 
     # Box-drawing characters
-    box_vertical: str  # │ vs |
     box_horizontal: str  # ─ vs -
-    box_double_horizontal: str  # ═ vs =
 
     # Diff-specific
     hunk_break: str  # ⋮ vs :
@@ -1187,9 +1185,7 @@ UNICODE_GLYPHS = Glyphs(
     disclosure_collapsed="▸",
     disclosure_expanded="▾",
     # Box-drawing characters
-    box_vertical="│",
     box_horizontal="─",
-    box_double_horizontal="═",
     # Diff-specific
     hunk_break="⋮",
     git_branch="↗",
@@ -1218,9 +1214,7 @@ ASCII_GLYPHS = Glyphs(
     disclosure_collapsed=">",
     disclosure_expanded="v",
     # Box-drawing characters
-    box_vertical="|",
     box_horizontal="-",
-    box_double_horizontal="=",
     # Diff-specific
     hunk_break=":",
     git_branch="git:",

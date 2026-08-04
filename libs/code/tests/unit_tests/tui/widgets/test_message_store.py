@@ -1,6 +1,7 @@
 """Tests for message store and serialization."""
 
 import pytest
+from textual.app import App, ComposeResult
 from textual.widgets import Static
 
 from deepagents_code.diff_utils import DiffStats
@@ -165,6 +166,46 @@ class TestMessageData:
         rehydrated = stored.to_widget()
         assert isinstance(rehydrated, ToolCallMessage)
         assert rehydrated._diff_superseded is True
+
+    async def test_rehydrated_superseded_row_is_hidden_once_mounted(self) -> None:
+        """The flag only matters if it survives all the way to `display`.
+
+        Restoring deferred status does not itself apply visibility, so the row
+        depends on `on_mount` re-applying it. Without a mounted assertion, a
+        resurrected edit row sitting beside its own diff would pass every test.
+        """
+        original = ToolCallMessage("edit_file")
+        original._status = "success"
+        original.mark_superseded_by_diff()
+        restored = MessageData.from_widget(original).to_widget()
+        assert isinstance(restored, ToolCallMessage)
+
+        class _App(App[None]):
+            def compose(self) -> ComposeResult:
+                yield restored
+
+        async with _App().run_test():
+            assert restored.display is False
+
+    async def test_rehydrated_non_diff_tool_is_not_hidden(self) -> None:
+        """Only the superseded-by-diff tool may hide; nothing replaces the rest.
+
+        The store writes restored state straight onto the widget, so the
+        tool-name guard is the only thing standing between a stray stored flag
+        and a row that vanishes with no diff to stand in for it.
+        """
+        data = MessageData.from_widget(ToolCallMessage("shell"))
+        data.tool_status = ToolStatus.SUCCESS
+        data.tool_diff_superseded = True
+        restored = data.to_widget()
+        assert isinstance(restored, ToolCallMessage)
+
+        class _App(App[None]):
+            def compose(self) -> ComposeResult:
+                yield restored
+
+        async with _App().run_test():
+            assert restored.display is True
 
     def test_error_message_roundtrip(self):
         """Test ErrorMessage serialization and deserialization."""

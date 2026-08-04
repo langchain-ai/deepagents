@@ -40,7 +40,15 @@ from rich.style import Style
 from rich.text import Text
 
 from deepagents_code._cli_context import CLIContext
-from deepagents_code._session_stats import SessionStats, print_usage_table
+from deepagents_code._constants import SESSION_END_DRAIN_TIMEOUT_SECONDS
+from deepagents_code._session_stats import (
+    RecordedRequest,
+    SessionStats,
+    classify_usage_kind,
+    finalize_recorded_requests,
+    print_usage_table,
+    record_message_usage,
+)
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
@@ -82,6 +90,7 @@ from deepagents_code.unicode_security import (
 
 if TYPE_CHECKING:
     from asyncio.subprocess import Process
+    from collections.abc import Mapping
     from pathlib import Path
     from uuid import UUID
 
@@ -463,6 +472,16 @@ class StreamState:
     stats: SessionStats = field(default_factory=SessionStats)
     """Accumulated model usage stats for this stream."""
 
+    recorded_usage_requests: dict[str, RecordedRequest] = field(default_factory=dict)
+    """Requests already counted in this headless run, keyed by message ID.
+
+    Monotonic across HITL resume passes so a replayed message does not add its
+    request, tokens, or cost to `stats` again. Each pass closes its entries via
+    `finalize_recorded_requests`, which is what extends that guarantee to
+    replayed *chunks* -- an open chunked request accepts revisions, so without
+    the round boundary a replayed chunk would merge into it a second time.
+    """
+
     spinner: _ConsoleSpinner | None = None
     """Optional animated spinner shown during agent work in verbose mode."""
 
@@ -557,6 +576,29 @@ def _process_interrupts(
                 dispatch_hook_fire_and_forget("input.required", {})
 
 
+def _record_usage_from_message(
+    message_obj: AIMessage,
+    state: StreamState,
+    *,
+    is_main_agent: bool = True,
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    """Record model usage and estimated cost from a streamed AI message."""
+    usage_kind = classify_usage_kind(
+        is_main_agent=is_main_agent,
+        metadata=metadata,
+    )
+    record_message_usage(
+        state.stats,
+        message_obj,
+        fallback_model=settings.model_name or "",
+        fallback_provider=settings.model_provider or "",
+        request_metadata=metadata,
+        kind=usage_kind,
+        recorded_requests=state.recorded_usage_requests,
+    )
+
+
 def _process_ai_message(
     message_obj: AIMessage,
     state: StreamState,
@@ -574,21 +616,6 @@ def _process_ai_message(
         state: Stream state for accumulating response text and tool-call buffers.
         console: Rich console for formatted output.
     """
-    # Extract token usage for stats accumulation
-    usage = getattr(message_obj, "usage_metadata", None)
-    if usage:
-        input_toks = usage.get("input_tokens", 0)
-        output_toks = usage.get("output_tokens", 0)
-        total_toks = usage.get("total_tokens", 0)
-        active_model = settings.model_name or ""
-        active_provider = settings.model_provider or ""
-        if input_toks or output_toks:
-            state.stats.record_request(
-                active_model, input_toks, output_toks, active_provider
-            )
-        elif total_toks:
-            state.stats.record_request(active_model, total_toks, 0, active_provider)
-
     if not hasattr(message_obj, "content_blocks"):
         logger.debug("AIMessage missing content_blocks attribute, skipping")
         return
@@ -706,11 +733,21 @@ def _process_message_chunk(
         return
 
     message_obj, metadata = data
+    stream_metadata = metadata if isinstance(metadata, dict) else None
+
+    # Account cost/tokens even for internal model calls whose text is hidden.
+    if isinstance(message_obj, AIMessage):
+        _record_usage_from_message(
+            message_obj,
+            state,
+            is_main_agent=True,
+            metadata=stream_metadata,
+        )
 
     # The summarization middleware injects synthetic messages to compress
     # conversation history for the LLM. These are internal bookkeeping and
     # should not be rendered to the user.
-    if metadata and metadata.get("lc_source") == "summarization":
+    if stream_metadata and stream_metadata.get("lc_source") == "summarization":
         state.summarization_observed = True
         return
 
@@ -942,7 +979,24 @@ def _process_stream_chunk(
             main_agent=is_main_agent,
         )
 
+    # Nested agent spend still counts even when chat rendering is skipped.
     if not is_main_agent:
+        if (
+            stream_mode == "messages"
+            and isinstance(data, tuple)
+            and len(data) == (_MESSAGE_DATA_LENGTH)
+        ):
+            message_obj, nested_metadata = data
+            if isinstance(message_obj, AIMessage):
+                _record_usage_from_message(
+                    message_obj,
+                    state,
+                    is_main_agent=False,
+                    metadata=cast(
+                        "Mapping[str, Any] | None",
+                        nested_metadata if isinstance(nested_metadata, dict) else None,
+                    ),
+                )
         return
 
     if stream_mode == "updates" and isinstance(data, dict) and "__interrupt__" in data:
@@ -1190,6 +1244,10 @@ async def _stream_agent(
             await _after_headless_compact(state)
             state.summarization_observed = False
     finally:
+        # Close the ledger at the round boundary, including on an aborted round:
+        # the next HITL pass replays these chunks, which would otherwise revise
+        # their requests a second time and double the run's tokens and cost.
+        finalize_recorded_requests(state.recorded_usage_requests)
         if state.spinner:
             state.spinner.stop()
 
@@ -1247,11 +1305,33 @@ async def _after_headless_compact(state: StreamState) -> None:
         )
 
 
-async def _end_headless_session(state: StreamState, cause: SessionEndCause) -> None:
+async def _end_headless_session(
+    state: StreamState,
+    cause: SessionEndCause,
+    *,
+    timeout_seconds: float = SESSION_END_DRAIN_TIMEOUT_SECONDS,
+) -> None:
+    """End a headless session without letting Hooks v2 stall process exit.
+
+    Args:
+        state: Active headless stream state.
+        cause: Reason the session ended.
+        timeout_seconds: Maximum time to wait for `SessionEnd` handlers.
+    """
     if state.session_end_fired:
         return
     state.session_end_fired = True
-    await state.hooks.on_session_end(cause)
+    try:
+        await asyncio.wait_for(
+            state.hooks.on_session_end(cause),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError:
+        logger.warning(
+            "SessionEnd hook drain did not finish within %ss; continuing session "
+            "teardown",
+            timeout_seconds,
+        )
 
 
 def _dispatch_orphaned_tool_result_hooks(state: StreamState, tool_output: str) -> None:
@@ -1855,9 +1935,9 @@ async def run_non_interactive(
             commands without an explicit `--trust-project-hooks` opt-in.
 
     Returns:
-        Exit code: 0 for success, 1 for error, 124 when the `--max-turns`
-            budget was exceeded (matching GNU `timeout`), 130 for keyboard
-            interrupt.
+        Exit code: 0 for success or an intentional hook stop, 1 for error, 124
+            when the `--max-turns` budget was exceeded (matching GNU `timeout`),
+            130 for keyboard interrupt.
     """
     _make_stdio_encoding_safe()
 
@@ -1990,6 +2070,7 @@ async def run_non_interactive(
         console.print(header)
 
     from deepagents_code.client.launch.server_manager import server_session
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
 
     # Launch MCP preload concurrently with server startup
     mcp_task: asyncio.Task[Any] | None = None
@@ -2142,6 +2223,9 @@ async def run_non_interactive(
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")
         return 130
+    except ClientHookStopError as exc:
+        console.print(Text(f"\nOperation stopped by hook: {exc}", style="yellow"))
+        return 0
     except HITLIterationLimitError as e:
         console.print(f"\n[red]{escape_markup(str(e))}[/red]")
         console.print(

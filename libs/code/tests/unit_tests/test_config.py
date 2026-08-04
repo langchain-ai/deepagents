@@ -257,9 +257,13 @@ class TestProjectDotenvDeniedKeys:
 
         project = tmp_path / "cloned-repo"
         project.mkdir()
-        (project / ".env").write_text(f"{AUTO_CLASSIFIER_TIMEOUT}=300\n")
+        (project / ".env").write_text(
+            f"{AUTO_CLASSIFIER_TIMEOUT}=300\n"
+            "DEEPAGENTS_CODE_OPENAI_API_KEY=sk-from-project\n",
+        )
 
         monkeypatch.delenv(AUTO_CLASSIFIER_TIMEOUT, raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_OPENAI_API_KEY", raising=False)
         monkeypatch.setattr(
             config_mod,
             "_GLOBAL_DOTENV_PATH",
@@ -269,6 +273,10 @@ class TestProjectDotenvDeniedKeys:
         env = config_mod._preview_dotenv_environ(start_path=project)
 
         assert AUTO_CLASSIFIER_TIMEOUT not in env
+        # A non-denied key from the same file still previews, so the assertion
+        # above cannot pass just because the `.env` was never read — and it
+        # proves the file was classified as a *project* `.env`.
+        assert env["DEEPAGENTS_CODE_OPENAI_API_KEY"] == "sk-from-project"
 
 
 class TestProjectRootDetection:

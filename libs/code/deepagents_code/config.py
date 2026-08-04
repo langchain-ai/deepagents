@@ -201,7 +201,8 @@ shell exports, the global `~/.deepagents/.env`, `[models].auto_classifier` in
 `AUTO_CLASSIFIER_TIMEOUT` tunes the same control's review deadline, so it is
 denied for the same reason: a cloned repo could otherwise stall every gated
 batch up to the ceiling, or squeeze the budget until reviews time out and the
-session degrades into blanket denials. `[models].auto_classifier_timeout` in
+session degrades into repeated denials and approval prompts.
+`[models].auto_classifier_timeout` in
 `~/.deepagents/config.toml` and the trusted env surfaces still set it.
 
 Unlike `_DOTENV_DENIED_ENV_KEYS` (denied from *any* `.env` because they turn

@@ -54,10 +54,13 @@ AUTO_CLASSIFIER_TIMEOUT = "DEEPAGENTS_CODE_AUTO_CLASSIFIER_TIMEOUT"
 
 Raise this when reviews time out on a slow or heavily loaded classifier model:
 a batch that misses the deadline is denied as `classifier_unavailable`, so the
-tool call does not run and repeated misses escalate to your approval. Values
-outside the accepted range are ignored in favor of the next config source, so
-the deadline can never be removed. Also settable via
-`[models].auto_classifier_timeout` in config.toml.
+tool call does not run and repeated misses escalate to your approval. This
+covers the wait for a verdict only — the separate budget for *building* the
+classifier model (cold provider import, credential bootstrap), which denies with
+"could not be built within 30s", is fixed. Values outside 1-300 seconds are
+ignored in favor of the next config source, so the deadline can never be
+removed. Also settable via `[models].auto_classifier_timeout` in config.toml.
+Resolved once per `dcode` start, so a change takes effect on the next launch.
 
 Like `AUTO_CLASSIFIER_MODEL`, a committed *project* `.env` cannot set it (see
 `config._PROJECT_DOTENV_DENIED_ENV_KEYS`).

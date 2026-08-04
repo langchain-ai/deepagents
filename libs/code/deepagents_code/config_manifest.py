@@ -62,16 +62,17 @@ INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
 AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT = 20.0
 """Default wall-clock budget for one Auto classifier decision batch.
 
-Single source of truth shared by the `models.auto_classifier_timeout` option,
-`auto_mode._CLASSIFIER_TIMEOUT_SECONDS`, and `resolve_auto_classifier_timeout`.
+Single source of truth shared by the manifest option, the middleware default,
+and the resolver, so the three cannot drift (pinned by test).
 """
 
 AUTO_CLASSIFIER_TIMEOUT_FLOOR = 1.0
 """Smallest accepted Auto classifier timeout.
 
-Below roughly a second no real provider round trip completes, so every gated
-batch would be denied as `classifier_unavailable`. A resolved value under the
-floor is rejected and falls through to the next layer / default.
+A sanity bound, not a workable budget: at least a second is required for any
+provider round trip to have a chance, and below that every gated batch would be
+denied as `classifier_unavailable`. A resolved value under the floor is rejected
+and falls through to the next layer / default.
 """
 
 AUTO_CLASSIFIER_TIMEOUT_CEILING = 300.0
@@ -750,7 +751,12 @@ def resolve_interpreter_kwargs(
 
 
 def _is_valid_auto_classifier_timeout(value: object) -> bool:
-    """Return whether `value` is an accepted Auto classifier timeout."""
+    """Return whether `value` is an accepted Auto classifier timeout.
+
+    Expects the `float` that `OptionKind.FLOAT` resolution produces on every
+    layer (`_coerce_env` and `_coerce_toml` both widen to `float`, and the typed
+    default is a `float`); a bare `int` is rejected.
+    """
     return (
         isinstance(value, float)
         and math.isfinite(value)
@@ -784,7 +790,9 @@ def resolve_auto_classifier_timeout_with_source(
         return value, source
 
     # Invalid higher-precedence values must fall through instead of jumping
-    # straight to the default, mirroring `resolve_recursion_limit`.
+    # straight to the default. Hide the rejected env var and re-resolve so
+    # `config.toml` and then the typed default still apply, mirroring
+    # `resolve_recursion_limit`.
     if source.startswith("env (") and source.endswith(")"):
         env_name = source[len("env (") : -1]
         logger.warning(
@@ -796,11 +804,22 @@ def resolve_auto_classifier_timeout_with_source(
             AUTO_CLASSIFIER_TIMEOUT_CEILING,
         )
         previous = os.environ.pop(env_name, None)
+        if previous is None:
+            # The name reconstructed from `source` is not the key `resolve_scalar`
+            # read, so re-resolving would see the same rejected value and recurse
+            # forever. Unreachable today (the source label is built from the
+            # environ key), but this runs on the startup path where a
+            # `RecursionError` would surface only as an opaque launch failure.
+            logger.warning(
+                "Unexpected auto_classifier_timeout env source %r; using %g",
+                source,
+                AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+            )
+            return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT, "default"
         try:
             return resolve_auto_classifier_timeout_with_source(toml_data=data)
         finally:
-            if previous is not None:
-                os.environ[env_name] = previous
+            os.environ[env_name] = previous
 
     if source != "default":
         logger.warning(
@@ -1247,8 +1266,8 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         key="models.auto_classifier_timeout",
         group="Models",
         summary=(
-            "Seconds the Auto approval classifier may take to review one batch; "
-            "a batch that misses the deadline is denied."
+            "Seconds the Auto approval classifier may take to review one batch "
+            "(1-300); a batch that misses the deadline is denied."
         ),
         kind=OptionKind.FLOAT,
         default=AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,

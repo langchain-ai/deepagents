@@ -3080,6 +3080,22 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
     assert plan["decisions"][0]["reason"] == "classifier did not respond within 0.05s"
 
 
+@pytest.mark.parametrize("budget", [0, -1.0, float("nan"), float("inf")])
+def test_unusable_classifier_budget_is_rejected_at_construction(
+    tmp_path: Path, budget: float
+) -> None:
+    """A nonsensical deadline must raise, not silently deny every gated batch.
+
+    User config goes through the bounded resolver, but a programmatic zero,
+    negative, or non-finite budget would expire `asyncio.timeout` immediately and
+    turn Auto into blanket denials with no indication why.
+    """
+    with pytest.raises(ValueError, match="positive finite number"):
+        _middleware(tmp_path, classifier_timeout_seconds=budget)
+    with pytest.raises(ValueError, match="positive finite number"):
+        _middleware(tmp_path, classifier_construction_timeout_seconds=budget)
+
+
 async def test_classifier_provider_timeout_stays_type_only(tmp_path: Path) -> None:
     model = _StructuredModel(error=TimeoutError("socket timed out"))
     middleware = _middleware(tmp_path)

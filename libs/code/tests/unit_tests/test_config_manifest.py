@@ -2699,6 +2699,101 @@ def test_resolve_auto_classifier_timeout_invalid_env_leaves_env_intact(
     assert os.environ[_env_vars.AUTO_CLASSIFIER_TIMEOUT] == "0"
 
 
+def test_resolve_auto_classifier_timeout_invalid_env_warns(monkeypatch, caplog) -> None:
+    """The rejection warning is a user's only signal; it must not be dropped.
+
+    Nothing else surfaces a discarded timeout, so a refactor that removed the
+    warning (or lowered it to `debug`) would make the fall-through silent.
+    """
+    import logging
+
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        resolve_auto_classifier_timeout(
+            toml_data={"models": {"auto_classifier_timeout": 30}}
+        )
+    assert any(
+        "auto_classifier_timeout" in r.getMessage()
+        and _env_vars.AUTO_CLASSIFIER_TIMEOUT in r.getMessage()
+        for r in caplog.records
+    )
+
+
+@pytest.mark.parametrize("raw", [0, 0.5, 100000, True, "30"])
+def test_resolve_auto_classifier_timeout_rejects_unusable_toml(
+    monkeypatch, caplog, raw
+) -> None:
+    """An unusable `config.toml` value falls back to the default with a warning.
+
+    TOML is the only non-env surface for this option (no CLI flag, no `/auto`
+    subcommand), and the threat model claims it cannot remove the deadline — so
+    a `= 0` that reached the middleware would deny every gated batch.
+    """
+    import logging
+
+    from deepagents_code.config_manifest import (
+        AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        resolve_auto_classifier_timeout,
+    )
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        resolved = resolve_auto_classifier_timeout(
+            toml_data={"models": {"auto_classifier_timeout": raw}}
+        )
+    assert resolved == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+    assert any("auto_classifier_timeout" in r.getMessage() for r in caplog.records)
+
+
+def test_resolve_auto_classifier_timeout_malformed_env_falls_through_to_toml(
+    monkeypatch,
+) -> None:
+    """A malformed env value takes the other fall-through path than an out-of-range one.
+
+    `"soon"` is dropped inside `resolve_scalar`, so the env layer never reports
+    itself as the source and no `os.environ` pop happens; `"0"` coerces fine and
+    is rejected later, taking the pop-and-re-resolve branch. Both must land on
+    the valid TOML value.
+    """
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "soon")
+    resolved = resolve_auto_classifier_timeout(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert resolved == pytest.approx(30.0)
+    assert os.environ[_env_vars.AUTO_CLASSIFIER_TIMEOUT] == "soon"
+
+
+def test_resolve_auto_classifier_timeout_guards_unpoppable_env_source(
+    monkeypatch,
+) -> None:
+    """A source label that is not an environ key must not recurse forever.
+
+    Termination of the fall-through branch depends on the reconstructed env name
+    actually being the key `resolve_scalar` read. If it is not, the pop is a
+    no-op and re-resolving would see the same rejected value again.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config_manifest import (
+        AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        resolve_auto_classifier_timeout,
+    )
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "resolve_scalar",
+        lambda *_args, **_kwargs: (0.0, "env (NOT_AN_ENVIRON_KEY)"),
+    )
+    assert (
+        resolve_auto_classifier_timeout(toml_data={})
+        == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+    )
+
+
 def test_resolve_auto_classifier_timeout_accepts_floor_and_ceiling(
     monkeypatch,
 ) -> None:
@@ -2752,6 +2847,23 @@ def test_config_resolve_reports_effective_auto_classifier_timeout(
     assert is_set is True
     assert source == "config.toml"
     assert value == pytest.approx(30.0)
+
+
+def test_config_resolve_discards_out_of_range_toml_auto_classifier_timeout(
+    monkeypatch,
+) -> None:
+    """`config get` reports the default when TOML provides an unusable timeout."""
+    from deepagents_code.config_manifest import AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+
+    option = get_option("models.auto_classifier_timeout")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
+    is_set, source, value = _resolve(
+        option, {"models": {"auto_classifier_timeout": 500}}
+    )
+    assert is_set is False
+    assert source == "default"
+    assert value == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
 
 
 def test_config_resolve_reports_valid_env_auto_classifier_timeout(

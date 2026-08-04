@@ -7,6 +7,7 @@ import contextlib
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -1849,6 +1850,22 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         ):
             msg = "trusted_compaction_tool must be named compact_conversation"
             raise ValueError(msg)
+        # The review deadline is a security control's budget, so reject a
+        # nonsensical one at the boundary rather than trusting every caller:
+        # a zero, negative, or NaN timeout expires immediately, silently turning
+        # Auto into "deny every gated batch, then escalate". Callers that read
+        # user config go through `resolve_auto_classifier_timeout`, which bounds
+        # the value; this guards programmatic construction.
+        for name, budget in (
+            ("classifier_timeout_seconds", classifier_timeout_seconds),
+            (
+                "classifier_construction_timeout_seconds",
+                classifier_construction_timeout_seconds,
+            ),
+        ):
+            if not math.isfinite(budget) or budget <= 0:
+                msg = f"{name} must be a positive finite number, got {budget!r}"
+                raise ValueError(msg)
         interrupt_map = dict(interrupt_on)
         interrupt_map["create_temp_artifact"] = {
             "allowed_decisions": ["approve", "reject"],

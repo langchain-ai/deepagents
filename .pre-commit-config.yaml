@@ -1,4 +1,13 @@
-default_install_hook_types: [pre-commit, commit-msg]
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
+
+# 3.2.0 is the first release that accepts the git-hook-named stages
+# (`pre-commit`/`pre-push`/`pre-merge-commit`); before it the spelling was
+# `push`, and an older pre-commit rejects this whole file on schema validation —
+# taking every other hook down with it, not just `branch-name`. It also covers
+# `PRE_COMMIT_REMOTE_BRANCH` (2.10.0) and `PRE_COMMIT_LOCAL_BRANCH` (2.14.0),
+# both of which pre-commit only exports together and which the `branch-name`
+# hook needs to know which branch is being pushed.
+minimum_pre_commit_version: '3.2.0'
 
 repos:
   - repo: https://github.com/compilerla/conventional-pre-commit
@@ -99,3 +108,16 @@ repos:
         entry: python3 .github/scripts/checks/check_version_equality.py
         files: (^libs/deepagents/pyproject\.toml|^libs/deepagents/deepagents/_version\.py|^libs/cli/pyproject\.toml|^libs/cli/deepagents_cli/_version\.py)$
         pass_filenames: false
+      - id: branch-scopes-sync
+        name: check branch-name rules match across hook, CI and pr_lint
+        language: system
+        entry: python3 .github/scripts/checks/check_branch_scopes_sync.py
+        files: (^\.githooks/pre-push|^\.github/workflows/(branch_name_check|pr_lint)\.yml)$
+        pass_filenames: false
+      - id: branch-name
+        name: check pushed branch name follows the naming convention
+        language: system
+        entry: bash .githooks/pre-push
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true

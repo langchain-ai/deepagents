@@ -109,11 +109,18 @@ def parse_categories(raw: str) -> list[str]:
 
 
 def _read_tasks(path: Path, rollouts: int) -> tuple[dict[str, float], bool]:
-    """Read per-task pass@K values; a missing file is incomplete, not malformed."""
+    """Read per-task scores; a missing file is incomplete, not malformed.
+
+    Graded categories emit `mean_reward@K` alongside `pass@K` and are preferred when
+    present: their per-task `pass@K` is 0.0 for every task (nothing scores a perfect
+    1.0), so ranking on it would make every task a tie and erase the comparison. The
+    key's presence is the signal, so no scoring mode has to be threaded in here.
+    """
     if not path.is_file():
         return {}, False
     tasks: dict[str, float] = {}
-    field = f"pass@{rollouts}"
+    pass_field = f"pass@{rollouts}"
+    graded_field = f"mean_reward@{rollouts}"
     for number, line in enumerate(
         path.read_text(encoding="utf-8").splitlines(), start=1
     ):
@@ -129,6 +136,7 @@ def _read_tasks(path: Path, rollouts: int) -> tuple[dict[str, float], bool]:
             raise ValueError(msg)
         row = cast(dict[str, object], value)
         task = row.get("task")
+        field = graded_field if graded_field in row else pass_field
         score = row.get(field)
         if not isinstance(task, str) or not task:
             msg = f"per-task row requires a task at {path}:{number}"

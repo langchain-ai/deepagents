@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 from typing import NamedTuple, cast
 
+from aggregate_shards import is_continuous_category
 from experiment_name import experiment_name
 from unified_types import LeafKey, RowKey
 
@@ -200,6 +201,18 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
     ):
         msg = "issues must be a list of objects with stage, code, and message strings"
         raise _LeafSummaryError(msg)
+    scoring = summary.get("scoring")
+    if scoring is not None and not isinstance(scoring, str):
+        msg = "scoring must be a string or null"
+        raise _LeafSummaryError(msg)
+    # Graded categories add macro_avg@K. It is optional so summaries written before
+    # the key existed, and every pass/fail category, still read cleanly.
+    macro_key = f"macro_avg@{k}"
+    macro_avg_at_k = (
+        _require_metric(summary, macro_key, tasks=tasks)
+        if macro_key in summary
+        else None
+    )
     return {
         "model": model or "unknown",
         "category": category or "unknown",
@@ -208,6 +221,8 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
         "source_sha": source_sha or "",
         "pass_at_k": _require_metric(summary, f"pass@{k}", tasks=tasks),
         "avg_at_k": _require_metric(summary, f"avg@{k}", tasks=tasks),
+        "macro_avg_at_k": macro_avg_at_k,
+        "scoring": scoring or "binary",
         "tasks": tasks,
         "passed": passed,
         "incomplete": incomplete,
@@ -431,6 +446,7 @@ def combine(
             leaf["category"]: {
                 "pass_at_k": leaf["pass_at_k"],
                 "avg_at_k": leaf["avg_at_k"],
+                "macro_avg_at_k": leaf.get("macro_avg_at_k"),
                 "tasks": leaf["tasks"],
                 "incomplete": leaf["incomplete"] or leaf["tasks"] == 0,
             }
@@ -510,9 +526,16 @@ def _incomplete_note(*, has_leaves: bool, missing_categories: list[str]) -> str:
 
 def render_markdown(combined: dict, k: int) -> str:
     cats = combined["categories"]
+    graded = [c for c in cats if is_continuous_category(c)]
     header = (
         ["Model / branch / config"]
-        + [f"{c} pass@{k}/avg@{k}" for c in cats]
+        + [
+            # A graded category's pass@K is 0.000 by construction, so labelling its
+            # column "pass@K/avg@K" would read as a failed run. Show its two mean
+            # rewards instead.
+            f"{c} avg@{k}/macro@{k}" if is_continuous_category(c) else f"{c} pass@{k}/avg@{k}"
+            for c in cats
+        ]
         + [
             f"Overall macro pass@{k}",
             f"macro avg@{k}",
@@ -533,9 +556,14 @@ def render_markdown(combined: dict, k: int) -> str:
         cells = [label + (" ⚠️" if r["incomplete"] else "")]
         for c in cats:
             cat = r["categories"].get(c)
-            cells.append(
-                f"{_fmt(cat['pass_at_k'])}/{_fmt(cat['avg_at_k'])}" if cat else "—"
-            )
+            if not cat:
+                cells.append("—")
+            elif is_continuous_category(c):
+                cells.append(
+                    f"{_fmt(cat['avg_at_k'])}/{_fmt(cat.get('macro_avg_at_k'))}"
+                )
+            else:
+                cells.append(f"{_fmt(cat['pass_at_k'])}/{_fmt(cat['avg_at_k'])}")
         cells += [
             _fmt(r["macro"]["pass_at_k"]),
             _fmt(r["macro"]["avg_at_k"]),
@@ -549,6 +577,19 @@ def render_markdown(combined: dict, k: int) -> str:
     ]
     lines += ["| " + " | ".join(r) + " |" for r in rows]
     md = "\n".join(lines) + "\n"
+
+    if graded:
+        # The Overall pass@K columns average every category, including graded ones
+        # whose pass@K is 0.000 by construction. Say so rather than let the number be
+        # read as a regression. Overall avg@K stays meaningful.
+        md += (
+            f"\n> ℹ️ `{'`, `'.join(graded)}` "
+            + ("is" if len(graded) == 1 else "are")
+            + " scored on a graded reward, not pass/fail: the column shows "
+            f"micro/macro mean reward. Such a category contributes pass@{k} = 0 by "
+            f"construction, so the **Overall pass@{k}** columns understate it — read "
+            f"**Overall avg@{k}** instead.\n"
+        )
 
     incompletes = [r for r in combined["rows"] if r["incomplete"]]
     if incompletes:

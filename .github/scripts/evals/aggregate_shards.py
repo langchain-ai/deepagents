@@ -23,6 +23,21 @@ an independent diagnostic tally: a Harbor result that records ``exception_info``
 and a verifier-passing reward counts as both passed and errored. Missing or
 non-numeric verifier rewards are not passes and are counted as errored.
 
+Categories in CONTINUOUS_CATEGORIES are graded, not pass/fail: their verifier
+reward is a fraction that essentially never reaches 1.0, so a pass rate carries
+no signal. For those:
+
+  - avg@K      the MEAN REWARD over the expected trial count, so a missing rollout
+               is charged as a zero just as it is on the binary path. Headline.
+  - macro_avg@K the unweighted mean of per-task means over the trials that ACTUALLY
+               ran, so it ignores missing rollouts and reports the quality of the
+               work that completed. Equal to avg@K on a complete run; a divergence
+               between them is itself the signal that rollouts are missing.
+
+``pass@K`` keeps its usual meaning everywhere -- it is not redefined -- so for a
+graded category it reads 0.0 and is omitted from the rendered summary rather than
+shown as a result.
+
 Aggregation is single-model on purpose: a run is one model's evaluation of one
 dataset (a "category" in the wider harness). If results from more than one model
 are present the script exits with an error rather than silently mixing them;
@@ -58,6 +73,21 @@ from pathlib import Path
 from typing import NamedTuple
 
 PASS_THRESHOLD = 1.0
+
+# Categories whose verifier emits a graded reward in [0, 1] rather than 0.0/1.0.
+# Kept as a literal set here rather than imported from `unified_prep.CATEGORY_MAP`:
+# that module reads `langgraph.json` at import scope, and this script (plus its
+# tests) must stay stdlib-only with no filesystem dependency.
+CONTINUOUS_CATEGORIES = frozenset({"research"})
+
+
+def is_continuous_category(category: str | None) -> bool:
+    """True when `category` is graded on a continuous reward rather than pass/fail.
+
+    Unknown and missing categories fall back to pass/fail, so a new category is
+    scored the established way until it is added above.
+    """
+    return category is not None and category in CONTINUOUS_CATEGORIES
 
 
 def analysis_issue(
@@ -109,12 +139,16 @@ class Aggregation(NamedTuple):
     or were not JSON objects; ``malformed_rewards`` counts trials whose reward
     was present but not numeric. Both are data-integrity signals that flag the
     run ``incomplete``.
+
+    Each ``by_task`` entry carries the integer counters ``trials``/``passed``/
+    ``errored`` plus ``reward_sum``, the sum of numeric rewards, which graded
+    categories average instead of counting passes.
     """
 
     models: set[str]
     job_ids: set[str]
     empty_shards: set[str]
-    by_task: dict[str, dict[str, int]]
+    by_task: dict[str, dict[str, float]]
     skipped_files: int
     malformed_rewards: int
 
@@ -126,6 +160,7 @@ class SummaryParts(NamedTuple):
     avg_at_k: float | None
     totals: dict[str, int]
     per_task: list[dict]
+    macro_avg_at_k: float | None = None
 
 
 def emit_annotation(msg: str) -> None:
@@ -216,8 +251,8 @@ def aggregate(root: Path) -> Aggregation:
     models: set[str] = set()
     job_ids: set[str] = set()
     empty_shards = {path.name for path in root.rglob("empty-shard-*") if path.is_file()}
-    by_task: dict[str, dict[str, int]] = defaultdict(
-        lambda: {"trials": 0, "passed": 0, "errored": 0}
+    by_task: dict[str, dict[str, float]] = defaultdict(
+        lambda: {"trials": 0, "passed": 0, "errored": 0, "reward_sum": 0.0}
     )
     skipped_files = 0
     malformed_rewards = 0
@@ -249,8 +284,12 @@ def aggregate(root: Path) -> Aggregation:
         if trial_errored(result):
             stats["errored"] += 1
         reward = trial_reward(result)
-        if reward is not None and reward >= PASS_THRESHOLD:
-            stats["passed"] += 1
+        if reward is not None:
+            # Graded categories average this; a missing or malformed reward
+            # contributes nothing, matching how it is already counted as a failure.
+            stats["reward_sum"] += reward
+            if reward >= PASS_THRESHOLD:
+                stats["passed"] += 1
 
     return Aggregation(
         models,
@@ -262,26 +301,56 @@ def aggregate(root: Path) -> Aggregation:
     )
 
 
-def build_summary(by_task: dict[str, dict[str, int]], rollouts: int) -> SummaryParts:
+def build_summary(
+    by_task: dict[str, dict[str, float]],
+    rollouts: int,
+    *,
+    category: str | None = None,
+) -> SummaryParts:
     """Compute per-task rows plus dataset-level pass@K and avg@K, where K = rollouts.
 
     Missing rollouts of a present task are treated as failures, so an incomplete
     shard cannot inflate the scores:
       - pass@K: fraction of present tasks with at least one observed passing trial
         (a task that ran fewer than K rollouts still passes iff it passed once).
+        This meaning is the same for every category, graded ones included.
       - avg@K: passing trials, capped at K per task, divided by
         (present tasks * rollouts). The denominator is the EXPECTED trial count,
         and duplicated rollouts cannot inflate the score above 1.
+
+    For a graded category (see `is_continuous_category`):
+
+      - avg@K averages the REWARD over the same expected-trial denominator, each
+        task's contribution capped at K so duplicated rollouts still cannot push it
+        above 1. This is the headline number, and it charges a missing rollout as a
+        zero exactly like the binary path does.
+      - macro_avg@K is the unweighted mean of per-task means taken over the trials
+        that ACTUALLY ran (`reward_sum / trials`), so it ignores missing rollouts and
+        answers "how good was the work that completed". Dividing instead by K would
+        make it algebraically identical to avg@K -- every task shares the denominator
+        K, so `sum(capped_i)/(n*K)` and `mean(capped_i/K)` are the same number -- and
+        report a distinction that does not exist.
+
+    The two therefore agree on a complete run and diverge only when rollout counts are
+    uneven, which is itself the signal that the run is incomplete.
+
+    Every task also gets a `mean_reward@K` column, which is what the A/B comparison
+    ranks on (a graded category's per-task pass@K is 0.0 for every task, so ranking
+    on it would make every task a tie).
     """
+    continuous = is_continuous_category(category)
     per_task: list[dict] = []
     passk_sum = 0.0
+    mean_reward_sum = 0.0
     total_trials = total_passed = total_errored = 0
     capped_passed = 0
+    capped_reward = 0.0
 
     for task in sorted(by_task):
-        n = by_task[task]["trials"]
-        c = by_task[task]["passed"]
-        errored = by_task[task]["errored"]
+        n = int(by_task[task]["trials"])
+        c = int(by_task[task]["passed"])
+        errored = int(by_task[task]["errored"])
+        reward_sum = float(by_task[task]["reward_sum"])
         total_trials += n
         total_passed += c
         capped_passed += min(c, rollouts)
@@ -291,22 +360,36 @@ def build_summary(by_task: dict[str, dict[str, int]], rollouts: int) -> SummaryP
         # be failures, so no unbiased estimator is needed.
         task_passk = 1.0 if c >= 1 else 0.0
         passk_sum += task_passk
-        per_task.append(
-            {
-                "task": task,
-                "trials": n,
-                "passed": c,
-                "errored": errored,
-                f"pass@{rollouts}": task_passk,
-            }
-        )
+        row = {
+            "task": task,
+            "trials": n,
+            "passed": c,
+            "errored": errored,
+            f"pass@{rollouts}": task_passk,
+        }
+        if continuous:
+            # Same capping rule as `capped_passed`, so a duplicated rollout cannot
+            # take a task above 1.0.
+            task_reward = min(reward_sum, float(rollouts))
+            capped_reward += task_reward
+            # Per-task column and the macro average use the ACTUAL trial count, so a
+            # task that ran fewer rollouts is not diluted here. `n >= 1` for any task
+            # present in `by_task`, so this cannot divide by zero.
+            actual_mean = min(reward_sum / n, 1.0)
+            mean_reward_sum += actual_mean
+            row[f"mean_reward@{rollouts}"] = round(actual_mean, 6)
+        per_task.append(row)
 
     n_tasks = len(by_task)
     dataset_passk = round(passk_sum / n_tasks, 6) if n_tasks else None
     # Missing rollouts count as failures through the expected denominator, while
     # per-task capping prevents duplicated rollouts from inflating the numerator.
     expected_trials = n_tasks * rollouts
-    avg_at_k = round(capped_passed / expected_trials, 6) if expected_trials else None
+    numerator = capped_reward if continuous else capped_passed
+    avg_at_k = round(numerator / expected_trials, 6) if expected_trials else None
+    macro_avg_at_k = (
+        round(mean_reward_sum / n_tasks, 6) if continuous and n_tasks else None
+    )
     totals = {
         "tasks": n_tasks,
         "trials": total_trials,
@@ -314,7 +397,7 @@ def build_summary(by_task: dict[str, dict[str, int]], rollouts: int) -> SummaryP
         "passed": total_passed,
         "errored": total_errored,
     }
-    return SummaryParts(dataset_passk, avg_at_k, totals, per_task)
+    return SummaryParts(dataset_passk, avg_at_k, totals, per_task, macro_avg_at_k)
 
 
 def make_summary(
@@ -334,13 +417,19 @@ def make_summary(
     totals: dict[str, int],
     pass_at_k: float | None,
     avg_at_k: float | None,
+    macro_avg_at_k: float | None = None,
     issues: list[dict[str, str]] | None = None,
 ) -> dict:
     """Assemble the summary dict in one place, so the empty and populated paths
     cannot drift in schema. The metric keys are dynamic (``pass@{K}`` /
-    ``avg@{K}``); ``rollouts_per_task`` carries K so a reader can reconstruct them.
+    ``avg@{K}`` / ``macro_avg@{K}``); ``rollouts_per_task`` carries K so a reader
+    can reconstruct them, and ``scoring`` says how to read them.
+
+    ``macro_avg@{K}`` is present only for graded categories. ``totals.passed``
+    stays a count of trials at or above PASS_THRESHOLD in every case, so for a
+    graded category it reads 0 -- meaning "no trial was perfect", not "no signal".
     """
-    return {
+    summary = {
         "dataset": dataset,
         "model": model,
         "category": category,
@@ -353,11 +442,15 @@ def make_summary(
         "skipped_files": skipped_files,
         "harbor_result": harbor_result,
         "incomplete": incomplete,
+        "scoring": "continuous" if is_continuous_category(category) else "binary",
         "totals": totals,
         f"pass@{rollouts}": pass_at_k,
         f"avg@{rollouts}": avg_at_k,
-        "issues": list(issues or []),
     }
+    if macro_avg_at_k is not None:
+        summary[f"macro_avg@{rollouts}"] = macro_avg_at_k
+    summary["issues"] = list(issues or [])
+    return summary
 
 
 def render_step_summary(summary: dict) -> str:
@@ -395,13 +488,28 @@ def render_step_summary(summary: dict) -> str:
     k = summary.get("rollouts_per_task")
     passk = summary.get(f"pass@{k}")
     avgk = summary.get(f"avg@{k}")
+    macrok = summary.get(f"macro_avg@{k}")
     lines.extend(["", "| metric | value |", "|---|---|"])
-    lines.append(
-        f"| pass@{k} | {passk:.3f} |" if passk is not None else f"| pass@{k} | n/a |"
-    )
-    lines.append(
-        f"| avg@{k} | {avgk:.3f} |" if avgk is not None else f"| avg@{k} | n/a |"
-    )
+    if summary.get("scoring") == "continuous":
+        # pass@K is deliberately omitted: this category's reward is graded, so the
+        # pass rate is 0.000 by construction and would read as a failed run.
+        lines.append(
+            f"| mean reward (micro, avg@{k}) | {avgk:.3f} |"
+            if avgk is not None
+            else f"| mean reward (micro, avg@{k}) | n/a |"
+        )
+        lines.append(
+            f"| mean reward (macro, macro_avg@{k}) | {macrok:.3f} |"
+            if macrok is not None
+            else f"| mean reward (macro, macro_avg@{k}) | n/a |"
+        )
+    else:
+        lines.append(
+            f"| pass@{k} | {passk:.3f} |" if passk is not None else f"| pass@{k} | n/a |"
+        )
+        lines.append(
+            f"| avg@{k} | {avgk:.3f} |" if avgk is not None else f"| avg@{k} | n/a |"
+        )
     issues = summary.get("issues") or []
     if issues:
         lines.extend(["", "## Analysis warnings", ""])
@@ -487,7 +595,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--category",
         default=None,
-        help="Eval category (autonomous|conversation|context), recorded in the summary.",
+        help=(
+            "Eval category (autonomous|conversation|context|research), recorded in the "
+            "summary. Also selects the scoring mode: categories in "
+            "CONTINUOUS_CATEGORIES average the reward instead of counting passes."
+        ),
     )
     parser.add_argument(
         "--config",
@@ -652,7 +764,7 @@ def main(argv: list[str] | None = None) -> int:
         print("No trial results found; wrote empty summary.", file=sys.stderr)
         return 0
 
-    parts = build_summary(agg.by_task, args.rollouts)
+    parts = build_summary(agg.by_task, args.rollouts, category=args.category)
     # Incomplete if a shard job failed, a shard is missing, a present task ran a
     # number of trials other than K (missing OR duplicated rollouts), or a result
     # was unreadable / had a non-numeric reward.
@@ -685,6 +797,7 @@ def main(argv: list[str] | None = None) -> int:
         totals=parts.totals,
         pass_at_k=parts.pass_at_k,
         avg_at_k=parts.avg_at_k,
+        macro_avg_at_k=parts.macro_avg_at_k,
         issues=issues,
     )
     if incomplete:

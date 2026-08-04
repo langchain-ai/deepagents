@@ -1339,3 +1339,70 @@ def test_main_with_usage_json_writes_usage_table(tmp_path: Path, monkeypatch):
     assert combined["usage_available"] is True
     assert combined["rows"][0]["usage"]["completed_totals"]["cost_usd"] == 0.3
     assert "## Token usage and cost" in step.read_text()
+
+
+# --- graded ("continuous") categories -------------------------------------------------
+
+
+def test_read_leaf_exposes_graded_scoring_and_macro(tmp_path):
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    summary = _summary("m", 1, 0.0, 0.378, 2, 0, category="research")
+    summary["scoring"] = "continuous"
+    summary["macro_avg@1"] = 0.42
+    (leaf / "summary.json").write_text(json.dumps(summary))
+
+    out = au.read_leaf(leaf, expected_rollouts=1)
+    assert out["scoring"] == "continuous"
+    assert out["macro_avg_at_k"] == 0.42
+    # pass@K is carried through unchanged; it is 0.0 because nothing scored a perfect 1.
+    assert out["pass_at_k"] == 0.0
+    assert out["avg_at_k"] == 0.378
+
+
+def test_read_leaf_defaults_scoring_to_binary_without_the_keys(tmp_path):
+    # Summaries written before `scoring`/`macro_avg@K` existed must still read cleanly.
+    leaf = tmp_path / "leaf"
+    leaf.mkdir()
+    (leaf / "summary.json").write_text(json.dumps(_summary("m", 1, 1.0, 1.0, 1, 1)))
+
+    out = au.read_leaf(leaf, expected_rollouts=1)
+    assert out["scoring"] == "binary"
+    assert out["macro_avg_at_k"] is None
+
+
+def test_render_markdown_labels_a_graded_category_by_its_means():
+    combined = {
+        "categories": ["context", "research"],
+        "rows": [
+            {
+                "model": "m",
+                "branch": "current",
+                "config": "bare",
+                "incomplete": False,
+                "categories": {
+                    "context": {"pass_at_k": 0.5, "avg_at_k": 0.4, "tasks": 2},
+                    "research": {
+                        "pass_at_k": 0.0,
+                        "avg_at_k": 0.378,
+                        "macro_avg_at_k": 0.42,
+                        "tasks": 2,
+                    },
+                },
+                "macro": {"pass_at_k": 0.25, "avg_at_k": 0.389},
+                "micro": {"pass_at_k": 0.25, "avg_at_k": 0.389},
+            }
+        ],
+        "issues": [],
+    }
+    md = au.render_markdown(combined, 1)
+    # The graded column is labelled and rendered as micro/macro mean reward, so its
+    # structural pass@1 of 0.000 is never shown as a result.
+    assert "research avg@1/macro@1" in md
+    assert "research pass@1/avg@1" not in md
+    assert "0.378/0.420" in md
+    # The pass/fail category keeps its original labelling.
+    assert "context pass@1/avg@1" in md
+    assert "0.500/0.400" in md
+    # And the Overall pass@K caveat is stated rather than left for the reader to hit.
+    assert "Overall pass@1" in md

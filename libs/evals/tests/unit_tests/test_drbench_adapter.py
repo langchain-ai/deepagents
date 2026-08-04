@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from typing import TYPE_CHECKING
 
 import pytest
 import yaml
-from harbor.models.task.config import NetworkMode, TaskConfig
+from harbor.models.task.config import NetworkMode, TaskConfig, VerifierEnvironmentMode
+from harbor.models.task.verifier_mode import (
+    resolve_effective_verifier_env_config,
+    resolve_task_verifier_mode,
+)
 
 from harbor_adapters.drbench import adapter
 
@@ -293,13 +298,27 @@ def test_generate_task_keeps_ground_truth_out_of_the_agents_reach(
     )
     task_dir = adapter.generate_task(output_dir=tmp_path / "dataset", task_id=_TASK_ID)
 
+    # The verifier installs upstream `drbench`, which ships both the gold `eval.json` and
+    # the document corpus as package data, so it needs nothing but the task id. Ground
+    # truth is therefore absent from the task directory entirely -- stricter than relying
+    # on Harbor to upload `tests/` only after the agent has finished.
     case = json.loads((task_dir / "tests" / "case.json").read_text())
-    assert [i["answer"] for i in case["insights"]] == [secret]
-    assert [d["answer"] for d in case["distractors"]] == [planted]
-    # The verifier re-fetches cited documents from the app stack, so it needs the login.
-    assert case["credentials"]["nextcloud"]["username"] == "dana.ray"
-    assert case["endpoints"]["nextcloud"] == "http://drbench:8081"
-    assert case["credential_regime"] == "persona"
+    assert set(case) == {"task_id", "upstream_sha"}
+    assert case["task_id"] == _TASK_ID
+    assert case["upstream_sha"] == adapter.UPSTREAM_SHA
+
+    # No generated file may carry a gold answer, with one deliberate exception: the oracle
+    # solution, which exists to write them out and is uploaded only by Harbor's OracleAgent.
+    oracle = task_dir / "solution" / "solve.sh"
+    assert secret in oracle.read_text()
+    leaked = [
+        str(path.relative_to(task_dir))
+        for path in sorted(task_dir.rglob("*"))
+        if path.is_file()
+        and path != oracle
+        and any(answer in path.read_text(errors="replace") for answer in (secret, planted))
+    ]
+    assert leaked == []
 
     # `tests/` goes to the verifier and `solution/` is uploaded only by Harbor's
     # OracleAgent, never on a real agent run. Everything else is agent-visible.
@@ -383,3 +402,124 @@ def test_generated_task_toml_validates_against_harbors_own_schema(
     assert config.environment.build_timeout_sec > 600.0
     assert config.agent.timeout_sec == 3600.0
     assert config.verifier.timeout_sec == 2400.0
+
+
+# --- separate verifier environment ----------------------------------------------------
+
+
+def test_generated_task_declares_a_separate_verifier_environment(
+    vendor: Path, tmp_path: Path
+) -> None:
+    """Validate with Harbor's own models, not string matching.
+
+    `TaskConfig` ignores unknown keys, so a misplaced or misspelled table validates and is
+    then silently dropped -- which is exactly how an earlier `artifacts` key ended up
+    doing nothing. Resolving the mode through Harbor's resolver is the only check that
+    proves the setting took effect.
+    """
+    _write_vendor(vendor, env_files=[_env_file("report.pdf")], qa=[_qa("IN1", "A fact.")])
+    task_dir = adapter.generate_task(output_dir=tmp_path / "dataset", task_id=_TASK_ID)
+    config = TaskConfig.model_validate(tomllib.loads((task_dir / "task.toml").read_text()))
+
+    assert resolve_task_verifier_mode(config) is VerifierEnvironmentMode.SEPARATE
+
+    verifier_env = resolve_effective_verifier_env_config(config, None)
+    assert verifier_env is not None
+    # Must be declared rather than inherited: without an explicit table Harbor deep-copies
+    # `[environment]`, which would boot the app stack again and then fail its healthcheck,
+    # since the verifier compose file has no such service.
+    assert verifier_env.healthcheck is None
+    assert verifier_env.network_mode.value == "public"
+
+    # The report has to survive into the verifier environment, which only happens if
+    # `artifacts` is a top-level key that actually validates.
+    assert config.artifacts
+
+
+def test_generated_task_ships_the_verifier_image_pinned_to_the_vendored_commit(
+    vendor: Path, tmp_path: Path
+) -> None:
+    _write_vendor(vendor, env_files=[_env_file("report.pdf")], qa=[_qa("IN1", "A fact.")])
+    task_dir = adapter.generate_task(output_dir=tmp_path / "dataset", task_id=_TASK_ID)
+
+    dockerfile = (task_dir / "tests" / "Dockerfile").read_text()
+    # One pin for the metrics, prompts, ground truth, and corpus, shared with the
+    # vendored task configs so a score is always traceable to one upstream commit.
+    assert adapter.UPSTREAM_SHA in dockerfile
+    assert "{drbench_ref}" not in dockerfile
+    # The build must fail on an install without package data, or factuality would score
+    # every claim unsupported while the image looks healthy.
+    assert "data" in dockerfile
+    assert "assert" in dockerfile
+
+    compose = (task_dir / "tests" / "docker-compose.yaml").read_text()
+    # Harbor uploads tests into, and runs test.sh in, the service named `main`.
+    assert "main:" in compose
+    # No app stack here: upstream resolves cited sources from the installed corpus.
+    assert "drbench:" not in compose
+
+
+# --- prompt contracts ------------------------------------------------------------------
+
+
+def test_instruction_names_the_citation_forms_the_verifier_can_resolve(
+    vendor: Path, tmp_path: Path
+) -> None:
+    # Upstream resolves an email citation by exact sender address and subject, and a chat
+    # citation by channel/team/user. A citation it cannot resolve scores as unsupported no
+    # matter how accurate the claim, so the prompt has to specify the forms.
+    _write_vendor(
+        vendor,
+        env_files=[_env_file("report.pdf"), _env_file("mail.jsonl", app="email")],
+        qa=[_qa("IN1", "A fact.")],
+    )
+    task_dir = adapter.generate_task(output_dir=tmp_path / "dataset", task_id=_TASK_ID)
+    instruction = (task_dir / "instruction.md").read_text()
+
+    assert "RoundCube-" in instruction
+    assert "MatterMost-" in instruction
+    # A display name cannot resolve -- every upstream pattern requires an `@` -- and the
+    # subject is matched character for character.
+    assert "email address" in instruction
+    assert "exactly" in instruction
+
+
+def test_instruction_passes_app_passwords_through_the_environment(
+    vendor: Path, tmp_path: Path
+) -> None:
+    """No literal `-u user:password` in a committed prompt.
+
+    These logins are public benchmark fixtures, not secrets, but repeating the pair across
+    100 committed prompts trips secret scanners on every push -- a false positive that
+    trains people to ignore real alerts. The values live in one labelled table per task.
+    """
+    _write_vendor(
+        vendor,
+        env_files=[_env_file("report.pdf"), _env_file("mail.jsonl", app="email")],
+        qa=[_qa("IN1", "A fact.")],
+    )
+    task_dir = adapter.generate_task(output_dir=tmp_path / "dataset", task_id=_TASK_ID)
+    instruction = (task_dir / "instruction.md").read_text()
+
+    assert re.search(r"-u\s+[A-Za-z0-9._@-]+:[A-Za-z0-9._@-]+", instruction) is None
+    assert "$DRBENCH_NEXTCLOUD_PASS" in instruction
+
+    env = tomllib.loads((task_dir / "task.toml").read_text())["environment"]["env"]
+    assert env["DRBENCH_NEXTCLOUD_USER"] == "dana.ray"
+    assert env["DRBENCH_NEXTCLOUD_PASS"]
+    assert env["DRBENCH_EMAIL_USER"] == "dana.ray"
+
+
+def test_no_generated_file_carries_a_literal_curl_credential_pair(
+    vendor: Path, tmp_path: Path
+) -> None:
+    _write_vendor(vendor, env_files=[_env_file("report.pdf")], qa=[_qa("IN1", "A fact.")])
+    task_dir = adapter.generate_task(output_dir=tmp_path / "dataset", task_id=_TASK_ID)
+
+    offenders = [
+        str(path.relative_to(task_dir))
+        for path in sorted(task_dir.rglob("*"))
+        if path.is_file()
+        and re.search(r"-u\s+[A-Za-z0-9._@-]+:[A-Za-z0-9._@-]+", path.read_text(errors="replace"))
+    ]
+    assert offenders == []

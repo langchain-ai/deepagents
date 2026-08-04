@@ -7,10 +7,15 @@ per-task container image, which serves the documents from Nextcloud, Mattermost,
 Roundcube/IMAP, and a file browser, and the agent researches by navigating those apps
 over the network rather than by reading files off disk.
 
-Two compose services per task. `main` is where Harbor installs the agent and where the
-verifier runs; it holds no task data. `drbench` is upstream's image, which boots its own
-supervisord with this task's documents already loaded. See `README.md` in the generated
-dataset for the runtime contract.
+Two compose services per task. `main` is where Harbor installs and runs the agent; it holds
+no task data. `drbench` is upstream's image, which boots its own supervisord with this
+task's documents already loaded.
+
+The verifier runs in a *third*, separate environment built from the task's `tests/`
+directory and started only after the agent's is torn down. That is what lets it install
+upstream `drbench` and score with upstream's own metrics: the package ships both the gold
+`eval.json` and the whole document corpus, neither of which may exist while the agent is
+running. See `README.md` in the generated dataset for the runtime contract.
 """
 
 from __future__ import annotations
@@ -65,12 +70,13 @@ _APP_DEFAULT_CREDENTIALS: dict[str, dict[str, str]] = {
     "file_system": {"username": "admin", "password": "admin_pwd"},
 }
 
-# Per-app access notes for the prompt. `USER`/`PASS` are substituted with the task's
-# persona login.
+# Per-app access notes for the prompt. `USER` is substituted with the task's login name;
+# the password is never written into the prompt -- see `_credential_env` for why.
 _APP_GUIDANCE: dict[str, str] = {
     "nextcloud": (
         "the company cloud drive. HTTP Basic auth over WebDAV. List one level with "
-        "`curl -u USER:PASS -X PROPFIND -H 'Depth: 1' -H 'Host: localhost' "
+        "`curl -u \"$DRBENCH_NEXTCLOUD_USER:$DRBENCH_NEXTCLOUD_PASS\" -X PROPFIND "
+        "-H 'Depth: 1' -H 'Host: localhost' "
         "http://drbench:8081/remote.php/dav/files/USER/`, then repeat on any directory "
         "it returns (they end in `/`) to walk deeper, and GET any file path to download "
         "it. Both extra headers matter: this server answers `400 Bad Request` to "
@@ -93,6 +99,31 @@ _APP_GUIDANCE: dict[str, str] = {
 
 # Returns 200 only once every service is up, 503 otherwise.
 HEALTH_URL = "http://drbench:8099/health"
+
+# Shared by both Docker build contexts a task generates (`environment/` and `tests/`).
+_DOCKERIGNORE = (
+    ".env\n.env.*\n*.pem\n*.key\n*.crt\ncredentials.json\n"
+    ".git\n__pycache__/\n.venv/\n.DS_Store\n"
+)
+
+
+def _credential_env(credentials: dict[str, dict[str, str]], apps: list[str]) -> dict[str, str]:
+    """Map each app's login to the env vars the prompt tells the agent to use.
+
+    The logins are public benchmark fixtures -- upstream publishes them in its repo and
+    bakes them into its public images -- so they are not secrets. They are passed through
+    the environment rather than written into `instruction.md` for two reasons: a literal
+    `-u <user>:<password>` repeated across 100 committed prompts trips secret scanners on
+    every push (a false positive that trains people to ignore real alerts), and env
+    indirection keeps every value in one clearly-labelled table per task instead of
+    scattered through prose.
+    """
+    env: dict[str, str] = {}
+    for app in apps:
+        prefix = f"DRBENCH_{app.upper()}"
+        env[f"{prefix}_USER"] = credentials[app]["username"]
+        env[f"{prefix}_PASS"] = credentials[app]["password"]
+    return env
 
 _INSIGHT_QA_TYPE = "insight"
 _DISTRACTOR_QA_TYPE = "distractor"
@@ -560,16 +591,30 @@ def _copy_environment_invariants(environment_dir: Path) -> None:
 
 
 def _copy_verifier_invariants(tests_dir: Path) -> None:
-    """Copy the task-invariant verifier files into `tests_dir`.
+    """Write the task-invariant verifier files into `tests_dir`.
 
-    `test.sh` and `judge.py` are byte-identical across every task, so they are
-    single-sourced in `templates/` and git-ignored per task. Only `case.json` (the
-    per-task question, ground truth, and app access) is committed per task.
+    All four are byte-identical across every task, so they are single-sourced in
+    `templates/` and git-ignored per task; only `case.json` is committed. `Dockerfile`
+    and `docker-compose.yaml` are here rather than under `environment/` because Harbor
+    builds a SEPARATE verifier environment from the tests directory, and starts it only
+    after the agent environment has been torn down.
     """
     tests_dir.mkdir(parents=True, exist_ok=True)
     templates_dir = _templates_dir()
     shutil.copy2(templates_dir / "test.sh", tests_dir / "test.sh")
     shutil.copy2(templates_dir / "judge.py", tests_dir / "judge.py")
+    # This directory is a Docker build context now, so it needs the same exclusions as
+    # `environment/`: nothing sensitive should be reachable by a COPY, even accidentally.
+    (tests_dir / ".dockerignore").write_text(_DOCKERIGNORE, encoding="utf-8")
+    shutil.copy2(
+        templates_dir / "verifier-compose.yaml.tmpl", tests_dir / "docker-compose.yaml"
+    )
+    # The only substitution: pin the upstream commit the metrics, prompts, ground truth,
+    # and corpus all come from, so it cannot drift from the vendored task configs.
+    dockerfile = (templates_dir / "verifier.Dockerfile").read_text(encoding="utf-8")
+    (tests_dir / "Dockerfile").write_text(
+        dockerfile.format(drbench_ref=UPSTREAM_SHA), encoding="utf-8"
+    )
 
 
 def _company_brief(company: dict) -> str:
@@ -627,13 +672,11 @@ def _instruction(
     persona = task_config.get("persona") or {}
 
     # Credentials differ per app, and in the `default` regime they are not the persona's
-    # at all, so each line carries its own login rather than one shared pair.
+    # at all, so each line names its own env var pair rather than one shared login.
     app_lines = "\n".join(
-        f"- **{app}** (log in as `{credentials[app]['username']}` / "
-        f"`{credentials[app]['password']}`) — "
-        + _APP_GUIDANCE[app]
-        .replace("USER", credentials[app]["username"])
-        .replace("PASS", credentials[app]["password"])
+        f"- **{app}** (log in as `{credentials[app]['username']}`, password in "
+        f"`$DRBENCH_{app.upper()}_PASS`) — "
+        + _APP_GUIDANCE[app].replace("USER", credentials[app]["username"])
         for app in apps
     )
     return f"""# Deep research request
@@ -655,7 +698,8 @@ You are working on behalf of:
 ## Where to research
 
 Your company's systems are running and reachable over the network. **Nothing is on this
-machine's filesystem** — you have to query the applications. Each one has its own login:
+machine's filesystem** — you have to query the applications. Each one has its own login,
+with its password already exported in the environment:
 
 {app_lines}
 
@@ -676,11 +720,20 @@ Write a research report to `/app/report.md` as Markdown.
 
 - Ground every factual claim in a source, cited inline with a bracketed number
   (`[1]`, `[2]`, ...).
-- End the report with a `## References` section listing each number against the
-  document's file name or the URL it came from. Use the file name, not the number, in
-  that list.
+- End the report with a `## References` section listing each number against its source,
+  in one of these exact forms. Scoring resolves each citation back to the source it
+  names, and a citation it cannot resolve counts as unsupported no matter how accurate
+  the claim is:
+  - **a document** — its file name, e.g. `food-safety-compliance.pdf`
+  - **a web page** — its full URL
+  - **an email** — `RoundCube-<sender address>-<a recipient address>-<Subject>`, e.g.
+    `RoundCube-david.lee@example.com-emily.patel@example.com-Re: Q2 Compliance Update`.
+    Use the sender's **email address**, not their display name, and copy the subject
+    line **exactly** as it appears in the mailbox — both are matched character for
+    character.
+  - **a chat message** — `MatterMost-<channel>-<team>-<user>`
 - Report only what your sources support. Uncited assertions, and claims you cannot trace
-  back to a document or web page, do not count in your favour.
+  back to a document, email, chat message, or web page, do not count in your favour.
 - Cover the question thoroughly: the report is scored on how many of the findings a
   domain expert would consider essential you actually surface, and on whether you kept
   the irrelevant material out.
@@ -692,12 +745,14 @@ def _write_task_files(task_dir: Path, *, record: dict[str, dict], image: str) ->
     task_config = record["task"]
     info = record["info"]
     task_id = str(task_config["task_id"])
-    question = str(task_config.get("dr_question", "")).strip()
-    persona = task_config.get("persona") or {}
 
     apps = task_apps(record["env"])
     documents = document_count(record["env"])
     credentials = app_credentials(task_config)
+    credential_env_toml = "\n".join(
+        f'{name} = {json.dumps(value)}'
+        for name, value in sorted(_credential_env(credentials, apps).items())
+    )
     regime = credential_regime(task_config)
     insights = insight_ground_truth(record["eval"])
     distractors = qa_ground_truth(record["eval"], _DISTRACTOR_QA_TYPE)
@@ -710,10 +765,7 @@ def _write_task_files(task_dir: Path, *, record: dict[str, dict], image: str) ->
         compose_template.format(image=image, platform=IMAGE_PLATFORM),
         encoding="utf-8",
     )
-    (environment_dir / ".dockerignore").write_text(
-        ".env\n.env.*\n*.pem\n*.key\n*.crt\ncredentials.json\n.git\n__pycache__/\n.venv/\n.DS_Store\n",
-        encoding="utf-8",
-    )
+    (environment_dir / ".dockerignore").write_text(_DOCKERIGNORE, encoding="utf-8")
     _copy_environment_invariants(environment_dir)
 
     (task_dir / "instruction.md").write_text(
@@ -735,10 +787,14 @@ def _write_task_files(task_dir: Path, *, record: dict[str, dict], image: str) ->
     )
 
     # `case.json` is the only per-task verifier input, so it is committed; the invariant
-    # verifier files are single-sourced and git-ignored (regenerated by
-    # `populate_corpus`). Ground truth lives only here, under `tests/`, which Harbor
-    # copies to the verifier and never into the agent's workdir. The persona login is
-    # included because factuality re-fetches cited documents from the app stack.
+    # verifier files are single-sourced and git-ignored (regenerated by `populate_corpus`).
+    #
+    # It carries no ground truth and no app credentials any more. The verifier installs
+    # upstream `drbench`, which ships both the gold `eval.json` and the document corpus as
+    # package data, so it needs only the task id to look them up -- and it resolves cited
+    # sources from that corpus rather than from the running app stack. Keeping the answers
+    # out of the task directory entirely is stricter than relying on Harbor to upload
+    # `tests/` only after the agent has finished.
     tests_dir = task_dir / "tests"
     tests_dir.mkdir()
     _copy_verifier_invariants(tests_dir)
@@ -746,16 +802,9 @@ def _write_task_files(task_dir: Path, *, record: dict[str, dict], image: str) ->
         json.dumps(
             {
                 "task_id": task_id,
-                "question": question,
-                "persona": {
-                    "name": str(persona.get("name", "")),
-                    "role": str(persona.get("role", "")),
-                },
-                "credential_regime": regime,
-                "credentials": {app: credentials[app] for app in apps},
-                "endpoints": {app: _APP_ENDPOINTS[app] for app in apps},
-                "insights": insights,
-                "distractors": distractors,
+                # Recorded so a score can be traced to the exact corpus and ground truth
+                # it was computed against; the verifier image pins the same commit.
+                "upstream_sha": UPSTREAM_SHA,
             },
             ensure_ascii=False,
             indent=2,
@@ -807,6 +856,14 @@ network_mode = "public"
 # inside this one budget. Harbor's 600s default does not survive a cold pull.
 build_timeout_sec = 2400.0
 
+# App logins, passed to the agent through the environment instead of being written into
+# `instruction.md`. These are public benchmark fixtures -- upstream publishes them and
+# bakes them into its public images -- so they are not secrets; the indirection keeps a
+# literal `-u <user>:<password>` out of 100 committed prompts, where it trips secret scanners
+# on every push.
+[environment.env]
+{credential_env_toml}
+
 # `compose up --wait` only waits for containers to be *running*, and this image declares
 # no HEALTHCHECK, so it returns long before the app stack is usable. Harbor runs this
 # check in `main` before it even installs the agent, so this is the real readiness gate.
@@ -825,8 +882,26 @@ timeout_sec = 3600.0
 
 [verifier]
 # Four metrics: one claim-split call, one call per gold insight and per distractor, plus
-# a document fetch and embedding pass for factuality.
+# a document read and embedding pass for factuality. Includes building the verifier image
+# on the first trial of a run.
 timeout_sec = 2400.0
+# The verifier runs in its OWN environment, built from `tests/` and started only after the
+# agent environment has been stopped. That is what lets it install upstream `drbench`,
+# which ships the gold `eval.json` and the whole document corpus as package data: none of
+# it is ever present while the agent is running. Without this the answers would sit in the
+# agent's image for the length of the run.
+environment_mode = "separate"
+
+[verifier.environment]
+# Must be declared, not inherited: with this table absent Harbor deep-copies
+# `[environment]`, which would boot the entire app stack a second time and then fail its
+# `drbench:8099` healthcheck, since the verifier compose file has no such service.
+#
+# Egress is required for the judge API and for re-fetching cited web pages.
+network_mode = "public"
+# First trial on a runner builds the image (pandas, faiss, pymupdf, scikit-learn);
+# BuildKit caches it for the rest of the run, since the file is identical across tasks.
+build_timeout_sec = 1800.0
 """,
         encoding="utf-8",
     )

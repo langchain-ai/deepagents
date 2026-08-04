@@ -36,6 +36,19 @@ network_mode = "public"
 # inside this one budget. Harbor's 600s default does not survive a cold pull.
 build_timeout_sec = 2400.0
 
+# App logins, passed to the agent through the environment instead of being written into
+# `instruction.md`. These are public benchmark fixtures -- upstream publishes them and
+# bakes them into its public images -- so they are not secrets; the indirection keeps a
+# literal `-u <user>:<password>` out of 100 committed prompts, where it trips secret scanners
+# on every push.
+[environment.env]
+DRBENCH_EMAIL_PASS = "my_drbench_pwd"
+DRBENCH_EMAIL_USER = "ethan.thompson"
+DRBENCH_MATTERMOST_PASS = "my_drbench_pwd"
+DRBENCH_MATTERMOST_USER = "ethan.thompson"
+DRBENCH_NEXTCLOUD_PASS = "my_drbench_pwd"
+DRBENCH_NEXTCLOUD_USER = "ethan.thompson"
+
 # `compose up --wait` only waits for containers to be *running*, and this image declares
 # no HEALTHCHECK, so it returns long before the app stack is usable. Harbor runs this
 # check in `main` before it even installs the agent, so this is the real readiness gate.
@@ -54,5 +67,23 @@ timeout_sec = 3600.0
 
 [verifier]
 # Four metrics: one claim-split call, one call per gold insight and per distractor, plus
-# a document fetch and embedding pass for factuality.
+# a document read and embedding pass for factuality. Includes building the verifier image
+# on the first trial of a run.
 timeout_sec = 2400.0
+# The verifier runs in its OWN environment, built from `tests/` and started only after the
+# agent environment has been stopped. That is what lets it install upstream `drbench`,
+# which ships the gold `eval.json` and the whole document corpus as package data: none of
+# it is ever present while the agent is running. Without this the answers would sit in the
+# agent's image for the length of the run.
+environment_mode = "separate"
+
+[verifier.environment]
+# Must be declared, not inherited: with this table absent Harbor deep-copies
+# `[environment]`, which would boot the entire app stack a second time and then fail its
+# `drbench:8099` healthcheck, since the verifier compose file has no such service.
+#
+# Egress is required for the judge API and for re-fetching cited web pages.
+network_mode = "public"
+# First trial on a runner builds the image (pandas, faiss, pymupdf, scikit-learn);
+# BuildKit caches it for the rest of the run, since the file is identical across tasks.
+build_timeout_sec = 1800.0

@@ -1,11 +1,16 @@
 # App mode carries no document corpus on disk — upstream's per-task image serves the
-# documents — so the only uncommitted files are the ones byte-identical across every
-# task. They are single-sourced in harbor_adapters/drbench/templates/ and laid down by
+# documents to the agent, and the verifier reads them from the `drbench` package it
+# installs — so the only uncommitted files are the ones byte-identical across every task.
+# They are single-sourced in harbor_adapters/drbench/templates/ and laid down by
 # `python -m harbor_adapters.drbench.main --populate <dir>`.
 #
-# Only tests/case.json (this task's question, ground truth, and app access) is committed
-# per task.
+# Only tests/case.json (this task's id and the upstream commit it is scored against) is
+# committed per task.
 */environment/main.Dockerfile
 */environment/extract_text.py
 */tests/test.sh
 */tests/judge.py
+# The verifier runs in its own environment, built from tests/ after the agent is done.
+*/tests/Dockerfile
+*/tests/docker-compose.yaml
+*/tests/.dockerignore

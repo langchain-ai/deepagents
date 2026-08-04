@@ -39,7 +39,7 @@ Two compose services per task:
 
 | Service | What it is |
 |---|---|
-| `main` | Where Harbor installs and runs the agent, and where the verifier runs. Holds **no** task data. |
+| `main` | Where Harbor installs and runs the agent. Holds **no** task data. The verifier runs elsewhere — see [Scoring](#scoring). |
 | `drbench` | Upstream's per-task image, pinned by digest. Boots its own supervisord with this task's documents already loaded. |
 
 The agent reaches the apps by compose service name:
@@ -92,28 +92,54 @@ secrets.
 
 ## Scoring
 
-`tests/judge.py` reproduces four upstream metrics, using upstream's own prompts, and then
-combines them. It is stdlib-only — no `drbench` install in the verifier.
+`tests/judge.py` calls **upstream's own metrics** — it installs `drbench` at the pinned commit
+and hands the report to `drbench.score_report.score_report`. Claim extraction, citation
+normalization, chunk retrieval, and every judging prompt are upstream's code, not a
+reimplementation.
 
-| Metric | Upstream | Note |
+| Metric | Upstream class | Note |
 |---|---|---|
 | `insights_recall` | `QASimilarityV2` | Fraction of gold insights the report lets you derive. |
 | `distractor_recall` | `DistractorRecall` | **Higher is worse** — the report swallowed planted material. |
-| `factuality` | `CitationFactuality` | Per cited claim: re-fetch the source from the app stack, chunk, rank by embedding similarity, judge. |
-| `report_quality` | `ReportQuality` | Five criteria scored 1–10, averaged. |
+| `factuality` | `CitationFactuality` | Per cited claim: resolve the cited source, chunk, rank by embedding similarity, judge. |
+| `report_quality` | `ReportQuality` | Five criteria scored 1–10, averaged and divided by 10. |
 
-The headline `reward` is a **harmonic mean** of `insights_recall`, `1 − distractor_recall`,
-`factuality`, and `report_quality`, each floored at 0.01 so one zero craters the score without
-erasing all ranking signal.
+The headline `reward` is the **harmonic mean** of `insights_recall`, `1 − distractor_recall`,
+`factuality`, and `report_quality`. That is the paper's own aggregate (arXiv 2510.00172,
+Table 2: *Insight Recall, Factuality, Distractor Avoidance, Report Quality, Harmonic Mean*),
+which also defines distractor avoidance as `1 − distractor recall`. Upstream's released code
+computes the four metrics but not the mean, so the combination happens in `judge.py`. The only
+deviation from the paper is a 0.01 floor per component, so one zero craters the score without
+erasing all ranking signal. All four components are written alongside it in `reward.json`, and
+`/logs/verifier/drbench_metrics.json` carries the breakdown — read that when diagnosing a score.
 
-**Upstream defines no combined score** — no harmonic mean, no overall metric, no leaderboard
-formula anywhere in DRBench. The composite is therefore *ours*, and a number quoted from it is
-not comparable to the paper. All four components are written alongside it in `reward.json` for
-that reason, and the per-insight, per-distractor, and per-claim verdicts land in
-`/logs/verifier/drbench_metrics.json` — that is the file to read when diagnosing a score.
+### The verifier runs in its own environment
 
-Ground truth lives only in `tests/case.json`, which Harbor copies to the verifier and never
-into the agent's workdir.
+`[verifier].environment_mode = "separate"`, so Harbor builds a second image from `tests/` and
+starts it only **after** the agent environment has been torn down. That is what makes installing
+`drbench` safe: the package ships both the gold `eval.json` **and** the whole document corpus as
+package data, and none of it may exist while the agent is running.
+
+Two consequences:
+
+- **`tests/case.json` holds no answers.** It is just the task id plus the upstream commit; the
+  verifier looks up ground truth in the installed package. Nothing in the task directory
+  contains a gold insight except `solution/solve.sh`, which is the oracle and is uploaded only
+  by Harbor's `OracleAgent`.
+- **The verifier never touches the app stack.** Cited documents are resolved from the corpus, so
+  email, chat, file-browser, and Nextcloud sources all resolve as plain files. An earlier
+  version re-fetched them over WebDAV and could therefore not resolve email or chat citations
+  at all.
+
+### Citations have to be resolvable
+
+Scoring resolves each citation back to a source, and one it cannot resolve counts as
+unsupported however accurate the claim. `instruction.md` therefore specifies the exact forms:
+a file name for a document, a full URL for a web page,
+`RoundCube-<sender address>-<recipient address>-<Subject>` for an email, and
+`MatterMost-<channel>-<team>-<user>` for a chat message. Sender address and subject are matched
+character for character, and a display name resolves nothing — every pattern in upstream's
+`normalize_email_citation` requires an `@`.
 
 ## Regenerating
 

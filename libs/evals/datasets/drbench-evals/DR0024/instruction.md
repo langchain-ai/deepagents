@@ -32,11 +32,12 @@ Today's date is 2025-10-30.
 ## Where to research
 
 Your company's systems are running and reachable over the network. **Nothing is on this
-machine's filesystem** — you have to query the applications. Each one has its own login:
+machine's filesystem** — you have to query the applications. Each one has its own login,
+with its password already exported in the environment:
 
-- **file_system** (log in as `admin` / `admin_pwd`) — local and shared drives, exposed through a file browser at `http://drbench:8090`.
-- **mattermost** (log in as `admin@drbench.com` / `mm_admin_pwd`) — team chat. `POST http://drbench:8082/api/v4/users/login` with a JSON body of `login_id` and `password` returns a session token in the `Token` response header; send it back as `Authorization: Bearer <token>`.
-- **nextcloud** (log in as `admin` / `admin_pwd`) — the company cloud drive. HTTP Basic auth over WebDAV. List one level with `curl -u admin:admin_pwd -X PROPFIND -H 'Depth: 1' -H 'Host: localhost' http://drbench:8081/remote.php/dav/files/admin/`, then repeat on any directory it returns (they end in `/`) to walk deeper, and GET any file path to download it. Both extra headers matter: this server answers `400 Bad Request` to `Depth: infinity`, and it only trusts the Host `localhost`, so a request addressed to `drbench:8081` is rejected without the `Host` override.
+- **file_system** (log in as `admin`, password in `$DRBENCH_FILE_SYSTEM_PASS`) — local and shared drives, exposed through a file browser at `http://drbench:8090`.
+- **mattermost** (log in as `admin@drbench.com`, password in `$DRBENCH_MATTERMOST_PASS`) — team chat. `POST http://drbench:8082/api/v4/users/login` with a JSON body of `login_id` and `password` returns a session token in the `Token` response header; send it back as `Authorization: Bearer <token>`.
+- **nextcloud** (log in as `admin`, password in `$DRBENCH_NEXTCLOUD_PASS`) — the company cloud drive. HTTP Basic auth over WebDAV. List one level with `curl -u "$DRBENCH_NEXTCLOUD_admin:$DRBENCH_NEXTCLOUD_PASS" -X PROPFIND -H 'Depth: 1' -H 'Host: localhost' http://drbench:8081/remote.php/dav/files/admin/`, then repeat on any directory it returns (they end in `/`) to walk deeper, and GET any file path to download it. Both extra headers matter: this server answers `400 Bad Request` to `Depth: infinity`, and it only trusts the Host `localhost`, so a request addressed to `drbench:8081` is rejected without the `Host` override.
 
 Documents are PDF, DOCX, XLSX, PPTX, and JSONL mail exports, so anything you download is
 binary. Convert it with `extract-text <path>`. Not every document is relevant — the
@@ -55,11 +56,20 @@ Write a research report to `/app/report.md` as Markdown.
 
 - Ground every factual claim in a source, cited inline with a bracketed number
   (`[1]`, `[2]`, ...).
-- End the report with a `## References` section listing each number against the
-  document's file name or the URL it came from. Use the file name, not the number, in
-  that list.
+- End the report with a `## References` section listing each number against its source,
+  in one of these exact forms. Scoring resolves each citation back to the source it
+  names, and a citation it cannot resolve counts as unsupported no matter how accurate
+  the claim is:
+  - **a document** — its file name, e.g. `food-safety-compliance.pdf`
+  - **a web page** — its full URL
+  - **an email** — `RoundCube-<sender address>-<a recipient address>-<Subject>`, e.g.
+    `RoundCube-david.lee@example.com-emily.patel@example.com-Re: Q2 Compliance Update`.
+    Use the sender's **email address**, not their display name, and copy the subject
+    line **exactly** as it appears in the mailbox — both are matched character for
+    character.
+  - **a chat message** — `MatterMost-<channel>-<team>-<user>`
 - Report only what your sources support. Uncited assertions, and claims you cannot trace
-  back to a document or web page, do not count in your favour.
+  back to a document, email, chat message, or web page, do not count in your favour.
 - Cover the question thoroughly: the report is scored on how many of the findings a
   domain expert would consider essential you actually surface, and on whether you kept
   the irrelevant material out.

@@ -114,20 +114,13 @@ jobs:
               return comments.find(c => c.body && c.body.startsWith(STICKY_MARKER));
             }
 
-            // A missing or revoked `issues: write` is a permanent
-            // misconfiguration: this check would stay green forever while
-            // silently doing nothing, indistinguishable from "every branch is
-            // conformant". Fail loudly on those; stay green on transient errors,
-            // which is what the advisory contract is actually about.
+            // Comment API failures must not make this explicitly advisory
+            // workflow fail. In particular, GitHub uses 403 for both missing
+            // permissions and temporary secondary-rate-limit/abuse responses,
+            // and a comment can disappear between the lookup and update/delete.
             function reportApiError(err, context) {
-              if (err.status === 403 || err.status === 404) {
-                core.setFailed(
-                  `${context} failed with HTTP ${err.status} — this workflow likely lacks ` +
-                  `'issues: write'. Check the permissions block in branch_name_check.yml.`,
-                );
-                return;
-              }
-              core.warning(`${context} failed transiently (HTTP ${err.status}): ${err.message}`);
+              const status = err.status ? `HTTP ${err.status}` : 'an unknown error';
+              core.warning(`${context} failed with ${status}: ${err.message}`);
             }
 
             // Conformant branch: clean up any stale warning and pass. Rarely
@@ -176,11 +169,8 @@ jobs:
               `Then open a PR from \`<new-name>\` and close this one. (Deleting \`${headRef}\` before that will close this PR automatically.)`,
             ].join('\n');
 
-            // Comment write can fail transiently (rate limits, API errors).
-            // Fall back to the job summary so the warning stays visible rather
-            // than turning this advisory check red — but a permissions failure
-            // still fails the job via reportApiError, since that one is not
-            // going to fix itself.
+            // Fall back to the job summary if any comment operation fails so
+            // the warning stays visible without turning this advisory check red.
             try {
               const existing = await findStickyComment();
               if (existing) {

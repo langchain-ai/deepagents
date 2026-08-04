@@ -13097,15 +13097,45 @@ class TestAutoClassifierModelCommand:
         assert screen._recommended_models == _AUTO_CLASSIFIER_RECOMMENDED_MODELS
         assert screen._include_recent_models is False
 
+    @staticmethod
+    def _rendered_description(push: MagicMock) -> str:
+        """Return the picker description as the user sees it rendered.
+
+        Reads through `Static.render()` rather than `str(...)` on purpose:
+        `str(Content(s)) == s`, so a `str()` assertion passes whether the
+        description was built as markup-safe `Content` or as a raw `str` that
+        `Static` would parse as markup.
+        """
+        rendered = Static(push.call_args.args[0]._description).render()
+        assert isinstance(rendered, Content)
+        return rendered.plain
+
     async def test_selector_description_names_the_configured_classifier(self) -> None:
         """The picker should say which model Auto reviews with right now."""
         app = DeepAgentsApp(agent=MagicMock())
         app._auto_classifier_model = "anthropic:claude-haiku-4-5"
+        with (
+            patch.object(app, "_effective_model_spec", return_value="openai:gpt-5.5"),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with anthropic:claude-haiku-4-5."
+            " A weaker model weakens that review."
+        )
+
+    async def test_selector_description_does_not_parse_a_spec_as_markup(self) -> None:
+        """A bracketed spec should render literally, not as a style tag."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = "anthropic:claude-opus-5[dim]"
         with patch.object(app, "push_screen") as push:
             await app._show_auto_classifier_model_selector()
 
-        description = str(push.call_args.args[0]._description)
-        assert description == "Auto currently reviews with anthropic:claude-haiku-4-5."
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with anthropic:claude-opus-5[dim]."
+            " A weaker model weakens that review."
+        )
 
     async def test_selector_description_marks_an_inherited_classifier(self) -> None:
         """With no classifier set, the picker should name the main agent model."""
@@ -13117,9 +13147,39 @@ class TestAutoClassifierModelCommand:
         ):
             await app._show_auto_classifier_model_selector()
 
-        description = str(push.call_args.args[0]._description)
-        assert description == (
+        assert self._rendered_description(push) == (
             "Auto currently reviews with openai:gpt-5.5, the main agent model."
+            " A weaker model weakens that review."
+        )
+
+    async def test_selector_description_never_shows_the_inherit_sentinel(self) -> None:
+        """`--auto-classifier-model ""` should read as inheriting, not as a spec."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = INHERIT_CLASSIFIER_MODEL
+        with (
+            patch.object(app, "_effective_model_spec", return_value="openai:gpt-5.5"),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with openai:gpt-5.5, the main agent model."
+            " A weaker model weakens that review."
+        )
+
+    async def test_selector_description_without_a_resolved_main_model(self) -> None:
+        """Before credentials resolve a spec, the picker names only the role."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = None
+        with (
+            patch.object(app, "_effective_model_spec", return_value=None),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        assert self._rendered_description(push) == (
+            "Auto currently reviews with the main agent model."
+            " A weaker model weakens that review."
         )
 
     async def test_bare_auto_still_switches_approval_mode(self) -> None:

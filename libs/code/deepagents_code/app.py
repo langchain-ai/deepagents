@@ -19156,13 +19156,25 @@ class DeepAgentsApp(App):
             # removes the modal.
             self.call_after_refresh(start_selection_worker)
 
+        # `from_markup` with `$spec`, not an f-string: the spec is user-supplied,
+        # and the description reaches a `Static` that parses a plain `str` as
+        # markup — a spec containing `[dim]` would render a wrong model name,
+        # and one containing `[/]` would raise `MarkupError` opening the modal.
+        caveat = " A weaker model weakens that review."
         active = self._auto_classifier_review_model_spec()
         if active is None:
-            description = "Auto currently reviews with the main agent model."
+            description = Content(
+                "Auto currently reviews with the main agent model." + caveat
+            )
         elif self._auto_classifier_display_spec() is None:
-            description = f"Auto currently reviews with {active}, the main agent model."
+            description = Content.from_markup(
+                "Auto currently reviews with $spec, the main agent model." + caveat,
+                spec=active,
+            )
         else:
-            description = f"Auto currently reviews with {active}."
+            description = Content.from_markup(
+                "Auto currently reviews with $spec." + caveat, spec=active
+            )
 
         screen = ModelSelectorScreen(
             current_model=current_model,
@@ -19171,7 +19183,7 @@ class DeepAgentsApp(App):
             recommended_models=_AUTO_CLASSIFIER_RECOMMENDED_MODELS,
             include_recent_models=False,
             title="Choose the Auto classifier model",
-            description=Content(description),
+            description=description,
         )
         self.push_screen(screen, handle_result)
 

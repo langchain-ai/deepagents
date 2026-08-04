@@ -200,6 +200,85 @@ class TestRuntimeDotenvReload:
             config_mod._dotenv_loaded_values.clear()
 
 
+class TestProjectDotenvDeniedKeys:
+    """A cloned repo must not tune the Auto approval classifier."""
+
+    def test_project_dotenv_cannot_set_classifier_timeout(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The classifier deadline is a user-level decision, like the model."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code._env_vars import (
+            AUTO_CLASSIFIER_MODEL,
+            AUTO_CLASSIFIER_TIMEOUT,
+        )
+
+        project = tmp_path / "cloned-repo"
+        project.mkdir()
+        (project / ".env").write_text(
+            f"{AUTO_CLASSIFIER_TIMEOUT}=300\n"
+            f"{AUTO_CLASSIFIER_MODEL}=openai:weak\n"
+            "DEEPAGENTS_CODE_OPENAI_API_KEY=sk-from-project\n",
+        )
+
+        monkeypatch.delenv(AUTO_CLASSIFIER_TIMEOUT, raising=False)
+        monkeypatch.delenv(AUTO_CLASSIFIER_MODEL, raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=project)
+
+            assert AUTO_CLASSIFIER_TIMEOUT not in os.environ
+            assert AUTO_CLASSIFIER_MODEL not in os.environ
+            # A non-denied key from the same file still loads, so the assertion
+            # above cannot pass just because the `.env` was never read.
+            assert os.environ["DEEPAGENTS_CODE_OPENAI_API_KEY"] == "sk-from-project"
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
+    def test_preview_ignores_project_dotenv_classifier_timeout(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The non-mutating preview mirrors the loader's denial."""
+        import deepagents_code.config as config_mod
+        from deepagents_code._env_vars import AUTO_CLASSIFIER_TIMEOUT
+
+        project = tmp_path / "cloned-repo"
+        project.mkdir()
+        (project / ".env").write_text(
+            f"{AUTO_CLASSIFIER_TIMEOUT}=300\n"
+            "DEEPAGENTS_CODE_OPENAI_API_KEY=sk-from-project\n",
+        )
+
+        monkeypatch.delenv(AUTO_CLASSIFIER_TIMEOUT, raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+
+        env = config_mod._preview_dotenv_environ(start_path=project)
+
+        assert AUTO_CLASSIFIER_TIMEOUT not in env
+        # A non-denied key from the same file still previews, so the assertion
+        # above cannot pass just because the `.env` was never read — and it
+        # proves the file was classified as a *project* `.env`.
+        assert env["DEEPAGENTS_CODE_OPENAI_API_KEY"] == "sk-from-project"
+
+
 class TestProjectRootDetection:
     """Test project root detection via .git directory."""
 
@@ -3658,6 +3737,19 @@ class TestQuietSdkLogging:
             # real SDK errors; the NullHandler alone keeps routine noise off the
             # last-resort stderr handler.
             assert logger.propagate is True
+
+    def test_covers_the_logger_genai_prices_actually_uses(self) -> None:
+        """The price updater's logger must be quieted under its real name.
+
+        Its background thread logs a failed hourly catalog refresh at ERROR.
+        Unhandled, that clears `logging.lastResort`'s WARNING threshold and
+        prints over the alternate-screen TUI once an hour for any offline or
+        proxied session. Reading the name off the module pins the coupling, so
+        an upstream rename fails here rather than in a user's terminal.
+        """
+        import genai_prices.update_prices
+
+        assert genai_prices.update_prices.logger.name in _QUIET_SDK_LOGGER_NAMES
 
     def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Repeated calls do not stack duplicate handlers."""

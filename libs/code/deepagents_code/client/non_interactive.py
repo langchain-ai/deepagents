@@ -40,6 +40,7 @@ from rich.style import Style
 from rich.text import Text
 
 from deepagents_code._cli_context import CLIContext
+from deepagents_code._constants import SESSION_END_DRAIN_TIMEOUT_SECONDS
 from deepagents_code._session_stats import (
     RecordedRequest,
     SessionStats,
@@ -1304,11 +1305,33 @@ async def _after_headless_compact(state: StreamState) -> None:
         )
 
 
-async def _end_headless_session(state: StreamState, cause: SessionEndCause) -> None:
+async def _end_headless_session(
+    state: StreamState,
+    cause: SessionEndCause,
+    *,
+    timeout_seconds: float = SESSION_END_DRAIN_TIMEOUT_SECONDS,
+) -> None:
+    """End a headless session without letting Hooks v2 stall process exit.
+
+    Args:
+        state: Active headless stream state.
+        cause: Reason the session ended.
+        timeout_seconds: Maximum time to wait for `SessionEnd` handlers.
+    """
     if state.session_end_fired:
         return
     state.session_end_fired = True
-    await state.hooks.on_session_end(cause)
+    try:
+        await asyncio.wait_for(
+            state.hooks.on_session_end(cause),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError:
+        logger.warning(
+            "SessionEnd hook drain did not finish within %ss; continuing session "
+            "teardown",
+            timeout_seconds,
+        )
 
 
 def _dispatch_orphaned_tool_result_hooks(state: StreamState, tool_output: str) -> None:
@@ -1912,9 +1935,9 @@ async def run_non_interactive(
             commands without an explicit `--trust-project-hooks` opt-in.
 
     Returns:
-        Exit code: 0 for success, 1 for error, 124 when the `--max-turns`
-            budget was exceeded (matching GNU `timeout`), 130 for keyboard
-            interrupt.
+        Exit code: 0 for success or an intentional hook stop, 1 for error, 124
+            when the `--max-turns` budget was exceeded (matching GNU `timeout`),
+            130 for keyboard interrupt.
     """
     _make_stdio_encoding_safe()
 
@@ -2047,6 +2070,7 @@ async def run_non_interactive(
         console.print(header)
 
     from deepagents_code.client.launch.server_manager import server_session
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
 
     # Launch MCP preload concurrently with server startup
     mcp_task: asyncio.Task[Any] | None = None
@@ -2199,6 +2223,9 @@ async def run_non_interactive(
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")
         return 130
+    except ClientHookStopError as exc:
+        console.print(Text(f"\nOperation stopped by hook: {exc}", style="yellow"))
+        return 0
     except HITLIterationLimitError as e:
         console.print(f"\n[red]{escape_markup(str(e))}[/red]")
         console.print(

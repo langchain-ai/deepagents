@@ -758,6 +758,63 @@ def _is_valid_auto_classifier_timeout(value: object) -> bool:
     )
 
 
+def resolve_auto_classifier_timeout_with_source(
+    *, toml_data: dict[str, Any] | None = None
+) -> tuple[float, str]:
+    """Resolve the Auto classifier decision-batch budget and its source.
+
+    Args:
+        toml_data: Parsed `config.toml`; loaded automatically when omitted.
+
+    Returns:
+        `(timeout_seconds, source)`, where `source` is the layer that supplied
+            the effective value (`env (<name>)`, `config.toml`, or `default`).
+            The timeout is guaranteed within
+            `[AUTO_CLASSIFIER_TIMEOUT_FLOOR, AUTO_CLASSIFIER_TIMEOUT_CEILING]`;
+            an out-of-range layer is discarded in favor of the next one, so the
+            returned source never credits a rejected layer.
+    """
+    data = load_config_toml() if toml_data is None else toml_data
+    option = get_option("models.auto_classifier_timeout")
+    if option is None:
+        return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT, "default"
+
+    value, source = resolve_scalar(option, toml_data=data)
+    if _is_valid_auto_classifier_timeout(value):
+        return value, source
+
+    # Invalid higher-precedence values must fall through instead of jumping
+    # straight to the default, mirroring `resolve_recursion_limit`.
+    if source.startswith("env (") and source.endswith(")"):
+        env_name = source[len("env (") : -1]
+        logger.warning(
+            "Ignoring %s auto_classifier_timeout %r (expected seconds in "
+            "[%g, %g]); falling through to the next config source",
+            source,
+            value,
+            AUTO_CLASSIFIER_TIMEOUT_FLOOR,
+            AUTO_CLASSIFIER_TIMEOUT_CEILING,
+        )
+        previous = os.environ.pop(env_name, None)
+        try:
+            return resolve_auto_classifier_timeout_with_source(toml_data=data)
+        finally:
+            if previous is not None:
+                os.environ[env_name] = previous
+
+    if source != "default":
+        logger.warning(
+            "Ignoring %s auto_classifier_timeout %r (expected seconds in "
+            "[%g, %g]); using %g",
+            source,
+            value,
+            AUTO_CLASSIFIER_TIMEOUT_FLOOR,
+            AUTO_CLASSIFIER_TIMEOUT_CEILING,
+            AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        )
+    return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT, "default"
+
+
 def resolve_auto_classifier_timeout(
     *, toml_data: dict[str, Any] | None = None
 ) -> float:
@@ -778,45 +835,8 @@ def resolve_auto_classifier_timeout(
         The resolved timeout in seconds, guaranteed within
             `[AUTO_CLASSIFIER_TIMEOUT_FLOOR, AUTO_CLASSIFIER_TIMEOUT_CEILING]`.
     """
-    data = load_config_toml() if toml_data is None else toml_data
-    option = get_option("models.auto_classifier_timeout")
-    if option is None:
-        return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
-
-    value, source = resolve_scalar(option, toml_data=data)
-    if _is_valid_auto_classifier_timeout(value):
-        return value
-
-    # Invalid higher-precedence values must fall through instead of jumping
-    # straight to the default, mirroring `resolve_recursion_limit`.
-    if source.startswith("env (") and source.endswith(")"):
-        env_name = source[len("env (") : -1]
-        logger.warning(
-            "Ignoring %s auto_classifier_timeout %r (expected seconds in "
-            "[%g, %g]); falling through to the next config source",
-            source,
-            value,
-            AUTO_CLASSIFIER_TIMEOUT_FLOOR,
-            AUTO_CLASSIFIER_TIMEOUT_CEILING,
-        )
-        previous = os.environ.pop(env_name, None)
-        try:
-            return resolve_auto_classifier_timeout(toml_data=data)
-        finally:
-            if previous is not None:
-                os.environ[env_name] = previous
-
-    if source != "default":
-        logger.warning(
-            "Ignoring %s auto_classifier_timeout %r (expected seconds in "
-            "[%g, %g]); using %g",
-            source,
-            value,
-            AUTO_CLASSIFIER_TIMEOUT_FLOOR,
-            AUTO_CLASSIFIER_TIMEOUT_CEILING,
-            AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
-        )
-    return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+    value, _ = resolve_auto_classifier_timeout_with_source(toml_data=toml_data)
+    return value
 
 
 def _is_valid_recursion_limit(value: object) -> bool:

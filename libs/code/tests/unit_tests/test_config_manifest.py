@@ -2723,6 +2723,67 @@ def test_resolve_auto_classifier_timeout_accepts_floor_and_ceiling(
     )
 
 
+def test_resolve_auto_classifier_timeout_with_source_reports_effective_layer(
+    monkeypatch,
+) -> None:
+    """The source variant credits the layer the runtime actually enforces."""
+    from deepagents_code.config_manifest import (
+        resolve_auto_classifier_timeout_with_source,
+    )
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
+    value, source = resolve_auto_classifier_timeout_with_source(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert value == pytest.approx(30.0)
+    assert source == "config.toml"
+
+
+def test_config_resolve_reports_effective_auto_classifier_timeout(
+    monkeypatch,
+) -> None:
+    """`config get` must not credit an out-of-range env value the runtime drops."""
+    option = get_option("models.auto_classifier_timeout")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
+    is_set, source, value = _resolve(
+        option, {"models": {"auto_classifier_timeout": 30}}
+    )
+    assert is_set is True
+    assert source == "config.toml"
+    assert value == pytest.approx(30.0)
+
+
+def test_config_resolve_reports_valid_env_auto_classifier_timeout(
+    monkeypatch,
+) -> None:
+    """An in-range env override still wins in the config reporting path."""
+    option = get_option("models.auto_classifier_timeout")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "45")
+    is_set, source, value = _resolve(
+        option, {"models": {"auto_classifier_timeout": 30}}
+    )
+    assert is_set is True
+    assert source == f"env ({_env_vars.AUTO_CLASSIFIER_TIMEOUT})"
+    assert value == pytest.approx(45.0)
+
+
+def test_config_resolve_reports_default_auto_classifier_timeout_as_unset(
+    monkeypatch,
+) -> None:
+    """A default-resolved timeout reports the default source, not a set value."""
+    option = get_option("models.auto_classifier_timeout")
+    assert option is not None
+    from deepagents_code.config_manifest import AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
+    is_set, source, value = _resolve(option, {})
+    assert is_set is False
+    assert source == "default"
+    assert value == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+
+
 # --- Recursion limit -------------------------------------------------------
 
 

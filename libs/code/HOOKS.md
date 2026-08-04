@@ -50,7 +50,7 @@ Native tools are matched by their wire names (for example `execute` → `Bash`, 
 | --- | --- | --- | --- |
 | `SessionStart` | client | `cause` | A session starts (`startup`, `resume`, `clear`, `compact`) |
 | `UserPromptSubmit` | client | _(none)_ | The user submits a prompt |
-| `SessionEnd` | client | `cause` | A session ends |
+| `SessionEnd` | client | `cause` | A session ends (`clear`, `resume`, `prompt_input_exit`, `other`) |
 | `PermissionRequest` | client | `tool_name` | The client is about to ask for tool permission |
 | `Notification` | client | `notification_type` | A client lifecycle notification is emitted |
 | `PreToolUse` | server | `tool_name` | Before a tool call runs |

@@ -55,7 +55,10 @@ from deepagents_code import (
     _textual_patches,  # noqa: F401
     theme,
 )
-from deepagents_code._cli_context import CLIContext
+from deepagents_code._cli_context import (
+    INHERIT_CLASSIFIER_MODEL,
+    CLIContext,
+)
 from deepagents_code._constants import (
     DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID,
     MCP_REENABLED_PENDING_ERROR,
@@ -66,6 +69,7 @@ from deepagents_code._git import (
     read_git_branch_via_subprocess,
 )
 from deepagents_code._invocation import invoked_name
+from deepagents_code._markdown import escape_markdown as _escape_markdown
 from deepagents_code._session_stats import (
     USAGE_KIND_LABELS,
     USAGE_KIND_ORDER,
@@ -137,6 +141,13 @@ _DEFERRED_START_NOTICE = (
     "No model is configured yet. Run `/model` to choose one. "
     "Deep Agents will ask for credentials for the selected provider."
 )
+
+_AUTO_CLASSIFIER_RECOMMENDED_MODELS = {
+    "anthropic:claude-haiku-4-5": "Claude Haiku 4.5",
+    "google_genai:gemini-3.6-flash": "Gemini 3.6 Flash",
+    "openai:gpt-5.6-luna": "GPT-5.6 Luna",
+}
+"""Lower-latency models recommended for repeated Auto action reviews."""
 
 
 def _parse_rubric_max_iterations(raw: str) -> tuple[int | None, str | None]:
@@ -2128,30 +2139,6 @@ def _truncate(text: str, *, limit: int) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
-_MARKDOWN_ESCAPES = str.maketrans({char: f"\\{char}" for char in "\\&`*_[]<>|~"})
-"""Translation table backing `_escape_markdown`.
-
-Covers the inline constructs Rich's markdown parser acts on (emphasis, code
-spans, links, autolinks/HTML, HTML entities, strikethrough) plus the `|`
-table-cell separator. Block-level punctuation (`#`, `-`, `>`) only has meaning
-at the start of a line; line breaks are normalized before translation, and `>`
-is escaped anyway because it is cheap.
-"""
-
-
-def _escape_markdown(text: str) -> str:
-    """Normalize line breaks and escape markdown syntax in external text.
-
-    Args:
-        text: Display string that may contain markdown punctuation.
-
-    Returns:
-        `text` on one line with markdown-significant characters escaped.
-    """
-    normalized = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
-    return normalized.translate(_MARKDOWN_ESCAPES)
-
-
 def _markdown_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
     """Build a markdown pipe table whose cells render as literal text.
 
@@ -2895,6 +2882,18 @@ class DeepAgentsApp(App):
         Binding("3", "approval_position(2)", "Select third", show=False),
         Binding("a", "approval_auto", "Auto", show=False),
         Binding("n", "approval_no", "No", show=False),
+        # Unlike its siblings above, this needs `priority=True`: `Screen.BINDINGS`
+        # binds `tab -> app.focus_next`, and the screen is resolved before the
+        # app, so a non-priority mirror here would never fire. `check_action`
+        # steps it aside whenever no approval is pending (or the chat input is
+        # focused) so `tab` reverts to focus traversal and completion.
+        Binding(
+            "tab",
+            "approval_reject_with_reason",
+            "Reject with feedback",
+            show=False,
+            priority=True,
+        ),
     ]
     """App-level keybindings for interrupt, quit, toggles, and approval menu
     navigation."""
@@ -3484,6 +3483,22 @@ class DeepAgentsApp(App):
             "rubric_max_iterations"
         )
         """Optional grader iterations per rubric attempt."""
+
+        self._auto_classifier_model: str | None = (server_kwargs or {}).get(
+            "auto_classifier_model"
+        )
+        """Effective model spec the Auto approval classifier reviews with.
+
+        The launch path resolves the CLI/env/TOML preference before app
+        construction. `None` means reviews inherit the main agent model."""
+
+        self._auto_classifier_model_cleared: bool = False
+        """Whether the user cleared the classifier back to the main agent model.
+
+        An absent per-run value leaves the server's startup classifier in place,
+        so "no override" and "review with the main agent model" are different
+        statements. This flag puts `INHERIT_CLASSIFIER_MODEL` on the run context
+        for the latter."""
 
         self._active_goal: str | None = None
         """Goal objective accepted by the user and backed by the active rubric."""
@@ -4207,6 +4222,7 @@ class DeepAgentsApp(App):
         self._status_bar.set_approval_mode(self._approval_mode.value)
         if self._approval_mode.value == "auto":
             self._notify_auto_mode_enabled_once()
+            self._notify_auto_classifier_active()
         elif self._approval_mode.value == "yolo":
             self._warn_yolo_active(timeout=10)
 
@@ -8645,7 +8661,10 @@ class DeepAgentsApp(App):
 
         try:
             self.push_screen(
-                AutoModeNoticeScreen(),
+                AutoModeNoticeScreen(
+                    model_label=self._auto_classifier_review_model_spec(),
+                    distinct_from_main_model=self._auto_classifier_is_distinct(),
+                ),
                 handle_result,
             )
         except Exception:
@@ -8730,6 +8749,7 @@ class DeepAgentsApp(App):
         if self._session_state:
             self._session_state.approval_mode = ApprovalMode.AUTO
         self._notify_auto_mode_enabled_once()
+        self._notify_auto_classifier_active()
         await self._auto_accept_pending_goal_rubric()
         return True
 
@@ -13669,7 +13689,9 @@ class DeepAgentsApp(App):
             await self._handle_version_command()
         elif cmd == "/agents":
             await self._show_agent_selector()
-        elif cmd in {"/manual", "/auto", "/yolo"}:
+        elif cmd == "/auto" or cmd.startswith("/auto "):
+            await self._handle_auto_command(command)
+        elif cmd in {"/manual", "/yolo"}:
             from deepagents_code.approval_mode import ApprovalMode
 
             await self._handle_approval_mode_command(ApprovalMode(cmd.lstrip("/")))
@@ -14998,6 +15020,7 @@ class DeepAgentsApp(App):
             model_params=self._model_params_override or {},
             profile_overrides=self._profile_override or {},
             model_context_limit=settings.model_context_limit,
+            classifier_model=self._auto_classifier_context_value(),
             thread_id=self._lc_thread_id,
             offload_tool_call_id=tool_call_id,
         )
@@ -15821,6 +15844,7 @@ class DeepAgentsApp(App):
         self._agent_turn_started = True
 
         from deepagents_code.config import settings
+        from deepagents_code.hooks.client_lifecycle import ClientHookStopError
         from deepagents_code.resume_state import RUBRIC_RESULT_VALUES
         from deepagents_code.tui.textual_adapter import (
             RubricEvaluationEnd,
@@ -15985,6 +16009,7 @@ class DeepAgentsApp(App):
                     model_params=self._model_params_override or {},
                     profile_overrides=self._profile_override or {},
                     model_context_limit=settings.model_context_limit,
+                    classifier_model=self._auto_classifier_context_value(),
                 ),
                 turn_stats=turn_stats,
             )
@@ -16000,6 +16025,11 @@ class DeepAgentsApp(App):
             except Exception:
                 logger.exception("Failed to close/regroup tool group at turn end")
             task_succeeded = True
+        except ClientHookStopError as exc:
+            with suppress(Exception):
+                await self._mount_message(
+                    AppMessage(f"Operation stopped by hook: {exc}")
+                )
         except Exception as e:  # Resilient tool rendering
             if not streaming_started:
                 # Nothing was ever sent to the agent, so this is a local TUI or
@@ -18954,6 +18984,7 @@ class DeepAgentsApp(App):
             self._status_bar.set_approval_mode(target.value)
         if target is ApprovalMode.AUTO:
             self._notify_auto_mode_enabled_once()
+            self._notify_auto_classifier_active()
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
         elif target is ApprovalMode.YOLO:
@@ -18967,6 +18998,318 @@ class DeepAgentsApp(App):
             if should_persist_live:
                 await self._auto_accept_pending_goal_rubric()
         return True
+
+    def _auto_classifier_display_spec(self) -> str | None:
+        """Return the configured classifier spec for display, or `None` to inherit.
+
+        `--auto-classifier-model ""` stores `INHERIT_CLASSIFIER_MODEL` here so the
+        server resolves inherit over an env / `config.toml` classifier; that
+        sentinel is not a real spec and must never surface as one.
+        """
+        if (
+            not self._auto_classifier_model
+            or self._auto_classifier_model == INHERIT_CLASSIFIER_MODEL
+        ):
+            return None
+        return self._auto_classifier_model
+
+    def _auto_classifier_model_label(self) -> str:
+        """Return how the Auto classifier model should be described to the user."""
+        if display := self._auto_classifier_display_spec():
+            return display
+        return self._effective_model_spec() or "the main agent model"
+
+    def _auto_classifier_review_model_spec(self) -> str | None:
+        """Return the spec of the model that reviews gated actions, if known.
+
+        Unlike `_auto_classifier_model_label`, this never substitutes prose for a
+        spec: callers that describe the *role* separately need to know whether
+        they have a real model name to show.
+        """
+        return (
+            self._auto_classifier_display_spec() or self._effective_model_spec() or None
+        )
+
+    def _auto_classifier_is_distinct(self) -> bool:
+        """Return whether reviews run on a different model than the coding one.
+
+        Returns:
+            `True` when a configured classifier differs from the effective main
+                model, so user-facing copy can distinguish the two roles.
+        """
+        display = self._auto_classifier_display_spec()
+        if not display:
+            return False
+        return display != self._effective_model_spec()
+
+    def _notify_auto_classifier_active(self) -> None:
+        """Disclose a distinct authorization classifier on Auto activation."""
+        # Truthiness, not `is None`: every other reader of this attribute treats
+        # a blank spec as "inherit", and disagreeing here announced a distinct
+        # reviewer when there was none.
+        if not self._auto_classifier_model:
+            return
+        if self._auto_classifier_model == self._effective_model_spec():
+            return
+        self.notify(
+            f"Auto reviews actions with {self._auto_classifier_model_label()}.",
+            severity="information",
+            markup=False,
+        )
+
+    def _auto_classifier_context_value(self) -> str | None:
+        """Return the per-run `classifier_model` value for the graph context.
+
+        `None` leaves the classifier the server resolved at startup in place;
+        `INHERIT_CLASSIFIER_MODEL` is the explicit "review with the main agent
+        model" instruction `/auto model clear` needs, which a bare `None` cannot
+        express.
+        """
+        display = self._auto_classifier_display_spec()
+        if display:
+            return display
+        if self._auto_classifier_model_cleared:
+            return INHERIT_CLASSIFIER_MODEL
+        return None
+
+    def _auto_usage_text(self) -> str:
+        """Return usage text for `/auto` and its `model` subcommand."""
+        return (
+            "Usage:\n"
+            "  /auto                      Switch to Auto approval mode\n"
+            "  /auto model                Pick the Auto classifier model\n"
+            "  /auto model <provider:model>\n"
+            "  /auto model clear          Reuse the main agent model\n\n"
+            "Auto reviews gated actions with a classifier model. It currently "
+            f"uses {self._auto_classifier_model_label()}. A weaker model makes "
+            "that review weaker; actions it cannot review are denied, and "
+            "repeated review failures fall back to your approval.\n\n"
+            "Changes here apply to this session only. Set "
+            "`[models].auto_classifier` in config.toml for a persistent choice."
+        )
+
+    async def _handle_auto_command(self, command: str) -> None:
+        """Handle `/auto`, including the `model` subcommand.
+
+        Bare `/auto` keeps switching approval mode (quiet, toast-only, like the
+        Shift+Tab switcher); `model` manages the classifier the Auto policy
+        reviews gated actions with.
+        """
+        from deepagents_code.approval_mode import ApprovalMode
+
+        remainder = command.strip()[len("/auto") :].strip()
+        if not remainder:
+            await self._handle_approval_mode_command(ApprovalMode.AUTO)
+            return
+
+        subcommand, _, arg = remainder.partition(" ")
+        await self._mount_message(UserMessage(command))
+        if subcommand.lower() != "model":
+            await self._mount_message(AppMessage(self._auto_usage_text()))
+            return
+
+        arg = arg.strip()
+        if not arg:
+            await self._show_auto_classifier_model_selector()
+        elif arg.lower() == "clear":
+            await self._set_auto_classifier_model(None)
+        else:
+            await self._set_auto_classifier_model(arg)
+
+    async def _show_auto_classifier_model_selector(self) -> None:
+        """Open the model selector for choosing the Auto classifier model."""
+        from deepagents_code.config import detect_provider, settings
+        from deepagents_code.model_config import ModelSpec
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+        current_provider = settings.model_provider
+        current_model = settings.model_name
+        if display := self._auto_classifier_display_spec():
+            parsed = ModelSpec.try_parse(display)
+            if parsed:
+                current_provider = parsed.provider
+                current_model = parsed.model
+            else:
+                provider = detect_provider(display)
+                if provider:
+                    current_provider = provider
+                    current_model = display
+
+        current_spec = (
+            f"{current_provider}:{current_model}"
+            if current_provider and current_model
+            else self._auto_classifier_model_label()
+        )
+
+        def handle_result(result: tuple[str, str] | None) -> None:
+            model_spec = result[0] if result is not None else None
+            extra = screen.pending_install_extra if result is not None else None
+
+            async def apply_selection() -> None:
+                if model_spec is None:
+                    await self._mount_message(
+                        AppMessage(
+                            f"Model not changed. Continuing to use {current_spec}"
+                        )
+                    )
+                    return
+                if extra and not await self._install_extra(extra, auto_restart=True):
+                    return
+                await self._set_auto_classifier_model(model_spec)
+
+            def start_selection_worker() -> None:
+                # The coroutine is built here, not above, so a callback dropped
+                # at app teardown cannot strand an un-awaited coroutine.
+                self.run_worker(
+                    apply_selection(),
+                    exclusive=False,
+                    group="auto-classifier-model",
+                )
+                if self._chat_input:
+                    self._chat_input.focus_input()
+
+            # The selector has not unwound inside its own dismiss callback, so
+            # mounting messages, starting the worker (which may open the install
+            # flow), and refocusing the chat input all wait for the refresh that
+            # removes the modal.
+            self.call_after_refresh(start_selection_worker)
+
+        screen = ModelSelectorScreen(
+            current_model=current_model,
+            current_provider=current_provider,
+            cli_profile_override=self._profile_override,
+            recommended_models=_AUTO_CLASSIFIER_RECOMMENDED_MODELS,
+            include_recent_models=False,
+            title="Choose the Auto classifier model",
+            description=(
+                "Recommended models favor lower latency and cost for repeated "
+                "reviews. A faster, cheaper model may review actions less "
+                "carefully. Clear it with `/auto model clear` to reuse the main "
+                "agent model."
+            ),
+        )
+        self.push_screen(screen, handle_result)
+
+    async def _set_auto_classifier_model(self, model_spec: str | None) -> None:
+        """Set the model the Auto approval classifier reviews actions with.
+
+        The value rides on the per-run graph context, so it applies from the
+        next turn without restarting the agent server. A spec that cannot be
+        resolved here is rejected outright rather than staged, because a
+        classifier the server cannot build denies every action it is asked to
+        review — those deterministic policy could not already clear — and only
+        escalates to approval once failures repeat.
+
+        Args:
+            model_spec: `provider:model` spec, or `None` to reuse the main model.
+        """
+        from deepagents_code.config import detect_provider
+        from deepagents_code.model_config import ModelSpec, get_provider_auth_status
+
+        display: str | None = None
+        unchanged = False
+        if model_spec is not None:
+            model_spec = model_spec.removeprefix(":")
+            if not model_spec:
+                await self._mount_message(
+                    ErrorMessage(
+                        "Auto classifier model must not be empty. Use `/auto model "
+                        "clear` to review with the main agent model."
+                    )
+                )
+                return
+            parsed = ModelSpec.try_parse(model_spec)
+            provider = parsed.provider if parsed else detect_provider(model_spec)
+            model_name = parsed.model if parsed else model_spec
+            display = (
+                model_spec if parsed or not provider else f"{provider}:{model_name}"
+            )
+            # Deliberately no early return when the spec is unchanged: re-issuing
+            # the same spec is how a user retries after fixing credentials, and
+            # short-circuiting made that a no-op that reported success. The
+            # checks below re-run, so they get a real answer either way.
+            unchanged = display == self._auto_classifier_model
+            auth_status = get_provider_auth_status(provider) if provider else None
+            if auth_status is not None and auth_status.blocks_start:
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Missing credentials: {auth_status.missing_detail()}\n\n"
+                        f"Run `/auth` for the '{auth_status.provider}' provider, "
+                        "then set the Auto classifier model again.",
+                    ),
+                )
+                return
+            try:
+                # No profile overrides: `--profile-override` describes the main
+                # model, and the server resolves the classifier without them, so
+                # validating with them would test a different model than the one
+                # Auto will actually build.
+                result = await asyncio.to_thread(
+                    _create_model_with_deepagents_import_lock,
+                    display,
+                )
+            except Exception as exc:
+                logger.exception("Failed to resolve Auto classifier model %s", display)
+                # This check runs in the client; the classifier is built in the
+                # agent server, which may be a separate process or a remote
+                # deployment with different credentials and provider packages. Say
+                # so rather than asserting the model is broken everywhere.
+                await self._mount_message(
+                    ErrorMessage(
+                        f"{_build_model_switch_error_body(exc)}\n\n"
+                        "This check ran in the client. If the agent server has "
+                        "credentials or provider packages this machine lacks, set "
+                        "`[models].auto_classifier` in config.toml instead."
+                    )
+                )
+                return
+            # Profiles are incomplete, and the classifier already fails closed
+            # at runtime, so an unsupported-looking model warns instead of being
+            # blocked.
+            profile = getattr(result.model, "profile", None)
+            if isinstance(profile, dict) and profile.get("structured_output") is False:
+                await self._mount_message(
+                    AppMessage(
+                        f"{display} does not advertise structured output. Auto "
+                        "asks the classifier for a structured verdict, so "
+                        "reviews may fail — those actions are denied, and "
+                        "repeated failures fall back to your approval."
+                    )
+                )
+        elif (
+            self._auto_classifier_model is None and self._auto_classifier_model_cleared
+        ):
+            # Only a previous clear proves reviews already use the main agent
+            # model. Otherwise the server may still hold a startup classifier
+            # from env / `config.toml` that this clear has to override.
+            await self._mount_message(
+                AppMessage("Auto classifier model already uses the main agent model.")
+            )
+            return
+
+        self._auto_classifier_model = display
+        self._auto_classifier_model_cleared = display is None
+        if self._server_kwargs is not None:
+            self._server_kwargs["auto_classifier_model"] = display
+
+        if display:
+            revalidated = " (revalidated)" if unchanged else ""
+            await self._mount_message(
+                AppMessage(
+                    f"Auto classifier model set to {display}{revalidated}; it "
+                    "reviews gated actions from the next turn, for this session. "
+                    "Set `[models].auto_classifier` in config.toml to make it "
+                    "the default."
+                )
+            )
+        else:
+            await self._mount_message(
+                AppMessage(
+                    "Auto classifier model cleared for this session; reviews use "
+                    "the main agent model again. A classifier in config.toml or "
+                    "the environment applies again next launch."
+                )
+            )
 
     async def _handle_approval_mode_command(self, target: ApprovalMode) -> None:
         """Switch approval mode from a slash command (`/manual`, `/auto`, `/yolo`).
@@ -18987,8 +19330,11 @@ class DeepAgentsApp(App):
         from deepagents_code.config import is_yolo_switcher_enabled
 
         if self._approval_mode is target:
+            message = f"Already in {target.value.capitalize()} mode."
+            if target is ApprovalMode.AUTO:
+                message += "\nUse /auto model to switch classifier models."
             self.notify(
-                f"Already in {target.value.capitalize()} mode.",
+                message,
                 severity="information",
                 markup=False,
             )
@@ -19198,6 +19544,19 @@ class DeepAgentsApp(App):
         """Handle the semantic reject key in the approval menu."""
         if self._pending_approval_widget:
             self._pending_approval_widget.action_select_reject()
+
+    def action_approval_reject_with_reason(self) -> None:
+        """Handle Tab in the approval menu - open the free-text reject field.
+
+        The approval footer advertises Tab unconditionally, so it needs the same
+        App-level mirror as the other advertised keys above; without one, Tab
+        falls through to `Screen.focus_next` (or chat-input completion) and does
+        nothing whenever the menu is not the focused widget. Focus-gated like
+        `approval_up`/`down`/`select`, since Tab belongs to the input's own
+        completion handling while the user is typing a prompt.
+        """
+        if self._pending_approval_widget and not self._is_input_focused():
+            self._pending_approval_widget.action_reject_with_reason()
 
     def action_approval_escape(self) -> None:
         """Handle escape in approval menu - reject."""
@@ -20756,6 +21115,12 @@ class DeepAgentsApp(App):
             Note this keys on the action, and `toggle_auto_approve` is
             also bound to `ctrl+t`, so that (harmless, already a no-op
             under modals) binding is stepped aside too while the console is open.
+        - `approval_reject_with_reason` (`tab`): unlike the other approval keys
+            this one must be `priority=True` to beat `Screen`'s
+            `tab -> app.focus_next`, which means it would otherwise swallow
+            `tab` app-wide. Stepping aside unless an approval menu is pending
+            and the chat input is unfocused keeps focus traversal and
+            chat-input completion working everywhere else.
 
         Branches on action names, not keys, so this stays correct if a binding is
         ever rebound.
@@ -20775,6 +21140,10 @@ class DeepAgentsApp(App):
 
             if isinstance(self.screen, DebugConsoleScreen):
                 return False
+        if action == "approval_reject_with_reason":
+            return self._pending_approval_widget is not None and (
+                not self._is_input_focused()
+            )
         return True
 
     def action_open_notifications(self) -> None:

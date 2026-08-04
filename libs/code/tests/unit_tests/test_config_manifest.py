@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -200,6 +201,136 @@ def test_is_openai_prompt_cache_key_enabled_unrecognized_env_falls_through(
         lambda: {"models": {"openai_prompt_cache_key": False}},
     )
     assert is_openai_prompt_cache_key_enabled() is False
+
+
+def test_resolve_auto_classifier_model_defaults_to_inheriting(monkeypatch) -> None:
+    """No preference leaves the Auto classifier on the main agent model."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+    assert resolve_auto_classifier_model() is None
+
+
+def test_resolve_auto_classifier_model_reads_toml(monkeypatch) -> None:
+    """`[models].auto_classifier` selects the classifier when env is unset."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "openai:gpt-5.5-mini"}},
+    )
+    assert resolve_auto_classifier_model() == "openai:gpt-5.5-mini"
+
+
+def test_resolve_auto_classifier_model_env_overrides_toml(monkeypatch) -> None:
+    """The env var wins over config.toml; a blank value means inherit."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "openai:gpt-5.5-mini"}},
+    )
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "anthropic:claude-haiku-4-5")
+    assert resolve_auto_classifier_model() == "anthropic:claude-haiku-4-5"
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "   ")
+    assert resolve_auto_classifier_model() is None
+
+
+def test_resolve_auto_classifier_model_warns_on_blank_value(
+    monkeypatch, caplog
+) -> None:
+    """A blank configured classifier is reported, not dropped in silence.
+
+    Reverting to the main agent model is a security control quietly changing
+    behavior, so it gets the same audible treatment a malformed value gets.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "   "}},
+    )
+
+    with caplog.at_level("WARNING", logger="deepagents_code.config"):
+        assert resolve_auto_classifier_model() is None
+
+    assert any(
+        "blank" in record.getMessage() and "auto_classifier" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_resolve_auto_classifier_model_reports_blank_problem(monkeypatch) -> None:
+    """A blank value is returned as a problem, not just logged.
+
+    A `logger.warning` lands in the debug log, which is not a surface the user
+    reads; the caller needs the description to show it at startup.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model_with_problem
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "   "}},
+    )
+
+    spec, problem = resolve_auto_classifier_model_with_problem()
+
+    assert spec is None
+    assert problem is not None
+    assert "blank" in problem
+    assert "main agent model" in problem
+
+
+def test_resolve_auto_classifier_model_reports_malformed_problem(monkeypatch) -> None:
+    """A wrong-typed value must not silently revert to self-review.
+
+    `resolve_scalar` coerces a non-string to the option default, making a
+    malformed entry indistinguishable from an absent one — so the agent resumed
+    grading its own actions with nothing logged at all.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model_with_problem
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": 3}},
+    )
+
+    spec, problem = resolve_auto_classifier_model_with_problem()
+
+    assert spec is None
+    assert problem is not None
+    assert "malformed" in problem
+    assert "main agent model" in problem
+
+
+def test_resolve_auto_classifier_model_reports_no_problem_when_absent(
+    monkeypatch,
+) -> None:
+    """An unconfigured classifier is the default, not a problem to report."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model_with_problem
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+
+    assert resolve_auto_classifier_model_with_problem() == (None, None)
 
 
 def test_goal_auto_accept_criteria_defaults_to_review(monkeypatch) -> None:
@@ -1216,6 +1347,60 @@ def test_no_update_check_resolves_inverted_persisted_check() -> None:
     assert resolve_scalar(opt, toml_data={"update": {"check": True}}) == (
         False,
         "config.toml",
+    )
+
+
+def test_prices_auto_update_default_matches_runtime(monkeypatch) -> None:
+    """The manifest default must agree with the one `_start_price_updater` uses.
+
+    They are declared independently, so a drift makes `dcode config get
+    update.prices_auto_update` report the opposite of what the updater does.
+    """
+    from deepagents_code import cost_tracking
+
+    opt = get_option("update.prices_auto_update")
+    assert opt is not None
+    monkeypatch.delenv(_env_vars.PRICES_AUTO_UPDATE, raising=False)
+    # Suite-wide fixtures set both; the updater honors OFFLINE as well.
+    monkeypatch.delenv(_env_vars.OFFLINE, raising=False)
+    # The runtime gate resolves the option, which reads the user's real
+    # `config.toml` here; an empty table keeps this test on defaults.
+    monkeypatch.setattr("deepagents_code.config_manifest.load_config_toml", dict)
+
+    started: list[object] = []
+    monkeypatch.setattr(cost_tracking, "_PRICE_UPDATER_ATTEMPTED", False)
+    monkeypatch.setattr(cost_tracking, "_PRICE_UPDATER", None)
+    monkeypatch.setattr(
+        cost_tracking,
+        "_build_price_updater",
+        lambda cls: started.append(cls) or MagicMock(),
+    )
+    cost_tracking._start_price_updater()
+
+    assert opt.default is True
+    assert bool(started) is opt.default
+
+
+def test_prices_auto_update_persists_in_toml(monkeypatch) -> None:
+    """The dotted key resolves from `config.toml`, not env vars only."""
+    opt = get_option("update.prices_auto_update")
+    assert opt is not None
+    monkeypatch.delenv(_env_vars.PRICES_AUTO_UPDATE, raising=False)
+    assert opt.toml_keys == ("update", "prices_auto_update")
+    assert resolve_scalar(opt, toml_data={"update": {"prices_auto_update": False}}) == (
+        False,
+        "config.toml",
+    )
+
+
+def test_prices_auto_update_empty_env_disables(monkeypatch) -> None:
+    """An explicitly empty env value opts out, matching `_start_price_updater`."""
+    opt = get_option("update.prices_auto_update")
+    assert opt is not None
+    monkeypatch.setenv(_env_vars.PRICES_AUTO_UPDATE, "")
+    assert resolve_scalar(opt, toml_data={}) == (
+        False,
+        f"env ({_env_vars.PRICES_AUTO_UPDATE})",
     )
 
 

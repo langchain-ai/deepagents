@@ -3659,6 +3659,19 @@ class TestQuietSdkLogging:
             # last-resort stderr handler.
             assert logger.propagate is True
 
+    def test_covers_the_logger_genai_prices_actually_uses(self) -> None:
+        """The price updater's logger must be quieted under its real name.
+
+        Its background thread logs a failed hourly catalog refresh at ERROR.
+        Unhandled, that clears `logging.lastResort`'s WARNING threshold and
+        prints over the alternate-screen TUI once an hour for any offline or
+        proxied session. Reading the name off the module pins the coupling, so
+        an upstream rename fails here rather than in a user's terminal.
+        """
+        import genai_prices.update_prices
+
+        assert genai_prices.update_prices.logger.name in _QUIET_SDK_LOGGER_NAMES
+
     def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Repeated calls do not stack duplicate handlers."""
         from deepagents_code._env_vars import DEBUG

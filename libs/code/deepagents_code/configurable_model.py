@@ -271,11 +271,15 @@ def _get_context(request: ModelRequest) -> CLIContextSchema | None:
     if isinstance(ctx, dict):
         raw_key = ctx.get("approval_mode_key")
         raw_thread_id = ctx.get("thread_id")
+        raw_classifier_model = ctx.get("classifier_model")
         return CLIContextSchema(
             model=ctx.get("model"),
             model_params=ctx.get("model_params") or {},
             profile_overrides=ctx.get("profile_overrides") or {},
             model_context_limit=ctx.get("model_context_limit"),
+            classifier_model=(
+                raw_classifier_model if isinstance(raw_classifier_model, str) else None
+            ),
             approval_mode=(
                 ctx.get("approval_mode")
                 if isinstance(ctx.get("approval_mode"), str)

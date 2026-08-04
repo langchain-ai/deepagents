@@ -5290,8 +5290,8 @@ class TestMessageQueue:
 
         Without this reset the gate would be sticky: once any turn produced
         output, every later turn's Esc-interrupt would stop restoring the
-        prompt. Closing the worker coroutine leaves the flag as `_send_to_agent`
-        set it, without running the turn.
+        prompt. Stubbing the worker leaves the flag as `_send_to_agent` set it,
+        without running the turn.
         """
         app = DeepAgentsApp()
         app._agent = MagicMock()
@@ -5308,8 +5308,6 @@ class TestMessageQueue:
             with patch.object(app, "run_worker") as mock_rw:
                 mock_rw.return_value = MagicMock()
                 await app._send_to_agent("next question")
-                coro = mock_rw.call_args[0][0]
-                coro.close()
 
             assert app._active_turn_visible_output_started is False
 
@@ -5552,6 +5550,27 @@ class TestTurnStateRelease:
             app.post_message(ChatInput.Submitted("next message", "normal"))
             await pilot.pause()
             assert not app._pending_messages
+
+    async def test_turn_is_spawned_as_a_callable(self) -> None:
+        """The worker is handed a callable, not an already-built coroutine.
+
+        Textual never runs the work of a worker cancelled before its first
+        event-loop step, so a pre-built coroutine would be left to be finalized
+        unawaited — a `RuntimeWarning`, and an unraisable exception once
+        interpreter teardown has gone far enough to break the import machinery
+        the coroutine's cleanup relies on.
+        """
+        app = self._configured_app()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            with patch.object(app, "run_worker") as mock_run_worker:
+                mock_run_worker.return_value = MagicMock()
+                await app._send_to_agent("hello")
+
+            work = mock_run_worker.call_args[0][0]
+            assert not inspect.iscoroutine(work)
+            assert callable(work)
 
     async def test_later_turns_can_still_recover(self) -> None:
         """The started-marker resets at turn end, so turn 2 recovers as well.
@@ -15954,8 +15973,6 @@ class TestShellCommandInterrupt:
             with patch.object(app, "run_worker") as mock_rw:
                 mock_rw.return_value = MagicMock()
                 await app._send_to_agent("what did that print?")
-                coro = mock_rw.call_args[0][0]
-                coro.close()
 
         app._agent.aupdate_state.assert_awaited_once()
         call = app._agent.aupdate_state.await_args
@@ -15985,8 +16002,6 @@ class TestShellCommandInterrupt:
             with patch.object(app, "run_worker") as mock_rw:
                 mock_rw.return_value = MagicMock()
                 await app._send_to_agent("what did that print?")
-                coro = mock_rw.call_args[0][0]
-                coro.close()
 
         app._agent.aupdate_state.assert_awaited_once()
         call = app._agent.aupdate_state.await_args
@@ -16203,8 +16218,6 @@ class TestShellCommandInterrupt:
                 manager.attach_mock(app._agent.aupdate_state, "flush")
                 manager.attach_mock(mock_rw, "spawn")
                 await app._send_to_agent("what did that print?")
-                coro = mock_rw.call_args[0][0]
-                coro.close()
 
         # Flush the `!` pair into state before spawning the turn, so the model
         # sees the shell output ahead of this turn's user message.

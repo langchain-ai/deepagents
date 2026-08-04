@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-code"
-version = "0.1.51"
+version = "0.1.52"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
@@ -341,6 +341,10 @@ filterwarnings = [
     # uses `stacklevel=2`, so it is attributed to this package, not to the
     # module that raised it.
     "error:Unsupported usage key for standard pricing:UserWarning",
+    # `google.genai.types` builds a union alias out of `typing._UnionGenericAlias`
+    # at import time, which Python 3.14 deprecates. Nothing here can act on it --
+    # it fires before any of our code runs and is fixed by upgrading the SDK.
+    "ignore:'_UnionGenericAlias' is deprecated:DeprecationWarning:google\\.genai\\.types",
 ]
 
 addopts = "--strict-markers --strict-config --durations=5"

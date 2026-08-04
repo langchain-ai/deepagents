@@ -1406,3 +1406,78 @@ def test_render_markdown_labels_a_graded_category_by_its_means():
     assert "0.500/0.400" in md
     # And the Overall pass@K caveat is stated rather than left for the reader to hit.
     assert "Overall pass@1" in md
+
+
+def test_read_leaf_rejects_an_unusable_component(tmp_path):
+    # summary.json comes from a CI artifact whose producer ran inside a sandbox, so this
+    # reader is the last gate before a number reaches a scorecard.
+    for bad in (
+        {"pipe|name": 0.5},
+        {"factuality": 1.5},
+        {"factuality": -0.1},
+        {"factuality": "abc"},
+        {"factuality": True},
+        [("factuality", 0.5)],
+    ):
+        leaf = tmp_path / f"leaf{abs(hash(str(bad)))}"
+        leaf.mkdir()
+        summary = _summary("m", 1, 0.0, 0.4, 1, 0, category="research")
+        summary["components"] = bad
+        (leaf / "summary.json").write_text(json.dumps(summary))
+        with pytest.raises(au._LeafSummaryError):
+            au.read_leaf(leaf, expected_rollouts=1)
+
+
+def test_render_markdown_shows_score_components():
+    combined = {
+        "categories": ["research"],
+        "rows": [
+            {
+                "model": "m",
+                "branch": "current",
+                "config": "bare",
+                "incomplete": False,
+                "categories": {
+                    "research": {
+                        "pass_at_k": 0.0,
+                        "avg_at_k": 0.376,
+                        "macro_avg_at_k": 0.376,
+                        "components": {"factuality": 0.617, "insights_recall": 0.381},
+                        "tasks": 30,
+                    }
+                },
+                "macro": {"pass_at_k": 0.0, "avg_at_k": 0.376},
+                "micro": {"pass_at_k": 0.0, "avg_at_k": 0.376},
+            }
+        ],
+        "issues": [],
+    }
+    md = au.render_markdown(combined, 1)
+
+    assert "### Score components" in md
+    assert "| factuality | 0.617 |" in md
+    assert "| insights_recall | 0.381 |" in md
+    # Without this caveat a reader recombining 0.617/0.381 gets a number that is not the
+    # headline and reads it as an arithmetic bug.
+    assert "do **not** recombine" in md
+
+
+def test_render_markdown_omits_the_section_without_components():
+    combined = {
+        "categories": ["context"],
+        "rows": [
+            {
+                "model": "m",
+                "branch": "current",
+                "config": "bare",
+                "incomplete": False,
+                "categories": {
+                    "context": {"pass_at_k": 0.5, "avg_at_k": 0.4, "components": {}, "tasks": 2}
+                },
+                "macro": {"pass_at_k": 0.5, "avg_at_k": 0.4},
+                "micro": {"pass_at_k": 0.5, "avg_at_k": 0.4},
+            }
+        ],
+        "issues": [],
+    }
+    assert "### Score components" not in au.render_markdown(combined, 1)

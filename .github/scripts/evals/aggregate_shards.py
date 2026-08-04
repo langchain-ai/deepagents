@@ -66,7 +66,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -79,6 +81,29 @@ PASS_THRESHOLD = 1.0
 # that module reads `langgraph.json` at import scope, and this script (plus its
 # tests) must stay stdlib-only with no filesystem dependency.
 CONTINUOUS_CATEGORIES = frozenset({"research"})
+
+
+# A graded verifier may report the components behind its reward (DRBench emits
+# insights_recall, distractor_recall, distractor_avoidance, factuality, report_quality).
+# They are summed per task under this prefix, which cannot collide with the integer
+# counters because a `:` is not in the accepted name pattern below.
+_COMPONENT_PREFIX = "component:"
+# `reward.json` is written inside a sandbox that ran an agent's task, so both the names and
+# the values are untrusted. Names go into markdown tables and JSON keys, so restrict them to
+# a character class that cannot break a table or inject markup -- stronger and simpler than
+# escaping. The caps bound how much a malformed file can make us retain and render.
+COMPONENT_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+_MAX_COMPONENT_NAME = 64
+_MAX_COMPONENTS = 16
+
+
+def component_name_is_safe(name: object) -> bool:
+    """True when a reported component name is safe to store and render."""
+    return (
+        isinstance(name, str)
+        and len(name) <= _MAX_COMPONENT_NAME
+        and COMPONENT_NAME_RE.match(name) is not None
+    )
 
 
 def is_continuous_category(category: str | None) -> bool:
@@ -161,6 +186,7 @@ class SummaryParts(NamedTuple):
     totals: dict[str, int]
     per_task: list[dict]
     macro_avg_at_k: float | None = None
+    components: dict[str, float] | None = None
 
 
 def emit_annotation(msg: str) -> None:
@@ -198,6 +224,52 @@ def raw_reward(result: dict) -> object:
     return rewards.get("reward")
 
 
+def _as_float(value: object) -> float | None:
+    """Coerce a reported score to a float, or None if it is not numeric.
+
+    Shared by the reward and its components so a stringified number is treated the same
+    either way. ``bool`` is tolerated (Python treats it as an ``int``).
+    """
+    if isinstance(value, bool):
+        return float(value)
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def trial_components(result: dict) -> dict[str, float]:
+    """Return the per-metric components a graded verifier reported for one trial.
+
+    These are the siblings of ``reward`` in the verifier's reward mapping -- for DRBench,
+    the four metrics behind the harmonic mean. Only names matching
+    `component_name_is_safe` and values that are finite and within [0, 1] are kept, and at
+    most `_MAX_COMPONENTS` of them: the file is written inside a sandbox that ran an agent's
+    task, so neither key nor value is trusted, and the names end up in rendered markdown.
+
+    A rejected entry is dropped rather than coerced, so a nonsense value can never reach a
+    published scorecard. Callers surface the count.
+    """
+    rewards = (result.get("verifier_result") or {}).get("rewards")
+    if not isinstance(rewards, dict):
+        return {}
+    kept: dict[str, float] = {}
+    for name, value in rewards.items():
+        if name == "reward" or not component_name_is_safe(name):
+            continue
+        numeric = _as_float(value)
+        if numeric is None or not math.isfinite(numeric) or not 0.0 <= numeric <= 1.0:
+            continue
+        kept[name] = numeric
+        if len(kept) >= _MAX_COMPONENTS:
+            break
+    return kept
+
+
 def trial_reward(result: dict) -> float | None:
     """Return the numeric verifier reward for a trial, or None if absent/non-numeric.
 
@@ -208,17 +280,7 @@ def trial_reward(result: dict) -> float | None:
     ``bool`` is tolerated (Python treats it as an ``int``), mapping True/False
     to 1.0/0.0.
     """
-    reward = raw_reward(result)
-    if isinstance(reward, bool):
-        return float(reward)
-    if isinstance(reward, (int, float)):
-        return float(reward)
-    if isinstance(reward, str):
-        try:
-            return float(reward)
-        except ValueError:
-            return None
-    return None
+    return _as_float(raw_reward(result))
 
 
 def reward_is_malformed(result: dict) -> bool:
@@ -290,6 +352,11 @@ def aggregate(root: Path) -> Aggregation:
             stats["reward_sum"] += reward
             if reward >= PASS_THRESHOLD:
                 stats["passed"] += 1
+        # The metrics behind a graded reward, so a scorecard can show what moved rather
+        # than only the combined number. Absent for pass/fail categories, whose verifiers
+        # report no siblings, which is why their `by_task` entries are unchanged.
+        for name, value in trial_components(result).items():
+            stats[_COMPONENT_PREFIX + name] = stats.get(_COMPONENT_PREFIX + name, 0.0) + value
 
     return Aggregation(
         models,
@@ -345,12 +412,18 @@ def build_summary(
     total_trials = total_passed = total_errored = 0
     capped_passed = 0
     capped_reward = 0.0
+    component_sums: dict[str, float] = defaultdict(float)
 
     for task in sorted(by_task):
         n = int(by_task[task]["trials"])
         c = int(by_task[task]["passed"])
         errored = int(by_task[task]["errored"])
         reward_sum = float(by_task[task]["reward_sum"])
+        for key, value in by_task[task].items():
+            if key.startswith(_COMPONENT_PREFIX):
+                # Capped per task exactly like the reward, so duplicated rollouts cannot
+                # push a component above 1 either.
+                component_sums[key[len(_COMPONENT_PREFIX) :]] += min(value, float(rollouts))
         total_trials += n
         total_passed += c
         capped_passed += min(c, rollouts)
@@ -397,7 +470,19 @@ def build_summary(
         "passed": total_passed,
         "errored": total_errored,
     }
-    return SummaryParts(dataset_passk, avg_at_k, totals, per_task, macro_avg_at_k)
+    # Same expected-trial denominator as avg@K, so a missing rollout is charged to a
+    # component exactly as it is to the headline and the two stay commensurable.
+    components = (
+        {
+            name: round(total / expected_trials, 6)
+            for name, total in sorted(component_sums.items())
+        }
+        if component_sums and expected_trials
+        else None
+    )
+    return SummaryParts(
+        dataset_passk, avg_at_k, totals, per_task, macro_avg_at_k, components
+    )
 
 
 def make_summary(
@@ -418,6 +503,7 @@ def make_summary(
     pass_at_k: float | None,
     avg_at_k: float | None,
     macro_avg_at_k: float | None = None,
+    components: dict[str, float] | None = None,
     issues: list[dict[str, str]] | None = None,
 ) -> dict:
     """Assemble the summary dict in one place, so the empty and populated paths
@@ -449,6 +535,13 @@ def make_summary(
     }
     if macro_avg_at_k is not None:
         summary[f"macro_avg@{rollouts}"] = macro_avg_at_k
+    if components:
+        # The metrics behind a graded reward. NOTE these are per-component means and do NOT
+        # recombine into the headline: the headline averages each trial's own harmonic mean,
+        # whereas combining these averages first hides tasks where one component collapsed.
+        # On a measured 30-task run the two differ by 0.068, so anything rendering them has
+        # to say so or it reads as an arithmetic bug.
+        summary["components"] = components
     summary["issues"] = list(issues or [])
     return summary
 
@@ -510,6 +603,19 @@ def render_step_summary(summary: dict) -> str:
         lines.append(
             f"| avg@{k} | {avgk:.3f} |" if avgk is not None else f"| avg@{k} | n/a |"
         )
+    components = summary.get("components") or {}
+    if components:
+        lines.extend(["", "| component | mean |", "|---|---|"])
+        # Names were restricted to `[a-z][a-z0-9_]*` on the way in, so they cannot contain
+        # a pipe or backtick and are safe to place in a table cell unescaped.
+        for name, value in sorted(components.items()):
+            lines.append(f"| {name} | {value:.3f} |")
+        lines.append(
+            "\n> Component means over the same expected-trial denominator. They do **not** "
+            f"recombine into avg@{k}: that averages each trial's own combined score, while "
+            "averaging the components first hides tasks where one of them collapsed."
+        )
+
     issues = summary.get("issues") or []
     if issues:
         lines.extend(["", "## Analysis warnings", ""])
@@ -798,6 +904,7 @@ def main(argv: list[str] | None = None) -> int:
         pass_at_k=parts.pass_at_k,
         avg_at_k=parts.avg_at_k,
         macro_avg_at_k=parts.macro_avg_at_k,
+        components=parts.components,
         issues=issues,
     )
     if incomplete:

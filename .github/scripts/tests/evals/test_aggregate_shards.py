@@ -82,11 +82,17 @@ def test_aggregate_and_summary(tmp_path: Path):
     assert result.skipped_files == 0
     assert result.malformed_rewards == 0
 
-    dataset_passk, avg_at_k, totals, per_task, macro_avg_at_k = agg.build_summary(
-        by_task, 3
+    parts = agg.build_summary(by_task, 3)
+    dataset_passk, avg_at_k, totals, per_task = (
+        parts.pass_at_k,
+        parts.avg_at_k,
+        parts.totals,
+        parts.per_task,
     )
-    # No category passed -> binary scoring, so no macro average is computed.
-    assert macro_avg_at_k is None
+    # No category passed -> binary scoring, so no macro average is computed. These
+    # fixtures report no component metrics either, so nothing is carried.
+    assert parts.macro_avg_at_k is None
+    assert parts.components is None
     # pass@K (K=3), scalar: mean over tasks of "passed at least once" = (1+0+1)/3.
     assert abs(dataset_passk - (1 + 0 + 1) / 3) < 1e-6
     assert totals == {
@@ -839,3 +845,150 @@ def test_main_cli_records_branch(tmp_path):
     )
     summary = json.loads((root / "summary.json").read_text())
     assert summary["branch"] == "main"
+
+
+# --- score components ------------------------------------------------------------------
+# A graded verifier reports the metrics behind its reward as siblings of `reward`. They used
+# to be discarded, so a scorecard could only show the combined number.
+
+
+def _write_trial_with_components(dirpath, task, reward, components, **kw):
+    dirpath.mkdir(parents=True, exist_ok=True)
+    result = {
+        "task_name": task,
+        "verifier_result": {"rewards": {"reward": reward, **components}},
+        "exception_info": None,
+        "config": {"agent": {"model_name": "m1"}, "job_id": "job1"},
+    }
+    (dirpath / "result.json").write_text(json.dumps(result))
+
+
+def test_components_are_averaged_over_expected_trials(tmp_path: Path):
+    _write_trial_with_components(
+        tmp_path / "a__0", "taskA", 0.5, {"factuality": 0.8, "insights_recall": 0.2}
+    )
+    _write_trial_with_components(
+        tmp_path / "b__0", "taskB", 0.3, {"factuality": 0.4, "insights_recall": 0.6}
+    )
+    parts = agg.build_summary(agg.aggregate(tmp_path).by_task, 1, category="research")
+
+    # Same denominator as avg@K, so a missing rollout is charged identically.
+    assert parts.components == {"factuality": 0.6, "insights_recall": 0.4}
+
+
+def test_components_do_not_change_the_headline(tmp_path: Path):
+    # Purely additive: carrying components must not perturb avg@K.
+    _write_trial_with_components(tmp_path / "a__0", "taskA", 0.5, {"factuality": 0.9})
+    with_components = agg.build_summary(
+        agg.aggregate(tmp_path).by_task, 1, category="research"
+    )
+    _write_trial(tmp_path / "b__0", "taskB", reward=0.5)
+    assert with_components.avg_at_k == 0.5
+
+
+def test_a_missing_rollout_lowers_a_component(tmp_path: Path):
+    _write_trial_with_components(tmp_path / "a__0", "taskA", 0.5, {"factuality": 0.8})
+    parts = agg.build_summary(agg.aggregate(tmp_path).by_task, 2, category="research")
+    # One of two expected rollouts ran, so the component is halved just as avg@K is.
+    assert parts.components == {"factuality": 0.4}
+
+
+def test_duplicate_rollouts_cannot_push_a_component_above_one(tmp_path: Path):
+    for i in range(3):
+        _write_trial_with_components(tmp_path / f"a__{i}", "taskA", 0.8, {"factuality": 0.9})
+    parts = agg.build_summary(agg.aggregate(tmp_path).by_task, 1, category="research")
+    assert parts.components == {"factuality": 1.0}
+
+
+def test_a_pass_fail_category_reports_no_components(tmp_path: Path):
+    # Its verifier emits no siblings, so nothing changes for it -- including `by_task`.
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
+    result = agg.aggregate(tmp_path)
+    assert result.by_task["taskA"] == {
+        "trials": 1,
+        "passed": 1,
+        "errored": 0,
+        "reward_sum": 1.0,
+    }
+    assert agg.build_summary(result.by_task, 1).components is None
+
+
+def test_unsafe_component_names_are_rejected():
+    # These land in markdown table cells and JSON keys, and the reward file is written
+    # inside a sandbox that ran an agent's task. A pipe or backtick would break the table.
+    for name in (
+        "has space",
+        "pipe|name",
+        "back`tick",
+        "Upper",
+        "1leading",
+        "trailing-dash",
+        "x" * 65,
+        "",
+        123,
+    ):
+        assert agg.component_name_is_safe(name) is False, name
+
+
+def test_safe_component_names_are_accepted():
+    for name in ("factuality", "insights_recall", "a", "a1_b2"):
+        assert agg.component_name_is_safe(name) is True, name
+
+
+def test_out_of_range_component_values_are_dropped():
+    # Dropped rather than coerced: a nonsense number must not reach a published scorecard.
+    for value in (1.5, -0.1, float("nan"), float("inf"), "abc", None, {}):
+        result = {"verifier_result": {"rewards": {"reward": 0.5, "factuality": value}}}
+        assert agg.trial_components(result) == {}, value
+
+
+def test_component_values_accept_a_numeric_string():
+    result = {"verifier_result": {"rewards": {"reward": 0.5, "factuality": "0.75"}}}
+    assert agg.trial_components(result) == {"factuality": 0.75}
+
+
+def test_component_count_is_capped():
+    rewards = {"reward": 0.5}
+    rewards.update({f"m{i}": 0.5 for i in range(40)})
+    kept = agg.trial_components({"verifier_result": {"rewards": rewards}})
+    assert len(kept) == agg._MAX_COMPONENTS
+
+
+def test_components_reach_the_summary_and_step_summary(tmp_path: Path):
+    _write_trial_with_components(
+        tmp_path / "a__0", "taskA", 0.4, {"factuality": 0.6, "pipe|bad": 0.9}
+    )
+    out = tmp_path / "out"
+    step = tmp_path / "step.md"
+    step.touch()
+    prev = os.environ.get("GITHUB_STEP_SUMMARY")
+    os.environ["GITHUB_STEP_SUMMARY"] = str(step)
+    try:
+        agg.main(
+            [str(tmp_path), "--rollouts", "1", "--category", "research", "--out-dir", str(out)]
+        )
+    finally:
+        if prev is None:
+            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        else:
+            os.environ["GITHUB_STEP_SUMMARY"] = prev
+
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["components"] == {"factuality": 0.6}
+    assert "pipe|bad" not in summary["components"]
+
+    rendered = step.read_text()
+    assert "| factuality | 0.600 |" in rendered
+    # The caveat has to be present, or a reader recombining the components and getting a
+    # different number reads it as an arithmetic bug.
+    assert "do **not** recombine" in rendered
+
+
+def test_component_summary_round_trips_through_the_unified_reader(tmp_path: Path):
+    _write_trial_with_components(tmp_path / "a__0", "taskA", 0.4, {"factuality": 0.6})
+    out = tmp_path / "out"
+    agg.main(
+        [str(tmp_path), "--rollouts", "1", "--category", "research", "--out-dir", str(out)]
+    )
+    leaf = unified.read_leaf(out, expected_rollouts=1)
+    assert leaf["components"] == {"factuality": 0.6}

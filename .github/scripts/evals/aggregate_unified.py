@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 from typing import NamedTuple, cast
 
-from aggregate_shards import is_continuous_category
+from aggregate_shards import COMPONENT_NAME_RE, is_continuous_category
 from experiment_name import experiment_name
 from unified_types import LeafKey, RowKey
 
@@ -213,6 +213,28 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
         if macro_key in summary
         else None
     )
+    # The metrics behind a graded reward, when the leaf reported them. Re-validated here
+    # rather than trusted: `aggregate_shards` already restricted the names and bounded the
+    # values, but this reader is the last gate before a number reaches a scorecard.
+    components: dict[str, float] = {}
+    raw_components = summary.get("components")
+    if raw_components is not None:
+        if not isinstance(raw_components, dict):
+            msg = "components must be an object"
+            raise _LeafSummaryError(msg)
+        for name, value in raw_components.items():
+            if not isinstance(name, str) or not COMPONENT_NAME_RE.match(name):
+                msg = f"components has an unusable name: {name!r}"
+                raise _LeafSummaryError(msg)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                or not 0.0 <= value <= 1.0
+            ):
+                msg = f"components[{name!r}] must be a number in [0, 1]"
+                raise _LeafSummaryError(msg)
+            components[name] = float(value)
     return {
         "model": model or "unknown",
         "category": category or "unknown",
@@ -222,6 +244,7 @@ def read_leaf(leaf_dir: Path, *, expected_rollouts: int | None = None) -> dict:
         "pass_at_k": _require_metric(summary, f"pass@{k}", tasks=tasks),
         "avg_at_k": _require_metric(summary, f"avg@{k}", tasks=tasks),
         "macro_avg_at_k": macro_avg_at_k,
+        "components": components,
         "scoring": scoring or "binary",
         "tasks": tasks,
         "passed": passed,
@@ -447,6 +470,7 @@ def combine(
                 "pass_at_k": leaf["pass_at_k"],
                 "avg_at_k": leaf["avg_at_k"],
                 "macro_avg_at_k": leaf.get("macro_avg_at_k"),
+                "components": leaf.get("components") or {},
                 "tasks": leaf["tasks"],
                 "incomplete": leaf["incomplete"] or leaf["tasks"] == 0,
             }
@@ -577,6 +601,29 @@ def render_markdown(combined: dict, k: int) -> str:
     ]
     lines += ["| " + " | ".join(r) + " |" for r in rows]
     md = "\n".join(lines) + "\n"
+
+    # Rendered as its own section rather than extra columns: with several categories and
+    # four metrics each, the main table would gain a dozen columns and stop being readable.
+    breakdown = [
+        (row, category, row["categories"][category]["components"])
+        for row in ranked
+        for category in cats
+        if row["categories"].get(category, {}).get("components")
+    ]
+    if breakdown:
+        md += "\n### Score components\n"
+        for row, category, components in breakdown:
+            label = f"{row['model']} / {row['branch']} / {row['config']} — {category}"
+            md += f"\n**{label}**\n\n| component | mean |\n|---|---|\n"
+            # Names were restricted to `[a-z][a-z0-9_]*` before they were stored, so they
+            # cannot contain a pipe or backtick and need no escaping here.
+            for name, value in sorted(components.items()):
+                md += f"| {name} | {_fmt(value)} |\n"
+        md += (
+            f"\n> Component means. They do **not** recombine into avg@{k}: that averages "
+            "each trial's own combined score, while averaging the components first hides "
+            "tasks where one of them collapsed.\n"
+        )
 
     if graded:
         # The Overall pass@K columns average every category, including graded ones

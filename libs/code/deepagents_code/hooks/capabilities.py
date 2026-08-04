@@ -16,6 +16,8 @@ from deepagents_code.hooks.models.domain import (
     PermissionRequestEvent,
     PostToolUseDecision,
     PostToolUseEvent,
+    PostToolUseFailureDecision,
+    PostToolUseFailureEvent,
     PreCompactDecision,
     PreCompactEvent,
     PreToolUseDecision,
@@ -183,6 +185,18 @@ _HOOK_EVENT_SPECS: Final[Mapping[HookEvent, HookEventSpec]] = MappingProxyType(
             aggregation_policy=AggregationPolicy.FEEDBACK_AND_CONTEXT,
             supported_handler_types=frozenset({HandlerType.COMMAND}),
         ),
+        HookEvent.POST_TOOL_USE_FAILURE: HookEventSpec(
+            event=HookEvent.POST_TOOL_USE_FAILURE,
+            owner=HookOwner.SERVER,
+            event_model=PostToolUseFailureEvent,
+            decision_model=PostToolUseFailureDecision,
+            matcher_field="tool_name",
+            default_timeout_seconds=DEFAULT_COMMAND_TIMEOUT_SECONDS,
+            exit_code_policy=ExitCodePolicy.FEEDBACK,
+            plain_output_policy=PlainOutputPolicy.IGNORE,
+            aggregation_policy=AggregationPolicy.FEEDBACK_AND_CONTEXT,
+            supported_handler_types=frozenset({HandlerType.COMMAND}),
+        ),
         HookEvent.PRE_COMPACT: HookEventSpec(
             event=HookEvent.PRE_COMPACT,
             owner=HookOwner.SERVER,
@@ -259,6 +273,8 @@ def get_event_spec(event: HookEvent) -> HookEventSpec:
             return _HOOK_EVENT_SPECS[HookEvent.PRE_TOOL_USE]
         case HookEvent.POST_TOOL_USE:
             return _HOOK_EVENT_SPECS[HookEvent.POST_TOOL_USE]
+        case HookEvent.POST_TOOL_USE_FAILURE:
+            return _HOOK_EVENT_SPECS[HookEvent.POST_TOOL_USE_FAILURE]
         case HookEvent.PRE_COMPACT:
             return _HOOK_EVENT_SPECS[HookEvent.PRE_COMPACT]
         case HookEvent.STOP:

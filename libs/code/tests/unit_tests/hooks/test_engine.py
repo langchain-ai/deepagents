@@ -33,6 +33,8 @@ from deepagents_code.hooks.models.domain import (
     PermissionRequestEvent,
     PostToolUseDecision,
     PostToolUseEvent,
+    PostToolUseFailureDecision,
+    PostToolUseFailureEvent,
     PreCompactDecision,
     PreCompactEvent,
     PreToolUseDecision,
@@ -451,6 +453,21 @@ def test_snapshot_rejects_matcher_for_unmatchable_event() -> None:
                 call=ToolCallData(id="call-2", name="Bash", args={}),
             ),
             {"hook_event_name": "PostToolUse", "tool_use_id": "call-2"},
+        ),
+        (
+            PostToolUseFailureEvent(
+                event=HookEvent.POST_TOOL_USE_FAILURE,
+                call=ToolCallData(id="call-3", name="Bash", args={}),
+                error="Command exited with non-zero status code 42",
+                duration_ms=15,
+            ),
+            {
+                "hook_event_name": "PostToolUseFailure",
+                "tool_use_id": "call-3",
+                "error": "Command exited with non-zero status code 42",
+                "is_interrupt": False,
+                "duration_ms": 15,
+            },
         ),
         (
             PreCompactEvent(
@@ -1205,6 +1222,21 @@ def test_reducer_covers_event_decision_shapes_and_loop_guards(tmp_path: Path) ->
             },
         ),
         (
+            PostToolUseFailureEvent(
+                event=HookEvent.POST_TOOL_USE_FAILURE,
+                call=ToolCallData(id="call", name="Bash", args={}),
+                error="failed",
+            ),
+            {
+                "decision": "block",
+                "reason": "failure feedback",
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUseFailure",
+                    "additionalContext": "failure context",
+                },
+            },
+        ),
+        (
             StopEvent(
                 event=HookEvent.STOP,
                 continuation_count=1,
@@ -1260,23 +1292,28 @@ def test_reducer_covers_event_decision_shapes_and_loop_guards(tmp_path: Path) ->
         HookEvent.NOTIFICATION,
         HookEvent.PERMISSION_REQUEST,
         HookEvent.POST_TOOL_USE,
+        HookEvent.POST_TOOL_USE_FAILURE,
         HookEvent.STOP,
         HookEvent.SUBAGENT_START,
         HookEvent.SUBAGENT_STOP,
     ]
     permission = decisions[2]
     post_tool = decisions[3]
-    stop = decisions[4]
-    subagent_start = decisions[5]
-    subagent_stop = decisions[6]
+    post_tool_failure = decisions[4]
+    stop = decisions[5]
+    subagent_start = decisions[6]
+    subagent_stop = decisions[7]
     assert isinstance(permission, PermissionRequestDecision)
     assert isinstance(post_tool, PostToolUseDecision)
+    assert isinstance(post_tool_failure, PostToolUseFailureDecision)
     assert isinstance(stop, StopDecision)
     assert isinstance(subagent_start, SubagentStartDecision)
     assert isinstance(subagent_stop, SubagentStopDecision)
     assert permission.permission.behavior == "deny"
     assert post_tool.feedback == ["feedback"]
     assert post_tool.context == ["context"]
+    assert post_tool_failure.feedback == ["failure feedback"]
+    assert post_tool_failure.context == ["failure context"]
     assert stop.continue_loop is True
     assert stop.feedback == ["continue"]
     assert subagent_start.context == ["focus"]

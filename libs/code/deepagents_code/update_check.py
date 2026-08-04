@@ -1583,6 +1583,42 @@ def _uv_tool_bin_dir() -> Path | None:
     return None
 
 
+def _resolves_to_upgraded_entry_point(
+    path_entry: str,
+    *,
+    upgraded_bin_dir: Path,
+    name: str,
+) -> bool:
+    """Report whether a PATH entry point is the upgraded shim under another name.
+
+    Complements the directory comparison in `detect_shadowed_dcode`: a symlink
+    outside uv's bin dir that points at uv's own shim runs the upgraded install,
+    so warning about it would send the user chasing a conflict that does not
+    exist.
+
+    Args:
+        path_entry: Un-followed `shutil.which` result for *name*.
+        upgraded_bin_dir: Bin directory uv installed the upgraded shim into.
+        name: Console-script name being checked.
+
+    Returns:
+        `True` when both paths resolve to the same file. `False` when they
+            differ or either side cannot be resolved — the caller then reports
+            the shadow, since an unverifiable alias is better surfaced than
+            silently dismissed.
+    """
+    try:
+        return Path(path_entry).resolve() == (upgraded_bin_dir / name).resolve()
+    except OSError:
+        logger.debug(
+            "Could not compare %s at %s against the upgraded shim",
+            name,
+            path_entry,
+            exc_info=True,
+        )
+        return False
+
+
 def detect_shadowed_dcode() -> ShadowedDcode | None:
     """Return the shadowing dcode entry point on the user's PATH, if any.
 
@@ -1595,13 +1631,13 @@ def detect_shadowed_dcode() -> ShadowedDcode | None:
     This compares each supported console script against uv's tool bin dir. A
     mismatch means a different binary will run next launch for that entry point.
 
-    Caveat: a `dcode` symlink that lives in some unrelated bin dir but
-    points *into* the upgraded tool venv (e.g. a manually-created
-    convenience symlink) is reported as shadowing even though the next
-    launch would actually run the upgraded entry point. Comparing
-    directories rather than resolved targets is intentional — see the
-    inline note below for why — and this edge is rare enough that we
-    accept a benign false positive over a class of false negatives.
+    The primary comparison is between *directories* rather than resolved
+    symlink targets (see the inline note below for why), but a directory
+    mismatch alone would misreport a `dcode` symlink that lives in an
+    unrelated bin dir and points *into* the upgraded tool venv (e.g. a
+    manually-created convenience symlink, or a package manager that
+    re-exposes uv's shim). Those launches do run the upgraded entry point, so
+    a second check compares resolved targets before reporting a conflict.
 
     Returns:
         A `ShadowedDcode` describing the conflict, or `None` when there is no
@@ -1653,6 +1689,15 @@ def detect_shadowed_dcode() -> ShadowedDcode | None:
             # This entry point resolves to the directory uv just wrote into.
             # Keep checking the other supported entry point before declaring
             # there is no shadow.
+            continue
+        if _resolves_to_upgraded_entry_point(
+            resolved,
+            upgraded_bin_dir=upgraded_bin_dir,
+            name=name,
+        ):
+            # A symlink outside uv's bin dir that still points at uv's own
+            # shim. PATH wins, but it wins *into* the upgraded install, so
+            # there is nothing for the user to fix.
             continue
         return ShadowedDcode(
             shadowing_bin=Path(resolved),

@@ -124,11 +124,9 @@ class TestStartupAutoUpdate:
         hermetic only by accident — the test runner's editable install
         currently short-circuits at `detect_install_method() != "uv"` — but
         a uv-tool-managed Python or CI image that does match would silently
-        re-route every "successful update" test through the new
-        `if shadow is not None: return` branch and skip the restart
-        assertion. Pin to `None` here so the contract being tested is
-        "shadow path is opt-in"; the dedicated shadow-present test below
-        patches it explicitly.
+        add an extra warning line to every "successful update" test. Pin to
+        `None` here so the contract being tested is "shadow path is opt-in";
+        the dedicated shadow-present test below patches it explicitly.
 
         Patches at the source module rather than `deepagents_code.main`
         because `_run_startup_auto_update` lazy-imports it inside the
@@ -185,15 +183,14 @@ class TestStartupAutoUpdate:
         assert "tail -f /tmp/dcode-update.log" in printed
         restart.assert_called_once_with()
 
-    def test_successful_update_skips_restart_when_shadowed(self) -> None:
-        """Successful upgrade + shadowed dcode must NOT restart into the old binary.
+    def test_successful_update_warns_and_still_restarts_when_shadowed(self) -> None:
+        """A PATH shadow must warn about the next launch, not skip this restart.
 
-        Regression guard for the critical bug: when a stale `dcode` is
-        earlier on PATH than uv's bin dir, re-exec'ing would silently
-        re-launch the old version. The pre-launch path must surface a
-        warning and return *before* `_restart_current_process` so the user
-        sees the message and isn't stranded on the old in-memory version
-        with no explanation. Also pins the markup-escape behavior: a path
+        `_restart_current_process` re-execs `sys.executable`, never a PATH
+        lookup, and the shadow detector only fires for uv installs — so the
+        restart always loads the version that was just installed. Skipping it
+        would strand the user on a mixed-version process whose splash still
+        reports the old release. Also pins the markup-escape behavior: a path
         containing a Rich-special character must not raise.
         """
         from deepagents_code.update_check import ShadowedDcode
@@ -239,12 +236,16 @@ class TestStartupAutoUpdate:
                 "deepagents_code.update_check.detect_shadowed_dcode",
                 return_value=shadow,
             ),
-            patch("deepagents_code.main._restart_current_process") as restart,
+            patch(
+                "deepagents_code.main._restart_current_process",
+                side_effect=SystemExit(0),
+            ) as restart,
+            pytest.raises(SystemExit),
         ):
             _run_startup_auto_update(console)
 
         upgrade.assert_awaited_once()
-        restart.assert_not_called()
+        restart.assert_called_once_with()
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "Warning:" in printed
         # The path's `[legacy]` segment must be Rich-escaped (`\[legacy]`)
@@ -254,7 +255,10 @@ class TestStartupAutoUpdate:
         # escaped form pins the fix.
         assert "/opt/old \\[legacy]/bin/dcode" in printed
         assert "/home/user/.local/bin" in printed
-        assert "Continuing with v" in printed
+        # The warning is about the *next* manual launch, so it must not claim
+        # this session stays on the old version.
+        assert "Continuing with v" not in printed
+        assert "Launching..." in printed
 
     def test_disabled_update_does_not_check_pypi(self) -> None:
         """Disabled auto-update should not perform network or install work."""
@@ -648,8 +652,15 @@ class TestStartupAutoUpdate:
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "restart loop" in printed
 
-    def test_restart_failure_after_successful_install_continues(self) -> None:
-        """A successful install with a failed re-exec reports an accurate message."""
+    def test_restart_failure_after_successful_install_exits(self) -> None:
+        """A successful install with a failed re-exec must exit, not launch.
+
+        The install already replaced the site-packages this process imports
+        from, so launching would mix pre-upgrade modules with post-upgrade ones
+        — the splash would report the old version and a renamed constant would
+        raise `ImportError`. Exiting `0` with a relaunch hint is the only safe
+        outcome, and must not be worded as an update failure.
+        """
         console = MagicMock()
         upgrade = AsyncMock(return_value=(True, "updated"))
 
@@ -676,17 +687,63 @@ class TestStartupAutoUpdate:
                 "deepagents_code.main._restart_current_process",
                 side_effect=OSError("exec failed"),
             ) as restart,
+            pytest.raises(SystemExit) as exit_info,
         ):
-            # Install succeeded; a failed re-exec must not raise or claim the
-            # update failed.
             _run_startup_auto_update(console)
 
+        assert exit_info.value.code == 0
         restart.assert_called_once_with()
         # Sentinel is dropped since the restart did not happen.
         assert os.environ.get("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE") is None
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-        assert "automatic restart failed" in printed
+        assert "automatic restart could not run" in printed
+        assert "Updated to v9.9.9" in printed
         assert "Auto-update failed" not in printed
+
+    def test_error_after_successful_install_exits_instead_of_launching(self) -> None:
+        """A post-install exception must not launch a mixed-version process.
+
+        The fail-soft handler exists for upgrades that never happened. Once the
+        install has landed, "continuing with the installed version" is a lie —
+        the loaded modules are the old release — so the handler exits with the
+        relaunch hint instead.
+        """
+        console = MagicMock()
+        upgrade = AsyncMock(return_value=(True, "updated"))
+
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=Path("/tmp/dcode-update.log"),
+            ),
+            patch("deepagents_code.update_check.perform_upgrade", upgrade),
+            patch(
+                "deepagents_code.update_check.clear_startup_auto_update_failure",
+                side_effect=RuntimeError("state dir exploded"),
+            ),
+            patch("deepagents_code.main._restart_current_process") as restart,
+            pytest.raises(SystemExit) as exit_info,
+        ):
+            _run_startup_auto_update(console)
+
+        assert exit_info.value.code == 0
+        restart.assert_not_called()
+        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
+        assert "Updated to v9.9.9" in printed
+        assert "continuing with the installed version" not in printed
 
     def test_restart_after_update_clears_transient_launch_status(
         self, monkeypatch: pytest.MonkeyPatch

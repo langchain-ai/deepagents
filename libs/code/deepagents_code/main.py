@@ -350,17 +350,60 @@ def _confirm_update_after_restart(console: "Console", version: str) -> None:
     console.print(f"[green]Updated to v{version}.[/green]", highlight=False)
 
 
+def _exit_after_unrestartable_update(console: "Console", version: str) -> NoReturn:
+    """Report an installed-but-not-reloaded update and exit instead of launching.
+
+    Reached only when the startup auto-update installed *successfully* and the
+    re-exec that would load it did not happen. The install already replaced the
+    site-packages this process imports from, so launching now would build the TUI
+    out of the new code while keeping every already-imported module (`_version`
+    among them) on the old release. Exiting with a relaunch hint is the only
+    honest outcome.
+
+    Exits `0`: nothing failed, and the user only needs to run the command again.
+
+    Args:
+        console: Console to print the notice to.
+        version: Version that was installed but is not loaded in this process.
+
+    Raises:
+        SystemExit: Always, to stop the launch.
+    """
+    from deepagents_code._invocation import invoked_name
+
+    console.print(
+        f"[green]Updated to v{version}.[/green] The automatic restart could not "
+        f"run, so this session would keep using the previous version. Run "
+        f"[cyan]{invoked_name()}[/cyan] again to start on v{version}.",
+        highlight=False,
+        markup=True,
+    )
+    # `raise` rather than `sys.exit` so the documented exit is explicit here.
+    raise SystemExit(0)
+
+
 def _run_startup_auto_update(console: "Console") -> None:
     """Apply enabled auto-updates before the TUI and server start.
 
-    On a successful upgrade the process is re-exec'd so the new version is
-    loaded. Any failure is fail-soft: the installed version is launched and
+    On a successful upgrade the process is *always* re-exec'd so the new version
+    is loaded, and the process exits rather than launching when the re-exec
+    cannot happen. Continuing in-process is not fail-soft once the install has
+    landed: the upgrade rewrote the site-packages this process imports from, and
+    because startup deliberately defers most imports, the TUI would be loaded
+    from the new code while already-imported modules (including `_version`,
+    which the splash reads) stay on the old release. That mixed-version process
+    reports the pre-upgrade version at best and raises `ImportError` on a
+    renamed constant at worst.
+
+    A *failed* install stays fail-soft: the installed version is launched and
     the error is surfaced, never blocking startup.
 
     Raises:
-        SystemExit: Re-raised rather than suppressed by the fail-soft handler,
-            so a process-exit request is never swallowed (the `os.execv`
-            re-exec is simulated this way under test).
+        SystemExit: Raised after a successful install that could not re-exec, so
+            the user relaunches instead of running a mixed-version process. Also
+            re-raised rather than suppressed by the fail-soft handler, so a
+            process-exit request is never swallowed (the `os.execv` re-exec is
+            simulated this way under test).
     """
     from rich.markup import escape
 
@@ -391,6 +434,10 @@ def _run_startup_auto_update(console: "Console") -> None:
     # failure, the fail-soft handler below records the cooldown from this so the
     # same broken target is not retried — and re-stalled — on every launch.
     pending_failure_version: str | None = None
+    # Set once the install has landed. From that point the on-disk code no
+    # longer matches the modules this process already imported, so the fail-soft
+    # handler must exit instead of launching a mixed-version TUI.
+    installed_version: str | None = None
     try:
         if (
             _is_editable_install()
@@ -505,14 +552,15 @@ def _run_startup_auto_update(console: "Console") -> None:
         )
         if success:
             pending_failure_version = None
+            installed_version = latest
             clear_startup_auto_update_failure(latest)
-            # If a stale `dcode` is earlier on PATH, the auto-restart would
-            # re-exec into the old binary and the user would silently keep
-            # running the pre-upgrade version. Detect that *before* the
-            # re-exec so the warning isn't immediately wiped by the new
-            # process's startup, and skip the restart — re-exec'ing into
-            # an unchanged version would also trip the `restarted_for`
-            # no-op loop guard on the next launch. Use the never-raises
+            # A stale `dcode` earlier on PATH does not affect *this* restart —
+            # `_restart_current_process` re-execs `sys.executable`, and the
+            # detector only fires for uv installs, meaning `sys.prefix` is the
+            # environment the upgrade just rewrote. So warn about the user's
+            # next manual launch and still restart. Warn *before* the restart so
+            # the notice lands above the `Launching...` line that
+            # `_confirm_update_after_restart` rewrites. Use the never-raises
             # wrapper so a detector defect can't crash startup after an
             # otherwise-successful upgrade.
             shadow = detect_shadowed_dcode_safe()
@@ -525,12 +573,10 @@ def _run_startup_auto_update(console: "Console") -> None:
                 # escapes its uv output the same way.
                 warning = format_shadowed_dcode_warning(shadow)
                 console.print(
-                    f"[bold yellow]Warning:[/bold yellow] {escape(warning)}\n"
-                    f"Continuing with v{cli_version}.",
+                    f"[bold yellow]Warning:[/bold yellow] {escape(warning)}",
                     highlight=False,
                     markup=True,
                 )
-                return
             console.print(
                 f"[green]Updated to v{latest}. Launching...[/green]",
                 highlight=False,
@@ -542,17 +588,12 @@ def _run_startup_auto_update(console: "Console") -> None:
                 _restart_current_process()
             except (OSError, RuntimeError):
                 # Upgrade succeeded but the re-exec did not happen (`os.execv`
-                # raised, or returned unexpectedly). Drop the sentinel and
-                # continue on the old in-memory code; the user must restart
-                # manually to load the new version.
+                # raised, or returned unexpectedly). Drop the sentinel and stop:
+                # this process can no longer launch safely, since the install
+                # replaced the code it imports from.
                 os.environ.pop(RESTARTED_AFTER_UPDATE, None)
                 logger.warning("Restart after update failed", exc_info=True)
-                console.print(
-                    f"[bold yellow]Warning:[/bold yellow] Updated to v{latest} but "
-                    "the automatic restart failed. Restart dcode manually to use "
-                    "the new version.",
-                    highlight=False,
-                )
+                _exit_after_unrestartable_update(console, latest)
             return
         persisted = mark_startup_auto_update_failed(latest)
         update_needs_prereleases = release_requires_prereleases(latest)
@@ -579,6 +620,11 @@ def _run_startup_auto_update(console: "Console") -> None:
         raise
     except Exception:
         logger.warning("Startup auto-update failed", exc_info=True)
+        if installed_version is not None:
+            # The install landed and something after it raised, so this process
+            # is already mixed-version. Exit rather than describe the successful
+            # install as a failure and launch anyway.
+            _exit_after_unrestartable_update(console, installed_version)
         message = (
             "[bold yellow]Warning:[/bold yellow] Auto-update failed before startup; "
             "continuing with the installed version."

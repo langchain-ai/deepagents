@@ -1966,6 +1966,42 @@ class TestDetectShadowedDcode:
         assert shadow.shadowing_bin == stale_shim
         assert shadow.upgraded_bin_dir == uv_bin.resolve()
 
+    def test_returns_none_for_convenience_symlink_to_upgraded_shim(
+        self, tmp_path
+    ) -> None:
+        """A symlink outside uv's bin dir pointing at uv's own shim is no shadow.
+
+        Users (and package managers) re-expose uv's shim from another bin dir on
+        PATH. The directory comparison alone flags that as a conflict, but the
+        launch it produces runs the upgraded entry point, so there is nothing to
+        fix — and reporting it made the caller skip the post-upgrade restart.
+        """
+        uv_bin = tmp_path / "uv-bin"
+        uv_bin.mkdir()
+        tool_internal_bin = tmp_path / "tools" / "deepagents-code" / "bin"
+        tool_internal_bin.mkdir(parents=True)
+        other_bin = tmp_path / "usr-local-bin"
+        other_bin.mkdir()
+        for name in ("dcode", "deepagents-code"):
+            real_entry_point = tool_internal_bin / name
+            real_entry_point.write_text("")
+            (uv_bin / name).symlink_to(real_entry_point)
+            (other_bin / name).symlink_to(real_entry_point)
+
+        def _which(name: str) -> str | None:
+            candidate = other_bin / name
+            return str(candidate) if candidate.exists() else None
+
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch.dict(os.environ, {"UV_TOOL_BIN_DIR": str(uv_bin)}),
+            patch("shutil.which", side_effect=_which),
+        ):
+            assert detect_shadowed_dcode() is None
+
     def test_returns_none_when_no_dcode_on_path(self, tmp_path) -> None:
         """Without any `dcode` on PATH there's nothing to be shadowed by."""
         uv_bin = tmp_path / "uv-bin"

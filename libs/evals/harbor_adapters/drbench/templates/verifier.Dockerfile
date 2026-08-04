@@ -28,16 +28,20 @@ RUN /usr/local/bin/python3 -m pip install --no-cache-dir \
 # The task-data probe matters most: `CitationFactuality` resolves cited documents from
 # the corpus shipped inside the package, so an install without `data/**` would score
 # every claim unsupported while looking healthy.
+# Resolved from `task_loader.__file__`, which is exactly how upstream locates the corpus
+# (`get_task_from_id` does `Path(__file__).parent / "data" / "tasks" / ...`). Note
+# `drbench.__file__` is None -- `drbench` ships no `__init__.py`, so it is a namespace
+# package -- which is why the probe must go through a real module.
 RUN /usr/local/bin/python3 -c "\
+import pathlib; \
+from drbench import task_loader; \
 from drbench.score_report import score_report; \
 from drbench.metrics import get_metric; \
-from drbench import task_loader; \
-import pathlib, drbench; \
-tasks = pathlib.Path(drbench.__file__).parent / 'data' / 'tasks'; \
+tasks = pathlib.Path(task_loader.__file__).parent / 'data' / 'tasks'; \
 assert tasks.is_dir(), 'drbench package data is missing: ' + str(tasks); \
-n = len(list(tasks.iterdir())); \
+n = sum(1 for p in tasks.iterdir() if (p / 'config' / 'eval.json').is_file()); \
 assert n > 50, 'expected the full task corpus, found ' + str(n); \
-print('drbench ok,', n, 'tasks')"
+print('drbench ok:', n, 'tasks with ground truth')"
 
 # The tests have to be baked in, not uploaded. In separate-verifier mode Harbor passes
 # `skip_tests_upload=True` and then executes `/tests/test.sh` directly, so anything the

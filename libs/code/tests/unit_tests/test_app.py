@@ -13105,9 +13105,7 @@ class TestAutoClassifierModelCommand:
             await app._show_auto_classifier_model_selector()
 
         description = str(push.call_args.args[0]._description)
-        assert "Auto currently reviews with anthropic:claude-haiku-4-5." in description
-        assert "less carefully" not in description
-        assert "/auto model clear" not in description
+        assert description == "Auto currently reviews with anthropic:claude-haiku-4-5."
 
     async def test_selector_description_marks_an_inherited_classifier(self) -> None:
         """With no classifier set, the picker should name the main agent model."""
@@ -13120,9 +13118,8 @@ class TestAutoClassifierModelCommand:
             await app._show_auto_classifier_model_selector()
 
         description = str(push.call_args.args[0]._description)
-        assert (
+        assert description == (
             "Auto currently reviews with openai:gpt-5.5, the main agent model."
-            in description
         )
 
     async def test_bare_auto_still_switches_approval_mode(self) -> None:

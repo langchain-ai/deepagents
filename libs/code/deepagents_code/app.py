@@ -19158,11 +19158,11 @@ class DeepAgentsApp(App):
 
         active = self._auto_classifier_review_model_spec()
         if active is None:
-            active_line = "Auto currently reviews with the main agent model."
+            description = "Auto currently reviews with the main agent model."
         elif self._auto_classifier_display_spec() is None:
-            active_line = f"Auto currently reviews with {active}, the main agent model."
+            description = f"Auto currently reviews with {active}, the main agent model."
         else:
-            active_line = f"Auto currently reviews with {active}."
+            description = f"Auto currently reviews with {active}."
 
         screen = ModelSelectorScreen(
             current_model=current_model,
@@ -19171,10 +19171,7 @@ class DeepAgentsApp(App):
             recommended_models=_AUTO_CLASSIFIER_RECOMMENDED_MODELS,
             include_recent_models=False,
             title="Choose the Auto classifier model",
-            description=Content(
-                "Recommended models favor lower latency and cost for repeated "
-                f"reviews.\n{active_line}"
-            ),
+            description=Content(description),
         )
         self.push_screen(screen, handle_result)
 

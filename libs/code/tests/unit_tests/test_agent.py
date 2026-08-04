@@ -4953,6 +4953,71 @@ class TestCreateCliAgentInterpreterWiring:
         )
         assert auto_middleware._configured_classifier_model is None
 
+    def test_auto_classifier_timeout_comes_from_the_resolver(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The middleware deadline is whatever the bounded resolver returned.
+
+        Asserting the manifest default here would be a tautology — the
+        middleware's own parameter default *is* that constant, so the assertion
+        would hold even if `create_cli_agent` stopped passing the keyword. A
+        sentinel that differs from the default pins the wiring itself.
+        """
+        from deepagents_code import config_manifest
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+        from deepagents_code.config_manifest import (
+            AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        )
+
+        sentinel = 7.5
+        assert sentinel != AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+        monkeypatch.setattr(
+            config_manifest,
+            "resolve_auto_classifier_timeout",
+            lambda **_kwargs: sentinel,
+        )
+
+        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert auto_middleware._classifier_timeout_seconds == pytest.approx(sentinel)
+
+    def test_auto_classifier_timeout_defaults_to_manifest_default(
+        self, tmp_path: Path
+    ) -> None:
+        """Nothing configured leaves the classifier on the default deadline."""
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+        from deepagents_code.config_manifest import (
+            AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        )
+
+        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert (
+            auto_middleware._classifier_timeout_seconds
+            == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+        )
+
+    def test_auto_classifier_timeout_reads_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A configured deadline reaches the Auto middleware."""
+        from deepagents_code._env_vars import AUTO_CLASSIFIER_TIMEOUT
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        monkeypatch.setenv(AUTO_CLASSIFIER_TIMEOUT, "45")
+        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert auto_middleware._classifier_timeout_seconds == pytest.approx(45.0)
+
     @pytest.mark.parametrize("auto_mode_enabled", [True, False])
     def test_single_hitl_slot_precedes_server_hooks(
         self,

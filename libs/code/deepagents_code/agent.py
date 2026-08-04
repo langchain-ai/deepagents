@@ -2856,6 +2856,7 @@ def create_cli_agent(
     if auto_mode_config is not None and resolved_interrupt_on is not None:
         from deepagents_code.auto_mode import AutoModeHITLMiddleware
         from deepagents_code.config import resolve_auto_classifier_model
+        from deepagents_code.config_manifest import resolve_auto_classifier_timeout
 
         trusted_root, narrow_allow_list = auto_mode_config
         # An explicit argument wins; otherwise the env var / `config.toml`
@@ -2872,6 +2873,7 @@ def create_cli_agent(
                 worktree_root=trusted_root,
                 shell_allow_list=narrow_allow_list,
                 classifier_model=classifier_model,
+                classifier_timeout_seconds=resolve_auto_classifier_timeout(),
                 trusted_ask_user_tool=trusted_ask_user_tool,
                 trusted_compaction_tool=compaction_middleware.tools[0],
             )

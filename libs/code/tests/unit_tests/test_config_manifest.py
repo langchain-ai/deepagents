@@ -2604,6 +2604,125 @@ def test_provider_dependency_metadata_is_exhaustive() -> None:
     )
 
 
+# --- Auto classifier timeout -----------------------------------------------
+
+
+def test_auto_classifier_timeout_option_metadata() -> None:
+    """The classifier-timeout option exposes the env/TOML override surface."""
+    opt = get_option("models.auto_classifier_timeout")
+    assert opt is not None
+    assert opt.kind is OptionKind.FLOAT
+    assert opt.env_var == _env_vars.AUTO_CLASSIFIER_TIMEOUT
+    assert opt.toml_keys == ("models", "auto_classifier_timeout")
+    assert "models.auto_classifier_timeout" in option_keys()
+
+
+def test_auto_classifier_timeout_default_matches_middleware_default() -> None:
+    """The middleware constant and the manifest default stay single-sourced."""
+    from deepagents_code.auto_mode import _CLASSIFIER_TIMEOUT_SECONDS
+    from deepagents_code.config_manifest import (
+        AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        resolve_auto_classifier_timeout,
+    )
+
+    assert _CLASSIFIER_TIMEOUT_SECONDS == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+    assert (
+        resolve_auto_classifier_timeout(toml_data={})
+        == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+    )
+
+
+def test_resolve_auto_classifier_timeout_env_wins(monkeypatch) -> None:
+    """A valid env var overrides both TOML and the default."""
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "45")
+    resolved = resolve_auto_classifier_timeout(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert resolved == pytest.approx(45.0)
+
+
+def test_resolve_auto_classifier_timeout_toml_when_env_unset(monkeypatch) -> None:
+    """`config.toml` is used when no env var is set, including bare integers."""
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
+    resolved = resolve_auto_classifier_timeout(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert resolved == pytest.approx(30.0)
+
+
+@pytest.mark.parametrize(
+    "raw", ["0", "-5", "0.5", "100000", "inf", "-inf", "nan", "soon"]
+)
+def test_resolve_auto_classifier_timeout_out_of_range_falls_back(
+    monkeypatch, raw
+) -> None:
+    """Non-positive, unbounded, non-finite, or malformed values fall back."""
+    from deepagents_code.config_manifest import (
+        AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        resolve_auto_classifier_timeout,
+    )
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raw)
+    assert (
+        resolve_auto_classifier_timeout(toml_data={})
+        == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+    )
+
+
+def test_resolve_auto_classifier_timeout_invalid_env_falls_through_to_toml(
+    monkeypatch,
+) -> None:
+    """An out-of-range env value does not mask a valid TOML override."""
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
+    resolved = resolve_auto_classifier_timeout(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert resolved == pytest.approx(30.0)
+
+
+def test_resolve_auto_classifier_timeout_invalid_env_leaves_env_intact(
+    monkeypatch,
+) -> None:
+    """Fall-through resolution must restore the rejected env var afterward."""
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
+    resolve_auto_classifier_timeout(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert os.environ[_env_vars.AUTO_CLASSIFIER_TIMEOUT] == "0"
+
+
+def test_resolve_auto_classifier_timeout_accepts_floor_and_ceiling(
+    monkeypatch,
+) -> None:
+    """The inclusive floor and ceiling are accepted verbatim."""
+    from deepagents_code.config_manifest import (
+        AUTO_CLASSIFIER_TIMEOUT_CEILING,
+        AUTO_CLASSIFIER_TIMEOUT_FLOOR,
+        resolve_auto_classifier_timeout,
+    )
+
+    monkeypatch.setenv(
+        _env_vars.AUTO_CLASSIFIER_TIMEOUT, str(AUTO_CLASSIFIER_TIMEOUT_FLOOR)
+    )
+    assert (
+        resolve_auto_classifier_timeout(toml_data={}) == AUTO_CLASSIFIER_TIMEOUT_FLOOR
+    )
+    monkeypatch.setenv(
+        _env_vars.AUTO_CLASSIFIER_TIMEOUT, str(AUTO_CLASSIFIER_TIMEOUT_CEILING)
+    )
+    assert (
+        resolve_auto_classifier_timeout(toml_data={}) == AUTO_CLASSIFIER_TIMEOUT_CEILING
+    )
+
+
 # --- Recursion limit -------------------------------------------------------
 
 

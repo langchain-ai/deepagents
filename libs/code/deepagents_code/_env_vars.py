@@ -49,6 +49,20 @@ model. Only the shell, the launch environment, or the global `~/.deepagents/.env
 can.
 """
 
+AUTO_CLASSIFIER_TIMEOUT = "DEEPAGENTS_CODE_AUTO_CLASSIFIER_TIMEOUT"
+"""Seconds the Auto approval-mode classifier may take to review one batch.
+
+Raise this when reviews time out on a slow or heavily loaded classifier model:
+a batch that misses the deadline is denied as `classifier_unavailable`, so the
+tool call does not run and repeated misses escalate to your approval. Values
+outside the accepted range are ignored in favor of the next config source, so
+the deadline can never be removed. Also settable via
+`[models].auto_classifier_timeout` in config.toml.
+
+Like `AUTO_CLASSIFIER_MODEL`, a committed *project* `.env` cannot set it (see
+`config._PROJECT_DOTENV_DENIED_ENV_KEYS`).
+"""
+
 AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
 """Toggle automatic app updates. Enabled by default; set to a falsy value
 ('0', 'false', 'no', 'off', or empty) to opt out."""

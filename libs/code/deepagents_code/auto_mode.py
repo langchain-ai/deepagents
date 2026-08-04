@@ -64,6 +64,7 @@ from deepagents_code.approval_mode import (
     aread_approval_mode_from_store,
     coerce_approval_mode,
 )
+from deepagents_code.config_manifest import AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
 from deepagents_code.goal_state_notice import project_goal_state
 
 if TYPE_CHECKING:
@@ -78,7 +79,7 @@ AUTO_MODE_COUNTERS_NAMESPACE: tuple[str, str] = (
 )
 USER_PROMPT_METADATA_KEY = "deepagents_code_user_prompt"
 AUTO_MODE_EVENT_TYPE = "auto_mode"
-_CLASSIFIER_TIMEOUT_SECONDS = 20.0
+_CLASSIFIER_TIMEOUT_SECONDS = AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
 # Building a classifier is a different kind of wait than asking one for a
 # verdict: a cold provider-package import, profile resolution, and credential
 # bootstrap all land on the first review. Sharing one budget made that first

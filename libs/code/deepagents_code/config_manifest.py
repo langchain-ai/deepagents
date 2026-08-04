@@ -31,6 +31,7 @@ prefix resolution) is imported lazily inside functions.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass
 from enum import Enum
@@ -57,6 +58,30 @@ INTERPRETER_MAX_PTC_CALLS_DEFAULT = 256
 INTERPRETER_MAX_RESULT_CHARS_DEFAULT = 4000
 INTERPRETER_PTC_DEFAULT: str | bool | list[str] = "safe"
 INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
+
+AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT = 20.0
+"""Default wall-clock budget for one Auto classifier decision batch.
+
+Single source of truth shared by the `models.auto_classifier_timeout` option,
+`auto_mode._CLASSIFIER_TIMEOUT_SECONDS`, and `resolve_auto_classifier_timeout`.
+"""
+
+AUTO_CLASSIFIER_TIMEOUT_FLOOR = 1.0
+"""Smallest accepted Auto classifier timeout.
+
+Below roughly a second no real provider round trip completes, so every gated
+batch would be denied as `classifier_unavailable`. A resolved value under the
+floor is rejected and falls through to the next layer / default.
+"""
+
+AUTO_CLASSIFIER_TIMEOUT_CEILING = 300.0
+"""Largest accepted Auto classifier timeout.
+
+The deadline is what stops a stalled classifier from hanging every gated tool
+call indefinitely, so it stays bounded: a mistyped or hostile override cannot
+effectively remove it. A resolved value above the ceiling is rejected and falls
+through to the next layer / default.
+"""
 
 RECURSION_LIMIT_DEFAULT = 2000
 """Default LangGraph `recursion_limit` for the main agent.
@@ -724,6 +749,76 @@ def resolve_interpreter_kwargs(
     return resolved
 
 
+def _is_valid_auto_classifier_timeout(value: object) -> bool:
+    """Return whether `value` is an accepted Auto classifier timeout."""
+    return (
+        isinstance(value, float)
+        and math.isfinite(value)
+        and AUTO_CLASSIFIER_TIMEOUT_FLOOR <= value <= AUTO_CLASSIFIER_TIMEOUT_CEILING
+    )
+
+
+def resolve_auto_classifier_timeout(
+    *, toml_data: dict[str, Any] | None = None
+) -> float:
+    """Resolve the wall-clock budget for one Auto classifier decision batch.
+
+    Resolves `models.auto_classifier_timeout` through the standard env →
+    `config.toml` → default precedence. An out-of-range value (below
+    `AUTO_CLASSIFIER_TIMEOUT_FLOOR` or above `AUTO_CLASSIFIER_TIMEOUT_CEILING`)
+    is discarded with a logged warning and the next lower-precedence layer is
+    tried, so a bad higher-precedence override cannot mask a valid TOML setting
+    (or the default) and can never remove the deadline that keeps a stalled
+    classifier from hanging every gated tool call.
+
+    Args:
+        toml_data: Parsed `config.toml`; loaded automatically when omitted.
+
+    Returns:
+        The resolved timeout in seconds, guaranteed within
+            `[AUTO_CLASSIFIER_TIMEOUT_FLOOR, AUTO_CLASSIFIER_TIMEOUT_CEILING]`.
+    """
+    data = load_config_toml() if toml_data is None else toml_data
+    option = get_option("models.auto_classifier_timeout")
+    if option is None:
+        return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+
+    value, source = resolve_scalar(option, toml_data=data)
+    if _is_valid_auto_classifier_timeout(value):
+        return value
+
+    # Invalid higher-precedence values must fall through instead of jumping
+    # straight to the default, mirroring `resolve_recursion_limit`.
+    if source.startswith("env (") and source.endswith(")"):
+        env_name = source[len("env (") : -1]
+        logger.warning(
+            "Ignoring %s auto_classifier_timeout %r (expected seconds in "
+            "[%g, %g]); falling through to the next config source",
+            source,
+            value,
+            AUTO_CLASSIFIER_TIMEOUT_FLOOR,
+            AUTO_CLASSIFIER_TIMEOUT_CEILING,
+        )
+        previous = os.environ.pop(env_name, None)
+        try:
+            return resolve_auto_classifier_timeout(toml_data=data)
+        finally:
+            if previous is not None:
+                os.environ[env_name] = previous
+
+    if source != "default":
+        logger.warning(
+            "Ignoring %s auto_classifier_timeout %r (expected seconds in "
+            "[%g, %g]); using %g",
+            source,
+            value,
+            AUTO_CLASSIFIER_TIMEOUT_FLOOR,
+            AUTO_CLASSIFIER_TIMEOUT_CEILING,
+            AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        )
+    return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+
+
 def _is_valid_recursion_limit(value: object) -> bool:
     """Return whether `value` is an accepted main-agent `recursion_limit`."""
     return (
@@ -1127,6 +1222,18 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.AUTO_CLASSIFIER_MODEL,
         toml_keys=("models", "auto_classifier"),
         cli_flag="--auto-classifier-model",
+    ),
+    ConfigOption(
+        key="models.auto_classifier_timeout",
+        group="Models",
+        summary=(
+            "Seconds the Auto approval classifier may take to review one batch; "
+            "a batch that misses the deadline is denied."
+        ),
+        kind=OptionKind.FLOAT,
+        default=AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        env_var=_env_vars.AUTO_CLASSIFIER_TIMEOUT,
+        toml_keys=("models", "auto_classifier_timeout"),
     ),
     # --- Tracing -------------------------------------------------------
     ConfigOption(

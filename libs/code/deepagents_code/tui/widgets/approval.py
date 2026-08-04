@@ -42,8 +42,6 @@ _SHELL_COMMAND_TRUNCATE_LENGTH: int = 120
 _SHELL_COMMAND_TRUNCATE_LINES: int = 5
 _WARNING_PREVIEW_LIMIT: int = 3
 _WARNING_TEXT_TRUNCATE_LENGTH: int = 220
-# Must match the "reject" entry in `_handle_selection`'s decision map.
-_REJECT_OPTION_INDEX: int = 2
 
 
 def _is_command_too_long(command: str) -> bool:
@@ -109,14 +107,14 @@ class ApprovalMenu(Container):
         Binding("down", "move_down", "Down", show=False),
         Binding("j", "move_down", "Down", show=False),
         Binding("enter", "select", "Select", show=False),
-        Binding("1", "select_approve", "Approve", show=False),
+        Binding("1", "select_position(0)", "Select first", show=False),
+        Binding("2", "select_position(1)", "Select second", show=False),
+        Binding("3", "select_position(2)", "Select third", show=False),
         Binding("y", "select_approve", "Approve", show=False),
-        Binding("2", "select_auto", "Auto-approve", show=False),
         Binding("a", "select_auto", "Auto-approve", show=False),
-        Binding("3", "select_reject", "Reject", show=False),
         Binding("n", "select_reject", "Reject", show=False),
         Binding("e", "toggle_expand", "Expand command", show=False),
-        Binding("tab", "reject_with_reason", "Reject with reason", show=False),
+        Binding("tab", "reject_with_reason", "Reject with feedback", show=False),
     ]
 
     class Decided(Message):
@@ -140,6 +138,8 @@ class ApprovalMenu(Container):
         action_requests: list[dict[str, Any]] | dict[str, Any],
         assistant_id: str | None = None,
         id: str | None = None,  # noqa: A002  # Textual widget constructor uses `id` parameter
+        *,
+        auto_mode_eligible: bool = True,
         **kwargs: Any,
     ) -> None:
         """Initialize the ApprovalMenu widget.
@@ -151,6 +151,9 @@ class ApprovalMenu(Container):
             assistant_id: Optional assistant ID for resolving virtual paths in
                 file-operation previews.
             id: Optional widget ID. Defaults to 'approval-menu'.
+            auto_mode_eligible: Whether Auto mode can be enabled in this session.
+                When `False` (e.g. a sandbox is active), the "Enable Auto for this
+                thread" option is not offered.
             **kwargs: Additional keyword arguments passed to the Container base class.
         """
         super().__init__(id=id or "approval-menu", classes="approval-menu", **kwargs)
@@ -163,6 +166,21 @@ class ApprovalMenu(Container):
         self._assistant_id = assistant_id
         # For display purposes, get tool names
         self._tool_names = [r.get("name", "unknown") for r in self._action_requests]
+        self._is_auto_fallback = any(
+            isinstance(request.get("description"), str)
+            and request["description"].startswith("Auto human fallback ")
+            for request in self._action_requests
+        )
+        # Only offer the Auto option when it can actually be enabled. A live
+        # Auto fallback implies Auto is already active, so its "Switch to
+        # Manual" affordance is always shown regardless of eligibility.
+        self._show_auto_option = self._is_auto_fallback or auto_mode_eligible
+        # Built once: every input to `_build_options` is fixed for the widget's
+        # lifetime, so caching keeps `_num_options`/`_reject_index` from ever
+        # disagreeing with the option list they describe.
+        self._options = self._build_options()
+        self._num_options = len(self._options)
+        self._reject_index = self._num_options - 1
         self._selected = 0
         self._future: asyncio.Future[dict[str, str]] | None = None
         self._option_widgets: list[Static] = []
@@ -307,8 +325,8 @@ class ApprovalMenu(Container):
 
         # Options container at bottom
         with Container(classes="approval-options-container"):
-            # Options - create 3 Static widgets
-            for i in range(3):  # noqa: B007  # Loop variable unused - iterating for count only
+            # Options - one Static widget per visible option
+            for i in range(self._num_options):  # noqa: B007  # Loop variable unused - iterating for count only
                 widget = Static("", classes="approval-option")
                 self._option_widgets.append(widget)
                 yield widget
@@ -318,6 +336,10 @@ class ApprovalMenu(Container):
             placeholder="Reason (Enter to submit, Esc to cancel)",
             classes="approval-reason-input",
             id="approval-reason-input",
+            # Textual selects all on focus by default, which would make the next
+            # keystroke replace the reason instead of extending it whenever
+            # `on_focus` hands focus back after it drifted to the menu.
+            select_on_focus=False,
         )
         self._reason_input.display = False
         yield self._reason_input
@@ -338,15 +360,19 @@ class ApprovalMenu(Container):
                 f"Enter submit {glyphs.bullet} Esc cancel {glyphs.bullet} "
                 "leave blank to reject without a reason"
             )
+        quick_keys = "y/a/n" if self._show_auto_option else "y/n"
+        # The Tab hint shows from every option, not just Reject: the quick keys
+        # are the fast path, so a hint gated on the Reject row stays invisible to
+        # the users most likely to want it. `Tab` moves the cursor to Reject
+        # itself, so the hint is live wherever it is read.
         help_parts = [
             (
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate "
-                f"{glyphs.bullet} Enter select {glyphs.bullet} y/a/n quick keys"
+                f"{glyphs.bullet} Enter select {glyphs.bullet} {quick_keys} quick keys"
             ),
+            "Tab reject with feedback",
+            "Esc reject",
         ]
-        if self._selected == _REJECT_OPTION_INDEX:
-            help_parts.append("Tab amend")
-        help_parts.append("Esc reject")
         help_text = f" {glyphs.bullet} ".join(help_parts)
         if self._has_expandable_command:
             help_text += f" {glyphs.bullet} e expand"
@@ -404,27 +430,35 @@ class ApprovalMenu(Container):
             approval_widget = widget_class(data)
             await self._tool_info_container.mount(approval_widget)
 
+    def _build_options(self) -> list[tuple[str, str]]:
+        """Build the visible options as `(label, decision_type)` pairs.
+
+        The Auto option is omitted unless Auto can actually be enabled
+        (`_show_auto_option`), so it is never suggested outside the local TUI.
+        Labels are unnumbered; `_update_options` prefixes the display number.
+
+        Returns:
+            Ordered `(label, decision_type)` pairs for the visible options.
+        """
+        count = len(self._action_requests)
+        approve = "Approve (y)" if count == 1 else f"Approve all {count} (y)"
+        reject = "Reject (n)" if count == 1 else f"Reject all {count} (n)"
+        options: list[tuple[str, str]] = [(approve, "approve")]
+        if self._show_auto_option:
+            if self._is_auto_fallback:
+                options.append(("Switch to Manual (a)", "switch_manual"))
+            else:
+                options.append(("Enable Auto for this thread (a)", "auto_approve_all"))
+        options.append((reject, "reject"))
+        return options
+
     def _update_options(self) -> None:
         """Update option widgets based on selection."""
-        count = len(self._action_requests)
-        if count == 1:
-            options = [
-                "1. Approve (y)",
-                "2. Auto-approve for this thread (a)",
-                "3. Reject (n)",
-            ]
-        else:
-            options = [
-                f"1. Approve all {count} (y)",
-                "2. Auto-approve for this thread (a)",
-                f"3. Reject all {count} (n)",
-            ]
-
-        for i, (text, widget) in enumerate(
-            zip(options, self._option_widgets, strict=True)
+        for i, ((text, _decision), widget) in enumerate(
+            zip(self._options, self._option_widgets, strict=True)
         ):
             cursor = f"{get_glyphs().cursor} " if i == self._selected else "  "
-            widget.update(f"{cursor}{text}")
+            widget.update(f"{cursor}{i + 1}. {text}")
 
             # Update classes
             widget.remove_class("approval-option-selected")
@@ -437,26 +471,58 @@ class ApprovalMenu(Container):
         """Move selection up."""
         if self._reason_input_active:
             return
-        self._selected = (self._selected - 1) % 3
+        self._selected = (self._selected - 1) % self._num_options
         self._update_options()
 
     def action_move_down(self) -> None:
         """Move selection down."""
         if self._reason_input_active:
             return
-        self._selected = (self._selected + 1) % 3
+        self._selected = (self._selected + 1) % self._num_options
         self._update_options()
 
     def action_select(self) -> None:
-        """Select current option."""
+        """Select the current option, or submit an open reason field.
+
+        While the reason field is open the footer reads `Enter submit`, so an
+        Enter that reaches the menu instead of the `Input` submits the typed
+        reason rather than falling through to a reason-less reject that would
+        discard it.
+        """
+        if self._reason_input_active and self._reason_input is not None:
+            self._submit_reason(self._reason_input.value)
+            return
         self._handle_selection(self._selected)
+
+    def action_select_position(self, position: int) -> None:
+        """Submit the option at a display position (0-indexed).
+
+        Backs the numeric quick keys, which map key `1`/`2`/`3` to position
+        `0`/`1`/`2`. Positions outside the visible options are ignored, so
+        when the Auto option is hidden (only positions 0-1 exist) the `3` key
+        (position 2) is a no-op and key `2` (position 1) selects Reject rather
+        than Auto.
+
+        Args:
+            position: Zero-based index of the visible option to submit.
+        """
+        if not 0 <= position < self._num_options:
+            return
+        self._handle_selection(position)
 
     def action_select_approve(self) -> None:
         """Submit approve option."""
         self._handle_selection(0)
 
     def action_select_auto(self) -> None:
-        """Submit auto-approve option."""
+        """Submit the middle option (Auto, or Switch to Manual in a fallback).
+
+        No-op when the option is hidden, since Auto cannot be enabled. When
+        shown it is always the second option (index 1): "Enable Auto" normally,
+        or "Switch to Manual" during a live Auto fallback.
+        """
+        if not self._show_auto_option:
+            return
         self._handle_selection(1)
 
     def action_select_reject(self) -> None:
@@ -469,7 +535,7 @@ class ApprovalMenu(Container):
         if self._reason_input_active:
             self._exit_reason_input_mode()
             return
-        self._handle_selection(2)
+        self._handle_selection(self._reject_index)
 
     def action_toggle_expand(self) -> None:
         """Toggle shell command expansion."""
@@ -486,17 +552,31 @@ class ApprovalMenu(Container):
         """Handle the selected option.
 
         Args:
-            option: Index of the chosen option (0 approve, 1 auto-approve, 2 reject).
-            reject_message: Optional free-text reason. Only attached when the
-                user rejects with a non-empty message via `action_reject_with_reason`.
+            option: Index of the chosen visible option. Maps to a decision type
+                via the current option layout (which omits Auto when hidden).
+            reject_message: Optional free-text reason. Only attached when a
+                non-empty reason is submitted via `on_input_submitted` (the
+                free-text reject flow opened by `action_reject_with_reason`).
         """
-        decision_map = {
-            0: "approve",
-            1: "auto_approve_all",
-            2: "reject",
-        }
-        decision: dict[str, str] = {"type": decision_map[option]}
-        if option == _REJECT_OPTION_INDEX and reject_message:
+        # Every quick key and Enter path resolves the approval through here, and
+        # the reason-submit callers all clear `_reason_input_active` before
+        # calling. So reaching this with the flag still set means a key was read
+        # as a menu command while the reason field was open and holding the
+        # user's half-typed rejection - letting it through would resolve (and for
+        # `y`/`a`/`1` *approve*) the very call being rejected. `on_focus` keeps
+        # the field focused so this should be unreachable; guard anyway, since
+        # focus is deferred and `Widget.focus()` swallows `NoScreen`.
+        if self._reason_input_active:
+            logger.warning(
+                "option %d reached _handle_selection while the reject reason "
+                "input was active; ignoring (focus desync)",
+                option,
+            )
+            return
+
+        decision_type = self._options[option][1]
+        decision: dict[str, str] = {"type": decision_type}
+        if decision_type == "reject" and reject_message:
             decision["message"] = reject_message
 
         self.display = False
@@ -509,34 +589,67 @@ class ApprovalMenu(Container):
         self.post_message(self.Decided(decision))
 
     def action_reject_with_reason(self) -> None:
-        """Enter free-text reject mode if Reject is currently selected.
+        """Enter free-text reject mode from any option.
 
-        No-op unless the cursor is on the Reject option. Mounts an inline
-        `Input` whose value is sent as `RejectDecision.message` on submit.
+        Moves the cursor to Reject first, so the highlighted option always
+        matches the decision the input will submit; it can only ever produce a
+        reject, never an approval. Reveals the inline `Input` composed (hidden)
+        by `compose()` and focuses it; its value is emitted verbatim on submit,
+        leaving any model-facing framing to the caller.
+
+        Note:
+            `_frame_reject_reason` in `deepagents_code.tui.textual_adapter`
+            prefixes the raw text before it becomes `RejectDecision.message`.
         """
         if self._reason_input_active:
-            return
-        if self._selected != _REJECT_OPTION_INDEX:
+            # Tab is advertised unconditionally, so a second press must not wipe
+            # a reason already being typed - hence returning before the
+            # `value = ""` reset below rather than re-entering the field.
             return
         if self._reason_input is None:
             # Lifecycle bug: Tab fired before `compose()` populated the Input ref.
             # Logging makes the silent no-op debuggable instead of invisible.
+            # Doubles as the guard for `_update_options`'s `strict=True` zip:
+            # `compose()` fills `_option_widgets` before assigning
+            # `_reason_input`, so a non-None ref implies the widget list exists.
+            # Keep that order if these yields are ever rearranged.
             logger.warning(
                 "action_reject_with_reason: _reason_input is None; menu may not "
                 "be mounted yet"
             )
             return
         self._reason_input_active = True
+        self._selected = self._reject_index
         self._reason_input.value = ""
         self._reason_input.display = True
-        if self._help_widget is not None:
-            self._help_widget.update(self._compose_help_text())
+        self._update_options()
         self._reason_input.focus()
 
+    def _submit_reason(self, raw_reason: str) -> None:
+        """Submit a reject carrying the typed reason.
+
+        Clears `_reason_input_active` before deciding, both so `on_focus` stops
+        bouncing focus into the field and so `_handle_selection`'s desync guard
+        recognizes this as the one legitimate caller during reason mode.
+
+        Args:
+            raw_reason: Unstripped reason field contents. Whitespace-only text
+                submits a bare reject, matching a blank field.
+        """
+        reason = raw_reason.strip()
+        self._reason_input_active = False
+        self._handle_selection(self._reject_index, reject_message=reason or None)
+
     def _exit_reason_input_mode(self) -> None:
-        """Close the reason input and return focus to the menu without deciding."""
+        """Close the reason input and return focus to the menu without deciding.
+
+        Backs the Esc/`n` cancel path, so it must leave the user on the menu.
+        """
         if not self._reason_input_active or self._reason_input is None:
             return
+        # Order matters: clearing the flag before `self.focus()` is what stops
+        # `on_focus` bouncing focus straight back into the field being closed.
+        # Reversing these two would trap the user in a cancelled reason field.
         self._reason_input_active = False
         self._reason_input.display = False
         if self._help_widget is not None:
@@ -556,9 +669,7 @@ class ApprovalMenu(Container):
                 "on_input_submitted fired with inactive reason input; dropping"
             )
             return
-        reason = event.value.strip()
-        self._reason_input_active = False
-        self._handle_selection(2, reject_message=reason or None)
+        self._submit_reason(event.value)
 
     def _collect_security_warnings(self) -> list[str]:
         """Collect warning strings for suspicious Unicode and URL values.
@@ -600,3 +711,20 @@ class ApprovalMenu(Container):
         if self._reason_input_active:
             return
         self.call_after_refresh(self.focus)
+
+    def on_focus(self, event: events.Focus) -> None:  # noqa: ARG002  # Textual event handler signature
+        """Hand focus to the reason input while it is open.
+
+        `on_blur` deliberately stops re-trapping focus during reason mode so the
+        `Input` can hold it, which leaves the reverse direction unhandled: a
+        click on the menu body focuses the menu and strands an open reason field,
+        where quick keys read as menu commands instead of text. Bouncing focus
+        back keeps "field open" and "field focused" the same state.
+
+        Cannot ping-pong: this focuses the `Input`, whose gain of focus blurs the
+        menu, and `on_blur` above returns early during reason mode. Nor does it
+        trap the user - `_exit_reason_input_mode` clears the flag before moving
+        focus, so a cancelled field is not re-entered.
+        """
+        if self._reason_input_active and self._reason_input is not None:
+            self.call_after_refresh(self._reason_input.focus)

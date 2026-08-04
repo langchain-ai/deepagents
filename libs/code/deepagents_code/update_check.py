@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 import tomllib
+import uuid
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
@@ -348,6 +349,26 @@ def get_last_update_check_time() -> float | None:
     return _coerce_checked_at(checked_at)
 
 
+def is_update_cache_fresh(checked_at: float | None) -> bool:
+    """Return whether a recorded check stamp is still within `CACHE_TTL`.
+
+    Lets status surfaces tell "the cache expired" apart from "the cache is
+    current but holds no usable answer for this install" — states that
+    `get_cached_update_available` collapses into the same `(False, None)`
+    result. Takes the stamp instead of reading it so a caller that already
+    called `get_last_update_check_time` does not read `CACHE_FILE` twice and
+    risk straddling a concurrent refresh.
+
+    Args:
+        checked_at: Epoch time of the last recorded check, as returned by
+            `get_last_update_check_time`.
+
+    Returns:
+        `True` when `checked_at` is set and younger than `CACHE_TTL`.
+    """
+    return checked_at is not None and time.time() - checked_at < CACHE_TTL
+
+
 def _canonical_prerelease_pin(raw: object) -> str | None:
     """Return the canonical targeted pre-release pin for `raw`, or `None`.
 
@@ -497,6 +518,34 @@ def _write_release_prerelease_pins(version: str, pins: Sequence[str]) -> None:
         )
 
 
+def _pypi_request_kwargs(*, bypass_cache: bool) -> dict[str, Any]:
+    """Build `requests.get` keyword arguments for a PyPI metadata request.
+
+    PyPI's JSON API is served through a CDN (Fastly). Bypassing only the local
+    on-disk cache is not enough immediately after a release: an edge node can
+    keep serving a stale copy for a few seconds until the purge propagates, so
+    a forced check may still report "already on the latest version" until a
+    retry. When `bypass_cache` is set, send no-cache request headers and a
+    unique cache-busting query parameter so the CDN cache key misses and the
+    response is fetched fresh from origin.
+
+    Args:
+        bypass_cache: When `True`, defeat CDN edge caching as well as the local
+            cache.
+
+    Returns:
+        Keyword arguments to pass to `requests.get`. Callers still pass
+        `timeout` explicitly so the timeout lint rule can see it.
+    """
+    headers = {"User-Agent": USER_AGENT}
+    kwargs: dict[str, Any] = {"headers": headers}
+    if bypass_cache:
+        headers["Cache-Control"] = "no-cache"
+        headers["Pragma"] = "no-cache"
+        kwargs["params"] = {"_": uuid.uuid4().hex}
+    return kwargs
+
+
 def get_latest_version(
     *,
     bypass_cache: bool = False,
@@ -548,8 +597,8 @@ def get_latest_version(
     try:
         resp = requests.get(
             PYPI_URL,
-            headers={"User-Agent": USER_AGENT},
             timeout=3,
+            **_pypi_request_kwargs(bypass_cache=bypass_cache),
         )
         resp.raise_for_status()
         payload = resp.json()
@@ -690,8 +739,8 @@ def release_prerelease_pins(
         url = f"{PYPI_URL.removesuffix('/json')}/{version}/json"
         resp = requests.get(
             url,
-            headers={"User-Agent": USER_AGENT},
             timeout=3,
+            **_pypi_request_kwargs(bypass_cache=bypass_cache),
         )
         resp.raise_for_status()
         payload = resp.json()
@@ -955,8 +1004,8 @@ def get_sdk_release_time(
     try:
         resp = requests.get(
             SDK_PYPI_URL,
-            headers={"User-Agent": USER_AGENT},
             timeout=3,
+            **_pypi_request_kwargs(bypass_cache=bypass_cache),
         )
         resp.raise_for_status()
         payload = resp.json()
@@ -2438,7 +2487,9 @@ def _uv_tool_with_packages(
             raise ToolRequirementIntrospectionError(msg)
         if canonicalize_name(name) == main:
             continue
-        unsupported_keys = sorted(set(entry) - {"name"})
+        unsupported_keys = sorted(
+            str(key) for key in entry if not isinstance(key, str) or key != "name"
+        )
         if unsupported_keys:
             msg = (
                 f"uv tool receipt requirement {name!r} cannot be preserved "
@@ -2954,6 +3005,30 @@ def install_extra_recovery_command(extra: str) -> str:
     return install_extra_command(extra)
 
 
+def safe_install_extra_recovery_command(extra: str, *, fallback: str) -> str:
+    """Return a manual recovery command, never raising.
+
+    Wraps `install_extra_recovery_command` so recovery-hint call sites never
+    let a second failure (validation, uv-receipt introspection, or unexpected
+    metadata errors) replace the original install/user error. On any failure
+    it logs and returns `fallback` so the hint is never empty.
+
+    Args:
+        extra: Extra name to add.
+        fallback: Command to return when the recovery command cannot be derived.
+
+    Returns:
+        The recovery command, or `fallback` when it could not be determined.
+    """
+    try:
+        return install_extra_recovery_command(extra)
+    except Exception:  # best-effort hint; never re-raise over the original error
+        logger.warning(
+            "install_extra_recovery_command failed; using fallback", exc_info=True
+        )
+        return fallback
+
+
 def _install_extra_uv_tool_command(
     extra: str,
     *,
@@ -3313,6 +3388,9 @@ def _read_update_config_strict() -> dict[str, bool]:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise _ConfigReadError from exc
     section = data.get("update", {})
+    if not isinstance(section, dict):
+        msg = "[update] config must be a table"
+        raise _ConfigReadError(msg)
     return {k: v for k, v in section.items() if isinstance(v, bool)}
 
 

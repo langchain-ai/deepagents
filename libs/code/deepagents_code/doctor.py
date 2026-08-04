@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     import argparse
 
     from deepagents_code.config import TracingStatus
+    from deepagents_code.extras_info import VersionReport
 
 logger = logging.getLogger(__name__)
 
@@ -59,22 +60,26 @@ def _platform_tag() -> str:
     return f"{platform.system()}-{platform.machine()}".lower()
 
 
-def _sdk_version() -> tuple[str, bool]:
-    """Return the installed `deepagents` SDK version and whether it resolved.
+def _sdk_diagnostic(report: VersionReport) -> tuple[str, bool]:
+    """Return the doctor SDK version value and whether it is healthy.
 
-    Maps the shared `resolve_sdk_version` outcome onto doctor's display: a
-    genuinely missing package reads as `not installed`, an unexpected lookup
-    failure as `unknown`, and only a resolved version is marked healthy.
+    A genuinely missing package reads as `not installed`, an unexpected lookup
+    failure as `unknown`, and a resolved version carries its editable/drift/
+    mismatch annotation. A dependency-requirement mismatch or invalid editable
+    source marker is unhealthy; drift between valid source and installed
+    metadata alone is informational, since it is normal while editing SDK source.
     """
-    from deepagents_code.extras_info import resolve_sdk_version
+    from deepagents_code.extras_info import format_sdk_version_annotation
 
-    sdk_version, status = resolve_sdk_version()
-    if status == "resolved":
-        # `sdk_version` is a real string when the status is "resolved".
-        return sdk_version or "unknown", True
-    if status == "not_installed":
+    sdk = report.sdk
+    if sdk.status == "not_installed":
         return "not installed", False
-    return "unknown", False
+    if sdk.status != "resolved":
+        return "unknown", False
+    value = f"{report.display_sdk_version}{format_sdk_version_annotation(report)}"
+    return value, not (
+        report.sdk_requirement_mismatch or report.sdk_source_version_invalid
+    )
 
 
 def _build_commit() -> str | None:
@@ -157,9 +162,21 @@ def _collect_diagnostics() -> DiagnosticSection:
         _get_editable_install_path,
         _is_editable_install,
     )
+    from deepagents_code.extras_info import (
+        collect_version_report,
+        format_cli_version_annotation,
+    )
     from deepagents_code.update_check import detect_install_method
 
-    sdk_version, sdk_ok = _sdk_version()
+    report = collect_version_report()
+    sdk_version, sdk_ok = _sdk_diagnostic(report)
+
+    # Source/metadata drift is informational (normal while editing source), so
+    # it annotates the value without flagging the CLI item unhealthy. Reuse the
+    # shared annotation helper so the phrasing stays in lockstep with
+    # `--version`/`/version` (editable status is shown via `Install method`).
+    cli_value = f"{__version__}{format_cli_version_annotation(report.cli)}"
+
     editable = _is_editable_install()
     if editable:
         method = "editable"
@@ -171,7 +188,7 @@ def _collect_diagnostics() -> DiagnosticSection:
     return DiagnosticSection(
         title="Diagnostics",
         items=[
-            DiagnosticItem("deepagents-code", __version__),
+            DiagnosticItem("deepagents-code", cli_value),
             DiagnosticItem("deepagents (SDK)", sdk_version, ok=sdk_ok),
             DiagnosticItem("Commit hash", _commit_hash(path)),
             DiagnosticItem("Python", platform.python_version()),
@@ -185,62 +202,122 @@ def _collect_diagnostics() -> DiagnosticSection:
 def _collect_updates() -> DiagnosticSection:
     """Collect update-channel status from local config and the offline cache.
 
+    The same four rows always render, so two `doctor` outputs stay
+    line-comparable and the `--json` item labels are stable; `Update checks` and
+    `Auto-updates` therefore report configuration as configured, even when this
+    install never acts on it. The `Latest version` row carries the reason no
+    cached answer is available, which is what makes it consistent with the
+    `Last checked` stamp below it.
+
     Returns:
         The `Updates` section.
     """
     from deepagents_code.config import _is_editable_install
     from deepagents_code.update_check import (
         get_cached_update_available,
+        get_last_update_check_time,
         is_auto_update_enabled,
         is_update_check_enabled,
     )
 
-    items = [
-        DiagnosticItem(
-            "Update checks",
-            "enabled" if is_update_check_enabled() else "disabled",
-        ),
-    ]
-    if _is_editable_install():
-        items.append(DiagnosticItem("Auto-updates", "disabled (editable install)"))
+    editable = _is_editable_install()
+    checks_enabled = is_update_check_enabled()
+    # Read once and share with both rows below so they cannot straddle a
+    # concurrent cache refresh and disagree.
+    checked_at = get_last_update_check_time()
+    if editable:
+        auto_updates = "disabled (editable install)"
     else:
-        items.append(
-            DiagnosticItem(
-                "Auto-updates",
-                "enabled" if is_auto_update_enabled() else "disabled",
-            )
-        )
+        auto_updates = "enabled" if is_auto_update_enabled() else "disabled"
 
     available, latest = get_cached_update_available()
-    if latest is None:
-        update_status = "unknown (no recent check)"
-    elif available:
-        update_status = f"v{latest} available"
-    else:
-        update_status = "up to date"
-    items.extend(
-        (
-            DiagnosticItem("Latest version", update_status),
-            DiagnosticItem("Last checked", _format_last_checked()),
-        )
+
+    return DiagnosticSection(
+        title="Updates",
+        items=[
+            DiagnosticItem(
+                "Update checks",
+                "enabled" if checks_enabled else "disabled",
+            ),
+            DiagnosticItem("Auto-updates", auto_updates),
+            DiagnosticItem(
+                "Latest version",
+                _format_latest_version(
+                    available,
+                    latest,
+                    editable=editable,
+                    checks_enabled=checks_enabled,
+                    checked_at=checked_at,
+                ),
+            ),
+            DiagnosticItem("Last checked", _format_last_checked(checked_at)),
+        ],
     )
 
-    return DiagnosticSection(title="Updates", items=items)
+
+def _format_latest_version(
+    available: bool,
+    latest: str | None,
+    *,
+    editable: bool,
+    checks_enabled: bool,
+    checked_at: float | None,
+) -> str:
+    """Describe the cached latest version, or why no answer is available.
+
+    A cached answer is reported whenever one exists, since it is a true
+    statement about the installed version. Otherwise the cause is named:
+    editable installs and disabled checks never contact PyPI at all, so any
+    stamp on disk was written by another install sharing the state directory.
+    Failing that, the stamp separates an expired cache (repeated fetch failures
+    leave it untouched) from one never written at all, and a current cache that
+    still yields no answer is reported as incomplete rather than stale: it holds
+    no entry this install can use, as when only pre-release pins were recorded
+    or a pre-release install meets a stable-only payload.
+
+    Args:
+        available: Whether the cached answer is newer than the running version.
+        latest: Cached latest version, or `None` when the cache holds no usable
+            answer.
+        editable: Whether this is an editable install.
+        checks_enabled: Whether update checks are enabled by config and env.
+        checked_at: Epoch time of the last recorded check, or `None`.
+
+    Returns:
+        The `Latest version` value.
+    """
+    from deepagents_code.update_check import is_update_cache_fresh
+
+    if latest is not None:
+        return f"v{latest} available" if available else "up to date"
+    if editable:
+        return "not checked (editable install)"
+    if not checks_enabled:
+        return "not checked (checks disabled)"
+    if checked_at is None:
+        return "unknown (never checked)"
+    if not is_update_cache_fresh(checked_at):
+        return "unknown (cache stale)"
+    return "unknown (cache incomplete)"
 
 
-def _format_last_checked() -> str:
+def _format_last_checked(checked_at: float | None) -> str:
     """Return a relative description of the last update check, or `never`.
 
     `never` covers both the no-check-recorded case and, defensively, a stamp
     that cannot be formatted. `get_last_update_check_time` only returns finite,
     in-range epochs, so the formatting path does not raise here.
+
+    Args:
+        checked_at: Epoch time of the last recorded check, or `None`.
+
+    Returns:
+        The `Last checked` value.
     """
     from datetime import UTC, datetime
 
     from deepagents_code.sessions import format_relative_timestamp
-    from deepagents_code.update_check import get_last_update_check_time
 
-    checked_at = get_last_update_check_time()
     if checked_at is None:
         return "never"
     iso = datetime.fromtimestamp(checked_at, tz=UTC).isoformat()
@@ -505,7 +582,7 @@ def _render_text(sections: list[DiagnosticSection]) -> None:
         console.print()
 
     console.print(
-        "  Tip: Run `dcode config show` or `dcode config get <key>` "
+        "  Tip: Run `dcode config` or `dcode config get <key>` "
         "to drill into config details.",
         style=theme.MUTED,
         highlight=False,

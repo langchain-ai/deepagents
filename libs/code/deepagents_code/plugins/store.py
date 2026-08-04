@@ -32,6 +32,13 @@ SUPPORTED_MARKETPLACE_SOURCE_TYPES: frozenset[MarketplaceSourceType] = frozenset
     {"directory", "file", "github", "git", "url"}
 )
 
+DEFAULT_PLUGIN_DIRNAME = "plugins"
+"""Default directory name for plugin storage under `~/.deepagents/`.
+
+Not an agent profile. The `/agent` picker reserves this name in addition to
+requiring an `AGENTS.md` marker, so it is never listed as a selectable agent.
+"""
+
 
 class PluginStateError(OSError):
     """Raised when existing plugin state cannot be safely modified."""
@@ -45,7 +52,7 @@ def plugin_storage_root() -> Path:
     raw = os.environ.get(PLUGIN_CACHE_DIR)
     if raw:
         return Path(raw).expanduser()
-    return DEFAULT_CONFIG_DIR / "plugins"
+    return DEFAULT_CONFIG_DIR / DEFAULT_PLUGIN_DIRNAME
 
 
 def plugin_data_dir(plugin_id: str) -> Path:

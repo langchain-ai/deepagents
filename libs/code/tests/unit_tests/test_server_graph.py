@@ -145,7 +145,12 @@ class TestServerGraph:
         loop_thread_id = threading.get_ident()
         create_cli_agent_thread_ids: list[int] = []
         create_model_thread_ids: list[int] = []
+        setup_thread_ids: list[int] = []
+        redaction_thread_ids: list[int] = []
         repository_backend = object()
+        user_cwd = object()
+        project_context = SimpleNamespace(user_cwd=user_cwd, project_root=object())
+        reload_from_environment = MagicMock()
 
         def create_cli_agent_side_effect(**_: object) -> tuple[object, object]:
             create_cli_agent_thread_ids.append(threading.get_ident())
@@ -154,6 +159,22 @@ class TestServerGraph:
         def create_model_side_effect(*_: object, **__: object) -> object:
             create_model_thread_ids.append(threading.get_ident())
             return model_result
+
+        def get_server_project_context_side_effect(*_: object, **__: object) -> object:
+            setup_thread_ids.append(threading.get_ident())
+            return project_context
+
+        def reload_from_environment_side_effect(
+            *_: object, **kwargs: object
+        ) -> list[str]:
+            setup_thread_ids.append(threading.get_ident())
+            assert kwargs.get("start_path") is user_cwd
+            return []
+
+        def configure_redaction_side_effect() -> None:
+            redaction_thread_ids.append(threading.get_ident())
+
+        reload_from_environment.side_effect = reload_from_environment_side_effect
 
         create_cli_agent = MagicMock(side_effect=create_cli_agent_side_effect)
         agent_module = _module_with_attrs(
@@ -167,7 +188,7 @@ class TestServerGraph:
             model=model_obj,
             apply_to_settings=MagicMock(),
         )
-        configure_redaction = MagicMock()
+        configure_redaction = MagicMock(side_effect=configure_redaction_side_effect)
         create_model = MagicMock(side_effect=create_model_side_effect)
         config_module = _module_with_attrs(
             "deepagents_code.config",
@@ -176,7 +197,7 @@ class TestServerGraph:
             is_memory_auto_save_enabled=MagicMock(return_value=True),
             settings=SimpleNamespace(
                 has_tavily=True,
-                reload_from_environment=MagicMock(),
+                reload_from_environment=reload_from_environment,
             ),
         )
 
@@ -201,6 +222,12 @@ class TestServerGraph:
         config = ServerConfig(
             no_mcp=False,
             profile_overrides={"max_input_tokens": 32000},
+            # Non-default allowlist so the `fs_tools=` assertion below is
+            # load-bearing: it round-trips through `to_env()`/`from_env()` and
+            # must reach `create_cli_agent`. With the `None` default this
+            # assertion passed whether or not `_make_graph` read
+            # `config.allow_fs_tools`, so a dropped read would go unnoticed.
+            allow_fs_tools=["ls", "read_file"],
         )
         env_overrides = {}
         for suffix, value in config.to_env().items():
@@ -220,7 +247,11 @@ class TestServerGraph:
             ),
             patch(
                 "deepagents_code.project_utils.get_server_project_context",
-                return_value=None,
+                side_effect=get_server_project_context_side_effect,
+            ),
+            patch(
+                "deepagents_code.plugins.adapters.mcp.discover_plugin_mcp_configs",
+                return_value=(),
             ),
         ):
             for suffix in (
@@ -236,9 +267,19 @@ class TestServerGraph:
             assert await module.make_graph() is graph_obj
 
         configure_redaction.assert_called_once_with()
+        reload_from_environment.assert_called_once_with(start_path=user_cwd)
         resolve_mcp_tools.assert_awaited_once()
         assert create_cli_agent_thread_ids
         assert create_cli_agent_thread_ids[0] != loop_thread_id
+        # Project-context resolution and the settings bootstrap must run off the
+        # loop: on Windows they call `os.getcwd()` via `Path.resolve()` /
+        # `Path.cwd()`, which `blockbuster` rejects on the server event loop.
+        assert setup_thread_ids
+        assert all(thread_id != loop_thread_id for thread_id in setup_thread_ids)
+        # Redaction fail-closed must run on the server task so
+        # `configure(enabled=False)` updates this task's tracing ContextVar,
+        # not only a worker-thread copy left behind by `asyncio.to_thread`.
+        assert redaction_thread_ids == [loop_thread_id]
         # `create_model` must run off the loop thread: it does blocking disk IO
         # for some providers (e.g. the `openai_codex` token store calls
         # `os.mkdir`), which `blockbuster` rejects on the server event loop.
@@ -251,20 +292,23 @@ class TestServerGraph:
         assert kwargs["explicit_config_path"] is None
         assert kwargs["no_mcp"] is False
         assert kwargs["trust_project_mcp"] is None
-        assert kwargs["project_context"] is None
+        assert kwargs["project_context"] is project_context
         assert kwargs["stateless"] is True
         assert isinstance(kwargs["session_manager"], FakeSessionManager)
         create_cli_agent.assert_called_once_with(
             model=model_obj,
             assistant_id="agent",
             tools=[fetch_tool, thread_tool, web_tool, mcp_tool],
+            mcp_tools=[mcp_tool],
             sandbox=None,
             sandbox_type=None,
             system_prompt=None,
             interactive=True,
             auto_approve=False,
+            auto_mode_enabled=True,
             interrupt_shell_only=False,
             shell_allow_list=None,
+            fs_tools=["ls", "read_file"],
             enable_ask_user=False,
             enable_memory=True,
             memory_auto_save=True,
@@ -273,11 +317,14 @@ class TestServerGraph:
             enable_interpreter=False,
             rubric_model=None,
             rubric_max_iterations=None,
+            auto_classifier_model=None,
+            recursion_limit=None,
             mcp_server_info=mcp_server_info,
-            cwd=None,
-            project_context=None,
+            cwd=user_cwd,
+            project_context=project_context,
             async_subagents=None,
             goal_criteria_tools=[fetch_tool, web_tool, mcp_tool],
+            rubric_grader_tools=[fetch_tool, web_tool, mcp_tool],
         )
 
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:

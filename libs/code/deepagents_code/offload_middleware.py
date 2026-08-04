@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, cast
 
 from deepagents.backends.protocol import FILE_NOT_FOUND
@@ -15,23 +18,42 @@ from deepagents.middleware.summarization import (
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # inspected for runtime injection
 )
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import InjectedToolArg, StructuredTool
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code.hooks.models.domain import (
+    CompactTrigger,
+    HookEvent,
+    PreCompactDecision,
+    PreCompactEvent,
+)
+from deepagents_code.hooks.server_middleware import (
+    _DEFAULT_DEADLINE,
+    _event_enabled,
+    _hook_context,
+    _invoke_hook,
+    _require_decision,
+    _session_gate,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from deepagents.backends.protocol import (
-        BACKEND_TYPES,
         BackendProtocol,
         EditResult,
         FileDownloadResponse,
         WriteResult,
     )
     from deepagents.middleware.summarization import SummarizationMiddleware
+    from langchain.agents.middleware.types import (
+        ExtendedModelResponse,
+        ModelRequest,
+        ModelResponse,
+    )
     from langchain.chat_models import BaseChatModel
     from langgraph.prebuilt.tool_node import ToolCallRequest
 
@@ -56,6 +78,14 @@ Only the *prefix position* is load-bearing; wording after it is free to change.
 """
 
 _OFFLOAD_SEED_ID_PREFIX = "offload-seed-"
+
+
+class _AutoCompactionBlockedError(Exception):
+    """Carry a blocked provider overflow past the SDK fallback handler."""
+
+    def __init__(self, overflow: ContextOverflowError) -> None:
+        super().__init__(str(overflow))
+        self.overflow = overflow
 
 
 def _offload_seed_message_id(tool_call_id: str) -> str:
@@ -313,13 +343,156 @@ class _ArchiveReadGuard:
 
 
 class CLICompactionMiddleware(SummarizationToolMiddleware):
-    """Add explicit forced compaction and runtime model selection for dcode.
+    """Add hook-aware automatic and explicit forced compaction for dcode.
 
     The SDK tool's normal, model-initiated behavior remains unchanged. The
     private `force` input is used only by the user-initiated `/offload` path,
     which must compact whenever messages exceed the retention window even when
     the conversation has not reached the SDK's proactive eligibility gate.
     """
+
+    @property
+    def name(self) -> str:
+        """Replace the SDK auto-summarizer while retaining the compact tool."""
+        return self._summarization.name
+
+    @staticmethod
+    def _auto_compaction_id(request: ModelRequest) -> str:
+        """Return a stable identity for one model-input snapshot."""
+        messages = request.messages
+        last = messages[-1]
+        identity = (
+            last.id or hashlib.sha256(last.model_dump_json().encode()).hexdigest()
+        )
+        return f"{len(messages)}:{identity}"
+
+    def _pre_auto_compact(self, request: ModelRequest) -> bool:
+        """Run `PreCompact` before automatic summarization.
+
+        Returns:
+            Whether summarization may continue.
+        """
+        from langgraph.config import get_config
+
+        runtime = request.runtime
+        gate = _session_gate(runtime.context)
+        if not _event_enabled(gate, HookEvent.PRE_COMPACT):
+            return True
+        try:
+            config = get_config()
+        except RuntimeError:
+            config = None
+        decision = _invoke_hook(
+            _hook_context(runtime.context, config, Path.cwd()),
+            PreCompactEvent(event=HookEvent.PRE_COMPACT, trigger=CompactTrigger.AUTO),
+            gate=gate,
+            config=config,
+            deadline=_DEFAULT_DEADLINE,
+            logical_event_id=self._auto_compaction_id(request),
+        )
+        return _require_decision(decision, PreCompactDecision).continue_processing
+
+    def _auto_compaction_request(self, request: ModelRequest) -> ModelRequest | None:
+        """Return the prepared request when threshold compaction will run."""
+        summarization = self._summarization
+        messages = summarization._get_effective_messages(request)
+        tokens = summarization._count_tokens(
+            messages, request.system_message, request.tools
+        )
+        messages, modified = summarization._truncate_args(messages, tokens)
+        if modified:
+            tokens = summarization._count_tokens(
+                messages, request.system_message, request.tools
+            )
+        if (
+            not summarization._should_summarize(messages, tokens)
+            or summarization._determine_cutoff_index(messages) <= 0
+        ):
+            return None
+        return request.override(messages=messages)
+
+    def _pre_overflow_compact(
+        self,
+        request: ModelRequest,
+        overflow: ContextOverflowError,
+    ) -> None:
+        """Gate a provider-overflow fallback before it compacts.
+
+        Raises:
+            _AutoCompactionBlockedError: If the hook blocks compaction.
+        """
+        if self._summarization._determine_cutoff_index(
+            request.messages
+        ) > 0 and not self._pre_auto_compact(request):
+            raise _AutoCompactionBlockedError(overflow) from overflow
+
+    def wrap_model_call(  # ty: ignore[invalid-method-override]  # delegates auto summarizer
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse | ExtendedModelResponse:
+        """Run `PreCompact` before synchronous automatic summarization.
+
+        Returns:
+            The model response.
+        """
+        call_model = partial(super().wrap_model_call, handler=handler)
+        prepared = self._auto_compaction_request(request)
+        if prepared is not None:
+            if not self._pre_auto_compact(prepared):
+                return call_model(prepared)
+            return self._summarization.wrap_model_call(request, call_model)
+
+        overflow_gated = False
+
+        def gated_handler(next_request: ModelRequest) -> ModelResponse:
+            nonlocal overflow_gated
+            try:
+                return call_model(next_request)
+            except ContextOverflowError as overflow:
+                if not overflow_gated:
+                    overflow_gated = True
+                    self._pre_overflow_compact(next_request, overflow)
+                raise
+
+        try:
+            return self._summarization.wrap_model_call(request, gated_handler)
+        except _AutoCompactionBlockedError as blocked:
+            raise blocked.overflow from None
+
+    async def awrap_model_call(  # ty: ignore[invalid-method-override]  # delegates auto summarizer
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse | ExtendedModelResponse:
+        """Run `PreCompact` before asynchronous automatic summarization.
+
+        Returns:
+            The model response.
+        """
+        call_model = partial(super().awrap_model_call, handler=handler)
+        prepared = self._auto_compaction_request(request)
+        if prepared is not None:
+            if not self._pre_auto_compact(prepared):
+                return await call_model(prepared)
+            return await self._summarization.awrap_model_call(request, call_model)
+
+        overflow_gated = False
+
+        async def gated_handler(next_request: ModelRequest) -> ModelResponse:
+            nonlocal overflow_gated
+            try:
+                return await call_model(next_request)
+            except ContextOverflowError as overflow:
+                if not overflow_gated:
+                    overflow_gated = True
+                    self._pre_overflow_compact(next_request, overflow)
+                raise
+
+        try:
+            return await self._summarization.awrap_model_call(request, gated_handler)
+        except _AutoCompactionBlockedError as blocked:
+            raise blocked.overflow from None
 
     @staticmethod
     def _offload_rejection(request: ToolCallRequest) -> ToolMessage | None:
@@ -442,17 +615,13 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             coroutine=async_compact,
         )
 
-    def _resolve_backend(self, runtime: ToolRuntime) -> BackendProtocol:
-        """Resolve the backend with fail-closed archive append behavior.
-
-        Args:
-            runtime: Runtime used to resolve backend factories.
+    def _guarded_backend(self) -> BackendProtocol:
+        """Wrap the configured backend with fail-closed archive append behavior.
 
         Returns:
             A backend adapter that refuses writes after raised archive reads.
         """
-        backend = super()._resolve_backend(runtime)
-        return cast("BackendProtocol", _ArchiveReadGuard(backend))
+        return cast("BackendProtocol", _ArchiveReadGuard(self._summarization._backend))
 
     def _summarization_for_runtime(
         self, runtime: ToolRuntime
@@ -464,7 +633,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
 
         Returns:
             The startup summarizer when no runtime model is selected, otherwise
-                a model-aware summarizer using the same resolved backend.
+                a model-aware summarizer using the same configured backend.
         """
         config = _runtime_model_config(runtime)
         if not config.model_spec:
@@ -498,7 +667,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                         context_limit,
                         exc_info=True,
                     )
-        backend = self._resolve_backend(runtime)
+        backend = self._guarded_backend()
         return create_summarization_middleware(model, backend)
 
     def _run_forced_compact(self, runtime: ToolRuntime) -> Command:
@@ -536,7 +705,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
 
             to_summarize, _ = summarization._partition_messages(effective, cutoff)
             summary = summarization._create_summary(to_summarize)
-            backend = self._resolve_backend(runtime)
+            backend = self._guarded_backend()
             file_path = summarization._offload_to_backend(backend, to_summarize)
             # The inherited `_build_compact_result` produces the same event and
             # tool message as the SDK's gated path via model-independent helpers
@@ -571,7 +740,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
 
             to_summarize, _ = summarization._partition_messages(effective, cutoff)
             summary = await summarization._acreate_summary(to_summarize)
-            backend = self._resolve_backend(runtime)
+            backend = self._guarded_backend()
             file_path = await summarization._aoffload_to_backend(backend, to_summarize)
             # See `_run_forced_compact` for why the inherited builder is reused
             # and why it stays inside the `try`.
@@ -625,7 +794,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
 
 def _create_cli_compaction_middleware(
     model: str | BaseChatModel,
-    backend: BACKEND_TYPES,
+    backend: BackendProtocol,
 ) -> CLICompactionMiddleware:
     """Create the dcode compaction middleware from the SDK configuration.
 

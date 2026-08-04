@@ -35,13 +35,13 @@ jobs:
       issues: write
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Generate GitHub App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
-          client-id: ${{ secrets.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
           private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
 
       - name: Validate issue checkboxes
@@ -83,7 +83,7 @@ jobs:
             let _cachedMember;
             async function isOrgMember() {
               if (_cachedMember) return _cachedMember;
-              const { h } = require('./.github/scripts/pr-labeler.js')
+              const { h } = require('./.github/scripts/labeling/pr-labeler.js')
                 .loadAndInit(github, owner, repo, core);
               const author = context.payload.sender.login;
               const { isExternal } = await h.checkMembership(

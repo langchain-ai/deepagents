@@ -1,0 +1,39 @@
+You are evaluating an AI agent's response to a data analysis question about synthetic people records stored in text files.
+
+Question: {input}
+Expected Answer: {ground_truth}
+Agent's Submission: {submission}
+
+## Task
+The agent was asked to find specific information by reading and cross-referencing multiple text files (people.txt, pets.txt, vehicles.txt, bank_accounts.txt, credit_cards.txt, employments.txt, addresses.txt, insurance_policies.txt, internet_accounts.txt, medical_records.txt).
+
+## Scoring
+
+Rate the response **0.0**, **0.5**, or **1.0**:
+
+### Score 1.0 — Correct
+The agent's final answer matches the expected answer. Apply these equivalence rules:
+- **Numeric formats are equivalent**: "$145,315.33" = "145315.33" = "$145315.33" = "145,315.33"
+- **Number words are equivalent**: "2 dogs" = "two dogs" = "2"
+- **Name matching is case-insensitive**: "john smith" = "John Smith"
+- **Minor phrasing differences are OK**: "Risk manager" = "The job title is Risk manager" = "Their job title is risk manager"
+- **Units can be implicit**: "4" = "4 vehicles" = "4 cars" (when the question asks about vehicles)
+- If the expected answer is a person's name, accept the name anywhere in the response as correct
+
+### Score 0.0 — Wrong
+The agent gives a different answer than expected:
+- Different name, different number, different value
+- Agent says it cannot find the answer but the expected answer exists
+- Agent provides a partial answer that misses the key value
+- Agent gives multiple answers when only one is expected, and the correct one is not clearly identified as the final answer
+
+### Score 0.5 — Refusal only
+The agent explicitly refuses to answer (e.g., "I cannot help with that", "I don't have access") without attempting the task. This is ONLY for clear refusals, not for failed attempts.
+
+## Important
+- Focus on the FINAL answer the agent provides, not intermediate reasoning
+- If the agent shows work and arrives at the correct answer, score 1.0 even if intermediate steps had errors
+- If the agent shows work but arrives at a wrong answer, score 0.0 regardless of reasoning quality
+- Do NOT give partial credit (0.25, 0.75, etc.) — only 0.0, 0.5, or 1.0
+
+Provide only the numerical score (e.g., "1.0").

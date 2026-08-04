@@ -1,11 +1,13 @@
 """Tests for optional-dependency status inspection."""
 
 import tomllib
+from collections.abc import Iterator
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
+from packaging.requirements import Requirement
 
 from deepagents_code.extras_info import (
     _COMPOSITE_EXTRAS,
@@ -13,18 +15,81 @@ from deepagents_code.extras_info import (
     MODEL_PROVIDER_EXTRAS,
     SANDBOX_EXTRAS,
     STANDALONE_EXTRAS,
+    DistributionMetadataStatus,
+    DistributionVersion,
+    InstallHint,
+    VersionReport,
+    _display_sdk_version,
+    _editable_sdk_is_cli_workspace_sibling,
     _editable_sdk_source_root,
+    _requirement_satisfied,
+    _resolve_source_path,
+    _sdk_requirement_comparison_version,
+    _with_editable_local_version,
+    collect_cli_version_info,
+    collect_sdk_version_info,
+    collect_version_report,
     extra_for_package,
+    format_cli_version_annotation,
     format_extras_status,
     format_extras_status_plain,
     format_known_extras,
+    format_sdk_version_annotation,
     get_extras_status,
     get_optional_dependency_status,
+    resolve_install_hint,
     resolve_sdk_version,
+    sdk_requirement_from_cli,
     verify_interpreter_deps,
 )
 
 _PYPROJECT_PATH = Path(__file__).resolve().parents[2] / "pyproject.toml"
+
+
+@pytest.fixture
+def sdk_root(tmp_path: Path) -> Path:
+    """A source root laid out like an editable `deepagents` checkout."""
+    root = tmp_path / "workspace" / "libs" / "deepagents"
+    (root / "deepagents").mkdir(parents=True)
+    return root
+
+
+@pytest.fixture(autouse=True)
+def _running_sdk_from(sdk_root: Path) -> Iterator[None]:
+    """Place the locatable `deepagents` package inside `sdk_root` for every test.
+
+    `_editable_sdk_source_root` only credits an editable record whose source root
+    contains the package `find_spec` would locate, so the two have to agree about
+    where that package lives. Tests that need them to disagree patch this
+    themselves.
+    """
+    with patch(
+        "deepagents_code.extras_info._running_sdk_package_root",
+        return_value=(sdk_root / "deepagents").resolve(),
+    ):
+        yield
+
+
+def _sdk_dist(*, raw: str | None = None) -> MagicMock:
+    """Build a minimal `importlib.metadata.Distribution` stand-in.
+
+    `raw` is the exact `direct_url.json` text the stand-in serves; `None` serves
+    no file, as a wheel or a source-tree `*.egg-info` would.
+    """
+    dist = MagicMock()
+    dist.name = "deepagents"
+    dist.metadata = {"Name": "deepagents"}
+    dist.read_text.return_value = raw
+    return dist
+
+
+def _write_cli_pyproject(root: Path, requirement: str) -> None:
+    """Write the minimal editable dcode project metadata used by version tests."""
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pyproject.toml").write_text(
+        f'[project]\nname = "deepagents-code"\ndependencies = ["{requirement}"]\n',
+        encoding="utf-8",
+    )
 
 
 def _optional_dependencies() -> dict[str, list[str]]:
@@ -41,7 +106,7 @@ def _declared_extras() -> frozenset[str]:
 def test_nvidia_extra_requires_aiohttp_safe_ai_endpoints_release() -> None:
     """The NVIDIA extra must require an aiohttp-safe ai-endpoints release."""
     assert _optional_dependencies()["nvidia"] == [
-        "aiohttp>=3.14.1,<3.15.0",
+        "aiohttp>=3.14.3,<3.15.0",
         "langchain-nvidia-ai-endpoints>=1.4.3,<2.0.0",
     ]
 
@@ -170,6 +235,53 @@ def test_extra_for_package_returns_none_for_unknown_package() -> None:
         assert extra_for_package("not-declared") is None
 
 
+def test_resolve_install_hint_prefers_declared_extra() -> None:
+    """A package declared by an extra resolves to that extra, no raw command."""
+    with patch("deepagents_code.extras_info.extra_for_package", return_value="vertex"):
+        hint = resolve_install_hint("langchain-google-vertexai")
+    assert hint == InstallHint(extra="vertex", command=None)
+
+
+def test_resolve_install_hint_falls_back_to_package_command() -> None:
+    """A package with no extra falls back to a raw install command."""
+    with (
+        patch("deepagents_code.extras_info.extra_for_package", return_value=None),
+        patch(
+            "deepagents_code.update_check.install_package_command",
+            return_value="uv tool install --with langchain-custom deepagents-code",
+        ) as mock_install_package_command,
+    ):
+        hint = resolve_install_hint(
+            "langchain-custom", distribution_name="deepagents-code-dev"
+        )
+    mock_install_package_command.assert_called_once_with(
+        "langchain-custom", distribution_name="deepagents-code-dev"
+    )
+    assert hint == InstallHint(
+        extra=None,
+        command="uv tool install --with langchain-custom deepagents-code",
+    )
+
+
+def test_resolve_install_hint_degrades_to_manual_on_error() -> None:
+    """When neither an extra nor a command resolves, both fields are None."""
+    with (
+        patch("deepagents_code.extras_info.extra_for_package", return_value=None),
+        patch(
+            "deepagents_code.update_check.install_package_command",
+            side_effect=ValueError("bad package"),
+        ),
+    ):
+        hint = resolve_install_hint("bad package")
+    assert hint == InstallHint(extra=None, command=None)
+
+
+def test_install_hint_rejects_both_extra_and_command() -> None:
+    """Dual-action resolutions are impossible and must fail construction."""
+    with pytest.raises(ValueError, match="both extra and command"):
+        InstallHint(extra="vertex", command="uv tool install deepagents-code")
+
+
 def test_skips_composite_self_referencing_extras() -> None:
     mock_dist = MagicMock()
     mock_dist.requires = [
@@ -262,7 +374,7 @@ def test_extras_taxonomy_covers_pyproject() -> None:
 def test_known_extras_is_union_of_categories() -> None:
     """`KNOWN_EXTRAS` must be the union of the three category frozensets.
 
-    `dcode --install <extra>` and `/install <extra>` consult `KNOWN_EXTRAS`
+    `dcode install <extra>` and `/install <extra>` consult `KNOWN_EXTRAS`
     to decide whether to prompt for confirmation on unknown values, so this
     set has to stay aligned with the taxonomy or callers will see spurious
     prompts for real extras.
@@ -372,54 +484,231 @@ class TestResolveSdkVersion:
 
     def test_resolved_returns_metadata_version_for_normal_install(self) -> None:
         """A normal install reports the package metadata version."""
-        dist = MagicMock()
-        dist.read_text.return_value = None
         with (
             patch(
                 "deepagents_code.extras_info.pkg_version", return_value="1.2.3"
             ) as mock,
-            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch("deepagents_code.extras_info.distributions", return_value=[]),
         ):
             version, status = resolve_sdk_version()
-        mock.assert_called_once_with("deepagents")
+        # Assert the SDK lookup happened without coupling to call ordering:
+        # `resolve_sdk_version` also looks up `deepagents-code` for the CLI.
+        assert ("deepagents",) in [call.args for call in mock.call_args_list]
         assert (version, status) == ("1.2.3", "resolved")
 
     def test_resolved_prefers_source_version_for_editable_install(
-        self, tmp_path: Path
+        self, sdk_root: Path
     ) -> None:
         """An editable SDK reports `_version.py` over stale metadata."""
-        version_file = tmp_path / "deepagents" / "_version.py"
-        version_file.parent.mkdir()
+        version_file = sdk_root / "deepagents" / "_version.py"
         version_file.write_text('__version__ = "1.2.4"\n', encoding="utf-8")
-        dist = MagicMock()
-        dist.read_text.return_value = (
-            f'{{"url":"{tmp_path.as_uri()}","dir_info":{{"editable":true}}}}'
+        editable = _sdk_dist(
+            raw=f'{{"url":"{sdk_root.as_uri()}","dir_info":{{"editable":true}}}}'
         )
         with (
             patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
-            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch("deepagents_code.extras_info.distributions", return_value=[editable]),
         ):
             version, status = resolve_sdk_version()
-        assert (version, status) == ("1.2.4", "resolved")
+        assert (version, status) == ("1.2.4+editable", "resolved")
+
+    def test_resolved_uses_newer_exact_requirement_for_editable_install(
+        self, sdk_root: Path
+    ) -> None:
+        """A newer exact dcode pin is effective for sibling monorepo packages."""
+        cli_path = sdk_root.parent / "code"
+        version_file = sdk_root / "deepagents" / "_version.py"
+        _write_cli_pyproject(cli_path, "deepagents==0.7.0a8")
+        version_file.write_text('__version__ = "0.6.12"\n', encoding="utf-8")
+        sdk_dist = _sdk_dist(
+            raw=f'{{"url":"{sdk_root.as_uri()}","dir_info":{{"editable":true}}}}'
+        )
+        code_dist = MagicMock()
+        code_dist.requires = ["deepagents==0.7.0a7"]
+
+        def version(name: str) -> str:
+            return {"deepagents": "0.6.12", "deepagents-code": "0.1.45"}[name]
+
+        with (
+            patch("deepagents_code.extras_info.pkg_version", side_effect=version),
+            patch("deepagents_code.extras_info.distributions", return_value=[sdk_dist]),
+            patch("deepagents_code.extras_info.distribution", return_value=code_dist),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(True, str(cli_path)),
+            ),
+        ):
+            version_value, status = resolve_sdk_version()
+        assert (version_value, status) == ("0.7.0a8+editable", "resolved")
+
+    def test_resolved_marks_editable_sibling_matching_its_pin(
+        self, sdk_root: Path
+    ) -> None:
+        """A workspace SDK level with dcode's pin still reports `+editable`.
+
+        This is the everyday monorepo checkout: nothing about the pin is ahead
+        of the sibling SDK, so no workspace-HEAD inference applies, yet the SDK
+        stamps `lc_versions["deepagents"]` as `0.7.1+editable`. Reporting a bare
+        `0.7.1` here left the two version entries in one trace disagreeing.
+        """
+        cli_path = sdk_root.parent / "code"
+        version_file = sdk_root / "deepagents" / "_version.py"
+        _write_cli_pyproject(cli_path, "deepagents==0.7.1")
+        version_file.write_text('__version__ = "0.7.1"\n', encoding="utf-8")
+        sdk_dist = _sdk_dist(
+            raw=f'{{"url":"{sdk_root.as_uri()}","dir_info":{{"editable":true}}}}'
+        )
+
+        def version(name: str) -> str:
+            return {"deepagents": "0.7.1", "deepagents-code": "0.1.50"}[name]
+
+        with (
+            patch("deepagents_code.extras_info.pkg_version", side_effect=version),
+            patch("deepagents_code.extras_info.distributions", return_value=[sdk_dist]),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(True, str(cli_path)),
+            ),
+        ):
+            version_value, status = resolve_sdk_version()
+            report = collect_version_report()
+        assert (version_value, status) == ("0.7.1+editable", "resolved")
+        # The human-facing surfaces render `(editable)` beside the version, so
+        # they keep the unsuffixed string.
+        assert report.display_sdk_version == "0.7.1"
+        assert format_sdk_version_annotation(report) == " (editable)"
+
+    def test_resolved_keeps_source_for_unrelated_editable_sdk(
+        self, tmp_path: Path, sdk_root: Path
+    ) -> None:
+        """A newer exact dcode pin does not mask an unrelated editable SDK."""
+        cli_path = tmp_path / "repo" / "libs" / "code"
+        version_file = sdk_root / "deepagents" / "_version.py"
+        version_file.write_text('__version__ = "0.6.12"\n', encoding="utf-8")
+        sdk_dist = _sdk_dist(
+            raw=f'{{"url":"{sdk_root.as_uri()}","dir_info":{{"editable":true}}}}'
+        )
+        code_dist = MagicMock()
+        code_dist.requires = ["deepagents==0.7.0a8"]
+
+        def version(name: str) -> str:
+            return {"deepagents": "0.6.12", "deepagents-code": "0.1.45"}[name]
+
+        with (
+            patch("deepagents_code.extras_info.pkg_version", side_effect=version),
+            patch("deepagents_code.extras_info.distributions", return_value=[sdk_dist]),
+            patch("deepagents_code.extras_info.distribution", return_value=code_dist),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(True, str(cli_path)),
+            ),
+        ):
+            version_value, status = resolve_sdk_version()
+        assert (version_value, status) == ("0.6.12+editable", "resolved")
+
+    def test_resolve_source_path_returns_none_for_unusable_path(self) -> None:
+        """Malformed editable paths should not crash version diagnostics."""
+        with patch.object(Path, "resolve", side_effect=ValueError("nul byte")):
+            assert _resolve_source_path("/repo/%00/libs/code") is None
+
+    def test_windows_editable_paths_are_workspace_siblings(self) -> None:
+        """PEP 610 drive paths compare equal across URL and Windows forms."""
+        cli = _distribution_version(
+            name="deepagents-code",
+            editable=True,
+            source_path="/C:/repo/libs/code",
+        )
+        sdk = _distribution_version(
+            editable=True,
+            source_path=r"C:\repo\libs\deepagents",
+        )
+        assert _editable_sdk_is_cli_workspace_sibling(cli, sdk) is True
 
     def test_resolved_falls_back_to_metadata_when_editable_version_file_missing(
-        self, tmp_path: Path
+        self, sdk_root: Path
     ) -> None:
         """An editable SDK still reports metadata if `_version.py` is unavailable."""
-        dist = MagicMock()
-        dist.read_text.return_value = (
-            f'{{"url":"{tmp_path.as_uri()}","dir_info":{{"editable":true}}}}'
+        editable = _sdk_dist(
+            raw=f'{{"url":"{sdk_root.as_uri()}","dir_info":{{"editable":true}}}}'
         )
         with (
             patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
-            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch("deepagents_code.extras_info.distributions", return_value=[editable]),
+        ):
+            version, status = resolve_sdk_version()
+        assert (version, status) == ("1.2.3+editable", "resolved")
+
+    def test_resolved_ignores_egg_info_shadowing_editable_install(
+        self, sdk_root: Path
+    ) -> None:
+        """A source-tree `*.egg-info` without PEP 610 data must not hide the install.
+
+        This is the layout the previous single `distribution()` lookup got wrong:
+        running from a checkout finds the gitignored `deepagents.egg-info/` first,
+        it carries no `direct_url.json`, and the single lookup concluded "not
+        editable" without ever consulting the real editable install.
+        """
+        version_file = sdk_root / "deepagents" / "_version.py"
+        version_file.write_text('__version__ = "1.2.4"\n', encoding="utf-8")
+        egg_info = _sdk_dist()
+        editable = _sdk_dist(
+            raw=f'{{"url":"{sdk_root.as_uri()}","dir_info":{{"editable":true}}}}'
+        )
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
+            patch(
+                "deepagents_code.extras_info.distributions",
+                return_value=[egg_info, editable],
+            ),
+        ):
+            version, status = resolve_sdk_version()
+        assert (version, status) == ("1.2.4+editable", "resolved")
+
+    def test_resolved_ignores_unrelated_editable_checkout(self, tmp_path: Path) -> None:
+        """An editable record must not be credited when it does not supply the code.
+
+        The imported `deepagents` lives outside this record's source root, so the
+        record cannot be correlated and the metadata version is used. Crediting it
+        would attribute a workspace build to a published install.
+        """
+        elsewhere = tmp_path / "some" / "other" / "checkout"
+        elsewhere.mkdir(parents=True)
+        unrelated = _sdk_dist(
+            raw=f'{{"url":"{elsewhere.as_uri()}","dir_info":{{"editable":true}}}}'
+        )
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
+            patch(
+                "deepagents_code.extras_info.distributions", return_value=[unrelated]
+            ),
+        ):
+            version, status = resolve_sdk_version()
+        assert (version, status) == ("1.2.3", "resolved")
+
+    def test_resolved_reports_metadata_when_sdk_location_is_unknown(
+        self, sdk_root: Path
+    ) -> None:
+        """A frozen/embedded interpreter without `__file__` cannot be correlated."""
+        version_file = sdk_root / "deepagents" / "_version.py"
+        version_file.write_text('__version__ = "1.2.4"\n', encoding="utf-8")
+        editable = _sdk_dist(
+            raw=f'{{"url":"{sdk_root.as_uri()}","dir_info":{{"editable":true}}}}'
+        )
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
+            patch("deepagents_code.extras_info.distributions", return_value=[editable]),
+            patch(
+                "deepagents_code.extras_info._running_sdk_package_root",
+                return_value=None,
+            ),
         ):
             version, status = resolve_sdk_version()
         assert (version, status) == ("1.2.3", "resolved")
 
     @pytest.mark.parametrize(
-        "direct_url",
+        "raw",
         [
+            "{not json",  # malformed JSON
             "[]",  # valid JSON, wrong top-level type
             '{"dir_info": null}',  # valid JSON, dir_info not an object
             '{"url": "file:///repo", "dir_info": {"editable": false}}',  # non-editable
@@ -427,14 +716,13 @@ class TestResolveSdkVersion:
         ],
     )
     def test_resolved_uses_metadata_when_not_an_editable_install(
-        self, direct_url: str
+        self, raw: str
     ) -> None:
         """Non-editable or unexpectedly-shaped metadata never prefers source."""
-        dist = MagicMock()
-        dist.read_text.return_value = direct_url
+        dist = _sdk_dist(raw=raw)
         with (
             patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
-            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch("deepagents_code.extras_info.distributions", return_value=[dist]),
         ):
             version, status = resolve_sdk_version()
         assert (version, status) == ("1.2.3", "resolved")
@@ -445,110 +733,127 @@ class TestResolveSdkVersion:
     ) -> None:
         """A failed/invalid `direct_url.json` read degrades to the metadata version.
 
-        Exercises the `_editable_sdk_source_root` except arm: invalid JSON
-        (`ValueError`), an unreadable metadata file (`OSError`), and a
-        non-text payload (`TypeError`) must all be swallowed rather than
-        crashing the resolver.
+        Exercises the `_read_sdk_direct_url` except arm: an unreadable metadata
+        file (`OSError`) and a non-text payload (`TypeError`) must be swallowed
+        per-distribution rather than crashing the resolver. `ValueError` covers
+        non-UTF-8 bytes (`UnicodeDecodeError`); malformed JSON itself is a parse
+        failure covered by the malformed-JSON case above.
         """
-        dist = MagicMock()
+        dist = _sdk_dist()
         dist.read_text.side_effect = side_effect("boom")
         with (
             patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
-            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch("deepagents_code.extras_info.distributions", return_value=[dist]),
+        ):
+            version, status = resolve_sdk_version()
+        assert (version, status) == ("1.2.3", "resolved")
+
+    def test_resolved_uses_metadata_when_scan_fails(self, sdk_root: Path) -> None:
+        """A `distributions()` failure mid-iteration masks every later record.
+
+        `distributions()` yields lazily, so a broken `sys.path` entry surfaces
+        while iterating and cannot be contained per-distribution — the backstop
+        reports no source root and the metadata version is used, even though a
+        matching editable record would have come later in the scan.
+        """
+        version_file = sdk_root / "deepagents" / "_version.py"
+        version_file.write_text('__version__ = "1.2.4"\n', encoding="utf-8")
+
+        def _explode() -> Iterator[MagicMock]:
+            yield _sdk_dist()
+            msg = "sys.path entry vanished"
+            raise FileNotFoundError(msg)
+            yield _sdk_dist(  # unreachable; documents the masked editable record
+                raw=f'{{"url":"{sdk_root.as_uri()}","dir_info":{{"editable":true}}}}'
+            )
+
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
+            patch("deepagents_code.extras_info.distributions", side_effect=_explode),
         ):
             version, status = resolve_sdk_version()
         assert (version, status) == ("1.2.3", "resolved")
 
     def test_resolved_falls_back_to_metadata_when_editable_version_file_invalid(
-        self, tmp_path: Path
+        self, sdk_root: Path
     ) -> None:
         """A broken editable SDK version file degrades to the metadata version."""
-        version_file = tmp_path / "deepagents" / "_version.py"
-        version_file.parent.mkdir()
+        version_file = sdk_root / "deepagents" / "_version.py"
         version_file.write_text("__version__ = ", encoding="utf-8")
-        dist = MagicMock()
-        dist.read_text.return_value = (
-            f'{{"url":"{tmp_path.as_uri()}","dir_info":{{"editable":true}}}}'
+        editable = _sdk_dist(
+            raw=f'{{"url":"{sdk_root.as_uri()}","dir_info":{{"editable":true}}}}'
         )
         with (
             patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
-            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch("deepagents_code.extras_info.distributions", return_value=[editable]),
         ):
             version, status = resolve_sdk_version()
-        assert (version, status) == ("1.2.3", "resolved")
+        assert (version, status) == ("1.2.3+editable", "resolved")
 
     @pytest.mark.parametrize("source_version", ["", None, 123])
     def test_resolved_falls_back_to_metadata_when_source_version_unusable(
-        self, tmp_path: Path, source_version: object
+        self, sdk_root: Path, source_version: object
     ) -> None:
         """An empty or non-string source `__version__` is rejected for metadata."""
-        version_file = tmp_path / "deepagents" / "_version.py"
-        version_file.parent.mkdir()
+        version_file = sdk_root / "deepagents" / "_version.py"
         version_file.write_text(f"__version__ = {source_version!r}\n", encoding="utf-8")
-        dist = MagicMock()
-        dist.read_text.return_value = (
-            f'{{"url":"{tmp_path.as_uri()}","dir_info":{{"editable":true}}}}'
+        editable = _sdk_dist(
+            raw=f'{{"url":"{sdk_root.as_uri()}","dir_info":{{"editable":true}}}}'
         )
         with (
             patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
-            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch("deepagents_code.extras_info.distributions", return_value=[editable]),
         ):
             version, status = resolve_sdk_version()
-        assert (version, status) == ("1.2.3", "resolved")
+        assert (version, status) == ("1.2.3+editable", "resolved")
 
     def test_resolved_uses_metadata_for_editable_non_file_url(self) -> None:
         """An editable install with a non-`file` source URL prefers metadata."""
-        dist = MagicMock()
-        dist.read_text.return_value = (
-            '{"url":"https://example.com/repo","dir_info":{"editable":true}}'
+        dist = _sdk_dist(
+            raw='{"url":"https://example.com/repo","dir_info":{"editable":true}}'
         )
         with (
             patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
-            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch("deepagents_code.extras_info.distributions", return_value=[dist]),
         ):
             version, status = resolve_sdk_version()
         assert (version, status) == ("1.2.3", "resolved")
 
     @pytest.mark.parametrize(
-        "direct_url",
+        "raw",
         [
             '{"dir_info":{"editable":true}}',  # url key absent
             '{"url":123,"dir_info":{"editable":true}}',  # url not a string
         ],
     )
-    def test_resolved_uses_metadata_when_editable_url_unusable(
-        self, direct_url: str
-    ) -> None:
+    def test_resolved_uses_metadata_when_editable_url_unusable(self, raw: str) -> None:
         """An editable install without a usable source URL prefers metadata."""
-        dist = MagicMock()
-        dist.read_text.return_value = direct_url
+        dist = _sdk_dist(raw=raw)
         with (
             patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
-            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch("deepagents_code.extras_info.distributions", return_value=[dist]),
         ):
             version, status = resolve_sdk_version()
         assert (version, status) == ("1.2.3", "resolved")
 
     def test_resolved_falls_back_to_metadata_when_version_assignment_absent(
-        self, tmp_path: Path
+        self, sdk_root: Path
     ) -> None:
         """A valid `_version.py` with no `__version__` assignment uses metadata."""
-        version_file = tmp_path / "deepagents" / "_version.py"
-        version_file.parent.mkdir()
+        version_file = sdk_root / "deepagents" / "_version.py"
         version_file.write_text('VERSION = "1.2.4"\n', encoding="utf-8")
-        dist = MagicMock()
-        dist.read_text.return_value = (
-            f'{{"url":"{tmp_path.as_uri()}","dir_info":{{"editable":true}}}}'
+        editable = _sdk_dist(
+            raw=f'{{"url":"{sdk_root.as_uri()}","dir_info":{{"editable":true}}}}'
         )
         with (
             patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
-            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch("deepagents_code.extras_info.distributions", return_value=[editable]),
         ):
             version, status = resolve_sdk_version()
-        assert (version, status) == ("1.2.3", "resolved")
+        assert (version, status) == ("1.2.3+editable", "resolved")
 
     def test_resolved_falls_back_to_metadata_when_version_is_non_literal(
-        self, tmp_path: Path
+        self, sdk_root: Path
     ) -> None:
         """A non-literal `__version__` RHS is rejected in favor of metadata.
 
@@ -556,19 +861,17 @@ class TestResolveSdkVersion:
         `SyntaxError` at parse time — where a syntactically valid but
         dynamically-computed assignment cannot be read as a constant.
         """
-        version_file = tmp_path / "deepagents" / "_version.py"
-        version_file.parent.mkdir()
+        version_file = sdk_root / "deepagents" / "_version.py"
         version_file.write_text("__version__ = _compute_version()\n", encoding="utf-8")
-        dist = MagicMock()
-        dist.read_text.return_value = (
-            f'{{"url":"{tmp_path.as_uri()}","dir_info":{{"editable":true}}}}'
+        editable = _sdk_dist(
+            raw=f'{{"url":"{sdk_root.as_uri()}","dir_info":{{"editable":true}}}}'
         )
         with (
             patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
-            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch("deepagents_code.extras_info.distributions", return_value=[editable]),
         ):
             version, status = resolve_sdk_version()
-        assert (version, status) == ("1.2.3", "resolved")
+        assert (version, status) == ("1.2.3+editable", "resolved")
 
     @pytest.mark.parametrize(
         ("url", "expected"),
@@ -582,12 +885,20 @@ class TestResolveSdkVersion:
     def test_editable_source_root_handles_url_authority(
         self, url: str, expected: Path
     ) -> None:
-        """`file://` authority handling distinguishes UNC hosts from `localhost`."""
-        dist = MagicMock()
-        dist.read_text.return_value = (
-            f'{{"url":"{url}","dir_info":{{"editable":true}}}}'
-        )
-        with patch("deepagents_code.extras_info.distribution", return_value=dist):
+        """`file://` authority handling distinguishes UNC hosts from `localhost`.
+
+        The running module is placed under the URL's root so the record can be
+        correlated; the assertion is about how the URL authority maps onto the
+        returned source root.
+        """
+        dist = _sdk_dist(raw=f'{{"url":"{url}","dir_info":{{"editable":true}}}}')
+        with (
+            patch("deepagents_code.extras_info.distributions", return_value=[dist]),
+            patch(
+                "deepagents_code.extras_info._running_sdk_package_root",
+                return_value=(expected / "deepagents").resolve(),
+            ),
+        ):
             assert _editable_sdk_source_root() == expected
 
     def test_not_installed_distinguished_from_error(self) -> None:
@@ -607,3 +918,816 @@ class TestResolveSdkVersion:
         ):
             version, status = resolve_sdk_version()
         assert (version, status) == (None, "error")
+
+
+def _distribution_version(
+    *,
+    name: str = "deepagents",
+    source_version: str | None = None,
+    metadata_version: str | None = None,
+    editable: bool = False,
+    source_path: str | None = None,
+    status: DistributionMetadataStatus = "resolved",
+) -> DistributionVersion:
+    """Build a `DistributionVersion` with sensible defaults for tests."""
+    return DistributionVersion(
+        name=name,
+        source_version=source_version,
+        metadata_version=metadata_version,
+        editable=editable,
+        source_path=source_path,
+        status=status,
+    )
+
+
+class TestContractHome:
+    """Tests for `~`-contraction of displayed editable source paths."""
+
+    def test_contracts_home_prefix(self) -> None:
+        """A path under the home directory is shown with a `~` prefix."""
+        from deepagents_code.extras_info import _contract_home
+
+        with patch(
+            "deepagents_code.extras_info.Path.home", return_value=Path("/home/dev")
+        ):
+            assert _contract_home(Path("/home/dev/src/proj")) == "~/src/proj"
+
+    def test_exact_home_becomes_tilde(self) -> None:
+        """The home directory itself contracts to a bare `~`."""
+        from deepagents_code.extras_info import _contract_home
+
+        with patch(
+            "deepagents_code.extras_info.Path.home", return_value=Path("/home/dev")
+        ):
+            assert _contract_home(Path("/home/dev")) == "~"
+
+    def test_non_home_path_is_unchanged(self) -> None:
+        """A path outside the home directory is returned verbatim."""
+        from deepagents_code.extras_info import _contract_home
+
+        with patch(
+            "deepagents_code.extras_info.Path.home", return_value=Path("/home/dev")
+        ):
+            assert _contract_home(Path("/opt/other")) == "/opt/other"
+
+    def test_unresolvable_home_returns_raw_path(self) -> None:
+        """When the home directory cannot be determined, the raw path is kept."""
+        from deepagents_code.extras_info import _contract_home
+
+        with patch("deepagents_code.extras_info.Path.home", side_effect=RuntimeError):
+            assert _contract_home(Path("/home/dev/x")) == "/home/dev/x"
+
+
+class TestDistributionVersion:
+    """Tests for the structured single-distribution version representation."""
+
+    def test_primary_prefers_source_for_editable(self) -> None:
+        """Editable installs report the live source version as primary."""
+        info = _distribution_version(
+            source_version="1.2.4", metadata_version="1.2.3", editable=True
+        )
+        assert info.primary_version == "1.2.4"
+
+    def test_primary_uses_metadata_for_non_editable(self) -> None:
+        """Non-editable installs report the metadata version as primary."""
+        info = _distribution_version(
+            source_version="9.9.9", metadata_version="1.2.3", editable=False
+        )
+        assert info.primary_version == "1.2.3"
+
+    def test_primary_falls_back_to_metadata_without_source(self) -> None:
+        """An editable install with no readable source version uses metadata."""
+        info = _distribution_version(
+            source_version=None, metadata_version="1.2.3", editable=True
+        )
+        assert info.primary_version == "1.2.3"
+
+    def test_has_drift_true_when_versions_differ(self) -> None:
+        """Drift is reported when both versions are known and differ."""
+        info = _distribution_version(source_version="1.2.4", metadata_version="1.2.3")
+        assert info.has_drift is True
+
+    def test_has_drift_false_when_versions_agree(self) -> None:
+        """No drift is reported when the versions agree."""
+        info = _distribution_version(source_version="1.2.3", metadata_version="1.2.3")
+        assert info.has_drift is False
+
+    @pytest.mark.parametrize(
+        ("source", "metadata"),
+        [(None, "1.2.3"), ("1.2.3", None), (None, None)],
+    )
+    def test_has_drift_false_when_a_version_is_unknown(
+        self, source: str | None, metadata: str | None
+    ) -> None:
+        """Drift requires both versions; a missing one is never drift."""
+        info = _distribution_version(source_version=source, metadata_version=metadata)
+        assert info.has_drift is False
+
+
+class TestVersionAnnotations:
+    """Tests for the rendered editable/drift/mismatch annotations."""
+
+    def _report(
+        self,
+        *,
+        cli: DistributionVersion | None = None,
+        sdk: DistributionVersion | None = None,
+        requirement: Requirement | None = None,
+        satisfied: bool | None = None,
+    ) -> VersionReport:
+        return VersionReport(
+            cli=cli or _distribution_version(name="deepagents-code"),
+            sdk=sdk or _distribution_version(),
+            sdk_requirement=requirement,
+            sdk_requirement_satisfied=satisfied,
+        )
+
+    def test_cli_annotation_empty_for_normal_install(self) -> None:
+        """A non-editable install with agreeing versions gets no annotation."""
+        info = _distribution_version(
+            name="deepagents-code", source_version="0.1.41", metadata_version="0.1.41"
+        )
+        assert format_cli_version_annotation(info) == ""
+
+    def test_cli_annotation_omits_editable_when_versions_agree(self) -> None:
+        """Editable status is shown separately, so an in-sync editable CLI is bare.
+
+        The CLI editable state is rendered by the dedicated `Editable install:`
+        line (and doctor's `Install method`), so the inline annotation carries
+        only drift — here there is none.
+        """
+        info = _distribution_version(
+            name="deepagents-code",
+            source_version="0.1.41",
+            metadata_version="0.1.41",
+            editable=True,
+        )
+        assert format_cli_version_annotation(info) == ""
+
+    def test_cli_annotation_shows_stale_metadata(self) -> None:
+        """An editable CLI with stale metadata shows the drift, not `editable`."""
+        info = _distribution_version(
+            name="deepagents-code",
+            source_version="0.1.41",
+            metadata_version="0.1.40",
+            editable=True,
+        )
+        assert format_cli_version_annotation(info) == " (installed metadata: 0.1.40)"
+
+    def test_sdk_annotation_empty_for_normal_install(self) -> None:
+        """A non-editable SDK whose requirement is satisfied gets no annotation."""
+        sdk = _distribution_version(source_version="0.7.0", metadata_version="0.7.0")
+        report = self._report(
+            sdk=sdk, requirement=Requirement("deepagents==0.7.0"), satisfied=True
+        )
+        assert format_sdk_version_annotation(report) == ""
+
+    def test_sdk_annotation_shows_stale_metadata_without_mismatch(self) -> None:
+        """An editable SDK with stale metadata but a satisfied pin shows drift."""
+        sdk = _distribution_version(
+            source_version="0.7.1", metadata_version="0.7.0", editable=True
+        )
+        report = self._report(
+            sdk=sdk, requirement=Requirement("deepagents>=0.7.0"), satisfied=True
+        )
+        assert (
+            format_sdk_version_annotation(report)
+            == " (editable; installed metadata: 0.7.0)"
+        )
+
+    def test_sdk_annotation_uses_newer_exact_pin_for_editable_install(self) -> None:
+        """A newer exact pin explains why the effective SDK version is ahead."""
+        cli = _distribution_version(
+            name="deepagents-code", editable=True, source_path="/repo/libs/code"
+        )
+        sdk = _distribution_version(
+            source_version="0.6.12",
+            metadata_version="0.6.12",
+            editable=True,
+            source_path="/repo/libs/deepagents",
+        )
+        report = self._report(
+            cli=cli,
+            sdk=sdk,
+            requirement=Requirement("deepagents==0.7.0a7"),
+            satisfied=True,
+        )
+        assert report.effective_sdk_version == "0.7.0a7"
+        assert report.display_sdk_version == "0.7.0a7+editable"
+        assert format_sdk_version_annotation(report) == (
+            " (workspace HEAD; source marker: 0.6.12)"
+        )
+
+    def test_workspace_head_decorates_display_not_comparison_version(self) -> None:
+        """The editable marker never changes the requirement comparison value."""
+        cli = _distribution_version(
+            name="deepagents-code", editable=True, source_path="/repo/libs/code"
+        )
+        sdk = _distribution_version(
+            source_version="0.6.12",
+            metadata_version="0.6.12",
+            editable=True,
+            source_path="/repo/libs/deepagents",
+        )
+        requirement = Requirement("deepagents==0.7.0a7+build")
+        report = self._report(
+            cli=cli,
+            sdk=sdk,
+            requirement=requirement,
+            satisfied=True,
+        )
+        comparison = _sdk_requirement_comparison_version(cli, sdk, requirement)
+        assert comparison == "0.7.0a7+build"
+        assert _requirement_satisfied(requirement, comparison) is True
+        assert _display_sdk_version(cli, sdk, requirement) == ("0.7.0a7+build.editable")
+        assert report.display_sdk_version == "0.7.0a7+build.editable"
+
+    @pytest.mark.parametrize("source_version", [None, "not-a-version"])
+    def test_workspace_head_requires_valid_source_version(
+        self, source_version: str | None
+    ) -> None:
+        """Stale metadata cannot mask a missing or malformed source marker."""
+        cli = _distribution_version(
+            name="deepagents-code", editable=True, source_path="/repo/libs/code"
+        )
+        sdk = _distribution_version(
+            source_version=source_version,
+            metadata_version="0.6.12",
+            editable=True,
+            source_path="/repo/libs/deepagents",
+        )
+        report = self._report(
+            cli=cli,
+            sdk=sdk,
+            requirement=Requirement("deepagents==0.7.0a7"),
+            satisfied=False,
+        )
+        assert report.sdk_is_workspace_head is False
+        expected = source_version or "0.6.12"
+        assert report.effective_sdk_version == expected
+        assert report.sdk_source_version_invalid is True
+        assert report.sdk_requirement_mismatch is True
+
+    @pytest.mark.parametrize(
+        ("pin", "satisfied", "mismatch"),
+        [
+            pytest.param("0.6.10", False, True, id="older-pin"),
+            pytest.param("0.6.12", True, False, id="equal-pin"),
+        ],
+    )
+    def test_workspace_head_requires_pin_newer_than_marker(
+        self, pin: str, satisfied: bool, mismatch: bool
+    ) -> None:
+        """A sibling pin that is not strictly newer never overrides the marker.
+
+        Guards the `pinned > max(markers)` comparison: an older pin must still
+        surface as a mismatch, and an equal pin must not decorate the version as
+        workspace HEAD.
+        """
+        cli = _distribution_version(
+            name="deepagents-code", editable=True, source_path="/repo/libs/code"
+        )
+        sdk = _distribution_version(
+            source_version="0.6.12",
+            metadata_version="0.6.12",
+            editable=True,
+            source_path="/repo/libs/deepagents",
+        )
+        report = self._report(
+            cli=cli,
+            sdk=sdk,
+            requirement=Requirement(f"deepagents=={pin}"),
+            satisfied=satisfied,
+        )
+        # The observed source marker wins; the pin neither masks it nor adds the
+        # `+editable` workspace-HEAD decoration.
+        assert report.sdk_is_workspace_head is False
+        assert report.effective_sdk_version == "0.6.12"
+        assert report.display_sdk_version == "0.6.12"
+        assert report.sdk_requirement_mismatch is mismatch
+
+    def test_ranged_requirement_never_overrides_sibling_marker(self) -> None:
+        """A ranged sibling requirement stays a mismatch instead of overriding.
+
+        `_exact_pin` returns `None` for a range, so the workspace-HEAD override
+        must decline and the marker must still read as a mismatch.
+        """
+        cli = _distribution_version(
+            name="deepagents-code", editable=True, source_path="/repo/libs/code"
+        )
+        sdk = _distribution_version(
+            source_version="0.6.12",
+            metadata_version="0.6.12",
+            editable=True,
+            source_path="/repo/libs/deepagents",
+        )
+        report = self._report(
+            cli=cli,
+            sdk=sdk,
+            requirement=Requirement("deepagents>=0.7,<0.8"),
+            satisfied=False,
+        )
+        assert report.sdk_is_workspace_head is False
+        assert report.effective_sdk_version == "0.6.12"
+        assert report.display_sdk_version == "0.6.12"
+        assert (
+            "required by deepagents-code: <0.8,>=0.7 — mismatch"
+            in format_sdk_version_annotation(report)
+        )
+
+    @pytest.mark.parametrize(
+        ("cli_editable", "sdk_editable"),
+        [
+            pytest.param(True, False, id="sdk-not-editable"),
+            pytest.param(False, True, id="cli-not-editable"),
+        ],
+    )
+    def test_workspace_sibling_requires_both_editable(
+        self, cli_editable: bool, sdk_editable: bool
+    ) -> None:
+        """The sibling shape only holds when both installs are editable."""
+        cli = _distribution_version(
+            name="deepagents-code",
+            editable=cli_editable,
+            source_path="/repo/libs/code",
+        )
+        sdk = _distribution_version(
+            editable=sdk_editable,
+            source_path="/repo/libs/deepagents",
+        )
+        assert _editable_sdk_is_cli_workspace_sibling(cli, sdk) is False
+
+    def test_sdk_annotation_shows_ranged_requirement_mismatch(self) -> None:
+        """A ranged requirement keeps its full specifier in the mismatch note."""
+        sdk = _distribution_version(source_version="0.6.12", metadata_version="0.6.12")
+        report = self._report(
+            sdk=sdk,
+            requirement=Requirement("deepagents>=0.7,<0.8"),
+            satisfied=False,
+        )
+        annotation = format_sdk_version_annotation(report)
+        assert "required by deepagents-code: <0.8,>=0.7 — mismatch" in annotation
+
+    def test_sdk_annotation_shows_editable_drift_without_mismatch(self) -> None:
+        """An editable source matching the exact pin is healthy.
+
+        Stale metadata is still shown for diagnostics.
+        """
+        sdk = _distribution_version(
+            source_version="0.7.0a7", metadata_version="0.6.12", editable=True
+        )
+        report = self._report(
+            sdk=sdk, requirement=Requirement("deepagents==0.7.0a7"), satisfied=True
+        )
+        assert report.effective_sdk_version == "0.7.0a7"
+        assert format_sdk_version_annotation(report) == (
+            " (editable; installed metadata: 0.6.12)"
+        )
+
+
+class TestWithEditableLocalVersion:
+    """Tests for `_with_editable_local_version`.
+
+    Mirrors the SDK's `test_version.py` cases for
+    `deepagents._version._with_editable_local_version`; both helpers must stamp
+    identical strings so the two `lc_versions` entries in a trace match.
+    """
+
+    def test_appends_editable_local_segment(self) -> None:
+        assert _with_editable_local_version("0.6.12") == "0.6.12+editable"
+
+    def test_preserves_existing_local_segment(self) -> None:
+        assert _with_editable_local_version("0.6.12+build") == "0.6.12+build.editable"
+
+    def test_returns_original_for_invalid_version(self) -> None:
+        assert _with_editable_local_version("not-a-version") == "not-a-version"
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            pytest.param(
+                "1.0.0-alpha1", "1.0.0a1+editable", id="prerelease-normalized"
+            ),
+            pytest.param("v1.2.3", "1.2.3+editable", id="v-prefix-stripped"),
+            pytest.param("01.2.3", "1.2.3+editable", id="leading-zeros-stripped"),
+            pytest.param("1.0+Build", "1.0+build.editable", id="local-lowercased"),
+            pytest.param("1!2.0", "1!2.0+editable", id="epoch-preserved"),
+        ],
+    )
+    def test_reemits_base_in_canonical_form(self, value: str, expected: str) -> None:
+        """The base version is canonicalized, so output can differ beyond the suffix."""
+        assert _with_editable_local_version(value) == expected
+
+    def test_is_not_idempotent(self) -> None:
+        """Applying twice stacks segments; callers must apply exactly once."""
+        once = _with_editable_local_version("0.7.0")
+        assert _with_editable_local_version(once) == "0.7.0+editable.editable"
+
+
+class TestRequirementSatisfied:
+    """Tests for comparing a declared requirement against installed metadata."""
+
+    def test_exact_pin_satisfied(self) -> None:
+        assert _requirement_satisfied(Requirement("deepagents==0.7.0"), "0.7.0") is True
+
+    def test_exact_pin_unsatisfied(self) -> None:
+        assert (
+            _requirement_satisfied(Requirement("deepagents==0.7.0a7"), "0.6.12")
+            is False
+        )
+
+    def test_ranged_requirement_satisfied(self) -> None:
+        assert (
+            _requirement_satisfied(Requirement("deepagents>=0.7,<0.8"), "0.7.3") is True
+        )
+
+    def test_ranged_requirement_unsatisfied(self) -> None:
+        assert (
+            _requirement_satisfied(Requirement("deepagents>=0.7,<0.8"), "0.6.12")
+            is False
+        )
+
+    def test_prerelease_metadata_is_evaluated(self) -> None:
+        """A prerelease installed version is compared, not silently dropped."""
+        assert (
+            _requirement_satisfied(Requirement("deepagents==0.7.0a7"), "0.7.0a7")
+            is True
+        )
+
+    @pytest.mark.parametrize(
+        ("requirement", "metadata"),
+        [(None, "0.7.0"), (Requirement("deepagents==0.7.0"), None), (None, None)],
+    )
+    def test_missing_inputs_are_inconclusive(
+        self, requirement: Requirement | None, metadata: str | None
+    ) -> None:
+        """A missing requirement or version yields `None`, not a boolean."""
+        assert _requirement_satisfied(requirement, metadata) is None
+
+    def test_unparseable_version_is_inconclusive(self) -> None:
+        """An unparseable installed version degrades to `None` rather than raising."""
+        assert (
+            _requirement_satisfied(Requirement("deepagents==0.7.0"), "not-a-version")
+            is None
+        )
+
+
+class TestSdkRequirementFromCli:
+    """Tests for reading the declared `deepagents` requirement from metadata."""
+
+    def _dist(self, requires: list[str]) -> MagicMock:
+        dist = MagicMock()
+        dist.requires = requires
+        return dist
+
+    def test_returns_base_requirement(self) -> None:
+        """The unconditional `deepagents` dependency is returned."""
+        dist = self._dist(["deepagents==0.7.0a7", "rich>=13"])
+        with patch("deepagents_code.extras_info.distribution", return_value=dist):
+            req = sdk_requirement_from_cli()
+        assert req is not None
+        assert str(req) == "deepagents==0.7.0a7"
+
+    def test_skips_extras_gated_requirement(self) -> None:
+        """An `extra`-gated `deepagents` entry is not treated as the base pin."""
+        dist = self._dist(['deepagents[extra]==9.9.9; extra == "foo"'])
+        with patch("deepagents_code.extras_info.distribution", return_value=dist):
+            assert sdk_requirement_from_cli() is None
+
+    def test_skips_unparseable_entries(self) -> None:
+        """A malformed `Requires-Dist` entry is skipped, not fatal."""
+        dist = self._dist(["=not a requirement=", "deepagents>=0.7,<0.8"])
+        with patch("deepagents_code.extras_info.distribution", return_value=dist):
+            req = sdk_requirement_from_cli()
+        assert req is not None
+        assert str(req.specifier) == "<0.8,>=0.7"
+
+    def test_missing_distribution_returns_none(self) -> None:
+        """A missing distribution yields `None` rather than raising."""
+        with patch(
+            "deepagents_code.extras_info.distribution",
+            side_effect=PackageNotFoundError("deepagents-code"),
+        ):
+            assert sdk_requirement_from_cli() is None
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+            TypeError("malformed metadata"),
+        ],
+    )
+    def test_unreadable_requirements_return_none(self, error: Exception) -> None:
+        """Unreadable requirement metadata is inconclusive rather than fatal."""
+        dist = MagicMock()
+        type(dist).requires = PropertyMock(side_effect=error)
+        with patch("deepagents_code.extras_info.distribution", return_value=dist):
+            assert sdk_requirement_from_cli() is None
+
+    def test_returns_applicable_marked_requirement(self) -> None:
+        """A base `deepagents` dep whose marker applies is still returned."""
+        dist = self._dist(['deepagents==0.7.0a7; python_version >= "3.0"'])
+        with patch("deepagents_code.extras_info.distribution", return_value=dist):
+            req = sdk_requirement_from_cli()
+        assert req is not None
+        assert str(req.specifier) == "==0.7.0a7"
+
+    def test_unevaluable_marker_is_treated_as_applicable(self) -> None:
+        """A marker that fails to evaluate must not silently drop the pin.
+
+        Dropping it would hide the SDK requirement mismatch this check exists to
+        surface, so an unexpected evaluation error is treated as applicable.
+        """
+        dist = self._dist(['deepagents==0.7.0a7; python_version >= "3.0"'])
+
+        def boom(_self: object, *_a: object, **_k: object) -> bool:
+            msg = "marker blew up"
+            raise ValueError(msg)
+
+        with (
+            patch("deepagents_code.extras_info.distribution", return_value=dist),
+            patch("packaging.markers.Marker.evaluate", boom),
+        ):
+            req = sdk_requirement_from_cli()
+        assert req is not None
+        assert str(req.specifier) == "==0.7.0a7"
+
+
+class TestCollectVersionInfo:
+    """Tests for the version collectors that read the live environment."""
+
+    def test_collect_cli_normal_install(self) -> None:
+        """A non-editable CLI reports source and metadata with no editable flag."""
+        with (
+            patch(
+                "deepagents_code.extras_info._read_cli_source_version",
+                return_value="0.1.41",
+            ),
+            patch("deepagents_code.extras_info.pkg_version", return_value="0.1.41"),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(False, None),
+            ),
+        ):
+            info = collect_cli_version_info()
+        assert info.source_version == "0.1.41"
+        assert info.metadata_version == "0.1.41"
+        assert info.editable is False
+        assert info.status == "resolved"
+        assert info.has_drift is False
+
+    def test_collect_cli_editable_stale_metadata(self) -> None:
+        """An editable CLI surfaces the stale-metadata drift."""
+        with (
+            patch(
+                "deepagents_code.extras_info._read_cli_source_version",
+                return_value="0.1.41",
+            ),
+            patch("deepagents_code.extras_info.pkg_version", return_value="0.1.40"),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(True, "~/src/deepagents/libs/code"),
+            ),
+        ):
+            info = collect_cli_version_info()
+        assert info.primary_version == "0.1.41"
+        assert info.metadata_version == "0.1.40"
+        assert info.editable is True
+        assert info.source_path == "~/src/deepagents/libs/code"
+        assert info.has_drift is True
+
+    def test_collect_cli_metadata_missing_resolves_from_source(self) -> None:
+        """Absent CLI metadata still resolves via the source version."""
+        with (
+            patch(
+                "deepagents_code.extras_info._read_cli_source_version",
+                return_value="0.1.41",
+            ),
+            patch(
+                "deepagents_code.extras_info.pkg_version",
+                side_effect=PackageNotFoundError("deepagents-code"),
+            ),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(False, None),
+            ),
+        ):
+            info = collect_cli_version_info()
+        assert info.status == "resolved"
+        assert info.metadata_version is None
+        assert info.primary_version == "0.1.41"
+
+    def test_collect_cli_metadata_and_source_missing_is_not_installed(self) -> None:
+        """No source and no metadata reports `not_installed`."""
+        with (
+            patch(
+                "deepagents_code.extras_info._read_cli_source_version",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.extras_info.pkg_version",
+                side_effect=PackageNotFoundError("deepagents-code"),
+            ),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(False, None),
+            ),
+        ):
+            info = collect_cli_version_info()
+        assert info.status == "not_installed"
+        assert info.primary_version is None
+
+    def test_collect_cli_unexpected_error_with_source_resolves(self) -> None:
+        """An unexpected metadata failure still resolves when source is present."""
+        with (
+            patch(
+                "deepagents_code.extras_info._read_cli_source_version",
+                return_value="0.1.41",
+            ),
+            patch(
+                "deepagents_code.extras_info.pkg_version",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(False, None),
+            ),
+        ):
+            info = collect_cli_version_info()
+        assert info.status == "resolved"
+        assert info.primary_version == "0.1.41"
+
+    def test_collect_cli_unexpected_error_without_source_is_error(self) -> None:
+        """An unexpected metadata failure with no source reports `error`."""
+        with (
+            patch(
+                "deepagents_code.extras_info._read_cli_source_version",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.extras_info.pkg_version",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(False, None),
+            ),
+        ):
+            info = collect_cli_version_info()
+        assert info.status == "error"
+        assert info.primary_version is None
+
+    def test_collect_sdk_normal_install(self) -> None:
+        """A non-editable SDK reports metadata and no editable source."""
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="0.7.0"),
+            patch("deepagents_code.extras_info.distributions", return_value=[]),
+        ):
+            info = collect_sdk_version_info()
+        assert info.metadata_version == "0.7.0"
+        assert info.editable is False
+        assert info.source_version is None
+        assert info.primary_version == "0.7.0"
+        assert info.status == "resolved"
+
+    def test_collect_sdk_editable_stale_metadata(self, sdk_root: Path) -> None:
+        """An editable SDK prefers source over stale metadata and reports drift."""
+        version_file = sdk_root / "deepagents" / "_version.py"
+        version_file.write_text('__version__ = "0.6.13"\n', encoding="utf-8")
+        editable = _sdk_dist(
+            raw=f'{{"url":"{sdk_root.as_uri()}","dir_info":{{"editable":true}}}}'
+        )
+        with (
+            patch("deepagents_code.extras_info.pkg_version", return_value="0.6.12"),
+            patch("deepagents_code.extras_info.distributions", return_value=[editable]),
+        ):
+            info = collect_sdk_version_info()
+        assert info.editable is True
+        assert info.source_version == "0.6.13"
+        assert info.metadata_version == "0.6.12"
+        assert info.primary_version == "0.6.13"
+        assert info.has_drift is True
+
+    def test_collect_sdk_not_installed(self) -> None:
+        """A missing SDK reports `not_installed` with no versions."""
+        with patch(
+            "deepagents_code.extras_info.pkg_version",
+            side_effect=PackageNotFoundError("deepagents"),
+        ):
+            info = collect_sdk_version_info()
+        assert info.status == "not_installed"
+        assert info.metadata_version is None
+        assert info.primary_version is None
+
+    def test_collect_version_report_uses_newer_exact_pin_for_editable_sdk(
+        self, sdk_root: Path
+    ) -> None:
+        """Editable main treats a newer exact dcode pin as the effective SDK."""
+        cli_path = sdk_root.parent / "code"
+        version_file = sdk_root / "deepagents" / "_version.py"
+        _write_cli_pyproject(cli_path, "deepagents==0.7.0a8")
+        version_file.write_text('__version__ = "0.6.12"\n', encoding="utf-8")
+        sdk_dist = _sdk_dist(
+            raw=f'{{"url":"{sdk_root.as_uri()}","dir_info":{{"editable":true}}}}'
+        )
+        code_dist = MagicMock()
+        code_dist.requires = ["deepagents==0.7.0a7"]
+
+        def fake_version(name: str) -> str:
+            return {"deepagents": "0.6.12", "deepagents-code": "0.1.45"}[name]
+
+        with (
+            patch("deepagents_code.extras_info.pkg_version", side_effect=fake_version),
+            patch("deepagents_code.extras_info.distributions", return_value=[sdk_dist]),
+            patch("deepagents_code.extras_info.distribution", return_value=code_dist),
+            patch(
+                "deepagents_code.extras_info._read_cli_source_version",
+                return_value="0.1.45",
+            ),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(True, str(cli_path)),
+            ),
+        ):
+            report = collect_version_report()
+        assert report.effective_sdk_version == "0.7.0a8"
+        assert report.display_sdk_version == "0.7.0a8+editable"
+        assert report.sdk_is_workspace_head is True
+        assert report.sdk_requirement_satisfied is True
+        assert report.sdk_requirement_mismatch is False
+
+    def test_collect_version_report_keeps_unrelated_editable_sdk_mismatch(
+        self, tmp_path: Path, sdk_root: Path
+    ) -> None:
+        """Editable SDKs outside the dcode checkout still report mismatches."""
+        cli_path = tmp_path / "repo" / "libs" / "code"
+        version_file = sdk_root / "deepagents" / "_version.py"
+        _write_cli_pyproject(cli_path, "deepagents==0.7.0a8")
+        version_file.write_text('__version__ = "0.6.12"\n', encoding="utf-8")
+        sdk_dist = _sdk_dist(
+            raw=f'{{"url":"{sdk_root.as_uri()}","dir_info":{{"editable":true}}}}'
+        )
+        code_dist = MagicMock()
+        code_dist.requires = ["deepagents==0.7.0a8"]
+
+        def fake_version(name: str) -> str:
+            return {"deepagents": "0.6.12", "deepagents-code": "0.1.45"}[name]
+
+        with (
+            patch("deepagents_code.extras_info.pkg_version", side_effect=fake_version),
+            patch("deepagents_code.extras_info.distributions", return_value=[sdk_dist]),
+            patch("deepagents_code.extras_info.distribution", return_value=code_dist),
+            patch(
+                "deepagents_code.extras_info._read_cli_source_version",
+                return_value="0.1.45",
+            ),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(True, str(cli_path)),
+            ),
+        ):
+            report = collect_version_report()
+        assert report.effective_sdk_version == "0.6.12"
+        assert report.display_sdk_version == "0.6.12"
+        assert report.sdk_is_workspace_head is False
+        assert report.sdk_requirement_satisfied is False
+        assert report.sdk_requirement_mismatch is True
+
+    def test_collect_version_report_flags_requirement_mismatch(self) -> None:
+        """The aggregated report flags an unsatisfied declared SDK requirement."""
+        code_dist = MagicMock()
+        code_dist.requires = ["deepagents==0.7.0a7"]
+
+        def fake_version(name: str) -> str:
+            return {"deepagents": "0.6.12", "deepagents-code": "0.1.41"}[name]
+
+        with (
+            patch("deepagents_code.extras_info.pkg_version", side_effect=fake_version),
+            patch("deepagents_code.extras_info.distributions", return_value=[]),
+            patch("deepagents_code.extras_info.distribution", return_value=code_dist),
+            patch(
+                "deepagents_code.extras_info._cli_editable_info",
+                return_value=(False, None),
+            ),
+        ):
+            report = collect_version_report()
+        assert report.sdk_requirement is not None
+        assert report.sdk_requirement_mismatch is True
+
+    def test_collect_version_report_uses_no_network_or_subprocess(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Collecting the report must not open sockets or spawn subprocesses."""
+        import socket
+        import subprocess
+
+        def _forbidden(*_args: object, **_kwargs: object) -> None:
+            msg = "version collection must stay offline and process-free"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(socket, "socket", _forbidden)
+        monkeypatch.setattr(subprocess, "run", _forbidden)
+        monkeypatch.setattr(subprocess, "Popen", _forbidden)
+
+        report = collect_version_report()
+        assert isinstance(report, VersionReport)

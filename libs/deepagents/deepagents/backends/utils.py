@@ -6,6 +6,7 @@ enable composition without fragile string parsing.
 """
 
 import functools
+import logging
 import os
 import re
 from collections.abc import Callable, Sequence
@@ -15,8 +16,9 @@ from typing import Any, Final, Literal, overload
 
 import wcmatch.glob as wcglob
 
-from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMatch as _GrepMatch, GrepResult, ReadResult
+
+logger = logging.getLogger(__name__)
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
 MAX_VIDEO_INPUT_BYTES: Final = 1024 * 1024 * 1024
@@ -162,31 +164,23 @@ def compile_recursive_glob(pattern: str) -> Callable[[str], bool]:
 
 
 def _normalize_content(file_data: FileData) -> str:
-    """Normalize file_data content to a plain string.
-
-    This is the single backwards-compatibility conversion point for the
-    legacy `list[str]` file format.  New code stores `content` as a
-    plain `str`; old data may still contain a list of lines.
+    """Normalize current and legacy file data content to a plain string.
 
     Args:
         file_data: `FileData` dict with `content` key.
 
     Returns:
         Content as a single string.
+
+    Raises:
+        TypeError: If content is neither a string nor a legacy list of strings.
     """
-    content = file_data["content"]
-    if isinstance(content, list):
-        warn_deprecated(
-            since="0.5.0",
-            removal="0.7.0",
-            message=(
-                "`FileData` with `list[str]` content is deprecated and will "
-                "be removed in deepagents==0.7.0. Content should be stored "
-                "as a plain `str`."
-            ),
-            package="deepagents",
-        )
+    content: object = file_data["content"]
+    if isinstance(content, list) and all(isinstance(line, str) for line in content):
         return "\n".join(content)
+    if not isinstance(content, str):
+        msg = f"File content must be a string or a legacy list of strings, got {type(content).__name__}."
+        raise TypeError(msg)
     return content
 
 
@@ -311,40 +305,17 @@ def _get_backend_read_file_type(path: str) -> FileType:
     return _get_file_type(path)
 
 
-def _to_legacy_file_data(file_data: FileData) -> dict[str, Any]:
-    r"""Convert a `FileData` dict to the legacy (v1) storage format.
-
-    The v1 format stores content as `list[str]` (lines split on `\\n`)
-    and omits the `encoding` field.  Use this when `file_format="v1"`
-    on a backend to preserve backwards compatibility with consumers that
-    expect `list[str]` content.
-
-    Args:
-        file_data: Modern (v2) `FileData` with `content: str` and `encoding`.
-
-    Returns:
-        Dict with `content` as `list[str]`, plus `created_at` /
-            `modified_at` timestamps.  No `encoding` key.
-    """
-    content = file_data["content"]
-    result: dict[str, Any] = {
-        "content": content.split("\n"),
-    }
-    if "created_at" in file_data:
-        result["created_at"] = file_data["created_at"]
-    if "modified_at" in file_data:
-        result["modified_at"] = file_data["modified_at"]
-    return result
-
-
 def file_data_to_string(file_data: FileData) -> str:
-    """Convert `FileData` to plain string content.
+    """Convert current or legacy persisted file content to a string.
 
     Args:
-        file_data: `FileData` dict with 'content' key
+        file_data: File data whose content is a string or legacy list of strings.
 
     Returns:
         Content as a single string.
+
+    Raises:
+        TypeError: If content is neither a string nor a legacy list of strings.
     """
     return _normalize_content(file_data)
 
@@ -421,6 +392,44 @@ def _copy_file_data_with_content(file_data: FileData, content: str) -> FileData:
     return sliced_fd
 
 
+def normalize_read_bounds(offset: int, limit: int) -> tuple[int, int]:
+    """Floor a requested read window at a zero offset and zero lines.
+
+    Models occasionally emit degenerate `read_file` arguments (`offset=-1`,
+    `limit=0`). Clamping `offset` keeps backends from reporting a line range
+    that starts before line 1, which `ReadResult` rejects.
+
+    Clamping `limit` is *not* sufficient on its own: flooring a negative limit
+    at `0` produces a zero-length window, which still has no valid
+    `start_line`/`end_line` pair. Callers must additionally treat a returned
+    `limit` of `0` as an empty read — see `slice_read_response` below, or the
+    equivalent short-circuits in the sandbox and LangSmith backends, which
+    flag the result with `ReadResult.no_lines_requested`.
+
+    The `int()` coercion is deliberate and load-bearing, not redundant with the
+    annotations: `offset` and `limit` originate from model-supplied tool
+    arguments, and the sandbox backend interpolates them into the source of a
+    script it executes (`_READ_COMMAND_TEMPLATE`). Do not remove it.
+
+    Args:
+        offset: Requested 0-indexed line offset.
+        limit: Requested maximum number of lines.
+
+    Returns:
+        Tuple of `(offset, limit)`, each coerced to `int` and floored at `0`.
+    """
+    normalized_offset, normalized_limit = max(int(offset), 0), max(int(limit), 0)
+    if (normalized_offset, normalized_limit) != (offset, limit):
+        logger.debug(
+            "Clamped degenerate read window: offset %r -> %d, limit %r -> %d",
+            offset,
+            normalized_offset,
+            limit,
+            normalized_limit,
+        )
+    return normalized_offset, normalized_limit
+
+
 def slice_read_response(
     file_data: FileData,
     offset: int,
@@ -437,17 +446,35 @@ def slice_read_response(
         offset: Line offset (0-indexed).
         limit: Maximum number of lines.
 
+    Both bounds are clamped through `normalize_read_bounds` before slicing, so
+    a negative `offset` reads from the first line and a negative `limit` is
+    treated as `0`.
+
     Returns:
         `ReadResult` with the sliced raw content and pagination metadata
             (`total_lines`, `start_line`, `end_line`, `next_offset`). The
             pagination fields are left unset for empty or whitespace-only
-            content. `error` is set instead when the offset exceeds the file
+            content, and when the clamped `limit` is `0`; the zero-`limit`
+            result additionally sets `no_lines_requested` so the middleware
+            can tell the never-inspected window apart from a genuinely empty
+            file. `error` is set instead when the offset exceeds the file
             length.
     """
     content = file_data_to_string(file_data)
+    offset, limit = normalize_read_bounds(offset, limit)
 
+    # Ordering note: blank content is reported before the zero-limit check, so a
+    # whitespace-only file returns its content (which the middleware maps to the
+    # empty-file reminder) rather than `""`, regardless of `limit`.
     if not content or content.strip() == "":
         return ReadResult(file_data=_copy_file_data_with_content(file_data, content))
+
+    # Nothing was requested: flag the window as never inspected so the
+    # middleware can tell it apart from a genuinely empty file, which arrives
+    # via the blank-content branch above (its `ReadResult` is otherwise
+    # identical: empty content, no pagination metadata).
+    if limit == 0:
+        return ReadResult(file_data=_copy_file_data_with_content(file_data, ""), no_lines_requested=True)
 
     # `splitlines(keepends=True)` retains each line's terminator, including
     # the absence of one on the final line. Joining with `""` therefore

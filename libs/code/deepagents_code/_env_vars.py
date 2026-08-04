@@ -30,6 +30,25 @@ import os
 # Keep alphabetically sorted by constant name.
 # ---------------------------------------------------------------------------
 
+AUTO_CLASSIFIER_MODEL = "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL"
+"""Model spec (`provider:model`) used by the Auto approval-mode classifier.
+
+Unset (the default) reuses the main agent model, preserving the historical
+behavior. A `provider:model` value points the authorization classifier at a
+separate — typically faster and cheaper — model without changing the model that
+writes code. The classifier is a security control: a model that cannot be
+resolved (bad spec, missing credentials, uninstalled provider package) never
+falls back to the main model — reviewed actions are denied, and repeated
+failures escalate to your approval. Also settable via `[models].auto_classifier`
+in config.toml and `--auto-classifier-model`.
+
+This is user-controlled process env, not a repo file: a committed *project*
+`.env` cannot set it (see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`), so a cloned
+repository cannot point the review that authorizes its own tool calls at a weaker
+model. Only the shell, the launch environment, or the global `~/.deepagents/.env`
+can.
+"""
+
 AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
 """Toggle automatic app updates. Enabled by default; set to a falsy value
 ('0', 'false', 'no', 'off', or empty) to opt out."""
@@ -67,10 +86,11 @@ file, so it does not weaken the user-level-only trust boundary (a committed
 This dangerous contract is name-based: a different project, command change, or
 URL change under the same server name still matches.
 
-When set, this replaces (takes precedence over) the scoped
-`[mcp].enabled_project_server_approvals` TOML approvals.
-(`DISABLED_PROJECT_MCP_SERVERS` instead *unions* with its TOML list, so a deny
-is never silently emptied.)
+This process-wide allowlist and the scoped
+`[mcp].enabled_project_server_approvals` TOML approvals are independent grants.
+Setting this variable, including to an empty value, does not suppress remembered
+project approvals. (`DISABLED_PROJECT_MCP_SERVERS` instead *unions* with its
+TOML list, so a deny is never silently emptied.)
 """
 
 DEBUG = "DEEPAGENTS_CODE_DEBUG"
@@ -78,6 +98,21 @@ DEBUG = "DEEPAGENTS_CODE_DEBUG"
 
 Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` (case-insensitive)
 as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
+"""
+
+DEBUG_CONSOLE_CLICK_TO_COPY = "DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY"
+r"""Enable click-to-copy in the `Ctrl+\` Debug Console when enabled.
+
+Off by default; toggle the "Click to copy" checkbox in the console or set
+`[ui].debug_console_click_to_copy` in config.toml. A recognized value is parsed
+by `classify_env_bool`; an unrecognized value falls through to the config value.
+An empty/whitespace value is ignored before parsing (rather than being treated
+as falsy) and also falls through, so it never masks the saved preference.
+
+When set, this env var takes precedence over the persisted
+`[ui].debug_console_click_to_copy` config value on launch, so toggling the
+checkbox will not appear to "stick" across restarts while the env var remains
+set.
 """
 
 DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
@@ -143,10 +178,8 @@ EXPERIMENTAL = "DEEPAGENTS_CODE_EXPERIMENTAL"
 """Opt into experimental, unstable dcode behavior.
 
 Off by default; parsed by `is_env_truthy` (see there for the accepted truthy
-values). Currently gates dropping the SDK's `TodoListMiddleware` (and its
-`write_todos` tool) from the agent and its subagents, along with the matching
-todo-list prompt guidance. Behavior behind this flag may change or be removed
-without notice.
+values). Marks experimental runs in UI/trace metadata. Behavior behind this
+flag may change or be removed without notice.
 """
 
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
@@ -161,6 +194,16 @@ EXTERNAL_EVENT_SOCKET_PATH = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET_PATH"
 
 EXTRA_SKILLS_DIRS = "DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS"
 """Colon-separated paths added to the skill containment allowlist."""
+
+GOAL_AUTO_ACCEPT_CRITERIA = "DEEPAGENTS_CODE_GOAL_AUTO_ACCEPT_CRITERIA"
+"""Apply generated goal criteria automatically in Auto mode.
+
+Disabled by default so Auto continues to show the goal review prompt unless the
+user opts in. Manual always reviews criteria and YOLO always applies them.
+Set to a recognized truthy or falsy value; unrecognized values are ignored and
+resolution falls through to `[goals].auto_accept_criteria` in config.toml, then
+the built-in default (disabled).
+"""
 
 HIDE_CWD = "DEEPAGENTS_CODE_HIDE_CWD"
 """Hide local path displays in the TUI footer and the editable-install path in
@@ -182,6 +225,17 @@ HIDE_SPLASH_TIPS = "DEEPAGENTS_CODE_HIDE_SPLASH_TIPS"
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
 
+INVOKED_AS = "DEEPAGENTS_CODE_INVOKED_AS"
+"""Internal sentinel carrying the command name the user launched with.
+
+Not user-facing. The launch name is normally derived from `sys.argv[0]`, but the
+startup auto-update re-execs the process as `python -m deepagents_code`, which
+discards it. `_restart_current_process` records the resolved name here so the
+re-exec'd process still echoes the command the user actually typed in its resume
+hints. Implausible values are ignored in favor of the `dcode` default; see
+`_invocation.invoked_name`.
+"""
+
 KITTY_KEYBOARD = "DEEPAGENTS_CODE_KITTY_KEYBOARD"
 """Override kitty-keyboard detection (`1` forces on, `0` forces off)."""
 
@@ -189,7 +243,7 @@ LANGSMITH_PROJECT = "DEEPAGENTS_CODE_LANGSMITH_PROJECT"
 """Override LangSmith project name for agent traces."""
 
 LANGSMITH_REDACT = "DEEPAGENTS_CODE_LANGSMITH_REDACT"
-"""Toggle LangSmith secret redaction for agent traces (defaults to on)."""
+"""Toggle LangSmith secret redaction for agent traces (defaults to off)."""
 
 LANGSMITH_REPLICA_PROJECTS = "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS"
 """Comma-separated LangSmith project names to *also* write agent traces to.
@@ -258,10 +312,51 @@ Set to a truthy value to bring the standalone integrations screen back into the
 flow. Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 """
 
+OPENAI_PROMPT_CACHE_KEY = "DEEPAGENTS_CODE_OPENAI_PROMPT_CACHE_KEY"
+"""Toggle injecting a per-thread OpenAI `prompt_cache_key` (defaults to on).
+
+When enabled, OpenAI-provider model calls receive the active thread ID as a
+top-level `prompt_cache_key`, giving more reliable prompt-cache prefix routing
+across turns. It is attempted for every model whose provider resolves to
+`openai` regardless of base URL (official API, the LangSmith gateway, and other
+OpenAI-compatible endpoints), because the field is optional and additive. Set to
+a falsy value (`0`, `false`, `no`, `off`) to opt out for endpoints that reject
+unknown request fields; an explicitly empty value also opts out because the
+option declares `empty_env_is_false`. Other tokens are parsed by
+`classify_env_bool`, and an unrecognized value falls through to
+`[models].openai_prompt_cache_key` in config.toml, then the default. A
+user-supplied key is always preserved.
+"""
+
 PLUGIN_CACHE_DIR = "DEEPAGENTS_CODE_PLUGIN_CACHE_DIR"
 """Override the plugin install/marketplace cache root.
 
 When unset, plugins are stored under `DEFAULT_CONFIG_DIR / "plugins"`.
+"""
+
+PRICES_AUTO_UPDATE = "DEEPAGENTS_CODE_PRICES_AUTO_UPDATE"
+"""Toggle hourly background refresh of the `genai-prices` pricing catalog.
+
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to keep using only the pricing data bundled with the installed `genai-prices`
+package. `DEEPAGENTS_CODE_OFFLINE` suppresses the refresh too, along with
+every other network fetch.
+
+Parsed by `is_env_truthy` on each pricing call until the updater starts, and
+never read again after that -- so disabling it mid-process has no effect on a
+running updater, while enabling it mid-process starts one on the next priced
+request. Also the escape hatch for hosts embedding this package that manage
+`genai_prices.UpdatePrices` themselves: genai-prices permits one updater per
+process, so an embedder that starts its own would otherwise race this one.
+"""
+
+RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
+"""Override the main agent's LangGraph `recursion_limit` (graph step budget).
+
+Parsed as an integer by the config manifest. Values below the LangGraph floor
+(`25`) or above the manifest ceiling are ignored with a logged warning, falling
+back to `config.toml` then the default. See `[runtime].recursion_limit` and the
+`--recursion-limit` CLI flag.
 """
 
 RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"
@@ -352,6 +447,17 @@ THEME = "DEEPAGENTS_CODE_THEME"
 USER_ID = "DEEPAGENTS_CODE_USER_ID"
 """Attach a user identifier to LangSmith trace metadata."""
 
+YOLO_SWITCHER = "DEEPAGENTS_CODE_YOLO_SWITCHER"
+"""Include YOLO in the Shift+Tab approval-mode cycle.
+
+Enabled by default so an interactive session can cycle Manual → Auto → YOLO
+without restarting with `--yolo`. Set to a falsy value (`0`, `false`, `no`,
+`off`, or empty) to leave Shift+Tab limited to Manual/Auto. Also settable via
+`[startup].yolo_switcher` in config.toml so orgs can distribute the opt-out.
+Parsed by `classify_env_bool` through the config resolver (unrecognized values
+fall through rather than forcing the default).
+"""
+
 _TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSY_VALUES = frozenset({"0", "false", "no", "off", ""})
 
@@ -401,6 +507,3 @@ def is_env_truthy(name: str, *, default: bool = False) -> bool:
         return default
     classified = classify_env_bool(raw)
     return default if classified is None else classified
-
-
-EXPERIMENTAL_HINT = f"This feature is experimental. Set {EXPERIMENTAL}=1 to enable."

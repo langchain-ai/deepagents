@@ -15,7 +15,6 @@ from bisect import bisect_left, bisect_right
 from datetime import datetime
 from pathlib import Path
 
-from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import (
     ASYNC_GREP_TIMEOUT,
     DEFAULT_GREP_TIMEOUT,
@@ -46,6 +45,7 @@ from deepagents.backends.utils import (
     compile_grep_include_glob,
     compile_recursive_glob,
     perform_string_replacement,
+    slice_read_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -132,14 +132,14 @@ class FilesystemBackend(BackendProtocol):
             `virtual_mode=True` is primarily for virtual path semantics (for example with
             `CompositeBackend`). It can also provide path-based guardrails by blocking
             traversal (`..`, `~`) and absolute paths outside `root_dir`, but it does not
-            provide sandboxing or process isolation. The default (`virtual_mode=False`)
-            provides no security even with `root_dir` set.
+            provide sandboxing or process isolation. Set `virtual_mode=False` only for
+            trusted local development workflows that require unrestricted host paths.
     """
 
     def __init__(
         self,
         root_dir: str | Path | None = None,
-        virtual_mode: bool | None = None,  # noqa: FBT001
+        virtual_mode: bool = True,  # noqa: FBT001, FBT002
         max_file_size_mb: int = 10,
     ) -> None:
         """Initialize filesystem backend.
@@ -149,8 +149,8 @@ class FilesystemBackend(BackendProtocol):
 
                 Defaults to the current working directory.
 
-                - When `virtual_mode=False` (default): Only affects relative path resolution.
-                - When `virtual_mode=True`: Acts as a virtual root for filesystem operations.
+                - When `virtual_mode=True` (default): Acts as a virtual root for filesystem operations.
+                - When `virtual_mode=False`: Only affects relative path resolution.
 
             virtual_mode: Enable virtual path mode.
 
@@ -158,11 +158,11 @@ class FilesystemBackend(BackendProtocol):
                 used with `CompositeBackend`, which strips route prefixes and forwards
                 normalized paths to the routed backend.
 
-                When `True`, all paths are treated as virtual paths anchored to
-                `root_dir`. Path traversal (`..`, `~`) is blocked and all resolved paths
-                are verified to remain within `root_dir`.
+                When `True` (default), all paths are treated as virtual paths anchored
+                to `root_dir`. Path traversal (`..`, `~`) is blocked and all resolved
+                paths are verified to remain within `root_dir`.
 
-                When `False` (default), absolute paths are used as-is and relative paths
+                When `False`, absolute paths are used as-is and relative paths
                 are resolved under `root_dir`. This provides no security against an agent
                 choosing paths outside `root_dir`.
 
@@ -176,24 +176,6 @@ class FilesystemBackend(BackendProtocol):
                 Files exceeding this limit are skipped during search. Defaults to 10 MB.
         """
         self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
-        if virtual_mode is None:
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.6.0",
-                message=(
-                    "`FilesystemBackend` `virtual_mode` default will change "
-                    "in deepagents==0.6.0; please specify `virtual_mode` "
-                    "explicitly. Note: `virtual_mode` is for virtual path "
-                    "semantics (e.g., `CompositeBackend` routing) and "
-                    "optional path-based guardrails; it does not provide "
-                    "sandboxing or process isolation. Security note: leaving "
-                    "`virtual_mode=False` allows absolute paths and `'..'` "
-                    "to bypass `root_dir`. Consult the API reference for "
-                    "details."
-                ),
-                package="deepagents",
-            )
-            virtual_mode = False
         self.virtual_mode = virtual_mode
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
 
@@ -440,7 +422,15 @@ class FilesystemBackend(BackendProtocol):
         Args:
             file_path: Absolute or relative file path.
             offset: Line offset to start reading from (0-indexed).
+
+                Only applied to text files, and clamped to the start of the file
+                when negative.
             limit: Maximum number of lines to read.
+
+                Only applied to text files with content: a non-positive value
+                returns empty content with no pagination metadata. Empty and
+                whitespace-only files return the empty-file reminder regardless
+                of `limit`, and binary files return their full payload.
 
         Returns:
             `ReadResult` with raw (unformatted) content for the requested window.
@@ -475,39 +465,19 @@ class FilesystemBackend(BackendProtocol):
                 if fd >= 0:
                     os.close(fd)
 
-            total_lines: int | None = None
-            start_line: int | None = None
-            end_line: int | None = None
-            next_offset: int | None = None
             if file_type == "text":
                 empty_msg = check_empty_content(content)
                 if empty_msg:
                     file_data = FileData(content=empty_msg, encoding="utf-8")
                 else:
-                    # `splitlines(keepends=True)` preserves whether the final line
-                    # has a terminator; joining with `""` round-trips the file's
-                    # trailing-newline state. Required so `edit()` can detect
-                    # EOF-newline mismatches in the model's `old_string`.
-                    lines = content.splitlines(keepends=True)
-                    start_idx = offset
-                    end_idx = min(start_idx + limit, len(lines))
-                    total_lines = len(lines)
+                    # Reuse the shared slicer so local reads paginate, clamp
+                    # degenerate bounds, and preserve trailing-newline state
+                    # exactly like the state and store backends. `edit()`
+                    # depends on that last property to detect EOF-newline
+                    # mismatches in the model's `old_string`.
+                    return slice_read_response(FileData(content=content, encoding="utf-8"), offset, limit)
 
-                    if start_idx >= total_lines:
-                        return ReadResult(error=f"Line offset {offset} exceeds file length ({total_lines} lines)")
-
-                    file_data = FileData(content="".join(lines[start_idx:end_idx]), encoding="utf-8")
-                    start_line = start_idx + 1
-                    end_line = end_idx
-                    next_offset = end_idx if end_idx < total_lines else None
-
-            return ReadResult(
-                file_data=file_data,
-                total_lines=total_lines,
-                start_line=start_line,
-                end_line=end_line,
-                next_offset=next_offset,
-            )
+            return ReadResult(file_data=file_data)
         except (OSError, UnicodeDecodeError) as e:
             return ReadResult(error=f"Error reading file '{file_path}': {e}")
 

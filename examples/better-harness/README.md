@@ -120,7 +120,7 @@ The visible/private split in this repo is meant to support train-vs-holdout opti
 Two load modes are supported:
 
 - `module_attr`
-  - patch a Python attribute such as `deepagents.graph:BASE_AGENT_PROMPT`
+  - patch a Python attribute such as `package.module:ATTRIBUTE`
 - `workspace_file`
   - temporarily replace a file in the target workspace for one eval run
 

@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
+
+from deepagents_code.json_types import JsonObject, JsonValue  # noqa: TC001, F401
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 MarketplaceSourceType = Literal["directory", "file", "github", "git", "url"]
 ExternalPluginRepositorySourceType = Literal["github", "git-subdir", "url"]
-JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
-JsonObject = dict[str, JsonValue]
+UnsupportedComponent = Literal["agents", "commands"]
+"""Plugin component directory that `deepagents-code` does not load."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -54,23 +56,35 @@ class PluginManifest:
 
     Attributes:
         name: Plugin name from the manifest, or `None` for manifest-less plugins.
+        display_name: Optional human-readable label from `displayName`.
         version: Version string from the plugin manifest.
-        component_paths: Validated skill and MCP paths keyed by component name.
+        component_paths: Validated skill, MCP, and hook paths keyed by component
+            name.
         inline_mcp: Inline MCP servers declared in the manifest.
+        inline_hooks: Inline hook configuration declared in the manifest, in
+            `hooks.json` document form.
     """
 
     name: str | None
     version: str | None
     component_paths: dict[str, tuple[Path, ...]]
     inline_mcp: JsonObject
+    inline_hooks: JsonObject = field(default_factory=dict)
+    display_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ComponentInventory:
-    """Inventory of supported plugin components."""
+    """Inventory of supported plugin components.
+
+    `unsupported` lists plugin component directories that `deepagents-code` does
+    not load (e.g. `agents/`, `commands/`).
+    """
 
     skills: tuple[Path, ...] = ()
     mcp_files: tuple[Path, ...] = ()
+    hook_files: tuple[Path, ...] = ()
+    unsupported: tuple[UnsupportedComponent, ...] = ()
     warnings: tuple[str, ...] = ()
 
 
@@ -164,6 +178,7 @@ class MarketplacePluginEntry:
     source: PluginSource
     description: str | None = None
     author: str | JsonObject | None = None
+    display_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

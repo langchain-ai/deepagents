@@ -11,6 +11,25 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
+INHERIT_CLASSIFIER_MODEL = "__dcode_inherit_classifier__"
+"""Per-run `classifier_model` value meaning "review with the main agent model".
+
+An absent (or `None`) `classifier_model` only says the run carries no
+preference, so the classifier keeps whatever the server resolved at startup
+(`--auto-classifier-model`, `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL`,
+`[models].auto_classifier`). `/auto model clear` needs the stronger statement
+that reviews go back to the main agent model, which this sentinel carries.
+
+It cannot collide with a real spec: `create_model` resolves `provider:model`
+(or a bare model name) and has no provider or model named `__dcode_...`. A
+control character such as a leading NUL would also be collision-proof, but this
+value has to survive the trip to a remote deployment intact — the context is
+serialized to JSON and may be persisted, and Postgres `text`/`jsonb` rejects NUL
+outright. A stripped sentinel would silently read as "no preference" and leave a
+startup classifier authorizing actions after the UI reported the clear, so the
+sentinel stays plain ASCII.
+"""
+
 
 @dataclass
 class CLIContextSchema:
@@ -39,15 +58,25 @@ class CLIContextSchema:
 
     model_context_limit: int | None = None
 
+    classifier_model: str | None = None
+
+    approval_mode: str = "manual"
+
     auto_approve: bool = False
 
     approval_mode_key: str | None = None
 
     thread_id: str | None = None
 
-    blocked_goal_retry_context: str | None = None
+    turn_id: str | None = None
 
     offload_tool_call_id: str | None = None
+
+    hooks_snapshot_id: str | None = None
+
+    hooks_server_events: list[str] = field(default_factory=list)
+
+    prompt_id: str | None = None
 
 
 class CLIContext(TypedDict, total=False):
@@ -73,14 +102,22 @@ class CLIContext(TypedDict, total=False):
     model_context_limit: int | None
     """Effective context-window limit for profile-aware middleware."""
 
-    auto_approve: bool
-    """Whether gated tool calls should skip the human-approval interrupt.
+    classifier_model: str | None
+    """Model spec the Auto approval classifier should use for this run.
 
-    Sourced from the client session (not graph state) so the model cannot
-    self-approve by writing state. The `interrupt_on` `when` predicate reads
-    this to suppress interrupts at the source when "approve always" is on,
-    avoiding the interrupt-then-auto-resolve round-trip.
+    `None` (or absent) expresses no per-run preference, so the classifier keeps
+    whatever the graph was built with — normally the main agent model, but a
+    separate model when the session was launched with one.
+    `INHERIT_CLASSIFIER_MODEL` overrides that startup value back to the main
+    agent model. Set by `/auto model` so the switch takes effect without
+    restarting the agent server.
     """
+
+    approval_mode: str
+    """`manual`, classifier-backed `auto`, or unrestricted `yolo`."""
+
+    auto_approve: bool
+    """Compatibility snapshot for clients predating the typed mode field."""
 
     approval_mode_key: str | None
     """Store key for the live approval-mode control record.
@@ -99,13 +136,8 @@ class CLIContext(TypedDict, total=False):
     session-affinity headers.
     """
 
-    blocked_goal_retry_context: str | None
-    """One-turn model context for retrying a previously blocked goal.
-
-    This is intentionally carried in runtime context instead of the user
-    message so it is not parsed as a file mention or checkpointed as human
-    input.
-    """
+    turn_id: str | None
+    """Current user-turn ID for binding trusted interactive responses."""
 
     offload_tool_call_id: str | None
     """The sole tool-call ID authorized during a server-driven `/offload` run.
@@ -113,3 +145,20 @@ class CLIContext(TypedDict, total=False):
     This is set by the client, not graph state, so model-generated calls cannot
     grant themselves permission to execute during the hidden compaction turn.
     """
+
+    hooks_snapshot_id: str | None
+    """Canonical Hooks v2 configuration hash for this session.
+
+    Server-owned lifecycle middleware includes this id on interrupt requests so
+    the client can reject mismatched resumes.
+    """
+
+    hooks_server_events: list[str]
+    """Server-owned HookEvent names that have configured handlers.
+
+    Middleware only interrupts for events listed here, avoiding a round-trip
+    when the session snapshot has no matching handlers.
+    """
+
+    prompt_id: str | None
+    """Optional per-turn prompt id projected into hook context."""

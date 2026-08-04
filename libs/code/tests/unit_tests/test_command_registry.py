@@ -129,16 +129,7 @@ class TestSlashCommands:
         command_entries = {command.to_entry() for command in COMMANDS}
         assert set(get_slash_commands()) <= command_entries
 
-    def test_experimental_plugin_commands_hidden_by_default(self) -> None:
-        names = {entry.name for entry in get_slash_commands()}
-        assert "/plugins" not in names
-
-    def test_experimental_plugin_commands_visible_when_enabled(
-        self, monkeypatch
-    ) -> None:
-        from deepagents_code._env_vars import EXPERIMENTAL
-
-        monkeypatch.setenv(EXPERIMENTAL, "1")
+    def test_plugin_commands_visible_by_default(self) -> None:
         names = {entry.name for entry in get_slash_commands()}
         assert "/plugins" in names
 
@@ -240,6 +231,21 @@ class TestToolsCommand:
     def test_tools_hidden_keywords_cover_mcp(self) -> None:
         tools_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/tools")
         assert "mcp" in tools_cmd.hidden_keywords.split()
+
+
+class TestCostCommand:
+    """Validate `/cost` registration and discoverability metadata."""
+
+    def test_cost_registered_and_queue_bound(self) -> None:
+        names = {entry.name for entry in get_slash_commands()}
+        assert "/cost" in names
+        assert "/cost" in QUEUE_BOUND
+
+    def test_cost_hidden_keywords_cover_usage_search(self) -> None:
+        cost_cmd = next(cmd for cmd in COMMANDS if cmd.name == "/cost")
+        assert {"price", "spend", "tokens", "usd"} <= set(
+            cost_cmd.hidden_keywords.split()
+        )
 
 
 class TestGoalCommand:

@@ -25,7 +25,7 @@ The `prep` job writes a **run-configuration summary** — every input plus the v
 
 ## The three categories
 
-A "deep agent" is not one skill, so a single benchmark can't score one. We split the evaluation into three capability categories, and map each to one benchmark. This mapping is the source of truth in [`unified_prep.py`](../../.github/scripts/unified_prep.py) (`CATEGORY_MAP`):
+A "deep agent" is not one skill, so a single benchmark can't score one. We split the evaluation into three capability categories, and map each to one benchmark. This mapping is the source of truth in [`unified_prep.py`](../../.github/scripts/evals/unified_prep.py) (`CATEGORY_MAP`):
 
 | Category | Capability it stands for | Benchmark | Harness |
 |---|---|---|---|
@@ -79,12 +79,14 @@ Within those domains the subset is a *difficulty probe* — a behavior spread ac
 
 **Why these tasks.** The 30 tasks span eight query types over the same corpus, so the set measures a range of retrieval-and-reasoning operations rather than one:
 
-- **`multi_hop_chain` · `multi_entity_comparison` (13 tasks)** — deep multi-file joins: follow a chain of relationships across files, or compare two entities each reached by its own lookup. The hardest type, and the core discriminators.
-- **`aggregation` · `cross_file_counting` (4)** — sum balances or count records scattered across files.
-- **`set_intersection` · `comparison_tiebreak` (6)** — find the entities satisfying several constraints at once, resolving ties.
-- **`negation` · `temporal_reasoning` (7)** — exclude by a condition, or reason over dates.
+- **`multi_hop_chain` · `multi_entity_comparison` (16 tasks)** — deep multi-file joins: follow a chain of relationships across files, or compare two entities each reached by its own lookup.
+- **`aggregation` · `cross_file_counting` (5)** — sum balances or count records scattered across files.
+- **`set_intersection` · `comparison_tiebreak` (5)** — find the entities satisfying several constraints at once, resolving ties.
+- **`negation` · `temporal_reasoning` (4)** — exclude by a condition, or reason over dates.
 
-Within that spread, each task earns its slot by the *role* its measured difficulty gives it. Tiers are empirical, from a calibration run on **Opus 4.8** via the **bare** `create_deep_agent` harness (3 rollouts/task; `pass@bare` = fraction solved): floors (`pass@bare` ≥ 0.90), an intermittent middle (`0.10 < pass@bare < 0.90`) that carries the most signal, and discriminators (`pass@bare` ≤ 0.10). The set is **5 easy · 9 medium · 16 hard**, weighted toward discriminators for headroom: Context-Bench is **bimodal** on a strong model (a task is solved ~1.0 or failed ~0.0), so intermittent tasks are rare — all ~9 that exist are kept, and the rest are hard so the set doesn't saturate. `pass@bare` is a *floor* (the bare default harness); a stronger harness like `dcode` is expected to solve some of the hard tier. Each task's own `pass@bare` and query type is listed in the [dataset README](datasets/context-retrieval-evals/README.md).
+The subset is a paired, six-rollout representative sample from the full 100-task Context-Bench cloud suite, calibrated on **gpt-5.6-terra** and **gpt-5.6-luna** with the **bare** `create_deep_agent` harness. In the [source run](https://github.com/langchain-ai/deepagents/actions/runs/29881672853), Terra scored 510/600 (85.0%) and Luna 552/600 (92.0%); this 30-task sample preserves that profile at 153/180 (85.0%) and 166/180 (92.2%). It also preserves source difficulty coverage: **2 easy · 10 medium · 18 hard**. These are original Context-Bench source strata, not post-hoc model tiers. The selection preserves aggregate measurement rather than targeting a cross-model leaderboard order; it is therefore appropriate for tracking the context capability without overstating a model-pair gap. The [dataset README](datasets/context-retrieval-evals/README.md) records each task's paired result and query type.
+
+**Lite Context slice.** `profile=lite` uses a frozen 10-task subset: `cb-cloud-48`, `cb-cloud-1`, `cb-cloud-21`, `cb-cloud-49`, `cb-cloud-65`, `cb-cloud-69`, `cb-cloud-57`, `cb-cloud-9`, `cb-cloud-7`, and `cb-cloud-4`. It retains every query type and adds a second hard `multi_entity_comparison` and `multi_hop_chain`; its source mix is **1 easy · 3 medium · 6 hard**. The slice was selected from the completed [six-model, three-rollout full-30 run](https://github.com/langchain-ai/deepagents/actions/runs/29883830538): it preserves that run's observed ContextBench order (Sol > Luna > Sonnet > Terra > Opus > GLM), while excluding the sole task with an errored trial. This preserves the measured full-corpus profile for inexpensive monitoring; it does not target an external leaderboard order.
 
 ## Why this, not the pytest eval suite
 
@@ -97,7 +99,7 @@ Reach for the unified evals when the question is *"how good is model X, versus Y
 
 ## Changing the battery
 
-- **Category → benchmark + harness mapping, shard defaults:** `CATEGORY_MAP` and `DEFAULT_N_SHARDS` in [`unified_prep.py`](../../.github/scripts/unified_prep.py).
+- **Category → benchmark + harness mapping, shard defaults:** `CATEGORY_MAP` and `DEFAULT_N_SHARDS` in [`unified_prep.py`](../../.github/scripts/evals/unified_prep.py).
 - **Conversation subset + tiers:** [`deepagents_evals/tau3_subset.py`](deepagents_evals/tau3_subset.py) (re-run and update each `justification`).
 - **Context subset + tiers:** [`datasets/context-retrieval-evals`](datasets/context-retrieval-evals/README.md) and its `calibration.json`.
-- **Model catalog / presets:** [`.github/scripts/models.py`](../../.github/scripts/models.py) and [`MODEL_GROUPS.md`](MODEL_GROUPS.md).
+- **Model catalog / presets:** [`.github/scripts/evals/models.py`](../../.github/scripts/evals/models.py) and [`MODEL_GROUPS.md`](MODEL_GROUPS.md).

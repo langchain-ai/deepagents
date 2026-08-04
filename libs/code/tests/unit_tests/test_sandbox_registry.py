@@ -123,7 +123,7 @@ def test_builtin_metadata_working_dir() -> None:
     assert vercel.supports_sandbox_id is True
     assert vercel.supports_snapshot_name is False
     assert vercel.install is not None
-    assert vercel.install.command(in_app=False) == "dcode --install vercel"
+    assert vercel.install.command(in_app=False) == "dcode install vercel"
 
 
 def test_unknown_provider_metadata_is_none() -> None:

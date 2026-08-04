@@ -85,7 +85,9 @@ Follow Conventional Commits. See `.github/workflows/pr_lint.yml` for allowed typ
 - Start the text after `type(scope):` with a lowercase letter, unless the first word is a proper noun (e.g. `Azure`, `GitHub`, `OpenAI`) or a named entity (class, function, method, parameter, or variable name).
 - Wrap named entities in backticks so they render as code. Proper nouns are left unadorned.
 - Keep titles short and descriptive — save detail for the body.
+- Do not include Linear issue-closing markers such as `[closes DCD-52]` in PR titles. Put issue references and closing metadata in the PR description instead.
 - For version-branch sync PRs, use a title like `chore(repo): sync main into vX.Y`. Do not use `release` as the scope; PR title lint reserves `release` for the type and disallows it as a scope.
+- **One PR = one releasable component.** release-please scopes commits by **changed file path**, not title scope. A bump-worthy title (`feat`/`fix`/etc.) that touches files under multiple managed packages opens a **separate release PR per package**. Keep the user-facing change in a single package-scoped PR; ship cross-package dependency / lockfile churn as a separate `chore(deps):` PR (`chore` is hidden and does not cut releases). See [Multi-component fan-out](.github/RELEASING.md#multi-component-fan-out) and [Lockfile churn fan-out](.github/RELEASING.md#lockfile-churn-fan-out).
 
 Examples:
 
@@ -118,27 +120,49 @@ mdrxy/cli/startup-cmd-flag
 
 #### PR descriptions
 
-The description *is* the summary — do not add a `# Summary` header.
+Do not add a `# Summary`, `## Release note`, or `## Release Note` heading. The plain paragraph above `---` *is* the release note — never restate that same idea later under a heading. Use an opening block ("frontmatter") in this order:
 
-- When the PR closes an issue, lead with the closing keyword on its own line at the very top, followed by a horizontal rule and then the body:
+```md
+Closes #123
 
-  ```txt
-  Closes #123
+A high-level, plain-English summary of the user-visible change.
 
-  ---
+---
 
-  <rest of description>
-  ```
+<rest of PR body>
+```
 
-  Only `Closes`, `Fixes`, and `Resolves` auto-close the referenced issue on merge. `Related:` or similar labels are informational and do not close anything.
+Bad example (do not do this — the opening paragraph already covers the user-visible change):
 
-- Explain the *why*: the motivation and why this solution is the right one. Limit prose.
+```md
+Resume hints now echo the launched command name instead of always printing `dcode`.
+
+---
+
+<details about motivation>
+
+## Release Note
+
+Resume hints now echo the launched command name instead of always printing `dcode`.
+```
+
+- The issue or PR relationship line is optional. Use the appropriate keyword, such as `Fixes`, `Closes`, `Resolves`, `Supersedes`, `Depends on`, or `Related`. Only `Closes`, `Fixes`, and `Resolves` auto-close the referenced GitHub issue on merge.
+- For net new features or behavior-changing bugfixes, put one high-level plain-English summary of the user-visible change in the opening block only (no label or heading). That text is the release note; do not duplicate it below `---` or under any `Release note` / `Release Note` heading. Omit the opening summary for chores, refactors, or test-only changes.
+- Below `---`, explain the *why*: the motivation and why this solution is the right one. Limit prose. Do not repeat the opening summary.
 - Write for readers who may be unfamiliar with this area of the codebase. Avoid insider shorthand and prefer language that is friendly to public viewers — this aids interpretability.
 - Do **not** cite line numbers; they go stale as soon as the file changes.
 - Rarely include full file paths or filenames. Reference the affected symbol, class, or subsystem by name instead.
 - Wrap class, function, method, parameter, and variable names in backticks.
-- For net new features or behavior-changing bugfixes, PR descriptions should include a `## Release note` section that states the user-visible change in release-note-ready language. Otherwise, omit the header.
-- Skip dedicated "Test plan" or "Testing" sections in most cases. Mention tests only when coverage is non-obvious, risky, or otherwise notable.
+- Do not include a dedicated "Test plan" or "Testing" section unless the PR is large or the changes are highly consequential. When one is warranted, keep it collapsed with GitHub's `<details>` and `<summary>` elements:
+
+  ```html
+  <details>
+  <summary>Test plan</summary>
+
+  - Describe the verification performed.
+
+  </details>
+  ```
 - Call out areas of the change that require careful review.
 
 ## Core development principles
@@ -373,6 +397,8 @@ See [Developing a new version line](.github/RELEASING.md#developing-a-new-versio
 
 **Release-please parse check** (`.github/workflows/release_please_parse_check.yml`) – Runs `@conventional-commits/parser` on the would-be squash-merge message (`<title> (#<num>)\n\n<body>`) at PR time. Fails the check and posts a sticky comment with a paste-ready `BEGIN_COMMIT_OVERRIDE` block when the parser would reject the body, preventing silent changelog drops. Mirrors release-please's `preprocessCommitMessage` and `splitMessages` so per-sub-message parse failures are caught the same way release-please catches them. The parser is exact-pinned (not a semver range) and must stay in lock-step with `release-please/package.json`.
 
+**Release-please fan-out guards** – `release_please_scope_check.yml` blocks bump-worthy PRs that touch real files in more than one managed component or only lockfiles inside a managed package; `release_fanout_bypass_warn.yml` posts a loud sticky when `allow-lockfile-release` / `allow-scope-mismatch` is applied; `release_please_fanout_watch.yml` is a post-merge safety net that comments on open release PRs whose package delta is lockfile-only. See [`.github/RELEASING.md`](./.github/RELEASING.md#multi-component-fan-out).
+
 **Auto-labeling:**
 
 - `.github/workflows/pr_labeler.yml` – Unified PR labeler (size, file, title, external/internal, contributor tier)
@@ -388,7 +414,7 @@ When adding a new partner package, update these files:
 - `.github/ISSUE_TEMPLATE/feature-request.yml` – Add to Area checkbox options
 - `.github/ISSUE_TEMPLATE/privileged.yml` – Add to Area checkbox options
 - `.github/dependabot.yml` – Add dependency update directory
-- `.github/scripts/pr-labeler-config.json` – Add scope-to-label mapping and file rule
+- `.github/scripts/labeling/pr-labeler-config.json` – Add scope-to-label mapping and file rule
 - `.github/workflows/auto-label-by-package.yml` – Add package label mapping
 - `.github/workflows/ci.yml` – Add to change detection and lint/test jobs
 - `.github/workflows/pr_lint.yml` – Add to allowed scopes
@@ -407,3 +433,13 @@ This repository require actions to be pinned to a full-length commit SHA. Attemp
 
 - **Documentation:** https://docs.langchain.com/oss/python/deepagents/overview and source at https://github.com/langchain-ai/docs or `../docs/`. Prefer the local install and use file search tools for best results. If needed, use the docs MCP server as defined in `.mcp.json` for programmatic access.
 - **Contributing Guide:** [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview)
+
+<!-- OPENWIKI:START -->
+
+## OpenWiki
+
+This repository uses OpenWiki for recurring code documentation. Start with `openwiki/quickstart.md`, then follow its links to architecture, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
+
+The scheduled OpenWiki GitHub Actions workflow refreshes the repository wiki. Do not hand-edit generated OpenWiki pages unless explicitly asked; prefer updating source code/docs and letting OpenWiki regenerate.
+
+<!-- OPENWIKI:END -->

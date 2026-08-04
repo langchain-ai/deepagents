@@ -16,7 +16,15 @@ import pytest
 from deepagents_code._version import __version__
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Awaitable, Callable, Iterator
+
+    from deepagents_code.extras_info import VersionReport
+
+    # `conftest`'s fixture protocols cannot be imported here: `tool.ty`
+    # `extra-paths` puts `libs/deepagents` on the path too, so
+    # `tests.unit_tests.conftest` is ambiguous across packages.
+    DrainModalCommands = Callable[..., Awaitable[None]]
+    WaitForModal = Callable[..., Awaitable[None]]
 
 
 @pytest.fixture(autouse=True)
@@ -89,7 +97,9 @@ def test_cli_version_flag() -> None:
     # argparse exits with 0 for --version
     assert result.returncode == 0
     assert f"deepagents-code {__version__}" in result.stdout
-    sdk_version = pkg_version("deepagents")
+    from deepagents_code.extras_info import collect_version_report
+
+    sdk_version = collect_version_report().display_sdk_version
     assert f"deepagents (SDK) {sdk_version}" in result.stdout
     # Extras block is plain-text (no markdown table or headings).
     assert "Installed optional dependencies:" in result.stdout
@@ -101,9 +111,10 @@ def test_cli_version_flag() -> None:
 async def test_version_slash_command_message_format() -> None:
     """Verify the `/version` slash command outputs both CLI and SDK versions."""
     from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.extras_info import collect_version_report
     from deepagents_code.tui.widgets.messages import AppMessage
 
-    sdk_version = pkg_version("deepagents")
+    sdk_version = collect_version_report().display_sdk_version
 
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -220,9 +231,10 @@ async def test_version_slash_command_includes_release_age(tmp_path) -> None:
 async def test_version_slash_command_includes_sdk_release_age() -> None:
     """Verify `/version` appends the cached release age for the installed SDK."""
     from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.extras_info import collect_version_report
     from deepagents_code.tui.widgets.messages import AppMessage
 
-    sdk_version = pkg_version("deepagents")
+    sdk_version = collect_version_report().display_sdk_version
 
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -255,13 +267,117 @@ async def test_version_slash_command_mentions_update_available() -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         app._update_available = (True, "99.99.99")
-        await app._handle_command("/version")
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+        ):
+            await app._handle_command("/version")
         await pilot.pause()
 
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         content = str(app_msgs[-1]._content)
         assert "Update available: v99.99.99" in content
-        assert "Run: " in content
+        assert "relaunch dcode to install it automatically" in content
+        # The auto-update hint must not also carry the manual fallback.
+        assert "/update" not in content
+        assert "uv tool install" not in content
+
+
+async def test_version_slash_command_update_hint_when_auto_update_disabled() -> None:
+    """Verify `/version` points to `/update` when auto-update is disabled."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._update_available = (True, "99.99.99")
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=False,
+            ),
+        ):
+            await app._handle_command("/version")
+        await pilot.pause()
+
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        content = str(app_msgs[-1]._content)
+        assert "Update available: v99.99.99" in content
+        assert "/update" in content
+        assert "dcode update" in content
+        # The manual hint must not falsely promise an automatic install.
+        assert "automatically" not in content
+        assert "uv tool install" not in content
+
+
+async def test_version_slash_command_does_not_promise_unsupported_update() -> None:
+    """Verify `/version` does not promise auto-update for unknown installers."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._update_available = (True, "99.99.99")
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="other",
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ) as auto_update_enabled,
+        ):
+            await app._handle_command("/version")
+        await pilot.pause()
+
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        content = str(app_msgs[-1]._content)
+        assert "Update available: v99.99.99" in content
+        assert "method that installed this copy of dcode" in content
+        assert "automatically" not in content
+        auto_update_enabled.assert_not_called()
+
+
+async def test_version_slash_command_falls_back_when_preference_lookup_fails() -> None:
+    """Verify `/version` survives an unreadable auto-update preference."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._update_available = (True, "99.99.99")
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                side_effect=AttributeError("malformed update config"),
+            ),
+        ):
+            await app._handle_command("/version")
+        await pilot.pause()
+
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        content = str(app_msgs[-1]._content)
+        assert "Update available: v99.99.99" in content
+        assert "/update" in content
+        assert "automatically" not in content
 
 
 async def test_version_slash_command_omits_update_hint_when_up_to_date() -> None:
@@ -372,6 +488,88 @@ def test_build_version_text_omits_core_deps_when_not_editable() -> None:
 
     assert "Editable install" not in text
     assert "Core dependencies:" not in text
+
+
+def _editable_exact_pin_version_report(cli_metadata: str = "0.1.40") -> VersionReport:
+    """Build a report with editable installs, CLI drift, and a newer SDK pin."""
+    from packaging.requirements import Requirement
+
+    from deepagents_code.extras_info import DistributionVersion, VersionReport
+
+    return VersionReport(
+        cli=DistributionVersion(
+            name="deepagents-code",
+            source_version=__version__,
+            metadata_version=cli_metadata,
+            editable=True,
+            source_path="~/src/deepagents/libs/code",
+            status="resolved",
+        ),
+        sdk=DistributionVersion(
+            name="deepagents",
+            source_version="0.6.12",
+            metadata_version="0.6.12",
+            editable=True,
+            source_path="~/src/deepagents/libs/deepagents",
+            status="resolved",
+        ),
+        sdk_requirement=Requirement("deepagents==0.7.0a7"),
+        sdk_requirement_satisfied=True,
+    )
+
+
+def test_build_version_text_reports_editable_drift_and_newer_sdk_pin() -> None:
+    """`--version` surfaces CLI stale metadata and the effective SDK pin."""
+    from deepagents_code.main import build_version_text
+
+    with patch(
+        "deepagents_code.extras_info.collect_version_report",
+        return_value=_editable_exact_pin_version_report(),
+    ):
+        text = build_version_text()
+
+    # Editable status is shown on its own `Editable install:` line, so the CLI
+    # version line carries only the source/metadata drift, not `editable`.
+    assert f"deepagents-code {__version__} (installed metadata: 0.1.40)" in text
+    assert (
+        "deepagents (SDK) 0.7.0a7+editable "
+        "(workspace HEAD; source marker: 0.6.12)" in text
+    )
+
+
+async def test_version_slash_command_reports_editable_drift_and_newer_sdk_pin() -> None:
+    """`/version` renders the same editable pin facts as `--version`."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.extras_info.collect_version_report",
+                return_value=_editable_exact_pin_version_report(),
+            ),
+            patch(
+                "deepagents_code.update_check.get_sdk_release_time",
+                return_value=None,
+            ) as get_sdk_release_time,
+        ):
+            await app._handle_command("/version")
+        await pilot.pause()
+
+        get_sdk_release_time.assert_called_once_with("0.7.0a7")
+        content = str(
+            [m for m in app.query(AppMessage) if not m._is_markdown][-1]._content
+        )
+        assert (
+            f"deepagents-code version: {__version__} "
+            "(installed metadata: 0.1.40)" in content
+        )
+        assert (
+            "deepagents (SDK) version: 0.7.0a7+editable "
+            "(workspace HEAD; source marker: 0.6.12)" in content
+        )
 
 
 def test_format_core_dependencies_lists_known_packages() -> None:
@@ -793,7 +991,9 @@ async def test_update_deps_reports_when_already_current() -> None:
         assert "Dependencies are already up to date." in str(app_msgs[-1]._content)
 
 
-async def test_update_deps_routes_outdated_dcode_through_regular_update() -> None:
+async def test_update_deps_routes_outdated_dcode_through_regular_update(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
     """`/update --deps` runs the normal update flow when dcode is outdated."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage
@@ -826,6 +1026,7 @@ async def test_update_deps_routes_outdated_dcode_through_regular_update() -> Non
             ),
         ):
             await app._handle_command("/update --deps")
+            await drain_modal_commands(app)
             await pilot.pause()
 
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
@@ -836,7 +1037,9 @@ async def test_update_deps_routes_outdated_dcode_through_regular_update() -> Non
         assert "Dependencies are already up to date." not in content
 
 
-async def test_update_deps_skips_refresh_prompt_when_refresh_unsupported() -> None:
+async def test_update_deps_skips_refresh_prompt_when_refresh_unsupported(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
     """Unsupported refresh installs take the normal outdated dcode update path."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage
@@ -876,6 +1079,7 @@ async def test_update_deps_skips_refresh_prompt_when_refresh_unsupported() -> No
             ) as perform_upgrade_mock,
         ):
             await app._handle_command("/update --deps")
+            await drain_modal_commands(app)
             await pilot.pause()
 
         confirm_mock.assert_not_awaited()
@@ -891,7 +1095,9 @@ async def test_update_deps_skips_refresh_prompt_when_refresh_unsupported() -> No
         assert "Dependency refresh failed" not in content
 
 
-async def test_update_deps_decline_app_update_refreshes_current_deps() -> None:
+async def test_update_deps_decline_app_update_refreshes_current_deps(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
     """Declining the app update refreshes deps without upgrading dcode."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage
@@ -932,6 +1138,7 @@ async def test_update_deps_decline_app_update_refreshes_current_deps() -> None:
             ) as perform_upgrade_mock,
         ):
             await app._handle_command("/update --deps")
+            await drain_modal_commands(app)
             await pilot.pause()
 
         refresh_mock.assert_awaited_once_with(include_prereleases=None)
@@ -944,7 +1151,9 @@ async def test_update_deps_decline_app_update_refreshes_current_deps() -> None:
         assert "Updated to v1.1.0" not in content
 
 
-async def test_update_deps_decline_app_update_reports_no_new_deps() -> None:
+async def test_update_deps_decline_app_update_reports_no_new_deps(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
     """`/update --deps` reports current deps even when dcode has an update."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage
@@ -982,6 +1191,7 @@ async def test_update_deps_decline_app_update_reports_no_new_deps() -> None:
             ) as perform_upgrade_mock,
         ):
             await app._handle_command("/update --deps")
+            await drain_modal_commands(app)
             await pilot.pause()
 
         perform_upgrade_mock.assert_not_awaited()
@@ -992,7 +1202,9 @@ async def test_update_deps_decline_app_update_reports_no_new_deps() -> None:
         assert "Updated to v1.1.0" not in content
 
 
-async def test_update_already_current_prompts_and_refreshes_on_confirm() -> None:
+async def test_update_already_current_prompts_and_refreshes_on_confirm(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
     """Plain `/update` offers a dep refresh when dcode is already current."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage
@@ -1037,6 +1249,7 @@ async def test_update_already_current_prompts_and_refreshes_on_confirm() -> None
             ) as refresh_mock,
         ):
             await app._handle_command("/update")
+            await drain_modal_commands(app)
             await pilot.pause()
 
         dry_run_mock.assert_awaited_once_with(include_prereleases=None)
@@ -1048,7 +1261,65 @@ async def test_update_already_current_prompts_and_refreshes_on_confirm() -> None
         assert "Refreshed dependencies:" in str(app_msgs[-1]._content)
 
 
-async def test_update_already_current_skips_refresh_on_decline() -> None:
+async def test_update_refresh_continuation_surfaces_unexpected_error(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
+    """A raise inside the detached refresh continuation reaches the user.
+
+    The continuation runs outside `_handle_update_command`'s `try/except`, so
+    without its own handler the failure would reach only `_log_task_exception`
+    and the user would see no outcome at all.
+    """
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import ErrorMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(False, "1.0.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.dependency_refresh_supported",
+                return_value=(True, None),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_dependency_refresh_dry_run",
+                new_callable=AsyncMock,
+                return_value=(
+                    True,
+                    " - langchain-openai==1.3.2\n + langchain-openai==1.5.0\n",
+                ),
+            ),
+            patch.object(
+                app,
+                "_confirm_refresh_dependencies",
+                new=AsyncMock(return_value=True),
+            ),
+            patch.object(
+                app,
+                "_refresh_dependencies",
+                new=AsyncMock(side_effect=RuntimeError("resolver blew up")),
+            ),
+        ):
+            await app._handle_command("/update")
+            await drain_modal_commands(app)
+            await pilot.pause()
+
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "Update failed: RuntimeError" in joined
+        assert "resolver blew up" in joined
+
+
+async def test_update_already_current_skips_refresh_on_decline(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
     """Declining the prompt leaves the install untouched."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage
@@ -1089,6 +1360,7 @@ async def test_update_already_current_skips_refresh_on_decline() -> None:
             ) as refresh_mock,
         ):
             await app._handle_command("/update")
+            await drain_modal_commands(app)
             await pilot.pause()
 
         dry_run_mock.assert_awaited_once_with(include_prereleases=None)
@@ -1100,7 +1372,172 @@ async def test_update_already_current_skips_refresh_on_decline() -> None:
         assert "Dependency refresh skipped." in str(app_msgs[-1]._content)
 
 
-async def test_update_already_current_reports_no_dependency_changes() -> None:
+async def test_update_refresh_prompt_responsive_through_message_pump(
+    drain_modal_commands: DrainModalCommands,
+    wait_for_modal: WaitForModal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The dependency-refresh modal must accept keys via the real submit path.
+
+    Regression test: `/update` is dispatched from the App's
+    `on_chat_input_submitted` handler, which is awaited inline on the App message
+    pump. Previously the confirmation was `await`ed in that chain, so the pump
+    stayed blocked while the modal was open and the modal never received the
+    Enter/Esc key events it needs to resolve — it appeared frozen until the
+    confirmation helper's watchdog fired. The confirmation now runs off the pump
+    (`_schedule_off_message_pump`), so submitting through the real
+    `ChatInput.Submitted` path and pressing Enter must resolve the modal and run
+    the refresh rather than wedging the UI.
+
+    The watchdog is shortened here so a regression fails on a real assertion in
+    seconds. At its production length the blocked pump also stalls `run_test()`
+    teardown, and the failure surfaces as a bare pytest-timeout that says
+    nothing about the cause.
+    """
+    from deepagents_code import app as app_module
+    from deepagents_code.app import DeepAgentsApp
+
+    monkeypatch.setattr(app_module, "_MODAL_WATCHDOG_TIMEOUT_SECONDS", 2.0)
+    from deepagents_code.tui.widgets.chat_input import ChatInput
+    from deepagents_code.tui.widgets.update_confirm import (
+        RefreshDependenciesConfirmScreen,
+    )
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        # Idle session so the submission is processed instead of queued.
+        app._agent_running = False
+        app._connecting = False
+        app._startup_sequence_running = False
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(False, "1.0.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.dependency_refresh_supported",
+                return_value=(True, None),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_dependency_refresh_dry_run",
+                new_callable=AsyncMock,
+                return_value=(
+                    True,
+                    " - langchain-openai==1.3.2\n + langchain-openai==1.5.0\n",
+                ),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_dependency_refresh",
+                new_callable=AsyncMock,
+                return_value=(
+                    True,
+                    " - langchain-openai==1.3.2\n + langchain-openai==1.5.0\n",
+                ),
+            ) as refresh_mock,
+        ):
+            # Submit through the message pump, exactly as the ChatInput widget
+            # would, rather than awaiting `_handle_command` directly (which would
+            # not exercise the pump-blocking path).
+            assert app._chat_input is not None
+            app._chat_input.post_message(ChatInput.Submitted("/update", "command"))
+            await wait_for_modal(
+                pilot,
+                RefreshDependenciesConfirmScreen,
+                present=True,
+            )
+
+            # With the pump free, Enter must reach the modal and resolve it.
+            await pilot.press("enter")
+            await wait_for_modal(
+                pilot,
+                RefreshDependenciesConfirmScreen,
+                present=False,
+            )
+            await drain_modal_commands(app)
+
+        refresh_mock.assert_awaited_once_with(include_prereleases=None)
+
+
+async def test_update_deps_prompt_responsive_through_message_pump(
+    drain_modal_commands: DrainModalCommands,
+    wait_for_modal: WaitForModal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The `--deps` app-update modal must accept keys via the real submit path.
+
+    Same pump-blocking regression as the dependency-refresh modal: Esc has to
+    reach `UpdateBeforeDependenciesConfirmScreen` for the user to keep the
+    current version and refresh its dependencies. The watchdog is shortened for
+    the same reason as there — so a regression fails legibly instead of hanging.
+    """
+    from deepagents_code import app as app_module
+    from deepagents_code.app import DeepAgentsApp
+
+    monkeypatch.setattr(app_module, "_MODAL_WATCHDOG_TIMEOUT_SECONDS", 2.0)
+    from deepagents_code.tui.widgets.chat_input import ChatInput
+    from deepagents_code.tui.widgets.update_confirm import (
+        UpdateBeforeDependenciesConfirmScreen,
+    )
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._agent_running = False
+        app._connecting = False
+        app._startup_sequence_running = False
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "1.1.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.dependency_refresh_supported",
+                return_value=(True, None),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+            ) as upgrade_mock,
+            patch(
+                "deepagents_code.update_check.perform_dependency_refresh",
+                new_callable=AsyncMock,
+                return_value=(True, ""),
+            ) as refresh_mock,
+        ):
+            assert app._chat_input is not None
+            app._chat_input.post_message(
+                ChatInput.Submitted("/update --deps", "command"),
+            )
+            await wait_for_modal(
+                pilot,
+                UpdateBeforeDependenciesConfirmScreen,
+                present=True,
+            )
+
+            await pilot.press("escape")
+            await wait_for_modal(
+                pilot,
+                UpdateBeforeDependenciesConfirmScreen,
+                present=False,
+            )
+            await drain_modal_commands(app)
+
+        refresh_mock.assert_awaited_once_with(include_prereleases=None)
+        upgrade_mock.assert_not_awaited()
+
+
+async def test_update_already_current_reports_no_dependency_changes(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
     """Plain `/update` skips the prompt when the dry run finds no changes."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage
@@ -1137,6 +1574,7 @@ async def test_update_already_current_reports_no_dependency_changes() -> None:
             ) as refresh_mock,
         ):
             await app._handle_command("/update")
+            await drain_modal_commands(app)
             await pilot.pause()
 
             dry_run_mock.assert_awaited_once_with(include_prereleases=None)
@@ -1146,7 +1584,9 @@ async def test_update_already_current_reports_no_dependency_changes() -> None:
             assert "Dependencies are already up to date." in str(app_msgs[-1]._content)
 
 
-async def test_update_already_current_reports_dependency_check_failure() -> None:
+async def test_update_already_current_reports_dependency_check_failure(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
     """A failed dry-run check reports the failure without refreshing."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage
@@ -1183,6 +1623,7 @@ async def test_update_already_current_reports_dependency_check_failure() -> None
             ) as refresh_mock,
         ):
             await app._handle_command("/update")
+            await drain_modal_commands(app)
             await pilot.pause()
 
             confirm_mock.assert_not_awaited()
@@ -1193,7 +1634,9 @@ async def test_update_already_current_reports_dependency_check_failure() -> None
             assert "No solution found" in content
 
 
-async def test_update_already_current_skips_prompt_when_refresh_unsupported() -> None:
+async def test_update_already_current_skips_prompt_when_refresh_unsupported(
+    drain_modal_commands: DrainModalCommands,
+) -> None:
     """brew/other installs aren't prompted for a refresh or prerelease support."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage
@@ -1233,6 +1676,7 @@ async def test_update_already_current_skips_prompt_when_refresh_unsupported() ->
             ) as refresh_mock,
         ):
             await app._handle_command("/update")
+            await drain_modal_commands(app)
             await pilot.pause()
 
         confirm_mock.assert_not_awaited()
@@ -1313,6 +1757,77 @@ async def test_refresh_dependencies_skips_in_debug_mode(monkeypatch) -> None:
         refresh_mock.assert_not_awaited()
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert "Skipped dependency refresh (debug mode)." in str(app_msgs[-1]._content)
+
+
+async def test_perform_app_upgrade_failure_surfaces_manual_command() -> None:
+    """A failed upgrade reports the detail plus a pinned manual command.
+
+    The `/update` path into this branch had no app-level coverage; the only
+    `"Auto-update failed"` assertions live in `test_main.py`, which exercises
+    `main._run_startup_auto_update` instead.
+    """
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(False, "resolver: conflict"),
+            ),
+            patch(
+                "deepagents_code.update_check.upgrade_command",
+                return_value="uv tool install -U 'deepagents-code==1.1.0'",
+            ),
+        ):
+            await app._perform_app_upgrade(
+                current="1.0.0",
+                latest="1.1.0",
+                include_prereleases=None,
+                upgrade_include_prereleases=None,
+                pin_upgrade_version="1.1.0",
+            )
+            await pilot.pause()
+
+        content = " ".join(
+            str(m._content) for m in app.query(AppMessage) if not m._is_markdown
+        )
+        assert "Auto-update failed" in content
+        assert "resolver: conflict" in content
+        assert "uv tool install -U 'deepagents-code==1.1.0'" in content
+
+
+async def test_perform_app_upgrade_skips_install_in_debug_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`DEBUG_UPDATE` short-circuits the app upgrade before shelling out to uv."""
+    from deepagents_code._env_vars import DEBUG_UPDATE
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage
+
+    monkeypatch.setenv(DEBUG_UPDATE, "1")
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch(
+            "deepagents_code.update_check.perform_upgrade",
+            new_callable=AsyncMock,
+        ) as upgrade_mock:
+            await app._perform_app_upgrade(
+                current="1.0.0",
+                latest="1.1.0",
+                include_prereleases=None,
+                upgrade_include_prereleases=None,
+                pin_upgrade_version=None,
+            )
+            await pilot.pause()
+
+        upgrade_mock.assert_not_awaited()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert "Skipped update install (debug mode)." in str(app_msgs[-1]._content)
 
 
 async def test_confirm_refresh_dependencies_reports_mount_failure() -> None:

@@ -211,6 +211,39 @@ class TestGoalReviewMenu:
             menu.action_reject_with_message()
             assert "Ctrl+X external editor" in str(help_widget.content)
 
+    async def test_newline_hint_uses_terminal_shortcut(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Newline hints use the terminal-aware shortcut, not a hardcoded key.
+
+        On terminals that cannot report Shift+Enter (e.g. macOS Terminal.app),
+        `newline_shortcut` returns `Ctrl+J`/`Option+Enter`; the goal editor must
+        advertise that key rather than a Shift+Enter that would submit instead.
+        """
+        from deepagents_code import config as config_module
+
+        # `newline_hint` resolves `newline_shortcut` via a call-time
+        # `from deepagents_code.config import newline_shortcut`, so patch the
+        # name on the config module it actually looks up.
+        monkeypatch.setattr(config_module, "newline_shortcut", lambda: "Ctrl+J")
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            help_widget = menu.query_one(".goal-review-help", Static)
+
+            menu.action_edit()
+            assert "Ctrl+J newline" in str(help_widget.content)
+            assert "Shift+Enter" not in str(help_widget.content)
+
+            menu.action_cancel()
+            menu.action_reject_with_message()
+            assert "Ctrl+J newline" in str(help_widget.content)
+
+            menu._hint_empty_submission("criteria")
+            assert "Ctrl+J newline" in str(help_widget.content)
+
     async def test_edit_expands_collapsed_paste_on_submit(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -236,7 +269,9 @@ class TestGoalReviewMenu:
             text_input.focus()
 
             big = "- crit\n" * 5
-            await text_input._on_paste(events.Paste(big))
+            # Post through the App so Textual's MRO dispatch reaches the
+            # base handlers that perform the insert.
+            pilot.app.post_message(events.Paste(big))
             await pilot.pause()
             assert text_input.text == "[Pasted text #1 +5 lines]"
 
@@ -268,7 +303,9 @@ class TestGoalReviewMenu:
             text_input.focus()
 
             big = "- feedback\n" * 5
-            await text_input._on_paste(events.Paste(big))
+            # Post through the App so Textual's MRO dispatch reaches the
+            # base handlers that perform the insert.
+            pilot.app.post_message(events.Paste(big))
             await pilot.pause()
             assert text_input.text == "[Pasted text #1 +5 lines]"
 

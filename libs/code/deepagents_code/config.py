@@ -12,15 +12,18 @@ import shlex
 import shutil
 import sys
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from deepagents_code._constants import FIREWORKS_PROVIDER_ID_PREFIX
 from deepagents_code._env_vars import (
+    AUTO_CLASSIFIER_MODEL,
     DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
     DISABLED_PROJECT_MCP_SERVERS,
     HIDE_SPLASH_VERSION,
@@ -36,6 +39,7 @@ from deepagents_code.config_manifest import (
     INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT,
     INTERPRETER_PTC_DEFAULT,
     INTERPRETER_TIMEOUT_SECONDS_DEFAULT,
+    RECURSION_LIMIT_DEFAULT,
 )
 
 logger = logging.getLogger(__name__)
@@ -110,6 +114,7 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "BASH_ENV",
         "BASHOPTS",
         "CDPATH",
+        "COMSPEC",
         "DYLD_INSERT_LIBRARIES",
         "DYLD_LIBRARY_PATH",
         "ENV",
@@ -126,6 +131,8 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "PYTHONSTARTUP",
         "SHELLOPTS",
         "SSH_ASKPASS",
+        "SYSTEMROOT",
+        "WINDIR",
         _INHERITED_PYTHONPATH_ENV,
     }
 )
@@ -165,12 +172,13 @@ _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
     {
         DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         DISABLED_PROJECT_MCP_SERVERS,
+        AUTO_CLASSIFIER_MODEL,
     }
 )
 """Env keys a *project* `.env` must not inject, even though they are otherwise
 safe process-env inputs.
 
-These two vars are the env form of the user-level project-MCP allow/deny lists
+The first two are the env form of the user-level project-MCP allow/deny lists
 (`model_config.load_mcp_server_trust_lists`). Their whole purpose is to be a
 *user-level* decision: naming a project MCP server here pre-approves it from an
 untrusted `.mcp.json` (stdio → local command execution; remote → SSRF and
@@ -178,6 +186,15 @@ untrusted `.mcp.json` (stdio → local command execution; remote → SSRF and
 travels with a cloned repo, so honoring it would let an attacker commit
 `.mcp.json` + `.env` and self-approve their own servers — exactly the trust
 boundary the feature exists to hold.
+
+`AUTO_CLASSIFIER_MODEL` chooses the model that authorizes gated tool calls in
+Auto approval mode. Honoring it from a project `.env` would let a cloned repo
+silently point that review at a weaker model — degrading the control, including
+its resistance to prompt injection in the untrusted material it reads — which is
+a repo-supplied downgrade of a user-level security decision, not a project build
+setting. Choosing a classifier stays available through the trusted surfaces:
+shell exports, the global `~/.deepagents/.env`, `[models].auto_classifier` in
+`~/.deepagents/config.toml`, `--auto-classifier-model`, and `/auto model`.
 
 Unlike `_DOTENV_DENIED_ENV_KEYS` (denied from *any* `.env` because they turn
 `.env` loading into code execution), these are denied only from the *project*
@@ -255,7 +272,8 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
                 continue
             if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # Mirror `_load_dotenv`: a project `.env` cannot preview-set a
-                # user-level MCP trust decision (the global `.env`/shell can).
+                # user-level trust decision — MCP trust lists or the Auto
+                # classifier model (the global `.env`/shell can).
                 logger.debug(
                     "Ignoring project-denied env key %r from %s", key, dotenv_path
                 )
@@ -362,8 +380,10 @@ def _load_dotenv(
                 logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
                 continue
             if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
-                # A committed project `.env` must not set a user-level MCP trust
-                # decision; the global `.env` and shell may (is_project=False).
+                # A committed project `.env` must not set a user-level trust
+                # decision — MCP trust lists or the Auto classifier model that
+                # authorizes this repo's own tool calls; the global `.env` and
+                # shell may (is_project=False).
                 logger.debug(
                     "Ignoring project-denied env key %r from %s", key, dotenv_path
                 )
@@ -459,6 +479,21 @@ def normalize_langsmith_endpoint(value: str) -> str:
     return cleaned
 
 
+def _is_langsmith_sdk_default_endpoint(value: str) -> bool:
+    """Return whether `value` is the LangSmith SDK's default US SaaS endpoint.
+
+    Profiles and configs often surface `LANGSMITH_US_ENDPOINT` even when the
+    user never chose a custom ingest target. That default is not a keyless
+    custom endpoint: the SDK treats it the same as leaving `api_url` unset, so
+    upload-target checks and client kwargs should ignore it.
+    """
+    cleaned = value.strip().rstrip("/")
+    if not cleaned:
+        return False
+    default = LANGSMITH_US_ENDPOINT.rstrip("/")
+    return cleaned.lower() == default.lower()
+
+
 def is_http_url(value: str) -> bool:
     """Return whether `value` is a non-empty `http`/`https` URL with a host.
 
@@ -509,20 +544,33 @@ class _LangSmithProfileConfig(Protocol):
     """OAuth refresh token from the active LangSmith profile."""
 
 
-def _quiet_sdk_tracing_logging() -> None:
-    """Keep LangSmith/LangChain SDK logging from corrupting the TUI.
+_QUIET_SDK_LOGGER_NAMES = (
+    "deepagents.profiles.harness.harness_profiles",
+    "genai-prices",
+    "langchain",
+    "langsmith",
+)
 
-    These SDK loggers emit ingestion/auth errors (e.g. repeated 401s) on their
-    own loggers. With no handler attached they reach Python's last-resort stderr
-    handler and bleed onto the alternate-screen TUI. Route them to the debug log
-    when `DEEPAGENTS_CODE_DEBUG` is set, otherwise attach a `NullHandler` so they
-    stay off the terminal.
+
+def _quiet_sdk_logging() -> None:
+    """Keep non-actionable SDK diagnostics off the terminal.
+
+    The harness-profile resolver, tracing SDKs, and the `genai-prices` price
+    updater emit diagnostics on their own logger hierarchies. With no handler
+    attached, warnings reach Python's last-resort stderr handler and can bleed
+    into command output or the alternate-screen TUI -- the price updater logs
+    at ERROR from a background thread once an hour, so an offline or
+    proxied session would otherwise get a stderr line over the TUI on every
+    failed refresh. Route them to the debug log when
+    `DEEPAGENTS_CODE_DEBUG` is set, otherwise attach a `NullHandler` so they stay
+    off the terminal. Other Deep Agents loggers remain untouched so actionable
+    runtime warnings are still visible.
     """
     from deepagents_code._debug import configure_debug_logging
     from deepagents_code._env_vars import DEBUG, is_env_truthy
 
     debug_enabled = is_env_truthy(DEBUG)
-    for name in ("langsmith", "langchain"):
+    for name in _QUIET_SDK_LOGGER_NAMES:
         sdk_logger = logging.getLogger(name)
         if debug_enabled:
             configure_debug_logging(sdk_logger)
@@ -564,12 +612,17 @@ def _has_langsmith_profile_credentials(env: dict[str, str] | None = None) -> boo
 
 
 def _has_langsmith_profile_custom_endpoint(env: dict[str, str] | None = None) -> bool:
-    """Return whether the LangSmith profile points at a custom endpoint."""
+    """Return whether the LangSmith profile points at a custom endpoint.
+
+    The SDK default US SaaS URL does not count: profiles often store it
+    even when the user never chose a custom ingest target.
+    """
     config = _load_langsmith_profile_config(env)
     if config is None:
         return False
 
-    return bool((config.api_url or "").strip())
+    api_url = (config.api_url or "").strip()
+    return bool(api_url) and not _is_langsmith_sdk_default_endpoint(api_url)
 
 
 def _build_orphaned_tracing_disabled_notice() -> str:
@@ -674,7 +727,7 @@ def _disable_orphaned_tracing() -> None:
     `api_url`) or replica endpoints (`LANGSMITH_RUNS_ENDPOINTS`/
     `LANGCHAIN_RUNS_ENDPOINTS`) signal tracing can upload without a top-level
     API key, so those explicitly configured targets are trusted and left alone.
-    The SDK loggers are quieted separately by `_quiet_sdk_tracing_logging`, so
+    The SDK loggers are quieted separately by `_quiet_sdk_logging`, so
     any residual ingest errors stay off the TUI.
     """
     global _orphaned_tracing_disabled_notice  # noqa: PLW0603
@@ -683,12 +736,20 @@ def _disable_orphaned_tracing() -> None:
         return
 
     env = dict(os.environ)
-    has_custom_endpoint = any(
+    # Match SDK endpoint precedence: a populated env var wins over the profile,
+    # even when it is the default US URL. Only consult the profile when no
+    # endpoint env var is set.
+    has_env_endpoint = any(
         (env.get(var) or "").strip() for var in _TRACING_ENDPOINT_ENV_VARS
+    )
+    has_custom_endpoint = any(
+        (value := (env.get(var) or "").strip())
+        and not _is_langsmith_sdk_default_endpoint(value)
+        for var in _TRACING_ENDPOINT_ENV_VARS
     )
     if (
         has_custom_endpoint
-        or _has_langsmith_profile_custom_endpoint()
+        or (not has_env_endpoint and _has_langsmith_profile_custom_endpoint())
         or _has_langsmith_runs_endpoints_from(env)
     ):
         return
@@ -773,7 +834,7 @@ def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
     startup-perf budget). So a stored-but-invalid key (typo'd, revoked, or for
     the wrong workspace) still force-enables tracing, and its traces are then
     silently dropped at ingest with only SDK-internal 401s — which
-    `_quiet_sdk_tracing_logging` routes away from the TUI. `_disable_orphaned_tracing`
+    `_quiet_sdk_logging` routes away from the TUI. `_disable_orphaned_tracing`
     and `consume_orphaned_tracing_disabled_notice` guard only the *absent*-key
     case, not the invalid-key case. If traces never appear, the key is the first
     thing to re-check via `/auth`.
@@ -926,9 +987,9 @@ def _ensure_bootstrap() -> None:
 
             configure_debug_logging(logging.getLogger("deepagents_code"))
 
-            # Keep LangSmith/LangChain SDK logging off the TUI (route to the
-            # debug log when enabled, else swallow via NullHandler).
-            _quiet_sdk_tracing_logging()
+            # Keep dependency logging out of command output and the TUI. Route it
+            # to the debug log when enabled, otherwise swallow it via NullHandler.
+            _quiet_sdk_logging()
 
             # Capture AFTER dotenv loading so .env-only values are visible,
             # but BEFORE the override below replaces it.
@@ -1206,8 +1267,9 @@ def _get_deepagents_version() -> str | None:
     """Resolve the installed Deep Agents SDK version for diagnostics.
 
     Editable installs can leave package metadata behind the source checkout, so
-    this uses the shared resolver that prefers the editable source version and
-    falls back to metadata when needed.
+    this uses the shared resolver that prefers the editable source marker and
+    appends an `+editable` suffix. A sibling monorepo workspace whose marker
+    trails dcode's exact pin reports the pinned release baseline instead.
 
     Returns:
         The resolved Deep Agents SDK version, or `None` when unavailable.
@@ -1232,14 +1294,29 @@ def _get_deepagents_version() -> str | None:
 def _format_lc_version(base_version: str, *, editable: bool) -> str:
     """Format an `lc_versions` value with editable-install context.
 
+    Editable installs get an `editable` PEP 440 local segment (`1.2.3+editable`).
+    The SDK stamps `lc_versions["deepagents"]` the same way and LangChain merges
+    the two dicts, so both entries in a single trace share one encoding. It is
+    also what `dcode_client_deepagents_version` already reports.
+
     Args:
         base_version: The base version string.
         editable: Whether the distribution is installed in editable mode.
 
     Returns:
-        The version string, suffixed with ` (editable)` when `editable`.
+        The version string, with an `editable` local segment when `editable`.
     """
-    return f"{base_version} (editable)" if editable else base_version
+    if not editable:
+        return base_version
+    # Imported lazily on purpose, for the same reason as `_get_deepagents_version`
+    # above: this pulls in `packaging`, which we keep off `config`'s module-import
+    # path (the startup hot path). Do not hoist this to the top of the module.
+    # Import from `extras_info` rather than `deepagents._version`: the SDK copy
+    # only exists in releases newer than the exact `deepagents` pin, and a
+    # PyPI-resolved SDK would raise `ImportError` here on every editable run.
+    from deepagents_code.extras_info import _with_editable_local_version
+
+    return _with_editable_local_version(base_version)
 
 
 def _resolve_editable_info() -> tuple[bool, str | None]:
@@ -1266,7 +1343,7 @@ def _resolve_editable_info() -> tuple[bool, str | None]:
             if editable:
                 url = data.get("url", "")
                 if url.startswith("file://"):
-                    path = unquote(urlparse(url).path)
+                    path = url2pathname(urlparse(url).path)
                     home = str(Path.home())
                     if path.startswith(home):
                         path = "~" + path[len(home) :]
@@ -1455,12 +1532,17 @@ in `tool_display`.
 """
 
 config: RunnableConfig = {
-    "recursion_limit": 1000,
+    "recursion_limit": RECURSION_LIMIT_DEFAULT,
 }
-"""Default LangGraph runnable config.
+"""Default LangGraph runnable config for the main agent.
 
-Sets `recursion_limit` to 1000 to accommodate deeply nested agent graphs without
-hitting the default LangGraph ceiling.
+Sets `recursion_limit` to `RECURSION_LIMIT_DEFAULT` (2000) to accommodate deeply
+nested agent graphs in long-running sessions without hitting the default
+LangGraph ceiling. The literal lives in `config_manifest` so the default is
+defined in exactly one place. This value is the fallback: `create_cli_agent`
+resolves the effective limit at agent-build time via `resolve_recursion_limit`,
+which honors the `--recursion-limit` CLI flag, the `DEEPAGENTS_CODE_RECURSION_LIMIT`
+env var, and `[runtime].recursion_limit` in `config.toml`.
 """
 
 _git_branch_cache: dict[str, str | None] = {}
@@ -1647,6 +1729,7 @@ def build_stream_config(
     sandbox_type: str | None = None,
     turn_id: str | None = None,
     turn_number: int | None = None,
+    auto_approve: bool = False,
 ) -> RunnableConfig:
     """Build the LangGraph stream config dict.
 
@@ -1674,10 +1757,18 @@ def build_stream_config(
 
     Also records `dcode_client_deepagents_version` as a dcode-client diagnostic.
     This describes the Deep Agents package installed alongside the TUI, which
-    can differ from a remote graph's Deep Agents runtime version.
+    can differ from a remote graph's Deep Agents runtime version. Editable
+    installs carry an `+editable` suffix, matching how the SDK stamps
+    `lc_versions["deepagents"]`; for sibling monorepo packages that suffix
+    identifies workspace HEAD relative to the pinned published SDK baseline.
 
     Also records `dcode_experimental=True` when `DEEPAGENTS_CODE_EXPERIMENTAL`
     is enabled, so experimental runs are filterable in trace metadata.
+
+    Also records `dcode_auto_approve=True` when auto-approve ("YOLO") mode is
+    active, so runs that ran tools without HITL approval are filterable in trace
+    metadata. This is a diagnostic key, not the contract-scoped `approval_policy`
+    key (see above), so it is safe to stamp trace-wide.
 
     Args:
         thread_id: The app session thread identifier. Set both on
@@ -1690,6 +1781,8 @@ def build_stream_config(
             sandbox is active.
         turn_id: Stable per-turn id for the current user prompt, or `None`.
         turn_number: 1-based per-thread turn index, or `None`.
+        auto_approve: Whether auto-approve ("YOLO") mode is active for this turn.
+            When `True`, `dcode_auto_approve=True` is recorded in trace metadata.
 
     Returns:
         Config dict with `configurable` and `metadata` keys.
@@ -1717,6 +1810,10 @@ def build_stream_config(
     # Mark experimental runs so they are filterable in trace metadata.
     if is_env_truthy(EXPERIMENTAL):
         metadata["dcode_experimental"] = True
+
+    # Mark auto-approve ("YOLO") runs so they are filterable in trace metadata.
+    if auto_approve:
+        metadata["dcode_auto_approve"] = True
 
     # Legacy / diagnostic keys preserved for backward-compatibility during the
     # coding-agent-v1 rollout (not part of the contract).
@@ -2600,6 +2697,13 @@ class Settings:
                 os.environ.pop("LANGSMITH_PROJECT", None)
                 _apply_default_langsmith_project()
 
+        # A reload can repoint env resolution at a different .env (e.g. after a
+        # cwd switch), so start a fresh diagnostics generation; otherwise the new
+        # "Resolved X from ..." lines would be suppressed by the pre-reload dedup
+        # set.
+        from deepagents_code.model_config import reset_env_resolution_log
+
+        reset_env_resolution_log()
         return self._format_reload_changes(previous, refreshed)
 
     @property
@@ -3065,6 +3169,95 @@ def get_langsmith_project_name() -> str | None:
     )
 
 
+@dataclass(frozen=True)
+class LangsmithShadowResult:
+    """Why `/trace` found no LangSmith key, when an empty override is involved.
+
+    Distinguishes the three states the caller renders differently: a specific
+    empty override is suppressing an available key (`shadowing_var`), the
+    credential store could not be read so a stored key can't be ruled out
+    (`store_unreadable`), or neither (both fields falsy -- the generic "not
+    configured" hint applies).
+    """
+
+    shadowing_var: str | None = None
+    """Prefixed env var whose empty value is suppressing an available key."""
+
+    store_unreadable: bool = False
+    """`True` when the `/auth` credential store raised while being checked."""
+
+
+def langsmith_key_shadowed_by_empty_override() -> LangsmithShadowResult:
+    """Report an empty prefixed override that is suppressing a LangSmith key.
+
+    `/trace` shows a generic "not configured" hint whenever no key resolves, but
+    a common footgun is exporting `DEEPAGENTS_CODE_LANGSMITH_API_KEY=` (empty).
+    A present-but-empty prefixed variable suppresses a key two ways: per
+    `resolve_env_var`'s precedence it shadows the canonical env variable
+    directly, and -- because `apply_stored_service_credentials` skips the `/auth`
+    bridge onto `LANGSMITH_API_KEY` whenever the prefixed var is present -- it
+    also keeps a `/auth`-stored key from ever reaching the environment. Either
+    way tracing silently stays off even though a key is available. Detecting this
+    lets callers name the offending variable instead of sending the user to
+    `/auth`.
+
+    Only an override that actually gates the *effective* key is reported. If a
+    key already resolves under the normal `LANGSMITH_API_KEY`-before-
+    `LANGCHAIN_API_KEY` precedence, tracing is off for some other reason (a
+    missing tracing flag), no override is to blame, and nothing is reported.
+    Otherwise each override is checked against the specific key it suppresses, so
+    the returned name is one that, once unset, actually lets a key resolve: its
+    canonical variant carries a value, or -- for `LANGSMITH_API_KEY`, the var
+    `/auth` bridges its stored key onto -- a stored key exists. When several
+    overrides qualify, the first in `_TRACING_API_KEY_ENV_VARS` order is
+    returned.
+
+    Returns:
+        A `LangsmithShadowResult`; see its fields for the three outcomes.
+    """
+    from deepagents_code import auth_store
+    from deepagents_code.model_config import (
+        LANGSMITH_SERVICE,
+        resolve_env_var,
+        resolved_env_var_name,
+    )
+
+    if resolve_env_var("LANGSMITH_API_KEY") or resolve_env_var("LANGCHAIN_API_KEY"):
+        # A key already resolves (matching `get_langsmith_project_name`'s key
+        # precedence), so no empty override is what's keeping tracing off, and
+        # unsetting one would change nothing. Defer to the generic hint.
+        return LangsmithShadowResult()
+
+    store_unreadable = False
+    for name in _TRACING_API_KEY_ENV_VARS:
+        resolved = resolved_env_var_name(name)
+        if resolved == name or os.environ.get(resolved):
+            # No prefixed override for this key, or the override carries a value:
+            # either way it is not an empty override suppressing this key.
+            continue
+        if (os.environ.get(name) or "").strip():
+            # The empty override is hiding a value on the canonical variable.
+            return LangsmithShadowResult(shadowing_var=resolved)
+        if name == "LANGSMITH_API_KEY":
+            # `/auth` bridges its stored key onto `LANGSMITH_API_KEY`, so an
+            # empty override for it also suppresses a stored key.
+            try:
+                if auth_store.get_stored_key(LANGSMITH_SERVICE):
+                    return LangsmithShadowResult(shadowing_var=resolved)
+            except RuntimeError as exc:
+                # Can't confirm a stored key, but keep scanning: a later
+                # override may still name a concrete shadow. Only if none does
+                # do we surface the unreadable store to the caller.
+                logger.warning(
+                    "Could not read the stored LangSmith credential while "
+                    "checking for an empty-override shadow: %s. The credential "
+                    "file may be corrupt; re-add the key via /auth.",
+                    exc,
+                )
+                store_unreadable = True
+    return LangsmithShadowResult(store_unreadable=store_unreadable)
+
+
 def is_langsmith_redaction_enabled() -> bool:
     """Return whether LangSmith secret redaction is enabled for agent traces."""
     from deepagents_code.config_manifest import (
@@ -3075,7 +3268,7 @@ def is_langsmith_redaction_enabled() -> bool:
 
     option = get_option("tracing.langsmith_redact")
     if option is None:
-        return True
+        return False
     value, _ = resolve_scalar(option, toml_data=load_config_toml())
     return bool(value)
 
@@ -3098,6 +3291,145 @@ def is_memory_auto_save_enabled() -> bool:
         return True
     value, _ = resolve_scalar(option, toml_data=load_config_toml())
     return bool(value)
+
+
+def is_yolo_switcher_enabled() -> bool:
+    """Return whether Shift+Tab may enter unrestricted YOLO mode.
+
+    Resolves the `startup.yolo_switcher` option from env/`config.toml`,
+    defaulting to enabled. When disabled, the interactive cycle stays Manual /
+    Auto only (or Manual alone when Auto is ineligible). Sessions already in
+    YOLO (for example via `--yolo`) can still leave it with Shift+Tab.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("startup.yolo_switcher")
+    if option is None:
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
+def is_openai_prompt_cache_key_enabled() -> bool:
+    """Return whether OpenAI model calls should carry a per-thread cache key.
+
+    Resolves the `models.openai_prompt_cache_key` option from env/`config.toml`,
+    defaulting to enabled. When disabled, `ConfigurableModelMiddleware` stops
+    injecting the thread ID as an OpenAI `prompt_cache_key` (a user-supplied key
+    is still forwarded). This is the opt-out for OpenAI-compatible endpoints that
+    reject unknown request fields.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("models.openai_prompt_cache_key")
+    if option is None:
+        return True
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value)
+
+
+def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None]:
+    """Resolve the Auto classifier spec and any reason it was ignored.
+
+    Reads the `models.auto_classifier` option from env/`config.toml`. `None`
+    means the classifier inherits the main agent model, which is the historical
+    behavior and the default.
+
+    A configured-but-unusable value (blank, or a non-string such as
+    `auto_classifier = 3`, which `resolve_scalar` drops to the default) silently
+    reverts authorization review to the main agent model — the agent grading its
+    own actions. The caller gets a description so it can say so on a surface the
+    user actually reads; a log line alone is not that surface.
+
+    Returns:
+        `(spec, problem)`. `spec` is a `provider:model` spec, or `None` when the
+            classifier should inherit. `problem` is a one-line description when a
+            configured value was ignored, else `None`.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("models.auto_classifier")
+    if option is None:
+        return None, None
+    toml_data = load_config_toml()
+    value, source = resolve_scalar(option, toml_data=toml_data)
+    if isinstance(value, str) and value.strip():
+        return value.strip(), None
+    if isinstance(value, str) and source != "default":
+        problem = (
+            f"Ignoring blank {source} auto_classifier model; the Auto approval "
+            "classifier will review with the main agent model."
+        )
+        logger.warning("%s", problem)
+        return None, problem
+    # `resolve_scalar` coerces a wrong-typed TOML value to the option default, so
+    # a malformed entry is indistinguishable here from an absent one. Re-read the
+    # raw table to tell them apart rather than reverting in silence.
+    raw = _raw_toml_auto_classifier(toml_data)
+    if raw is not None and not isinstance(raw, str):
+        problem = (
+            f"Ignoring malformed config.toml auto_classifier model {raw!r} "
+            "(expected a provider:model string); the Auto approval classifier "
+            "will review with the main agent model."
+        )
+        logger.warning("%s", problem)
+        return None, problem
+    return None, None
+
+
+def _raw_toml_auto_classifier(toml_data: Mapping[str, Any]) -> object | None:
+    """Return the raw `[models].auto_classifier` entry, or `None` if absent."""
+    models = toml_data.get("models")
+    if not isinstance(models, Mapping):
+        return None
+    return models.get("auto_classifier")
+
+
+def resolve_auto_classifier_model() -> str | None:
+    """Resolve the model spec the Auto approval classifier should use.
+
+    Returns:
+        A `provider:model` spec, or `None` when the classifier should inherit.
+    """
+    spec, _problem = resolve_auto_classifier_model_with_problem()
+    return spec
+
+
+def resolve_goal_auto_accept_criteria() -> tuple[bool, str]:
+    """Resolve whether Auto mode applies generated goal criteria without review.
+
+    Returns:
+        The effective preference and its config source. The preference fails closed
+        to disabled if the manifest entry is unavailable.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("goals.auto_accept_criteria")
+    if option is None:
+        logger.warning(
+            "Manifest option 'goals.auto_accept_criteria' is missing; goal "
+            "criteria auto-accept is disabled and any saved preference is "
+            "ignored.",
+        )
+        return False, "default"
+    value, source = resolve_scalar(option, toml_data=load_config_toml())
+    return bool(value), source
 
 
 def configure_langsmith_secret_redaction() -> bool:
@@ -3129,8 +3461,8 @@ def configure_langsmith_secret_redaction() -> bool:
     try:
         if not is_langsmith_redaction_enabled():
             logger.warning(
-                "LangSmith tracing is active but secret redaction is disabled "
-                "via %s; secrets may be uploaded to traces unredacted.",
+                "LangSmith tracing is active without secret redaction; secrets may "
+                "be uploaded to traces unredacted. Set %s=true to enable redaction.",
                 LANGSMITH_REDACT,
             )
             return False
@@ -3453,17 +3785,27 @@ def _tracing_endpoint_from(env: dict[str, str]) -> str | None:
     LangSmith SDK reads them canonically, so only the canonical names (plus the
     active profile's `api_url`) are consulted here.
 
+    Mirrors SDK resolution order (`env_api_url or profile_config.api_url`): a
+    populated env endpoint wins over the profile. The SDK default US SaaS URL is
+    not a custom ingest target — when env is that default, return `None` without
+    falling through to the profile. When env is unset, a non-default profile
+    `api_url` still counts.
+
     Args:
         env: Environment mapping to read.
     """
     for var in _TRACING_ENDPOINT_ENV_VARS:
         value = (env.get(var) or "").strip()
-        if value:
-            return value
+        if not value:
+            continue
+        if _is_langsmith_sdk_default_endpoint(value):
+            # Non-empty env wins over profile, even when it is the SDK default.
+            return None
+        return value
     config = _load_langsmith_profile_config(env)
     if config is not None:
         api_url = (config.api_url or "").strip()
-        if api_url:
+        if api_url and not _is_langsmith_sdk_default_endpoint(api_url):
             return api_url
     return None
 
@@ -3792,6 +4134,29 @@ def build_langsmith_thread_url(thread_id: str) -> str | None:
     return _assemble_langsmith_thread_url(project_url, thread_id)
 
 
+def get_cached_langsmith_thread_url(thread_id: str) -> str | None:
+    """Build a LangSmith thread URL only when its project URL is cached.
+
+    This non-blocking variant lets transient UI surfaces render a previously
+    resolved link immediately without repeating or scheduling another lookup.
+
+    Args:
+        thread_id: Thread identifier to build the URL for.
+
+    Returns:
+        Full thread URL string when the active project's URL is already cached,
+        otherwise `None`.
+    """
+    project_name = get_langsmith_project_name()
+    if not project_name or _langsmith_url_cache is None:
+        return None
+
+    cached_name, cached_url = _langsmith_url_cache
+    if cached_name != project_name:
+        return None
+    return _assemble_langsmith_thread_url(cached_url, thread_id)
+
+
 def reset_langsmith_url_cache() -> None:
     """Reset the LangSmith URL cache (for testing)."""
     global _langsmith_url_cache  # noqa: PLW0603  # Module-level cache requires global statement
@@ -3952,9 +4317,9 @@ def _get_default_model_spec() -> str:
     # list, switch to checking `state` against the relevant
     # `ProviderAuthState` members directly.
     if get_provider_auth_status("openai").as_legacy_bool() is True:
-        return "openai:gpt-5.5"
+        return "openai:gpt-5.6-terra"
     if get_provider_auth_status("anthropic").as_legacy_bool() is True:
-        return "anthropic:claude-opus-4-7"
+        return "anthropic:claude-opus-5"
     if get_provider_auth_status("google_genai").as_legacy_bool() is True:
         return "google_genai:gemini-3.1-pro-preview"
 
@@ -4111,6 +4476,40 @@ def _get_provider_kwargs(
     return result
 
 
+def _compose_openai_reasoning_effort(
+    provider: str,
+    kwargs: dict[str, Any],
+    effort_override: object,
+    reasoning_override: object,
+) -> dict[str, Any]:
+    """Compose a session effort override with an OpenAI reasoning mapping.
+
+    Args:
+        provider: Resolved model provider.
+        kwargs: Layered model constructor parameters.
+        effort_override: High-priority `reasoning_effort` from session params.
+        reasoning_override: High-priority native `reasoning` from session params.
+
+    Returns:
+        Constructor parameters with one native `reasoning` mapping when
+        composition is needed.
+    """
+    if provider not in {"openai", "openai_codex"} or not isinstance(
+        effort_override, str
+    ):
+        return kwargs
+    reasoning = kwargs.get("reasoning")
+    if not isinstance(reasoning, dict):
+        return kwargs
+    composed = dict(kwargs)
+    if isinstance(reasoning_override, dict) and "effort" in reasoning_override:
+        composed.pop("reasoning_effort", None)
+        return composed
+    composed["reasoning"] = {**reasoning, "effort": effort_override}
+    composed.pop("reasoning_effort", None)
+    return composed
+
+
 def _create_model_from_class(
     class_path: str,
     model_name: str,
@@ -4244,36 +4643,19 @@ def _create_model_via_init(
                 f"import for provider '{provider}': {e}"
             )
         else:
-            from deepagents_code.extras_info import extra_for_package
+            from deepagents_code.extras_info import resolve_install_hint
 
-            extra = extra_for_package(package)
-            if extra is not None:
+            hint = resolve_install_hint(package)
+            if hint.extra is not None:
                 msg = (
                     f"Missing package for provider '{provider}'. "
-                    f"Install: /install {extra}"
+                    f"Install: /install {hint.extra}"
                 )
             else:
-                from deepagents_code.extras_info import ExtrasIntrospectionError
-                from deepagents_code.update_check import (
-                    ToolRequirementIntrospectionError,
-                    install_package_command,
-                )
-
-                try:
-                    install_cmd = install_package_command(package)
-                except (
-                    ValueError,
-                    ExtrasIntrospectionError,
-                    ToolRequirementIntrospectionError,
-                ) as exc:
-                    logger.debug(
-                        "install_package_command failed; falling back to "
-                        "manual hint: %s",
-                        exc,
-                    )
-                    install_hint = f"Install the '{package}' package manually"
+                if hint.command is not None:
+                    install_hint = f"Install with: {hint.command}"
                 else:
-                    install_hint = f"Install with: {install_cmd}"
+                    install_hint = f"Install the '{package}' package manually"
                 msg = (
                     f"Missing package for provider '{provider}'. "
                     f"{install_hint}, then retry with `/model`."
@@ -4547,10 +4929,20 @@ def create_model(
     # app re-creating the model on a runtime `/model` switch) keeps the sentinel
     # for the next provider's resolution.
     cli_max_retries: int | None = None
+    reasoning_effort_override: object = None
+    reasoning_override: object = None
     if extra_kwargs:
         extra_kwargs = dict(extra_kwargs)
         cli_max_retries = extra_kwargs.pop(CLI_MAX_RETRIES_KEY, None)
+        reasoning_effort_override = extra_kwargs.get("reasoning_effort")
+        reasoning_override = extra_kwargs.get("reasoning")
         kwargs.update(extra_kwargs)
+    kwargs = _compose_openai_reasoning_effort(
+        provider,
+        kwargs,
+        reasoning_effort_override,
+        reasoning_override,
+    )
 
     # `--max-retries` outranks everything: fold it under the provider's resolved
     # retry-param name (honoring `[retries.<provider>].param`) so a custom
@@ -4606,6 +4998,9 @@ def create_model(
         model = _create_model_via_init(model_name, provider, kwargs)
 
     resolved_provider = provider or getattr(model, "_model_provider", provider)
+    from deepagents_code.cost_tracking import _set_configured_provider_metadata
+
+    _set_configured_provider_metadata(model, resolved_provider)
 
     # Apply profile overrides from config.toml (e.g., max_input_tokens)
     if provider:

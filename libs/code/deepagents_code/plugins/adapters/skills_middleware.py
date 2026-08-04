@@ -17,11 +17,12 @@ from deepagents_code.plugins.adapters.skills import (
     SkillNamespace,
     namespaced_skill_name,
 )
+from deepagents_code.skills.merge import merge_skill
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from deepagents.backends.protocol import BackendProtocol
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
 
@@ -239,7 +240,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
     def __init__(
         self,
         *,
-        backend: BACKEND_TYPES,
+        backend: BackendProtocol,
         sources: Sequence[CodeSkillSource],
         system_prompt: str | None = sdk_skills.SKILLS_SYSTEM_PROMPT,
     ) -> None:
@@ -281,8 +282,8 @@ class PluginSkillsMiddleware(SkillsMiddleware):
     def before_agent(
         self,
         state: sdk_skills.SkillsState,
-        runtime: Runtime,
-        config: RunnableConfig,
+        runtime: Runtime,  # noqa: ARG002
+        config: RunnableConfig,  # noqa: ARG002
     ) -> sdk_skills.SkillsStateUpdate | None:
         """Load and namespace plugin skills before collision resolution.
 
@@ -293,11 +294,19 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         if "skills_metadata" in state:
             return None
 
-        backend = self._get_backend(state, runtime, config)
+        backend = self._backend
         all_skills: dict[str, sdk_skills.SkillMetadata] = {}
+        merged_source_labels: dict[str, str | None] = {}
         errors: list[str] = []
 
-        for source_path, namespace in zip(self.sources, self._namespaces, strict=True):
+        # `self.sources`, `self.source_labels`, and `self._namespaces` are all
+        # built from the same source sequence at the same indices (see
+        # `__init__` and the SDK base), so this zip is aligned by construction.
+        # `strict=True` turns future *length* drift into a loud error; it does
+        # not catch a same-length reorder, which would still mispair silently.
+        for source_path, source_label, namespace in zip(
+            self.sources, self.source_labels, self._namespaces, strict=True
+        ):
             if namespace is None:
                 source_skills, source_error = sdk_skills._list_skills_with_errors(
                     backend, source_path
@@ -307,15 +316,20 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             else:
                 source_skills = load_namespaced_skills(backend, source_path, namespace)
             for skill in source_skills:
-                all_skills[skill["name"]] = skill
+                merge_skill(
+                    all_skills,
+                    merged_source_labels,
+                    skill,
+                    source_label=source_label,
+                )
 
         return self._state_update(all_skills, errors)
 
     async def abefore_agent(
         self,
         state: sdk_skills.SkillsState,
-        runtime: Runtime,
-        config: RunnableConfig,
+        runtime: Runtime,  # noqa: ARG002
+        config: RunnableConfig,  # noqa: ARG002
     ) -> sdk_skills.SkillsStateUpdate | None:
         """Asynchronously load and namespace skills before collision resolution.
 
@@ -326,11 +340,16 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         if "skills_metadata" in state:
             return None
 
-        backend = self._get_backend(state, runtime, config)
+        backend = self._backend
         all_skills: dict[str, sdk_skills.SkillMetadata] = {}
+        merged_source_labels: dict[str, str | None] = {}
         errors: list[str] = []
 
-        for source_path, namespace in zip(self.sources, self._namespaces, strict=True):
+        # See `before_agent`: the three sequences are index-aligned by
+        # construction, and `strict=True` guards against future length drift.
+        for source_path, source_label, namespace in zip(
+            self.sources, self.source_labels, self._namespaces, strict=True
+        ):
             if namespace is None:
                 (
                     source_skills,
@@ -343,6 +362,11 @@ class PluginSkillsMiddleware(SkillsMiddleware):
                     backend, source_path, namespace
                 )
             for skill in source_skills:
-                all_skills[skill["name"]] = skill
+                merge_skill(
+                    all_skills,
+                    merged_source_labels,
+                    skill,
+                    source_label=source_label,
+                )
 
         return self._state_update(all_skills, errors)

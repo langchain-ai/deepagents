@@ -23,13 +23,16 @@ import traceback
 from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NoReturn
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 if TYPE_CHECKING:
+    from deepagents import FsToolName
     from rich.console import Console
 
     from deepagents_code.app import AppResult
+    from deepagents_code.approval_mode import ApprovalMode
     from deepagents_code.config import Glyphs
+    from deepagents_code.hooks.trust import WorkspaceTrust
     from deepagents_code.mcp_tools import MCPServerInfo, ProjectServerSummary
     from deepagents_code.notifications import PendingNotification
 
@@ -49,22 +52,30 @@ _UNPERSISTED_AUTO_UPDATE_FAILURE_NOTE = (
 )
 
 
-class _ProjectMcpTrustAction(Enum):
-    """Actions available in the project MCP trust prompt."""
+class _TrustAction(Enum):
+    """Actions available in any project-scope trust prompt.
+
+    Shared by the project MCP server and project hook prompts; both offer the
+    same allow-once / remember / deny choice over a different subject.
+    """
 
     ALLOW_ONCE = "allow_once"
     REMEMBER = "remember"
     DENY = "deny"
 
 
-class _ProjectMcpTrustPromptOutcome(Enum):
-    """Internal outcomes that are not project MCP trust decisions."""
+class _TrustPromptOutcome(Enum):
+    """Trust-prompt results that are not decisions about the subject.
+
+    Subject-neutral so hook and MCP prompts can report the same abort paths.
+    """
 
     INTERRUPTED = "interrupted"
     """The user pressed Ctrl+C; the caller aborts the run (exit 130)."""
 
     CANCELLED = "cancelled"
-    """The user backed out of a nested prompt; the caller aborts the launch."""
+    """The user backed out of the trust prompt (Esc in the action or remember
+    picker, or blank/EOF in the text fallback); the caller aborts the launch."""
 
 
 _PROJECT_MCP_PICKER_VISIBLE_ROWS = 8
@@ -118,12 +129,25 @@ def build_version_text() -> str:
     Returns:
         Multi-line version string suitable for stdout.
     """
-    from deepagents_code.extras_info import resolve_sdk_version
+    from deepagents_code.extras_info import (
+        collect_version_report,
+        format_cli_version_annotation,
+        format_sdk_version_annotation,
+    )
 
-    sdk_version_value, status = resolve_sdk_version()
-    sdk_version = sdk_version_value if status == "resolved" else "unknown"
+    report = collect_version_report()
+    cli_annotation = format_cli_version_annotation(report.cli)
+    if report.sdk.status == "resolved":
+        sdk_version = report.display_sdk_version
+        sdk_annotation = format_sdk_version_annotation(report)
+    else:
+        sdk_version = "unknown"
+        sdk_annotation = ""
 
-    text = f"deepagents-code {__version__}\ndeepagents (SDK) {sdk_version}"
+    text = (
+        f"deepagents-code {__version__}{cli_annotation}\n"
+        f"deepagents (SDK) {sdk_version}{sdk_annotation}"
+    )
 
     editable = False
     try:
@@ -174,7 +198,14 @@ def _restart_current_process() -> NoReturn:
     Raises:
         RuntimeError: If process replacement unexpectedly returns.
     """
+    from deepagents_code._env_vars import INVOKED_AS
+    from deepagents_code._invocation import invoked_name
+
     argv = [sys.executable, "-m", "deepagents_code", *sys.argv[1:]]
+    # `-m` discards argv[0], so the launch name would be lost across the exec
+    # and post-update resume hints would fall back to `dcode`. Hand it to the
+    # next generation explicitly.
+    os.environ[INVOKED_AS] = invoked_name()
     # Re-exec the trusted interpreter with the user's own argv verbatim; the
     # only "input" is the command the user already ran, so S606's concern
     # (untrusted/unsanitized args to a spawned executable) does not apply.
@@ -238,6 +269,7 @@ def _render_teardown_thread_hints(
     from rich.style import Style
     from rich.text import Text
 
+    from deepagents_code._invocation import invoked_name
     from deepagents_code.config import build_langsmith_thread_url
     from deepagents_code.sessions import thread_exists
 
@@ -269,7 +301,10 @@ def _render_teardown_thread_hints(
     if return_code == 0:
         console.print()
         console.print("[dim]Resume this thread with:[/dim]")
-        hint = Text("dcode -r ", style="cyan")
+        # Echo the command the user actually launched (a shim or the
+        # `deepagents-code` alias), not a hardcoded `dcode` they may not have.
+        hint = Text(invoked_name(), style="cyan")
+        hint.append(" -r ", style="cyan")
         hint.append(str(thread_id), style="cyan")
         console.print(hint)
 
@@ -683,6 +718,85 @@ def _parse_interpreter_tools_flag(
     return names
 
 
+# Aliased from the dependency-free `_constants` module (see its docstring for
+# why the set is hardcoded, how the drift guard pins it, and why importing it
+# here keeps the arg-parsing hot path free of a `deepagents` import).
+from deepagents_code._constants import FS_TOOL_NAMES as _FS_TOOL_NAMES
+
+
+def _parse_allow_fs_tools_flag(
+    raw: str | None,
+) -> "list[FsToolName] | None":
+    """Parse `--allow-fs-tools` into `FilesystemMiddleware`'s `tools` shape.
+
+    Args:
+        raw: Argparse value: `None` (flag absent), `"all"`, or a
+            comma-separated list of filesystem tool names.
+
+    Returns:
+        `None` when the flag is absent *or* the value is `"all"` (both mean
+            "leave the SDK default filesystem middleware in place — all tools"),
+            or a list of trimmed, lower-cased tool names.
+
+            Tool names are matched case-insensitively
+            (like the `"all"` sentinel), so `READ_FILE` and `read_file`
+            are equivalent.
+
+            Calls `sys.exit(2)` when the value is empty, contains only blank
+            tokens, combines the `"all"` sentinel with other tool names,
+            includes an unknown tool name, or is an explicit list that
+            omits `"read_file"` — `FilesystemMiddleware` requires it.
+    """
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        sys.stderr.write(
+            "Error: --allow-fs-tools requires a value: 'all', or a "
+            "comma-separated list of filesystem tool names.\n"
+        )
+        sys.exit(2)
+    normalized = text.lower()
+    if normalized == "all":
+        # `"all"` collapses to `None`: both mean "all filesystem tools". `None`
+        # leaves the SDK's own default `FilesystemMiddleware` untouched, which is
+        # strictly safer than reinstalling a hand-built unrestricted instance
+        # (that would have to re-derive descriptions/permissions and could drift
+        # from the SDK default). Only an explicit sub-list installs a
+        # replacement middleware.
+        return None
+    # Lower-case each token so tool names are case-insensitive, matching the
+    # `"all"` sentinel above. SDK `FsToolName` members are all lower-case.
+    names = [token.strip().lower() for token in text.split(",") if token.strip()]
+    if not names:
+        sys.stderr.write(
+            "Error: --allow-fs-tools list must contain at least one "
+            "non-empty tool name.\n"
+        )
+        sys.exit(2)
+    if "all" in names:  # `names` are already lower-cased above.
+        sys.stderr.write(
+            "Error: --allow-fs-tools 'all' cannot be combined with other tool "
+            "names; pass 'all' on its own.\n"
+        )
+        sys.exit(2)
+    unknown = [name for name in names if name not in _FS_TOOL_NAMES]
+    if unknown:
+        sys.stderr.write(
+            f"Error: --allow-fs-tools has unknown tool name(s): "
+            f"{', '.join(unknown)}. Valid names: "
+            f"{', '.join(sorted(_FS_TOOL_NAMES))}.\n"
+        )
+        sys.exit(2)
+    if "read_file" not in names:
+        sys.stderr.write(
+            "Error: --allow-fs-tools list must include 'read_file'; it is "
+            "required by FilesystemMiddleware.\n"
+        )
+        sys.exit(2)
+    return cast("list[FsToolName]", names)
+
+
 def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
     """Return whether the JS interpreter should run for these CLI args.
 
@@ -700,26 +814,175 @@ def _resolve_interpreter_enabled(args: argparse.Namespace) -> bool:
     return _resolve_enable_interpreter(args.interpreter, args.sandbox)
 
 
-def _resolve_auto_approve(args: argparse.Namespace) -> bool:
-    """Return whether the interactive TUI should auto-approve tool calls.
+def _resolve_approval_mode(args: argparse.Namespace) -> "ApprovalMode":
+    """Resolve explicit flags and `[startup].mode` into a typed mode.
 
-    Headless mode uses `--shell-allow-list` instead and never calls this resolver.
-    An explicit `-y`/`--auto-approve` wins; when the flag is omitted
-    (`args.auto_approve is None`), the persistent `[startup].mode` config
-    default decides — `dangerously-auto` enables auto-approval, anything else
-    (including missing/invalid config) keeps human-in-the-loop approvals on.
+    Args:
+        args: Parsed CLI arguments.
 
-    Extracted from the `cli_main` body so it is unit-testable without
-    constructing the full arg tree, matching `_resolve_interpreter_enabled`.
+    Returns:
+        Explicit `--yolo`, explicit `-y`/`--auto-approve` as `auto`, or the
+        validated startup config value. Invalid config remains fail-closed.
     """
-    if args.auto_approve is not None:
-        return args.auto_approve
-    from deepagents_code.model_config import (
-        STARTUP_MODE_DANGEROUSLY_AUTO,
-        load_startup_mode,
+    from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
+    from deepagents_code.model_config import load_startup_mode
+
+    if getattr(args, "yolo", False):
+        return ApprovalMode.YOLO
+    if args.auto_approve is True:
+        return ApprovalMode.AUTO
+    return coerce_approval_mode(load_startup_mode())
+
+
+def _resolve_auto_approve(args: argparse.Namespace) -> bool:
+    """Return the compatibility Boolean for callers using the old resolver.
+
+    Args:
+        args: Parsed CLI arguments.
+
+    Returns:
+        Whether startup resolves to either autonomous mode.
+    """
+    from deepagents_code.approval_mode import ApprovalMode
+
+    return _resolve_approval_mode(args) is not ApprovalMode.MANUAL
+
+
+def _prompt_yolo_acknowledgement(console: "Console") -> bool:
+    """Show an inline fail-closed selector for unrestricted execution.
+
+    Args:
+        console: Rich console used for warning and fallback text.
+
+    Returns:
+        Whether the user explicitly accepted the warning.
+    """
+    console.print()
+    console.print(
+        "[bold red]YOLO mode: the agent acts on its own, with no approval "
+        "prompts.[/bold red]"
+    )
+    console.print(
+        "It can run commands, change files, and use tools on your machine "
+        "without asking you first."
+    )
+    console.print('[dim]Not sure? Pick "Use Manual" below.[/dim]')
+    console.print()
+    if not (sys.stdin.isatty() and sys.stderr.isatty()):
+        return False
+    try:
+        from prompt_toolkit import Application
+        from prompt_toolkit.formatted_text import FormattedText
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.key_binding.key_processor import KeyPressEvent
+        from prompt_toolkit.layout import Layout
+        from prompt_toolkit.layout.containers import Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+        from prompt_toolkit.output.defaults import create_output
+        from prompt_toolkit.styles import Style
+
+        from deepagents_code.config import get_glyphs
+
+        choices = [(False, "Use Manual"), (True, "Acknowledge and enable YOLO")]
+        selected_index = 0
+        glyphs = get_glyphs()
+
+        def rows() -> FormattedText:
+            fragments: list[tuple[str, str]] = [
+                (
+                    "class:prompt.help",
+                    (
+                        f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
+                        "Enter select · Esc Manual · Ctrl+C quit\n"
+                    ),
+                )
+            ]
+            for index, (_value, label) in enumerate(choices):
+                active = index == selected_index
+                cursor = glyphs.cursor if active else " "
+                style = "class:item.current" if active else "class:item"
+                suffix = "\n" if index < len(choices) - 1 else ""
+                fragments.append((style, f"{cursor} {label}{suffix}"))
+            return FormattedText(fragments)
+
+        bindings = KeyBindings()
+
+        @bindings.add("up")
+        @bindings.add("s-tab")
+        def move_up(_event: KeyPressEvent) -> None:
+            nonlocal selected_index
+            selected_index = (selected_index - 1) % len(choices)
+
+        @bindings.add("down")
+        @bindings.add("tab")
+        def move_down(_event: KeyPressEvent) -> None:
+            nonlocal selected_index
+            selected_index = (selected_index + 1) % len(choices)
+
+        @bindings.add("enter")
+        def choose(event: KeyPressEvent) -> None:
+            event.app.exit(result=choices[selected_index][0])
+
+        @bindings.add("escape")
+        def decline(event: KeyPressEvent) -> None:
+            event.app.exit(result=False)
+
+        @bindings.add("c-c")
+        @bindings.add("c-d")
+        def abort(event: KeyPressEvent) -> None:
+            # Quit the launch entirely rather than falling back to Manual; the
+            # top-level KeyboardInterrupt handler prints "Interrupted" and exits
+            # without starting the TUI.
+            event.app.exit(exception=KeyboardInterrupt())
+
+        app: Application[bool] = Application(
+            layout=Layout(
+                Window(
+                    FormattedTextControl(rows, show_cursor=False),
+                    height=len(choices) + 1,
+                    dont_extend_height=True,
+                )
+            ),
+            key_bindings=bindings,
+            style=Style.from_dict(
+                {"prompt.help": "ansibrightblack", "item.current": "reverse"}
+            ),
+            full_screen=False,
+            erase_when_done=True,
+            output=create_output(stdout=sys.stderr),
+        )
+        return bool(app.run())
+    except (EOFError, OSError, RuntimeError, ImportError):
+        logger.debug("YOLO acknowledgement selector unavailable", exc_info=True)
+        return False
+    # A KeyboardInterrupt (Ctrl+C/Ctrl+D) deliberately propagates so the launch
+    # aborts instead of falling back to Manual and starting the TUI.
+
+
+def _ensure_yolo_acknowledged(console: "Console") -> bool:
+    """Ensure the current local YOLO policy has been accepted and persisted.
+
+    Args:
+        console: Console used for the acknowledgement UI.
+
+    Returns:
+        `True` only when an existing or newly persisted acknowledgement exists.
+    """
+    from deepagents_code.approval_mode import (
+        has_yolo_acknowledgement,
+        save_yolo_acknowledgement,
     )
 
-    return load_startup_mode() == STARTUP_MODE_DANGEROUSLY_AUTO
+    if has_yolo_acknowledgement():
+        return True
+    if not _prompt_yolo_acknowledgement(console):
+        return False
+    if save_yolo_acknowledgement():
+        return True
+    console.print(
+        "[yellow]YOLO acknowledgement could not be saved; using Manual.[/yellow]"
+    )
+    return False
 
 
 def _warn_if_interpreter_disabled_by_sandbox(args: argparse.Namespace) -> None:
@@ -1223,7 +1486,6 @@ _HELP_SPECS: dict[str, tuple[str | None, str]] = {
     "plugins": ("plugin_command", "show_plugins_help"),
     "threads": ("threads_command", "show_threads_help"),
     "mcp": ("mcp_command", "show_mcp_help"),
-    "config": ("config_command", "show_config_help"),
     "auth": ("auth_command", "show_auth_help"),
     "tools": ("tools_command", "show_tools_help"),
 }
@@ -1238,19 +1500,22 @@ Each value is `(subcommand_dest, ui_help_fn_name)`:
 - `ui_help_fn_name` is the attribute on `deepagents_code.ui` invoked to
     render the help screen.
 
-When adding a new top-level command group with sub-subparsers, register it
-here and add a corresponding `show_<group>_help` to `ui.py`. The drift
-test in `tests/unit_tests/test_startup_fast_paths.py` enforces this.
+Command groups whose bare invocation performs an action instead belong in
+`_BARE_ACTION_GROUPS`. The drift test in
+`tests/unit_tests/test_startup_fast_paths.py` requires every group to be in
+exactly one collection.
 """
+
+_BARE_ACTION_GROUPS = frozenset({"config"})
+"""Command groups that perform their primary action without a subcommand."""
 
 
 def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
     """Render help for `help` and bare command groups before the heavy bootstrap.
 
     Short-circuits before `console`/`settings` are imported so help-only
-    invocations stay snappy. Mirrors the dispatch in `cli_main` for the
-    `help`, `agents`, `skills`, `threads`, `mcp`, `config`, `auth`, and `tools`
-    commands when no subcommand was given.
+    invocations stay snappy. Command groups in `_BARE_ACTION_GROUPS` bypass
+    this path because their bare invocation has useful behavior.
 
     Args:
         args: Namespace from `parse_args()`. Only `command` and the per-group
@@ -1261,7 +1526,7 @@ def _show_bare_command_group_help(args: argparse.Namespace) -> bool:
             when the command requires the full runtime path.
     """
     command = getattr(args, "command", None)
-    if not isinstance(command, str):
+    if not isinstance(command, str) or command in _BARE_ACTION_GROUPS:
         return False
     spec = _HELP_SPECS.get(command)
     if spec is None:
@@ -1419,25 +1684,13 @@ def parse_args() -> argparse.Namespace:
         make_help_action=_make_help_action,
     )
 
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+    from deepagents_code.plugins.commands_cli import setup_plugin_parser
 
-    if is_env_truthy(EXPERIMENTAL):
-        from deepagents_code.plugins.commands_cli import setup_plugin_parser
-
-        setup_plugin_parser(
-            subparsers,
-            make_help_action=_make_help_action,
-            add_output_args=add_json_output_arg,
-        )
-    else:
-        plugin_parser = subparsers.add_parser(
-            "plugin",
-            aliases=["plugins"],
-            add_help=False,
-            help=argparse.SUPPRESS,
-        )
-        plugin_parser.add_argument("plugin_command", nargs="?")
-        plugin_parser.add_argument("plugin_args", nargs=argparse.REMAINDER)
+    setup_plugin_parser(
+        subparsers,
+        make_help_action=_make_help_action,
+        add_output_args=add_json_output_arg,
+    )
 
     setup_config_parser(
         subparsers,
@@ -1573,6 +1826,35 @@ def parse_args() -> argparse.Namespace:
     )
     add_json_output_arg(tools_list)
 
+    install_parser = subparsers.add_parser(
+        "install",
+        help="Install an optional extra (e.g. daytona, fireworks)",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_install_help")),
+    )
+    install_parser.add_argument(
+        "install_target",
+        nargs="?",
+        default=None,
+        metavar="NAME",
+        help="Extra name, or package name when --package is set",
+    )
+    install_parser.add_argument(
+        "--package",
+        dest="install_package",
+        action="store_true",
+        help=(
+            "Treat NAME as a package added via `uv --with` "
+            "(for a custom provider package), not a deepagents-code extra"
+        ),
+    )
+    install_parser.add_argument(
+        "--yes",
+        dest="install_yes",
+        action="store_true",
+        help="Skip interactive confirmation prompts",
+    )
+
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
     parser.add_argument(
@@ -1631,6 +1913,16 @@ def parse_args() -> argparse.Namespace:
         help="Override model profile fields as a JSON string "
         "(e.g., '{\"max_input_tokens\": 4096}'). "
         "Merged on top of config file profile overrides.",
+    )
+
+    parser.add_argument(
+        "--auto-classifier-model",
+        dest="auto_classifier_model",
+        metavar="MODEL",
+        help="Model the Auto approval classifier reviews actions with "
+        "(e.g. anthropic:claude-haiku-4-5). Interactive TUI only. Defaults to "
+        "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL, then [models].auto_classifier, "
+        "then the main agent model. A weaker model weakens Auto's review.",
     )
 
     parser.add_argument(
@@ -1754,6 +2046,15 @@ def parse_args() -> argparse.Namespace:
         help="Override grader iterations per rubric attempt before stopping "
         "(must be >= 1; defaults to the SDK setting).",
     )
+    parser.add_argument(
+        "--recursion-limit",
+        dest="recursion_limit",
+        type=positive_int,
+        metavar="N",
+        help="Override the main agent's LangGraph recursion_limit (graph step "
+        "budget; must be >= 1). Overrides DEEPAGENTS_CODE_RECURSION_LIMIT and "
+        "[runtime].recursion_limit; defaults to 2000.",
+    )
 
     parser.add_argument(
         "--stdin",
@@ -1763,20 +2064,20 @@ def parse_args() -> argparse.Namespace:
 
     add_json_output_arg(parser, default="text")
 
-    parser.add_argument(
+    approval_group = parser.add_mutually_exclusive_group()
+    approval_group.add_argument(
         "-y",
         "--auto-approve",
         action="store_true",
         default=None,
+        help="Interactive local TUI only: enable classifier-backed Auto mode.",
+    )
+    approval_group.add_argument(
+        "--yolo",
+        action="store_true",
         help=(
-            "Interactive mode only: auto-approve all tool calls without prompting "
-            "(disables human-in-the-loop). Affected tools: shell execution, file "
-            "writes/edits, web search, and URL fetch. Headless mode approves "
-            "non-shell tools; shell is disabled unless allowed via "
-            "--shell-allow-list. "
-            "Use with caution — the agent can execute arbitrary commands. When "
-            "omitted, the launch default comes from [startup].mode in "
-            "~/.deepagents/config.toml ('manual' or 'dangerously-auto')."
+            "Interactive mode only: run gated actions without review after the "
+            "one-time local risk acknowledgement."
         ),
     )
 
@@ -1840,6 +2141,12 @@ def parse_args() -> argparse.Namespace:
         "(skip interactive approval prompt)",
     )
     parser.add_argument(
+        "--trust-project-hooks",
+        action="store_true",
+        help="Trust project-level `.deepagents/hooks.json` command handlers "
+        "(required for headless/CI runs that should load repository hooks)",
+    )
+    parser.add_argument(
         "--interpreter",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -1853,6 +2160,17 @@ def parse_args() -> argparse.Namespace:
         help="PTC allowlist for `js_eval`: 'safe', 'all', or a comma-separated "
         "list of tool names (which may include the 'safe' preset, e.g. "
         "'safe,task'). Default is 'safe' (read-only file tools).",
+    )
+    parser.add_argument(
+        "--allow-fs-tools",
+        dest="allow_fs_tools",
+        metavar="LIST",
+        help="Allowlist of filesystem tools to expose to the agent: 'all', or "
+        "a comma-separated list of tool names (ls, read_file, write_file, "
+        "edit_file, delete, glob, grep, execute). 'read_file' must be "
+        "included in an explicit list. Note 'execute' is the shell tool: "
+        "omitting it from the list removes shell access even if shell is "
+        "otherwise enabled. Default is 'all'.",
     )
 
     parser.add_argument(
@@ -1873,20 +2191,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--install",
         metavar="NAME",
-        help="Install an optional extra (e.g. daytona, fireworks), then exit",
+        help=(
+            "Alias for `install NAME`. Install an optional extra "
+            "(e.g. daytona, fireworks), then exit"
+        ),
     )
     parser.add_argument(
         "--package",
         action="store_true",
         help=(
-            "With --install, treat NAME as a package added via `uv --with` "
-            "(for a custom provider package), not a deepagents-code extra"
+            "With --install or `install`, treat NAME as a package added via "
+            "`uv --with` (for a custom provider package), not a "
+            "deepagents-code extra"
         ),
     )
     parser.add_argument(
         "--yes",
         action="store_true",
-        help="Skip interactive confirmation prompts (e.g., for --install)",
+        help=("Skip interactive confirmation prompts (e.g., for --install / install)"),
     )
     parser.add_argument(
         "--acp",
@@ -1916,6 +2238,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
+    # `--auto-classifier-model ""` yields the empty string, not `None`. Keep it
+    # distinct from an absent flag (just trimmed): an explicit blank is the
+    # "inherit the main agent model" instruction and must override a classifier
+    # configured via env var or `config.toml`, which collapsing it to `None`
+    # here would silently re-enable.
+    if getattr(args, "auto_classifier_model", None) is not None:
+        args.auto_classifier_model = args.auto_classifier_model.strip()
     _resolve_and_validate_sandbox(args, parser)
     return args
 
@@ -2004,10 +2333,60 @@ def _resolve_and_validate_sandbox(
         parser.error(f"--sandbox-id is not supported by provider '{args.sandbox}'")
 
 
+def _auto_classifier_spec_problem(spec: str) -> str | None:
+    """Return why a configured Auto classifier spec looks unusable, if it does.
+
+    `/auto model` validates by constructing the model and refuses a spec it
+    cannot build. The startup surfaces — `--auto-classifier-model`, the env var,
+    `[models].auto_classifier` — reached the middleware unchecked, so a typo was
+    announced as the active reviewer and only surfaced as a denied tool call
+    mid-turn.
+
+    This is the cheap half of what the slash command does: parse the spec and
+    check the provider's credentials. It deliberately does not call
+    `create_model`, which would pull LangChain onto the launch path (see
+    `AGENTS.md`), so it catches the two common mistakes — unknown provider and
+    missing credential — and leaves the rest to the middleware's fail-closed
+    path.
+
+    Args:
+        spec: Resolved `provider:model` specification.
+
+    Returns:
+        A one-line problem description, or `None` when the spec looks usable.
+    """
+    from deepagents_code.config import detect_provider
+    from deepagents_code.model_config import ModelSpec, get_provider_auth_status
+
+    parsed = ModelSpec.try_parse(spec)
+    provider = parsed.provider if parsed else detect_provider(spec)
+    if not provider:
+        return (
+            f"Auto classifier model {spec!r} has no recognizable provider; "
+            "Auto will deny gated actions until it is fixed. Use "
+            "provider:model, e.g. anthropic:claude-haiku-4-5."
+        )
+    try:
+        status = get_provider_auth_status(provider)
+    except Exception:
+        # Advisory check only — a probe failure must never block startup.
+        logger.debug("Auto classifier provider auth probe failed", exc_info=True)
+        return None
+    if status.blocks_start:
+        env_var = f" Set {status.env_var}." if status.env_var else ""
+        return (
+            f"Auto classifier model {spec!r} has no credentials for provider "
+            f"{provider!r}; Auto will deny gated actions until it is "
+            f"fixed.{env_var}"
+        )
+    return None
+
+
 async def run_textual_cli_async(
     assistant_id: str,
     *,
-    auto_approve: bool = False,
+    approval_mode: "ApprovalMode | str" = "manual",
+    auto_approve: bool | None = None,
     sandbox_type: str = "none",  # str (not None) to match argparse choices
     sandbox_id: str | None = None,
     sandbox_snapshot_name: str | None = None,
@@ -2024,10 +2403,14 @@ async def run_textual_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    hook_trust: "WorkspaceTrust | None" = None,
     enable_interpreter: bool | None = None,
     interpreter_arg: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
+    allow_fs_tools: "list[FsToolName] | None" = None,
+    auto_classifier_model: str | None = None,
+    recursion_limit: int | None = None,
 ) -> "AppResult":
     """Run the Textual TUI interface (async version).
 
@@ -2035,8 +2418,10 @@ async def run_textual_cli_async(
     `langgraph-sdk` client.
 
     Args:
-        assistant_id: Agent identifier for memory storage
-        auto_approve: Whether to auto-approve tool usage
+        assistant_id: Agent identifier for memory storage.
+        approval_mode: Initial `manual`, `auto`, or `yolo` mode.
+        auto_approve: Compatibility input for callers using the previous Boolean
+            API. `True` maps to unrestricted `yolo`.
         sandbox_type: Type of sandbox
             ("none", "agentcore", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse.
@@ -2078,6 +2463,8 @@ async def run_textual_cli_async(
             `True` to allow, `False` to deny, `None` to fall back to the
             user's per-server scoped approvals (equivalent to `False` for the
             whole-config decision).
+        hook_trust: Policy deciding which workspaces may run project-scoped hook
+            commands. `None` consults only the persisted trust store.
         enable_interpreter: Enable `CodeInterpreterMiddleware` (`js_eval`) on
             the main agent. `None` defers to the sandbox-aware/config default.
         interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state,
@@ -2088,6 +2475,19 @@ async def run_textual_cli_async(
             for `js_eval`).
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,
+            from `--allow-fs-tools`.
+
+            `None` leaves the SDK default (all tools).
+        auto_classifier_model: Model spec the Auto approval classifier reviews
+            with, from `--auto-classifier-model`.
+
+            `None` resolves from env / `config.toml` and then reuses the main
+            agent model. A blank string means the flag was explicitly supplied
+            with no value: it overrides any env / `config.toml` classifier so
+            reviews inherit the main agent model.
+        recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+            from env / `config.toml` / default at agent-build time.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -2095,9 +2495,11 @@ async def run_textual_cli_async(
     from rich.text import Text
 
     from deepagents_code.app import AppResult, run_textual_app
+    from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
     from deepagents_code.config import (
         _get_default_model_spec,
         detect_provider,
+        resolve_auto_classifier_model_with_problem,
         settings,
     )
     from deepagents_code.model_config import (
@@ -2106,6 +2508,12 @@ async def run_textual_cli_async(
         NoCredentialsConfiguredError,
     )
     from deepagents_code.onboarding import should_run_onboarding
+
+    resolved_approval_mode = coerce_approval_mode(approval_mode)
+    if auto_approve is not None:
+        resolved_approval_mode = (
+            ApprovalMode.YOLO if auto_approve else ApprovalMode.MANUAL
+        )
 
     # Resolve display-name cheaply (<1ms, no langchain) so the status
     # bar can show the model on first paint. The expensive create_model()
@@ -2137,6 +2545,43 @@ async def run_textual_cli_async(
         settings.model_provider = ""
         settings.model_name = ""
 
+    # Distinguish "flag absent" from "flag explicitly blank": `--auto-classifier-
+    # model ""` is the "inherit the main agent model" instruction and overrides
+    # any env / `config.toml` classifier, while an absent flag defers to those
+    # sources. Map the explicit blank to `INHERIT_CLASSIFIER_MODEL`, the sentinel
+    # the server and Auto middleware already understand as inherit, so the
+    # override survives the trip to the agent server (a bare `""` would collapse
+    # to `None` in `ServerConfig.from_env` and silently re-enable a configured
+    # classifier there).
+    from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+
+    flag_supplied = auto_classifier_model is not None
+    flag_classifier_model = (auto_classifier_model or "").strip() or None
+    auto_classifier_problem: str | None = None
+    if flag_classifier_model is not None:
+        resolved_auto_classifier_model = flag_classifier_model
+    elif flag_supplied:
+        resolved_auto_classifier_model = INHERIT_CLASSIFIER_MODEL
+    else:
+        (
+            resolved_auto_classifier_model,
+            auto_classifier_problem,
+        ) = resolve_auto_classifier_model_with_problem()
+    if (
+        resolved_auto_classifier_model is not None
+        and resolved_auto_classifier_model != INHERIT_CLASSIFIER_MODEL
+    ):
+        auto_classifier_problem = _auto_classifier_spec_problem(
+            resolved_auto_classifier_model
+        )
+    if auto_classifier_problem is not None:
+        from rich.console import Console as _WarnConsole
+        from rich.markup import escape
+
+        _WarnConsole(stderr=True).print(
+            f"[bold yellow]Warning:[/bold yellow] {escape(auto_classifier_problem)}"
+        )
+
     model_kwargs: dict[str, Any] | None = None
     if not defer_server_start:
         model_kwargs = {
@@ -2145,11 +2590,8 @@ async def run_textual_cli_async(
             "profile_overrides": profile_override,
         }
 
-    # Build kwargs for deferred server startup (runs inside the TUI).
-    # Never pass auto_approve to the server — the interactive server must
-    # always configure full HITL interrupts so that Shift+Tab can toggle
-    # approval mode mid-session. The -y flag is handled client-side via
-    # session_state.auto_approve in `tui.textual_adapter`.
+    # Build kwargs for deferred server startup. Approval mode remains a live
+    # per-thread Store record, so graph construction is independent of startup mode.
     server_kwargs: dict[str, Any] = {
         "assistant_id": assistant_id,
         "model_name": model_name or resolved_spec or None,
@@ -2163,10 +2605,13 @@ async def run_textual_cli_async(
         "enable_interpreter": enable_interpreter,
         "interpreter_ptc": interpreter_ptc,
         "interpreter_ptc_acknowledge_unsafe": interpreter_ptc_acknowledge_unsafe,
+        "allow_fs_tools": allow_fs_tools,
+        "auto_classifier_model": resolved_auto_classifier_model,
         "mcp_config_path": mcp_config_path,
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
         "interactive": True,
+        "recursion_limit": recursion_limit,
     }
 
     mcp_preload_kwargs: dict[str, Any] | None = None
@@ -2181,7 +2626,7 @@ async def run_textual_cli_async(
         result = await run_textual_app(
             assistant_id=assistant_id,
             backend=None,
-            auto_approve=auto_approve,
+            approval_mode=resolved_approval_mode,
             cwd=Path.cwd(),
             thread_id=thread_id,
             resume_thread=resume_thread,
@@ -2197,6 +2642,7 @@ async def run_textual_cli_async(
             model_explicitly_set=model_name is not None,
             interpreter_arg=interpreter_arg,
             defer_server_start=defer_server_start,
+            hook_trust=hook_trust,
         )
     except Exception as e:
         logger.debug("App error", exc_info=True)
@@ -2223,6 +2669,8 @@ async def _run_acp_cli_async(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    allow_fs_tools: "list[FsToolName] | None" = None,
+    recursion_limit: int | None = None,
 ) -> int:
     """Run ACP server mode and return a process exit code.
 
@@ -2237,6 +2685,12 @@ async def _run_acp_cli_async(
         no_mcp: Disable all MCP tool loading.
         trust_project_mcp: Controls project-level server trust (stdio and
             remote alike).
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,
+            from `--allow-fs-tools`.
+
+            `None` leaves the SDK default (all tools).
+        recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+            from env/`config.toml`/default at agent-build time.
 
     Returns:
         Exit code for ACP mode.
@@ -2332,6 +2786,8 @@ async def _run_acp_cli_async(
             mcp_server_info=mcp_server_info,
             checkpointer=InMemorySaver(),
             async_subagents=async_subagents,
+            fs_tools=allow_fs_tools,
+            recursion_limit=recursion_limit,
             memory_auto_save=is_memory_auto_save_enabled(),
         )
     except Exception as exc:
@@ -2614,24 +3070,32 @@ def _format_project_mcp_checkbox_rows(
     return rows
 
 
-def _project_mcp_picker_has_terminal() -> bool:
-    """Return whether the inline MCP pickers have interactive input and output."""
+def _trust_picker_has_terminal() -> bool:
+    """Return whether the inline trust pickers have interactive input and output."""
     return sys.stdin.isatty() and sys.stderr.isatty()
 
 
-def _run_project_mcp_trust_action_picker(
+def _run_trust_action_picker(
     console: "Console",
-) -> _ProjectMcpTrustAction | _ProjectMcpTrustPromptOutcome | None:
-    """Show the inline project MCP trust action picker.
+    *,
+    remember_label: str = "Allow for this project — until changed",
+) -> _TrustAction | _TrustPromptOutcome | None:
+    """Show the inline allow-once / remember / deny picker for a trust prompt.
+
+    Subject-agnostic: callers describe what is being trusted before calling and
+    supply the label for the persistent option.
 
     Args:
         console: Console to print fallback notices to (stderr).
+        remember_label: Label for the persistent-trust option. Set this to match
+            what the caller actually persists, since scope differs by subject.
 
     Returns:
-        The chosen action, `INTERRUPTED` for Ctrl+C, or `None` when the inline
-        picker cannot run and the caller should use the text fallback.
+        The chosen action, `CANCELLED` for Esc or Ctrl+D, `INTERRUPTED` for
+        Ctrl+C, or `None` when the inline picker cannot run and the caller should
+        use the text fallback.
     """
-    if not _project_mcp_picker_has_terminal():
+    if not _trust_picker_has_terminal():
         return None
 
     try:
@@ -2645,7 +3109,7 @@ def _run_project_mcp_trust_action_picker(
         from prompt_toolkit.output.defaults import create_output
         from prompt_toolkit.styles import Style
     except ImportError:
-        logger.debug("Project MCP action picker unavailable", exc_info=True)
+        logger.debug("Trust action picker unavailable", exc_info=True)
         console.print(
             "[dim]Interactive selector unavailable; falling back to text input.[/dim]",
             highlight=False,
@@ -2656,9 +3120,9 @@ def _run_project_mcp_trust_action_picker(
 
     glyphs = get_glyphs()
     actions = [
-        (_ProjectMcpTrustAction.ALLOW_ONCE, "Allow once"),
-        (_ProjectMcpTrustAction.REMEMBER, "Allow for this project — until changed"),
-        (_ProjectMcpTrustAction.DENY, "Deny"),
+        (_TrustAction.ALLOW_ONCE, "Allow once"),
+        (_TrustAction.REMEMBER, remember_label),
+        (_TrustAction.DENY, "Deny"),
     ]
     selected_index = len(actions) - 1
 
@@ -2668,7 +3132,7 @@ def _run_project_mcp_trust_action_picker(
                 "class:prompt.help",
                 (
                     f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
-                    "Enter select · Esc deny\n"
+                    "Enter select · Esc/Ctrl+D abort\n"
                 ),
             ),
         ]
@@ -2701,61 +3165,74 @@ def _run_project_mcp_trust_action_picker(
         event.app.exit(result=actions[selected_index][0])
 
     @key_bindings.add("escape")
-    def _deny(event: KeyPressEvent) -> None:
-        event.app.exit(result=_ProjectMcpTrustAction.DENY)
+    @key_bindings.add("c-d")
+    def _abort(event: KeyPressEvent) -> None:
+        event.app.exit(result=_TrustPromptOutcome.CANCELLED)
 
     @key_bindings.add("c-c")
     def _interrupt(event: KeyPressEvent) -> None:
-        event.app.exit(result=_ProjectMcpTrustPromptOutcome.INTERRUPTED)
+        event.app.exit(result=_TrustPromptOutcome.INTERRUPTED)
 
-    app: Application[_ProjectMcpTrustAction | _ProjectMcpTrustPromptOutcome] = (
-        Application(
-            layout=Layout(
-                Window(
-                    FormattedTextControl(_rows),
-                    height=len(actions) + 1,
-                    dont_extend_height=True,
-                )
-            ),
-            key_bindings=key_bindings,
-            style=Style.from_dict(
-                {
-                    "prompt.help": "ansibrightblack",
-                    "item.current": "reverse",
-                }
-            ),
-            full_screen=False,
-            erase_when_done=True,
-            output=create_output(stdout=sys.stderr),
-        )
+    app: Application[_TrustAction | _TrustPromptOutcome] = Application(
+        layout=Layout(
+            Window(
+                FormattedTextControl(_rows, show_cursor=False),
+                height=len(actions) + 1,
+                dont_extend_height=True,
+            )
+        ),
+        key_bindings=key_bindings,
+        style=Style.from_dict(
+            {
+                "prompt.help": "ansibrightblack",
+                "item.current": "reverse",
+            }
+        ),
+        full_screen=False,
+        erase_when_done=True,
+        output=create_output(stdout=sys.stderr),
     )
     try:
         return app.run()
     except (RuntimeError, OSError):
-        logger.debug("Project MCP action picker failed", exc_info=True)
+        logger.debug("Trust action picker failed", exc_info=True)
         console.print(
             "[dim]Interactive selector unavailable; falling back to text input.[/dim]",
             highlight=False,
         )
         return None
     except KeyboardInterrupt:
-        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+        return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
         return None
 
 
-def _select_project_mcp_trust_action(
+def _select_trust_action(
     console: "Console",
-) -> _ProjectMcpTrustAction | _ProjectMcpTrustPromptOutcome:
-    """Choose whether to allow once, remember selected servers, or deny.
+    *,
+    remember_label: str = "Allow for this project — until changed",
+) -> _TrustAction | _TrustPromptOutcome:
+    """Choose whether to allow once, remember, or deny a project-scoped subject.
+
+    Falls back to a text prompt when the inline picker cannot run. Every failure
+    mode resolves to a decision the caller can act on without knowing which
+    input path produced it: an unavailable picker degrades to text, and EOF on
+    the text prompt denies rather than aborting, so a non-interactive launch
+    fails closed instead of hanging.
 
     Args:
         console: Console used by the text fallback.
+        remember_label: Label for the persistent-trust option forwarded to the
+            inline picker.
 
     Returns:
-        The selected trust action, or `INTERRUPTED` when the user presses Ctrl+C.
+        The selected trust action, `CANCELLED` when the user presses Esc or
+        Ctrl+D, or `INTERRUPTED` when the user presses Ctrl+C.
     """
-    selected = _run_project_mcp_trust_action_picker(console)
+    selected = _run_trust_action_picker(
+        console,
+        remember_label=remember_label,
+    )
     if selected is not None:
         return selected
 
@@ -2764,19 +3241,19 @@ def _select_project_mcp_trust_action(
             input("Choose [y] allow once / [r] remember / [N] deny: ").strip().lower()
         )
     except KeyboardInterrupt:
-        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+        return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
-        return _ProjectMcpTrustAction.DENY
+        return _TrustAction.DENY
     if answer in {"y", "yes"}:
-        return _ProjectMcpTrustAction.ALLOW_ONCE
+        return _TrustAction.ALLOW_ONCE
     if answer in {"r", "remember", "a", "always"}:
-        return _ProjectMcpTrustAction.REMEMBER
-    return _ProjectMcpTrustAction.DENY
+        return _TrustAction.REMEMBER
+    return _TrustAction.DENY
 
 
 def _run_project_mcp_server_checkbox_picker(
     prompt_servers: Sequence["ProjectServerSummary"], console: "Console"
-) -> list[str] | _ProjectMcpTrustPromptOutcome | None:
+) -> list[str] | _TrustPromptOutcome | None:
     """Show an inline checkbox picker for project MCP servers to remember.
 
     Args:
@@ -2785,11 +3262,11 @@ def _run_project_mcp_server_checkbox_picker(
 
     Returns:
         Selected server names. Empty means the user confirmed no selections;
-        `CANCELLED` means the user pressed Esc to cancel the approval;
+        `CANCELLED` means the user backed out (Esc or Ctrl+D) to abort the launch;
         `INTERRUPTED` means the user pressed Ctrl+C; `None` means the checkbox UI
         could not run and the caller should fall back to a simpler prompt.
     """
-    if not _project_mcp_picker_has_terminal():
+    if not _trust_picker_has_terminal():
         return None
 
     try:
@@ -2834,7 +3311,7 @@ def _run_project_mcp_server_checkbox_picker(
                         f"{len(selected_names)} selected\n"
                         f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
                         "Space toggle · a select all · c clear · Enter confirm · "
-                        "Esc cancel\n"
+                        "Esc abort\n"
                     ),
                 ),
             ]
@@ -2893,23 +3370,23 @@ def _run_project_mcp_server_checkbox_picker(
 
     @key_bindings.add("escape")
     def _cancel(event: KeyPressEvent) -> None:
-        event.app.exit(result=_ProjectMcpTrustPromptOutcome.CANCELLED)
+        event.app.exit(result=_TrustPromptOutcome.CANCELLED)
 
     @key_bindings.add("c-c")
     def _interrupt(event: KeyPressEvent) -> None:
-        event.app.exit(result=_ProjectMcpTrustPromptOutcome.INTERRUPTED)
+        event.app.exit(result=_TrustPromptOutcome.INTERRUPTED)
 
-    app: Application[list[str] | _ProjectMcpTrustPromptOutcome] = Application(
+    app: Application[list[str] | _TrustPromptOutcome] = Application(
         layout=Layout(
             HSplit(
                 [
                     Window(
-                        FormattedTextControl(_help_text),
+                        FormattedTextControl(_help_text, show_cursor=False),
                         height=4,
                         dont_extend_height=True,
                     ),
                     Window(
-                        FormattedTextControl(_rows),
+                        FormattedTextControl(_rows, show_cursor=False),
                         height=visible_count,
                         dont_extend_height=True,
                     ),
@@ -2938,16 +3415,16 @@ def _run_project_mcp_server_checkbox_picker(
         )
         return None
     except KeyboardInterrupt:
-        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+        return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
         # Ctrl+D backs out of the picker, same as Esc: cancel rather than
         # silently confirm an empty selection.
-        return _ProjectMcpTrustPromptOutcome.CANCELLED
+        return _TrustPromptOutcome.CANCELLED
 
 
 def _select_project_servers_with_numbers(
     prompt_servers: Sequence["ProjectServerSummary"], console: "Console"
-) -> list[str] | _ProjectMcpTrustPromptOutcome:
+) -> list[str] | _TrustPromptOutcome:
     """Ask which prompted project MCP servers to remember with a text fallback.
 
     Args:
@@ -2970,13 +3447,13 @@ def _select_project_servers_with_numbers(
             highlight=False,
         )
     try:
-        raw = input("Enter numbers to remember (e.g. 1,3), 'all', or blank to cancel: ")
+        raw = input("Enter numbers to remember (e.g. 1,3), 'all', or blank to abort: ")
     except KeyboardInterrupt:
-        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
+        return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
-        return _ProjectMcpTrustPromptOutcome.CANCELLED
+        return _TrustPromptOutcome.CANCELLED
     if not raw.strip():
-        return _ProjectMcpTrustPromptOutcome.CANCELLED
+        return _TrustPromptOutcome.CANCELLED
     if raw.strip().lower() in {"a", "all"}:
         return names
     return [
@@ -2986,7 +3463,7 @@ def _select_project_servers_with_numbers(
 
 def _select_project_servers_to_persist(
     prompt_servers: Sequence["ProjectServerSummary"], console: "Console"
-) -> list[str] | _ProjectMcpTrustPromptOutcome:
+) -> list[str] | _TrustPromptOutcome:
     """Ask which prompted project MCP servers to remember for this project.
 
     Multiple prompted servers use an arrow-key checkbox picker. A single
@@ -2999,7 +3476,8 @@ def _select_project_servers_to_persist(
     Returns:
         The chosen server names. Empty when the user confirms no servers or
         makes no valid fallback selection. `CANCELLED` means the user backed out
-        and the caller should deny. `INTERRUPTED` means the user pressed Ctrl+C.
+        and the caller should abort the launch. `INTERRUPTED` means the user
+        pressed Ctrl+C.
     """
     names = [name for name, _kind, _summary in prompt_servers]
     if len(names) <= 1:
@@ -3016,8 +3494,8 @@ def _check_mcp_project_trust(
 ) -> (
     bool
     | Literal[
-        _ProjectMcpTrustPromptOutcome.INTERRUPTED,
-        _ProjectMcpTrustPromptOutcome.CANCELLED,
+        _TrustPromptOutcome.INTERRUPTED,
+        _TrustPromptOutcome.CANCELLED,
     ]
     | None
 ):
@@ -3033,8 +3511,8 @@ def _check_mcp_project_trust(
     returns `True`. Otherwise it shows an inline action selector for unresolved
     servers: allow once, remember selected servers, or deny. Remembered approvals
     are scoped to this project and each exact server definition. The remember
-    picker starts with nothing selected; Esc cancels the launch, and no server
-    loads without an explicit allow action.
+    picker starts with nothing selected; Esc or Ctrl+D in either picker aborts
+    the launch, and no server loads without an explicit allow action.
 
     Servers already resolved by the user's scoped approvals, the
     `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` env allowlist, or the
@@ -3052,8 +3530,8 @@ def _check_mcp_project_trust(
         `True` to allow project servers, `False` to deny (including when the
             user's trust policy could not be read), `None` when there are no
             project servers whose fate this prompt decides, `INTERRUPTED` when
-            the user presses Ctrl+C, or `CANCELLED` when the user backs out of
-            server selection.
+            the user presses Ctrl+C, or `CANCELLED` when the user presses Esc or
+            Ctrl+D to abort the launch.
     """
     from deepagents_code.mcp_tools import (
         ProjectServerSummary,
@@ -3163,16 +3641,18 @@ def _check_mcp_project_trust(
 
     server_count = len(prompt_servers)
     noun = "server" if server_count == 1 else "servers"
-    action = _select_project_mcp_trust_action(prompt_console)
-    if action is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
-        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
-    if action is _ProjectMcpTrustAction.DENY:
+    action = _select_trust_action(prompt_console)
+    if action is _TrustPromptOutcome.INTERRUPTED:
+        return _TrustPromptOutcome.INTERRUPTED
+    if action is _TrustPromptOutcome.CANCELLED:
+        return _TrustPromptOutcome.CANCELLED
+    if action is _TrustAction.DENY:
         prompt_console.print(
             f"[dim]Denied {server_count} project MCP {noun}.[/dim]",
             highlight=False,
         )
         return False
-    if action is _ProjectMcpTrustAction.ALLOW_ONCE:
+    if action is _TrustAction.ALLOW_ONCE:
         prompt_console.print(
             f"[dim]Allowing {server_count} project MCP {noun} for this "
             "session; remembering 0.[/dim]",
@@ -3183,14 +3663,10 @@ def _check_mcp_project_trust(
     from deepagents_code.model_config import add_enabled_project_mcp_servers
 
     names = _select_project_servers_to_persist(prompt_servers, prompt_console)
-    if names is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
-        return _ProjectMcpTrustPromptOutcome.INTERRUPTED
-    if names is _ProjectMcpTrustPromptOutcome.CANCELLED:
-        prompt_console.print(
-            f"[dim]Cancelled; denied {server_count} project MCP {noun}.[/dim]",
-            highlight=False,
-        )
-        return _ProjectMcpTrustPromptOutcome.CANCELLED
+    if names is _TrustPromptOutcome.INTERRUPTED:
+        return _TrustPromptOutcome.INTERRUPTED
+    if names is _TrustPromptOutcome.CANCELLED:
+        return _TrustPromptOutcome.CANCELLED
     if not names:
         prompt_console.print(
             f"[dim]No servers selected; denied {server_count} project MCP "
@@ -3217,6 +3693,102 @@ def _check_mcp_project_trust(
         highlight=False,
     )
     return True
+
+
+_PROJECT_HOOKS_REMEMBER_LABEL = "Always allow hooks in this workspace"
+
+
+def _check_project_hooks_trust(
+    *,
+    trust_flag: bool = False,
+) -> "WorkspaceTrust | _TrustPromptOutcome":
+    """Resolve interactive trust for project-scoped hook commands.
+
+    Returns a policy rather than a Boolean so the decision keeps its scope: the
+    grant applies to the launch workspace, and directories the session later
+    moves into are re-resolved against the persisted trust store.
+
+    Args:
+        trust_flag: Whether the CLI explicitly trusted project hooks.
+
+    Returns:
+        The trust policy to run the session under, `INTERRUPTED` when the user
+        presses Ctrl+C, or `CANCELLED` when the user presses Esc or Ctrl+D to
+        abort startup. Nothing is trusted, and no prompt is shown, unless
+        `DEEPAGENTS_CODE_EXPERIMENTAL` is truthy, since hooks stay off without
+        it.
+    """
+    from rich.console import Console
+    from rich.text import Text
+
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+    from deepagents_code.hooks.loading import project_hooks_path
+    from deepagents_code.hooks.trust import (
+        WorkspaceTrust,
+        is_project_hooks_trusted,
+        trust_project_hooks,
+    )
+    from deepagents_code.project_utils import ProjectContext
+
+    if not is_env_truthy(EXPERIMENTAL):
+        return WorkspaceTrust.none()
+    try:
+        context = ProjectContext.from_user_cwd(Path.cwd())
+        project_root = context.project_root or context.user_cwd
+        config_path = project_hooks_path(project_root)
+        if not config_path.is_file():
+            return WorkspaceTrust.none()
+    except OSError:
+        logger.warning("Could not inspect project hooks configuration", exc_info=True)
+        return WorkspaceTrust.none()
+
+    granted = WorkspaceTrust.for_session(project_root, granted=True)
+    if trust_flag or is_project_hooks_trusted(project_root):
+        return granted
+
+    prompt_console = Console(stderr=True)
+    prompt_console.print()
+    title = Text("Project hooks can execute commands from ", style="bold yellow")
+    title.append(str(config_path))
+    prompt_console.print(title, highlight=False)
+    prompt_console.print(
+        "Only allow hooks for projects you trust. Future edits to this file "
+        "will run without asking again if you always allow.",
+        style="yellow",
+        highlight=False,
+    )
+    action = _select_trust_action(
+        prompt_console,
+        remember_label=_PROJECT_HOOKS_REMEMBER_LABEL,
+    )
+    if action is _TrustPromptOutcome.INTERRUPTED:
+        return action
+    if action is _TrustPromptOutcome.CANCELLED:
+        return action
+    if action is _TrustAction.ALLOW_ONCE:
+        prompt_console.print(
+            "[dim]Allowing project hooks for this session.[/dim]",
+            highlight=False,
+        )
+        return granted
+    if action is _TrustAction.REMEMBER:
+        if not trust_project_hooks(project_root):
+            prompt_console.print(
+                "[yellow]Project hook trust could not be remembered; "
+                "allowing this session only.[/yellow]",
+                highlight=False,
+            )
+        else:
+            prompt_console.print(
+                "[dim]Project hooks trusted for this workspace.[/dim]",
+                highlight=False,
+            )
+        return granted
+    prompt_console.print(
+        "[dim]Project hooks skipped.[/dim]",
+        highlight=False,
+    )
+    return WorkspaceTrust.none()
 
 
 def _verify_interpreter_or_exit() -> None:
@@ -3258,6 +3830,11 @@ def cli_main() -> None:
         print(build_version_text())  # noqa: T201  # Version output
         sys.exit(0)
 
+    # Note shim/alias launches for the Debug Console only; never prints.
+    from deepagents_code._invocation import log_nonstandard_invoked_name
+
+    log_nonstandard_invoked_name()
+
     # ACP mode does not require Textual, so skip UI dependency checks when
     # the flag is present in raw argv.
     if "--acp" not in sys.argv[1:]:
@@ -3271,6 +3848,9 @@ def cli_main() -> None:
 
     try:
         args = parse_args()
+        allow_fs_tools = _parse_allow_fs_tools_flag(
+            getattr(args, "allow_fs_tools", None)
+        )
 
         if _show_bare_command_group_help(args):
             return
@@ -3302,6 +3882,11 @@ def cli_main() -> None:
             from deepagents_code.client.commands.tools import run_tools_command
 
             sys.exit(run_tools_command(args))
+
+        if command == "install":
+            from deepagents_code.client.commands.extras import run_install_command
+
+            sys.exit(run_install_command(args))
 
         # Best-effort, idempotent migration. Placed after parse_args and the
         # bare-help fast path so --help / --version / `deepagents <group>`
@@ -3375,6 +3960,18 @@ def cli_main() -> None:
                 sys.exit(1)
 
         if getattr(args, "acp", False):
+            if getattr(args, "auto_approve", False) or getattr(args, "yolo", False):
+                flag = "--yolo" if getattr(args, "yolo", False) else "--auto-approve"
+                sys.stderr.write(
+                    f"Error: {flag} is only supported by the interactive Textual TUI.\n"
+                )
+                sys.exit(2)
+            if getattr(args, "auto_classifier_model", None) is not None:
+                sys.stderr.write(
+                    "Error: --auto-classifier-model is only supported by the "
+                    "interactive Textual TUI.\n"
+                )
+                sys.exit(2)
             assistant_id = _resolve_agent_arg(args)
             try:
                 from acp import run_agent as run_acp_agent
@@ -3411,6 +4008,8 @@ def cli_main() -> None:
                     mcp_config_path=getattr(args, "mcp_config", None),
                     no_mcp=getattr(args, "no_mcp", False),
                     trust_project_mcp=getattr(args, "trust_project_mcp", False),
+                    allow_fs_tools=allow_fs_tools,
+                    recursion_limit=getattr(args, "recursion_limit", None),
                 )
             )
             sys.exit(exit_code)
@@ -3428,13 +4027,16 @@ def cli_main() -> None:
         # predicate that selects the headless branch below), so this reliably
         # rejects `--auto-approve` on both the `-n` and piped-stdin paths while
         # leaving interactive launches untouched.
-        if args.auto_approve and args.non_interactive_message:
+        if (
+            args.auto_approve or getattr(args, "yolo", False)
+        ) and args.non_interactive_message:
             from rich.console import Console as _Console
 
+            flag = "--yolo" if getattr(args, "yolo", False) else "--auto-approve"
             _Console(stderr=True).print(
-                "[bold red]Error:[/bold red] --auto-approve is only supported in "
-                "interactive mode. Headless mode already approves non-shell tools; "
-                "use --shell-allow-list to control shell access."
+                f"[bold red]Error:[/bold red] {flag} is only supported in "
+                "interactive mode. Headless mode uses fail-closed MCP routing and "
+                "--shell-allow-list for shell access."
             )
             sys.exit(2)
 
@@ -3553,6 +4155,28 @@ def cli_main() -> None:
                 "--rubric-max-iterations require "
                 "--non-interactive (-n) or piped stdin\n"
                 "  dcode -n 'implement X' --rubric 'tests pass'"
+            )
+            sys.exit(2)
+
+        # Auto approval mode (and therefore its classifier) requires the
+        # interactive TUI *and* no sandbox — `agent.create_cli_agent` disables
+        # Auto for either. Accepting the flag in those runs would silently do
+        # nothing to a setting that governs action authorization.
+        if getattr(args, "auto_classifier_model", None) is not None and (
+            args.non_interactive_message or args.sandbox not in {"none", None}
+        ):
+            from rich.console import Console as _Console
+
+            unavailable_because = (
+                "a sandbox is in use"
+                if not args.non_interactive_message
+                else "it runs headlessly"
+            )
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --auto-classifier-model is only "
+                "supported in the interactive TUI, where Auto approval mode "
+                f"runs; {unavailable_because}.\n"
+                "  dcode --auto-classifier-model anthropic:claude-haiku-4-5"
             )
             sys.exit(2)
 
@@ -3723,250 +4347,24 @@ def cli_main() -> None:
 
         if args.package and not args.install:
             console.print(
-                "[bold red]Error:[/bold red] --package requires --install <package>.",
+                "[bold red]Error:[/bold red] --package requires "
+                "`dcode install <package> --package` "
+                "(or the `--install <package>` alias).",
             )
             sys.exit(2)
 
-        # Handle --install <package> --package flag (headless, no session).
-        # Installs an arbitrary package via `uv --with` for a custom provider,
-        # rather than a deepagents-code extra. Always exits.
-        if args.install and args.package:
-            from rich.markup import escape
-
-            from deepagents_code.config import _is_editable_install
-            from deepagents_code.update_check import (
-                create_update_log_path,
-                editable_package_hint,
-                is_valid_package_name,
-                perform_install_package,
-            )
-
-            package: str = args.install
-            pkg_log_path: Path | None = None
-            try:
-                if not is_valid_package_name(package):
-                    # Defense in depth — the package is interpolated into a
-                    # shell command. Reject malformed names before any prompt
-                    # or uv call, even with --yes.
-                    console.print(
-                        f"[bold red]Error:[/bold red] "
-                        f"Invalid package name '{escape(package)}'. "
-                        "Package names must be alphanumeric with `-`, `_`, "
-                        "or `.` (PEP 508).",
-                        highlight=False,
-                    )
-                    sys.exit(2)
-                if _is_editable_install():
-                    console.print(
-                        "[bold yellow]Warning:[/bold yellow] "
-                        "--install --package is not supported on editable "
-                        "installs.\n" + escape(editable_package_hint(package)),
-                        highlight=False,
-                    )
-                    sys.exit(1)
-
-                # Arbitrary packages have no curated allowlist to vet against,
-                # so confirm before pulling third-party code into the tool env.
-                console.print(
-                    f"This will install the package '{escape(package)}' into "
-                    "the dcode environment (this runs third-party "
-                    "code).",
-                    highlight=False,
-                )
-                if not args.yes:
-                    if not sys.stdin.isatty():
-                        console.print(
-                            "[bold red]Error:[/bold red] "
-                            "Refusing package install in non-interactive mode. "
-                            "Pass --yes to proceed."
-                        )
-                        sys.exit(2)
-                    try:
-                        reply = input(f"Install package '{package}'? [y/N] ")
-                    except EOFError:
-                        console.print("\nAborted.", style="dim")
-                        sys.exit(130)
-                    if reply.strip().lower() not in {"y", "yes"}:
-                        console.print("Aborted.", style="dim")
-                        sys.exit(1)
-
-                console.print(f"Installing package '{package}'...")
-                pkg_log_path = create_update_log_path()
-                console.print(
-                    f"Install log: {_tail_log_command(pkg_log_path)}",
-                    style="dim",
-                    highlight=False,
-                    markup=False,
-                )
-                success, output = asyncio.run(
-                    perform_install_package(package, log_path=pkg_log_path)
-                )
-                if success:
-                    console.print(f"[green]Installed package '{package}'.[/green]")
-                    sys.exit(0)
-                # Tail the last 200 chars — uv prints the resolved error at the
-                # end. The full output is in the log.
-                detail = f": {output[-200:]}" if output else ""
-                console.print(
-                    f"[bold red]Install failed[/bold red]{escape(detail)}\n"
-                    f"Log: {pkg_log_path}",
-                    markup=True,
-                    highlight=False,
-                )
-                sys.exit(1)
-            except KeyboardInterrupt:
-                console.print("\nAborted.", style="dim")
-                sys.exit(130)
-            except Exception as exc:
-                logger.warning("--install --package failed", exc_info=True)
-                log_line = f"\nLog: {pkg_log_path}" if pkg_log_path else ""
-                console.print(
-                    f"[bold red]Error:[/bold red] "
-                    f"{type(exc).__name__}: {escape(str(exc))}"
-                    f"{escape(log_line)}",
-                    markup=True,
-                    highlight=False,
-                )
-                sys.exit(1)
-
-        # Handle --install <extra> flag (headless, no session)
+        # Handle --install <name> [--package] flag (headless, no session).
+        # Alias for `dcode install`. Always exits.
         if args.install:
-            from rich.markup import escape
+            from deepagents_code.client.commands.extras import run_install_request
 
-            from deepagents_code.config import _is_editable_install
-            from deepagents_code.extras_info import (
-                KNOWN_EXTRAS,
-                ExtrasIntrospectionError,
+            sys.exit(
+                run_install_request(
+                    name=args.install,
+                    package=bool(args.package),
+                    yes=bool(args.yes),
+                )
             )
-            from deepagents_code.update_check import (
-                ToolRequirementIntrospectionError,
-                create_update_log_path,
-                editable_extra_hint,
-                install_extra_command,
-                install_extra_recovery_command,
-                install_extras_command,
-                is_valid_extra_name,
-                perform_install_extra,
-            )
-
-            extra: str = args.install
-            log_path: Path | None = None
-            manual_cmd: str | None = None
-            try:
-                if not is_valid_extra_name(extra):
-                    # Defense in depth — the extra is interpolated into a
-                    # shell command. Reject malformed names before any
-                    # confirmation prompt, even with --yes.
-                    console.print(
-                        f"[bold red]Error:[/bold red] "
-                        f"Invalid extra name '{escape(extra)}'. "
-                        "Extra names must be alphanumeric with `-`, `_`, "
-                        "or `.` (PEP 508).",
-                        highlight=False,
-                    )
-                    sys.exit(2)
-                if _is_editable_install():
-                    console.print(
-                        "[bold yellow]Warning:[/bold yellow] "
-                        "--install is not supported on editable installs.\n"
-                        + escape(editable_extra_hint(extra)),
-                        highlight=False,
-                    )
-                    sys.exit(1)
-
-                manual_cmd = install_extra_command(extra)
-                # KNOWN_EXTRAS is a curated "did you mean" list, not the
-                # authoritative set (that's pyproject, resolved by uv): warn and
-                # confirm rather than refuse, since valid-but-unlisted names
-                # exist (e.g. all-providers). Malformed names blocked above.
-                if extra not in KNOWN_EXTRAS:
-                    known = ", ".join(sorted(KNOWN_EXTRAS))
-                    console.print(
-                        f"[bold yellow]Warning:[/bold yellow] "
-                        f"'{extra}' is not a known extra.\n"
-                        f"Known extras: {known}",
-                        highlight=False,
-                    )
-                    if not args.yes:
-                        if not sys.stdin.isatty():
-                            console.print(
-                                "[bold red]Error:[/bold red] "
-                                "Refusing unknown extra in non-interactive "
-                                "mode. Pass --yes to override."
-                            )
-                            sys.exit(2)
-                        reply = input("Continue anyway? [y/N] ").strip().lower()
-                        if reply not in {"y", "yes"}:
-                            console.print("Aborted.", style="dim")
-                            sys.exit(1)
-
-                console.print(f"Installing extra '{extra}'...")
-                log_path = create_update_log_path()
-                console.print(
-                    f"Install log: {_tail_log_command(log_path)}",
-                    style="dim",
-                    highlight=False,
-                    markup=False,
-                )
-                success, output = asyncio.run(
-                    perform_install_extra(extra, log_path=log_path)
-                )
-                if success:
-                    console.print(f"[green]Installed extra '{extra}'.[/green]")
-                    sys.exit(0)
-                # Tail the last 200 chars — uv resolver prints the resolved
-                # error at the end, not the beginning.
-                detail = f": {output[-200:]}" if output else ""
-                try:
-                    manual_cmd = install_extra_recovery_command(extra)
-                except (
-                    ExtrasIntrospectionError,
-                    ToolRequirementIntrospectionError,
-                    ValueError,
-                ):
-                    logger.warning(
-                        "--install recovery command failed (install reported failure)",
-                        exc_info=True,
-                    )
-                    # Keep the install-script command bound above; fall back to a
-                    # bare extras command only if that was never set.
-                    manual_cmd = manual_cmd or install_extras_command((extra,))
-                console.print(
-                    f"[bold red]Install failed[/bold red]{escape(detail)}\n"
-                    f"Log: {log_path}\n"
-                    f"Run manually: [cyan]{escape(manual_cmd)}[/cyan]",
-                    markup=True,
-                    highlight=False,
-                )
-                sys.exit(1)
-            except KeyboardInterrupt:
-                console.print("\nAborted.", style="dim")
-                sys.exit(130)
-            except Exception as exc:
-                logger.warning("--install failed", exc_info=True)
-                log_line = f"\nLog: {log_path}" if log_path else ""
-                # This is the catch-all for any unexpected install failure, so
-                # the recovery-hint guard is intentionally broad too: it must
-                # never raise a second error over the original one. `manual_cmd`
-                # may be unset here (the failure could predate its assignment),
-                # so fall back to a bare extras command.
-                try:
-                    fallback_cmd = install_extra_recovery_command(extra)
-                except Exception:  # best-effort hint, never re-raise here
-                    logger.warning(
-                        "--install recovery command failed (unexpected error)",
-                        exc_info=True,
-                    )
-                    fallback_cmd = manual_cmd or install_extras_command((extra,))
-                console.print(
-                    f"[bold red]Error:[/bold red] "
-                    f"{type(exc).__name__}: {escape(str(exc))}"
-                    f"{escape(log_line)}\n"
-                    f"Run manually: [cyan]{escape(fallback_cmd)}[/cyan]",
-                    markup=True,
-                    highlight=False,
-                )
-                sys.exit(1)
 
         # Handle --auto-update flag (headless toggle: reads current state
         # and inverts it, no session)
@@ -4081,15 +4479,6 @@ def cli_main() -> None:
 
             execute_skills_command(args)
         elif args.command in {"plugin", "plugins"}:
-            from deepagents_code._env_vars import (
-                EXPERIMENTAL,
-                EXPERIMENTAL_HINT,
-                is_env_truthy,
-            )
-
-            if not is_env_truthy(EXPERIMENTAL):
-                print(EXPERIMENTAL_HINT)  # noqa: T201
-                sys.exit(2)
             from deepagents_code.plugins.commands_cli import execute_plugin_command
 
             execute_plugin_command(args)
@@ -4263,14 +4652,19 @@ def cli_main() -> None:
                             mcp_config_path=getattr(args, "mcp_config", None),
                             no_mcp=getattr(args, "no_mcp", False),
                             trust_project_mcp=getattr(args, "trust_project_mcp", False),
+                            trust_project_hooks=getattr(
+                                args, "trust_project_hooks", False
+                            ),
                             enable_interpreter=enable_interpreter,
                             interpreter_ptc=interpreter_ptc,
+                            allow_fs_tools=allow_fs_tools,
                             max_turns=getattr(args, "max_turns", None),
                             rubric=rubric_text,
                             rubric_model=getattr(args, "rubric_model", None),
                             rubric_max_iterations=getattr(
                                 args, "rubric_max_iterations", None
                             ),
+                            recursion_limit=getattr(args, "recursion_limit", None),
                         ),
                         timeout=timeout,
                     )
@@ -4351,9 +4745,29 @@ def cli_main() -> None:
             )
             if _debug_mcp_project_trust_enabled():
                 sys.exit(0)
-            if mcp_trust_decision is _ProjectMcpTrustPromptOutcome.INTERRUPTED:
+            if mcp_trust_decision is _TrustPromptOutcome.INTERRUPTED:
                 sys.exit(130)
-            if mcp_trust_decision is _ProjectMcpTrustPromptOutcome.CANCELLED:
+            if mcp_trust_decision is _TrustPromptOutcome.CANCELLED:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(
+                    "[dim]Aborted; no project MCP servers loaded.[/dim]",
+                    highlight=False,
+                )
+                return
+
+            hook_trust = _check_project_hooks_trust(
+                trust_flag=getattr(args, "trust_project_hooks", False),
+            )
+            if hook_trust is _TrustPromptOutcome.INTERRUPTED:
+                sys.exit(130)
+            if hook_trust is _TrustPromptOutcome.CANCELLED:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(
+                    "[dim]Aborted; project hooks not loaded.[/dim]",
+                    highlight=False,
+                )
                 return
 
             # Run Textual TUI
@@ -4367,14 +4781,31 @@ def cli_main() -> None:
                 # advisory as a startup notification instead (see
                 # `DeepAgentsApp._notify_interpreter_tools_without_interpreter`).
 
-                # An explicit -y/--auto-approve wins; otherwise the persistent
-                # [startup].mode config default decides the launch mode.
-                auto_approve = _resolve_auto_approve(args)
+                from deepagents_code.approval_mode import ApprovalMode
+
+                approval_mode = _resolve_approval_mode(args)
+                if (
+                    approval_mode is ApprovalMode.AUTO
+                    and args.sandbox
+                    and args.sandbox != "none"
+                ):
+                    console.print(
+                        "[yellow]Auto is unavailable with a sandbox. "
+                        "Using Manual.[/yellow]"
+                    )
+                    approval_mode = ApprovalMode.MANUAL
+                if approval_mode is ApprovalMode.YOLO and not _ensure_yolo_acknowledged(
+                    console
+                ):
+                    console.print(
+                        "[yellow]YOLO was not enabled; using Manual.[/yellow]"
+                    )
+                    approval_mode = ApprovalMode.MANUAL
 
                 result = asyncio.run(
                     run_textual_cli_async(
                         assistant_id=assistant_id,
-                        auto_approve=auto_approve,
+                        approval_mode=approval_mode,
                         sandbox_type=args.sandbox,
                         sandbox_id=args.sandbox_id,
                         sandbox_snapshot_name=args.sandbox_snapshot_name,
@@ -4391,9 +4822,15 @@ def cli_main() -> None:
                         mcp_config_path=getattr(args, "mcp_config", None),
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
+                        hook_trust=hook_trust,
                         enable_interpreter=enable_interpreter,
                         interpreter_arg=args.interpreter,
                         interpreter_ptc=interpreter_ptc,
+                        allow_fs_tools=allow_fs_tools,
+                        auto_classifier_model=getattr(
+                            args, "auto_classifier_model", None
+                        ),
+                        recursion_limit=getattr(args, "recursion_limit", None),
                     )
                 )
                 return_code = result.return_code
@@ -4464,13 +4901,13 @@ def cli_main() -> None:
             except Exception:
                 logger.warning("Failed to display exit update banner", exc_info=True)
     except KeyboardInterrupt:
-        # Clean exit on Ctrl+C — suppress ugly traceback.
+        # Suppress the traceback while preserving the conventional SIGINT status.
         # `console` may not be bound if Ctrl+C arrives during config import.
         try:
             console.print("\n\n[yellow]Interrupted[/yellow]")
         except NameError:
             sys.stderr.write("\n\nInterrupted\n")
-        sys.exit(0)
+        sys.exit(130)
 
 
 if __name__ == "__main__":

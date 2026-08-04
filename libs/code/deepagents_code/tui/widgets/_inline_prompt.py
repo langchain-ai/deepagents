@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import time
-from typing import TYPE_CHECKING, Any, ClassVar, Generic, TypeVar
+from collections import Counter
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
-from textual.binding import Binding, BindingType
 from textual.content import Content
 from textual.message import Message
 from textual.widgets import Static
 
 if TYPE_CHECKING:
-    import asyncio
+    from pathlib import Path
 
     from textual import events
     from textual.widget import Widget
@@ -20,9 +22,44 @@ from deepagents_code import theme
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.tui.widgets._paste_textarea import CollapsingPasteTextArea
 
+logger = logging.getLogger(__name__)
+
 ResultT = TypeVar("ResultT")
 
 _UNSET: Any = object()
+
+MEDIA_UNSUPPORTED_TOAST_PREFIX = "Only text is supported here"
+"""Leading clause of the toast shown when media is dropped on an inline prompt.
+
+Public so tests can assert on the toast without duplicating the whole message,
+which names the discarded files (see `_media_unsupported_toast`).
+"""
+
+
+def _media_unsupported_toast(paths: list[Path]) -> str:
+    """Build the toast for a rejected media drop.
+
+    Names each discarded file rather than only the media ones, because the whole
+    payload is swallowed — a mixed drop otherwise loses its non-media paths with
+    nothing to explain where they went. Paths are identified by name, falling
+    back to the full path when two drops share a basename, so the listing always
+    distinguishes every file it counts.
+
+    Args:
+        paths: All resolved paths in the rejected payload. Never empty — the
+            caller only builds a toast once it has found media.
+
+    Returns:
+        Toast text naming the files that were not inserted.
+    """
+    unique = list(dict.fromkeys(paths))
+    name_counts = Counter(path.name for path in unique)
+    labels = [
+        path.name if name_counts[path.name] == 1 else str(path) for path in unique
+    ]
+    noun = "file" if len(labels) == 1 else "files"
+    listing = ", ".join(labels)
+    return f"{MEDIA_UNSUPPORTED_TOAST_PREFIX}; {noun} not inserted: {listing}."
 
 
 class InlinePromptCompletion(Generic[ResultT]):
@@ -87,22 +124,6 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
     back to the full text via `submitted_value`.
     """
 
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding(
-            "shift+enter,alt+enter,ctrl+enter,ctrl+j",
-            "insert_newline",
-            "New Line",
-            show=False,
-            priority=True,
-        ),
-        Binding(
-            "ctrl+backspace,alt+backspace",
-            "delete_word_left",
-            "Delete left to start of word",
-            show=False,
-        ),
-    ]
-
     class Submitted(Message):
         """Posted when the user presses Enter to submit text.
 
@@ -161,6 +182,18 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
             event.stop()
             return
 
+        # Some terminals (e.g. VSCode built-in) send a literal backslash followed
+        # by enter for shift+enter; treat that pair as a newline before the enter
+        # below would otherwise submit.
+        if self._consume_backslash_enter_newline(event, now):
+            return
+
+        self._track_backslash_pending(event, now)
+
+        # Modifier+Enter (and Ctrl+J) insert a newline rather than submitting.
+        if self._consume_modifier_newline(event):
+            return
+
         if event.key == "enter":
             event.prevent_default()
             event.stop()
@@ -171,6 +204,94 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
             return
 
         await super()._on_key(event)
+
+    async def _on_paste(self, event: events.Paste) -> None:
+        """Reject a dragged media file, else defer to shared paste handling."""
+        # Flush first, matching the base handler: a rejection returns early, and
+        # leaving a pending burst behind would let its timer insert the buffered
+        # keystrokes after the paste was already refused.
+        if self._paste_burst_buffer:
+            await self._flush_paste_burst()
+
+        if await self._reject_dropped_media(event.text):
+            event.prevent_default()
+            event.stop()
+            return
+
+        # Don't call super() here — Textual dispatches a message to *every*
+        # class in the MRO that defines `_on_paste`, in order, so the base
+        # handlers already run after this one returns and super() would invoke
+        # them a second time. The `prevent_default()` above is what stops that
+        # walk on the rejection path.
+
+    async def _dispatch_burst_payload(self, payload: str) -> None:
+        """Reject a media file replayed as a key burst, else defer to the base."""
+        if await self._reject_dropped_media(payload):
+            return
+        await super()._dispatch_burst_payload(payload)
+
+    async def _reject_dropped_media(self, text: str) -> bool:
+        """Toast and swallow a dropped payload containing an image or video.
+
+        Free-text prompts accept only text, so a dragged media file is rejected
+        here instead of inserting its path. Detection requires the payload to
+        resolve to files that exist on disk in the shape a terminal emits for a
+        drop, so free-form prose is unaffected (see `dropped_payload_paths`).
+
+        The whole payload is swallowed when any path is media, so a mixed drop
+        does not half-insert; the toast names each discarded file to make that
+        visible.
+
+        Args:
+            text: Raw pasted/dropped text payload.
+
+        Returns:
+            `True` when a media payload was detected and swallowed.
+        """
+        from deepagents_code.input import (
+            dropped_payload_paths,
+            looks_like_dropped_payload,
+        )
+        from deepagents_code.media_utils import is_media_path
+
+        # Screen with the pure string guard before hopping to a thread: the
+        # thread hop is an `await`, and `_dispatch_burst_payload` runs from the
+        # burst flush timer's own task rather than the widget message queue, so
+        # yielding there lets a concurrent keystroke land ahead of the buffered
+        # payload. Ordinary typing and pasting never pays that cost now.
+        if not looks_like_dropped_payload(text):
+            return False
+
+        try:
+            paths = await asyncio.to_thread(dropped_payload_paths, text)
+        except Exception:
+            # The parser guards its own filesystem probes, but
+            # `_resolve_with_unicode_space_variants` calls `expanduser()` and
+            # `Path.cwd()` unguarded, so a deleted working directory or an
+            # unresolvable home still surfaces here. Log at warning (not debug)
+            # so it survives without DEEPAGENTS_CODE_DEBUG, since falling
+            # through re-inserts the path this method exists to reject. The
+            # message never includes the payload, though an OSError traceback
+            # may name a path.
+            logger.warning(
+                "Media-payload detection failed; treating paste as text",
+                exc_info=True,
+            )
+            return False
+        if not any(is_media_path(path) for path in paths):
+            return False
+        if not self.is_mounted:
+            # The prompt was resolved while the probe was in flight; `self.app`
+            # still resolves via the active-app ContextVar, so notifying here
+            # would toast about a field the user can no longer see.
+            return True
+        self.app.notify(
+            _media_unsupported_toast(paths),
+            severity="warning",
+            timeout=5,
+            markup=False,
+        )
+        return True
 
 
 class InlinePromptOption(Static):
@@ -236,6 +357,13 @@ class InlinePromptOption(Static):
         if self._selected_class is None:
             return
         self.set_class(self._highlighted, self._selected_class)
+
+
+def newline_hint() -> str:
+    """Return the newline-shortcut hint fragment (e.g. 'Ctrl+J newline')."""
+    from deepagents_code.config import newline_shortcut
+
+    return f"{newline_shortcut()} newline"
 
 
 def apply_inline_prompt_border(widget: Widget) -> None:

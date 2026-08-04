@@ -79,6 +79,33 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="switch profile persona",
     ),
     SlashCommand(
+        name="/auto",
+        description=(
+            "Switch to Auto approval mode, or pick its classifier model for "
+            "this session"
+        ),
+        # Bare `/auto` still switches mode immediately (the switcher must work
+        # mid-turn); `/auto model ...` opens UI or resolves a model, so it waits
+        # for idle like every other argument form.
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords=(
+            "approval mode classifier automatic auto-approve shift+tab model"
+        ),
+        argument_hint="[model [<spec>|clear]]",
+    ),
+    SlashCommand(
+        name="/manual",
+        description="Switch to Manual approval mode",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="approval mode approve prompt review shift+tab",
+    ),
+    SlashCommand(
+        name="/yolo",
+        description="Switch to YOLO approval mode (no review)",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="approval mode unrestricted auto-approve dangerous shift+tab",
+    ),
+    SlashCommand(
         name="/auth",
         description="Connect and manage provider and service credentials",
         bypass_tier=BypassTier.IMMEDIATE_UI,
@@ -97,6 +124,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/copy",
         description="Copy the latest assistant message to clipboard",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+    ),
+    SlashCommand(
+        name="/cost",
+        description="Show estimated thread cost",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="price spend usage tokens dollars usd",
     ),
     SlashCommand(
         name="/force-clear",
@@ -127,7 +160,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         description="Set reasoning effort for the current model",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="reasoning thinking level",
-        argument_hint="[none|low|medium|high|xhigh|max|clear]",
+        argument_hint="[<level>|clear]",
     ),
     SlashCommand(
         name="/mcp",
@@ -138,7 +171,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/plugins",
-        description="Manage plugins (experimental)",
+        description="Manage plugins",
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="plugin marketplace skills mcp enable disable install",
     ),
@@ -149,9 +182,9 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/notifications",
-        description="Configure startup warnings",
+        description="Configure warning notifications",
         bypass_tier=BypassTier.IMMEDIATE_UI,
-        hidden_keywords="warnings alerts suppress",
+        hidden_keywords="warnings alerts suppress startup yolo",
     ),
     SlashCommand(
         name="/offload",
@@ -216,7 +249,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/restart",
         description="Restart the agent server",
         bypass_tier=BypassTier.ALWAYS,
-        hidden_keywords="respawn server",
+        hidden_keywords="respawn server reconnect connect",
     ),
     SlashCommand(
         name="/theme",
@@ -401,29 +434,13 @@ class CommandEntry(NamedTuple):
         return self.display_name or self.name
 
 
-_EXPERIMENTAL_PLUGIN_COMMANDS: frozenset[str] = frozenset({"/plugins"})
-"""Slash commands gated behind `DEEPAGENTS_CODE_EXPERIMENTAL`."""
-
-
 def get_slash_commands() -> list[CommandEntry]:
-    """Return autocomplete entries for currently enabled slash commands.
-
-    This function is the public autocomplete API. It derives entries directly
-    from `COMMANDS` so callers always observe the current experimental-feature
-    environment instead of a stale import-time snapshot.
+    """Return autocomplete entries for slash commands.
 
     Returns:
-        Autocomplete entries derived from `COMMANDS`, excluding experimental
-        plugin commands unless `DEEPAGENTS_CODE_EXPERIMENTAL` is set.
+        Autocomplete entries derived from `COMMANDS`.
     """
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
-
-    include_experimental = is_env_truthy(EXPERIMENTAL)
-    return [
-        command.to_entry()
-        for command in COMMANDS
-        if include_experimental or command.name not in _EXPERIMENTAL_PLUGIN_COMMANDS
-    ]
+    return [command.to_entry() for command in COMMANDS]
 
 
 def parse_skill_command(command: str) -> tuple[str, str]:

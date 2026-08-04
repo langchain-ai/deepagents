@@ -77,13 +77,167 @@ class TestCollectSections:
         """The Diagnostics section reports the running CLI version."""
         from deepagents_code._version import __version__
 
-        diagnostics = collect_sections()[0]
+        # Isolate the SDK requirement check so the workspace pin cannot inject a
+        # mismatch annotation into the CLI value under test. Editable installs
+        # resolve the pin through `_sdk_requirement_for_cli`.
+        with patch(
+            "deepagents_code.extras_info._sdk_requirement_for_cli",
+            return_value=None,
+        ):
+            diagnostics = collect_sections()[0]
         labels = {item.label: item.value for item in diagnostics.items}
         assert labels["deepagents-code"] == __version__
         assert "Commit hash" in labels
         assert labels["Commit hash"]
         assert "Platform" in labels
         assert "Install method" in labels
+
+
+class TestDiagnosticsVersionReport:
+    """Tests for how the Diagnostics section renders version-report facts."""
+
+    def _diagnostics(self, report: object) -> dict[str, DiagnosticItem]:
+        from deepagents_code.doctor import _collect_diagnostics
+
+        with (
+            patch(
+                "deepagents_code.extras_info.collect_version_report",
+                return_value=report,
+            ),
+            patch("deepagents_code.doctor._commit_hash", return_value="abc1234"),
+        ):
+            section = _collect_diagnostics()
+        return {item.label: item for item in section.items}
+
+    def test_sdk_requirement_mismatch_is_unhealthy(self) -> None:
+        """An unsatisfied declared SDK requirement makes the SDK item unhealthy."""
+        from packaging.requirements import Requirement
+
+        from deepagents_code._version import __version__
+        from deepagents_code.extras_info import DistributionVersion, VersionReport
+
+        report = VersionReport(
+            cli=DistributionVersion(
+                "deepagents-code", __version__, __version__, True, "~/src", "resolved"
+            ),
+            sdk=DistributionVersion(
+                "deepagents", "0.6.12", "0.6.12", True, "~/src/sdk", "resolved"
+            ),
+            sdk_requirement=Requirement("deepagents>=0.7,<0.8"),
+            sdk_requirement_satisfied=False,
+        )
+        items = self._diagnostics(report)
+        sdk = items["deepagents (SDK)"]
+        assert sdk.ok is False
+        assert "required by deepagents-code: <0.8,>=0.7 — mismatch" in sdk.value
+
+    def test_newer_exact_sdk_pin_is_informational_for_editable_sdk(self) -> None:
+        """A newer exact dcode pin is healthy for an editable main SDK checkout."""
+        from packaging.requirements import Requirement
+
+        from deepagents_code._version import __version__
+        from deepagents_code.extras_info import DistributionVersion, VersionReport
+
+        report = VersionReport(
+            cli=DistributionVersion(
+                "deepagents-code",
+                __version__,
+                __version__,
+                True,
+                "/repo/libs/code",
+                "resolved",
+            ),
+            sdk=DistributionVersion(
+                "deepagents",
+                "0.6.12",
+                "0.6.12",
+                True,
+                "/repo/libs/deepagents",
+                "resolved",
+            ),
+            sdk_requirement=Requirement("deepagents==0.7.0a8"),
+            sdk_requirement_satisfied=True,
+        )
+        items = self._diagnostics(report)
+        sdk = items["deepagents (SDK)"]
+        assert sdk.ok is True
+        assert sdk.value == ("0.7.0a8+editable (workspace HEAD; source marker: 0.6.12)")
+
+    def test_source_metadata_drift_is_informational(self) -> None:
+        """Source/metadata drift annotates the values but stays healthy."""
+        from packaging.requirements import Requirement
+
+        from deepagents_code._version import __version__
+        from deepagents_code.extras_info import DistributionVersion, VersionReport
+
+        report = VersionReport(
+            cli=DistributionVersion(
+                "deepagents-code", __version__, "0.1.40", True, "~/src", "resolved"
+            ),
+            sdk=DistributionVersion(
+                "deepagents", "0.6.13", "0.6.12", True, "~/src/sdk", "resolved"
+            ),
+            sdk_requirement=Requirement("deepagents>=0.6"),
+            sdk_requirement_satisfied=True,
+        )
+        items = self._diagnostics(report)
+        cli = items["deepagents-code"]
+        sdk = items["deepagents (SDK)"]
+        assert cli.ok is True
+        assert cli.value == f"{__version__} (installed metadata: 0.1.40)"
+        assert sdk.ok is True
+        assert "installed metadata: 0.6.12" in sdk.value
+
+    def test_invalid_editable_sdk_source_version_is_unhealthy(self) -> None:
+        """Stale metadata cannot make a broken editable SDK look healthy."""
+        from packaging.requirements import Requirement
+
+        from deepagents_code._version import __version__
+        from deepagents_code.extras_info import DistributionVersion, VersionReport
+
+        report = VersionReport(
+            cli=DistributionVersion(
+                "deepagents-code",
+                __version__,
+                __version__,
+                True,
+                "/repo/libs/code",
+                "resolved",
+            ),
+            sdk=DistributionVersion(
+                "deepagents",
+                None,
+                "0.6.12",
+                True,
+                "/repo/libs/deepagents",
+                "resolved",
+            ),
+            sdk_requirement=Requirement("deepagents==0.7.0a8"),
+            sdk_requirement_satisfied=False,
+        )
+        sdk = self._diagnostics(report)["deepagents (SDK)"]
+        assert sdk.ok is False
+        assert "invalid source marker: unavailable" in sdk.value
+
+    def test_sdk_not_installed_is_unhealthy(self) -> None:
+        """A missing SDK is reported as not installed and unhealthy."""
+        from deepagents_code._version import __version__
+        from deepagents_code.extras_info import DistributionVersion, VersionReport
+
+        report = VersionReport(
+            cli=DistributionVersion(
+                "deepagents-code", __version__, __version__, False, None, "resolved"
+            ),
+            sdk=DistributionVersion(
+                "deepagents", None, None, False, None, "not_installed"
+            ),
+            sdk_requirement=None,
+            sdk_requirement_satisfied=None,
+        )
+        items = self._diagnostics(report)
+        sdk = items["deepagents (SDK)"]
+        assert sdk.ok is False
+        assert sdk.value == "not installed"
 
 
 class TestCollectTracing:
@@ -318,7 +472,14 @@ class TestEndpointGatewayState:
 class TestCollectUpdates:
     """Tests for the Updates diagnostic section."""
 
-    def _labels(self, cache_file: Path) -> dict[str, str]:
+    def _labels(
+        self,
+        cache_file: Path,
+        *,
+        editable: bool = False,
+        checks_enabled: bool = True,
+        cached: tuple[bool, str | None] = (False, "1.0.0"),
+    ) -> dict[str, str]:
         """Collect the Updates labels, reading `checked_at` from `cache_file`.
 
         Patches `CACHE_FILE` rather than `get_last_update_check_time` so the
@@ -328,10 +489,13 @@ class TestCollectUpdates:
         from deepagents_code.doctor import _collect_updates
 
         with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=editable,
+            ),
             patch(
                 "deepagents_code.update_check.is_update_check_enabled",
-                return_value=True,
+                return_value=checks_enabled,
             ),
             patch(
                 "deepagents_code.update_check.is_auto_update_enabled",
@@ -339,12 +503,28 @@ class TestCollectUpdates:
             ),
             patch(
                 "deepagents_code.update_check.get_cached_update_available",
-                return_value=(False, "1.0.0"),
+                return_value=cached,
             ),
             patch("deepagents_code.update_check.CACHE_FILE", cache_file),
         ):
             section = _collect_updates()
         return {item.label: item.value for item in section.items}
+
+    def _stale_cache(self, tmp_path: Path) -> Path:
+        """Write a cache stamped three days ago, well past `CACHE_TTL`."""
+        cache = tmp_path / "latest_version.json"
+        cache.write_text(
+            json.dumps({"checked_at": time.time() - 3 * 86_400}), encoding="utf-8"
+        )
+        return cache
+
+    def _fresh_cache(self, tmp_path: Path) -> Path:
+        """Write a cache stamped five minutes ago, well inside `CACHE_TTL`."""
+        cache = tmp_path / "latest_version.json"
+        cache.write_text(
+            json.dumps({"checked_at": time.time() - 300}), encoding="utf-8"
+        )
+        return cache
 
     def test_last_checked_shows_relative_time(self, tmp_path: Path) -> None:
         """A check stamped an hour ago renders as `1h ago` via the real read."""
@@ -371,6 +551,70 @@ class TestCollectUpdates:
         cache = tmp_path / "latest_version.json"
         cache.write_text(json.dumps({"checked_at": float("nan")}), encoding="utf-8")
         assert self._labels(cache)["Last checked"] == "never"
+
+    def test_latest_version_reports_cached_answer(self, tmp_path: Path) -> None:
+        """A cached answer is reported even though it is older than the TTL."""
+        cache = self._stale_cache(tmp_path)
+        assert self._labels(cache)["Latest version"] == "up to date"
+        available = self._labels(cache, cached=(True, "9.9.9"))
+        assert available["Latest version"] == "v9.9.9 available"
+
+    def test_latest_version_blames_editable_install(self, tmp_path: Path) -> None:
+        """Editable installs never check, so the row names that as the cause."""
+        labels = self._labels(
+            self._stale_cache(tmp_path), editable=True, cached=(False, None)
+        )
+        assert labels["Latest version"] == "not checked (editable install)"
+        assert labels["Auto-updates"] == "disabled (editable install)"
+        assert labels["Last checked"] == "3d ago"
+
+    def test_latest_version_blames_disabled_checks(self, tmp_path: Path) -> None:
+        """Disabled checks freeze the cache, so the row names that as the cause."""
+        labels = self._labels(
+            self._stale_cache(tmp_path), checks_enabled=False, cached=(False, None)
+        )
+        assert labels["Latest version"] == "not checked (checks disabled)"
+        assert labels["Update checks"] == "disabled"
+
+    def test_latest_version_reports_stale_cache(self, tmp_path: Path) -> None:
+        """An enabled checker with a rejected cache reads as stale, not unknown."""
+        labels = self._labels(self._stale_cache(tmp_path), cached=(False, None))
+        assert labels["Latest version"] == "unknown (cache stale)"
+        assert labels["Last checked"] == "3d ago"
+
+    def test_latest_version_reports_incomplete_cache(self, tmp_path: Path) -> None:
+        """A current cache with no usable entry is incomplete, not stale.
+
+        Reachable when only pre-release pins were written or a pre-release
+        install meets a stable-only payload, so the row must not claim the cache
+        expired.
+        """
+        labels = self._labels(self._fresh_cache(tmp_path), cached=(False, None))
+        assert labels["Latest version"] == "unknown (cache incomplete)"
+        assert labels["Last checked"] == "5m ago"
+
+    def test_latest_version_reports_never_checked(self, tmp_path: Path) -> None:
+        """With no stamp on disk, no check has ever completed."""
+        labels = self._labels(tmp_path / "latest_version.json", cached=(False, None))
+        assert labels["Latest version"] == "unknown (never checked)"
+        assert labels["Last checked"] == "never"
+
+    def test_row_set_is_fixed(self, tmp_path: Path) -> None:
+        """Every state renders the same labels so outputs stay comparable."""
+        expected = ["Update checks", "Auto-updates", "Latest version", "Last checked"]
+        stale = self._stale_cache(tmp_path)
+        assert list(self._labels(stale)) == expected
+        assert (
+            list(self._labels(stale, editable=True, cached=(False, None))) == expected
+        )
+        assert (
+            list(self._labels(stale, checks_enabled=False, cached=(False, None)))
+            == expected
+        )
+        assert (
+            list(self._labels(tmp_path / "missing.json", cached=(False, None)))
+            == expected
+        )
 
 
 class TestCommitHash:
@@ -475,14 +719,22 @@ class TestRunDoctorCommand:
 
     def test_text_output_contains_sections(self) -> None:
         """Text output renders each section title and key facts."""
-        code, output = self._run_text()
+        # Isolate the SDK requirement check so a workspace where the declared
+        # `deepagents` pin intentionally leads or lags the installed SDK does
+        # not make the section unhealthy; the mismatch path has dedicated
+        # coverage. Editable installs resolve via `_sdk_requirement_for_cli`.
+        with patch(
+            "deepagents_code.extras_info._sdk_requirement_for_cli",
+            return_value=None,
+        ):
+            code, output = self._run_text()
         assert code == 0
         assert "Diagnostics" in output
         assert "Updates" in output
         assert "Tracing" in output
         assert "Configuration" in output
         assert "deepagents-code" in output
-        assert "dcode config show" in output
+        assert "dcode config" in output
         assert "dcode config get <key>" in output
         assert "dcode --version" in output
         assert "dcode -v" in output
@@ -490,7 +742,14 @@ class TestRunDoctorCommand:
     def test_json_output_envelope(self, capsys) -> None:
         """JSON output is a stable envelope with section data."""
         args = argparse.Namespace(output_format="json")
-        code = run_doctor_command(args)
+        # Isolate the SDK requirement check (see text-output test) so the
+        # envelope reports the healthy shape regardless of the workspace pin.
+        # Editable installs resolve the pin through `_sdk_requirement_for_cli`.
+        with patch(
+            "deepagents_code.extras_info._sdk_requirement_for_cli",
+            return_value=None,
+        ):
+            code = run_doctor_command(args)
         assert code == 0
 
         captured = capsys.readouterr()
@@ -572,7 +831,7 @@ class TestDoctorHelp:
         output = buf.getvalue()
         assert "dcode doctor [options]" in output
         assert "Usage:" in output
-        assert "dcode config show" in output
+        assert "dcode config" in output
         assert "dcode config get <key>" in output
         assert "dcode --version" in output
         assert "dcode -v" in output

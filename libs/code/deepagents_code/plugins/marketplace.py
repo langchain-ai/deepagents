@@ -738,11 +738,15 @@ def _parse_entry(
         if isinstance(author_value, str)
         else None
     )
+    display_name_value = entry.get("displayName")
     return MarketplacePluginEntry(
         name=name,
         source=source,
         description=description_value if isinstance(description_value, str) else None,
         author=author,
+        display_name=(
+            display_name_value if isinstance(display_name_value, str) else None
+        ),
     )
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
 if TYPE_CHECKING:
@@ -16,12 +17,22 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     ResponseT,
 )
-from langchain.tools import InjectedToolCallId
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain.tools import InjectedToolCallId, ToolRuntime
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
+from pydantic import Field
 
-from deepagents_code._ask_user_types import AskUserRequest, Question
+from deepagents_code._ask_user_types import (
+    ASK_USER_AUTHORIZATION_METADATA_KEY,
+    ASK_USER_CANCELLED_ANSWER,
+    MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
+    AskUserAuthorizationReceipt,
+    AskUserRequest,
+    Question,
+    format_ask_user_error_answer,
+    format_ask_user_transcript,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,16 +108,54 @@ def _validate_questions(questions: list[Question]) -> None:
             raise ValueError(msg)
 
 
+def _context_string(context: object, name: str) -> str | None:
+    value = (
+        context.get(name)
+        if isinstance(context, Mapping)
+        else getattr(context, name, None)
+    )
+    return value if isinstance(value, str) and value else None
+
+
+def _execution_thread_id(runtime: object) -> str | None:
+    execution_info = getattr(runtime, "execution_info", None)
+    thread_id = getattr(execution_info, "thread_id", None)
+    return thread_id if isinstance(thread_id, str) and thread_id else None
+
+
+def _active_turn_id(runtime: object) -> str | None:
+    from deepagents_code.auto_mode import USER_PROMPT_METADATA_KEY
+
+    state = getattr(runtime, "state", None)
+    messages = state.get("messages") if isinstance(state, Mapping) else None
+    if not isinstance(messages, list):
+        return None
+    for message in reversed(messages):
+        if not isinstance(message, HumanMessage):
+            continue
+        metadata = message.additional_kwargs.get(USER_PROMPT_METADATA_KEY)
+        if not isinstance(metadata, Mapping):
+            return None
+        turn_id = metadata.get("turn_id")
+        return turn_id if isinstance(turn_id, str) and turn_id else None
+    return None
+
+
 def _parse_answers(
     response: object,
     questions: list[Question],
     tool_call_id: str,
+    *,
+    thread_id: str | None = None,
+    turn_id: str | None = None,
 ) -> Command[Any]:
     """Parse an interrupt response into a `Command` with a `ToolMessage`.
 
     Supports explicit status signaling from the adapter:
 
-    - `answered` (default): consume provided `answers`
+    - `answered` (default): consume provided `answers`. An answer count that does
+      not match `questions` is rejected as `error` rather than padded or
+      truncated, since either would misattribute answers to questions.
     - `cancelled`: synthesize `(cancelled)` answers
     - `error`: synthesize `(error: ...)` answers
 
@@ -117,12 +166,24 @@ def _parse_answers(
         response: Raw value returned by `interrupt()`.
         questions: The questions that were asked.
         tool_call_id: Originating tool call ID for the `ToolMessage`.
+        thread_id: Trusted runtime thread identity.
+        turn_id: Trusted runtime user-turn identity.
 
     Returns:
-        `Command` containing a formatted `ToolMessage` with Q&A pairs.
+        `Command` containing a formatted `ToolMessage` with Q&A pairs, carrying an
+            explicit `status` — `"error"` for a failed prompt, `"success"` for an
+            answered or cancelled one. Consumers depend on that field; see the
+            comment at the `ToolMessage` construction below.
     """
+    # Untrusted: holds whatever `status` the resume payload carried until the
+    # branches below normalize it to one of answered/cancelled/error.
     status: str = "answered"
-    error_text: str | None = None
+    # Detail for a defect found here while trusting the payload, kept apart from
+    # `client_error_text` so the two cannot clobber each other in either order.
+    local_error_text: str | None = None
+    # Detail supplied by a caller that declared the failure itself.
+    client_error_text: str | None = None
+    answers_are_strings = False
     answers: list[str]
     if not isinstance(response, dict):
         logger.error(
@@ -132,12 +193,20 @@ def _parse_answers(
         )
         answers = []
         status = "error"
-        error_text = "invalid ask_user response payload"
+        local_error_text = "invalid ask_user response payload"
     else:
         response_dict = cast("dict[str, Any]", response)
         response_status = response_dict.get("status")
         if isinstance(response_status, str):
             status = response_status
+
+        if status == "error":
+            # Read before local validation can flip `status` to "error" itself:
+            # a payload claiming "answered" may carry a stale `error` field, and
+            # that must not end up describing a failure detected here.
+            response_error = response_dict.get("error")
+            if isinstance(response_error, str) and response_error:
+                client_error_text = response_error
 
         if "answers" not in response_dict:
             if status == "answered":
@@ -147,12 +216,35 @@ def _parse_answers(
                 )
                 answers = []
                 status = "error"
-                error_text = "missing ask_user answers payload"
+                local_error_text = "missing ask_user answers payload"
             else:
                 answers = []
         else:
             raw_answers = response_dict["answers"]
             if isinstance(raw_answers, list):
+                answers_are_strings = all(
+                    isinstance(answer, str) for answer in raw_answers
+                )
+                if not answers_are_strings:
+                    # Coerced rather than rejected so the model still sees
+                    # something for each question, but logged: the `str()` of a
+                    # non-string element is presented to the model as the user's
+                    # own words, and it silently withholds the authorization
+                    # receipt below (which requires `answers_are_strings`).
+                    logger.warning(
+                        "ask_user received non-string answer element(s) (%s); "
+                        "coercing with str() and withholding the authorization "
+                        "receipt",
+                        ", ".join(
+                            sorted(
+                                {
+                                    type(answer).__name__
+                                    for answer in raw_answers
+                                    if not isinstance(answer, str)
+                                }
+                            )
+                        ),
+                    )
                 answers = [str(answer) for answer in raw_answers]
             else:
                 logger.error(
@@ -162,42 +254,93 @@ def _parse_answers(
                 )
                 answers = []
                 status = "error"
-                error_text = "invalid ask_user answers payload"
+                local_error_text = "invalid ask_user answers payload"
 
-        if status == "error":
-            response_error = response_dict.get("error")
-            if isinstance(response_error, str) and response_error:
-                error_text = response_error
-        elif status == "cancelled":
-            answers = ["(cancelled)" for _ in questions]
-        elif status == "answered":
-            if len(answers) != len(questions):
-                logger.warning(
-                    "ask_user answer count mismatch: expected %d, got %d",
-                    len(questions),
-                    len(answers),
+        match status:
+            case "cancelled":
+                answers = [ASK_USER_CANCELLED_ANSWER for _ in questions]
+            case "answered":
+                if len(answers) != len(questions):
+                    # Treated as a failed prompt, not a partial one. A short list
+                    # silently re-attributes every answer after the gap to the
+                    # wrong question, and a long one drops the extras — either way
+                    # the payload is untrustworthy, and a `"success"` transcript
+                    # would hand the model a confident wrong Q->A pairing.
+                    logger.error(
+                        "ask_user answer count mismatch: expected %d, got %d; "
+                        "returning explicit error answers",
+                        len(questions),
+                        len(answers),
+                    )
+                    status = "error"
+                    local_error_text = (
+                        f"ask_user answer count mismatch (expected "
+                        f"{len(questions)}, got {len(answers)})"
+                    )
+            case "error":
+                # Already normalized above; the detail is resolved below.
+                pass
+            case _:
+                logger.error(
+                    "ask_user received unknown status %r; returning explicit "
+                    "error answers",
+                    status,
                 )
-        else:
-            logger.error(
-                "ask_user received unknown status %r; returning explicit error answers",
-                status,
-            )
-            answers = []
-            status = "error"
-            error_text = "invalid ask_user response status"
+                answers = []
+                status = "error"
+                local_error_text = "invalid ask_user response status"
 
     if status == "error":
-        detail = error_text or "ask_user interaction failed"
-        answers = [f"(error: {detail})" for _ in questions]
+        # A caller that declared the failure knows the root cause; a detail
+        # derived here describes a payload defect found while trusting it.
+        detail = client_error_text or local_error_text or "ask_user interaction failed"
+        answers = [format_ask_user_error_answer(detail) for _ in questions]
 
-    formatted_answers = []
-    for i, q in enumerate(questions):
-        answer = answers[i] if i < len(answers) else "(no answer)"
-        formatted_answers.append(f"Q: {q['question']}\nA: {answer}")
-    result_text = "\n\n".join(formatted_answers)
+    additional_kwargs: dict[str, object] = {}
+    if (
+        status == "answered"
+        and answers_are_strings
+        and len(answers) == len(questions)
+        and all(
+            len(answer) <= MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS for answer in answers
+        )
+        and thread_id is not None
+        and turn_id is not None
+    ):
+        receipt = AskUserAuthorizationReceipt(
+            version=1,
+            thread_id=thread_id,
+            turn_id=turn_id,
+            tool_call_id=tool_call_id,
+            answers=list(answers),
+        )
+        additional_kwargs[ASK_USER_AUTHORIZATION_METADATA_KEY] = receipt
+
+    result_text = format_ask_user_transcript(questions, answers)
     return Command(
         update={
-            "messages": [ToolMessage(result_text, tool_call_id=tool_call_id)],
+            "messages": [
+                ToolMessage(
+                    result_text,
+                    name="ask_user",
+                    tool_call_id=tool_call_id,
+                    additional_kwargs=additional_kwargs,
+                    # Consumers, so a failed prompt must not be left at the
+                    # `"success"` default:
+                    #   - `normalize_tool_status`, on both the live TUI stream and
+                    #     the headless surface (`client.non_interactive`);
+                    #   - the `case "error"` arm of `_restore_deferred_state`, on
+                    #     reload;
+                    #   - `auto_mode`, which refuses to mint a trusted
+                    #     authorization receipt unless this reads `"success"` —
+                    #     the consumer with real consequences.
+                    # A cancel stays `"success"` — it is a user choice, not a tool
+                    # failure — and is safe for that last consumer because the
+                    # receipt above requires `status == "answered"`, so a cancelled
+                    # prompt carries none to trust.
+                    status="error" if status == "error" else "success",
+                )
+            ],
         }
     )
 
@@ -230,14 +373,14 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         @tool(description=self.tool_description)
         def _ask_user(
-            questions: list[Question],
+            questions: Annotated[
+                list[Question],
+                Field(description="Questions to present to the user."),
+            ],
             tool_call_id: Annotated[str, InjectedToolCallId],
+            runtime: ToolRuntime[Any, Any],
         ) -> Command[Any]:
             """Ask the user one or more questions.
-
-            Args:
-                questions: Questions to present to the user.
-                tool_call_id: Tool call identifier injected by LangChain.
 
             Returns:
                 `Command` containing the parsed user answers as a `ToolMessage`.
@@ -254,7 +397,25 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             # GraphBubbleUp — a broad `except Exception` (e.g. ToolRetryMiddleware)
             # would swallow this interrupt and silently break ask_user.
             response = interrupt(ask_request)
-            return _parse_answers(response, questions, tool_call_id)
+            execution_thread_id = _execution_thread_id(runtime)
+            context_thread_id = _context_string(runtime.context, "thread_id")
+            context_turn_id = _context_string(runtime.context, "turn_id")
+            active_turn_id = _active_turn_id(runtime)
+            runtime_tool_call_id = runtime.tool_call_id
+            return _parse_answers(
+                response,
+                questions,
+                tool_call_id,
+                thread_id=(
+                    execution_thread_id
+                    if execution_thread_id == context_thread_id
+                    and runtime_tool_call_id == tool_call_id
+                    else None
+                ),
+                turn_id=(
+                    context_turn_id if context_turn_id == active_turn_id else None
+                ),
+            )
 
         _ask_user.name = "ask_user"
         self.tools = [_ask_user]

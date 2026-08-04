@@ -58,6 +58,30 @@ INTERPRETER_MAX_RESULT_CHARS_DEFAULT = 4000
 INTERPRETER_PTC_DEFAULT: str | bool | list[str] = "safe"
 INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
 
+RECURSION_LIMIT_DEFAULT = 2000
+"""Default LangGraph `recursion_limit` for the main agent.
+
+Single source of truth shared by the `runtime.recursion_limit` option, the
+`config.config` runnable-config default, and `resolve_recursion_limit`. Raised
+above the LangGraph/SDK default (`25`) to accommodate deeply nested agent graphs
+in long-running sessions without hitting `GRAPH_RECURSION_LIMIT`.
+"""
+
+RECURSION_LIMIT_FLOOR = 25
+"""Smallest accepted `recursion_limit`; matches the LangGraph default ceiling.
+
+A value below this would break otherwise-valid runs, so a resolved value under
+the floor is rejected and falls through to the next layer / default.
+"""
+
+RECURSION_LIMIT_CEILING = 100_000
+"""Largest accepted `recursion_limit`.
+
+Bounds the graph step budget so a mistyped or hostile override cannot request
+effectively unbounded traversal. A resolved value above the ceiling is rejected
+and falls through to the next layer / default.
+"""
+
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
 """Project agent traces fall back to when no project env var is set.
 
@@ -173,7 +197,7 @@ class ConfigOption:
     """
 
     group: str
-    """Human-readable grouping for `config list` and `config show`."""
+    """Human-readable grouping for `config`."""
 
     summary: str
     """One-line description of what the option controls."""
@@ -194,7 +218,7 @@ class ConfigOption:
     fallback_env_vars: tuple[str, ...] = ()
     """Secondary env vars read (in order) when `env_var` is unset.
 
-    Read literally — no `DEEPAGENTS_CODE_` prefix logic — so `config show`/`get`
+    Read literally — no `DEEPAGENTS_CODE_` prefix logic — so `config`/`config get`
     mirror runtime fallbacks such as `get_langsmith_project_name` reading bare
     `LANGSMITH_PROJECT`.
     """
@@ -209,7 +233,7 @@ class ConfigOption:
     """Representative CLI flag that sets the option, or `None`."""
 
     redacted: bool = False
-    """Whether `config show` reports only set/not-set, never the raw value.
+    """Whether `config` reports only set/not-set, never the raw value.
 
     Named `redacted` rather than `secret` so the value (and the JSON field it
     populates) carries no credential-suggesting identifier — the flag is
@@ -238,7 +262,7 @@ class ConfigOption:
     Set only for `Credentials`-group options (e.g. `"anthropic"`, `"tavily"`),
     where it is the key `/auth` stores the credential under and the name passed
     to `model_config.is_service`. Carrying it as a structured field lets
-    `config show`/`get` look up the stored credential without re-parsing it out
+    `config`/`config get` look up the stored credential without re-parsing it out
     of `key`. `None` for every other option.
     """
 
@@ -396,7 +420,7 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         classified = classify_env_bool(raw)
         if classified is None:
             # Unrecognized boolean token: log and fall through like every other
-            # malformed scalar, so `config show` reports the real source
+            # malformed scalar, so `config` reports the real source
             # (config.toml/default) instead of crediting the env var with a
             # value it did not actually supply.
             logger.warning("Ignoring %s=%r (expected bool)", name, raw)
@@ -473,7 +497,7 @@ def _coerce_env(option: ConfigOption, raw: str, name: str) -> object:
         if raw in VALID_STARTUP_MODES:
             return raw
         logger.warning(
-            "Ignoring %s=%r (expected 'manual' or 'dangerously-auto')",
+            "Ignoring %s=%r (expected 'manual', 'auto', or 'yolo')",
             name,
             raw,
         )
@@ -540,7 +564,7 @@ def _coerce_toml(option: ConfigOption, raw: object) -> object:
         if isinstance(raw, str) and raw in VALID_STARTUP_MODES:
             return raw
         logger.warning(
-            "Ignoring %s=%r in config.toml (expected 'manual' or 'dangerously-auto')",
+            "Ignoring %s=%r in config.toml (expected 'manual', 'auto', or 'yolo')",
             label,
             raw,
         )
@@ -700,6 +724,72 @@ def resolve_interpreter_kwargs(
     return resolved
 
 
+def _is_valid_recursion_limit(value: object) -> bool:
+    """Return whether `value` is an accepted main-agent `recursion_limit`."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and RECURSION_LIMIT_FLOOR <= value <= RECURSION_LIMIT_CEILING
+    )
+
+
+def resolve_recursion_limit(*, toml_data: dict[str, Any] | None = None) -> int:
+    """Resolve the effective main-agent `recursion_limit`.
+
+    Resolves `runtime.recursion_limit` through the standard env → `config.toml`
+    → default precedence. An out-of-range value (below `RECURSION_LIMIT_FLOOR`
+    or above `RECURSION_LIMIT_CEILING`) is discarded with a logged warning and
+    the next lower-precedence layer is tried, so a bad higher-precedence
+    override cannot mask a valid TOML setting (or the default).
+
+    Args:
+        toml_data: Parsed `config.toml`; loaded automatically when omitted.
+
+    Returns:
+        The resolved recursion limit, guaranteed within
+            `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`.
+    """
+    data = load_config_toml() if toml_data is None else toml_data
+    option = get_option("runtime.recursion_limit")
+    if option is None:
+        return RECURSION_LIMIT_DEFAULT
+
+    value, source = resolve_scalar(option, toml_data=data)
+    if _is_valid_recursion_limit(value):
+        return value
+
+    # Invalid higher-precedence values must fall through instead of jumping
+    # straight to the default. Hide the rejected env var (if any) and re-resolve
+    # so remaining env fallbacks, then TOML, then the typed default still apply.
+    if source.startswith("env (") and source.endswith(")"):
+        env_name = source[len("env (") : -1]
+        logger.warning(
+            "Ignoring %s recursion_limit %r (expected int in [%d, %d]); "
+            "falling through to the next config source",
+            source,
+            value,
+            RECURSION_LIMIT_FLOOR,
+            RECURSION_LIMIT_CEILING,
+        )
+        previous = os.environ.pop(env_name, None)
+        try:
+            return resolve_recursion_limit(toml_data=data)
+        finally:
+            if previous is not None:
+                os.environ[env_name] = previous
+
+    if source != "default":
+        logger.warning(
+            "Ignoring %s recursion_limit %r (expected int in [%d, %d]); using %d",
+            source,
+            value,
+            RECURSION_LIMIT_FLOOR,
+            RECURSION_LIMIT_CEILING,
+            RECURSION_LIMIT_DEFAULT,
+        )
+    return RECURSION_LIMIT_DEFAULT
+
+
 # --- Option definitions -----------------------------------------------------
 
 # Search credentials that are not provider API keys live outside
@@ -800,7 +890,8 @@ _CREDENTIAL_SETTINGS_FIELD: dict[str, str] = {
 
 def _is_secret_env(name: str) -> bool:
     """Return whether a credential env var name carries secret material."""
-    return any(marker in name for marker in _SECRET_NAME_MARKERS)
+    upper = name.upper()
+    return any(marker in upper for marker in _SECRET_NAME_MARKERS)
 
 
 def _credential_options() -> tuple[ConfigOption, ...]:
@@ -918,6 +1009,15 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("ui", "show_scrollbar"),
     ),
     ConfigOption(
+        key="display.debug_console_click_to_copy",
+        group="Display",
+        summary="Copy on click in the Ctrl+\\ Debug Console (off by default).",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.DEBUG_CONSOLE_CLICK_TO_COPY,
+        toml_keys=("ui", "debug_console_click_to_copy"),
+    ),
+    ConfigOption(
         key="display.collapse_pastes",
         group="Display",
         summary="Collapse large chat-input pastes into compact placeholders.",
@@ -1015,6 +1115,19 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STR,
         toml_keys=("models", "recent"),
     ),
+    ConfigOption(
+        key="models.auto_classifier",
+        group="Models",
+        summary=(
+            "Model spec ('provider:model') used by the Auto approval classifier; "
+            "unset reuses the main agent model. A weaker model weakens Auto's "
+            "review of gated actions."
+        ),
+        kind=OptionKind.STR,
+        env_var=_env_vars.AUTO_CLASSIFIER_MODEL,
+        toml_keys=("models", "auto_classifier"),
+        cli_flag="--auto-classifier-model",
+    ),
     # --- Tracing -------------------------------------------------------
     ConfigOption(
         key="tracing.langsmith_project",
@@ -1031,7 +1144,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         group="Tracing",
         summary="Redact detected secrets from LangSmith agent traces before upload.",
         kind=OptionKind.BOOL,
-        default=True,
+        default=False,
         env_var=_env_vars.LANGSMITH_REDACT,
         toml_keys=("tracing", "langsmith_redact"),
     ),
@@ -1087,6 +1200,20 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.OLLAMA_DISCOVERY,
     ),
     ConfigOption(
+        key="models.openai_prompt_cache_key",
+        group="Tools",
+        summary=(
+            "Attach a per-thread prompt_cache_key to OpenAI-provider model calls "
+            "for reliable prompt-cache routing; disable for endpoints that reject "
+            "unknown request fields."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.OPENAI_PROMPT_CACHE_KEY,
+        empty_env_is_false=True,
+        toml_keys=("models", "openai_prompt_cache_key"),
+    ),
+    ConfigOption(
         key="memory.auto_save",
         group="Tools",
         summary=(
@@ -1121,6 +1248,16 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         summary="Override the default Unix-socket path for the event listener.",
         kind=OptionKind.STR,
         env_var=_env_vars.EXTERNAL_EVENT_SOCKET_PATH,
+    ),
+    # --- Goals ----------------------------------------------------------
+    ConfigOption(
+        key="goals.auto_accept_criteria",
+        group="Goals",
+        summary="Apply generated goal criteria automatically in Auto mode.",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.GOAL_AUTO_ACCEPT_CRITERIA,
+        toml_keys=("goals", "auto_accept_criteria"),
     ),
     # --- Interpreter (config.toml-only; defaults owned by this module) --
     ConfigOption(
@@ -1218,7 +1355,10 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="warnings.suppress",
         group="Warnings",
-        summary="Warning keys to suppress (e.g. 'ripgrep').",
+        summary=(
+            "Warning keys to suppress (e.g. 'ripgrep', 'tavily', 'yolo'); "
+            "also editable from /notifications."
+        ),
         kind=OptionKind.STRUCTURED,
         toml_keys=("warnings", "suppress"),
     ),
@@ -1234,15 +1374,18 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     # Project trust lists are parsed by `model_config.load_mcp_server_trust_lists`,
     # which reads them only from the user-level config.toml (never a project file),
     # so they are STRUCTURED-for-discovery here rather than env-backed scalars. The
-    # env overrides are named in the summaries instead of `env_var` because the
-    # scalar resolver rejects env-backed STRUCTURED options by design.
+    # related env settings are named in the summaries instead of `env_var` because
+    # the scalar resolver rejects env-backed STRUCTURED options by design.
     ConfigOption(
         key="mcp.enabled_project_server_approvals",
         group="MCP",
         summary=(
-            "Project MCP server approvals saved by project root, server name, and "
-            "server fingerprint; edited commands/URLs require re-approval. Env-only "
-            "global override (bypasses project/fingerprint binding): "
+            "Remote project MCP approvals with fixed URLs are shared across one "
+            "local Git repository's worktrees; local commands and interpolated "
+            "remote URLs use the exact worktree. All include the server name and "
+            "fingerprint, so edited commands/URLs or transport changes require "
+            "re-approval. Process-wide "
+            "name allowlist (bypasses project/fingerprint binding): "
             "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS."
         ),
         kind=OptionKind.STRUCTURED,
@@ -1300,7 +1443,29 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("update", "check"),
         invert_toml_bool=True,
     ),
+    ConfigOption(
+        key="update.prices_auto_update",
+        group="Updates",
+        summary=(
+            "Refresh the model pricing catalog from upstream hourly in the background."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.PRICES_AUTO_UPDATE,
+        toml_keys=("update", "prices_auto_update"),
+        empty_env_is_false=True,
+    ),
     # --- Runtime --------------------------------------------------------
+    ConfigOption(
+        key="runtime.recursion_limit",
+        group="Runtime",
+        summary="Main agent LangGraph recursion_limit (graph step budget).",
+        kind=OptionKind.INT,
+        default=RECURSION_LIMIT_DEFAULT,
+        env_var=_env_vars.RECURSION_LIMIT,
+        toml_keys=("runtime", "recursion_limit"),
+        cli_flag="--recursion-limit",
+    ),
     ConfigOption(
         key="runtime.offline",
         group="Runtime",
@@ -1321,11 +1486,24 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="startup.mode",
         group="Startup",
-        summary="Default approval mode at launch ('manual' or 'dangerously-auto').",
+        summary="Default approval mode at launch ('manual', 'auto', or 'yolo').",
         kind=OptionKind.STARTUP_MODE_DELEGATE,
         default="manual",
         toml_keys=("startup", "mode"),
         cli_flag="--auto-approve",
+    ),
+    ConfigOption(
+        key="startup.yolo_switcher",
+        group="Startup",
+        summary=(
+            "Include YOLO in the Shift+Tab approval-mode cycle "
+            "(Manual → Auto → YOLO); disable to keep the cycle Manual/Auto only."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.YOLO_SWITCHER,
+        empty_env_is_false=True,
+        toml_keys=("startup", "yolo_switcher"),
     ),
     # --- Debug / Development -------------------------------------------
     ConfigOption(
@@ -1408,6 +1586,9 @@ NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
         _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS,
         # Plugin cache root override; read directly by plugins.store
         _env_vars.PLUGIN_CACHE_DIR,
+        # Set by the self-update restart to carry the launched command name into
+        # the re-exec'd process; never user-configured.
+        _env_vars.INVOKED_AS,
     }
 )
 """`_env_vars` constants intentionally excluded from the option catalog."""
@@ -1433,6 +1614,35 @@ def get_option(key: str) -> ConfigOption | None:
 def option_keys() -> tuple[str, ...]:
     """Return every manifest key in definition order."""
     return tuple(opt.key for opt in get_config_options())
+
+
+def options_with_key_prefix(prefix: str) -> tuple[ConfigOption, ...]:
+    """Return every option whose key sits under the dotted `prefix` section.
+
+    Matching is exact on segment boundaries: `credentials` matches
+    `credentials.openai` but `credential` matches nothing, so `config get` can
+    accept a section name without also accepting truncated guesses.
+
+    Matching is case-insensitive, and key prefixes are the only section
+    namespace: display group titles (`Credentials`, `Tools`) are not accepted,
+    since several headings (`Models`, `Tools`) name a different set of options
+    than the same word as a prefix — one namespace keeps a section unambiguous.
+
+    Args:
+        prefix: Dotted key prefix (e.g. `credentials`). A trailing dot is not
+            stripped here — `credentials.` matches nothing, since it would look
+            for keys under `credentials..`. Callers that accept user input
+            should strip it first.
+
+    Returns:
+        Matching options in manifest order; empty when no key uses `prefix`.
+    """
+    if not prefix:
+        return ()
+    section = f"{prefix.casefold()}."
+    return tuple(
+        opt for opt in get_config_options() if opt.key.casefold().startswith(section)
+    )
 
 
 @lru_cache(maxsize=1)

@@ -207,6 +207,24 @@ class TestServerConfigPostInit:
         config = ServerConfig(sandbox_type=None)
         assert config.sandbox_type is None
 
+    def test_recursion_limit_none_allowed(self) -> None:
+        assert ServerConfig(recursion_limit=None).recursion_limit is None
+
+    def test_recursion_limit_positive_allowed(self) -> None:
+        assert ServerConfig(recursion_limit=2000).recursion_limit == 2000
+
+    def test_recursion_limit_zero_rejected(self) -> None:
+        with pytest.raises(ValueError, match="recursion_limit"):
+            ServerConfig(recursion_limit=0)
+
+    def test_recursion_limit_negative_rejected(self) -> None:
+        with pytest.raises(ValueError, match="recursion_limit"):
+            ServerConfig(recursion_limit=-1)
+
+    def test_recursion_limit_bool_rejected(self) -> None:
+        with pytest.raises(TypeError, match="recursion_limit"):
+            ServerConfig(recursion_limit=True)
+
 
 class TestServerConfigInterpreterDefault:
     """Tests for sandbox-aware interpreter default resolution."""
@@ -375,6 +393,49 @@ class TestServerConfigEdgeCases:
 
         assert restored.enable_interpreter is False
 
+    def test_auto_classifier_model_round_trips(self) -> None:
+        """The Auto classifier spec must reach the server subprocess."""
+        original = ServerConfig(auto_classifier_model="openai:gpt-5.5-mini")
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.auto_classifier_model == "openai:gpt-5.5-mini"
+
+    def test_empty_auto_classifier_model_env_clears_override(self) -> None:
+        """An empty value means "inherit the main model", not an empty spec."""
+        with patch.dict(
+            os.environ,
+            {f"{SERVER_ENV_PREFIX}AUTO_CLASSIFIER_MODEL": ""},
+            clear=True,
+        ):
+            restored = ServerConfig.from_env()
+
+        assert restored.auto_classifier_model is None
+
+    def test_inherit_classifier_sentinel_round_trips(self) -> None:
+        """The inherit sentinel must reach the server subprocess intact.
+
+        `--auto-classifier-model ""` resolves to `INHERIT_CLASSIFIER_MODEL` in
+        the launch path so an explicit blank overrides a configured classifier;
+        the env serialization must not collapse it to `None` the way a bare
+        empty string does.
+        """
+        from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+
+        original = ServerConfig(auto_classifier_model=INHERIT_CLASSIFIER_MODEL)
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.auto_classifier_model == INHERIT_CLASSIFIER_MODEL
+
     def test_malformed_rubric_max_iterations_env_uses_sdk_default(self) -> None:
         """Bad optional rubric iteration config must fall back to SDK default."""
         with patch.dict(
@@ -447,3 +508,39 @@ class TestServerConfigEdgeCases:
             restored = ServerConfig.from_env()
 
         assert restored.sandbox_snapshot_name is None
+
+    def test_recursion_limit_round_trips(self) -> None:
+        """An explicit recursion limit survives the server env boundary."""
+        original = ServerConfig(recursion_limit=3000)
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.recursion_limit == 3000
+
+    def test_recursion_limit_unset_defaults_to_none(self) -> None:
+        """No recursion-limit env var restores as `None` (resolve at build time)."""
+        original = ServerConfig()
+        env_dict = original.to_env()
+        assert env_dict["RECURSION_LIMIT"] is None
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.recursion_limit is None
+
+    def test_malformed_recursion_limit_env_uses_none(self) -> None:
+        """A malformed recursion-limit env var falls back to `None`."""
+        with patch.dict(
+            os.environ,
+            {f"{SERVER_ENV_PREFIX}RECURSION_LIMIT": "abc"},
+            clear=True,
+        ):
+            restored = ServerConfig.from_env()
+
+        assert restored.recursion_limit is None

@@ -12,6 +12,7 @@ from deepagents_code.plugins.models import (
     ComponentInventory,
     JsonObject,
     PluginManifest,
+    UnsupportedComponent,
 )
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,11 @@ _MANIFEST_RELATIVE_PATHS = (
     Path(".claude-plugin") / "plugin.json",
     Path(".codex-plugin") / "plugin.json",
 )
-_PATH_COMPONENT_FIELDS = {"skills", "mcpServers"}
+_PATH_COMPONENT_FIELDS = {"skills", "mcpServers", "hooks"}
+_UNSUPPORTED_COMPONENT_DIRS: tuple[UnsupportedComponent, ...] = (
+    "agents",
+    "commands",
+)
 _NAME_RE = re.compile(r"^[^\s]+$")
 
 
@@ -163,6 +168,23 @@ def _inline_mcp(value: object) -> JsonObject:
     return {}
 
 
+def _inline_hooks(value: object) -> JsonObject:
+    """Normalize inline hooks to `hooks.json` document form.
+
+    Returns:
+        A wrapped hooks document, or an empty object.
+    """
+    if not isinstance(value, dict):
+        return {}
+    normalized = json_object(value)
+    if not normalized:
+        return {}
+    wrapped = normalized.get("hooks")
+    if isinstance(wrapped, dict):
+        return {"hooks": wrapped}
+    return {"hooks": normalized}
+
+
 def load_manifest(
     root: Path, *, fallback_name: str | None = None
 ) -> tuple[PluginManifest | None, Path | None, tuple[str, ...]]:
@@ -201,7 +223,7 @@ def load_manifest(
         declaration = raw.get(field_name)
         if declaration is None:
             continue
-        if field_name == "mcpServers" and isinstance(declaration, dict):
+        if field_name in {"mcpServers", "hooks"} and isinstance(declaration, dict):
             continue
         paths = _resolve_component_paths(declaration, root, field_name, warnings)
         if paths:
@@ -209,11 +231,16 @@ def load_manifest(
 
     version_value = raw.get("version")
     version = version_value if isinstance(version_value, str) else None
+    display_name_value = raw.get("displayName")
     manifest = PluginManifest(
         name=name,
         version=version,
         component_paths=component_paths,
         inline_mcp=_inline_mcp(raw.get("mcpServers")),
+        inline_hooks=_inline_hooks(raw.get("hooks")),
+        display_name=(
+            display_name_value if isinstance(display_name_value, str) else None
+        ),
     )
     return manifest, manifest_path, tuple(warnings)
 
@@ -231,6 +258,35 @@ def _existing_component_path(path: Path, plugin_root: Path) -> tuple[Path, ...]:
         return ()
     else:
         return (resolved,)
+
+
+def _hooks_document_paths(path: Path, plugin_root: Path) -> tuple[Path, ...]:
+    """Resolve a declared hooks file or directory.
+
+    Returns:
+        Existing hook document paths inside the plugin root.
+    """
+    try:
+        target = path / "hooks.json" if path.is_dir() else path
+    except OSError:
+        logger.warning("Could not inspect plugin hooks path %s", path)
+        return ()
+    return _existing_component_path(target, plugin_root)
+
+
+def _unsupported_component_dirs(
+    plugin_root: Path,
+) -> tuple[UnsupportedComponent, ...]:
+    """Return present component dirs that deepagents-code does not load."""
+    found: list[UnsupportedComponent] = []
+    for name in _UNSUPPORTED_COMPONENT_DIRS:
+        path = plugin_root / name
+        try:
+            if path.is_dir():
+                found.append(name)
+        except OSError:
+            logger.warning("Could not inspect plugin component path %s", path)
+    return tuple(found)
 
 
 def build_inventory(
@@ -265,8 +321,21 @@ def build_inventory(
         *metadata_paths.get("mcpServers", ()),
     )
 
+    hook_files = (
+        *_hooks_document_paths(plugin_root / "hooks", plugin_root),
+        *(
+            document
+            for path in metadata_paths.get("hooks", ())
+            for document in _hooks_document_paths(path, plugin_root)
+        ),
+    )
+
+    unsupported = _unsupported_component_dirs(plugin_root)
+
     return ComponentInventory(
         skills=tuple(dict.fromkeys(skills)),
         mcp_files=tuple(dict.fromkeys(mcp_files)),
+        hook_files=tuple(dict.fromkeys(hook_files)),
+        unsupported=unsupported,
         warnings=tuple(warnings),
     )

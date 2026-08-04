@@ -1,48 +1,23 @@
-Fixes #
+<!-- Optional: Replace this comment with `Fixes #` / `Closes #` / or `Resolves #` with the issue number to auto-close the issue when this PR is merged. If applicable, add separate `Depends on #` or `Related: #` lines. -->
+
+<!-- For a net new feature or behavior-changing bugfix: replace this comment with one plain-English sentence on the user-visible change. Usually not needed for chores/refactors/test-only PRs. -->
 
 ---
 
-<!-- Keep the `Fixes #xx` keyword at the very top and update the issue number — this auto-closes the issue on merge. Replace this comment with a 1-2 sentence description of your change. No `# Summary` header; the description is the summary. -->
+<!-- Why this change, and why this approach. No `# Summary` or `## Release note` headings, please. -->
 
-Read the full contributing guidelines: https://docs.langchain.com/oss/python/contributing/overview
+Thanks for contributing! A few essentials below. Remove these instructions before submission.
 
-> **All contributions must be in English.** See the [language policy](https://docs.langchain.com/oss/python/contributing/overview#language-policy).
+1. **Title:** `type(scope): description` — e.g. `fix(sdk): ...`, `feat(cli): ...`. Allowed values: [pr_lint.yml](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/pr_lint.yml).
+2. One package per PR unless a maintainer says otherwise
+3. External contributors: don't change `uv.lock` / add deps without maintainer approval
+4. Large pasted AI descriptions may be ignored or closed
+5. English only — [language policy](https://docs.langchain.com/oss/python/contributing/overview#language-policy)
 
-If you paste a large clearly AI generated description here your PR may be IGNORED or CLOSED!
-
-Thank you for contributing to Deep Agents! Follow these steps to have your pull request considered as ready for review.
-
-1. PR title: Should follow the format: TYPE(SCOPE): DESCRIPTION
-
-  - Examples:
-    - fix(sdk): resolve flag parsing error
-    - feat(cli): add multi-tenant support
-    - test(acp): update API usage tests
-  - Allowed TYPE and SCOPE values: https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/pr_lint.yml
-
-2. PR description:
-
-  - Write 1-2 sentences summarizing the change.
-  - If this PR addresses a specific issue, please include "Fixes #ISSUE_NUMBER" in the description to automatically close the issue when the PR is merged.
-  - If there are any breaking changes, please clearly describe them.
-  - If this PR depends on another PR being merged first, please include "Depends on #PR_NUMBER" in the description.
-
-## Release note
-<!-- Required for net new features or behavior-changing bugfixes. State the user-visible change in release-note-ready language. Omit this section for chores, refactors, or test-only changes. -->
-
-3. Run `make format`, `make lint` and `make test` from the root of the package(s) you've modified.
-
-  - We will not consider a PR unless these three are passing in CI.
-
-4. How did you verify your code works?
-
-Additional guidelines:
-
-  - We ask that if you use generative AI for your contribution, you include a disclaimer.
-  - PRs should not touch more than one package unless absolutely necessary.
-  - Do not update the `uv.lock` files or add dependencies to `pyproject.toml` files (even optional ones) unless you have explicit permission to do so by a maintainer.
+Full guide: https://docs.langchain.com/oss/python/contributing/overview
+Remove the above instructions before submission!
 
 ## Social handles (optional)
-<!-- If you'd like a shoutout on release, add your socials below -->
-Twitter: @
-LinkedIn: https://linkedin.com/in/
+<!-- For external contributors: get a shoutout on release -->
+Twitter: @YOUR_USERNAME
+LinkedIn: https://linkedin.com/in/YOUR_USERNAME

@@ -23,10 +23,34 @@ def _make_acp_args(**overrides: object) -> argparse.Namespace:
         mcp_config=None,
         no_mcp=False,
         trust_project_mcp=False,
+        auto_classifier_model=None,
     )
     for key, value in overrides.items():
         setattr(args, key, value)
     return args
+
+
+def test_acp_mode_rejects_auto_classifier_model(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ACP must reject an authorization setting it cannot apply."""
+    args = _make_acp_args(auto_classifier_model="openai:gpt-5.5-mini")
+
+    with (
+        patch.object(
+            sys,
+            "argv",
+            ["deepagents", "--acp", "--auto-classifier-model", "openai:gpt-5.5-mini"],
+        ),
+        patch("deepagents_code.main.parse_args", return_value=args),
+        patch("deepagents_code.main._resolve_agent_arg") as resolve_agent,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 2
+    assert "--auto-classifier-model is only supported" in capsys.readouterr().err
+    resolve_agent.assert_not_called()
 
 
 def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
@@ -201,6 +225,135 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
     assert call_kwargs["tools"] == [fetch_tool, thread_tool]
     assert call_kwargs["mcp_server_info"] == []
     assert call_kwargs["checkpointer"] is not None
+
+
+def test_acp_mode_forwards_allow_fs_tools() -> None:
+    """`--acp --allow-fs-tools` forwards the parsed allowlist as `fs_tools`."""
+    args = _make_acp_args(allow_fs_tools="ls,read_file")
+    model_obj = object()
+    model_result = SimpleNamespace(
+        model=model_obj,
+        provider="anthropic",
+        model_name="claude-sonnet-4-6",
+        apply_to_settings=MagicMock(),
+    )
+    server = object()
+    run_agent = AsyncMock(return_value=None)
+    resolve_mcp_tools = AsyncMock(return_value=([], None, []))
+
+    with (
+        patch.object(sys, "argv", ["deepagents", "--acp"]),
+        patch(
+            "deepagents_code.main.check_cli_dependencies",
+            side_effect=AssertionError("check_cli_dependencies should be skipped"),
+        ),
+        patch("deepagents_code.main.parse_args", return_value=args),
+        patch("deepagents_code.config.settings", new=SimpleNamespace(has_tavily=False)),
+        patch("deepagents_code.model_config.save_recent_model", return_value=True),
+        patch("deepagents_code.config.create_model", return_value=model_result),
+        patch(
+            "deepagents_code.mcp_tools.resolve_and_load_mcp_tools", resolve_mcp_tools
+        ),
+        patch("deepagents_code.tools.fetch_url", new=object()),
+        patch("deepagents_code.tools.get_current_thread_id", new=object()),
+        patch("deepagents_code.tools.web_search", new=object()),
+        patch(
+            "deepagents_code.agent.create_cli_agent", return_value=("graph", object())
+        ) as mock_create_agent,
+        patch("deepagents_acp.server.AgentServerACP", return_value=server),
+        patch("acp.run_agent", run_agent),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 0
+    mock_create_agent.assert_called_once()
+    assert mock_create_agent.call_args.kwargs["fs_tools"] == ["ls", "read_file"]
+
+
+def test_acp_mode_forwards_none_allow_fs_tools_by_default() -> None:
+    """`--acp` without `--allow-fs-tools` forwards `fs_tools=None` (unrestricted)."""
+    args = _make_acp_args()  # no allow_fs_tools override
+    model_result = SimpleNamespace(
+        model=object(),
+        provider="anthropic",
+        model_name="claude-sonnet-4-6",
+        apply_to_settings=MagicMock(),
+    )
+    run_agent = AsyncMock(return_value=None)
+    resolve_mcp_tools = AsyncMock(return_value=([], None, []))
+
+    with (
+        patch.object(sys, "argv", ["deepagents", "--acp"]),
+        patch(
+            "deepagents_code.main.check_cli_dependencies",
+            side_effect=AssertionError("check_cli_dependencies should be skipped"),
+        ),
+        patch("deepagents_code.main.parse_args", return_value=args),
+        patch("deepagents_code.config.settings", new=SimpleNamespace(has_tavily=False)),
+        patch("deepagents_code.model_config.save_recent_model", return_value=True),
+        patch("deepagents_code.config.create_model", return_value=model_result),
+        patch(
+            "deepagents_code.mcp_tools.resolve_and_load_mcp_tools", resolve_mcp_tools
+        ),
+        patch("deepagents_code.tools.fetch_url", new=object()),
+        patch("deepagents_code.tools.get_current_thread_id", new=object()),
+        patch("deepagents_code.tools.web_search", new=object()),
+        patch(
+            "deepagents_code.agent.create_cli_agent", return_value=("graph", object())
+        ) as mock_create_agent,
+        patch("deepagents_acp.server.AgentServerACP", return_value=object()),
+        patch("acp.run_agent", run_agent),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 0
+    mock_create_agent.assert_called_once()
+    assert mock_create_agent.call_args.kwargs["fs_tools"] is None
+    assert mock_create_agent.call_args.kwargs["recursion_limit"] is None
+
+
+def test_acp_mode_forwards_recursion_limit() -> None:
+    """`--acp --recursion-limit` forwards the explicit limit to `create_cli_agent`."""
+    args = _make_acp_args(recursion_limit=3000)
+    model_result = SimpleNamespace(
+        model=object(),
+        provider="anthropic",
+        model_name="claude-sonnet-4-6",
+        apply_to_settings=MagicMock(),
+    )
+    run_agent = AsyncMock(return_value=None)
+    resolve_mcp_tools = AsyncMock(return_value=([], None, []))
+
+    with (
+        patch.object(sys, "argv", ["deepagents", "--acp", "--recursion-limit", "3000"]),
+        patch(
+            "deepagents_code.main.check_cli_dependencies",
+            side_effect=AssertionError("check_cli_dependencies should be skipped"),
+        ),
+        patch("deepagents_code.main.parse_args", return_value=args),
+        patch("deepagents_code.config.settings", new=SimpleNamespace(has_tavily=False)),
+        patch("deepagents_code.model_config.save_recent_model", return_value=True),
+        patch("deepagents_code.config.create_model", return_value=model_result),
+        patch(
+            "deepagents_code.mcp_tools.resolve_and_load_mcp_tools", resolve_mcp_tools
+        ),
+        patch("deepagents_code.tools.fetch_url", new=object()),
+        patch("deepagents_code.tools.get_current_thread_id", new=object()),
+        patch("deepagents_code.tools.web_search", new=object()),
+        patch(
+            "deepagents_code.agent.create_cli_agent", return_value=("graph", object())
+        ) as mock_create_agent,
+        patch("deepagents_acp.server.AgentServerACP", return_value=object()),
+        patch("acp.run_agent", run_agent),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 0
+    mock_create_agent.assert_called_once()
+    assert mock_create_agent.call_args.kwargs["recursion_limit"] == 3000
 
 
 def test_mcp_preload_includes_plugin_configs() -> None:

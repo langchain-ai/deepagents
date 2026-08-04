@@ -30,9 +30,18 @@ IMPORTANT: `Content` requires **Textual's** `Style` (`textual.style.Style`) for 
 
 **Decision rule:** if the value could ever come from outside the codebase (user input, tool output, API responses, file contents), use `from_markup` with `$var`. If it's a hardcoded string, glyph, or computed int, `styled` is fine.
 
+### Markdown messages take a different escape path
+
+The above applies to Rich **markup**. A message mounted as markdown — `AppMessage(source, markdown=True)`, used by `/version` and `/tools` — is parsed as markdown instead, so `from_markup`/`$var` does not apply and offers no protection there. Build the source with the helpers in `app.py`:
+
+- `_escape_markdown(text)` — backslash-escapes markdown punctuation **and** collapses line breaks to spaces. Both matter: unescaped punctuation is parsed (`<b>x</b>` is swallowed as HTML, `[d](u)` collapses to its link text), and an embedded newline ends the current block, so external text could otherwise inject its own headings, lists, and tables.
+- `_markdown_table(headers, rows)` — builds a pipe table, escaping every header and cell, so a `|` cannot forge an extra column.
+
+**Decision rule:** any string reaching markdown source from outside the codebase goes through `_escape_markdown` (or `_markdown_table`, which applies it per cell). Only internal literals and computed ints may be interpolated raw.
+
 ### `App.notify()` defaults to `markup=True`
 
-Textual's `App.notify(message)` parses the message string as Rich markup by default. Any dynamic content (exception messages, file paths, user input, command strings) containing brackets `[]`, ANSI escape codes, or `=` will cause a `MarkupError` crash in Textual's Toast renderer. Always pass `markup=False` when the message contains f-string interpolated variables. Hardcoded string literals are safe with the default.
+Textual's `App.notify(message)` parses the message string as Rich markup by default. Any dynamic content (exception messages, file paths, user input, command strings) containing square brackets is unsafe: tag-shaped text like `[bold]` is silently swallowed, and closing-tag-shaped text like `[/tmp/x]` raises a `MarkupError` crash in Textual's Toast renderer. Always pass `markup=False` when the message contains f-string interpolated variables. Hardcoded string literals are safe with the default.
 
 ### Rich `console.print()` and number highlighting
 
@@ -62,6 +71,7 @@ Apply these rules to new UI; do not treat them as a mandate to refactor existing
 - Co-locate a screen's `.tcss` file with its root component and set `CSS_PATH` relative to that module. Its styles may target sibling and small nested components, but a large nested component should generally own its own stylesheet.
 - Widgets cannot use `CSS_PATH`; put intrinsic, auto-scoped defaults in `DEFAULT_CSS`. The mounting screen owns the widget's sizing and placement.
 - Children must not import parent components. They may import shared utilities and data models; send events up and pass state/data down.
+- A `ModalScreen` root inherits Textual's default translucent backdrop (`background: $background 60%`, which degrades to transparent under ansi themes) so it dims and composites the content underneath. Don't override it with `background: transparent` unless the modal is deliberately a non-dimming popover (as some selector overlays are); doing so by accident removes the dim.
 
 ### Testing Textual apps
 
@@ -69,7 +79,8 @@ Apply these rules to new UI; do not treat them as a mandate to refactor existing
 - Snapshot testing available for visual regression - see repo `notes/snapshot_testing.md`
 - For modal flows, test the real interaction path with keypresses when possible. Unit tests that call action methods or resume handlers directly can miss focus and modal-stack bugs.
 - Do not open another modal or refocus the base chat input directly inside a modal dismiss callback. Preserve the non-blocking `push_screen(..., callback)` flow and schedule follow-up UI work with `call_after_refresh` so the dismissing modal fully unwinds first.
-- Be cautious replacing `push_screen(..., callback)` with an awaited modal result inside slash-command handlers; awaiting can block the Textual message pump and break keyboard navigation in the active modal.
+- Be cautious replacing `push_screen(..., callback)` with an awaited modal result inside slash-command handlers; awaiting can block the Textual message pump and break keyboard navigation in the active modal. Slash commands are dispatched from `on_chat_input_submitted`, which is awaited inline on that pump, so a modal awaited anywhere in the call chain never receives the keys that would resolve it and looks frozen.
+- When a command genuinely needs an awaited modal result, hand the continuation to `_schedule_off_message_pump` so the handler returns first. A detached continuation runs outside the handler's `try/except` and is cancelled at app exit, so it must catch its own exceptions and mount its own failure message — otherwise the failure reaches only `_log_task_exception` and the user sees no outcome at all — and it must tolerate cancellation part-way through, including mid-subprocess. Anything that mutates the running tool environment must also take `_environment_mutation_lock`, since the handler no longer serializes commands by blocking.
 
 ### Typing and test doubles
 
@@ -120,6 +131,10 @@ Debug logging is configured **once**, on the `deepagents_code` package logger, b
 ## CLI help screen
 
 The `deepagents-code --help` screen is hand-maintained in `ui.show_help()`, separate from the argparse definitions in `main.parse_args()`. When adding a new CLI flag, update **both** files. A drift-detection test (`test_args.TestHelpScreenDrift`) fails if a flag is registered in argparse but missing from the help screen.
+
+## Command name in hints
+
+Hints that tell the user to run something (for example the teardown `-r <thread>` resume hint) must render `_invocation.invoked_name()` rather than a literal `dcode`. The package ships two console scripts (`dcode` and `deepagents-code`), and per-checkout shims — a renamed symlink pointing at a worktree's `bin/dcode` — are a common way to run several installs side by side, so a hardcoded name sends those users to a command they do not have. `invoked_name()` resolves from `sys.argv[0]` (an internal env sentinel carries it across the auto-update re-exec, which drops argv[0]) and falls back to `dcode` when the launch name is not a plausible command. The hand-maintained `--help` usage lines still hardcode `dcode`.
 
 ## Splash screen tips
 

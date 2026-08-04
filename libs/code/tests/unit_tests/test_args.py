@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from rich.console import Console
 
-from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.main import parse_args
 from deepagents_code.ui import show_help, show_threads_list_help
 
@@ -50,25 +49,15 @@ class TestInitialPromptArg:
         assert args.initial_prompt == ""
 
 
-def test_plugin_subcommand_parses_without_experimental_flag(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Argparse still accepts `plugin` when experimental is off.
-
-    The experimental gate lives at execution time in `main` (exit 2 + hint),
-    not in argparse, so disabled users get a clear message instead of a usage error.
-    """
-    monkeypatch.delenv(EXPERIMENTAL, raising=False)
+def test_plugin_subcommand_parses() -> None:
+    """Argparse accepts the `plugin` subcommand."""
     with patch.object(sys, "argv", ["deepagents", "plugin", "list"]):
         args = parse_args()
     assert args.command == "plugin"
     assert args.plugin_command == "list"
 
 
-def test_plugin_marketplace_remove_parses(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(EXPERIMENTAL, "1")
+def test_plugin_marketplace_remove_parses() -> None:
     with patch.object(
         sys,
         "argv",
@@ -776,6 +765,38 @@ class TestAutoUpdateArg:
         with patch.object(sys, "argv", ["deepagents"]):
             args = parse_args()
         assert args.auto_update is False
+
+
+class TestRecursionLimitArg:
+    """Tests for the --recursion-limit override flag."""
+
+    def test_parses_positive_int(self) -> None:
+        """--recursion-limit sets a positive integer."""
+        with patch.object(sys, "argv", ["deepagents", "--recursion-limit", "3000"]):
+            args = parse_args()
+        assert args.recursion_limit == 3000
+
+    def test_defaults_to_none(self) -> None:
+        """Without the flag, recursion_limit is None (resolve at build time)."""
+        with patch.object(sys, "argv", ["deepagents"]):
+            args = parse_args()
+        assert args.recursion_limit is None
+
+    def test_rejects_zero(self) -> None:
+        """--recursion-limit 0 is rejected by argparse (must be >= 1)."""
+        with (
+            patch.object(sys, "argv", ["deepagents", "--recursion-limit", "0"]),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
+
+    def test_rejects_negative(self) -> None:
+        """A negative recursion limit is rejected by argparse."""
+        with (
+            patch.object(sys, "argv", ["deepagents", "--recursion-limit", "-5"]),
+            pytest.raises(SystemExit),
+        ):
+            parse_args()
 
 
 class TestHelpScreenDrift:

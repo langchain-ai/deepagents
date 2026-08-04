@@ -14,7 +14,13 @@ EVALS = ROOT / "libs" / "evals"
 def test_evals_uses_published_harbor_langsmith_dependency() -> None:
     pyproject = tomllib.loads((EVALS / "pyproject.toml").read_text())
 
-    assert "harbor[langsmith]>=0.16.1,<0.17.0" in pyproject["project"]["dependencies"]
+    deps = pyproject["project"]["dependencies"]
+    assert "harbor[langsmith]>=0.20.0,<0.21.0" in deps
+    # harbor-langsmith 0.3.0+ honors experiment_name (no job-id suffix); pin its
+    # floor explicitly since harbor's extra leaves it unconstrained (would resolve
+    # an older, still-suffixing release otherwise).
+    assert "harbor-langsmith>=0.3.0,<0.4.0" in deps
+    # Published packages only — no git override / uv source for harbor.
     assert "harbor" not in pyproject["tool"]["uv"]["sources"]
 
 
@@ -24,10 +30,7 @@ def test_langsmith_make_target_uses_harbor_plugin_and_langgraph_agent() -> None:
     target = target.split("\n\n", maxsplit=1)[0]
 
     assert "HARBOR_AGENT_IMPL ?= dcode" in makefile
-    assert (
-        "HARBOR_AGENT_GRAPH = $(if $(filter bare,$(HARBOR_AGENT_IMPL)),bare_deepagent,deepagent)"
-        in makefile
-    )
+    assert "HARBOR_AGENT_GRAPH = $(HARBOR_AGENT_IMPL)" in makefile
     assert "HARBOR_AGENT_ARGS = --agent langgraph" in makefile
     assert "HARBOR_LANGGRAPH_PROJECT = deepagents_harbor/langgraph_project" in makefile
     assert "--agent-kwarg project_path=$(HARBOR_LANGGRAPH_PROJECT)" in makefile
@@ -99,7 +102,8 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     assert '--n-attempts "$HARBOR_ROLLOUTS_PER_TASK"' in run_step
     # Results are written under a jobs dir the aggregate job later collects.
     assert "--jobs-dir harbor-jobs/" in run_step
-    # LangSmith is driven by the plugin, with dataset + experiment names passed to it.
+    # LangSmith is driven by harbor's stock plugin (harbor-langsmith >=0.3.0 honors
+    # experiment_name, so all shards of a leaf converge on one queryable experiment).
     assert "--plugin langsmith" in run_step
     assert '--plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET"' in run_step
     assert '--plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"' in run_step
@@ -244,9 +248,10 @@ def test_harbor_workflow_wires_tau3_subset() -> None:
     # The resolve step must fail loudly on a wrong-sized filter (empty => full
     # dataset), so the count tripwire must stay wired.
     assert 'if [ "$task_count" -ne 30 ]; then' in leaf
-    # tau3's verifier/user simulator needs OpenAI even when the agent model is
-    # hosted by another provider, so missing credentials should fail preflight.
-    assert "contains(inputs.dataset, 'tau3')" in leaf
+    # tau3's verifier/judge is always an OpenAI model, so the leaf provides the
+    # OpenAI key unconditionally, and the preflight fails loudly if it is missing
+    # for a tau3 run whose agent model is hosted by another provider.
+    assert "OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}" in leaf
     assert '[[ "$HARBOR_DATASET" == *tau3* ]]' in leaf
     assert '[ "$model_provider" != "openai" ]' in leaf
 

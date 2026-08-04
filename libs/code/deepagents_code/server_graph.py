@@ -149,16 +149,16 @@ def _criteria_context_tools(
     tools: list[Any],
     mcp_tools: list[Any],
 ) -> list[Any]:
-    """Select external context tools from the normal agent tool list.
+    """Select read-only external tools for criteria drafting and rubric grading.
 
     Args:
         tools: Main agent tools in execution order.
         mcp_tools: Exact tool objects returned by MCP discovery.
 
     Returns:
-        External context tools available to criteria generation. MCP tools are
-        included only when their protocol annotations explicitly declare them
-        read-only.
+        External context tools available to criteria generation and grading.
+        MCP tools are included only when their protocol annotations explicitly
+        declare them read-only.
     """
     from deepagents_code.tools import fetch_url, web_search
 
@@ -180,12 +180,9 @@ def _mcp_tool_is_explicitly_read_only(tool: Any) -> bool:  # noqa: ANN401
     Returns:
         `True` only for an explicitly and consistently read-only MCP tool.
     """
-    metadata = getattr(tool, "metadata", None)
-    return (
-        isinstance(metadata, dict)
-        and metadata.get("readOnlyHint") is True
-        and metadata.get("destructiveHint") is not True
-    )
+    from deepagents_code.auto_mode import mcp_tool_is_coherently_read_only
+
+    return mcp_tool_is_coherently_read_only(tool)
 
 
 async def _make_graph() -> Any:  # noqa: ANN401
@@ -199,18 +196,59 @@ async def _make_graph() -> Any:  # noqa: ANN401
         Compiled LangGraph agent graph.
     """
     config = ServerConfig.from_env()
-    project_context = get_server_project_context()
 
-    from deepagents_code.agent import create_cli_agent, load_async_subagents
-    from deepagents_code.config import (
-        configure_langsmith_secret_redaction,
+    # Offload cwd/path resolution and the lazy settings bootstrap off the event
+    # loop. On Windows, `Path.resolve()` / `Path.cwd()` call `os.getcwd()`, which
+    # `blockbuster` rejects when invoked directly from the server loop (see
+    # issue #5043). Importing `deepagents_code.agent` / first `settings` access
+    # can also trigger `find_project_root()` -> `Path.cwd()`.
+    #
+    # Keep LangSmith redaction configuration on the server task: its fail-closed
+    # path calls `langsmith.configure(enabled=False)`, which sets both a global
+    # fallback and the current `_TRACING_ENABLED` ContextVar. `asyncio.to_thread`
+    # only updates a copied worker context, so a ContextVar disable there would
+    # not reach a parent tracing context that already has `enabled=True` (ContextVar
+    # wins over the global flag).
+    def _resolve_project_context_and_settings() -> tuple[
+        ProjectContext | None,
+        Any,
+        Any,
+        Any,
+        Any,
+        Any,
+        Any,
+    ]:
+        project_context = get_server_project_context()
+
+        from deepagents_code.agent import create_cli_agent, load_async_subagents
+        from deepagents_code.config import (
+            configure_langsmith_secret_redaction,
+            create_model,
+            is_memory_auto_save_enabled,
+            settings,
+        )
+
+        if project_context is not None:
+            settings.reload_from_environment(start_path=project_context.user_cwd)
+        return (
+            project_context,
+            create_cli_agent,
+            load_async_subagents,
+            create_model,
+            is_memory_auto_save_enabled,
+            settings,
+            configure_langsmith_secret_redaction,
+        )
+
+    (
+        project_context,
+        create_cli_agent,
+        load_async_subagents,
         create_model,
         is_memory_auto_save_enabled,
         settings,
-    )
-
-    if project_context is not None:
-        settings.reload_from_environment(start_path=project_context.user_cwd)
+        configure_langsmith_secret_redaction,
+    ) = await asyncio.to_thread(_resolve_project_context_and_settings)
     configure_langsmith_secret_redaction()
 
     # Offload to a worker thread: `create_model` does blocking disk IO for some
@@ -226,6 +264,7 @@ async def _make_graph() -> Any:  # noqa: ANN401
     result.apply_to_settings()
 
     tools, mcp_server_info, mcp_tools = await _build_tools(config, project_context)
+    read_only_context_tools = _criteria_context_tools(tools, mcp_tools)
 
     # Create sandbox backend if a sandbox provider is configured.
     # The context manager is created here in the factory, but its reference is
@@ -282,6 +321,7 @@ async def _make_graph() -> Any:  # noqa: ANN401
 
     def _create_cli_agent_sync() -> Any:  # noqa: ANN401
         async_subagents = load_async_subagents() or None
+        auto_mode_enabled = config.interactive and sandbox_backend is None
 
         # These process-global settings writes are safe here because `make_graph`
         # is lock-serialized and caches one graph for the server process lifetime.
@@ -296,13 +336,16 @@ async def _make_graph() -> Any:  # noqa: ANN401
             model=result.model,
             assistant_id=config.assistant_id,
             tools=tools,
+            mcp_tools=mcp_tools,
             sandbox=sandbox_backend,
             sandbox_type=config.sandbox_type,
             system_prompt=config.system_prompt,
             interactive=config.interactive,
             auto_approve=config.auto_approve,
+            auto_mode_enabled=auto_mode_enabled,
             interrupt_shell_only=config.interrupt_shell_only,
             shell_allow_list=config.shell_allow_list,
+            fs_tools=config.allow_fs_tools,
             enable_ask_user=config.enable_ask_user,
             enable_memory=config.enable_memory,
             memory_auto_save=is_memory_auto_save_enabled(),
@@ -311,11 +354,14 @@ async def _make_graph() -> Any:  # noqa: ANN401
             enable_interpreter=config.enable_interpreter,
             rubric_model=config.rubric_model,
             rubric_max_iterations=config.rubric_max_iterations,
+            auto_classifier_model=config.auto_classifier_model,
+            recursion_limit=config.recursion_limit,
             mcp_server_info=mcp_server_info,
             cwd=project_context.user_cwd if project_context is not None else config.cwd,
             project_context=project_context,
             async_subagents=async_subagents,
-            goal_criteria_tools=_criteria_context_tools(tools, mcp_tools),
+            goal_criteria_tools=read_only_context_tools,
+            rubric_grader_tools=read_only_context_tools,
         )
         return agent
 

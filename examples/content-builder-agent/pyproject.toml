@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "deepagents>=0.6.12",
     "google-genai>=2.10.0",
-    "pillow>=12.2.0",
+    "pillow>=12.3.0",
     "pyyaml>=6.0.3",
     "rich>=15.0.0",
     "tavily-python>=0.7.26",

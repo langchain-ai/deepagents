@@ -48,6 +48,53 @@ def scoped_mcp_server_name(plugin_id: str, server_name: str) -> str:
     return f"plugin__{plugin_part}__{server_part}"
 
 
+def _mcp_server_needs_login(server: object) -> bool:
+    """Return whether an MCP server config typically requires interactive login."""
+    if not isinstance(server, dict):
+        return False
+    server_type = server.get("type")
+    if server_type in {"http", "sse"}:
+        return True
+    return isinstance(server.get("url"), str)
+
+
+def plugin_mcp_server_entries(
+    plugin: PluginInstance,
+) -> tuple[tuple[str, str, bool], ...]:
+    """List plugin MCP servers as `(label, scoped_name, needs_login)` tuples.
+
+    `label` is the unscoped name from the plugin config (for UI). `scoped_name`
+    is what dcode registers after namespacing.
+
+    Args:
+        plugin: Plugin whose MCP declarations should be listed.
+
+    Returns:
+        Deduplicated server entries in declaration order.
+    """
+    servers: dict[str, object] = {}
+    for path in plugin.inventory.mcp_files:
+        if path.suffix in {".mcpb", ".dxt"}:
+            continue
+        servers.update(_load_mcp_server_map(path))
+    if plugin.manifest and plugin.manifest.inline_mcp:
+        servers.update(_server_map(plugin.manifest.inline_mcp))
+    entries: list[tuple[str, str, bool]] = []
+    seen: set[str] = set()
+    for name, server in servers.items():
+        if not isinstance(name, str) or name in seen:
+            continue
+        seen.add(name)
+        entries.append(
+            (
+                name,
+                scoped_mcp_server_name(plugin.plugin_id, name),
+                _mcp_server_needs_login(server),
+            )
+        )
+    return tuple(entries)
+
+
 def _server_map(raw: object) -> JsonObject:
     """Extract the server-name to config map from a decoded MCP document.
 
@@ -80,6 +127,43 @@ def _load_mcp_server_map(path: Path) -> JsonObject:
         logger.warning("Skipping plugin MCP config %s: %s", path, exc)
         return {}
     return _server_map(raw)
+
+
+def _plugin_mcp_server_map(plugin: PluginInstance) -> JsonObject:
+    """Load a plugin's declared MCP servers without creating runtime state.
+
+    Returns:
+        The unscoped server configuration keyed by declared server name.
+    """
+    servers: JsonObject = {}
+    for path in plugin.inventory.mcp_files:
+        if path.suffix in {".mcpb", ".dxt"}:
+            logger.warning(
+                "Skipping unsupported MCP bundle for plugin %s: %s",
+                plugin.plugin_id,
+                path,
+            )
+            continue
+        servers.update(_load_mcp_server_map(path))
+    if plugin.manifest and plugin.manifest.inline_mcp:
+        servers.update(_server_map(plugin.manifest.inline_mcp))
+    return servers
+
+
+def plugin_mcp_server_names(plugin: PluginInstance) -> tuple[str, ...]:
+    """Return scoped MCP server names without preparing plugin runtime state.
+
+    Args:
+        plugin: Plugin instance whose declarations should be inspected.
+
+    Returns:
+        Scoped MCP server names in declaration order.
+    """
+    return tuple(
+        scoped_mcp_server_name(plugin.plugin_id, name)
+        for name in _plugin_mcp_server_map(plugin)
+        if isinstance(name, str)
+    )
 
 
 def _normalize_server(
@@ -118,13 +202,8 @@ def discover_plugin_mcp_configs(
         project_dir: Project directory for variable substitution.
 
     Returns:
-        Plugin MCP config layers, or an empty tuple when plugins are disabled or
-        discovery fails.
+        Plugin MCP config layers, or an empty tuple when discovery fails.
     """
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
-
-    if not is_env_truthy(EXPERIMENTAL):
-        return ()
     try:
         from deepagents_code.plugins import discover_plugins
 
@@ -167,18 +246,7 @@ def plugin_mcp_configs(
                 plugin.data_dir,
                 exc_info=True,
             )
-        servers: JsonObject = {}
-        for path in plugin.inventory.mcp_files:
-            if path.suffix in {".mcpb", ".dxt"}:
-                logger.warning(
-                    "Skipping unsupported MCP bundle for plugin %s: %s",
-                    plugin.plugin_id,
-                    path,
-                )
-                continue
-            servers.update(_load_mcp_server_map(path))
-        if plugin.manifest and plugin.manifest.inline_mcp:
-            servers.update(_server_map(plugin.manifest.inline_mcp))
+        servers = _plugin_mcp_server_map(plugin)
         scoped: JsonObject = {}
         for name, server in servers.items():
             if not isinstance(name, str):

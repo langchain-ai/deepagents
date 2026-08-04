@@ -15,20 +15,22 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 from deepagents_code import theme
+from deepagents_code.approval_mode import YOLO_WARNING_KEY
 from deepagents_code.config import get_glyphs, is_ascii_mode
 
 logger = logging.getLogger(__name__)
 
 # Warning keys and their user-facing labels.
-# Checked = warning is shown at startup (not suppressed). Unchecked = suppressed.
+# Checked = warning is shown (not suppressed). Unchecked = suppressed.
 WARNING_TOGGLES: list[tuple[str, str]] = [
     ("ripgrep", "Warn when ripgrep is not installed"),
     ("tavily", "Warn when TAVILY_API_KEY is not set (web search)"),
+    (YOLO_WARNING_KEY, "Warn when YOLO mode is active (no approval review)"),
 ]
 
 
 class NotificationSettingsScreen(ModalScreen[None]):
-    """Modal dialog for managing startup warning preferences.
+    """Modal dialog for managing warning preferences.
 
     Each checkbox maps to a key in `[warnings].suppress` in
     `~/.deepagents/config.toml`. Toggling a checkbox immediately
@@ -52,7 +54,6 @@ class NotificationSettingsScreen(ModalScreen[None]):
     CSS = """
     NotificationSettingsScreen {
         align: center middle;
-        background: transparent;
     }
 
     NotificationSettingsScreen > VerticalGroup {
@@ -115,7 +116,7 @@ class NotificationSettingsScreen(ModalScreen[None]):
                 )
             help_text = (
                 f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab navigate"
-                f" {glyphs.bullet} Space toggle"
+                f" {glyphs.bullet} Space/Enter toggle"
                 f" {glyphs.bullet} Esc close"
             )
             yield Static(help_text, classes="ns-help")
@@ -155,6 +156,12 @@ class NotificationSettingsScreen(ModalScreen[None]):
                 )
                 ok = False
             if not ok:
+                # Roll the box back to what is actually on disk. Leaving it
+                # showing the requested state would claim a warning is armed
+                # when it is still suppressed — the unsafe direction to lie in.
+                # `prevent` keeps the rollback from re-entering this handler.
+                with event.checkbox.prevent(Checkbox.Changed):
+                    event.checkbox.value = not enabled
                 self.app.notify(
                     "Could not save notification preference. "
                     "Check file permissions for ~/.deepagents/config.toml.",

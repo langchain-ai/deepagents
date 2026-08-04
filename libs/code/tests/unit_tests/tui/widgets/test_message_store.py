@@ -43,6 +43,37 @@ class TestMessageData:
         assert restored._content == "Hello, world!"
         assert restored.id == "test-user-1"
 
+    def test_user_message_roundtrip_preserves_expansion(self):
+        """An expanded long prompt stays expanded across virtualization."""
+        original = UserMessage("A" * 12_000, id="test-user-long")
+        original._expanded = True
+
+        data = MessageData.from_widget(original)
+        assert data.user_expanded is True
+
+        restored = data.to_widget()
+        assert isinstance(restored, UserMessage)
+        assert restored._deferred_expanded is True
+
+    def test_user_message_roundtrip_preserves_detect_mode(self):
+        """`detect_mode=False` survives, so a literal leading slash stays literal."""
+        original = UserMessage("/not/a/command", id="test-user-path", detect_mode=False)
+
+        data = MessageData.from_widget(original)
+        assert data.user_detect_mode is False
+
+        restored = data.to_widget()
+        assert isinstance(restored, UserMessage)
+        assert restored._detect_mode is False
+
+    def test_user_message_roundtrip_defaults_to_collapsed(self):
+        """A prompt the user never expanded rehydrates collapsed."""
+        original = UserMessage("B" * 12_000, id="test-user-collapsed")
+
+        restored = MessageData.from_widget(original).to_widget()
+        assert isinstance(restored, UserMessage)
+        assert restored._deferred_expanded is False
+
     def test_assistant_message_roundtrip(self):
         """Test AssistantMessage serialization and deserialization."""
         original = AssistantMessage(
@@ -176,7 +207,7 @@ class TestMessageData:
         or `to_widget` would silently downgrade rehydrated `/version` extras
         tables to plain-text rendering.
         """
-        from deepagents_code.tui.widgets.messages import _MutedRichMarkdown
+        from textual.content import Content
 
         markdown_source = (
             "### Installed optional dependencies\n"
@@ -195,8 +226,11 @@ class TestMessageData:
         restored = data.to_widget()
         assert isinstance(restored, AppMessage)
         assert restored._is_markdown is True
-        rendered = restored._Static__content  # ty: ignore
-        assert isinstance(rendered, _MutedRichMarkdown)
+        # Markdown renders to selectable `Content` (not a raw Rich renderable)
+        # so the rehydrated extras table stays copyable.
+        rendered = restored.render()
+        assert isinstance(rendered, Content)
+        assert "langchain-anthropic" in rendered.plain
 
     def test_diff_message_roundtrip(self):
         """Test DiffMessage serialization and deserialization."""

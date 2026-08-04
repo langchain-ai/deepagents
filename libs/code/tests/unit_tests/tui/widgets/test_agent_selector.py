@@ -464,3 +464,23 @@ class TestAgentSelectorSetDefaultErrorPaths:
                 prompt = str(option_list.get_option_at_index(i).prompt)
                 assert "(default)" not in prompt
                 assert "default)" not in prompt
+
+
+class TestAgentSelectorBackdrop:
+    """Tests for the modal's dimming backdrop."""
+
+    async def test_dims_underlying_content(self) -> None:
+        """The modal must inherit the translucent `ModalScreen` backdrop.
+
+        Like the model and thread selectors, `/agents` should composite and
+        dim the content underneath rather than render a fully transparent
+        (non-dimming) overlay. The alpha is in (0, 1) only under a non-ansi
+        theme, so pin `textual-dark`.
+        """
+        async with AgentSelectorTestApp().run_test() as pilot:
+            app = _app(pilot)
+            app.theme = "textual-dark"
+            await pilot.pause()
+            app.show_selector()
+            await pilot.pause()
+            assert 0 < app.screen.styles.background.a < 1

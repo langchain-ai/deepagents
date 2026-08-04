@@ -20,11 +20,13 @@ from deepagents_code.mcp_login_service import (
 if TYPE_CHECKING:
     import pytest
 
+    from deepagents_code.json_types import JsonValue
+
 
 def _project_approval_config(
     project_root: Path,
     name: str,
-    server: object,
+    server: JsonValue,
     *,
     disabled: list[str] | None = None,
 ) -> str:

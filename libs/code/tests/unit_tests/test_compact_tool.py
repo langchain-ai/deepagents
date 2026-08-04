@@ -269,7 +269,7 @@ class TestCLICompactionMiddleware:
         invoke.assert_called_once()
         handler.assert_awaited_once()
         summarization._aoffload_to_backend.assert_not_awaited()
-        summarization._acreate_summary.assert_not_awaited()
+        summarization.model.ainvoke.assert_not_awaited()
 
     async def test_force_bypasses_sdk_eligibility_gate(self) -> None:
         """Forced compaction partitions directly even below the proactive gate."""

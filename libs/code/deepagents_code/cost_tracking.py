@@ -34,12 +34,17 @@ updater starts refreshing the catalog from upstream hourly (see
 `_start_price_updater`); `DEEPAGENTS_CODE_PRICES_AUTO_UPDATE=0` or
 `[update].prices_auto_update = false` in `config.toml` opts out, and
 `DEEPAGENTS_CODE_OFFLINE` suppresses it along with every other network fetch.
-Unsupported models and malformed usage return `None`; pricing must never
-interrupt a model turn.
+When neither the bundled nor the auto-updated catalog covers a model, a local
+override catalog is consulted as a fallback-on-miss (see `_override_price`):
+a maintainer-curated file shipped as package data plus the user's own
+`~/.deepagents/prices.json`, in that precedence order. Unsupported models and
+malformed usage return `None`; pricing must never interrupt a model turn.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import json
 import logging
 import math
 import operator
@@ -65,10 +70,12 @@ from deepagents_code._env_vars import OFFLINE, is_env_truthy
 from deepagents_code.resume_state import ResumeState
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from uuid import UUID
 
     from genai_prices import UpdatePrices
     from genai_prices.data_snapshot import DataSnapshot
+    from genai_prices.types import AbstractUsage, Provider
     from langchain_core.outputs import LLMResult
     from langgraph.runtime import Runtime
 
@@ -528,6 +535,298 @@ def pricing_data_available() -> bool:
     return not (_PRICING_UNAVAILABLE or _PRICING_CONTRACT_BROKEN)
 
 
+_BUNDLED_OVERRIDES_RESOURCE = "bundled_prices.json"
+"""Package-data resource holding the maintainer-curated pricing overrides.
+
+Maintained as a stopgap for models no released genai-prices covers yet. JSON
+has no comments, so the maintenance policy lives beside the data in
+`bundled_prices.README.md`: every entry must link the upstream genai-prices
+PR/issue covering the model, and must be removed once a released genai-prices
+carries it. It ships as an empty provider array until the first such stopgap.
+"""
+
+_USER_OVERRIDES_FILENAME = "prices.json"
+"""Override filename under the user config directory (`~/.deepagents`).
+
+Resolved through `model_config.DEFAULT_CONFIG_DIR` rather than a path spelled
+out here, so the overrides live wherever that helper puts the rest of the
+user-level configuration.
+"""
+
+_OVERRIDES_LOCK = threading.Lock()
+"""Serializes the lazy build of `_PRICE_OVERRIDES`.
+
+Acquired for the same reason as `_PRICE_UPDATER_LOCK`: `estimate_cost` runs
+both on the event loop and on executor threads, and an unguarded load would
+parse and validate both files once per concurrent caller.
+"""
+
+_PRICE_OVERRIDES: tuple[Provider, ...] | None = None
+"""Merged override providers, or `None` until the first `LookupError` fallback.
+
+Set under `_OVERRIDES_LOCK` and read without it: the tuple is replaced whole
+rather than mutated, so a reader either sees the last complete build or none.
+"""
+
+
+def _read_override_source(path: Path | None, *, resource: bool) -> list[Any] | None:
+    """Read one override catalog, returning `None` when it cannot be used.
+
+    A missing or empty file is the normal case for the user source, so it is
+    silent. Anything else -- malformed JSON, a payload that is not the provider
+    array upstream publishes, an unreadable file -- is warned about once per
+    process and the source is ignored, because pricing must never interrupt a
+    model turn.
+
+    Args:
+        path: Filesystem path for the user source; `None` selects the built-in
+            package resource.
+        resource: Whether *path* names a package resource instead. Split this
+            way because `importlib.resources` and `Path` share no read API.
+
+    Returns:
+        The decoded provider array, or `None` when the source yields nothing.
+    """
+    label = (
+        f"package resource {_BUNDLED_OVERRIDES_RESOURCE!r}"
+        if resource
+        else f"override file {str(path)!r}"
+    )
+    try:
+        if resource:
+            from importlib.resources import files
+
+            text = (
+                files("deepagents_code")
+                .joinpath(_BUNDLED_OVERRIDES_RESOURCE)
+                .read_text(encoding="utf-8")
+            )
+        else:
+            if path is None:
+                return None
+            text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except Exception:
+        logger.warning(
+            "Could not read the pricing overrides in %s; ignoring that source",
+            label,
+            exc_info=True,
+        )
+        return None
+    if not text.strip():
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning(
+            "Could not parse the pricing overrides in %s as JSON; ignoring that source",
+            label,
+            exc_info=True,
+        )
+        return None
+    if not isinstance(payload, list):
+        logger.warning(
+            "Ignoring the pricing overrides in %s: the payload must be an array "
+            "of providers, the same schema as upstream's data.json",
+            label,
+        )
+        return None
+    return payload
+
+
+def _merge_override_providers(
+    user_providers: Sequence[Provider], built_in_providers: Sequence[Provider]
+) -> tuple[Provider, ...]:
+    """Merge the two override sources, user entries winning on conflict.
+
+    Conflict means the same `(provider id, model id)` pair, so an entire
+    built-in provider drops out only when every one of its models collides
+    with the user file.
+
+    Args:
+        user_providers: Providers parsed from the user's `prices.json`.
+        built_in_providers: Providers parsed from the bundled override catalog.
+
+    Returns:
+        The user providers followed by the non-conflicting built-ins.
+    """
+    overridden = {
+        (provider.id, model.id)
+        for provider in user_providers
+        for model in provider.models
+    }
+    kept: list[Provider] = []
+    for provider in built_in_providers:
+        models = [
+            model
+            for model in provider.models
+            if (provider.id, model.id) not in overridden
+        ]
+        if models:
+            kept.append(dataclasses.replace(provider, models=models))
+    return (*user_providers, *kept)
+
+
+def _price_overrides() -> tuple[Provider, ...]:
+    """Load and merge both override catalogs, once per process.
+
+    Parsed with `genai_prices.types._providers_from_raw`, the same private
+    helper `UpdatePrices.fetch` uses for the hourly catalog. The genai-prices
+    pin is `<0.2.0`, so depending on that private name is acceptable here --
+    but a validation failure is treated exactly like the
+    `_PRICING_CONTRACT_BROKEN` guard treats a `Usage` rejection: log once,
+    disable that source, never crash pricing. Both sources use the raw
+    provider-array schema of upstream's `prices/new_data/v2/data.json`, so an
+    entry is copy-pasteable into a genai-prices PR.
+
+    Returns:
+        The merged providers, user file first; empty when neither source
+            yields anything usable.
+    """
+    global _PRICE_OVERRIDES  # noqa: PLW0603
+    with _OVERRIDES_LOCK:
+        if _PRICE_OVERRIDES is not None:
+            return _PRICE_OVERRIDES
+        # Same private helper `UpdatePrices.fetch` parses the hourly catalog
+        # with; the `<0.2.0` genai-prices pin makes depending on it acceptable.
+        from genai_prices.types import _providers_from_raw  # noqa: PLC2701
+
+        from deepagents_code.model_config import DEFAULT_CONFIG_DIR
+
+        parsed: list[list[Provider]] = []
+        for path, resource in (
+            (DEFAULT_CONFIG_DIR / _USER_OVERRIDES_FILENAME, False),
+            (None, True),
+        ):
+            raw = _read_override_source(path, resource=resource)
+            if raw is None:
+                parsed.append([])
+                continue
+            label = (
+                f"override file {str(path)!r}"
+                if not resource
+                else f"package resource {_BUNDLED_OVERRIDES_RESOURCE!r}"
+            )
+            try:
+                parsed.append(_providers_from_raw(raw))
+            except Exception:
+                logger.warning(
+                    "Ignoring the pricing overrides in %s: the entries failed "
+                    "validation against the genai-prices provider schema",
+                    label,
+                    exc_info=True,
+                )
+                parsed.append([])
+        _PRICE_OVERRIDES = _merge_override_providers(*parsed)
+        return _PRICE_OVERRIDES
+
+
+def _find_override_model(
+    providers: Sequence[Provider], provider_id: str | None, model_ref: str
+) -> tuple[Provider, Any] | None:
+    """Search the override catalog the way `calc_price` searches its own.
+
+    A `provider_id` narrows the search to the matching provider when one
+    matches, mirroring `DataSnapshot.find_provider`. But where the snapshot
+    raises on an unmatched `provider_id`, the overrides fall through to
+    inference: LangChain provider names (and `_PROVIDER_ALIASES` keys) do not
+    always line up with genai-prices ids, and this is a last-resort catalog.
+    Inference tries a `model_match` claim first -- as the snapshot does --
+    then sweeps every provider's models, so entries under a provider with no
+    `model_match` stay reachable.
+
+    Args:
+        providers: The merged override providers.
+        provider_id: genai-prices provider identifier, or `None` to infer.
+        model_ref: Model identifier used for the request.
+
+    Returns:
+        The `(provider, model)` pair, or `None` on an override miss.
+    """
+    model_key = model_ref.lower()
+    candidates: Sequence[Provider] = providers
+    if provider_id is not None:
+        from genai_prices.data_snapshot import find_provider_by_id
+
+        if provider := find_provider_by_id(list(providers), provider_id):
+            candidates = (provider,)
+        else:
+            matched = [
+                provider
+                for provider in providers
+                if provider.model_match is not None
+                and provider.model_match.is_match(model_key)
+            ]
+            if matched:
+                candidates = matched
+    else:
+        matched = [
+            provider
+            for provider in providers
+            if provider.model_match is not None
+            and provider.model_match.is_match(model_key)
+        ]
+        if matched:
+            candidates = matched
+    for provider in candidates:
+        # `all_providers` enables the one-step `fallback_model_providers` hop,
+        # the same resolution a natively cataloged model gets.
+        if model := provider.find_model(model_ref, all_providers=list(providers)):
+            return provider, model
+    return None
+
+
+def _override_price(
+    usage: AbstractUsage, model_ref: str, provider_id: str | None
+) -> float | None:
+    """Price one request from the override catalog after a primary miss.
+
+    Pricing goes through `ModelInfo.calc_price` with the already-built `Usage`,
+    never hand-rolled arithmetic, so the cache/audio/reasoning bucket
+    decomposition behaves identically to a natively cataloged model. The
+    catalog lives outside the snapshot mechanism on purpose: the hourly
+    auto-update wholesale-replaces the custom snapshot, and anything installed
+    through `set_custom_snapshot` would be clobbered with it.
+
+    Args:
+        usage: The `Usage` object already built for this request.
+        model_ref: Model identifier used for the request.
+        provider_id: genai-prices provider identifier, or `None` to infer.
+
+    Returns:
+        Estimated cost in USD, or `None` when no override covers the model or
+            override loading itself failed. Nothing here may raise.
+    """
+    try:
+        providers = _price_overrides()
+        if not providers:
+            return None
+        found = _find_override_model(providers, provider_id, model_ref)
+        if found is None:
+            return None
+        provider, model = found
+        price = model.calc_price(usage, provider)
+    except Exception:
+        logger.debug(
+            "Override pricing failed for model=%r provider_id=%r",
+            model_ref,
+            provider_id,
+            exc_info=True,
+        )
+        return None
+    # DEBUG rather than INFO because it fires per request, but this is the
+    # signal to pursue the upstream addition: a model billed from the override
+    # catalog is one genai-prices does not cover yet.
+    logger.debug(
+        "Priced model=%r provider_id=%r from the pricing override catalog; "
+        "upstream genai-prices has no rates for it",
+        model_ref,
+        provider_id,
+    )
+    return float(price.total_price)
+
+
 def _load_pricing() -> tuple[Any, Any] | None:
     """Import `genai-prices` lazily, tracking whether it is currently loadable.
 
@@ -775,7 +1074,14 @@ def estimate_cost(
     except LookupError:
         # The catalog publishes no rates for this model or provider. Ordinary,
         # not actionable, and specifically not a broken install -- so it must
-        # leave `_PRICING_CONTRACT_BROKEN` alone.
+        # leave `_PRICING_CONTRACT_BROKEN` alone. Before giving up, consult the
+        # override catalogs. Fallback-on-miss only: a successful primary lookup
+        # never reaches them, so upstream rates always win and a built-in entry
+        # becomes dead weight the day a released genai-prices ships the model,
+        # with no migration needed.
+        override_cost = _override_price(usage, model_ref, provider_id)
+        if override_cost is not None:
+            return override_cost
         logger.debug(
             "Cost estimate unavailable for model=%r provider=%r",
             model_ref,

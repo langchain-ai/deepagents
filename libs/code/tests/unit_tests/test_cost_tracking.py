@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import builtins
 import inspect
+import json
 import logging
 import subprocess
 import sys
@@ -56,8 +57,10 @@ from deepagents_code.cost_tracking import (
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
+    from pathlib import Path
 
     from genai_prices import UpdatePrices
+    from genai_prices.types import Provider
     from langchain_core.callbacks import CallbackManagerForLLMRun
     from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
@@ -66,6 +69,15 @@ if TYPE_CHECKING:
 KNOWN_MODEL = "claude-sonnet-4-5"
 KNOWN_PROVIDER = "anthropic"
 THREAD_ID = "thread-under-test"
+
+_OVERRIDE_MODEL = "dcode-override-test-model"
+"""Model only the override fixtures catalog; absent from genai-prices itself."""
+
+_OVERRIDE_USER_MODEL = "dcode-override-user-model"
+"""Model only the user-file fixture catalogs."""
+
+_OVERRIDE_CONFLICT_MODEL = "dcode-override-conflict-model"
+"""Model both override fixtures catalog, at deliberately different rates."""
 
 
 @pytest.fixture(autouse=True)
@@ -831,6 +843,320 @@ class TestEstimateCost:
             text=True,
         )
         assert result.returncode == 0, result.stderr
+
+
+def _override_catalog(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build a one-provider override catalog in upstream's raw schema."""
+    return [
+        {
+            "id": "dcode-test",
+            "name": "dcode test overrides",
+            "api_pattern": "https://api\\.dcode-test\\.invalid",
+            # No `model_match`: inference would claim every unpriced model for
+            # this provider. The fixtures price with an explicit provider, so
+            # the omission only narrows the tests to the provider-id path.
+            "models": models,
+        }
+    ]
+
+
+def _override_model(
+    model_id: str,
+    prices: dict[str, float],
+    *,
+    match_prefix: str | None = None,
+) -> dict[str, Any]:
+    """Build one override model entry, exact- or prefix-matched."""
+    match = {"starts_with": match_prefix} if match_prefix else {"equals": model_id}
+    return {"id": model_id, "match": match, "prices": prices}
+
+
+def _write_user_prices(config_dir: Path, models: list[dict[str, Any]]) -> Path:
+    """Write a user `prices.json` into the isolated config directory."""
+    (config_dir / "prices.json").write_text(
+        json.dumps(_override_catalog(models)), encoding="utf-8"
+    )
+    return config_dir
+
+
+class TestPriceOverrides:
+    """Local pricing catalogs consulted after a primary `LookupError`."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_overrides(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> Iterator[Path]:
+        """Isolate the process-wide override cache and point the user file at tmp.
+
+        The cache is module-level and set once per process, so it is reset
+        around every test the way the other `cost_tracking` latches are. The
+        user-file path is redirected through the `DEFAULT_CONFIG_DIR` constant
+        the loader reuses, so the real `~/.deepagents/prices.json` can never
+        leak into a test. `raising=False` because `setdefault` makes an absent
+        attribute look patchable and then restore it as a plain instance
+        attribute; deleting that restore would mask whichever import actually
+        won. Yields the empty directory the user file goes in.
+        """
+        import deepagents_code.model_config
+
+        monkeypatch.setattr(cost_tracking, "_PRICE_OVERRIDES", None)
+        monkeypatch.setattr(
+            deepagents_code.model_config, "DEFAULT_CONFIG_DIR", tmp_path, raising=False
+        )
+        yield tmp_path
+        monkeypatch.setattr(cost_tracking, "_PRICE_OVERRIDES", None)
+
+    def _install_built_ins(
+        self, monkeypatch: pytest.MonkeyPatch, models: list[dict[str, Any]]
+    ) -> None:
+        """Point the built-in resource read at a fixture catalog.
+
+        The loader reads a real package resource, which cannot be swapped
+        cleanly per test, so its small read helper is what gets patched. The
+        user-source call delegates to the real helper so tests can combine
+        fixture built-ins with an on-disk user file.
+        """
+        raw = _override_catalog(models)
+        real_read = cost_tracking._read_override_source
+
+        def read(path: Path | None, *, resource: bool) -> list[Any] | None:
+            return raw if resource else real_read(path, resource=resource)
+
+        monkeypatch.setattr(cost_tracking, "_read_override_source", read)
+
+    def _install_user_file(self, tmp_path: Path, models: list[dict[str, Any]]) -> None:
+        """Drop a user `prices.json` into the isolated config directory."""
+        _write_user_prices(tmp_path, models)
+
+    def test_built_in_override_prices_a_model_the_catalog_lacks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The decomposition is genai-prices', not naive input/output math.
+
+        Every published bucket bills at its own rate, so the expected total is
+        computed bucket by bucket: 100 uncached input + 800 cache reads + 100
+        cache writes + 60 ordinary output + 40 reasoning output.
+        """
+        self._install_built_ins(
+            monkeypatch,
+            [
+                _override_model(
+                    _OVERRIDE_MODEL,
+                    {
+                        "input_mtok": 1.0,
+                        "output_mtok": 2.0,
+                        "cache_read_mtok": 0.1,
+                        "cache_write_mtok": 1.25,
+                        "output_reasoning_mtok": 0.5,
+                    },
+                )
+            ],
+        )
+        usage = _usage(cache_read=800, cache_write=100)
+        usage["output_token_details"] = {"reasoning": 40}
+
+        cost = estimate_cost(usage, _OVERRIDE_MODEL, "dcode-test")
+
+        expected = (
+            100 * 1.0 + 800 * 0.1 + 100 * 1.25 + 60 * 2.0 + 40 * 0.5
+        ) / 1_000_000
+        assert cost == pytest.approx(expected)
+
+    def test_built_in_override_prices_without_a_provider_id(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty provider searches every override provider's models."""
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+
+        assert estimate_cost(_usage(), _OVERRIDE_MODEL, "") == pytest.approx(
+            (1_000 * 1.0 + 100 * 2.0) / 1_000_000
+        )
+
+    def test_prefix_matched_override_prices_via_model_match_inference(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `model_match` provider claims inferred models, as upstream does."""
+        self._install_built_ins(
+            monkeypatch,
+            [
+                _override_model(
+                    _OVERRIDE_MODEL,
+                    {"input_mtok": 1.0, "output_mtok": 2.0},
+                    match_prefix="dcode-override-",
+                )
+            ],
+        )
+        # `find_provider_by_id` matches the id exactly only, so an unaliased
+        # LangChain provider resolves through the `model_match` inference path.
+        assert estimate_cost(_usage(), _OVERRIDE_MODEL, "unmatched-provider") == (
+            pytest.approx((1_000 * 1.0 + 100 * 2.0) / 1_000_000)
+        )
+
+    def test_user_file_prices_a_model_both_catalogs_lack(self, tmp_path: Path) -> None:
+        self._install_user_file(
+            tmp_path,
+            [
+                _override_model(
+                    _OVERRIDE_USER_MODEL, {"input_mtok": 4.0, "output_mtok": 8.0}
+                )
+            ],
+        )
+
+        assert estimate_cost(_usage(), _OVERRIDE_USER_MODEL, "dcode-test") == (
+            pytest.approx((1_000 * 4.0 + 100 * 8.0) / 1_000_000)
+        )
+
+    def test_user_file_beats_a_conflicting_built_in_entry(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Same `(provider id, model id)`: the user rate must be the one used."""
+        self._install_built_ins(
+            monkeypatch,
+            [
+                _override_model(
+                    _OVERRIDE_CONFLICT_MODEL,
+                    {"input_mtok": 100.0, "output_mtok": 2.0},
+                )
+            ],
+        )
+        self._install_user_file(
+            tmp_path,
+            [
+                _override_model(
+                    _OVERRIDE_CONFLICT_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0}
+                )
+            ],
+        )
+
+        assert estimate_cost(_usage(), _OVERRIDE_CONFLICT_MODEL, "dcode-test") == (
+            pytest.approx((1_000 * 1.0 + 100 * 2.0) / 1_000_000)
+        )
+
+    def test_overrides_are_not_consulted_when_the_primary_catalog_covers_the_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Upstream wins: a `calc_price` success never reaches the overrides."""
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(KNOWN_MODEL, {"input_mtok": 999.0, "output_mtok": 999.0})],
+        )
+        # The built-in fixture has no `model_match` and KNOWN_PROVIDER does not
+        # match its id, so were the overrides consulted the request would price
+        # at the absurd fixture rate instead of the real catalog one.
+        cost = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
+        assert cost is not None
+        assert cost < 0.01
+
+    def test_malformed_user_file_warns_once_and_built_ins_still_price(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+        (tmp_path / "prices.json").write_text("{not json", encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is not None
+
+        assert caplog.text.count("prices.json") == 1
+        assert "ignoring that source" in caplog.text
+        assert cost_tracking.pricing_data_available()
+
+    def test_schema_invalid_user_file_warns_once_and_built_ins_still_price(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+        (tmp_path / "prices.json").write_text(
+            json.dumps([{"id": "dcode-test", "bogus": True}]), encoding="utf-8"
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is not None
+
+        assert caplog.text.count("failed validation") == 1
+        assert cost_tracking.pricing_data_available()
+
+    def test_unreadable_user_file_warns_once_and_built_ins_still_price(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A directory where the file should be is the portable EISDIR case."""
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+        (tmp_path / "prices.json").mkdir()
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is not None
+
+        assert caplog.text.count("Could not read the pricing overrides") == 1
+        assert cost_tracking.pricing_data_available()
+
+    def test_invalid_overrides_do_not_touch_bundled_pricing_health(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A bad user file must not masquerade as a broken pricing install."""
+        (tmp_path / "prices.json").write_text("{not json", encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is not None
+
+        assert cost_tracking.pricing_data_available()
+
+    def test_a_missing_user_file_is_a_silent_no_op(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            assert estimate_cost(_usage(), "no-such-model-in-any-catalog", "") is None
+
+        assert "prices.json" not in caplog.text
+
+    def test_auto_update_snapshot_swap_cannot_clobber_overrides(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Composes with #5264: the hourly swap leaves override pricing intact.
+
+        Overrides live outside the snapshot mechanism precisely because
+        `UpdatePrices` wholesale-replaces the custom snapshot every refresh.
+        Installing an empty snapshot -- the most destructive thing an
+        auto-update can do to the primary catalog -- must not change where the
+        override rate comes from.
+        """
+        self._install_built_ins(
+            monkeypatch,
+            [_override_model(_OVERRIDE_MODEL, {"input_mtok": 1.0, "output_mtok": 2.0})],
+        )
+
+        before = estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test")
+
+        import genai_prices.data_snapshot
+
+        genai_prices.data_snapshot.set_custom_snapshot(
+            genai_prices.data_snapshot.DataSnapshot(providers=[], from_auto_update=True)
+        )
+        try:
+            after = estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test")
+        finally:
+            genai_prices.data_snapshot.set_custom_snapshot(None)
+
+        assert before is not None
+        assert after == pytest.approx(before)
 
 
 class TestPriceUpdater:

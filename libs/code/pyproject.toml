@@ -191,6 +191,9 @@ include = [
     "deepagents_code/**/*.py",
     "deepagents_code/**/*.md",
     "deepagents_code/**/*.tcss",
+    # Maintainer-curated pricing overrides consulted when the genai-prices
+    # catalog misses (see `cost_tracking._price_overrides`).
+    "deepagents_code/bundled_prices.json",
 ]
 
 [tool.hatch.build.targets.wheel.shared-data]

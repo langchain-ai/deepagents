@@ -358,6 +358,33 @@ function latestApplied({ comments, login, id, component, version }) {
 // limit keeps both readable. Applies to instructions only, not the command.
 const INSTRUCTIONS_MAX_LENGTH = 500;
 
+// Tokens that must never reach the override comment via the instructions echo.
+// parseOverrideComment locates the curated section by scanning for the first
+// CONTENT_START/CONTENT_END, and validateDraftOutput rejects MARKER_PREFIX and
+// `## [` for the same reason. Instructions containing any of these would let a
+// valid command corrupt the bot-authored comment it later echoes into, so
+// sanitizeInstructions strips them alongside the `@`/length handling. The full
+// content markers come before MARKER_PREFIX: stripping the prefix first would
+// leave `content-start -->` behind.
+const INSTRUCTIONS_FORBIDDEN = [CONTENT_START, CONTENT_END, MARKER_PREFIX];
+
+// Normalize maintainer instructions into a value safe to embed in the drafting
+// prompt and to echo back inside the parseable override comment. A `@` could
+// read as a second mention, reserved release-note markers or a `## [` heading
+// could corrupt the comment's parsers, and the length is capped — all three are
+// applied here so parseCommand and prepareDraft share one guarantee.
+function sanitizeInstructions(value) {
+  let text = String(value).split('@')[0];
+  for (const token of INSTRUCTIONS_FORBIDDEN) {
+    text = text.split(token).join(' ');
+  }
+  // Drop any `## [...]` version heading. Instructions collapse to a single line
+  // below, so this is not line-anchored — an inline occurrence would otherwise
+  // survive and render as a forged heading in the echoed comment.
+  text = text.replace(/## \[[^\]]*\]/g, ' ');
+  return text.replace(/\s+/g, ' ').trim().slice(0, INSTRUCTIONS_MAX_LENGTH);
+}
+
 // Distinguish "no command" from "ambiguous" (2+ commands) so the caller can stay
 // silent on a casual mention but explain a genuinely ambiguous one. Refusing to
 // guess between two commands is deliberate; the bot's own instructions mention
@@ -381,9 +408,7 @@ function parseCommand(body) {
   const fullPattern = new RegExp(`(?:^|[^A-Za-z0-9_-])${mention}\\s+(draft|apply)\\b([^\\n]*)`);
   const match = fullPattern.exec(normalize(body ?? ''));
   const command = match[1];
-  // A `@` inside instructions could read as a second mention, so strip `@` and
-  // everything after it; the command itself was matched before the remainder.
-  const rest = (match[2] ?? '').split('@')[0].trim().slice(0, INSTRUCTIONS_MAX_LENGTH);
+  const rest = sanitizeInstructions(match[2] ?? '');
   return { command, ambiguous: false, instructions: command === 'draft' ? rest : '' };
 }
 
@@ -637,12 +662,10 @@ async function prepareDraft({ github, owner, repo, number, expectedHead, runnerT
   // inside `work`; it must not be able to overwrite the state postDraft
   // re-validates the PR/head/component/version against.
   const state = path.join(runnerTemp, 'release-notes-draft-state.json');
-  // Sanitize instructions defensively: the `@` strip and length cap mirror
-  // parseCommand so a caller that passes raw comment text cannot smuggle a
-  // second command mention or an unbounded prompt into the drafting input. The
-  // release maintainer is trusted, but the input file crosses a process
-  // boundary into the model request, so keep the guarantee local.
-  const guidance = String(instructions).split('@')[0].trim().slice(0, INSTRUCTIONS_MAX_LENGTH);
+  // Re-sanitize here rather than trusting parseCommand's output: the input file
+  // crosses a process boundary into the model request, so keep the guarantee
+  // local regardless of what a caller passed.
+  const guidance = sanitizeInstructions(instructions);
   fs.writeFileSync(
     input,
     [
@@ -1227,6 +1250,7 @@ module.exports = {
   releaseTarget,
   releaseVersion,
   replaceVersionSection,
+  sanitizeInstructions,
   sha256,
   targetForComponent,
   validateDraftOutput,

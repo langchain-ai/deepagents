@@ -313,6 +313,32 @@ test('captures draft instructions from the command line only', () => {
   assert.equal(releaseNotes.instructionsFromComment(long).length, 500);
 });
 
+test('sanitizeInstructions strips tokens that would corrupt the override comment', () => {
+  // A valid command naming a reserved content marker must not echo that marker
+  // into the parseable comment before the real one (parseOverrideComment scans
+  // for the first occurrence).
+  assert.equal(
+    releaseNotes.sanitizeInstructions('mention <!-- release-notes-content-start --> here'),
+    'mention here',
+  );
+  // Stripping the shared marker prefix leaves inert text (no `<!-- release-notes-`
+  // remains), so no parser can match the residue.
+  assert.equal(
+    releaseNotes.sanitizeInstructions('use <!-- release-notes-content-end --> and <!-- release-notes-override -->'),
+    'use and override -->',
+  );
+  assert.ok(!releaseNotes.sanitizeInstructions('use <!-- release-notes-content-end --> and <!-- release-notes-override -->').includes('<!-- release-notes-'));
+  // A version heading forges a `## [` in the echo whether it is on its own line
+  // or inline (instructions collapse to one line, so both forms are stripped).
+  assert.equal(releaseNotes.sanitizeInstructions('notes\n## [1.2.3]\nmore'), 'notes more');
+  assert.equal(releaseNotes.sanitizeInstructions('mention ## [9.9.9] here'), 'mention here');
+  // The `@` strip, whitespace collapse, and length cap all apply together.
+  assert.equal(releaseNotes.sanitizeInstructions('  keep   it  short @bot now  '), 'keep it short');
+  assert.equal(releaseNotes.sanitizeInstructions('x'.repeat(600)).length, 500);
+  // Non-string input (a caller that did not pre-clean) is coerced, never throws.
+  assert.equal(releaseNotes.sanitizeInstructions(''), '');
+});
+
 test('trusts only marked comments from the configured bot identity', () => {
   const valid = overrideComment();
   const impostor = { ...overrideComment({ id: 11 }), user: { login: BOT.login, id: 99 } };

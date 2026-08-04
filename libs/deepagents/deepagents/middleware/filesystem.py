@@ -41,7 +41,9 @@ from deepagents.backends.protocol import (
     BackendProtocol,
     DeleteResult,
     EditResult,
+    ExecuteArtifact,
     ExecuteOffloadResult,
+    ExecuteResponse,
     FileData as FileData,  # Re-export for backwards compatibility
     FileInfo,
     GlobResult,
@@ -1538,7 +1540,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
     If the backend implements
     [`SandboxBackendProtocol`][deepagents.backends.protocol.SandboxBackendProtocol],
-    an `execute` tool is also added for running shell commands.
+    an `execute` tool is also added for running shell commands. Its results carry
+    [`ExecuteArtifact`][deepagents.backends.protocol.ExecuteArtifact] metadata on
+    `ToolMessage.artifact`.
 
     This middleware also automatically evicts large tool results to the file system when
     they exceed a token threshold, preventing context window saturation.
@@ -2763,6 +2767,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             parts.append("\n[Output was truncated due to size limits]")
         return "".join(parts)
 
+    @staticmethod
+    def _execute_artifact(response: ExecuteResponse) -> ExecuteArtifact:
+        """Build the `ExecuteArtifact` for an execute result.
+
+        See `ExecuteArtifact` for why an unknown exit code is omitted rather
+        than published as `None`.
+        """
+        if response.exit_code is None:
+            return {}
+        return {"exit_code": response.exit_code}
+
     def _interpret_capture_output(self, offload: ExecuteOffloadResult, capture_path: str, tool_call_id: str) -> str:
         """Build `ToolMessage` content from an `execute_with_offload` result."""
         response = offload.response
@@ -2847,10 +2862,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         max_inline_bytes=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict),
                         timeout=timeout,
                     )
+                    response = offload.response
                     content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id))
                 else:
-                    result = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
-                    content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
+                    response = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
+                    content = self._format_execute_output(response.output, response.exit_code, truncated=response.truncated)
             except NotImplementedError as e:
                 return ToolMessage(
                     content=f"Error: Execution not available. {e}",
@@ -2870,6 +2886,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 content=content,
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
+                artifact=self._execute_artifact(response),
                 status="success",
             )
 
@@ -2933,10 +2950,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         max_inline_bytes=NUM_CHARS_PER_TOKEN * cast("int", self._tool_token_limit_before_evict),
                         timeout=timeout,
                     )
+                    response = offload.response
                     content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id))
                 else:
-                    result = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
-                    content = self._format_execute_output(result.output, result.exit_code, truncated=result.truncated)
+                    response = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
+                    content = self._format_execute_output(response.output, response.exit_code, truncated=response.truncated)
             except NotImplementedError as e:
                 return ToolMessage(
                     content=f"Error: Execution not available. {e}",
@@ -2956,6 +2974,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 content=content,
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
+                artifact=self._execute_artifact(response),
                 status="success",
             )
 

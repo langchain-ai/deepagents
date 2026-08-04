@@ -763,11 +763,32 @@ class ExecuteResponse:
     exit_code: int | None = None
     """The process exit code.
 
-    0 indicates success, non-zero indicates failure.
+    0 indicates success, non-zero indicates failure. `None` means the exit code
+    could not be determined.
     """
 
     truncated: bool = False
     """Whether the output was truncated due to backend limitations."""
+
+
+class ExecuteArtifact(TypedDict):
+    """Machine-readable metadata attached to an `execute` tool result.
+
+    Carried on `ToolMessage.artifact` alongside the model-facing `content`, so
+    callers can react to shell failures. `artifact` is `None` instead when no
+    command ran -- a validation or unsupported-backend error, where
+    `ToolMessage.status` is `"error"`.
+
+    Note that `status` is `"success"` for any command that ran, including one
+    that exited non-zero: the model is expected to read the output and decide
+    what to do. Use `exit_code`, not `status`, to detect command failure.
+    """
+
+    exit_code: NotRequired[int]
+    """The command's exit status. 0 indicates success, non-zero indicates failure.
+
+    Omitted when the exit code could not be determined.
+    """
 
 
 @dataclass(frozen=True, slots=True)

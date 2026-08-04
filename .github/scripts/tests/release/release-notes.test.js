@@ -459,6 +459,9 @@ test('posts a bot-authored draft and refuses stale agent output', async t => {
   assert.match(calls.createComment[0].body, /```\n@release-bot apply\n```/);
   assert.match(calls.createComment[0].body, /```\n@release-bot draft\n```/);
   assert.match(calls.createComment[0].body, /only way to skip the curated-notes merge gate/);
+  // The header advertises the steering form so maintainers learn it from the draft.
+  assert.match(calls.createComment[0].body, /Keep the version heading intact\. To regenerate with steering/);
+  assert.match(calls.createComment[0].body, /@release-bot draft <instructions>/);
   // No instructions were recorded in state, so nothing is echoed.
   assert.ok(!calls.createComment[0].body.includes('Drafted with maintainer instructions'));
 

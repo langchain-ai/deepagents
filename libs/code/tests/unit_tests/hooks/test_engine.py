@@ -350,7 +350,7 @@ def test_snapshot_rejects_invalid_matcher_at_compile_time(tmp_path: Path) -> Non
                         "hooks": [{"type": "command", "command": "bad"}],
                     },
                     {
-                        "matcher": "logout",
+                        "matcher": "clear",
                         "hooks": [{"type": "command", "command": "good"}],
                     },
                     {
@@ -415,8 +415,8 @@ def test_snapshot_rejects_matcher_for_unmatchable_event() -> None:
             },
         ),
         (
-            SessionEndEvent(event=HookEvent.SESSION_END, cause=SessionEndCause.LOGOUT),
-            {"hook_event_name": "SessionEnd", "reason": "logout"},
+            SessionEndEvent(event=HookEvent.SESSION_END, cause=SessionEndCause.CLEAR),
+            {"hook_event_name": "SessionEnd", "reason": "clear"},
         ),
         (
             PermissionRequestEvent(
@@ -446,10 +446,9 @@ def test_snapshot_rejects_matcher_for_unmatchable_event() -> None:
             {"hook_event_name": "PreToolUse", "tool_use_id": "call-1"},
         ),
         (
-            PostToolUseEvent(
-                event=HookEvent.POST_TOOL_USE,
+            PostToolUseEvent.from_tool_result(
+                ToolMessage(content="done", tool_call_id="call-2"),
                 call=ToolCallData(id="call-2", name="Bash", args={}),
-                result=ToolMessage(content="done", tool_call_id="call-2"),
             ),
             {"hook_event_name": "PostToolUse", "tool_use_id": "call-2"},
         ),
@@ -568,10 +567,9 @@ def test_projects_native_tool_names_to_wire(tmp_path: Path) -> None:
 
     invocation = _invocation(
         tmp_path,
-        PostToolUseEvent.model_construct(
-            event=HookEvent.POST_TOOL_USE,
+        PostToolUseEvent.from_tool_result(
+            Command(update={"result": "done"}),
             call=ToolCallData(id="call-1", name="Bash", args={}),
-            result=Command(update={"result": "done"}),
         ),
     )
 
@@ -734,13 +732,12 @@ def test_adapts_native_tool_calls_to_wire(
 def test_serializes_native_tool_message_as_json(tmp_path: Path) -> None:
     invocation = _invocation(
         tmp_path,
-        PostToolUseEvent(
-            event=HookEvent.POST_TOOL_USE,
-            call=ToolCallData(id="call-1", name="Bash", args={}),
-            result=ToolMessage(
+        PostToolUseEvent.from_tool_result(
+            ToolMessage(
                 content=[{"type": "text", "text": "done"}],
                 tool_call_id="call-1",
             ),
+            call=ToolCallData(id="call-1", name="Bash", args={}),
         ),
     )
 
@@ -1194,10 +1191,9 @@ def test_reducer_covers_event_decision_shapes_and_loop_guards(tmp_path: Path) ->
             },
         ),
         (
-            PostToolUseEvent(
-                event=HookEvent.POST_TOOL_USE,
+            PostToolUseEvent.from_tool_result(
+                ToolMessage(content="done", tool_call_id="call"),
                 call=ToolCallData(id="call", name="Bash", args={}),
-                result=ToolMessage(content="done", tool_call_id="call"),
             ),
             {
                 "decision": "block",

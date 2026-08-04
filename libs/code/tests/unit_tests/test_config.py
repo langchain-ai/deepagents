@@ -830,6 +830,25 @@ class TestCreateModelProfileExtraction:
         assert result.context_limit == 200000
 
     @patch("langchain.chat_models.init_chat_model")
+    def test_attaches_configured_provider_to_model_metadata(
+        self, mock_init_chat_model: Mock
+    ) -> None:
+        """Every request should retain the provider selected at construction."""
+        from deepagents_code.cost_tracking import _CONFIGURED_PROVIDER_METADATA_KEY
+
+        mock_model = Mock()
+        mock_model.metadata = {"existing": "value"}
+        mock_model.profile = None
+        mock_init_chat_model.return_value = mock_model
+
+        result = create_model("anthropic:claude-sonnet-4-5")
+
+        assert result.model.metadata == {
+            "existing": "value",
+            _CONFIGURED_PROVIDER_METADATA_KEY: "anthropic",
+        }
+
+    @patch("langchain.chat_models.init_chat_model")
     def test_handles_missing_profile_gracefully(
         self, mock_init_chat_model: Mock
     ) -> None:
@@ -3639,6 +3658,19 @@ class TestQuietSdkLogging:
             # real SDK errors; the NullHandler alone keeps routine noise off the
             # last-resort stderr handler.
             assert logger.propagate is True
+
+    def test_covers_the_logger_genai_prices_actually_uses(self) -> None:
+        """The price updater's logger must be quieted under its real name.
+
+        Its background thread logs a failed hourly catalog refresh at ERROR.
+        Unhandled, that clears `logging.lastResort`'s WARNING threshold and
+        prints over the alternate-screen TUI once an hour for any offline or
+        proxied session. Reading the name off the module pins the coupling, so
+        an upstream rename fails here rather than in a user's terminal.
+        """
+        import genai_prices.update_prices
+
+        assert genai_prices.update_prices.logger.name in _QUIET_SDK_LOGGER_NAMES
 
     def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Repeated calls do not stack duplicate handlers."""

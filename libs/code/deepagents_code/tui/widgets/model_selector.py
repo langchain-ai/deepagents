@@ -65,64 +65,43 @@ from the per-provider sections below.
 
 
 _RECOMMENDED_MODELS: dict[str, str] = {
-    "anthropic:claude-opus-4-7": "Claude Opus 4.7",
     "anthropic:claude-opus-4-8": "Claude Opus 4.8",
     "anthropic:claude-opus-5": "Claude Opus 5",
     "anthropic:claude-sonnet-5": "Claude Sonnet 5",
+    "baseten:deepseek-ai/DeepSeek-V4-Flash-0731": "DeepSeek V4 Flash 0731",
     "baseten:deepseek-ai/DeepSeek-V4-Pro": "DeepSeek V4 Pro",
-    "baseten:moonshotai/Kimi-K2.7-Code": "Kimi K2.7 Code",
     "baseten:moonshotai/Kimi-K3": "Kimi K3",
     "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": "Nemotron 3 Ultra 550B A55B",
     "baseten:zai-org/GLM-5.2": "GLM 5.2",
     "baseten:zai-org/GLM-5.2-Fast": "GLM 5.2 Fast",
+    "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731": (
+        "DeepSeek V4 Flash 0731"
+    ),
     "fireworks:accounts/fireworks/models/deepseek-v4-pro": "DeepSeek V4 Pro",
     "fireworks:accounts/fireworks/models/glm-5p2": "GLM 5.2",
-    "fireworks:accounts/fireworks/models/kimi-k2p7-code": "Kimi K2.7 Code",
     "fireworks:accounts/fireworks/models/kimi-k3": "Kimi K3",
     "fireworks:accounts/fireworks/models/minimax-m3": "MiniMax-M3",
     "fireworks:accounts/fireworks/models/qwen3p7-plus": "Qwen 3.7 Plus",
     "google_genai:gemini-3.6-flash": "Gemini 3.6 Flash",
-    "google_genai:gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
     "meta:muse-spark-1.1": "Muse Spark 1.1",
     "ollama:deepseek-v4-flash:cloud": "DeepSeek V4 Flash",
     "ollama:deepseek-v4-pro:cloud": "DeepSeek V4 Pro",
     "ollama:glm-5.2:cloud": "GLM 5.2",
-    "ollama:kimi-k2.7-code:cloud": "Kimi K2.7 Code",
     "ollama:minimax-m3:cloud": "MiniMax-M3",
-    "openai:gpt-5.4": "GPT-5.4",
-    "openai:gpt-5.4-mini": "GPT-5.4 mini",
-    "openai:gpt-5.4-pro": "GPT-5.4 Pro",
-    "openai:gpt-5.5": "GPT-5.5",
-    "openai:gpt-5.5-pro": "GPT-5.5 Pro",
     "openai:gpt-5.6-luna": "GPT-5.6 Luna",
     "openai:gpt-5.6-sol": "GPT-5.6 Sol",
     "openai:gpt-5.6-terra": "GPT-5.6 Terra",
-    "openai_codex:gpt-5.2": "GPT-5.2",
-    "openai_codex:gpt-5.3-codex": "GPT-5.3 Codex",
-    "openai_codex:gpt-5.4": "GPT-5.4",
-    "openai_codex:gpt-5.4-mini": "GPT-5.4 mini",
-    "openai_codex:gpt-5.5": "GPT-5.5",
     "openai_codex:gpt-5.6-luna": "GPT-5.6 Luna",
     "openai_codex:gpt-5.6-sol": "GPT-5.6 Sol",
     "openai_codex:gpt-5.6-terra": "GPT-5.6 Terra",
-    "openrouter:anthropic/claude-opus-4.6": "Claude Opus 4.6",
-    "openrouter:anthropic/claude-opus-4.7": "Claude Opus 4.7",
-    "openrouter:anthropic/claude-opus-4.7-fast": "Claude Opus 4.7 Fast",
     "openrouter:anthropic/claude-opus-4.8": "Claude Opus 4.8",
     "openrouter:anthropic/claude-sonnet-5": "Claude Sonnet 5",
-    "openrouter:deepseek/deepseek-v4-flash": "DeepSeek V4 Flash",
+    "openrouter:deepseek/deepseek-v4-flash-0731": "DeepSeek V4 Flash 0731",
     "openrouter:deepseek/deepseek-v4-flash:free": "DeepSeek V4 Flash (free)",
     "openrouter:deepseek/deepseek-v4-pro": "DeepSeek V4 Pro",
     "openrouter:google/gemini-3.6-flash": "Gemini 3.6 Flash",
-    "openrouter:google/gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
-    "openrouter:moonshotai/kimi-k2.7-code": "Kimi K2.7 Code",
     "openrouter:moonshotai/kimi-k3": "Kimi K3",
     "openrouter:nvidia/nemotron-3-ultra-550b-a55b": "Nemotron 3 Ultra 550B A55B",
-    "openrouter:openai/gpt-5.4": "GPT-5.4",
-    "openrouter:openai/gpt-5.4-mini": "GPT-5.4 mini",
-    "openrouter:openai/gpt-5.4-pro": "GPT-5.4 Pro",
-    "openrouter:openai/gpt-5.5": "GPT-5.5",
-    "openrouter:openai/gpt-5.5-pro": "GPT-5.5 Pro",
     "openrouter:openrouter/fusion": "OpenRouter Fusion",
     "openrouter:qwen/qwen3.7-plus": "Qwen 3.7 Plus",
     "openrouter:z-ai/glm-5.2": "GLM 5.2",
@@ -136,11 +115,11 @@ Used by the onboarding picker (`curated=True`) and by the in-`/model`
 the spec keys; the names are a display fallback for `_get_model_display_name`
 when a provider package (and thus its profile `name`) is not installed — the
 common case for uninstalled recommendations and onboarding, where the raw
-model id (e.g. `accounts/fireworks/models/kimi-k2p7-code`) would otherwise
+model id (e.g. `accounts/fireworks/models/kimi-k3`) would otherwise
 show. When a profile is available its upstream `name` wins, so these stay a
 safety net rather than a second source of truth.
 
-Same model IDs may appear under multiple providers (e.g. Kimi K2.7 Code via
+Same model IDs may appear under multiple providers (e.g. GLM 5.2 via
 `baseten`, `fireworks`, `ollama`, and `openrouter`) and are listed under each
 provider intentionally so the user can pick whichever provider they have
 credentials for.
@@ -265,7 +244,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             show=False,
             priority=True,
         ),
-        Binding("ctrl+n", "toggle_names", "Model IDs", show=False, priority=True),
+        # Description stays mode-neutral because the footer hint (see
+        # `_help_text`) flips with `_show_specs` while this string cannot.
+        Binding(
+            "ctrl+n", "toggle_names", "Toggle model IDs", show=False, priority=True
+        ),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
     ]
     """Key bindings for model navigation, selection, defaulting, and cancel.
@@ -393,6 +376,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         cli_profile_override: dict[str, Any] | None = None,
         *,
         curated: bool = False,
+        recommended_models: Mapping[str, str] | None = None,
+        include_recent_models: bool = True,
         title: str | None = None,
         description: str | Content | None = None,
         result_callback: Callable[[tuple[str, str] | None], None] | None = None,
@@ -410,6 +395,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 Merged on top of upstream + config.toml profiles so that app
                 overrides appear with `*` markers in the detail footer.
             curated: Whether to show a short, profile-ranked model subset.
+            recommended_models: Optional `provider:model` to display-name mapping
+                that replaces the standard recommendation set for this selector.
+            include_recent_models: Whether recent main-model picks should be
+                included in the recommended view.
             title: Optional title override for the selector.
             description: Optional description shown below the title.
             result_callback: Optional callback for selector results when the
@@ -420,6 +409,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._current_provider = current_provider
         self._cli_profile_override = cli_profile_override
         self._curated = curated
+        self._recommended_models = (
+            _RECOMMENDED_MODELS
+            if recommended_models is None
+            else dict(recommended_models)
+        )
+        self._include_recent_models = include_recent_models
         self._title = title
         self._description = description
         self._result_callback = result_callback
@@ -432,6 +427,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # to its raw `provider:model` spec (mirrors the `/theme` picker's
         # label/key toggle) so a user can read or copy the canonical id.
         self._show_specs = False
+        # True while the footer is displaying a Ctrl+S failure notice, so other
+        # footer writers (Ctrl+N) leave it alone until its restore timer fires.
+        self._help_error_shown = False
 
         self._unfiltered_models: list[tuple[str, str]] = []
         self._recent_specs: list[str] = []
@@ -491,6 +489,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         width, so the help `Static` is sized to grow (auto height) and wraps to
         two rows rather than clipping the trailing hints.
 
+        The Ctrl+N hint names what the next press *does* rather than the
+        current mode, so it reads "Ctrl+N IDs" while friendly names are shown
+        and "Ctrl+N names" once rows are flipped to raw `provider:model` specs.
+
         Returns:
             The bullet-separated help line.
         """
@@ -501,7 +503,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             "Enter select",
         ]
         if not self._curated:
-            parts.extend(("Ctrl+S set default", "Ctrl+R recommended", "Ctrl+N IDs"))
+            names_hint = "Ctrl+N names" if self._show_specs else "Ctrl+N IDs"
+            parts.extend(("Ctrl+S set default", "Ctrl+R recommended", names_hint))
         sep = f" {glyphs.bullet} "
         return sep.join(parts)
 
@@ -579,6 +582,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         *,
         include_uninstalled: bool = True,
         include_recent: bool = True,
+        recommended_models: Mapping[str, str] | None = None,
     ) -> _ModelData:
         """Gather model discovery data synchronously.
 
@@ -599,6 +603,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 startup default-fallback resolution writes its auto-detected
                 pick into the MRU, which would otherwise surface as a bogus
                 "Recent" entry the user never chose.
+            recommended_models: Recommendation set whose missing provider models
+                should be surfaced. `None` uses the standard model shortlist.
 
         Returns:
             A `_ModelData` bundle of the discovered models, default spec,
@@ -626,7 +632,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             existing_specs = {spec for spec, _ in all_models}
             installed_recommended: list[tuple[str, str]] = []
             uninstalled_recommended: list[tuple[str, str]] = []
-            for spec in sorted(_RECOMMENDED_MODELS):
+            recommendations = (
+                _RECOMMENDED_MODELS
+                if recommended_models is None
+                else recommended_models
+            )
+            for spec in sorted(recommendations):
                 if spec in existing_specs:
                     continue
                 provider = spec.split(":", 1)[0]
@@ -693,40 +704,55 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 models are installed so the screen is never empty.
         """
         if self._curated:
-            return self._curate_models(all_models)
+            return self._curate_models(
+                all_models,
+                recommended_models=self._recommended_models,
+            )
         if self._recommended_only:
-            curated = self._curate_models(all_models)
+            curated = self._curate_models(
+                all_models,
+                recommended_models=self._recommended_models,
+            )
             curated_specs = {spec for spec, _ in curated}
             # Order follows all_models (insertion), not MRU; _update_display
             # rebuilds visual order by iterating self._recent_specs directly.
-            recent_extra = [
-                (spec, provider)
-                for spec, provider in all_models
-                if spec in self._recent_specs and spec not in curated_specs
-            ]
+            recent_extra = (
+                [
+                    (spec, provider)
+                    for spec, provider in all_models
+                    if spec in self._recent_specs and spec not in curated_specs
+                ]
+                if self._include_recent_models
+                else []
+            )
             return [*recent_extra, *curated]
         return list(all_models)
 
     @staticmethod
     def _curate_models(
         all_models: list[tuple[str, str]],
+        *,
+        recommended_models: Mapping[str, str] | None = None,
     ) -> list[tuple[str, str]]:
-        """Return the curated onboarding list in the model switcher's order.
+        """Return the active recommendation list in model-switcher order.
 
-        Returns the eval-backed frontier subset when any of those models are
-        available. When none are, returns the full switcher list so onboarding
-        still surfaces every installed provider rather than a truncated slice.
+        When none of the recommendations are available, returns the full
+        switcher list so the selector never becomes empty.
 
         Args:
             all_models: Full list of `(provider:model, provider)` pairs.
+            recommended_models: Recommendation set to filter against. `None`
+                uses the standard model shortlist.
 
         Returns:
-            Curated model list for onboarding setup.
+            Models from the active recommendation set, or `all_models` when no
+            recommendation is available.
         """
+        recommendations = (
+            _RECOMMENDED_MODELS if recommended_models is None else recommended_models
+        )
         frontier = [
-            (spec, provider)
-            for spec, provider in all_models
-            if spec in _RECOMMENDED_MODELS
+            (spec, provider) for spec, provider in all_models if spec in recommendations
         ]
         return frontier or all_models
 
@@ -753,7 +779,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 self._load_model_data,
                 self._cli_profile_override,
                 include_uninstalled=True,
-                include_recent=not self._curated,
+                include_recent=self._include_recent_models and not self._curated,
+                recommended_models=self._recommended_models,
             )
         except Exception:
             logger.exception("Failed to load model data for /model selector")
@@ -1556,8 +1583,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         human-readable `name` (e.g. `'Claude Sonnet 5'`), which reads better
         than the raw model id. When no profile is loaded — the case for
         uninstalled recommendations and onboarding — falls back to the
-        hardcoded name in `_RECOMMENDED_MODELS`, then the model portion of the
-        spec, then the spec itself.
+        hardcoded name in the selector's active recommendation set, then the
+        model portion of the spec, then the spec itself.
 
         Args:
             model_spec: The `provider:model` string.
@@ -1574,7 +1601,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 name = profile.get("name")
                 if isinstance(name, str) and name:
                     return name
-        recommended = _RECOMMENDED_MODELS.get(model_spec)
+        recommended = self._recommended_models.get(model_spec)
         if recommended:
             return recommended
         parsed = ModelSpec.try_parse(model_spec)
@@ -1889,6 +1916,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                         f"bold {theme.get_theme_colors(self).error}",
                     )
                 )
+                self._help_error_shown = True
                 self.set_timer(3.0, self._restore_help_text)
         elif await asyncio.to_thread(save_default_model, model_spec):
             self._default_spec = model_spec
@@ -1906,10 +1934,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     f"bold {theme.get_theme_colors(self).error}",
                 )
             )
+            self._help_error_shown = True
             self.set_timer(3.0, self._restore_help_text)
 
     def _restore_help_text(self) -> None:
-        """Restore the default help text after a temporary message."""
+        """Restore the default help text after a temporary message.
+
+        Recomputes `_help_text()` rather than replaying a captured string, so
+        a timer scheduled before a Ctrl+N press still restores the hint for the
+        display mode that is current when it fires.
+        """
+        self._help_error_shown = False
         help_widget = self.query_one(".model-selector-help", Static)
         help_widget.update(self._help_text())
 
@@ -1962,11 +1997,24 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         toggle changes neither ordering nor selection, so a full rebuild is
         unnecessary — and stays available in curated/onboarding mode since it
         only affects presentation.
+
+        In standard mode the footer hint is rewritten so it advertises the mode
+        the next press switches to; curated mode omits the hint entirely, so
+        the refresh is a no-op there.
+
+        The refresh is skipped while a Ctrl+S *error* notice is on the footer,
+        since that notice is the only signal a save failed and the user may not
+        have read it yet. Successful Ctrl+S messages are clobbered freely. The
+        pending restore timer is never cancelled, but it is idempotent — it
+        re-renders `_help_text()` for whatever mode is current when it fires,
+        so an orphaned timer cannot resurrect a stale hint.
         """
         if not self._loaded:
             return
         self._show_specs = not self._show_specs
         self._relabel_options()
+        if not self._help_error_shown:
+            self._restore_help_text()
 
     def _relabel_options(self) -> None:
         """Rebuild each mounted row's label for the current display mode.

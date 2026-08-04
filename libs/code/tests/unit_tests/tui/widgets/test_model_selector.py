@@ -1,6 +1,6 @@
 """Tests for ModelSelectorScreen."""
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import MagicMock
@@ -62,7 +62,7 @@ def _seed_provider_credentials(
 
 _FILTER_TEST_MODELS: list[tuple[str, str]] = [
     ("anthropic:claude-sonnet-4-5", "anthropic"),
-    ("anthropic:claude-opus-4-7", "anthropic"),
+    ("anthropic:claude-opus-4-8", "anthropic"),
     ("anthropic:claude-haiku-4-5", "anthropic"),
     ("openai:gpt-4", "openai"),
     ("openai:gpt-5.5", "openai"),
@@ -365,6 +365,27 @@ class TestModelSelectorChrome:
 class TestRecommendedToggle:
     """Tests for the Ctrl+R recommended-only toggle in `/model`."""
 
+    def test_custom_recommendations_replace_standard_list(self) -> None:
+        """Specialized pickers should be able to supply their own shortlist."""
+        recommendations = {
+            "anthropic:claude-haiku-4-5": "Claude Haiku 4.5",
+        }
+        screen = ModelSelectorScreen(
+            recommended_models=recommendations,
+            include_recent_models=False,
+        )
+        screen._recent_specs = ["openai:gpt-5.5"]
+        models = [
+            ("anthropic:claude-haiku-4-5", "anthropic"),
+            ("openai:gpt-5.5", "openai"),
+        ]
+
+        assert screen._apply_subset(models) == models[:1]
+        assert (
+            screen._get_model_display_name("anthropic:claude-haiku-4-5")
+            == "Claude Haiku 4.5"
+        )
+
     async def test_default_view_is_recommended(self) -> None:
         """Opening `/model` should land on the curated recommended subset."""
         app = ModelSelectorTestApp()
@@ -381,13 +402,13 @@ class TestRecommendedToggle:
         """Typing a filter should search beyond the recommended subset."""
         screen = ModelSelectorScreen()
         screen._unfiltered_models = [
-            ("openai:gpt-5.5", "openai"),
+            ("openai:gpt-5.6-luna", "openai"),
             ("openai:gpt-4o", "openai"),
         ]
         screen._all_models = screen._apply_subset(screen._unfiltered_models)
 
         assert screen._recommended_only is True
-        assert screen._all_models == [("openai:gpt-5.5", "openai")]
+        assert screen._all_models == [("openai:gpt-5.6-luna", "openai")]
 
         screen._filter_text = "gpt-4o"
         screen._update_filtered_list()
@@ -397,12 +418,12 @@ class TestRecommendedToggle:
     def test_recent_codex_keeps_recommended_provider_order(self) -> None:
         """A recent Codex model should stay between OpenAI and OpenRouter."""
         screen = ModelSelectorScreen()
-        screen._recent_specs = ["openai_codex:gpt-5.5"]
+        screen._recent_specs = ["openai_codex:gpt-5.6-luna"]
         all_models = [
             ("anthropic:claude-sonnet-5", "anthropic"),
-            ("openai:gpt-5.5", "openai"),
-            ("openai_codex:gpt-5.5", "openai_codex"),
-            ("openrouter:openai/gpt-5.5", "openrouter"),
+            ("openai:gpt-5.6-luna", "openai"),
+            ("openai_codex:gpt-5.6-luna", "openai_codex"),
+            ("openrouter:anthropic/claude-sonnet-5", "openrouter"),
         ]
 
         providers = [provider for _, provider in screen._apply_subset(all_models)]
@@ -574,6 +595,118 @@ class TestNamesToggle:
             help_text = screen.query_one(".model-selector-help", Static)
             assert "Ctrl+N" in str(help_text.content)
 
+    async def test_help_text_names_toggle_hint_follows_display_mode(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The Ctrl+N footer hint advertises what the next press switches to."""
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+N IDs" in str(help_widget.content)
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            assert "Ctrl+N names" in str(help_widget.content)
+            assert "Ctrl+N IDs" not in str(help_widget.content)
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            assert "Ctrl+N IDs" in str(help_widget.content)
+            assert "Ctrl+N names" not in str(help_widget.content)
+
+    async def test_names_toggle_clobbers_ctrl_s_success_message(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pending Ctrl+S restore timer must not resurrect a stale hint.
+
+        Ctrl+N and Ctrl+S both write the footer. Toggling while a success
+        message is up replaces it immediately, and the message's uncancelled
+        3s timer must then restore the hint for the *new* mode — which only
+        holds because `_restore_help_text` recomputes rather than replaying a
+        string captured when the message was set.
+        """
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+        monkeypatch.setattr(model_selector, "save_default_model", lambda _spec: True)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            screen._default_spec = None
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert "Default set to" in str(help_widget.content)
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+            assert "Ctrl+N names" in str(help_widget.content)
+
+            # Stand in for the 3s timer the Ctrl+S message left pending.
+            screen._restore_help_text()
+            assert "Ctrl+N names" in str(help_widget.content)
+
+    async def test_names_toggle_preserves_ctrl_s_error_message(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+N must not wipe the only notice that saving the default failed."""
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+        monkeypatch.setattr(model_selector, "save_default_model", lambda _spec: False)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            screen._default_spec = None
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert "Failed to save default" in str(help_widget.content)
+
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+
+            # Rows still flip; only the footer refresh is held back.
+            assert screen._show_specs
+            assert "anthropic:claude-sonnet-5" in str(screen._option_widgets[0].content)
+            assert "Failed to save default" in str(help_widget.content)
+
+            screen._restore_help_text()
+            assert "Ctrl+N names" in str(help_widget.content)
+
     async def test_help_text_omits_names_toggle_in_curated_mode(self) -> None:
         """Onboarding's curated help footer should not mention Ctrl+N."""
         app = ModelSelectorTestApp()
@@ -609,6 +742,10 @@ class TestNamesToggle:
 
             assert screen._show_specs
             assert "anthropic:claude-sonnet-5" in str(screen._option_widgets[0].content)
+            # The toggle refreshes the footer, but curated mode advertises no
+            # Ctrl+N hint to begin with — the press must not leak one in.
+            help_widget = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+N" not in str(help_widget.content)
 
     async def test_show_specs_persists_across_filter_rebuild(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1553,21 +1690,21 @@ class TestModelSelectorFuzzyMatching:
     def test_fuzzy_matches_friendly_name_dotted_version(self) -> None:
         """A dotted version in the friendly name matches where the spec can't.
 
-        `anthropic:claude-opus-4-7` hyphenates its version, so the "4.7" token
-        cannot subsequence-match the spec. The friendly name "Claude Opus 4.7"
+        `anthropic:claude-opus-4-8` hyphenates its version, so the "4.8" token
+        cannot subsequence-match the spec. The friendly name "Claude Opus 4.8"
         (from the recommended list) supplies the dotted form.
         """
         screen = _model_selector_for_filtering()
-        screen._filter_text = "opus 4.7"
+        screen._filter_text = "opus 4.8"
         screen._update_filtered_list()
 
         specs = [spec for spec, _ in screen._filtered_models]
-        assert "anthropic:claude-opus-4-7" in specs, (
-            f"friendly name should let 'opus 4.7' match. Got: {specs}"
+        assert "anthropic:claude-opus-4-8" in specs, (
+            f"friendly name should let 'opus 4.8' match. Got: {specs}"
         )
 
     def test_fuzzy_dotted_version_needs_friendly_name(self) -> None:
-        """Negative control: without the friendly name, "4.7" can't match the spec.
+        """Negative control: without the friendly name, "4.8" can't match the spec.
 
         Pins that the previous test passes because of the folded-in name, not
         some incidental spec match — guarding the friendly-name search feature.
@@ -1575,15 +1712,15 @@ class TestModelSelectorFuzzyMatching:
         screen = _model_selector_for_filtering()
 
         # Neutralize the friendly name (return the hyphenated model portion, as
-        # the raw spec already carries) so "4.7" has no dotted form to match.
+        # the raw spec already carries) so "4.8" has no dotted form to match.
         screen._get_model_display_name = (  # ty: ignore[invalid-assignment]
             lambda spec: spec.split(":", 1)[-1]
         )
-        screen._filter_text = "opus 4.7"
+        screen._filter_text = "opus 4.8"
         screen._update_filtered_list()
 
         specs = [spec for spec, _ in screen._filtered_models]
-        assert "anthropic:claude-opus-4-7" not in specs
+        assert "anthropic:claude-opus-4-8" not in specs
 
     def test_fuzzy_matches_provider_friendly_label(self) -> None:
         """The provider display label — not just the key — is searchable.
@@ -1728,7 +1865,7 @@ class TestFilteredModelsWidgetSync:
         to match so that _update_footer looks up the correct model for the
         highlighted widget index.
         """
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         # Simulate score-sorted filtered list that interleaves providers
         screen._filtered_models = [
             ("openai:gpt-5", "openai"),
@@ -1778,7 +1915,7 @@ class TestAvailabilityOrdering:
 
     def test_provider_availability_rank_orders_states(self) -> None:
         """Usable < unknown < missing < not-installed, regardless of auth."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._install_extras = {"baseten": "baseten"}
         rank = screen._provider_availability_rank
 
@@ -2046,21 +2183,21 @@ class TestCuratedModelSelection:
     def test_curated_models_filter_frontier_in_default_order(self) -> None:
         """Onboarding curation should preserve the model switcher's order."""
         all_models = [
-            ("openai:gpt-5.5", "openai"),
+            ("openai:gpt-5.6-luna", "openai"),
             ("anthropic:claude-sonnet-4-5", "anthropic"),
-            ("openai:gpt-5.4", "openai"),
-            ("anthropic:claude-opus-4-7", "anthropic"),
-            ("google_genai:gemini-3.1-pro-preview", "google_genai"),
+            ("openai:gpt-5.6-sol", "openai"),
+            ("anthropic:claude-opus-5", "anthropic"),
+            ("google_genai:gemini-3.6-flash", "google_genai"),
             ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
         curated = ModelSelectorScreen._curate_models(all_models)
 
         assert curated == [
-            ("openai:gpt-5.5", "openai"),
-            ("openai:gpt-5.4", "openai"),
-            ("anthropic:claude-opus-4-7", "anthropic"),
-            ("google_genai:gemini-3.1-pro-preview", "google_genai"),
+            ("openai:gpt-5.6-luna", "openai"),
+            ("openai:gpt-5.6-sol", "openai"),
+            ("anthropic:claude-opus-5", "anthropic"),
+            ("google_genai:gemini-3.6-flash", "google_genai"),
             ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
@@ -2418,7 +2555,7 @@ class TestGetModelStatus:
 
     def test_returns_status_when_present(self) -> None:
         """Status is returned when profile entry has the key."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {
             "anthropic:old-model": ModelProfileEntry(
                 profile={"status": "deprecated"},
@@ -2429,13 +2566,13 @@ class TestGetModelStatus:
 
     def test_returns_none_when_no_profile_entry(self) -> None:
         """None is returned when model spec is not in profiles."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {}
         assert screen._get_model_status("anthropic:missing") is None
 
     def test_returns_none_when_no_status_key(self) -> None:
         """None is returned when profile exists but has no status key."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {
             "anthropic:model": ModelProfileEntry(
                 profile={"max_input_tokens": 200000},
@@ -2446,7 +2583,7 @@ class TestGetModelStatus:
 
     def test_returns_none_when_profile_empty(self) -> None:
         """None is returned when profile dict is empty."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {
             "anthropic:model": ModelProfileEntry(
                 profile={},
@@ -2456,12 +2593,45 @@ class TestGetModelStatus:
         assert screen._get_model_status("anthropic:model") is None
 
 
+def _bare_selector() -> ModelSelectorScreen:
+    """Build an uninitialized selector with just the display-name dependencies.
+
+    `_get_model_display_name` is a pure lookup over `_profiles` and
+    `_recommended_models`, so these tests skip `__init__` (which needs a running
+    app). Both attributes are set explicitly: the screen must not carry a
+    fallback to the *main-model* recommendation set, since the classifier
+    selector passes its own and would otherwise be labelled from the wrong one.
+    """
+    from deepagents_code.tui.widgets import model_selector
+
+    screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+    screen._recommended_models = model_selector._RECOMMENDED_MODELS
+    return screen
+
+
 class TestGetModelDisplayName:
     """Tests for _get_model_display_name resolution."""
 
+    def test_uses_the_injected_recommendation_set(self) -> None:
+        """A caller-supplied set is used, not the main-model default.
+
+        `/auto model` passes `_AUTO_CLASSIFIER_RECOMMENDED_MODELS`, so falling
+        back to the main-model set would label classifier rows from the wrong
+        catalog.
+        """
+        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen._profiles = {}
+        screen._recommended_models = {"openai:tiny": "Tiny Reviewer"}
+
+        assert screen._get_model_display_name("openai:tiny") == "Tiny Reviewer"
+        # A spec only in the main-model catalog must not resolve here.
+        assert screen._get_model_display_name("anthropic:claude-opus-5") == (
+            "claude-opus-5"
+        )
+
     def test_returns_profile_name_when_present(self) -> None:
         """The human-readable profile name wins over the raw model id."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {
             "anthropic:claude-sonnet-4-5": ModelProfileEntry(
                 profile={"name": "Claude Sonnet 4.5"},
@@ -2475,7 +2645,7 @@ class TestGetModelDisplayName:
 
     def test_falls_back_to_model_id_when_no_name(self) -> None:
         """A profile without a `name` key falls back to the model portion."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {
             "anthropic:claude-sonnet-4-5": ModelProfileEntry(
                 profile={"max_input_tokens": 200000},
@@ -2490,7 +2660,7 @@ class TestGetModelDisplayName:
     @pytest.mark.parametrize(
         ("spec", "name"),
         [
-            ("fireworks:accounts/fireworks/models/kimi-k2p7-code", "Kimi K2.7 Code"),
+            ("fireworks:accounts/fireworks/models/kimi-k3", "Kimi K3"),
             ("meta:muse-spark-1.1", "Muse Spark 1.1"),
             ("openai:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai:gpt-5.6-sol", "GPT-5.6 Sol"),
@@ -2505,7 +2675,7 @@ class TestGetModelDisplayName:
         """Uninstalled recommendations use the hardcoded name, not the raw id."""
         from deepagents_code.tui.widgets import model_selector
 
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {}
         assert spec in model_selector._RECOMMENDED_MODELS
         assert screen._get_model_display_name(spec) == name
@@ -2514,20 +2684,20 @@ class TestGetModelDisplayName:
         """A loaded profile's `name` takes precedence over the hardcoded one."""
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "openai:gpt-5.5"
+        spec = "openai:gpt-5.6-luna"
         assert spec in model_selector._RECOMMENDED_MODELS
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {
             spec: ModelProfileEntry(
-                profile={"name": "GPT-5.5 (from profile)"},
+                profile={"name": "GPT-5.6 Luna (from profile)"},
                 overridden_keys=frozenset(),
             ),
         }
-        assert screen._get_model_display_name(spec) == "GPT-5.5 (from profile)"
+        assert screen._get_model_display_name(spec) == "GPT-5.6 Luna (from profile)"
 
     def test_falls_back_to_model_id_when_not_recommended(self) -> None:
         """A non-recommended spec absent from profiles falls back to the model."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {}
         assert (
             screen._get_model_display_name("openai:some-unlisted-model")
@@ -2536,7 +2706,7 @@ class TestGetModelDisplayName:
 
     def test_ignores_empty_name(self) -> None:
         """An empty `name` string falls back rather than rendering blank."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {
             "openai:some-unlisted-model": ModelProfileEntry(
                 profile={"name": ""},
@@ -2550,7 +2720,7 @@ class TestGetModelDisplayName:
 
     def test_preserves_colon_in_model_id_fallback(self) -> None:
         """Only the leading `provider:` is stripped in the fallback path."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {}
         assert (
             screen._get_model_display_name("ollama:some-model:cloud")
@@ -2559,7 +2729,7 @@ class TestGetModelDisplayName:
 
     def test_returns_bare_spec_unchanged(self) -> None:
         """A spec without a `provider:` prefix is returned as-is."""
-        screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
+        screen = _bare_selector()
         screen._profiles = {}
         assert screen._get_model_display_name("gpt-5.5") == "gpt-5.5"
 
@@ -2795,7 +2965,9 @@ class TestModelSelectorInstallRouting:
             *,
             include_uninstalled: bool = True,
             include_recent: bool = True,
+            recommended_models: Mapping[str, str] | None = None,
         ) -> model_selector._ModelData:
+            del recommended_models
             captured["include_uninstalled"] = include_uninstalled
             captured["include_recent"] = include_recent
             return model_selector._ModelData(
@@ -2894,7 +3066,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "fireworks:accounts/fireworks/models/kimi-k2p7-code"
+        spec = "fireworks:accounts/fireworks/models/kimi-k3"
         assert spec in model_selector._RECOMMENDED_MODELS
 
         # Provider is installed/discoverable but its profiles omit the curated
@@ -2926,7 +3098,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "baseten:moonshotai/Kimi-K2.7-Code"
+        spec = "baseten:moonshotai/Kimi-K3"
         assert spec in model_selector._RECOMMENDED_MODELS
 
         monkeypatch.setattr(
@@ -2954,7 +3126,7 @@ class TestModelSelectorInstallRouting:
         from deepagents_code import config_manifest
         from deepagents_code.tui.widgets import model_selector
 
-        spec = "fireworks:accounts/fireworks/models/kimi-k2p7-code"
+        spec = "fireworks:accounts/fireworks/models/kimi-k3"
         model = spec.split(":", 1)[1]
         assert spec in model_selector._RECOMMENDED_MODELS
 
@@ -3244,7 +3416,7 @@ enabled = false
         the `install_required` flag, so uninstalled rows turned bright after
         the cursor passed over them and never reverted.
         """
-        install_spec = "baseten:moonshotai/Kimi-K2.7-Code"
+        install_spec = "baseten:moonshotai/Kimi-K3"
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             app.show_selector()
@@ -3293,7 +3465,7 @@ enabled = false
         install-required model also surfaces at the top as a recent pick, so
         cursoring onto then off that Recent row must re-dim it just the same.
         """
-        install_spec = "baseten:moonshotai/Kimi-K2.7-Code"
+        install_spec = "baseten:moonshotai/Kimi-K3"
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
             app.show_selector()
@@ -3325,7 +3497,7 @@ enabled = false
             # carries a dim `(Baseten)` provider tag, so a bare "dim" substring
             # search can't tell install-required dimming from the tag. The name
             # is wrapped in `[dim]...` only when install-required and unselected.
-            name_dim = "[dim]Kimi K2.7 Code"
+            name_dim = "[dim]Kimi K3"
             # The provider tag disambiguates the cross-provider Recent row and
             # must survive `_move_selection`'s incremental relabel — which
             # re-derives the label from the widget's persisted `show_provider`.

@@ -1929,12 +1929,11 @@ def _should_interrupt_tool_call(
     Returns:
         `True` to interrupt, or `False` for Auto/YOLO bypass.
     """
-    from deepagents_code.hooks.server_middleware import pre_tool_behavior
+    from deepagents_code.hooks.server_middleware import hook_decided_permission
 
     tool_call = getattr(request, "tool_call", None)
     tool_call_id = str(tool_call.get("id") or "") if isinstance(tool_call, dict) else ""
-    hook_behavior = pre_tool_behavior(getattr(request, "state", None), tool_call_id)
-    if hook_behavior in {"allow", "deny"}:
+    if hook_decided_permission(getattr(request, "state", None), tool_call_id):
         return False
 
     runtime = getattr(request, "runtime", None)
@@ -2201,6 +2200,7 @@ def create_cli_agent(
     enable_interpreter: bool = False,
     rubric_model: str | BaseChatModel | None = None,
     rubric_max_iterations: int | None = None,
+    auto_classifier_model: str | BaseChatModel | None = None,
     recursion_limit: int | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
@@ -2326,6 +2326,16 @@ def create_cli_agent(
         rubric_max_iterations: Explicit grader iterations per rubric attempt
             before the agent terminates with `'max_iterations_reached'`; `None`
             uses the SDK default.
+        auto_classifier_model: Model the Auto approval classifier reviews with.
+
+            A `'provider:model'` string or `BaseChatModel`.
+
+            When `None`, `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` is consulted,
+            then `[models].auto_classifier`, and the main `model` is reused when
+            both are unset. A blank string is *not* the same as `None`: it means
+            "inherit the main model" directly and, unlike `None`, does not
+            consult the env var or `config.toml`. Only meaningful when
+            `auto_mode_enabled` is `True`.
         recursion_limit: Explicit LangGraph `recursion_limit` (graph step budget)
             for the main agent. When `None`, it is resolved from the
             `DEEPAGENTS_CODE_RECURSION_LIMIT` env var, `[runtime].recursion_limit`
@@ -2443,11 +2453,17 @@ def create_cli_agent(
         *,
         has_explicit_model: bool,
     ) -> list[AgentMiddleware[Any, Any]]:
+        from deepagents_code.cost_tracking import CostTrackingMiddleware
+
         middleware: list[AgentMiddleware[Any, Any]] = []
         if resolved_interrupt_on is not None:
             middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
         if not has_explicit_model:
             middleware.append(ConfigurableModelMiddleware(persist_model_state=False))
+        # Checkpoint nested spend before HITL can pause the subgraph, then hand
+        # the completed delta back through owner-scoped state for the parent
+        # graph to add to its durable total.
+        middleware.append(CostTrackingMiddleware(nested=True))
         # Interactive turns may legitimately be tool-free, so terminal-stall
         # recovery is installed only on headless stacks. The middleware itself
         # activates only for the measured Fireworks GLM-5.2 endpoint.
@@ -2555,13 +2571,24 @@ def create_cli_agent(
     # Resume state: declares private checkpoint channels used on resume.
     # `ResumeStateMiddleware.after_model` writes `_context_tokens`; model metadata
     # is written by `ConfigurableModelMiddleware` from the actual completed model
-    # request. The CLI reads them back from `state_values` on thread resume.
+    # request. `CostTrackingMiddleware` is the sole writer of the cumulative
+    # thread cost, pricing every model request recorded for this thread —
+    # including subagent, offload, and Auto classifier calls that never reach
+    # `after_model` — so thread-keyed draining makes that
+    # coverage independent of position within the model loop. `after_agent`
+    # hooks run in reverse list order, though, so this must stay *before*
+    # `ReliableRubricMiddleware`: otherwise the grading agent's spend lands in
+    # the next turn's checkpoint, or is lost on a session's final turn.
+    # The CLI reads these channels back from `state_values` on thread resume.
     # Goal tools: exposes the read-only `get_goal`/`get_rubric` tools and the
     # constrained `update_goal` tool, and maintains goal-state notices.
+    from deepagents_code.cost_tracking import CostTrackingMiddleware
     from deepagents_code.goal_tools import GoalToolsMiddleware
     from deepagents_code.resume_state import ResumeStateMiddleware
 
-    agent_middleware.extend([ResumeStateMiddleware(), GoalToolsMiddleware()])
+    agent_middleware.extend(
+        [ResumeStateMiddleware(), CostTrackingMiddleware(), GoalToolsMiddleware()]
+    )
 
     # Add ask_user middleware (must be early so its tool is available)
     trusted_ask_user_tool: BaseTool | None = None
@@ -2828,13 +2855,23 @@ def create_cli_agent(
     compaction_middleware = _create_cli_compaction_middleware(model, composite_backend)
     if auto_mode_config is not None and resolved_interrupt_on is not None:
         from deepagents_code.auto_mode import AutoModeHITLMiddleware
+        from deepagents_code.config import resolve_auto_classifier_model
 
         trusted_root, narrow_allow_list = auto_mode_config
+        # An explicit argument wins; otherwise the env var / `config.toml`
+        # preference is read here, where agent construction already runs off the
+        # blockbuster-guarded server loop (see `server_graph._make_graph`).
+        classifier_model = (
+            auto_classifier_model
+            if auto_classifier_model is not None
+            else resolve_auto_classifier_model()
+        )
         agent_middleware.append(
             AutoModeHITLMiddleware(
                 resolved_interrupt_on,
                 worktree_root=trusted_root,
                 shell_allow_list=narrow_allow_list,
+                classifier_model=classifier_model,
                 trusted_ask_user_tool=trusted_ask_user_tool,
                 trusted_compaction_tool=compaction_middleware.tools[0],
             )

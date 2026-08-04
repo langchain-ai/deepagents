@@ -19206,6 +19206,89 @@ class TestExitGracefulWorkerHandoff:
             for record in caplog.records
         )
 
+    async def test_client_session_end_timeout_is_bounded_and_at_most_once(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A slow Hooks v2 `SessionEnd` cannot stall or fire twice on TUI exit."""
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.hooks.manager import HookSessionIdentity
+        from deepagents_code.hooks.models.domain import (
+            HookEvent,
+            SessionEndDecision,
+        )
+
+        calls = 0
+        cancelled = asyncio.Event()
+        drain_observed_cancellation = asyncio.Event()
+
+        async def invoke(_invocation: object) -> SessionEndDecision:
+            nonlocal calls
+            calls += 1
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return SessionEndDecision(event=HookEvent.SESSION_END)
+
+        async def drain_pending() -> None:
+            try:
+                await asyncio.wait_for(cancelled.wait(), timeout=0.1)
+            except TimeoutError:
+                return
+            drain_observed_cancellation.set()
+
+        runtime = MagicMock()
+        runtime.cwd = Path.cwd()
+        runtime.configured_events.return_value = frozenset({HookEvent.SESSION_END})
+        runtime.invoke = invoke
+        hooks = HooksManager.adopting(
+            runtime,
+            identity=lambda: HookSessionIdentity(
+                thread_id="t1",
+                approval_mode=ApprovalMode.MANUAL,
+            ),
+        )
+        app = DeepAgentsApp()
+        loop = asyncio.get_running_loop()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            if app._session_state is None:
+                app._detached_hooks = hooks
+            else:
+                app._session_state.hooks = hooks
+
+            with (
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+                patch(
+                    "deepagents_code.app.SESSION_END_DRAIN_TIMEOUT_SECONDS",
+                    0.01,
+                ),
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch("deepagents_code.hooks.drain_pending_hooks", new=drain_pending),
+                patch.object(App, "exit") as super_exit,
+            ):
+                started = loop.time()
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+                elapsed = loop.time() - started
+                app.exit()
+
+                assert super_exit.call_count == 2
+
+        assert elapsed < 0.5
+        assert cancelled.is_set()
+        assert drain_observed_cancellation.is_set()
+        assert calls == 1
+        assert any(
+            record.levelno == logging.WARNING
+            and "SessionEnd hook drain did not finish" in record.message
+            for record in caplog.records
+        )
+
     async def test_second_exit_force_quits_pending_graceful_exit(self) -> None:
         """A second exit() during a pending graceful exit force-quits.
 

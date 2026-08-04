@@ -63,6 +63,7 @@ from deepagents_code._constants import (
     DEFAULT_AGENT_NAME as DEFAULT_ASSISTANT_ID,
     MCP_REENABLED_PENDING_ERROR,
     SDK_DEFAULT_RUBRIC_MAX_ITERATIONS,
+    SESSION_END_DRAIN_TIMEOUT_SECONDS,
 )
 from deepagents_code._git import (
     read_git_branch_from_filesystem,
@@ -136,6 +137,33 @@ from deepagents_code.tui.widgets.welcome import WelcomeBanner
 logger = logging.getLogger(__name__)
 _GRACEFUL_EXIT_WAIT_SECONDS = 2.0
 _monotonic = time.monotonic
+
+
+async def _wait_for_session_end(
+    session_end: Awaitable[None],
+    *,
+    timeout_seconds: float | None = None,
+) -> None:
+    """Bound Hooks v2 `SessionEnd` while a client session is torn down.
+
+    Args:
+        session_end: Session-end invocation or its already-running task.
+        timeout_seconds: Optional timeout override for deterministic tests.
+    """
+    timeout = (
+        SESSION_END_DRAIN_TIMEOUT_SECONDS
+        if timeout_seconds is None
+        else timeout_seconds
+    )
+    try:
+        await asyncio.wait_for(session_end, timeout=timeout)
+    except TimeoutError:
+        logger.warning(
+            "SessionEnd hook drain did not finish within %ss; continuing session "
+            "teardown",
+            timeout,
+        )
+
 
 _DEFERRED_START_NOTICE = (
     "No model is configured yet. Run `/model` to choose one. "
@@ -13782,7 +13810,9 @@ class DeepAgentsApp(App):
 
             if cmd == "/force-clear":
                 self._force_interrupt_active_work()
-            await self._hooks.on_session_end(SessionEndCause.CLEAR)
+            await _wait_for_session_end(
+                self._hooks.on_session_end(SessionEndCause.CLEAR)
+            )
             self._pending_messages.clear()
             self._queued_widgets.clear()
             self._sync_status_queued()
@@ -18442,7 +18472,11 @@ class DeepAgentsApp(App):
                     from deepagents_code.hooks.models.domain import SessionEndCause
 
                     client_session_end_task = asyncio.ensure_future(
-                        self._hooks.on_session_end(SessionEndCause.PROMPT_INPUT_EXIT)
+                        _wait_for_session_end(
+                            self._hooks.on_session_end(
+                                SessionEndCause.PROMPT_INPUT_EXIT
+                            )
+                        )
                     )
 
                 async def _drain_hooks() -> None:
@@ -20653,9 +20687,11 @@ class DeepAgentsApp(App):
                         if resume_thread_id is not None
                         else SessionEndCause.OTHER
                     )
-                    await self._hooks.on_session_end(
-                        end_cause,
-                        thread_id=previous_thread_id,
+                    await _wait_for_session_end(
+                        self._hooks.on_session_end(
+                            end_cause,
+                            thread_id=previous_thread_id,
+                        )
                     )
                     if resume_thread_id is None:
                         next_thread_id = self._session_state.reset_thread()
@@ -25080,7 +25116,9 @@ class DeepAgentsApp(App):
                     SessionStartCause,
                 )
 
-                await self._hooks.on_session_end(SessionEndCause.RESUME)
+                await _wait_for_session_end(
+                    self._hooks.on_session_end(SessionEndCause.RESUME)
+                )
                 await self._reload_hooks()
                 if not await self._run_session_start_hook(SessionStartCause.RESUME):
                     return
@@ -25122,9 +25160,11 @@ class DeepAgentsApp(App):
                 SessionStartCause,
             )
 
-            await self._hooks.on_session_end(
-                SessionEndCause.RESUME,
-                thread_id=prev_session_thread,
+            await _wait_for_session_end(
+                self._hooks.on_session_end(
+                    SessionEndCause.RESUME,
+                    thread_id=prev_session_thread,
+                )
             )
             outgoing_ended = True
 

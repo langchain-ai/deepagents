@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import logging
 import signal
 import sys
 from collections.abc import AsyncIterator, Iterator, Sequence
@@ -35,6 +36,7 @@ from deepagents_code.client.non_interactive import (
     _collect_action_request_warnings,
     _compaction_result_id,
     _dispatch_orphaned_tool_result_hooks,
+    _end_headless_session,
     _make_hitl_decision,
     _make_stdio_encoding_safe,
     _process_ai_message,
@@ -58,6 +60,7 @@ from deepagents_code.hooks.models.domain import (
     HookEvent,
     PermissionEffect,
     PermissionRequestDecision,
+    SessionEndCause,
     SessionEndDecision,
     SessionStartDecision,
     UserPromptSubmitDecision,
@@ -1416,6 +1419,58 @@ def _manager(runtime: MagicMock) -> HooksManager:
             thread_id="t1",
             approval_mode=ApprovalMode.MANUAL,
         ),
+    )
+
+
+async def test_headless_session_end_timeout_is_bounded_and_at_most_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A slow Hooks v2 `SessionEnd` cannot stall or fire twice on exit."""
+    calls = 0
+    cancelled = asyncio.Event()
+
+    async def invoke(_invocation: object) -> SessionEndDecision:
+        nonlocal calls
+        calls += 1
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return SessionEndDecision(event=HookEvent.SESSION_END)
+
+    runtime = MagicMock()
+    runtime.cwd = Path.cwd()
+    runtime.configured_events.return_value = frozenset({HookEvent.SESSION_END})
+    runtime.invoke = invoke
+    state = StreamState(hooks=_manager(runtime))
+    loop = asyncio.get_running_loop()
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="deepagents_code.client.non_interactive",
+    ):
+        started = loop.time()
+        await _end_headless_session(
+            state,
+            SessionEndCause.PROMPT_INPUT_EXIT,
+            timeout_seconds=0.01,
+        )
+        elapsed = loop.time() - started
+        await _end_headless_session(
+            state,
+            SessionEndCause.PROMPT_INPUT_EXIT,
+            timeout_seconds=0.01,
+        )
+
+    assert elapsed < 0.5
+    assert cancelled.is_set()
+    assert calls == 1
+    assert state.session_end_fired
+    assert any(
+        record.levelno == logging.WARNING
+        and "SessionEnd hook drain did not finish" in record.message
+        for record in caplog.records
     )
 
 

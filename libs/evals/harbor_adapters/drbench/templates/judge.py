@@ -159,7 +159,7 @@ def _install_embedding_batching() -> None:
     if getattr(original, "_deepagents_batched", False):
         return
 
-    def batched(texts: list[str], *args: Any, **kwargs: Any) -> list:
+    def batched(texts: list[str], *args: Any, **kwargs: Any) -> Any:
         items = list(texts)
         if len(items) <= 1:
             return original(items, *args, **kwargs)
@@ -172,21 +172,39 @@ def _install_embedding_batching() -> None:
         except Exception:  # noqa: BLE001 - fall back to a character estimate
             sizes = [max(1, len(text) // 3) for text in items]
 
-        out: list = []
+        groups: list[list[str]] = []
         batch: list[str] = []
         budget = 0
         for text, size in zip(items, sizes, strict=True):
             if batch and budget + size > _EMBED_TOKEN_BUDGET:
-                out.extend(original(batch, *args, **kwargs))
+                groups.append(batch)
                 batch, budget = [], 0
             batch.append(text)
             budget += size
         if batch:
-            out.extend(original(batch, *args, **kwargs))
-        if len(out) != len(items):
-            msg = f"embedding batching returned {len(out)} vectors for {len(items)} texts"
+            groups.append(batch)
+
+        results = [original(group, *args, **kwargs) for group in groups]
+        if len(results) == 1:
+            return results[0]
+
+        # The result must stay a C-contiguous float32 ndarray, not a list: the caller reads
+        # `.shape[1]` and hands it to `faiss.normalize_L2`, which mutates in place and
+        # requires that exact layout. Returning a list here fails with
+        # "'list' object has no attribute 'shape'".
+        try:
+            import numpy as np  # noqa: PLC0415 - a drbench dependency
+
+            joined = np.concatenate(results, axis=0)
+            combined: Any = np.ascontiguousarray(joined, dtype=results[0].dtype)
+        except (ImportError, AttributeError, ValueError):
+            # A non-array embedding backend; preserve sequence semantics instead.
+            combined = [vector for result in results for vector in result]
+
+        if len(combined) != len(items):
+            msg = f"embedding batching returned {len(combined)} vectors for {len(items)} texts"
             raise RuntimeError(msg)
-        return out
+        return combined
 
     batched._deepagents_batched = True  # type: ignore[attr-defined]
     utils.get_embeddings = batched

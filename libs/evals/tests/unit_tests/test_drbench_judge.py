@@ -19,6 +19,7 @@ import types
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import numpy
 import pytest
 
 if TYPE_CHECKING:
@@ -90,9 +91,13 @@ def _install_fake_drbench(
 
     utils: Any = types.ModuleType("drbench.agents.utils")
 
-    def get_embeddings(texts: list[str], *_a: Any, **_kw: Any) -> list[list[float]]:
+    def get_embeddings(texts: list[str], *_a: Any, **_kw: Any) -> Any:
+        # Mirrors upstream exactly: a C-contiguous float32 ndarray. The caller reads
+        # `.shape[1]` and passes it to `faiss.normalize_L2`, which mutates in place, so a
+        # stub returning plain lists would hide a real type regression.
         recorded.setdefault("embed_batches", []).append(len(texts))
-        return [[float(len(text)), 0.0] for text in texts]
+        rows = numpy.array([[float(len(text)), 0.5] for text in texts])
+        return numpy.ascontiguousarray(rows, dtype=numpy.float32)
 
     utils.get_embeddings = get_embeddings
     utils.OPENAI_MODELS = (
@@ -650,7 +655,15 @@ def test_embedding_batching_preserves_the_vectors_exactly(
     texts = _dense(200)
     unbatched = utils.get_embeddings(texts)
     judge._install_embedding_batching()
-    assert utils.get_embeddings(texts) == unbatched
+    batched = utils.get_embeddings(texts)
+
+    assert numpy.array_equal(batched, unbatched)
+    # Type fidelity matters as much as the values: the consumer reads `.shape[1]` and
+    # calls `faiss.normalize_L2`, which needs a C-contiguous float32 array.
+    assert isinstance(batched, numpy.ndarray)
+    assert batched.dtype == unbatched.dtype
+    assert batched.flags["C_CONTIGUOUS"]
+    assert batched.shape == unbatched.shape
 
 
 def test_embedding_batching_leaves_a_normal_request_alone(

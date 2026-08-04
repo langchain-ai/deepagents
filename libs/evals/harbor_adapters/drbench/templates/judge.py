@@ -65,16 +65,63 @@ EPSILON = 0.01
 # in this log rather than only in upstream's stdout.
 MAX_REPORT_LENGTH = 60_000
 
-_DEFAULT_JUDGE_MODEL = "gpt-4.1"
+# `gpt-4o` is in both of upstream's model registries (see `_supported_judge_models`), is
+# what `get_metric` itself defaults to, and accepts `temperature=0`, which upstream passes
+# on every judge call.
+_DEFAULT_JUDGE_MODEL = "gpt-4o"
 
 
-def _judge_model() -> str:
-    """First model in the harness-injected ``JUDGE_MODELS`` (or a supported default)."""
+def _requested_judge_model() -> str:
+    """First model in the harness-injected ``JUDGE_MODELS``, or the default."""
     raw = os.environ.get("JUDGE_MODELS") or os.environ.get("JUDGE_MODEL") or ""
     for token in re.split(r"[\s,]+", raw.strip()):
         if token:
             return token
     return _DEFAULT_JUDGE_MODEL
+
+
+def _supported_judge_models() -> set[str]:
+    """Models the installed DRBench can actually drive, read from upstream itself.
+
+    Upstream gates the judge model in two independent places that do not agree:
+    ``agents.utils.OPENAI_MODELS`` (used by `prompt_llm`) and
+    ``gen_agent.SERVICE_TO_MODELS["openai"]` (used by `AIAgentManager`, which
+    `QASimilarityV2` constructs). A model in only one of them fails partway through
+    scoring, so the usable set is the intersection. Derived at runtime rather than
+    hardcoded, so a future upstream bump is picked up for free.
+    """
+    from drbench import gen_agent  # noqa: PLC0415 - installed only in the sandbox
+    from drbench.agents import utils  # noqa: PLC0415
+
+    return set(utils.OPENAI_MODELS) & set(gen_agent.SERVICE_TO_MODELS.get("openai", []))
+
+
+def _judge_model() -> str:
+    """Return a judge model the installed DRBench supports.
+
+    The harness picks one judge for the whole eval suite via ``JUDGE_MODELS``, but DRBench
+    only drives a fixed set, and its default is a reasoning model that upstream cannot use:
+    it is absent from both registries and rejects the ``temperature=0`` upstream sends on
+    every call. Rather than monkeypatch three separate upstream internals to force it
+    through, fall back to a supported model and say so.
+
+    That is also the more faithful choice. DRBench's prompts and thresholds were calibrated
+    with a GPT-4o-class judge, so scoring with one keeps our numbers comparable to the
+    paper -- which is the whole reason for using upstream's metrics.
+    """
+    requested = _requested_judge_model()
+    supported = _supported_judge_models()
+    if not supported:
+        print(f"upstream exposes no usable judge model; trying {requested!r} anyway")
+        return requested
+    if requested in supported:
+        return requested
+    fallback = _DEFAULT_JUDGE_MODEL if _DEFAULT_JUDGE_MODEL in supported else min(supported)
+    print(
+        f"judge model {requested!r} is not one upstream DRBench can drive "
+        f"({sorted(supported)}); scoring with {fallback!r} instead"
+    )
+    return fallback
 
 
 def _embedding_model() -> str | None:
@@ -85,26 +132,6 @@ def _embedding_model() -> str | None:
     chose, so the metric matches the code being reused rather than our guess.
     """
     return os.environ.get("JUDGE_EMBEDDING_MODEL") or None
-
-
-def _allow_judge_model(model: str) -> None:
-    """Let upstream route `model` through its plain OpenAI-compatible client.
-
-    ``drbench.agents.utils.prompt_llm`` dispatches on an allowlist -- currently
-    ``["gpt-4o", "gpt-4o-mini", "gpt-4.1"]`` -- and anything outside it falls through to
-    an OpenRouter client keyed on ``OPENROUTER_API_KEY``, which this environment does not
-    set, so every judge call would fail. The harness picks one judge for the whole eval
-    suite via ``JUDGE_MODELS`` and forwards ``OPENAI_BASE_URL`` next to ``OPENAI_API_KEY``
-    for exactly this, so extending the allowlist points the model at the configured
-    OpenAI-compatible endpoint. The alternative -- hardcoding one of the three names --
-    would silently judge this category with a different model than every other category
-    in the same run.
-    """
-    from drbench.agents import utils  # noqa: PLC0415 - installed only in the sandbox
-
-    if model not in utils.OPENAI_MODELS:
-        utils.OPENAI_MODELS.append(model)
-        print(f"routing judge model {model!r} through the OpenAI-compatible client")
 
 
 def composite(components: dict[str, float]) -> float:
@@ -169,9 +196,11 @@ def _grade() -> tuple[dict[str, float], dict[str, Any]]:
         )
 
     model = _judge_model()
-    _allow_judge_model(model)
     embedding_model = _embedding_model()
     breakdown["judge_model"] = model
+    # Recorded so a score is never silently attributed to the judge the harness asked for
+    # when a different one actually ran.
+    breakdown["requested_judge_model"] = _requested_judge_model()
     breakdown["embedding_model"] = embedding_model
 
     # `task` supplies both the task config and the ground truth from the installed

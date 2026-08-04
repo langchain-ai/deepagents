@@ -60,6 +60,7 @@ def _install_fake_drbench(
     *,
     scores: dict[str, float] | object,
     openai_models: list[str] | None = None,
+    service_to_models: dict[str, list[str]] | None = None,
     calls: dict[str, Any] | None = None,
 ) -> None:
     """Inject the `drbench` modules `judge.py` imports lazily.
@@ -92,6 +93,15 @@ def _install_fake_drbench(
         ["gpt-4o", "gpt-4o-mini", "gpt-4.1"] if openai_models is None else openai_models
     )
 
+    # Upstream's second, independent registry. It disagrees with the first -- `gpt-4.1` is
+    # in `OPENAI_MODELS` but not here -- which is why the judge takes the intersection.
+    gen_agent: Any = types.ModuleType("drbench.gen_agent")
+    gen_agent.SERVICE_TO_MODELS = (
+        {"openai": ["gpt-4o-mini", "gpt-4o"], "vllm": [], "together": []}
+        if service_to_models is None
+        else service_to_models
+    )
+
     agents: Any = types.ModuleType("drbench.agents")
     agents.utils = utils
 
@@ -101,6 +111,7 @@ def _install_fake_drbench(
         ("drbench", root),
         ("drbench.agents", agents),
         ("drbench.agents.utils", utils),
+        ("drbench.gen_agent", gen_agent),
         ("drbench.task_loader", task_loader),
         ("drbench.score_report", score_report_mod),
     ):
@@ -135,20 +146,74 @@ def _stage_paths(
 # --- judge/embedding model selection --------------------------------------------------
 
 
-def test_judge_model_reads_first_of_judge_models(
+def test_requested_judge_model_reads_first_of_judge_models(
     judge: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("JUDGE_MODELS", "gpt-5.6-terra, gpt-5.6-luna")
-    assert judge._judge_model() == "gpt-5.6-terra"
+    monkeypatch.setenv("JUDGE_MODELS", "gpt-4o, gpt-4o-mini")
+    assert judge._requested_judge_model() == "gpt-4o"
 
 
-def test_judge_model_falls_back_when_unset(
+def test_requested_judge_model_falls_back_when_unset(
     judge: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("JUDGE_MODELS", raising=False)
     monkeypatch.delenv("JUDGE_MODEL", raising=False)
-    # The fallback must be a model upstream's allowlist already accepts.
-    assert judge._judge_model() == "gpt-4.1"
+    assert judge._requested_judge_model() == "gpt-4o"
+
+
+def test_supported_judge_models_is_the_intersection_of_both_registries(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Upstream gates the judge in two independent places that disagree: `gpt-4.1` is in
+    # `agents.utils.OPENAI_MODELS` but not in `gen_agent.SERVICE_TO_MODELS["openai"]`.
+    # A model present in only one gets past `prompt_llm` and then dies inside
+    # QASimilarityV2, so only the intersection is actually usable.
+    _install_fake_drbench(monkeypatch, scores={})
+    assert judge._supported_judge_models() == {"gpt-4o", "gpt-4o-mini"}
+
+
+def test_judge_model_keeps_a_supported_request(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_drbench(monkeypatch, scores={})
+    monkeypatch.setenv("JUDGE_MODELS", "gpt-4o-mini")
+    assert judge._judge_model() == "gpt-4o-mini"
+
+
+def test_judge_model_falls_back_off_an_unsupported_request(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    # The harness default is a reasoning model upstream cannot drive: absent from both
+    # registries, and it rejects the `temperature=0` upstream sends on every call. Forcing
+    # it through would mean patching three upstream internals, so fall back and say so.
+    _install_fake_drbench(monkeypatch, scores={})
+    monkeypatch.setenv("JUDGE_MODELS", "gpt-5.6-luna")
+    assert judge._judge_model() == "gpt-4o"
+    assert "gpt-5.6-luna" in capsys.readouterr().out
+
+
+def test_judge_model_rejects_a_model_in_only_one_registry(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `gpt-4.1` is the trap: allowlisted by `prompt_llm`, unknown to `AIAgentManager`.
+    _install_fake_drbench(monkeypatch, scores={})
+    monkeypatch.setenv("JUDGE_MODELS", "gpt-4.1")
+    assert judge._judge_model() == "gpt-4o"
+
+
+def test_judge_model_picks_from_whatever_upstream_offers(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The set is read from upstream, not hardcoded, so a future bump is honored without
+    # a change here -- including one that drops today's default.
+    _install_fake_drbench(
+        monkeypatch,
+        scores={},
+        openai_models=["gpt-6-omni"],
+        service_to_models={"openai": ["gpt-6-omni"]},
+    )
+    monkeypatch.setenv("JUDGE_MODELS", "gpt-5.6-luna")
+    assert judge._judge_model() == "gpt-6-omni"
 
 
 def test_embedding_model_defaults_to_upstreams_choice(
@@ -160,27 +225,6 @@ def test_embedding_model_defaults_to_upstreams_choice(
     assert judge._embedding_model() is None
     monkeypatch.setenv("JUDGE_EMBEDDING_MODEL", "text-embedding-3-large")
     assert judge._embedding_model() == "text-embedding-3-large"
-
-
-def test_allow_judge_model_extends_upstreams_allowlist(
-    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Upstream dispatches on an allowlist and sends anything else to an OpenRouter client
-    # this environment has no key for, so an un-allowlisted judge would fail every call.
-    _install_fake_drbench(monkeypatch, scores={})
-    from drbench.agents import utils  # noqa: PLC0415  # ty: ignore[unresolved-import]
-
-    judge._allow_judge_model("gpt-5.6-luna")
-    assert "gpt-5.6-luna" in utils.OPENAI_MODELS
-
-    # Idempotent: a second call must not duplicate the entry.
-    judge._allow_judge_model("gpt-5.6-luna")
-    assert utils.OPENAI_MODELS.count("gpt-5.6-luna") == 1
-
-    # An already-supported model is left alone.
-    before = list(utils.OPENAI_MODELS)
-    judge._allow_judge_model("gpt-4o")
-    assert before == utils.OPENAI_MODELS
 
 
 # --- the composite ---------------------------------------------------------------------
@@ -309,10 +353,15 @@ def test_grade_records_the_upstream_scores_verbatim(
 ) -> None:
     _install_fake_drbench(monkeypatch, scores=dict(_SCORES))
     _stage_paths(judge, monkeypatch, tmp_path)
+    monkeypatch.setenv("JUDGE_MODELS", "gpt-5.6-luna")
 
     _, breakdown = judge._grade()
     assert breakdown["upstream_scores"] == _SCORES
     assert breakdown["task_id"] == "DR0001"
+    # Both the model asked for and the one that ran, so a score is never misattributed
+    # to a judge that was silently substituted.
+    assert breakdown["judge_model"] == "gpt-4o"
+    assert breakdown["requested_judge_model"] == "gpt-5.6-luna"
 
 
 def test_grade_rejects_a_missing_metric(

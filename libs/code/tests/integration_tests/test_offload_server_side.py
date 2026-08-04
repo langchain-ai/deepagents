@@ -1,11 +1,11 @@
 """Integration coverage for the server-side `/offload` path.
 
-`/offload` drives the agent's own `compact_conversation` tool (with
-`force=True`) server-side, so the offloaded archive lands in the agent's
-composite backend and is readable via `read_file` in every run mode — not in a
-client-local directory the server can never read. These tests construct the app
-the PRODUCTION way (`backend=None`) and prove the archive is readable *through
-the agent*.
+For a server-backed agent `/offload` runs the dedicated `offload` operation
+graph, which compacts without a model node or a synthetic tool call. Either way
+the offloaded archive lands in the agent's composite backend and is readable via
+`read_file` in every run mode — not in a client-local directory the server can
+never read. These tests construct the app the PRODUCTION way (`backend=None`)
+and prove the archive is readable *through the agent*.
 """
 
 from __future__ import annotations
@@ -165,7 +165,7 @@ async def test_offload_runs_server_side_and_is_agent_readable(
     enough content, runs `/offload`, and asserts:
 
     - no `ErrorMessage` and an "Offloaded " success message,
-    - no HITL interrupt is surfaced for the seeded compaction call,
+    - no HITL interrupt is surfaced, the operation graph having no tool node,
     - a persisted `_summarization_event` with `cutoff > 0` and
       `file_path == /conversation_history/<thread>.md`,
     - the archive is readable THROUGH THE AGENT (via its own `read_file` tool),
@@ -275,9 +275,10 @@ async def test_offload_runs_server_side_and_is_agent_readable(
                 finally:
                     agent.for_graph = plain_for_graph  # ty: ignore
 
-                # The seeded compaction is authorized by the per-run context, so
-                # it executes without a human-approval round trip in any
-                # approval mode (this app runs the default Manual mode).
+                # The operation graph has no HITL middleware and manufactures no
+                # tool call, so the slash command is the whole authorization
+                # boundary: there is nothing left to approve in any approval
+                # mode (this app runs the default Manual mode).
                 assert offload_interrupts == []
                 # Positive control: the recorder must have seen chunks, so the
                 # empty-interrupt assertion above cannot pass vacuously.

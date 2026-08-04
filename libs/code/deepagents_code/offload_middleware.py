@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, Protocol, cast
 
 from deepagents.backends.protocol import FILE_NOT_FOUND
 from deepagents.middleware.summarization import (
@@ -16,7 +16,7 @@ from deepagents.middleware.summarization import (
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # inspected for runtime injection
 )
-from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import InjectedToolArg, StructuredTool
 from langgraph.types import Command
 
@@ -24,7 +24,7 @@ from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.cost_tracking import CostState, CostTrackingMiddleware
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping
+    from collections.abc import Awaitable, Callable
 
     from deepagents.backends.protocol import (
         BackendProtocol,
@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     )
     from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain.chat_models import BaseChatModel
+    from langgraph.graph.state import CompiledStateGraph
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
 
@@ -48,13 +49,64 @@ class _OffloadState(CostState, total=False):
     _summarization_event: SummarizationEvent
 
 
+class OffloadServerResources(NamedTuple):
+    """Middleware the `/offload` operation graph shares with the agent graph."""
+
+    compaction: CLICompactionMiddleware
+    """Compaction implementation bound to the agent's composite backend."""
+
+    hooks: ServerHooksMiddleware | None
+    """Lifecycle middleware, or `None` when hooks are not mounted."""
+
+
+_OFFLOAD_RESOURCES_ATTR = "_cli_offload_resources"
+"""Attribute carrying `OffloadServerResources` on the composite backend.
+
+`create_cli_agent` builds this middleware but returns only the agent and the
+backend, and its 60-plus call sites unpack that pair positionally, so widening
+the return is not viable. The backend is the one object both the agent graph and
+the separately-resolved `offload` graph already hold, which makes it the
+carrier. Reaching it through `attach_offload_resources` /
+`offload_resources_from` instead of a bare `getattr` keeps the attribute name in
+one place and the unchecked write behind a single type assertion.
+"""
+
+
+def attach_offload_resources(
+    backend: object, resources: OffloadServerResources
+) -> None:
+    """Publish the operation graph's middleware on the shared backend.
+
+    Args:
+        backend: Composite backend returned alongside the agent graph.
+        resources: Middleware instances the `offload` graph must reuse.
+    """
+    setattr(backend, _OFFLOAD_RESOURCES_ATTR, resources)
+
+
+def offload_resources_from(backend: object) -> OffloadServerResources | None:
+    """Read back the middleware published by `attach_offload_resources`.
+
+    Args:
+        backend: Composite backend returned alongside the agent graph.
+
+    Returns:
+        The published resources, or `None` when the backend carries none (so
+            the caller can fail with its own message rather than an
+            `AttributeError`).
+    """
+    resources = getattr(backend, _OFFLOAD_RESOURCES_ATTR, None)
+    return resources if isinstance(resources, OffloadServerResources) else None
+
+
 COMPACTION_FAILURE_PREFIX = "Compaction failed"
 """Stable prefix for forced-compaction failure tool messages.
 
-`/offload` drives the tool server-side and can only observe the resulting
-`ToolMessage` text across the LangGraph server boundary, so it keys failure
-detection on this prefix. Owning the literal here means the producer
-(`_forced_compact_error`) and both consumers
+The seeded driver (local in-process agents) drives the tool and can only observe
+the resulting `ToolMessage` text across the LangGraph server boundary, so it keys
+failure detection on this prefix. Owning the literal here means the producers
+(`_forced_compact_error` and the operation graph's node, which reuses the prefix
+in the `RuntimeError` it raises) and both consumers
 (`app._drive_legacy_seeded_compaction` live-stream detection and
 `app._find_compaction_failure` committed-state scan) reference one constant
 instead of re-hardcoding the wording independently.
@@ -123,11 +175,28 @@ class RuntimeModelConfig(NamedTuple):
     context_limit: int | None
 
 
-def _runtime_model_config(runtime: ToolRuntime) -> RuntimeModelConfig:
-    """Read the active model configuration from a tool runtime.
+class _HasRunContext(Protocol):
+    """Anything carrying a per-run context object.
+
+    The compaction helpers read `context` and nothing else, so they accept both
+    the `ToolRuntime` injected into the tool and the plain LangGraph `Runtime`
+    the operation graph's node receives -- which is not a `ToolRuntime`. Stating
+    the dependency this narrowly means a helper that starts touching, say,
+    `tool_call_id` fails to type-check instead of breaking the operation graph
+    at runtime.
+    """
+
+    @property
+    def context(self) -> Any:  # noqa: ANN401  # context shape is validated at use
+        """The run's context object."""
+        ...
+
+
+def _runtime_model_config(runtime: _HasRunContext) -> RuntimeModelConfig:
+    """Read the active model configuration from a run context carrier.
 
     Args:
-        runtime: Runtime injected into the compaction tool.
+        runtime: Runtime carrying the current `CLIContext`.
 
     Returns:
         The active model specification, invocation parameters, profile
@@ -462,7 +531,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         return cast("BackendProtocol", _ArchiveReadGuard(self._summarization._backend))
 
     def _summarization_for_runtime(
-        self, runtime: ToolRuntime
+        self, runtime: _HasRunContext
     ) -> SummarizationMiddleware:
         """Build a summarizer for the active runtime model when overridden.
 
@@ -585,43 +654,27 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             logger.exception("forced compact_conversation failed")
             return self._forced_compact_error(runtime.tool_call_id or "", exc)
 
-    def _run_forced_compaction_update(
-        self, state: Mapping[str, object], runtime: object
-    ) -> dict[str, object] | None:
-        """Run forced compaction as a server operation without a tool message.
-
-        Returns:
-            The state update, or `None` when nothing can be compacted.
-        """
-        summarization = self._summarization_for_runtime(cast("ToolRuntime", runtime))
-        messages = cast("list[AnyMessage]", state.get("messages", []))
-        event = cast("SummarizationEvent | None", state.get("_summarization_event"))
-        effective = summarization._apply_event_to_messages(messages, event)
-        cutoff = summarization._determine_cutoff_index(effective)
-        if cutoff == 0:
-            return None
-        to_summarize, _ = summarization._partition_messages(effective, cutoff)
-        summary = summarization._create_summary(to_summarize)
-        file_path = summarization._offload_to_backend(
-            self._guarded_backend(), to_summarize
-        )
-        return self._forced_compaction_update(
-            summarization, summary, file_path, event, cutoff
-        )
-
     async def arun_forced_compaction_update(
-        self, state: Mapping[str, object], runtime: object
+        self, state: _OffloadState, runtime: _HasRunContext
     ) -> dict[str, object] | None:
         """Run forced compaction as a server operation without a tool message.
+
+        Unlike the tool paths, this raises on failure instead of returning a
+        `ToolMessage`: the operation graph has no tool node to carry one, so its
+        node converts the exception into a client-visible error.
+
+        Args:
+            state: Checkpointed conversation and prior summarization event.
+            runtime: Run context carrier used to select the summarizer model.
 
         Returns:
             The state update, or `None` when nothing can be compacted.
         """
         summarization = await asyncio.to_thread(
-            self._summarization_for_runtime, cast("ToolRuntime", runtime)
+            self._summarization_for_runtime, runtime
         )
-        messages = cast("list[AnyMessage]", state.get("messages", []))
-        event = cast("SummarizationEvent | None", state.get("_summarization_event"))
+        messages = state.get("messages", [])
+        event = state.get("_summarization_event")
         effective = summarization._apply_event_to_messages(messages, event)
         cutoff = summarization._determine_cutoff_index(effective)
         if cutoff == 0:
@@ -724,7 +777,7 @@ def create_forced_compaction_graph(
     middleware: CLICompactionMiddleware,
     *,
     hooks_middleware: ServerHooksMiddleware | None = None,
-) -> object:
+) -> CompiledStateGraph[Any, CLIContextSchema, Any, Any]:
     """Create the dedicated server graph used by the `/offload` command.
 
     This operation updates only the persisted summarization event. Unlike the
@@ -774,14 +827,34 @@ def create_forced_compaction_graph(
             outcomes = hook_update.get("_hooks_pre_tool_outcomes", {})
             outcome = outcomes.get("offload-precompact", {})
             if outcome.get("behavior") == "deny":
-                return {}
+                # Returning `{}` here would be indistinguishable from "nothing
+                # old enough to compact", so the client would report a hook
+                # veto as "the conversation is already compact". Raise instead
+                # so the reason reaches the user.
+                reason = outcome.get("reason") or "Blocked by PreCompact hook"
+                raise RuntimeError(str(reason))
         try:
             update = await middleware.arun_forced_compaction_update(state, runtime)
-        finally:
-            # Summary generation invokes a model outside the normal agent loop.
-            # Drain it even if the archive write or state-update construction
-            # fails, so a later turn cannot be required to persist its spend.
-            cost_update = await cost_tracking.aafter_agent(state, runtime)
+        except Exception as exc:
+            logger.exception("forced /offload compaction failed")
+            # Re-raise as `RuntimeError`: the server serializes exceptions for
+            # the client and preserves the message only for an allowlist of
+            # builtin types, replacing every other one with "An internal error
+            # occurred" -- which is what an `OSError` from the archive write or
+            # a provider SDK error would otherwise become.
+            #
+            # Deliberately no cost drain on this path: `aafter_agent` returns an
+            # update the raise would discard, and its drain is destructive, so
+            # the summarizer's spend would be lost outright. Left undrained it
+            # is charged on the next turn's first step instead.
+            msg = (
+                f"{COMPACTION_FAILURE_PREFIX}: {type(exc).__name__}: {exc}. "
+                "Your conversation is unchanged."
+            )
+            raise RuntimeError(msg) from exc
+        # Summary generation invokes a model outside the normal agent loop, so
+        # drain it here rather than leaving this run's checkpoint incomplete.
+        cost_update = await cost_tracking.aafter_agent(state, runtime)
         return {**(update or {}), **(cost_update or {})}
 
     graph = StateGraph(cast("Any", _OffloadState), context_schema=CLIContextSchema)

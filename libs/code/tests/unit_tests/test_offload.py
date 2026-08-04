@@ -7,11 +7,12 @@ import stat
 import tempfile
 from contextlib import nullcontext
 from pathlib import Path, PureWindowsPath
-from typing import Any, cast
+from typing import Annotated, Any, TypedDict, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from deepagents.backends.utils import validate_path
+from langgraph.graph.message import add_messages
 
 from deepagents_code import offload
 from deepagents_code._session_stats import format_token_count
@@ -90,6 +91,22 @@ def _setup_server_offload_app(app: DeepAgentsApp) -> MagicMock:
     from deepagents_code.client.remote_client import RemoteAgent
 
     agent = MagicMock(spec=RemoteAgent)
+    agent.aupdate_state = AsyncMock()
+    app._agent = agent
+    app._backend = None
+    app._lc_thread_id = "test-thread"
+    app._agent_running = False
+    return agent
+
+
+def _setup_local_offload_app(app: DeepAgentsApp) -> MagicMock:
+    """Configure a `DeepAgentsApp` as a local in-process agent for offload tests.
+
+    A plain `MagicMock` agent is *not* a `RemoteAgent`, so `_remote_agent()`
+    returns `None` and `_handle_offload` takes the seeded in-process path
+    (`_drive_legacy_seeded_compaction`) instead of the operation graph.
+    """
+    agent = MagicMock()
     agent.aupdate_state = AsyncMock()
     app._agent = agent
     app._backend = None
@@ -903,12 +920,14 @@ class TestOffloadErrorHandling:
                 for widget in app.query(ErrorMessage)
             )
 
-    async def test_failed_run_removes_dangling_seed(self) -> None:
-        """A raising run cleans up the committed seed before surfacing failure.
+    async def test_failed_operation_graph_run_has_no_seed_to_clean_up(self) -> None:
+        """A failed operation-graph run needs no seed cleanup.
 
-        When the drive raises and the committed cutoff has not advanced, the
-        seeded (and now unanswered) tool call must be removed so it does not
-        wedge the next turn; the failure is still surfaced to the user.
+        The operation graph commits no synthetic tool call, so there is nothing
+        that could wedge the next turn with a dangling `tool_use` and the cleanup
+        must not run. The failure is still surfaced to the user. The seeded
+        driver's counterpart is
+        `test_failed_seeded_run_removes_dangling_seed`.
         """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -946,14 +965,15 @@ class TestOffloadErrorHandling:
                 for widget in app.query(ErrorMessage)
             )
 
-    async def test_double_failure_warns_thread_may_be_inconsistent(self) -> None:
-        """Stream failure + failed reconcile + failed cleanup warns the user.
+    async def test_operation_graph_double_failure_surfaces_one_error(self) -> None:
+        """Stream failure plus a failed reconcile still reports exactly once.
 
-        When the drive raises, the reconcile state-read also fails, and the
-        best-effort seed cleanup cannot confirm removal (returns False), the
-        user is warned the thread may be inconsistent -- in addition to the
-        surfaced "Offload failed" error -- so a later cryptic `tool_use`
-        rejection is not their only signal.
+        The seeded driver additionally warns that the thread may be inconsistent
+        when it cannot confirm seed removal (see
+        `test_seeded_double_failure_warns_thread_may_be_inconsistent`). The
+        operation graph has no seed, so no cleanup runs and no wedge warning is
+        appropriate -- the user should see the "Offload failed" error alone
+        rather than a second, inapplicable warning.
         """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
@@ -990,6 +1010,96 @@ class TestOffloadErrorHandling:
                 str(widget._content) for widget in app.query(ErrorMessage)
             )
             assert "Offload failed" in error_text
+            assert "inconsistent state" not in error_text
+
+    async def test_failed_seeded_run_removes_dangling_seed(self) -> None:
+        """A failed local seeded run must not leave an unanswered tool call.
+
+        The seeded driver commits a synthetic assistant `tool_use` before the
+        tool runs, so a run that fails without compacting has to remove it or the
+        model API rejects the next turn.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_local_offload_app(app)
+
+            before = _state_values(_make_dict_messages(6))
+            reconciled = _state_values(_make_dict_messages(6))  # cutoff unchanged
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, reconciled],
+                ),
+                patch.object(
+                    app,
+                    "_drive_legacy_seeded_compaction",
+                    new_callable=AsyncMock,
+                    side_effect=RuntimeError("stream boom"),
+                ),
+                patch.object(
+                    app,
+                    "_remove_unanswered_offload_seed",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ) as cleanup,
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            cleanup.assert_awaited_once()
+            assert any(
+                "Offload failed" in str(widget._content)
+                for widget in app.query(ErrorMessage)
+            )
+
+    async def test_seeded_double_failure_warns_thread_may_be_inconsistent(self) -> None:
+        """Unconfirmed seed removal warns the user the thread may be wedged.
+
+        When the drive raises, the reconcile state-read also fails, and the
+        best-effort seed cleanup cannot confirm removal (returns `False`), the
+        user is warned -- in addition to the surfaced "Offload failed" error --
+        so a later cryptic `tool_use` rejection is not their only signal.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_local_offload_app(app)
+
+            before = _state_values(_make_dict_messages(6))
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, RuntimeError("reconcile read boom")],
+                ),
+                patch.object(
+                    app,
+                    "_drive_legacy_seeded_compaction",
+                    new_callable=AsyncMock,
+                    side_effect=RuntimeError("stream boom"),
+                ),
+                patch.object(
+                    app,
+                    "_remove_unanswered_offload_seed",
+                    new_callable=AsyncMock,
+                    return_value=False,
+                ) as cleanup,
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            cleanup.assert_awaited_once()
+            error_text = " ".join(
+                str(widget._content) for widget in app.query(ErrorMessage)
+            )
+            assert "Offload failed" in error_text
+            assert "inconsistent state" in error_text
 
     async def test_compaction_run_failure_shows_error(self) -> None:
         """Should show error and leave state untouched when the run raises."""
@@ -2702,7 +2812,39 @@ class TestForcedCompactionGraph:
     """Lifecycle and cost guarantees of the dedicated `/offload` graph."""
 
     async def test_precompact_denial_skips_forced_compaction(self) -> None:
-        """A configured `PreCompact` hook can deny manual `/offload`."""
+        """A configured `PreCompact` hook can deny manual `/offload`.
+
+        The denial has to raise rather than return an empty update: an empty
+        update is indistinguishable from "nothing old enough to compact", so the
+        client would render a hook veto as "the conversation is already compact"
+        and the reason would never reach the user.
+        """
+        from deepagents_code._cli_context import CLIContext
+        from deepagents_code.offload_middleware import create_forced_compaction_graph
+
+        middleware = MagicMock()
+        middleware.arun_forced_compaction_update = AsyncMock()
+        hooks = MagicMock()
+        hooks.aafter_model = AsyncMock(
+            return_value={
+                "_hooks_pre_tool_outcomes": {
+                    "offload-precompact": {
+                        "behavior": "deny",
+                        "reason": "policy forbids compaction",
+                    }
+                }
+            }
+        )
+
+        graph = create_forced_compaction_graph(middleware, hooks_middleware=hooks)
+        with pytest.raises(RuntimeError, match="policy forbids compaction"):
+            await cast("Any", graph).ainvoke({"messages": []}, context=CLIContext())
+
+        hooks.aafter_model.assert_awaited_once()
+        middleware.arun_forced_compaction_update.assert_not_awaited()
+
+    async def test_precompact_denial_without_reason_still_surfaces(self) -> None:
+        """A denial carrying no reason still reports something actionable."""
         from deepagents_code._cli_context import CLIContext
         from deepagents_code.offload_middleware import create_forced_compaction_graph
 
@@ -2716,10 +2858,178 @@ class TestForcedCompactionGraph:
         )
 
         graph = create_forced_compaction_graph(middleware, hooks_middleware=hooks)
-        await cast("Any", graph).ainvoke({"messages": []}, context=CLIContext())
+        with pytest.raises(RuntimeError, match="Blocked by PreCompact hook"):
+            await cast("Any", graph).ainvoke({"messages": []}, context=CLIContext())
 
-        hooks.aafter_model.assert_awaited_once()
         middleware.arun_forced_compaction_update.assert_not_awaited()
+
+    async def test_compaction_failure_is_raised_with_a_preserved_message(self) -> None:
+        """A node failure raises `RuntimeError` so its text survives the server.
+
+        The LangGraph server preserves an exception's message only for an
+        allowlist of builtin types and replaces every other one with "An
+        internal error occurred", so an `OSError` from the archive write has to
+        be re-raised as an allowlisted type to stay diagnosable.
+        """
+        from deepagents_code._cli_context import CLIContext
+        from deepagents_code.offload_middleware import create_forced_compaction_graph
+
+        middleware = MagicMock()
+        middleware.arun_forced_compaction_update = AsyncMock(
+            side_effect=OSError("disk is full")
+        )
+
+        graph = create_forced_compaction_graph(middleware)
+        with pytest.raises(RuntimeError, match="OSError: disk is full") as exc_info:
+            await cast("Any", graph).ainvoke({"messages": []}, context=CLIContext())
+
+        assert "Your conversation is unchanged." in str(exc_info.value)
+
+    async def test_failed_compaction_leaves_summary_spend_undrained(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failure must not drain cost it is about to discard.
+
+        The drain is destructive and the raise discards any update built on this
+        path, so draining here would lose the summarizer's spend outright.
+        Undrained records are charged on the next turn's first step instead.
+        """
+        from deepagents_code import offload_middleware
+        from deepagents_code._cli_context import CLIContext
+
+        cost_tracking = MagicMock()
+        cost_tracking.aafter_agent = AsyncMock(return_value={"_session_cost_usd": 0.25})
+        monkeypatch.setattr(
+            offload_middleware, "CostTrackingMiddleware", lambda: cost_tracking
+        )
+        middleware = MagicMock()
+        middleware.arun_forced_compaction_update = AsyncMock(
+            side_effect=OSError("disk is full")
+        )
+
+        graph = offload_middleware.create_forced_compaction_graph(middleware)
+        with pytest.raises(RuntimeError):
+            await cast("Any", graph).ainvoke({"messages": []}, context=CLIContext())
+
+        cost_tracking.aafter_agent.assert_not_awaited()
+
+    async def test_operation_graph_preserves_agent_only_channels(self) -> None:
+        """The narrow operation schema must not drop the agent's other state.
+
+        Both graphs run against one thread, but `_OffloadState` declares only
+        the two channels the operation needs. A schema that dropped or replaced
+        the rest would silently destroy conversation state the agent owns, so
+        this pins that a real checkpoint round-trip leaves it intact.
+        """
+        from langchain_core.messages import HumanMessage
+        from langgraph.checkpoint.memory import InMemorySaver
+        from langgraph.graph import END, START, StateGraph
+
+        from deepagents_code._cli_context import CLIContext
+        from deepagents_code.offload_middleware import create_forced_compaction_graph
+
+        checkpointer = InMemorySaver()
+        config = {"configurable": {"thread_id": "shared-thread"}}
+
+        # Stand in for the agent graph: a wider schema on the same thread.
+        class _WideState(TypedDict, total=False):
+            messages: Annotated[list, add_messages]
+            todos: list[str]
+            _summarization_event: dict
+
+        def _seed(state: _WideState) -> dict:  # noqa: ARG001  # node input unused
+            return {
+                "messages": [HumanMessage(content="secret history", id="m0")],
+                "todos": ["keep me"],
+            }
+
+        wide = StateGraph(cast("Any", _WideState))
+        wide.add_node("seed", cast("Any", _seed))
+        wide.add_edge(START, "seed")
+        wide.add_edge("seed", END)
+        await cast("Any", wide.compile(checkpointer=checkpointer)).ainvoke({}, config)
+
+        middleware = MagicMock()
+        middleware.arun_forced_compaction_update = AsyncMock(
+            return_value={"_summarization_event": {"cutoff_index": 1}}
+        )
+        offload = create_forced_compaction_graph(middleware)
+        # `create_forced_compaction_graph` compiles without a checkpointer
+        # because the LangGraph server attaches its own to every registered
+        # graph. Do the same here so both graphs share one thread.
+        cast("Any", offload).checkpointer = checkpointer
+        await cast("Any", offload).ainvoke({}, config, context=CLIContext())
+
+        # Read back through the wide schema, as the agent graph would.
+        state = await cast("Any", wide.compile(checkpointer=checkpointer)).aget_state(
+            config
+        )
+        assert state.values["todos"] == ["keep me"]
+        assert [message.id for message in state.values["messages"]] == ["m0"]
+        assert state.values["_summarization_event"] == {"cutoff_index": 1}
+
+    async def test_replayed_input_reaches_the_node_without_duplicating(self) -> None:
+        """The driver's state replay must arrive intact and not double up.
+
+        `_drive_offload_operation_graph` replays the thread's messages as the run
+        input because an empty input leaves a *server-backed* run with nothing to
+        compact. The `add_messages` reducer is what makes that safe: replaying
+        messages that are already checkpointed merges them by ID rather than
+        appending a second copy.
+        """
+        from langchain_core.messages import HumanMessage
+        from langgraph.checkpoint.memory import InMemorySaver
+        from langgraph.graph import END, START, StateGraph
+
+        from deepagents_code._cli_context import CLIContext
+        from deepagents_code.offload_middleware import create_forced_compaction_graph
+
+        checkpointer = InMemorySaver()
+        config = {"configurable": {"thread_id": "shared-thread"}}
+        seeded = [
+            HumanMessage(content="history", id="m0"),
+            HumanMessage(content="more", id="m1"),
+        ]
+
+        class _WideState(TypedDict, total=False):
+            messages: Annotated[list, add_messages]
+
+        def _seed(state: _WideState) -> dict:  # noqa: ARG001  # node input unused
+            return {"messages": seeded}
+
+        wide = StateGraph(cast("Any", _WideState))
+        wide.add_node("seed", cast("Any", _seed))
+        wide.add_edge(START, "seed")
+        wide.add_edge("seed", END)
+        await cast("Any", wide.compile(checkpointer=checkpointer)).ainvoke({}, config)
+
+        middleware = MagicMock()
+        middleware.arun_forced_compaction_update = AsyncMock(return_value=None)
+        offload = create_forced_compaction_graph(middleware)
+        cast("Any", offload).checkpointer = checkpointer
+        await cast("Any", offload).ainvoke(
+            {"messages": seeded}, config, context=CLIContext()
+        )
+
+        await_args = middleware.arun_forced_compaction_update.await_args
+        assert await_args is not None
+        state_arg = await_args.args[0]
+        assert [message.id for message in state_arg["messages"]] == ["m0", "m1"]
+
+    async def test_nothing_to_compact_returns_an_empty_update(self) -> None:
+        """A `None` update must not become a partial write."""
+        from deepagents_code._cli_context import CLIContext
+        from deepagents_code.offload_middleware import create_forced_compaction_graph
+
+        middleware = MagicMock()
+        middleware.arun_forced_compaction_update = AsyncMock(return_value=None)
+
+        graph = create_forced_compaction_graph(middleware)
+        result = await cast("Any", graph).ainvoke(
+            {"messages": []}, context=CLIContext()
+        )
+
+        assert "_summarization_event" not in result
 
     async def test_summary_cost_is_drained_into_graph_update(
         self, monkeypatch: pytest.MonkeyPatch

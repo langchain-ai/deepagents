@@ -136,6 +136,7 @@ class RemoteAgent:
         self._api_key = api_key
         self._headers = headers
         self._graph: Any = None
+        self._sibling_clients: dict[str, RemoteAgent] = {}
 
     def _get_graph(self) -> Any:  # noqa: ANN401
         """Lazily create the `RemoteGraph` instance.
@@ -157,18 +158,28 @@ class RemoteAgent:
     def for_graph(self, graph_name: str) -> RemoteAgent:
         """Return a client for another graph served by the same runtime.
 
+        Cached per graph name, mirroring the `_graph` cache: each `RemoteGraph`
+        builds its own `httpx` async *and* sync client, neither of which is
+        pooled by the SDK or closed here, so constructing one per call would
+        leak two connection pools on every use.
+
         Args:
             graph_name: Registered LangGraph graph name.
 
         Returns:
-            A fresh client that preserves this connection's URL and credentials.
+            A client that preserves this connection's URL and credentials. The
+                same instance is returned for repeated calls with one name.
         """
-        return RemoteAgent(
-            self._url,
-            graph_name=graph_name,
-            api_key=self._api_key,
-            headers=self._headers,
-        )
+        cached = self._sibling_clients.get(graph_name)
+        if cached is None:
+            cached = RemoteAgent(
+                self._url,
+                graph_name=graph_name,
+                api_key=self._api_key,
+                headers=self._headers,
+            )
+            self._sibling_clients[graph_name] = cached
+        return cached
 
     async def astream(
         self,

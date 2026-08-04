@@ -152,6 +152,29 @@ class TestCLICompactionMiddleware:
         assert result.update is not None
         assert result.update["_summarization_event"]["cutoff_index"] == 2
 
+    async def test_forced_compact_writes_through_the_archive_guard(self) -> None:
+        """The archive write is guarded even though the summarizer is not.
+
+        `_ArchiveReadGuard` deliberately exposes only the read/write methods it
+        has to intercept, so it cannot stand in for the composite backend the
+        summarizer needs (see `test_runtime_model_builds_matching_summarizer`).
+        The two therefore have to be handed out separately, and this pins that
+        the write half still gets the guard.
+        """
+        summarization = self._summarization()
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+        runtime.state = {"messages": [HumanMessage("one"), HumanMessage("two")]}
+        runtime.tool_call_id = "tool-call"
+
+        await middleware._arun_forced_compact(runtime)
+
+        write_backend = summarization._aoffload_to_backend.await_args.args[0]
+        assert isinstance(write_backend, _ArchiveReadGuard)
+        assert write_backend._backend is summarization._backend
+        assert not hasattr(write_backend, "artifacts_root")
+
     def test_runtime_model_builds_matching_summarizer(self) -> None:
         """A `/model` override selects the summarizer used by `/offload`."""
         startup = self._summarization()
@@ -184,8 +207,11 @@ class TestCLICompactionMiddleware:
         )
         create_summarization.assert_called_once()
         assert create_summarization.call_args.args[0] is active_model
-        guarded_backend = create_summarization.call_args.args[1]
-        assert guarded_backend._backend is startup._backend
+        # The summarizer gets the composite backend itself, not the
+        # `_ArchiveReadGuard` wrapper: it reads `artifacts_root` to prefix the
+        # archive path, and the guard exposes no such attribute. The write path
+        # applies the guard separately (see `test_forced_compact_writes_guarded`).
+        assert create_summarization.call_args.args[1] is startup._backend
 
     def test_runtime_profile_overrides_and_context_limit_are_applied(self) -> None:
         """Server-side offload uses the CLI's effective model profile."""
@@ -222,8 +248,7 @@ class TestCLICompactionMiddleware:
         assert active_model.profile["max_input_tokens"] == 24_000
         create_summarization.assert_called_once()
         assert create_summarization.call_args.args[0] is active_model
-        guarded_backend = create_summarization.call_args.args[1]
-        assert guarded_backend._backend is startup._backend
+        assert create_summarization.call_args.args[1] is startup._backend
 
     async def test_force_noops_when_nothing_old_enough(self) -> None:
         """Forced compaction still no-ops at cutoff 0 (bypasses only the gate)."""

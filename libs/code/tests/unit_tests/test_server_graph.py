@@ -47,6 +47,94 @@ class TestServerGraph:
 
         make_graph.assert_awaited_once_with()
 
+    async def test_both_graphs_share_one_resource_initialization(self) -> None:
+        """`agent` and `offload` must not build two server runtimes.
+
+        The LangGraph server resolves named graphs independently, so a second
+        initialization would re-discover MCP servers, create a second sandbox,
+        and stack duplicate `atexit` handlers.
+        """
+        graph_obj = object()
+        module = _import_fresh_server_graph()
+        backend = SimpleNamespace()
+        offload_graph = object()
+
+        from deepagents_code.offload_middleware import (
+            OffloadServerResources,
+            attach_offload_resources,
+        )
+
+        attach_offload_resources(
+            backend,
+            OffloadServerResources(compaction=MagicMock(), hooks=None),
+        )
+
+        with (
+            patch.object(
+                module,
+                "_make_graphs",
+                new=AsyncMock(return_value=(graph_obj, backend)),
+            ) as make_graphs,
+            patch(
+                "deepagents_code.offload_middleware.create_forced_compaction_graph",
+                return_value=offload_graph,
+            ),
+        ):
+            assert await module.make_graph() is graph_obj
+            assert await module.make_offload_graph() is offload_graph
+            assert await module.make_offload_graph() is offload_graph
+            assert await module.make_graph() is graph_obj
+
+        make_graphs.assert_awaited_once_with()
+
+    async def test_offload_graph_reuses_the_agents_middleware(self) -> None:
+        """The operation graph must run the agent's own compaction middleware."""
+        module = _import_fresh_server_graph()
+        backend = SimpleNamespace()
+        compaction = MagicMock()
+        hooks = MagicMock()
+
+        from deepagents_code.offload_middleware import (
+            OffloadServerResources,
+            attach_offload_resources,
+        )
+
+        attach_offload_resources(
+            backend,
+            OffloadServerResources(compaction=compaction, hooks=hooks),
+        )
+
+        with (
+            patch.object(
+                module,
+                "_make_graphs",
+                new=AsyncMock(return_value=(object(), backend)),
+            ),
+            patch(
+                "deepagents_code.offload_middleware.create_forced_compaction_graph",
+                return_value=object(),
+            ) as create_graph,
+        ):
+            await module.make_offload_graph()
+
+        create_graph.assert_called_once_with(compaction, hooks_middleware=hooks)
+
+    async def test_offload_graph_fails_closed_without_published_middleware(
+        self,
+    ) -> None:
+        """A backend carrying no offload resources must fail, not half-work."""
+        module = _import_fresh_server_graph()
+
+        with (
+            patch.object(
+                module,
+                "_make_graphs",
+                new=AsyncMock(return_value=(object(), SimpleNamespace())),
+            ),
+            pytest.raises(RuntimeError, match="did not publish its offload"),
+        ):
+            await module.make_offload_graph()
+
     def test_criteria_context_tools_use_identity_allowlist_in_tool_order(self) -> None:
         """Criteria tools should be known context objects in main-tool order."""
         module = _import_fresh_server_graph()
@@ -227,7 +315,7 @@ class TestServerGraph:
             # Non-default allowlist so the `fs_tools=` assertion below is
             # load-bearing: it round-trips through `to_env()`/`from_env()` and
             # must reach `create_cli_agent`. With the `None` default this
-            # assertion passed whether or not `_make_graph` read
+            # assertion passed whether or not `_make_graphs` read
             # `config.allow_fs_tools`, so a dropped read would go unnoticed.
             allow_fs_tools=["ls", "read_file"],
         )

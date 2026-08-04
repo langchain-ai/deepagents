@@ -367,60 +367,6 @@ async def _make_graphs() -> tuple[Any, Any]:
     return await asyncio.to_thread(_create_cli_graphs_sync)
 
 
-def _build_graph_factory(
-    builder: Callable[[], Awaitable[Any]] | None = None,
-) -> Callable[[], Awaitable[Any]]:
-    """Build the cached async graph factory exposed to `langgraph dev`.
-
-    The returned coroutine function is what `langgraph.json` references. It keeps
-    its cache and lock in this closure rather than in module-level globals, so
-    importing the module (e.g. for import-only checks) introduces no shared
-    mutable state.
-
-    Args:
-        builder: Optional alternate graph builder.
-
-    Returns:
-        A zero-arg async factory that builds the graph once and returns the
-        cached instance on every subsequent call.
-    """
-    missing = object()
-    graph: Any = missing
-    lock = asyncio.Lock()
-
-    async def make_graph() -> Any:  # noqa: ANN401
-        """Create (or return the cached) agent graph for `langgraph dev`.
-
-        LangGraph loads this async factory from the generated `langgraph.json`
-        and invokes it lazily on its event loop — and again on every run. The
-        built graph is cached for the process lifetime so MCP discovery, sandbox
-        creation, and `atexit` registration each happen exactly once; re-running
-        them per request would re-discover MCP servers, leak sandbox sessions,
-        and stack duplicate `atexit` handlers. Any construction failure is
-        converted into a startup-error marker (scraped by the parent app
-        process) before exiting.
-
-        Returns:
-            Compiled LangGraph agent graph.
-        """
-        nonlocal graph
-        if graph is not missing:
-            return graph
-        async with lock:
-            if graph is missing:
-                try:
-                    if builder is not None:
-                        graph = await builder()
-                    else:
-                        graph = (await _make_graphs())[0]
-                except Exception as exc:  # noqa: BLE001  # top-level barrier: any construction failure must surface to the parent as a marker
-                    emit_startup_failure(exc)
-                    sys.exit(1)
-            return graph
-
-    return make_graph
-
-
 def _build_graph_factories(
     builder: Callable[[], Awaitable[tuple[Any, Any]]] | None = None,
 ) -> tuple[Callable[[], Awaitable[Any]], Callable[[], Awaitable[Any]]]:
@@ -431,6 +377,13 @@ def _build_graph_factories(
     composite backend, and MCP sessions rather than constructing a second
     server runtime for the slash command.
 
+    The cache and lock live in this closure rather than in module-level globals,
+    so importing the module (e.g. for import-only checks) introduces no shared
+    mutable state.
+
+    Args:
+        builder: Optional alternate builder for the shared server resources.
+
     Returns:
         Factories for the interactive agent and `/offload` operation graphs.
     """
@@ -439,47 +392,69 @@ def _build_graph_factories(
     offload_graph: Any = missing
     lock = asyncio.Lock()
 
-    async def resource_at(index: int) -> Any:  # noqa: ANN401
+    async def shared_resources() -> tuple[Any, Any]:
+        """Build (or return the cached) agent graph and composite backend.
+
+        LangGraph loads the factories below from the generated `langgraph.json`
+        and invokes them lazily on its event loop — and again on every run. The
+        result is cached for the process lifetime so MCP discovery, sandbox
+        creation, and `atexit` registration each happen exactly once; re-running
+        them per request would re-discover MCP servers, leak sandbox sessions,
+        and stack duplicate `atexit` handlers.
+
+        Returns:
+            The agent graph and the composite backend it was built with.
+        """
         nonlocal resources
         if resources is missing:
             async with lock:
                 if resources is missing:
                     try:
                         resources = await (builder or _make_graphs)()
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:  # noqa: BLE001  # top-level barrier: any construction failure must surface to the parent as a marker
                         emit_startup_failure(exc)
                         sys.exit(1)
-        return cast("tuple[Any, Any]", resources)[index]
+        return cast("tuple[Any, Any]", resources)
 
     async def make_graph() -> Any:  # noqa: ANN401
-        """Return the normal interactive agent graph."""
-        return await resource_at(0)
+        """Return the normal interactive agent graph.
+
+        Returns:
+            Compiled LangGraph agent graph.
+        """
+        agent_graph, _backend = await shared_resources()
+        return agent_graph
 
     async def make_offload_graph() -> Any:  # noqa: ANN401
         """Return the explicit server-side `/offload` operation graph.
 
+        Returns:
+            Compiled graph performing one forced compaction attempt.
+
         Raises:
-            RuntimeError: If the shared agent backend lacks compaction support.
+            RuntimeError: If the shared agent backend published no compaction
+                middleware, which would leave `/offload` with no implementation.
         """
         nonlocal offload_graph
-        backend = await resource_at(1)
+        _agent_graph, backend = await shared_resources()
         if offload_graph is missing:
             async with lock:
                 if offload_graph is missing:
                     from deepagents_code.offload_middleware import (
-                        CLICompactionMiddleware,
                         create_forced_compaction_graph,
+                        offload_resources_from,
                     )
 
-                    middleware = getattr(backend, "_cli_compaction_middleware", None)
-                    if not isinstance(middleware, CLICompactionMiddleware):
-                        msg = "Agent backend did not expose its compaction middleware."
+                    offload_resources = offload_resources_from(backend)
+                    if offload_resources is None:
+                        msg = (
+                            "Agent backend did not publish its offload "
+                            "middleware; /offload has no implementation."
+                        )
                         raise RuntimeError(msg)
-                    hooks_middleware = getattr(
-                        backend, "_cli_server_hooks_middleware", None
-                    )
                     offload_graph = create_forced_compaction_graph(
-                        middleware, hooks_middleware=hooks_middleware
+                        offload_resources.compaction,
+                        hooks_middleware=offload_resources.hooks,
                     )
         return offload_graph
 

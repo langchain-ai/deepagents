@@ -493,11 +493,14 @@ def _is_tool_message(msg: Any) -> bool:  # noqa: ANN401
 def _find_compaction_failure(messages: list[Any]) -> str | None:
     """Return a persisted forced-compaction failure message, if present.
 
-    `/offload` primarily detects tool failures from the live message stream,
-    but a stream hiccup (or an update-injected `ToolMessage` that never surfaces
-    on the `messages` stream) can drop that signal even though the failure
-    `ToolMessage` still lands in durable state. Scanning committed state closes
-    that gap so a genuine failure is not misreported as "nothing to offload".
+    This covers the seeded driver used for local in-process agents, which is
+    the only `/offload` path that produces a `ToolMessage` at all. It primarily
+    detects tool failures from the live message stream, but a stream hiccup (or
+    an update-injected `ToolMessage` that never surfaces on the `messages`
+    stream) can drop that signal even though the failure `ToolMessage` still
+    lands in durable state. Scanning committed state closes that gap so a
+    genuine failure is not misreported as "nothing to offload". The server-side
+    operation graph raises instead, so it never reaches this scan.
 
     The caller passes only the messages produced by the *current* `/offload`
     attempt (the tail after the pre-seed prefix). This matters because the
@@ -14661,10 +14664,12 @@ class DeepAgentsApp(App):
 
             if new_event is None or new_cutoff <= prior_cutoff:
                 # A failure and a genuine no-op both leave `_summarization_event`
-                # unchanged. Stream-based detection can miss the failure
-                # `ToolMessage` (e.g. an update-injected message that never
-                # surfaces on the `messages` stream), so cross-check committed
-                # state before concluding there was nothing to do.
+                # unchanged. On the seeded path, stream-based detection can miss
+                # the failure `ToolMessage` (e.g. an update-injected message that
+                # never surfaces on the `messages` stream), so cross-check
+                # committed state before concluding there was nothing to do. The
+                # operation graph raises on failure and so never reaches here
+                # with one pending; for it this branch is a true no-op.
                 current_messages = new_state.get("messages", [])[len(before_messages) :]
                 failure = _find_compaction_failure(current_messages)
                 if failure is not None:
@@ -14695,19 +14700,33 @@ class DeepAgentsApp(App):
                 )
                 return
 
+            if not local_seeded:
+                # The seeded driver fires this from inside its drain, keyed on
+                # the compaction tool result. The operation graph produces no
+                # tool result, so fire it here instead -- at the same point in
+                # the lifecycle (compaction has committed), so a configured
+                # `SessionStart` hook sees `/offload` exactly as it sees
+                # automatic compaction.
+                from deepagents_code.hooks.models.domain import SessionStartCause
+
+                if not await self._run_session_start_hook(SessionStartCause.COMPACT):
+                    return
+
             archive_path = (
                 new_event.get("file_path")
                 if isinstance(new_event, dict)
                 else getattr(new_event, "file_path", None)
             )
-            # Recompute the post-offload size from the ORIGINAL pre-seed
-            # messages plus the new event. `_effective_conversation` yields
+            # Recompute the post-offload size from the ORIGINAL pre-run messages
+            # plus the new event. `_effective_conversation` yields
             # `[summary, *before_messages[new_cutoff:]]` — the compacted
-            # conversation without the tool's own machinery (the seeded tool
+            # conversation without the seeded driver's machinery (the seeded tool
             # call, the tool result, and the trailing model turn), all of which
-            # land in `new_state["messages"]` at/after `new_cutoff`. Counting
-            # `before_messages` keeps this token figure consistent with the
-            # message counts below and avoids understating the reduction.
+            # land in `new_state["messages"]` at/after `new_cutoff`. The
+            # operation graph commits no such artifacts, so for that path this is
+            # simply the pre-run conversation. Counting `before_messages` keeps
+            # this token figure consistent with the message counts below and
+            # avoids understating the reduction.
             #
             # This is a client-side approximation for the status bar and is
             # deliberately not the persisted `_context_tokens` (refreshed from
@@ -14772,8 +14791,15 @@ class DeepAgentsApp(App):
             self._on_tokens_update(tokens_after)
 
         except Exception as exc:  # surface offload errors to user
+            from deepagents_code.client.remote_client import format_agent_exception
+
             logger.exception("Offload failed")
-            await self._mount_message(ErrorMessage(f"Offload failed: {exc}"))
+            # The operation graph reports failure by raising, so a server-backed
+            # `/offload` surfaces a `RemoteException` here. `str()` renders that
+            # as a raw dict repr; `format_agent_exception` unwraps it.
+            await self._mount_message(
+                ErrorMessage(f"Offload failed: {format_agent_exception(exc)}")
+            )
         finally:
             self._set_agent_running(False)
             try:
@@ -14830,16 +14856,43 @@ class DeepAgentsApp(App):
             thread_id=self._lc_thread_id,
         )
         self._hooks.apply_graph_context(stream_context)
+        # Replay the thread's own state as the run input. This is load-bearing
+        # against a real server even though `messages` carries the `add_messages`
+        # reducer: an empty input starts the run with an empty message list and
+        # the node finds nothing to compact (verified in
+        # `test_offload_server_side.py`; an in-process checkpointer does resolve
+        # it from the checkpoint, so unit tests alone will not catch this).
+        # `astream(None)` is not an option either -- it never starts a run on
+        # `RemoteAgent`. `_summarization_event` is stripped: its embedded summary
+        # message is a private-shape dict the server cannot deserialize, and the
+        # event reaches the node through the checkpoint channels regardless.
         stream_input = {
             key: value
             for key, value in state_values.items()
             if key != "_summarization_event"
         }
+
+        # `stream_mode=["updates"]` only: unlike the seeded driver, this path
+        # cannot itemize the offload under the `offload` kind in `/cost`. The
+        # summarizer runs as a direct model invoke inside the node and passes its
+        # own `config`, which replaces the ambient run config the `messages`
+        # stream is built from, so no message chunk ever reaches this client
+        # (verified in `test_offload_server_side.py`). The spend itself is not
+        # lost: the process-wide recorder captures the request and the graph's
+        # `CostTrackingMiddleware` prices it onto `_session_cost_usd`, which
+        # `_sync_session_cost_from_state` reads back. Only the per-kind token
+        # breakdown is unavailable, and recovering it needs a usage channel on
+        # the checkpoint that does not exist yet.
         async for _chunk in remote.for_graph("offload").astream(
             cast("Any", stream_input),
             stream_mode=["updates"],
             config=config,
             context=stream_context,
+            # Accepted for signature parity and documented as ignored by
+            # `RemoteAgent.astream` (the server owns durability), so this is not
+            # a guarantee that the event is committed when the stream ends. The
+            # caller re-reads committed state and reconciles rather than trusting
+            # the stream.
             durability="exit",
         ):
             pass

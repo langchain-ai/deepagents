@@ -1074,3 +1074,58 @@ class TestAgentErrorType:
 
     def test_non_dict_payload_uses_class_name(self) -> None:
         assert agent_error_type(ValueError("boom")) == "ValueError"
+
+
+# ---------------------------------------------------------------------------
+# RemoteAgent.for_graph
+# ---------------------------------------------------------------------------
+
+
+class TestForGraph:
+    """Sibling clients for other graphs served by the same runtime."""
+
+    def _agent(self) -> RemoteAgent:
+        return RemoteAgent(
+            "http://localhost:1234",
+            graph_name="agent",
+            api_key="secret-key",
+            headers={"x-proxy": "yes"},
+        )
+
+    def test_preserves_url_and_credentials(self) -> None:
+        """A dropped key would 401 only on authenticated deployments."""
+        sibling = self._agent().for_graph("offload")
+
+        assert sibling._graph_name == "offload"
+        assert sibling._url == "http://localhost:1234"
+        assert sibling._api_key == "secret-key"
+        assert sibling._headers == {"x-proxy": "yes"}
+
+    def test_repeated_calls_return_one_client(self) -> None:
+        """Each `RemoteGraph` opens an httpx async *and* sync client.
+
+        Neither is pooled by the SDK nor closed here, so building a client per
+        call would leak two connection pools on every `/offload`.
+        """
+        agent = self._agent()
+
+        assert agent.for_graph("offload") is agent.for_graph("offload")
+
+    def test_distinct_names_get_distinct_clients(self) -> None:
+        agent = self._agent()
+
+        assert agent.for_graph("offload") is not agent.for_graph("agent")
+
+    def test_sibling_does_not_share_the_parents_graph(self) -> None:
+        """The cached `RemoteGraph` is per-graph-name, not shared."""
+        agent = self._agent()
+        with patch("langgraph.pregel.remote.RemoteGraph") as remote_graph:
+            remote_graph.side_effect = lambda name, **_kwargs: SimpleNamespace(
+                name=name
+            )
+            parent_graph = agent._get_graph()
+            sibling_graph = agent.for_graph("offload")._get_graph()
+
+        assert parent_graph is not sibling_graph
+        assert parent_graph.name == "agent"
+        assert sibling_graph.name == "offload"

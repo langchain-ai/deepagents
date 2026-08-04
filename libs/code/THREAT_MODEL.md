@@ -183,6 +183,7 @@
 #### DC5: Offloaded Conversation History
 
 - **Fields**: Timestamped, formatted conversation messages written by `offload.offload_messages_to_backend`.
+- **Producers**: Two paths write this data — the model-initiated `compact_conversation` tool (HITL-gated, see TB2) and the explicit `/offload` command. On a server-backed agent the latter runs the `offload` operation graph, which writes outside the tool-approval path; both funnel through `offload_middleware._ArchiveReadGuard`, which fails closed rather than truncating existing history when its prerequisite read fails.
 - **Storage**: Sandbox backend filesystem at path `/conversation_history/{thread_id}.md` where `thread_id` is a UUID7 (via `sessions.generate_thread_id`).
 - **Access**: Accessible within the sandbox session; depends on provider access controls.
 - **Encryption**: Depends on sandbox provider storage backend.
@@ -222,6 +223,7 @@
 - **Outside**: Once the user clicks "approve" (interactive) or a command passes the allow-list check (non-interactive), the tool executes with no further framework-level gating.
 - **Crossing mechanism**: LangGraph HITL interrupt routed through `RemoteAgent` SSE stream.
 - **Key note**: `auto_approve` mode bypasses all HITL approval prompts while still displaying Unicode/URL warnings.
+- **Key note**: This boundary gates the *model-initiated* `compact_conversation` tool. The explicit `/offload` command does not cross it: on a server-backed agent it runs the separate `offload` operation graph (`offload_middleware.create_forced_compaction_graph`), which has no tool node and therefore no HITL interrupt — the slash command is the authorization. That graph still dispatches `PreCompact` against an in-memory forced tool call, so a hook can veto it, but the archive write reaches `backend.awrite()` without traversing the tool-approval path. See DF25.
 
 #### TB3: Tool Result → LLM Context
 
@@ -252,6 +254,7 @@
 - **Inside**: Server bound to `127.0.0.1` by default; `client/launch/server.py:_DEFAULT_HOST = "127.0.0.1"`. `RemoteAgent` only connects to the URL returned by `ServerProcess.url`. Server is ephemeral — started at session start, stopped at session end. Binds a free ephemeral port by default (`client/launch/server.py:_EPHEMERAL_PORT`); an explicit port is honored but still falls back to a free port if occupied.
 - **Outside**: `LANGGRAPH_AUTH_TYPE=noop` disables all LangGraph server authentication. Any process on localhost that discovers the port can submit requests, read thread state, or inject messages.
 - **Crossing mechanism**: HTTP POST/GET to `http://127.0.0.1:{port}` using `langgraph.pregel.remote.RemoteGraph`.
+- **Key note**: `generate_langgraph_json` registers two graphs, `agent` and `offload`, so the surface is both. The `offload` graph's state schema (`offload_middleware._OffloadState`) publishes `messages` and `_summarization_event` as writable input channels on the same threads the agent uses; the driver has to replay the thread's messages as run input, so an empty input schema is not available as a mitigation. A local caller can therefore set the compaction cutoff directly. `messages` inherits the `add_messages` reducer, so replayed input merges by ID rather than replacing the conversation. This is a narrower escalation than the pre-existing consequence of `noop` auth, which already permits injecting messages on the `agent` graph.
 
 #### TB11: Config File → Code Execution
 

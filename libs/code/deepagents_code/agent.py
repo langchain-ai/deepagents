@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
     from langgraph.types import Command
 
+    from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.output import OutputFormat
     from deepagents_code.plugins.adapters.skills import CodeSkillSource
@@ -100,7 +101,11 @@ from deepagents_code.offload import (
     _artifacts_root,
     _offload_fallback_root,
 )
-from deepagents_code.offload_middleware import _create_cli_compaction_middleware
+from deepagents_code.offload_middleware import (
+    OffloadServerResources,
+    _create_cli_compaction_middleware,
+    attach_offload_resources,
+)
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
 from deepagents_code.reliable_rubric import ReliableRubricMiddleware
@@ -2842,9 +2847,7 @@ def create_cli_agent(
         )
 
     compaction_middleware = _create_cli_compaction_middleware(model, composite_backend)
-    # The dedicated server-side `/offload` graph reuses this exact middleware
-    # through the composite backend, avoiding a second summarizer/backend setup.
-    composite_backend._cli_compaction_middleware = compaction_middleware  # ty: ignore[unresolved-attribute]
+    server_hooks_middleware: ServerHooksMiddleware | None = None
     if auto_mode_config is not None and resolved_interrupt_on is not None:
         from deepagents_code.auto_mode import AutoModeHITLMiddleware
 
@@ -2878,11 +2881,19 @@ def create_cli_agent(
         server_hooks_middleware = ServerHooksMiddleware(
             cwd=hooks_cwd, mcp_tools=mcp_tools
         )
-        # The dedicated `/offload` graph has no model/tool nodes, so retain the
-        # same lifecycle implementation on the shared backend for its explicit
-        # in-memory `PreCompact` dispatch.
-        composite_backend._cli_server_hooks_middleware = server_hooks_middleware  # ty: ignore[unresolved-attribute]
         agent_middleware.append(server_hooks_middleware)
+
+    # The dedicated server-side `/offload` graph has no model or tool nodes, so
+    # it reuses these exact instances through the shared composite backend: the
+    # same summarizer/backend setup, and the same lifecycle implementation for
+    # its in-memory `PreCompact` dispatch.
+    attach_offload_resources(
+        composite_backend,
+        OffloadServerResources(
+            compaction=compaction_middleware,
+            hooks=server_hooks_middleware,
+        ),
+    )
 
     if fs_tools is not None:
         # `fs_tools` is an explicit allowlist here (`--allow-fs-tools all` and an

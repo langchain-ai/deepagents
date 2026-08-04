@@ -38,13 +38,15 @@ When the active genai-prices catalog -- the bundled data, or the auto-updated
 snapshot once one is installed -- has no rates for a model, a local override
 catalog is consulted as a fallback-on-miss (see `_override_price`): the user's
 own `~/.deepagents/prices.json` first, then a maintainer-curated file shipped
-as package data. Unsupported models and malformed usage return `None`; pricing
-must never interrupt a model turn.
+as package data. `PRICING.md` documents the former for users and
+`bundled_prices.README.md` the latter for maintainers. Unsupported models and
+malformed usage return `None`; pricing must never interrupt a model turn.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import errno
 import json
 import logging
 import math
@@ -71,6 +73,7 @@ from deepagents_code._env_vars import OFFLINE, is_env_truthy
 from deepagents_code.resume_state import ResumeState
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
     from uuid import UUID
 
@@ -551,6 +554,31 @@ the first such stopgap.
 _USER_OVERRIDES_FILENAME = "prices.json"
 """Override filename under the user config directory, `DEFAULT_CONFIG_DIR`."""
 
+_TRANSIENT_READ_ERRNOS = frozenset(
+    {
+        errno.EAGAIN,
+        errno.EBUSY,
+        errno.EINTR,
+        errno.EIO,
+        errno.EMFILE,
+        errno.ENFILE,
+        errno.ENOMEM,
+        errno.ESTALE,
+        errno.ETIMEDOUT,
+    }
+)
+"""`OSError` codes that a later request could plausibly get past.
+
+Everything else a read raises is a property of the file rather than of the
+moment -- `PermissionError`, `IsADirectoryError`, `NotADirectoryError`, and the
+`UnicodeDecodeError` a non-UTF-8 file raises (a `ValueError`, so not an
+`OSError` at all). Re-reading those cannot produce a different answer, and
+calling them transient would be expensive rather than merely useless: it keeps
+`_PRICE_OVERRIDES` at `None`, so every unpriced request re-reads both files and
+re-validates both catalogs on the event loop, while `_report_override_once`
+guarantees nothing is said about it after the first line.
+"""
+
 _OVERRIDES_LOCK = threading.Lock()
 """Serializes the lazy build of `_PRICE_OVERRIDES`.
 
@@ -563,12 +591,15 @@ _PRICE_OVERRIDES: tuple[Provider, ...] | None = None
 """Merged override providers, or `None` while no build has been cached.
 
 Read and written only under `_OVERRIDES_LOCK`. A build that hit a transient
-read failure deliberately leaves this `None` so the next unpriced request tries
-again: caching the empty result there would report a momentary `PermissionError`
-or a half-written file as "this user has no overrides" for the rest of the
-process, indistinguishable from having no override file at all. Deterministic
-outcomes -- including malformed JSON and a payload upstream's schema rejects --
-do cache, because re-reading the same bytes cannot produce a different answer.
+read failure (see `_TRANSIENT_READ_ERRNOS`) deliberately leaves this `None` so
+the next unpriced request tries again: caching the empty result there would
+report a momentarily exhausted fd table as "this user has no overrides" for the
+rest of the process, indistinguishable from having no override file at all.
+Every deterministic outcome caches -- including malformed JSON, a payload
+upstream's schema rejects, and a file whose permissions or type make it
+permanently unreadable -- because re-reading the same bytes cannot produce a
+different answer. So a build caches at most once per process, and editing
+`prices.json` mid-session has no effect until dcode is restarted.
 """
 
 _USER_OVERRIDE_ENTRIES = 0
@@ -579,40 +610,50 @@ nothing" apart from "there is no file", which are otherwise identical from the
 outside. Written under `_OVERRIDES_LOCK` alongside `_PRICE_OVERRIDES`.
 """
 
-_OVERRIDE_MISS_REPORTED = False
-"""Whether an override miss against a non-empty user file has been reported.
+_USER_OVERRIDE_LABEL = f"override file {_USER_OVERRIDES_FILENAME!r}"
+"""How to name the user's override file in a message, once its path is known.
 
-Latched: a user who hand-wrote `prices.json` and still sees no cost needs to be
-told the file was read and did not match, but an override miss fires on every
-unpriced request, so saying it once is the whole budget.
+`_report_override_miss` runs far from the build that resolved
+`DEFAULT_CONFIG_DIR`, and telling a user their `'prices.json'` matched nothing
+is unhelpful when the interesting part is *which* one. Written under
+`_OVERRIDES_LOCK` alongside `_PRICE_OVERRIDES`; the initial value only shows if
+a miss is somehow reported before any build.
 """
 
 _OVERRIDE_REPORTED: set[str] = set()
 """Keys of override conditions already reported, so each warns once.
 
-Covers only the conditions a caller retries -- a transient read failure and a
-vanished genai-prices helper -- since everything else is reported from the
-cached one-shot build and warns once for free. Not cleared, because both
-conditions are properties of the environment rather than of a request, and
-deliberately unguarded: a racing duplicate warning is the whole cost.
+Everything the override path warns about is claimed through here, including the
+conditions the cached one-shot build would already dedup for free. It does not
+dedup them when the *sibling* source failed transiently, since that suppresses
+caching (see `_PRICE_OVERRIDES`) -- and a deterministic problem on one file must
+not become a warning on every unpriced request because the other file was
+briefly unreadable.
+
+Keys carry whatever distinguishes one instance from another: an override miss is
+keyed by model, so the first unpriced model of a session cannot spend the report
+that a *later*, actually-misconfigured model needed. Not cleared, and
+deliberately unguarded by the lock: a racing duplicate warning is the whole
+cost.
 """
 
 
-def _override_source_label(path: Path | None, *, resource: bool) -> str:
+def _override_source_label(path: Path | None) -> str:
     """Name one override source for a log message.
 
     Built here rather than at each logging site so the wordings cannot drift
     apart as the sources are added to.
 
     Args:
-        path: Filesystem path of the user source. Ignored when *resource* is set.
-        resource: Whether to name the built-in package resource instead.
+        path: Filesystem path of the user source, or `None` for the built-in
+            package resource.
 
     Returns:
         A phrase naming the source, for interpolation into a log message.
     """
-    if resource:
+    if path is None:
         return f"package resource {_BUNDLED_OVERRIDES_RESOURCE!r}"
+    # `str()` first, deliberately: `repr` of a `Path` prints `PosixPath('...')`.
     return f"override file {str(path)!r}"
 
 
@@ -635,10 +676,13 @@ def _report_override_once(key: str) -> bool:
 def _report_override_dependency(name: str) -> None:
     """Warn once that a genai-prices helper the overrides resolve through moved.
 
-    Reported at WARNING rather than through `_override_price`'s blanket DEBUG
-    handler. The genai-prices pin is a single minor range, so a name that moves
-    means the pin was widened -- and the visible symptom is that the models
-    this catalog exists to price silently revert to no cost at all.
+    Reported at WARNING because nothing else would surface it -- see
+    `_price_overrides` for why depending on a private name is acceptable at all,
+    and why the place to look when this fires is upstream's changelog rather
+    than our pin. How much is lost depends on the caller: losing the parser
+    disables the catalog outright, while losing the provider-id lookup only
+    drops that narrowing and still prices through inference. Each call site
+    states its own consequence.
 
     Args:
         name: Fully qualified helper the import failed on. It is the whole
@@ -653,9 +697,42 @@ def _report_override_dependency(name: str) -> None:
         )
 
 
-def _read_override_source(
-    path: Path | None, *, resource: bool
-) -> tuple[list[Any] | None, bool]:
+def _report_override_provider_mismatch(
+    model_ref: str, provider_id: str, priced_by: str
+) -> None:
+    """Warn once that a full sweep priced a request under a different provider.
+
+    The sweep is what keeps an entry reachable when the provider id LangChain
+    reports does not match what upstream (or the user's file) calls that
+    provider, which is much of the reason this catalog exists. But the same
+    model id is commonly published by several providers at very different rates
+    -- `llama-3.3-70b` on Bedrock, Together, and Groq -- so one hand-written
+    entry can silently reprice every provider serving that id.
+
+    Alone among the outcomes here, this one hands the user a confident dollar
+    figure that may be the wrong figure rather than no figure at all, so it does
+    not stay at DEBUG with the ordinary override-pricing trail.
+
+    Args:
+        model_ref: Model identifier used for the request.
+        provider_id: Provider the request actually ran against, post-alias.
+        priced_by: Override provider whose entry supplied the rates.
+    """
+    if _report_override_once(f"mismatch:{provider_id}:{priced_by}:{model_ref}"):
+        logger.warning(
+            "Priced model=%r from override provider %r, but the request ran "
+            "against provider %r: no override provider claims that id, so the "
+            "catalog was swept by model id alone and these rates may belong to "
+            "a different provider's copy of the model. Give the entry the "
+            "provider id %r (or a matching `provider_match`) to pin it.",
+            model_ref,
+            priced_by,
+            provider_id,
+            provider_id,
+        )
+
+
+def _read_override_source(path: Path | None) -> tuple[list[Any] | None, bool]:
     """Read one override catalog, saying whether the failure was transient.
 
     A missing or empty *user* file is the normal case, so it is silent. A
@@ -663,24 +740,31 @@ def _read_override_source(
     without its package data, so it is warned about. Every other bad outcome --
     malformed JSON, a payload that is not the provider array upstream
     publishes, an unreadable file -- drops the source with a warning rather
-    than raising, because pricing must never interrupt a model turn.
+    than raising, because pricing must never interrupt a model turn. Only a
+    transient read failure is reported as such, and `_TRANSIENT_READ_ERRNOS`
+    decides which those are; malformed content never is.
+
+    Every warning here is claimed through `_report_override_once`. The cached
+    one-shot build would dedup most of them for free, but not when the sibling
+    source failed transiently and so suppressed that caching -- which would
+    otherwise turn a deterministic problem with one file into a warning on every
+    unpriced request.
 
     Args:
-        path: Filesystem path for the user source. Ignored when *resource* is
-            set; a `None` path without *resource* yields nothing.
-        resource: Read the built-in `_BUNDLED_OVERRIDES_RESOURCE` package data
-            instead of *path*. Split this way because `importlib.resources` and
-            `Path` share no read API.
+        path: Filesystem path for the user source, or `None` to read the
+            built-in `_BUNDLED_OVERRIDES_RESOURCE` package data. Split on `None`
+            rather than by a flag because `importlib.resources` and `Path` share
+            no read API, and a flag would admit states with no meaning.
 
     Returns:
         The decoded provider array -- or `None` when the source yields nothing
             usable -- paired with whether it failed for a *transient* reason.
-            Only that flag keeps `_price_overrides` from caching the build:
-            malformed content is deterministic, an I/O error is not.
+            Only that flag keeps `_price_overrides` from caching the build.
     """
-    label = _override_source_label(path, resource=resource)
+    resource = path is None
+    label = _override_source_label(path)
     try:
-        if resource:
+        if path is None:
             from importlib.resources import files
 
             text = (
@@ -688,31 +772,42 @@ def _read_override_source(
                 .joinpath(_BUNDLED_OVERRIDES_RESOURCE)
                 .read_text(encoding="utf-8")
             )
-        elif path is None:
-            return None, False
         else:
             text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
-        if resource:
+        if resource and _report_override_once(f"missing:{label}"):
             logger.warning(
                 "The pricing overrides in %s are missing; this build shipped "
                 "without its package data",
                 label,
             )
         return None, False
-    except Exception:
-        # Transient by assumption: a momentarily exhausted fd table, EIO on a
-        # network mount, or the window an editor opens while saving the file
-        # all land here, and none of them mean the user has no overrides.
+    except OSError as exc:
+        # A momentarily exhausted fd table or EIO on a network mount is worth
+        # retrying; a directory, a mode-000 file, or a broken symlink is not,
+        # and pretending otherwise costs a re-read per unpriced request forever.
+        transient = exc.errno in _TRANSIENT_READ_ERRNOS
         if _report_override_once(f"read:{label}"):
             logger.warning(
                 "Could not read the pricing overrides in %s; ignoring that source",
                 label,
                 exc_info=True,
             )
-        return None, True
+        return None, transient
+    except Exception:
+        # Not an `OSError`, so not a momentary I/O condition: a file saved as
+        # UTF-16 or holding binary raises `UnicodeDecodeError`, and the same
+        # bytes cannot decode differently on a later attempt.
+        if _report_override_once(f"decode:{label}"):
+            logger.warning(
+                "Could not decode the pricing overrides in %s as UTF-8 text; "
+                "ignoring that source",
+                label,
+                exc_info=True,
+            )
+        return None, False
     if not text.strip():
-        if resource:
+        if resource and _report_override_once(f"empty:{label}"):
             logger.warning(
                 "The pricing overrides in %s are empty; this build shipped "
                 "truncated package data",
@@ -722,18 +817,21 @@ def _read_override_source(
     try:
         payload = json.loads(text)
     except json.JSONDecodeError:
-        logger.warning(
-            "Could not parse the pricing overrides in %s as JSON; ignoring that source",
-            label,
-            exc_info=True,
-        )
+        if _report_override_once(f"json:{label}"):
+            logger.warning(
+                "Could not parse the pricing overrides in %s as JSON; ignoring "
+                "that source",
+                label,
+                exc_info=True,
+            )
         return None, False
     if not isinstance(payload, list):
-        logger.warning(
-            "Ignoring the pricing overrides in %s: the payload must be an array "
-            "of providers, the same schema as upstream's data.json",
-            label,
-        )
+        if _report_override_once(f"shape:{label}"):
+            logger.warning(
+                "Ignoring the pricing overrides in %s: the payload must be an "
+                "array of providers, the same schema as upstream's data.json",
+                label,
+            )
         return None, False
     return payload, False
 
@@ -749,6 +847,15 @@ def _merge_override_providers(
     stopgaps must not shadow that provider's other built-in models, which is
     what two same-id providers would do -- `_find_override_model` resolves an
     id to a single provider and does not fall through to the second.
+
+    Only `models` is unioned. Everything else on a same-id provider record --
+    `model_match`, `provider_match`, `fallback_model_providers`, the display name
+    -- comes from the user's record wholesale, since that is the file whose
+    intent should win. The built-in record's own matching claims are therefore
+    dropped in that case, leaving its models reachable through the full sweep or
+    an exact id. That is acceptable for a stopgap catalog and inert while
+    `bundled_prices.json` declares no such claims, but it is the thing to
+    revisit if a built-in entry ever needs one.
 
     Args:
         user_providers: Providers parsed from the user's `prices.json`.
@@ -773,16 +880,23 @@ def _merge_override_providers(
     return tuple(merged.values())
 
 
-def _price_overrides() -> tuple[Provider, ...]:
-    """Load and merge both override catalogs, caching a complete build.
+def _build_price_overrides(
+    providers_from_raw: Callable[[list[Any]], list[Provider]],
+) -> tuple[tuple[Provider, ...], bool]:
+    """Read, validate, and merge both override catalogs.
 
-    Parsed with `genai_prices.types._providers_from_raw`, the same private
-    helper `UpdatePrices.fetch` uses for the hourly catalog. The genai-prices
-    pin is a single minor range, so depending on that private name is
-    acceptable -- and if it moves, `_report_override_dependency` says so at
-    WARNING rather than letting the catalog fail silently. Both sources use the
-    raw provider-array schema of upstream's `prices/new_data/v2/data.json`, so
-    an entry is copy-pasteable into a genai-prices PR.
+    Parsed with *providers_from_raw*, which is `genai_prices.types`' private
+    helper `UpdatePrices.fetch` uses for the hourly catalog. Depending on a
+    private name is acceptable here because the pin is narrow, this fallback is
+    non-essential, and the failure is loud. What it is *not* is safe by virtue
+    of the pin: `genai-prices>=0.1.1,<0.2.0` spans every `0.1.x` patch, so the
+    name can move on a lockfile refresh with `pyproject.toml` untouched, and no
+    project promises private names survive a patch. That is why
+    `_report_override_dependency` warns instead of assuming stability -- and why
+    the place to look when it fires is upstream's changelog rather than our pin.
+    Both sources use the raw provider-array schema of upstream's
+    `prices/new_data/v2/data.json`, so an entry is copy-pasteable into a
+    genai-prices PR.
 
     A source that fails to parse or validate is dropped with a warning and the
     other is still used. None of that touches `_PRICING_UNAVAILABLE` or
@@ -790,75 +904,97 @@ def _price_overrides() -> tuple[Provider, ...]:
     describe: a bad override file is not a broken pricing install, and must not
     tell the user to reinstall.
 
+    Called only by `_price_overrides`, which holds `_OVERRIDES_LOCK`, resolves
+    *providers_from_raw*, and owns the caching decision. May raise;
+    `_price_overrides` is what makes loading infallible for everyone else.
+
+    Args:
+        providers_from_raw: Upstream's raw-payload parser, resolved by the caller
+            so an `ImportError` from it is not confused with one raised by this
+            function's own imports.
+
+    Returns:
+        The merged providers, user entries first -- empty when neither source
+            yields anything usable -- paired with whether a transient read
+            failure means a later attempt could do better.
+    """
+    global _USER_OVERRIDE_ENTRIES, _USER_OVERRIDE_LABEL  # noqa: PLW0603
+    from deepagents_code.model_config import DEFAULT_CONFIG_DIR
+
+    user_path = DEFAULT_CONFIG_DIR / _USER_OVERRIDES_FILENAME
+    _USER_OVERRIDE_LABEL = _override_source_label(user_path)
+    parsed: list[list[Provider]] = []
+    retryable = False
+    for path in (user_path, None):
+        raw, transient = _read_override_source(path)
+        retryable = retryable or transient
+        if raw is None:
+            parsed.append([])
+            continue
+        try:
+            parsed.append(providers_from_raw(raw))
+        except Exception:
+            label = _override_source_label(path)
+            if _report_override_once(f"schema:{label}"):
+                logger.warning(
+                    "Ignoring the pricing overrides in %s: the entries failed "
+                    "validation against the genai-prices provider schema",
+                    label,
+                    exc_info=True,
+                )
+            parsed.append([])
+    # Unpacked rather than indexed so a third source cannot silently re-point
+    # the user-entry count at the wrong file.
+    user_providers, built_in_providers = parsed
+    _USER_OVERRIDE_ENTRIES = sum(len(provider.models) for provider in user_providers)
+    return _merge_override_providers(user_providers, built_in_providers), retryable
+
+
+def _price_overrides() -> tuple[Provider, ...]:
+    """Return the merged override catalog, building and caching it once.
+
     Returns:
         The merged providers, user entries first; empty when neither source
-            yields anything usable. The result is cached unless a transient
-            read failure means a later attempt could do better -- see
+            yields anything usable. Never raises: any failure the build did not
+            handle itself warns once and caches an empty catalog, so
+            `_override_price` can treat loading as infallible and keep its own
+            handler narrow enough to stay at DEBUG. The result is cached unless a
+            transient read failure means a later attempt could do better -- see
             `_PRICE_OVERRIDES`.
     """
-    global _PRICE_OVERRIDES, _USER_OVERRIDE_ENTRIES  # noqa: PLW0603
+    global _PRICE_OVERRIDES  # noqa: PLW0603
     with _OVERRIDES_LOCK:
         if _PRICE_OVERRIDES is not None:
             return _PRICE_OVERRIDES
         try:
             from genai_prices.types import _providers_from_raw  # noqa: PLC2701
         except ImportError:
-            # Permanent for this process, so cache the empty result: without
-            # the parser there is nothing either source can contribute.
+            # The private upstream parser moved. Permanent for this process, so
+            # cache the empty result: without it neither source contributes.
             _report_override_dependency("genai_prices.types._providers_from_raw")
             _PRICE_OVERRIDES = ()
             return _PRICE_OVERRIDES
-
-        from deepagents_code.model_config import DEFAULT_CONFIG_DIR
-
-        parsed: list[list[Provider]] = []
-        retryable = False
-        for path, resource in (
-            (DEFAULT_CONFIG_DIR / _USER_OVERRIDES_FILENAME, False),
-            (None, True),
-        ):
-            raw, transient = _read_override_source(path, resource=resource)
-            retryable = retryable or transient
-            if raw is None:
-                parsed.append([])
-                continue
-            try:
-                parsed.append(_providers_from_raw(raw))
-            except Exception:
+        try:
+            merged, retryable = _build_price_overrides(_providers_from_raw)
+        except Exception:
+            # Whatever the per-source handlers did not anticipate: the
+            # `model_config` import, an unexpected `Provider` shape. Cache the
+            # empty catalog, because letting this escape would rebuild and
+            # re-raise on every unpriced request for the rest of the process --
+            # and warn, because what silently stops applying is the user's own
+            # hand-written rates.
+            if _report_override_once("build"):
                 logger.warning(
-                    "Ignoring the pricing overrides in %s: the entries failed "
-                    "validation against the genai-prices provider schema",
-                    _override_source_label(path, resource=resource),
+                    "Could not load the pricing override catalog; local pricing "
+                    "overrides are disabled for this session",
                     exc_info=True,
                 )
-                parsed.append([])
-        _USER_OVERRIDE_ENTRIES = sum(len(provider.models) for provider in parsed[0])
-        merged = _merge_override_providers(*parsed)
+            _PRICE_OVERRIDES = ()
+            return _PRICE_OVERRIDES
         if retryable:
             return merged
         _PRICE_OVERRIDES = merged
         return _PRICE_OVERRIDES
-
-
-def _infer_override_providers(
-    providers: Sequence[Provider], model_key: str
-) -> Sequence[Provider] | None:
-    """Narrow the override catalog by provider-level `model_match` claims.
-
-    Args:
-        providers: The merged override providers.
-        model_key: Lowercased model identifier to match claims against.
-
-    Returns:
-        The providers claiming *model_key*, or `None` when none do -- distinct
-            from an empty sequence, which would mean "search nothing".
-    """
-    matched = [
-        provider
-        for provider in providers
-        if provider.model_match is not None and provider.model_match.is_match(model_key)
-    ]
-    return matched or None
 
 
 def _find_override_model(
@@ -875,11 +1011,20 @@ def _find_override_model(
     tries a `model_match` claim first -- as the snapshot does -- and otherwise
     sweeps every provider's models, so entries under a provider with no
     `model_match` stay reachable as long as no other override provider claims
-    the model.
+    the model. A sweep that bills a request under a provider other than the one
+    it ran against is warned about by `_report_override_provider_mismatch`: that
+    is the one path here that can produce a wrong dollar figure rather than none.
+
+    A claim, by id or by `model_match`, is final: the search does not fall
+    through to the sweep when the claiming provider turns out not to carry the
+    model. A file that names a provider is taken at its word about which models
+    that provider serves, and a sweep past it would bill some other provider's
+    copy of the model instead of reporting nothing.
 
     Upstream's `litellm` provider-prefix split and its `provider_api_url`
-    matching are not reproduced, so a `litellm`-prefixed model reference does
-    not resolve against the overrides.
+    matching are not reproduced, so a `litellm`-prefixed model reference
+    resolves only incidentally -- whenever some `match` clause happens to match
+    the prefixed string -- and never through the provider the prefix names.
 
     Args:
         providers: The merged override providers.
@@ -889,6 +1034,7 @@ def _find_override_model(
     Returns:
         The `(provider, model)` pair, or `None` on an override miss.
     """
+    all_providers = list(providers)
     claimed: Provider | None = None
     if provider_id is not None:
         try:
@@ -900,17 +1046,31 @@ def _find_override_model(
                 "genai_prices.data_snapshot.find_provider_by_id"
             )
         else:
-            claimed = find_provider_by_id(list(providers), provider_id)
-    candidates: Sequence[Provider] = providers
+            claimed = find_provider_by_id(all_providers, provider_id)
     if claimed is not None:
-        candidates = (claimed,)
-    elif inferred := _infer_override_providers(providers, model_ref.lower()):
-        candidates = inferred
+        candidates: Sequence[Provider] = (claimed,)
+    else:
+        # Providers claiming the model narrow the search as upstream's snapshot
+        # does; with no claim, sweep everything so an entry under a provider
+        # with no `model_match` stays reachable.
+        model_key = model_ref.lower()
+        candidates = [
+            provider
+            for provider in all_providers
+            if provider.model_match is not None
+            and provider.model_match.is_match(model_key)
+        ] or all_providers
     for provider in candidates:
         # `all_providers` enables the one-step `fallback_model_providers` hop.
         # The set is the override catalog alone rather than upstream's, so a
         # fallback resolves only against a provider the override files define.
-        if model := provider.find_model(model_ref, all_providers=list(providers)):
+        if model := provider.find_model(model_ref, all_providers=all_providers):
+            if (
+                claimed is None
+                and provider_id is not None
+                and provider.id != provider_id
+            ):
+                _report_override_provider_mismatch(model_ref, provider_id, provider.id)
             return provider, model
     return None
 
@@ -927,24 +1087,32 @@ def _report_override_miss(
     searched on -- note *provider_id* is post-`_PROVIDER_ALIASES`, and so is
     not necessarily the string the user thought to write.
 
+    Keyed per `(model, provider)` rather than latched once per process. A miss
+    fires for every model the primary catalog does not cover, including side
+    models the user never meant to configure, and a single process-wide latch
+    would let the first of those spend the report -- leaving the user reading a
+    warning about a model they never wrote an entry for while their own typo'd
+    entry missed in silence.
+
     Args:
-        providers: The merged override providers that were searched.
+        providers: The merged override providers searched, empty when there was
+            nothing to search.
         model_ref: Model identifier used for the request.
         provider_id: genai-prices provider identifier, or `None` when inferred.
     """
-    global _OVERRIDE_MISS_REPORTED  # noqa: PLW0603
-    entries = sum(len(provider.models) for provider in providers)
-    if _USER_OVERRIDE_ENTRIES and not _OVERRIDE_MISS_REPORTED:
-        _OVERRIDE_MISS_REPORTED = True
+    if _USER_OVERRIDE_ENTRIES and _report_override_once(
+        f"miss:{model_ref}:{provider_id}"
+    ):
         logger.warning(
-            "No pricing override matched model=%r provider_id=%r, though %r "
-            "contributed %d model entries. Entries must match on the "
-            "genai-prices provider id and model id; the provider named here is "
-            "the one the lookup searched on, after alias resolution.",
+            "No pricing override matched model=%r provider_id=%r, though %s "
+            "contributed %d model %s. Entries must match on the genai-prices "
+            "provider id and model id; the provider named here is the one the "
+            "lookup searched on, after alias resolution.",
             model_ref,
             provider_id,
-            _USER_OVERRIDES_FILENAME,
+            _USER_OVERRIDE_LABEL,
             _USER_OVERRIDE_ENTRIES,
+            "entry" if _USER_OVERRIDE_ENTRIES == 1 else "entries",
         )
         return
     logger.debug(
@@ -952,7 +1120,7 @@ def _report_override_miss(
         "catalog contributed %d model entries",
         model_ref,
         provider_id,
-        entries,
+        sum(len(provider.models) for provider in providers),
     )
 
 
@@ -979,8 +1147,11 @@ def _override_price(
         Estimated cost in USD, or `None` when no override covers the model or
             override loading itself failed. Nothing here may raise.
     """
+    # Outside the handler below on purpose: `_price_overrides` reports its own
+    # load failures at WARNING and never raises, so a failure to read the user's
+    # rates is not downgraded to a DEBUG line by this function's net.
+    providers = _price_overrides()
     try:
-        providers = _price_overrides()
         found = (
             _find_override_model(providers, provider_id, model_ref)
             if providers
@@ -992,18 +1163,30 @@ def _override_price(
         provider, model = found
         cost_usd = float(model.calc_price(usage, provider).total_price)
     except Exception:
-        logger.debug(
-            "Override pricing failed for model=%r provider_id=%r",
-            model_ref,
-            provider_id,
-            exc_info=True,
-        )
+        # Warned rather than logged at DEBUG, and keyed per model so it stays one
+        # line: an override entry that matches but cannot be priced is a mistake
+        # in a hand-written file, and upstream rejects some of those here rather
+        # than at parse time -- a negative rate raises out of `calc_price`.
+        if _report_override_once(f"price:{model_ref}"):
+            logger.warning(
+                "Could not price model=%r provider_id=%r from the override "
+                "catalog; its entry matched but its rates were rejected",
+                model_ref,
+                provider_id,
+                exc_info=True,
+            )
         return None
     if not math.isfinite(cost_usd) or cost_usd < 0:
-        # The same guard `estimate_cost` closes with, applied here because the
-        # override return jumps past it. Rates are unbounded `Decimal`s, so a
-        # mistyped one converts to `inf` -- and `inf` compares greater than
-        # zero, so nothing downstream would filter it out of a session total.
+        # The same predicate `estimate_cost` closes with, applied here because
+        # the override return jumps past it -- but reported rather than silent,
+        # since an override rate is hand-authored and therefore fixable. Rates
+        # are unbounded `Decimal`s, so a mistyped one multiplies out to a finite
+        # `Decimal` that `float()` turns into `inf`, which upstream's own
+        # validation never sees -- and `inf` compares greater than zero, so
+        # nothing downstream would filter it out of a session total. The negative
+        # half is defense in depth: the installed genai-prices rejects a negative
+        # rate inside `calc_price`, above, but nothing about this package's
+        # contract with it guarantees that stays true.
         logger.warning(
             "Ignoring the pricing override for model=%r provider_id=%r: its "
             "rates produced %r, not a finite non-negative cost",
@@ -1016,10 +1199,11 @@ def _override_price(
     # signal to pursue the upstream addition: a model billed from the override
     # catalog is one genai-prices does not cover yet.
     logger.debug(
-        "Priced model=%r provider_id=%r from the pricing override catalog; "
-        "upstream genai-prices has no rates for it",
+        "Priced model=%r provider_id=%r from override provider %r; upstream "
+        "genai-prices has no rates for it",
         model_ref,
         provider_id,
+        provider.id,
     )
     return cost_usd
 

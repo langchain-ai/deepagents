@@ -60,7 +60,13 @@ dependencies = [
     "tavily-python>=0.7.26,<1.0.0",
     "langchain-quickjs>=0.3.4,<0.4.0",
 
-    # Cost estimation (bundled offline pricing data)
+    # Cost estimation (bundled offline pricing data).
+    # The local pricing overrides resolve through two *private* upstream names,
+    # `genai_prices.types._providers_from_raw` and
+    # `genai_prices.data_snapshot.find_provider_by_id`. Neither is covered by any
+    # compatibility promise, and this range spans every 0.1.x patch, so re-verify
+    # both against `cost_tracking._build_price_overrides` and
+    # `cost_tracking._find_override_model` when widening it.
     "genai-prices>=0.1.1,<0.2.0",
 
     # Clipboard

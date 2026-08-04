@@ -192,7 +192,7 @@ include = [
     "deepagents_code/**/*.md",
     "deepagents_code/**/*.tcss",
     # Maintainer-curated pricing overrides consulted when the genai-prices
-    # catalog misses (see `cost_tracking._price_overrides`).
+    # catalog misses (see `cost_tracking._override_price`).
     "deepagents_code/bundled_prices.json",
 ]
 

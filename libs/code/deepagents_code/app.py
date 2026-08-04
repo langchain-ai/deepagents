@@ -9305,8 +9305,32 @@ class DeepAgentsApp(App):
 
         self._startup_sequence_running = True
         initial_submitted = False
+        resume_payload: _ThreadHistoryPayload | None = None
+        compact_before_resume = False
         try:
             from deepagents_code.hooks.models.domain import SessionStartCause
+
+            if self._initial_resume_requested and self._lc_thread_id and self._agent:
+                try:
+                    resume_payload = await self._fetch_thread_history_data(
+                        self._lc_thread_id
+                    )
+                except Exception:
+                    logger.warning(
+                        "Could not prefetch resumed thread %s for the compaction "
+                        "suggestion",
+                        self._lc_thread_id,
+                        exc_info=True,
+                    )
+                else:
+                    choice = await self._offer_resume_compaction(
+                        resume_payload.context_tokens
+                    )
+                    if choice == "cancel":
+                        await self._cancel_initial_resume()
+                        resume_payload = None
+                    else:
+                        compact_before_resume = choice == "compact"
 
             start_cause = (
                 SessionStartCause.RESUME
@@ -9318,11 +9342,24 @@ class DeepAgentsApp(App):
                 or not self._has_initial_submission()
             )
             if should_load_history:
-                await self._load_thread_history(resolve_pending_goal=False)
+                await self._load_thread_history(
+                    preloaded_payload=resume_payload,
+                    resolve_pending_goal=False,
+                )
             elif self._has_initial_submission():
                 try:
                     await self._adopt_resumed_model_if_needed(
-                        thread_id=self._lc_thread_id
+                        model_spec=(
+                            resume_payload.model_spec
+                            if resume_payload is not None
+                            else None
+                        ),
+                        model_params=(
+                            resume_payload.model_params
+                            if resume_payload is not None
+                            else None
+                        ),
+                        thread_id=self._lc_thread_id,
                     )
                 except Exception:
                     logger.exception(
@@ -9342,6 +9379,9 @@ class DeepAgentsApp(App):
                 self._initial_session_start_stopped = True
                 return
             self._initial_session_started = True
+
+            if compact_before_resume:
+                await self._handle_offload()
 
             if self._startup_cmd:
                 cmd = self._startup_cmd
@@ -16491,6 +16531,69 @@ class DeepAgentsApp(App):
             return dict(state.values)
         return {}
 
+    async def _offer_resume_compaction(
+        self, context_tokens: int
+    ) -> Literal["compact", "continue", "cancel"]:
+        """Offer to compact a large-context thread before resuming it.
+
+        Args:
+            context_tokens: Latest model-reported context size for the thread.
+
+        Returns:
+            The user's choice. Threads at or below the configured threshold
+            continue without showing a prompt. A prompt failure also continues so
+            a cosmetic UI fault cannot strand a resumable thread.
+        """
+        from deepagents_code.config import get_compact_on_resume_threshold
+
+        threshold = get_compact_on_resume_threshold()
+        if (
+            not isinstance(context_tokens, int)
+            or isinstance(context_tokens, bool)
+            or context_tokens <= threshold
+        ):
+            return "continue"
+
+        from deepagents_code.tui.widgets.resume_compact import (
+            ResumeCompactPromptScreen,
+        )
+
+        try:
+            choice = await self._push_screen_wait(
+                ResumeCompactPromptScreen(
+                    context_tokens=context_tokens,
+                    threshold=threshold,
+                )
+            )
+        except Exception:
+            logger.exception("Failed to show the compact-on-resume prompt")
+            self.notify(
+                "Could not show the compact-on-resume prompt; resuming without "
+                "compacting.",
+                severity="warning",
+                markup=False,
+            )
+            return "continue"
+        return choice or "cancel"
+
+    async def _cancel_initial_resume(self) -> None:
+        """Start a fresh thread after canceling the launch-time resume."""
+        if self._session_state is not None:
+            thread_id = self._session_state.reset_thread()
+        else:
+            thread_id = _new_thread_id()
+        self._lc_thread_id = thread_id
+        self._initial_resume_requested = False
+        self._should_adopt_resumed_model = False
+        self._resuming = False
+        self._sync_status_connection()
+        self._update_welcome_banner(
+            thread_id,
+            missing_message="Welcome banner not found after canceling resume to %s",
+            warn_if_missing=False,
+        )
+        await self._mount_message(AppMessage("Resume canceled. Started a new thread."))
+
     async def _fetch_thread_history_data(self, thread_id: str) -> _ThreadHistoryPayload:
         """Fetch and convert stored messages for a thread.
 
@@ -20534,6 +20637,7 @@ class DeepAgentsApp(App):
         resume_thread_id: str | None = None,
         preloaded_payload: _ThreadHistoryPayload | None = None,
         persist_default_agent: bool = True,
+        compact_on_resume: bool = False,
     ) -> bool:
         """Restart the langgraph server with a new `assistant_id`.
 
@@ -20561,6 +20665,8 @@ class DeepAgentsApp(App):
                 transition mutates the current session.
             persist_default_agent: Whether the switch should become the saved
                 default agent. One-off thread resumes leave it unchanged.
+            compact_on_resume: Whether to compact the resumed thread after the
+                transition succeeds.
 
         Returns:
             `True` when the new agent is running and the requested transition
@@ -20572,6 +20678,9 @@ class DeepAgentsApp(App):
         """
         if preloaded_payload is not None and resume_thread_id is None:
             msg = "preloaded thread history requires resume_thread_id"
+            raise ValueError(msg)
+        if compact_on_resume and resume_thread_id is None:
+            msg = "resume compaction requires resume_thread_id"
             raise ValueError(msg)
 
         from deepagents_code._env_vars import SERVER_ENV_PREFIX
@@ -20936,6 +21045,9 @@ class DeepAgentsApp(App):
                     thread=previous_thread_id,
                 )
                 await self._mount_message(AppMessage(resume_hint))
+
+            if compact_on_resume:
+                await self._handle_offload()
 
             # Drain any messages the user typed after we cleared the queue
             # but before the new server was ready.
@@ -24219,17 +24331,39 @@ class DeepAgentsApp(App):
         if target is None:
             return
 
+        # Resume flows can open cwd and compaction modals. Detach from Textual's
+        # message pump so those modals can receive their resolving key events.
         active_agent = self._assistant_id or DEFAULT_ASSISTANT_ID
         if target.agent_name == active_agent:
-            await self._resume_thread(target.thread_id)
+            self._schedule_off_message_pump(
+                self._resume_same_agent_thread(target.thread_id),
+                context=f"threads-resume:{target.thread_id}",
+            )
             return
 
-        # This command runs inline on Textual's message pump. Detach before
-        # awaiting the confirmation modal so Enter/Esc can reach it.
         self._schedule_off_message_pump(
             self._confirm_then_resume_cross_agent_thread(target),
             context=f"threads-resume:{target.thread_id}",
         )
+
+    async def _resume_same_agent_thread(self, thread_id: str) -> None:
+        """Resume a thread from a detached slash-command continuation.
+
+        Args:
+            thread_id: Thread to resume.
+
+        Raises:
+            asyncio.CancelledError: If app shutdown cancels the continuation.
+        """
+        try:
+            await self._resume_thread(thread_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Same-agent resume failed for thread %s", thread_id)
+            await self._mount_message(
+                ErrorMessage(f"Could not resume thread {thread_id}: {exc}.")
+            )
 
     async def _resolve_threads_resume_target(
         self, requested_id: str | None
@@ -24438,6 +24572,17 @@ class DeepAgentsApp(App):
                 )
                 return
 
+            compact_choice = await self._offer_resume_compaction(
+                getattr(payload, "context_tokens", 0)
+            )
+            if compact_choice == "cancel":
+                await self._mount_message(
+                    AppMessage(
+                        "Resume canceled; staying on the current agent and thread."
+                    )
+                )
+                return
+
             previous_cwd = Path(self._cwd)
             cwd_choice = await self._offer_thread_cwd_switch(
                 target.thread_id,
@@ -24456,6 +24601,7 @@ class DeepAgentsApp(App):
                 resume_thread_id=target.thread_id,
                 preloaded_payload=payload,
                 persist_default_agent=False,
+                compact_on_resume=compact_choice == "compact",
             )
             if not switched and not await asyncio.to_thread(
                 self._cwd_paths_equal,
@@ -25164,11 +25310,27 @@ class DeepAgentsApp(App):
             self._chat_input.set_cursor_active(active=False)
 
         prefetched_payload: _ThreadHistoryPayload | None = None
+        compact_before_resume = False
+        switch_started = False
         outgoing_ended = False
         try:
             self._update_status(f"Loading thread: {thread_id}")
             await self._set_spinner("Loading thread")
             prefetched_payload = await self._fetch_thread_history_data(thread_id)
+            await self._set_spinner(None)
+            self._update_status("")
+
+            compact_choice = await self._offer_resume_compaction(
+                getattr(prefetched_payload, "context_tokens", 0)
+            )
+            if compact_choice == "cancel":
+                await self._restore_cwd_after_failed_thread_switch(prev_cwd)
+                return
+            compact_before_resume = compact_choice == "compact"
+            switch_started = True
+
+            self._update_status(f"Loading thread: {thread_id}")
+            await self._set_spinner("Loading thread")
             from deepagents_code.hooks.models.domain import (
                 SessionEndCause,
                 SessionStartCause,
@@ -25253,9 +25415,11 @@ class DeepAgentsApp(App):
             self._last_thread_unchanged = None
             if not await self._run_session_start_hook(SessionStartCause.RESUME):
                 return
+            if compact_before_resume:
+                await self._handle_offload()
         except Exception as exc:
-            if prefetched_payload is None:
-                logger.exception("Failed to prefetch history for thread %s", thread_id)
+            if not switch_started:
+                logger.exception("Failed to prepare thread %s for resume", thread_id)
                 await self._restore_cwd_after_failed_thread_switch(prev_cwd)
                 await self._mount_message(
                     AppMessage(

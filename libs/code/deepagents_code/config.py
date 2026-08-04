@@ -3302,6 +3302,25 @@ def is_memory_auto_save_enabled() -> bool:
     return bool(value)
 
 
+def get_compact_on_resume_threshold() -> int:
+    """Return the configured context-token threshold for resume suggestions."""
+    from deepagents_code.config_manifest import (
+        COMPACT_ON_RESUME_THRESHOLD_DEFAULT,
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("threads.compact_on_resume_threshold")
+    if option is None:
+        return COMPACT_ON_RESUME_THRESHOLD_DEFAULT
+    value, _ = resolve_scalar(option, toml_data=load_config_toml())
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    logger.warning("Ignoring compact-on-resume threshold %r (expected int >= 0)", value)
+    return COMPACT_ON_RESUME_THRESHOLD_DEFAULT
+
+
 def is_yolo_switcher_enabled() -> bool:
     """Return whether Shift+Tab may enter unrestricted YOLO mode.
 

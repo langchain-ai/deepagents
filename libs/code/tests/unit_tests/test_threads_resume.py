@@ -61,25 +61,35 @@ class TestHandleThreadsCommand:
         app = _make_app()
         target = _ThreadsResumeTarget("thread-x", "agent")
         app._resolve_threads_resume_target = AsyncMock(return_value=target)  # ty: ignore
-        await app._handle_threads_command("/threads -r")
+        with patch.object(app, "_schedule_off_message_pump") as schedule:
+            await app._handle_threads_command("/threads -r")
         app._resolve_threads_resume_target.assert_awaited_once_with(None)  # ty: ignore
-        app._resume_thread.assert_awaited_once_with("thread-x")  # ty: ignore
         app._show_thread_selector.assert_not_awaited()  # ty: ignore
+        schedule.assert_called_once()
+        assert schedule.call_args.kwargs == {"context": "threads-resume:thread-x"}
+        await schedule.call_args.args[0]
+        app._resume_thread.assert_awaited_once_with("thread-x")  # ty: ignore
 
     async def test_resume_specific_id(self) -> None:
         app = _make_app()
         target = _ThreadsResumeTarget("abc", "agent")
         app._resolve_threads_resume_target = AsyncMock(return_value=target)  # ty: ignore
-        await app._handle_threads_command("/threads -r abc")
+        with patch.object(app, "_schedule_off_message_pump") as schedule:
+            await app._handle_threads_command("/threads -r abc")
         app._resolve_threads_resume_target.assert_awaited_once_with("abc")  # ty: ignore
-        app._resume_thread.assert_awaited_once_with("abc")  # ty: ignore
+        app._resume_thread.assert_not_awaited()  # ty: ignore
+        schedule.assert_called_once()
+        schedule.call_args.args[0].close()
 
     async def test_resume_long_form_flag(self) -> None:
         app = _make_app()
         target = _ThreadsResumeTarget("abc", "agent")
         app._resolve_threads_resume_target = AsyncMock(return_value=target)  # ty: ignore
-        await app._handle_threads_command("/threads --resume abc")
+        with patch.object(app, "_schedule_off_message_pump") as schedule:
+            await app._handle_threads_command("/threads --resume abc")
         app._resolve_threads_resume_target.assert_awaited_once_with("abc")  # ty: ignore
+        schedule.assert_called_once()
+        schedule.call_args.args[0].close()
 
     async def test_cross_agent_resume_schedules_confirmation(self) -> None:
         """A cross-agent target is confirmed off Textual's message pump."""
@@ -409,6 +419,7 @@ class TestCrossAgentResume:
             resume_thread_id="research-thread",
             preloaded_payload=payload,
             persist_default_agent=False,
+            compact_on_resume=False,
         )
 
     async def test_cancel_keeps_current_session_untouched(self, tmp_path: Path) -> None:

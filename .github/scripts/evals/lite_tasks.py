@@ -1,9 +1,14 @@
-"""Frozen 'lite' task subsets per category for the unified evals `profile=lite`.
+"""Frozen task subsets per category for the unified evals run profiles.
 
-A high-signal, low-cost slice: fewer tasks, FULL rollouts. Autonomous and
-conversation use their calibrated difficulty frontiers. Context is a neutral,
-paired Terra/Luna representative sample of the frozen 30-task corpus so a lite
-run does not amplify either model's measured Context-Bench advantage.
+`LITE_TASKS` backs `profile=lite`: a high-signal, low-cost slice — fewer tasks, FULL
+rollouts. Autonomous and conversation use their calibrated difficulty frontiers.
+Context is a neutral, paired Terra/Luna representative sample of the frozen 30-task
+corpus so a lite run does not amplify either model's measured Context-Bench advantage.
+Research is pinned to upstream DRBench's own 15-task subset (see below).
+
+`FULL_TASKS` caps `profile=full` for the few categories where running the entire
+dataset costs more than a representative sample is worth. A category absent from it
+keeps `full` meaning every task, which is the default for all but `research`.
 
 Names are the exact harbor `--include-task-name` filters per category:
   autonomous   -> registry ref `harbor-index/<task>`
@@ -12,7 +17,7 @@ Names are the exact harbor `--include-task-name` filters per category:
   research     -> local task dir basename `DR<nnnn>`
 
 `include_tasks(category)` returns the space-separated string the workflow passes to
-`_harbor_run.yml`. Keep this list under review; re-calibrate as models/tasks change.
+`_harbor_run.yml`. Keep these lists under review; re-calibrate as models/tasks change.
 """
 
 from __future__ import annotations
@@ -82,24 +87,78 @@ LITE_TASKS: dict[str, list[str]] = {
     # `quality_assurance`/`quality assurance`; tasks whose `domain` is really an
     # industry label are excluded from the per-domain pick).
     #
-    # Unlike the other categories this is not calibrated against a measured run —
-    # there isn't one yet. It is a coverage slice: 4 easy / 4 medium / 2 hard, 76 gold
-    # insights (24 external) across 172 documents, and 8 of 10 tasks carry external
-    # (open-web) insights so a lite run still exercises search rather than corpus
-    # reading alone. Per-domain pick favours
-    # tasks with external insights, then a moderate corpus (<= 25 documents), then an
-    # insight count near the dataset mean of 6. Re-calibrate once a full run exists.
+    # Not ours to choose: this is upstream DRBench's own subset, the one the paper calls
+    # MinEval ("restricted to 15 tasks for efficient ablation studies"). The paper names
+    # it but never lists the ids; upstream ships them in `drbench/data/subsets/minival.jsonl`,
+    # vendored at `libs/evals/harbor_adapters/drbench/vendor/subsets/minival.jsonl` and
+    # asserted equal to this list by `test_lite_tasks.py`.
+    #
+    # It is a designed stratified block rather than the first 15 by coincidence:
+    # 3 industries x 5 tasks, difficulty easy/easy/medium/medium/hard per industry, so
+    # 6 easy / 6 medium / 3 hard over 10 distinct domains. DR0016 onward does NOT continue
+    # the pattern — the rest of the corpus is unstructured and hard-skewed — which is why
+    # `FULL_TASKS` extends it by stratified selection rather than by id order.
     "research": [
-        "DR0006",  # compliance / healthcare (easy) — 7 insights, 3 external, 12 docs
-        "DR0003",  # crm / retail (medium) — 10 insights, 3 external, 22 docs
-        "DR0025",  # csm / automobiles (hard) — 5 insights, 0 external, 20 docs
-        "DR0013",  # cybersecurity / automobiles (medium) — 9 insights, 3 external, 18 docs
-        "DR0007",  # itsm / healthcare (easy) — 9 insights, 3 external, 18 docs
-        "DR0029",  # knowledge management / retail (hard) — 4 insights, 0 external, 18 docs
-        "DR0004",  # market analysis / retail (medium) — 9 insights, 3 external, 20 docs
-        "DR0012",  # quality assurance / automobiles (easy) — 6 insights, 3 external, 9 docs
-        "DR0014",  # research / automobiles (medium) — 10 insights, 3 external, 21 docs
-        "DR0002",  # sales / retail (easy) — 7 insights, 3 external, 14 docs
+        "DR0001",  # compliance / retail (easy)
+        "DR0002",  # sales / retail (easy)
+        "DR0003",  # crm / retail (medium)
+        "DR0004",  # market analysis / retail (medium)
+        "DR0005",  # csm / retail (hard)
+        "DR0006",  # compliance / healthcare (easy)
+        "DR0007",  # itsm / healthcare (easy)
+        "DR0008",  # cybersecurity / healthcare (medium)
+        "DR0009",  # crm / healthcare (medium)
+        "DR0010",  # marketing / healthcare (hard)
+        "DR0011",  # compliance / automotive (easy)
+        "DR0012",  # quality assurance / automotive (easy)
+        "DR0013",  # cybersecurity / automotive (medium)
+        "DR0014",  # research / automotive (medium)
+        "DR0015",  # csm / automotive (hard)
+    ],
+}
+
+# Categories whose `profile=full` runs a representative subset instead of the whole
+# dataset. Anything absent keeps `full` meaning every task.
+FULL_TASKS: dict[str, list[str]] = {
+    # 30 tasks. DRBench ships 100, and running all of them costs ~$150-200 per model per
+    # run, so this is a proportional sample instead: the full corpus is 20 easy / 23 medium
+    # / 57 hard, which scaled to 30 is exactly 6 / 7 / 17. MinEval (see LITE_TASKS above)
+    # already supplies 6 easy / 6 medium / 3 hard, so the 15 additions below are precisely
+    # 1 medium and 14 hard. That lands on the benchmark's own difficulty ratio while making
+    # lite a strict subset of full, so the two profiles share 15 comparable data points.
+    #
+    # Industry comes out 10 retail / 10 healthcare / 10 automotive across 13 distinct
+    # domains, at most 3 per domain. Additions were picked by holding the difficulty target
+    # and then repeatedly taking the task whose (domain, industry) pair was least
+    # represented so far, lowest id breaking ties — reproducible rather than taste.
+    #
+    # A number from this set is NOT comparable to the paper's FullBenchmark, which is over
+    # all 100 tasks. Say so wherever it is published.
+    #
+    # Two upstream `info.json` defects shape the picks. Four tasks carry an industry name
+    # in their `domain` field (DR0082 "retail", DR0083 "virtual/remote healthcare", DR0084
+    # and DR0085 "automotive -- electric vehicles"), so they earn no domain-diversity credit
+    # here; an earlier pass selected three of them precisely because those bogus values
+    # looked like new coverage. And domain labels are double-counted by formatting
+    # (crm/customer relationship management, itsm/it service management,
+    # market analysis/market_analysis), which normalizes 20 raw values down to 13.
+    "research": [
+        *(f"DR{n:04d}" for n in range(1, 16)),  # MinEval: 6 easy / 6 medium / 3 hard
+        "DR0025",  # csm / retail (hard)
+        "DR0029",  # knowledge management / retail (hard)
+        "DR0030",  # knowledge management / retail (hard)
+        "DR0031",  # knowledge management / retail (hard)
+        "DR0037",  # public relations / retail (medium)
+        "DR0040",  # crm / healthcare (hard)
+        "DR0043",  # market analysis / healthcare (hard)
+        "DR0044",  # market analysis / healthcare (hard)
+        "DR0046",  # itsm / healthcare (hard)
+        "DR0047",  # itsm / healthcare (hard)
+        "DR0064",  # sales / automotive (hard)
+        "DR0065",  # sales / automotive (hard)
+        "DR0076",  # asset management / automotive (hard)
+        "DR0077",  # asset management / automotive (hard)
+        "DR0089",  # quality assurance / automotive (hard)
     ],
 }
 

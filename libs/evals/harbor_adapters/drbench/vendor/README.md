@@ -16,6 +16,17 @@ benchmark, pinned at commit `0d699ecf6aa96b1de378595b432e9b16a82f0ed9`:
 Reproduced verbatim so our verifier scores the same ground truth the upstream
 metrics do — see `../adapter.py` and `../templates/judge.py`.
 
+- `subsets/{minival,val,sanity}.jsonl` — upstream's own task subsets
+  (upstream `drbench/data/subsets/`), copied verbatim. `minival.jsonl` is the
+  15-task set the paper calls **MinEval** ("restricted to 15 tasks for efficient
+  ablation studies"); the paper names the subset but not its task ids, so this
+  file is the only authoritative list. It is what
+  `.github/scripts/evals/lite_tasks.py` pins the `research` lite profile to, and a
+  test asserts the two match — otherwise "lite is upstream's MinEval" would be a
+  claim in a comment that nothing checks. Vendored rather than read from the
+  installed package because `drbench` exists only inside the verifier image, never
+  in the dev or CI environment.
+
 Also here:
 
 - `image_digests.json` — each task's upstream image resolved to an immutable

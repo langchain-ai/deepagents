@@ -305,6 +305,52 @@ def _load_tasks_json(path: str) -> dict[str, list[str]]:
     return cast(dict[str, list[str]], raw)
 
 
+def cap_full_profile(
+    tasks_by_category: dict[str, list[str]],
+    full_tasks: dict[str, list[str]] | None = None,
+) -> dict[str, list[str]]:
+    """Restrict full-profile categories that declare a representative subset.
+
+    DRBench ships 100 tasks and costs roughly $150-200 per model to run in full, so
+    `research` declares a 30-task proportional sample in `lite_tasks.FULL_TASKS`. Every
+    other category has no entry and keeps `full` meaning the whole enumerated dataset.
+
+    The declared ids are intersected with what was actually enumerated, in declared
+    order, rather than substituted for it. A declared id missing from the dataset is a
+    stale registry -- a task renamed or dropped by a regeneration -- and silently running
+    29 of 30 tasks would quietly change the denominator of a published score. So it
+    raises here instead, matching how `filter_tasks` treats an unknown
+    `UNIFIED_INCLUDE_TASKS` name.
+
+    Args:
+        tasks_by_category: Tasks enumerated for each selected category.
+        full_tasks: Category -> declared subset. Defaults to `lite_tasks.FULL_TASKS`.
+
+    Returns:
+        Category task lists, capped where a subset is declared.
+
+    Raises:
+        SystemExit: If a declared id is absent from the enumerated tasks.
+    """
+    declared = lite_tasks.FULL_TASKS if full_tasks is None else full_tasks
+    capped: dict[str, list[str]] = {}
+    for category, tasks in tasks_by_category.items():
+        wanted = declared.get(category)
+        if not wanted:
+            capped[category] = tasks
+            continue
+        available = set(tasks)
+        missing = [task for task in wanted if task not in available]
+        if missing:
+            raise SystemExit(
+                f"FULL_TASKS[{category!r}] names tasks that are not in the dataset: "
+                f"{missing}. The registry is stale -- regenerate the dataset or update "
+                "lite_tasks.FULL_TASKS."
+            )
+        capped[category] = [task for task in wanted if task in available]
+    return capped
+
+
 def filter_tasks(
     tasks_by_category: dict[str, list[str]], selection: str
 ) -> dict[str, list[str]]:
@@ -535,7 +581,7 @@ def main(argv: list[str] | None = None) -> int:
         tasks_json = os.environ.get("UNIFIED_TASKS_JSON", "").strip()
         if not tasks_json:
             raise SystemExit("full profile requires UNIFIED_TASKS_JSON (enumerated tasks).")
-        tasks_by_cat = _load_tasks_json(tasks_json)
+        tasks_by_cat = cap_full_profile(_load_tasks_json(tasks_json))
 
     include_tasks = os.environ.get("UNIFIED_INCLUDE_TASKS", "").strip()
     tasks_by_cat = filter_tasks(tasks_by_cat, include_tasks)

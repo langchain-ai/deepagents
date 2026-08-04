@@ -724,3 +724,115 @@ def test_main_emits_experiments_map(tmp_path, monkeypatch):
     assert name in experiments
     # expected = tasks-in-category * rollouts (the count the collector waits for).
     assert experiments[name] == len(lite_tasks.LITE_TASKS["context"]) * 2
+
+def test_research_lite_is_exactly_upstreams_minival_subset():
+    # The `research` lite profile claims to be DRBench's own MinEval set. The paper names
+    # that subset but never lists its ids, so upstream's `minival.jsonl` (vendored) is the
+    # only authoritative source. Without this the claim is just a comment.
+    import json
+    from pathlib import Path
+
+    import lite_tasks
+
+    repo_root = Path(up.__file__).resolve().parents[3]
+    minival = (
+        repo_root
+        / "libs/evals/harbor_adapters/drbench/vendor/subsets/minival.jsonl"
+    )
+    upstream = [
+        json.loads(line)["task_id"]
+        for line in minival.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(upstream) == 15
+    assert lite_tasks.LITE_TASKS["research"] == upstream
+
+def test_research_full_extends_lite_and_matches_the_benchmark_split():
+    # `full` for research is a 30-task proportional sample, not the whole 100. Two
+    # properties make it defensible, and both must survive a dataset regeneration:
+    #   - lite is a strict subset, so lite and full runs share comparable data points
+    #   - its difficulty ratio equals the full corpus's (20:23:57 -> 6:7:17 at n=30)
+    import collections
+    import json
+    from pathlib import Path
+
+    import lite_tasks
+
+    full = lite_tasks.FULL_TASKS["research"]
+    lite = lite_tasks.LITE_TASKS["research"]
+    assert len(full) == 30
+    assert len(set(full)) == 30, "duplicate ids"
+    assert set(lite) <= set(full)
+
+    vendor = (
+        Path(up.__file__).resolve().parents[3]
+        / "libs/evals/harbor_adapters/drbench/vendor/tasks"
+    )
+
+    def info(task_id: str) -> dict:
+        return json.loads((vendor / task_id / "info.json").read_text(encoding="utf-8"))
+
+    def industry(raw: object) -> str:
+        text = str(raw).lower()
+        if "retail" in text:
+            return "retail"
+        return "healthcare" if "health" in text else "automotive"
+
+    difficulty = collections.Counter(info(t).get("difficulty") for t in full)
+    assert dict(difficulty) == {"easy": 6, "medium": 7, "hard": 17}
+    # Same ratio as the whole corpus, which is what makes 30 tasks a fair estimate of it.
+    whole = collections.Counter(
+        info(p.name).get("difficulty")
+        for p in sorted(vendor.iterdir())
+        if p.name.startswith("DR")
+    )
+    assert dict(whole) == {"easy": 20, "medium": 23, "hard": 57}
+    for level in ("easy", "medium", "hard"):
+        assert difficulty[level] == round(whole[level] / 100 * 30)
+
+    assert dict(collections.Counter(industry(info(t).get("industry")) for t in full)) == {
+        "retail": 10,
+        "healthcare": 10,
+        "automotive": 10,
+    }
+
+def test_research_full_task_ids_all_exist():
+    from pathlib import Path
+
+    import lite_tasks
+
+    dataset = (
+        Path(up.__file__).resolve().parents[3] / "libs/evals/datasets/drbench-evals"
+    )
+    for task_id in lite_tasks.FULL_TASKS["research"]:
+        assert (dataset / task_id / "task.toml").is_file(), task_id
+
+def test_cap_full_profile_only_narrows_declared_categories():
+    enumerated = {
+        "research": ["DR0001", "DR0002", "DR0003"],
+        "context": ["cb-cloud-1", "cb-cloud-2"],
+    }
+    capped = up.cap_full_profile(enumerated, {"research": ["DR0003", "DR0001"]})
+
+    # Declared order wins, so the run order is reviewable from the registry.
+    assert capped["research"] == ["DR0003", "DR0001"]
+    # A category with no entry keeps the whole enumerated dataset.
+    assert capped["context"] == ["cb-cloud-1", "cb-cloud-2"]
+
+def test_cap_full_profile_rejects_a_stale_registry_id():
+    # Silently dropping a renamed task would change the denominator of a published score
+    # without anyone noticing, so a stale id has to fail the run.
+    import pytest
+
+    with pytest.raises(SystemExit, match=r"FULL_TASKS\['research'\].*DR9999"):
+        up.cap_full_profile(
+            {"research": ["DR0001"]}, {"research": ["DR0001", "DR9999"]}
+        )
+
+def test_cap_full_profile_defaults_to_the_real_registry():
+    import lite_tasks
+
+    declared = lite_tasks.FULL_TASKS["research"]
+    # Feed it more than the registry declares; the cap must reduce to exactly the registry.
+    enumerated = {"research": [f"DR{n:04d}" for n in range(1, 101)]}
+    assert up.cap_full_profile(enumerated)["research"] == declared

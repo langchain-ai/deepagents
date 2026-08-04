@@ -19156,6 +19156,14 @@ class DeepAgentsApp(App):
             # removes the modal.
             self.call_after_refresh(start_selection_worker)
 
+        active = self._auto_classifier_review_model_spec()
+        if active is None:
+            active_line = "Auto currently reviews with the main agent model."
+        elif self._auto_classifier_display_spec() is None:
+            active_line = f"Auto currently reviews with {active}, the main agent model."
+        else:
+            active_line = f"Auto currently reviews with {active}."
+
         screen = ModelSelectorScreen(
             current_model=current_model,
             current_provider=current_provider,
@@ -19163,11 +19171,9 @@ class DeepAgentsApp(App):
             recommended_models=_AUTO_CLASSIFIER_RECOMMENDED_MODELS,
             include_recent_models=False,
             title="Choose the Auto classifier model",
-            description=(
+            description=Content(
                 "Recommended models favor lower latency and cost for repeated "
-                "reviews. A faster, cheaper model may review actions less "
-                "carefully. Clear it with `/auto model clear` to reuse the main "
-                "agent model."
+                f"reviews.\n{active_line}"
             ),
         )
         self.push_screen(screen, handle_result)

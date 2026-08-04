@@ -13097,6 +13097,34 @@ class TestAutoClassifierModelCommand:
         assert screen._recommended_models == _AUTO_CLASSIFIER_RECOMMENDED_MODELS
         assert screen._include_recent_models is False
 
+    async def test_selector_description_names_the_configured_classifier(self) -> None:
+        """The picker should say which model Auto reviews with right now."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = "anthropic:claude-haiku-4-5"
+        with patch.object(app, "push_screen") as push:
+            await app._show_auto_classifier_model_selector()
+
+        description = str(push.call_args.args[0]._description)
+        assert "Auto currently reviews with anthropic:claude-haiku-4-5." in description
+        assert "less carefully" not in description
+        assert "/auto model clear" not in description
+
+    async def test_selector_description_marks_an_inherited_classifier(self) -> None:
+        """With no classifier set, the picker should name the main agent model."""
+        app = DeepAgentsApp(agent=MagicMock())
+        app._auto_classifier_model = None
+        with (
+            patch.object(app, "_effective_model_spec", return_value="openai:gpt-5.5"),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_auto_classifier_model_selector()
+
+        description = str(push.call_args.args[0]._description)
+        assert (
+            "Auto currently reviews with openai:gpt-5.5, the main agent model."
+            in description
+        )
+
     async def test_bare_auto_still_switches_approval_mode(self) -> None:
         """`/auto` without arguments keeps switching approval mode."""
         from deepagents_code.approval_mode import ApprovalMode

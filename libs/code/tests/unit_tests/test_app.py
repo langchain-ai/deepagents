@@ -32460,12 +32460,18 @@ class TestStatusBarConnectionMirroring:
 class TestResumeThreadCwdSwitch:
     """Tests for cwd mismatch handling while resuming threads."""
 
+    @pytest.mark.parametrize(
+        ("abort", "reload_manager"),
+        [(None, True), ("thread_switch", False)],
+    )
     async def test_offer_switch_changes_process_cwd_and_widgets(
         self,
+        abort: Literal["thread_switch"] | None,
+        reload_manager: bool,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Accepting the prompt switches process and UI cwd before startup."""
+        """Accepting the prompt switches process and UI cwd."""
         from deepagents_code.config import settings
 
         current = tmp_path / "current"
@@ -32504,7 +32510,9 @@ class TestResumeThreadCwdSwitch:
             patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)),
             patch("deepagents_code.model_config.clear_caches") as clear_caches,
         ):
-            ok = await app._offer_thread_cwd_switch("thread-1", restart_server=False)
+            ok = await app._offer_thread_cwd_switch(
+                "thread-1", restart_server=False, abort=abort
+            )
 
         assert ok == "continue"
         assert Path.cwd() == target
@@ -32515,7 +32523,7 @@ class TestResumeThreadCwdSwitch:
         clear_caches.assert_called_once_with()
         screen = push_wait.call_args.args[0]
         assert screen._project_settings_change_detected is True
-        retarget.assert_awaited_once_with(reload_manager=True)
+        retarget.assert_awaited_once_with(reload_manager=reload_manager)
 
     async def test_offer_switch_preserves_launch_relative_server_paths(
         self,
@@ -32634,41 +32642,6 @@ class TestResumeThreadCwdSwitch:
         assert app._cwd == str(current)
         notify.assert_called_once()
         assert "Cached local context may be stale" in notify.call_args.args[0]
-
-    async def test_offer_server_switch_defers_hook_reload(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        current = tmp_path / "current"
-        target = tmp_path / "target"
-        current.mkdir()
-        target.mkdir()
-        app = DeepAgentsApp(thread_id="thread-1", cwd=current)
-        monkeypatch.setattr(
-            app,
-            "_push_screen_wait",
-            AsyncMock(return_value="switch"),
-        )
-        monkeypatch.setattr(
-            app,
-            "_preview_project_settings_change",
-            AsyncMock(return_value=False),
-        )
-        replace = AsyncMock(return_value="continue")
-        monkeypatch.setattr(app, "_replace_server_after_cwd_switch", replace)
-        retarget = AsyncMock()
-        monkeypatch.setattr(app, "_retarget_hooks_after_cwd_switch", retarget)
-
-        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
-            outcome = await app._offer_thread_cwd_switch(
-                "thread-1",
-                restart_server=True,
-            )
-
-        assert outcome == "continue"
-        replace.assert_awaited_once_with(target)
-        retarget.assert_awaited_once_with(reload_manager=False)
 
     async def test_offer_switch_failure_returns_abort(
         self,

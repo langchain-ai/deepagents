@@ -338,14 +338,17 @@ def _canonical_group(group: MatcherGroup, *, source: HooksSource) -> dict[str, o
     return result
 
 
-def _read_hooks_json_with_fingerprint(
+def read_hooks_json(
     path: Path,
 ) -> tuple[bool, JsonValue, tuple[HookDiagnostic, ...], str | None]:
     """Decode one hooks document and fingerprint the exact bytes read.
 
+    Args:
+        path: Document path.
+
     Returns:
         Whether decoding succeeded, the decoded document, diagnostics, and the
-        exact-byte SHA-256 fingerprint.
+        exact-byte SHA-256 fingerprint. An absent file is not a diagnostic.
     """
     if not path.is_file():
         return False, None, (), None
@@ -371,35 +374,10 @@ def _read_hooks_json_with_fingerprint(
     return True, decoded, (), hashlib.sha256(content).hexdigest()
 
 
-def read_hooks_json(
-    path: Path,
-) -> tuple[bool, JsonValue, tuple[HookDiagnostic, ...]]:
-    """Decode one hooks JSON document, reporting read failures as diagnostics.
-
-    Shared by the project/user file loader and by callers that must transform a
-    document before it is validated, so every hooks document on disk reports
-    unreadable bytes, invalid UTF-8, and malformed JSON the same way instead of
-    raising into an unrelated caller.
-
-    Args:
-        path: Document path.
-
-    Returns:
-        Whether decoding succeeded, the decoded JSON value, and any diagnostics.
-        An absent file is not a diagnostic.
-    """
-    decoded, document, diagnostics, _fingerprint = _read_hooks_json_with_fingerprint(
-        path
-    )
-    return decoded, document, diagnostics
-
-
 def _read_hooks_document(
     path: Path,
 ) -> tuple[HooksConfig | None, tuple[HookDiagnostic, ...], str | None]:
-    decoded, data, read_diagnostics, fingerprint = _read_hooks_json_with_fingerprint(
-        path
-    )
+    decoded, data, read_diagnostics, fingerprint = read_hooks_json(path)
     if not decoded:
         return None, read_diagnostics, None
 

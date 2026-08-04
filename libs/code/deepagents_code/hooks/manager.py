@@ -657,5 +657,4 @@ def _load_runtime(
     except Exception:
         logger.exception("Failed to load hook configuration; hooks disabled")
         return None
-    else:
-        return runtime
+    return runtime

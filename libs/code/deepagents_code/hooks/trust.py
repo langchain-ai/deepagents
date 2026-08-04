@@ -366,12 +366,8 @@ class WorkspaceTrust:
     every reload; nothing upstream needs to hold or reinterpret the decision.
     """
 
-    session_grants: frozenset[str] = frozenset()
-    """Canonical workspace roots trusted for this session only.
-
-    Populated from an explicit CLI grant or an in-session `allow once` choice,
-    neither of which is persisted to the trust store.
-    """
+    session_grants: frozenset[tuple[str, str]] = frozenset()
+    """Canonical workspace roots and hook fingerprints trusted for this session."""
 
     consult_store: bool = True
     """Whether persisted trust may satisfy the policy.
@@ -383,9 +379,6 @@ class WorkspaceTrust:
 
     store_path: Path | None = None
     """Alternate trust store path for tests."""
-
-    session_grant_fingerprints: frozenset[tuple[str, str]] = frozenset()
-    """Project-hooks content fingerprints captured with session grants."""
 
     @classmethod
     def none(cls) -> WorkspaceTrust:
@@ -464,22 +457,12 @@ class WorkspaceTrust:
                 exc_info=True,
             )
             return self
-        key = _project_key(root)
-        fingerprints = dict(self.session_grant_fingerprints)
         fingerprint = _project_hooks_fingerprint(root)
         if fingerprint is None:
-            fingerprints.pop(key, None)
-            return replace(
-                self,
-                session_grants=self.session_grants - {key},
-                session_grant_fingerprints=frozenset(fingerprints.items()),
-            )
-        fingerprints[key] = fingerprint
-        return replace(
-            self,
-            session_grants=self.session_grants | {key},
-            session_grant_fingerprints=frozenset(fingerprints.items()),
-        )
+            return self.without_session_grant(root)
+        grants = dict(self.session_grants)
+        grants[_project_key(root)] = fingerprint
+        return replace(self, session_grants=frozenset(grants.items()))
 
     def without_session_grant(self, cwd: Path | str) -> WorkspaceTrust:
         """Return a policy without any session grant for `cwd`.
@@ -498,13 +481,9 @@ class WorkspaceTrust:
                 exc_info=True,
             )
             return self
-        fingerprints = dict(self.session_grant_fingerprints)
-        fingerprints.pop(key, None)
-        return replace(
-            self,
-            session_grants=self.session_grants - {key},
-            session_grant_fingerprints=frozenset(fingerprints.items()),
-        )
+        grants = dict(self.session_grants)
+        grants.pop(key, None)
+        return replace(self, session_grants=frozenset(grants.items()))
 
     def allows(
         self,
@@ -533,9 +512,8 @@ class WorkspaceTrust:
                 exc_info=True,
             )
             return False
-        key = _project_key(root)
-        if key in self.session_grants:
-            granted_fingerprint = dict(self.session_grant_fingerprints).get(key)
+        granted_fingerprint = dict(self.session_grants).get(_project_key(root))
+        if granted_fingerprint is not None:
             current_fingerprint = (
                 project_hooks_fingerprint
                 if project_hooks_fingerprint is not None

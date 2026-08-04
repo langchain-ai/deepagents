@@ -39,13 +39,13 @@ def _enable_hooks_v2(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(EXPERIMENTAL, "1")
 
 
-def _write_project_hooks(root: Path) -> Path:
-    (root / ".git").mkdir(parents=True)
+def _write_project_hooks(root: Path, *, event: str = "Stop") -> Path:
+    (root / ".git").mkdir(parents=True, exist_ok=True)
     hooks_dir = root / ".deepagents"
-    hooks_dir.mkdir()
+    hooks_dir.mkdir(exist_ok=True)
     (hooks_dir / "hooks.json").write_text(
         json.dumps(
-            {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "true"}]}]}}
+            {"hooks": {event: [{"hooks": [{"type": "command", "command": "true"}]}]}}
         ),
         encoding="utf-8",
     )
@@ -135,64 +135,21 @@ def test_session_grant_does_not_extend_to_other_workspaces(tmp_path: Path) -> No
     assert not is_project_hooks_trusted(granted, store_path=store)
 
 
-def test_session_grant_replacements_preserve_policy_posture(tmp_path: Path) -> None:
+@pytest.mark.parametrize("persisted", [False, True])
+def test_project_hook_edits_invalidate_only_session_grants(
+    persisted: bool,
+    tmp_path: Path,
+) -> None:
     root = _write_project_hooks(tmp_path / "project")
     store = tmp_path / "state" / "hooks_trust.json"
-    original = WorkspaceTrust(consult_store=False, store_path=store)
-
-    granted = original.with_session_grant(root)
-    revoked = granted.without_session_grant(root)
-
-    assert granted is not original
-    assert granted.consult_store is False
-    assert granted.store_path == store
-    assert granted.allows(root)
-    assert not original.allows(root)
-    assert revoked.consult_store is False
-    assert revoked.store_path == store
-    assert not revoked.allows(root)
-
-
-def test_changed_project_hooks_invalidate_session_grant(tmp_path: Path) -> None:
-    root = _write_project_hooks(tmp_path / "project")
-    policy = WorkspaceTrust.for_session(root, granted=True)
-    assert policy.allows(root)
-
-    config_path = root / ".deepagents" / "hooks.json"
-    config_path.write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "SessionStart": [
-                        {"hooks": [{"type": "command", "command": "true"}]}
-                    ]
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    assert not policy.allows(root)
-
-
-def test_persisted_trust_survives_project_hooks_change(tmp_path: Path) -> None:
-    root = _write_project_hooks(tmp_path / "project")
-    store = tmp_path / "state" / "hooks_trust.json"
-    assert trust_project_hooks(root, store_path=store)
+    if persisted:
+        assert trust_project_hooks(root, store_path=store)
     policy = WorkspaceTrust.for_session(root, granted=True, store_path=store)
-
-    (root / ".deepagents" / "hooks.json").write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "SessionEnd": [{"hooks": [{"type": "command", "command": "true"}]}]
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-
     assert policy.allows(root)
+
+    _write_project_hooks(root, event="SessionEnd")
+
+    assert policy.allows(root) is persisted
 
 
 def test_explicit_only_policy_ignores_persisted_trust(tmp_path: Path) -> None:
@@ -394,23 +351,11 @@ def test_manager_rejects_project_hooks_changed_after_trust_check(
     _isolate_hook_config(tmp_path, monkeypatch)
     root = _write_project_hooks(tmp_path / "project")
     policy = WorkspaceTrust.for_session(root, granted=True)
-    config_path = root / ".deepagents" / "hooks.json"
     fingerprint = trust_module._project_hooks_fingerprint
 
     def fingerprint_then_replace(project_root: Path) -> str | None:
         result = fingerprint(project_root)
-        config_path.write_text(
-            json.dumps(
-                {
-                    "hooks": {
-                        "SessionEnd": [
-                            {"hooks": [{"type": "command", "command": "true"}]}
-                        ]
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
+        _write_project_hooks(project_root, event="SessionEnd")
         return result
 
     monkeypatch.setattr(
@@ -550,27 +495,6 @@ async def test_launch_cwd_retarget_updates_policy_before_session_state_exists(
     assert app._hooks.has_handlers(HookEvent.STOP)
 
 
-async def test_cwd_retarget_loads_persisted_project_hooks_without_prompt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _isolate_hook_config(tmp_path, monkeypatch)
-    current = tmp_path / "current"
-    current.mkdir()
-    target = _write_project_hooks(tmp_path / "target")
-    store = tmp_path / "state" / "hooks_trust.json"
-    assert trust_project_hooks(target, store_path=store)
-    app = await _textual_app(current, WorkspaceTrust(store_path=store))
-    app._cwd = str(target)
-    prompt = AsyncMock(return_value="deny")
-    monkeypatch.setattr(app, "_push_screen_wait", prompt)
-
-    await app._retarget_hooks_after_cwd_switch()
-
-    assert app._hooks.has_handlers(HookEvent.STOP)
-    prompt.assert_not_awaited()
-
-
 @pytest.mark.parametrize("choice", ["allow_once", "always_allow"])
 async def test_cwd_retarget_grants_project_hooks_from_prompt(
     choice: str,
@@ -595,36 +519,6 @@ async def test_cwd_retarget_grants_project_hooks_from_prompt(
     )
 
 
-async def test_cwd_retarget_deny_revokes_changed_session_grant(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _isolate_hook_config(tmp_path, monkeypatch)
-    root = _write_project_hooks(tmp_path / "project")
-    app = await _textual_app(
-        root,
-        WorkspaceTrust.for_session(root, granted=True),
-    )
-    assert app._hooks.has_handlers(HookEvent.STOP)
-    (root / ".deepagents" / "hooks.json").write_text(
-        json.dumps(
-            {
-                "hooks": {
-                    "SessionEnd": [{"hooks": [{"type": "command", "command": "true"}]}]
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(app, "_push_screen_wait", AsyncMock(return_value="deny"))
-
-    await app._retarget_hooks_after_cwd_switch()
-
-    assert not app._hooks.trust.allows(root)
-    assert not app._hooks.has_handlers(HookEvent.STOP)
-    assert not app._hooks.has_handlers(HookEvent.SESSION_END)
-
-
 async def test_cwd_retarget_rejects_allow_once_when_file_changes_during_prompt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -637,18 +531,7 @@ async def test_cwd_retarget_rejects_allow_once_when_file_changes_during_prompt(
     app._cwd = str(target)
 
     def mutate_before_allow(_screen: object) -> str:
-        (target / ".deepagents" / "hooks.json").write_text(
-            json.dumps(
-                {
-                    "hooks": {
-                        "SessionEnd": [
-                            {"hooks": [{"type": "command", "command": "true"}]}
-                        ]
-                    }
-                }
-            ),
-            encoding="utf-8",
-        )
+        _write_project_hooks(target, event="SessionEnd")
         return "allow_once"
 
     monkeypatch.setattr(
@@ -709,33 +592,3 @@ async def test_cwd_retarget_explicit_only_policy_never_prompts(
     prompt.assert_not_awaited()
     assert app._hooks.trust.consult_store is False
     assert not app._hooks.has_handlers(HookEvent.STOP)
-
-
-async def test_cwd_retarget_persistence_failure_keeps_session_grant(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from deepagents_code.hooks import trust as trust_module
-
-    _isolate_hook_config(tmp_path, monkeypatch)
-    current = tmp_path / "current"
-    current.mkdir()
-    target = _write_project_hooks(tmp_path / "target")
-    app = await _textual_app(current, WorkspaceTrust())
-    app._cwd = str(target)
-    monkeypatch.setattr(
-        app,
-        "_push_screen_wait",
-        AsyncMock(return_value="always_allow"),
-    )
-    monkeypatch.setattr(
-        trust_module, "trust_project_hooks", lambda *_args, **_kwargs: False
-    )
-    notify = MagicMock()
-    monkeypatch.setattr(app, "notify", notify)
-
-    await app._retarget_hooks_after_cwd_switch()
-
-    assert app._hooks.trust.allows(target)
-    assert app._hooks.has_handlers(HookEvent.STOP)
-    notify.assert_called_once()

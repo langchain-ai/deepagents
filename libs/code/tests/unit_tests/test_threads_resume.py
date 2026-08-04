@@ -403,7 +403,6 @@ class TestCrossAgentResume:
             "research-thread",
             restart_server=False,
             abort="thread_switch",
-            defer_hook_reload=True,
         )
         app._restart_server_for_agent_swap.assert_awaited_once_with(  # ty: ignore
             "researcher",

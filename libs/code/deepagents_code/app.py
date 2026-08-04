@@ -3043,12 +3043,7 @@ class DeepAgentsApp(App):
 
         self._register_custom_themes()
         self._hook_trust: WorkspaceTrust | None = hook_trust
-        """Project-hook trust policy used before and during manager construction.
-
-        Session state may be built concurrently with a launch-time cwd switch, so
-        in-session trust decisions replace this value as well as the live manager's
-        policy. Whichever path finishes construction then observes the same policy.
-        """
+        """Project-hook trust shared across pending and live manager state."""
 
         self.theme = _load_theme_preference()
         """Active Textual theme name.
@@ -4723,40 +4718,6 @@ class DeepAgentsApp(App):
 
         await self._hooks.reload(cwd=Path(self._cwd), plugins=plugins)
 
-    def _current_hook_trust(self) -> WorkspaceTrust:
-        """Return the policy owned by the live or not-yet-built hooks manager."""
-        from deepagents_code.hooks.trust import WorkspaceTrust
-
-        if self._session_state is not None:
-            return self._session_state.hooks.trust
-        if self._hook_trust is not None:
-            return self._hook_trust
-        if self._detached_hooks is not None:
-            return self._detached_hooks.trust
-        return WorkspaceTrust.none()
-
-    async def _apply_hook_trust(
-        self,
-        trust: WorkspaceTrust,
-        *,
-        reload_manager: bool,
-    ) -> None:
-        """Apply a replacement trust policy, optionally reloading the manager."""
-        self._hook_trust = trust
-        manager = self._hooks
-        manager.trust = trust
-        if reload_manager:
-            await self._reload_hooks()
-
-    async def _wait_for_hook_trust_prompt_refresh(self) -> None:
-        """Let the cwd-switch modal unwind before mounting the trust prompt."""
-        if not self.is_running:
-            return
-        refreshed = asyncio.Event()
-        if not self.call_after_refresh(refreshed.set):
-            return
-        await refreshed.wait()
-
     async def _retarget_hooks_after_cwd_switch(
         self,
         *,
@@ -4775,13 +4736,15 @@ class DeepAgentsApp(App):
             return
 
         from deepagents_code.hooks.loading import project_hooks_path
-        from deepagents_code.hooks.trust import (
-            project_root_for,
-            trust_project_hooks,
-        )
-        from deepagents_code.tui.widgets.hook_trust import HookTrustScreen
+        from deepagents_code.hooks.trust import project_root_for, trust_project_hooks
+        from deepagents_code.tui.widgets.cwd_switch import HookTrustScreen
 
-        trust = self._current_hook_trust()
+        state = self._session_state
+        trust = (
+            state.hooks.trust
+            if state is not None
+            else self._hook_trust or self._hooks.trust
+        )
         try:
             root = await asyncio.to_thread(project_root_for, Path(self._cwd))
             config_path = project_hooks_path(root)
@@ -4791,54 +4754,55 @@ class DeepAgentsApp(App):
                 "Could not inspect project hooks after cwd switch",
                 exc_info=True,
             )
-            await self._apply_hook_trust(trust, reload_manager=reload_manager)
-            return
+        else:
+            if has_project_hooks and not await asyncio.to_thread(trust.allows, root):
+                trust = await asyncio.to_thread(trust.without_session_grant, root)
+                if trust.consult_store:
+                    prompt_grant = await asyncio.to_thread(
+                        trust.with_session_grant, root
+                    )
+                    if self.is_running:
+                        refreshed = asyncio.Event()
+                        if self.call_after_refresh(refreshed.set):
+                            await refreshed.wait()
+                    try:
+                        choice = await self._push_screen_wait(
+                            HookTrustScreen(
+                                project_root=str(root),
+                                config_path=str(config_path),
+                            )
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Project hooks trust prompt failed after cwd switch",
+                            exc_info=True,
+                        )
+                        self.notify(
+                            "Project hooks were not loaded because the trust prompt "
+                            "failed.",
+                            severity="warning",
+                            markup=False,
+                        )
+                        choice = None
 
-        if not has_project_hooks or await asyncio.to_thread(trust.allows, root):
-            await self._apply_hook_trust(trust, reload_manager=reload_manager)
-            return
+                    if choice in {"allow_once", "always_allow"}:
+                        trust = prompt_grant
+                        if choice == "always_allow" and not await asyncio.to_thread(
+                            trust_project_hooks,
+                            root,
+                            store_path=trust.store_path,
+                        ):
+                            self.notify(
+                                "Approved for this session, but the decision could not "
+                                "be saved — you may be asked again next time.",
+                                severity="warning",
+                                markup=False,
+                            )
 
-        trust = await asyncio.to_thread(trust.without_session_grant, root)
-        if not trust.consult_store:
-            await self._apply_hook_trust(trust, reload_manager=reload_manager)
-            return
-        prompt_grant = await asyncio.to_thread(trust.with_session_grant, root)
-        await self._wait_for_hook_trust_prompt_refresh()
-
-        try:
-            choice = await self._push_screen_wait(
-                HookTrustScreen(
-                    project_root=str(root),
-                    config_path=str(config_path),
-                )
-            )
-        except Exception:
-            logger.warning(
-                "Project hooks trust prompt failed after cwd switch",
-                exc_info=True,
-            )
-            self.notify(
-                "Project hooks were not loaded because the trust prompt failed.",
-                severity="warning",
-                markup=False,
-            )
-            choice = None
-
-        if choice in {"allow_once", "always_allow"}:
-            trust = prompt_grant
-            if choice == "always_allow" and not await asyncio.to_thread(
-                trust_project_hooks,
-                root,
-                store_path=trust.store_path,
-            ):
-                self.notify(
-                    "Approved for this session, but the decision could not be "
-                    "saved — you may be asked again next time.",
-                    severity="warning",
-                    markup=False,
-                )
-
-        await self._apply_hook_trust(trust, reload_manager=reload_manager)
+        self._hook_trust = trust
+        self._hooks.trust = trust
+        if reload_manager:
+            await self._reload_hooks()
 
     async def _run_session_start_hook(self, cause: SessionStartCause) -> bool:
         """Run `SessionStart`, surfacing a stop as a chat message.
@@ -24065,7 +24029,6 @@ class DeepAgentsApp(App):
                 target.thread_id,
                 restart_server=False,
                 abort="thread_switch",
-                defer_hook_reload=True,
             )
             if cwd_choice == "abort":
                 await self._mount_message(
@@ -24571,7 +24534,6 @@ class DeepAgentsApp(App):
         *,
         restart_server: bool,
         abort: CwdSwitchAbortMode | None = None,
-        defer_hook_reload: bool = False,
     ) -> Literal["continue", "abort"]:
         """Offer to switch to a resumed thread's cwd when it differs.
 
@@ -24584,9 +24546,6 @@ class DeepAgentsApp(App):
             abort: When set, the prompt offers a third "abort" option that
                 declines the resume/switch entirely; the mode selects its
                 wording (see `CwdSwitchAbortMode`). `None` hides the option.
-            defer_hook_reload: Whether a process-only switch should keep the
-                outgoing hook runtime active until its caller finishes the
-                combined transition.
 
         Returns:
             `"continue"` when resume may proceed, or `"abort"` when the user
@@ -24635,8 +24594,9 @@ class DeepAgentsApp(App):
                 return outcome
             self._preserve_launch_relative_server_paths(Path(self._cwd))
             self._switch_process_cwd(target)
+            # Cross-agent resumes reload after the outgoing `SessionEnd`.
             await self._retarget_hooks_after_cwd_switch(
-                reload_manager=not defer_hook_reload
+                reload_manager=abort != "thread_switch"
             )
             return "continue"
 

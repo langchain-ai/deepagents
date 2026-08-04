@@ -68,6 +68,7 @@ class TestCollectSections:
         sections = collect_sections()
         assert [s.title for s in sections] == [
             "Diagnostics",
+            "Terminal",
             "Updates",
             "Tracing",
             "Configuration",
@@ -238,6 +239,100 @@ class TestDiagnosticsVersionReport:
         sdk = items["deepagents (SDK)"]
         assert sdk.ok is False
         assert sdk.value == "not installed"
+
+
+class TestCollectTerminal:
+    """Tests for the Terminal diagnostic section."""
+
+    def _section(self, status: object) -> DiagnosticSection:
+        from deepagents_code.doctor import _collect_terminal
+
+        with patch(
+            "deepagents_code.multiplexer.query_tmux_status", return_value=status
+        ):
+            return _collect_terminal()
+
+    def _labels(self, status: object) -> dict[str, str]:
+        return {item.label: item.value for item in self._section(status).items}
+
+    def _tmux_status(self, **options: str) -> object:
+        from deepagents_code.multiplexer import TmuxStatus
+
+        return TmuxStatus(version="tmux 3.5a", options=options)
+
+    def test_outside_tmux_reports_terminal_identity(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without a multiplexer the section collapses to the terminal itself."""
+        monkeypatch.setenv("TERM_PROGRAM", "Ghostty")
+        labels = self._labels(None)
+        assert labels["Terminal"] == "Ghostty"
+        assert "Multiplexer" not in labels
+        assert "Color" in labels
+
+    def test_healthy_tmux_options_render_bare(self) -> None:
+        """An already-correct option needs no explanation."""
+        from deepagents_code.multiplexer import (
+            ALLOW_PASSTHROUGH,
+            FOCUS_EVENTS,
+            SET_CLIPBOARD,
+        )
+
+        labels = self._labels(
+            self._tmux_status(
+                **{FOCUS_EVENTS: "on", ALLOW_PASSTHROUGH: "on", SET_CLIPBOARD: "on"}
+            )
+        )
+        assert labels["Multiplexer"] == "tmux 3.5a"
+        assert labels["Focus events"] == "on"
+        assert labels["Passthrough"] == "on"
+        assert labels["Clipboard"] == "on"
+
+    def test_disabled_option_carries_consequence_and_remedy(self) -> None:
+        """A user must be able to act on the row without leaving the terminal."""
+        from deepagents_code.multiplexer import FOCUS_EVENTS
+
+        value = self._labels(self._tmux_status(**{FOCUS_EVENTS: "off"}))["Focus events"]
+        assert value.startswith("off - ")
+        assert "blinking cursor" in value
+        assert "set -g focus-events on" in value
+
+    def test_unknown_option_is_distinct_from_failed_probe(self) -> None:
+        """An old tmux and an unreachable one are different problems."""
+        from deepagents_code.multiplexer import TmuxStatus
+
+        old = self._labels(self._tmux_status())["Passthrough"]
+        unreachable = self._labels(TmuxStatus(version=None, options=None))[
+            "Passthrough"
+        ]
+        assert old == "unsupported by this tmux"
+        assert unreachable == "could not query tmux"
+
+    def test_missing_version_is_reported(self) -> None:
+        """A server that will not answer `-V` is still worth listing."""
+        from deepagents_code.multiplexer import TmuxStatus
+
+        labels = self._labels(TmuxStatus(version=None, options={}))
+        assert labels["Multiplexer"] == "tmux (version unknown)"
+
+    def test_section_stays_healthy_when_options_are_off(self) -> None:
+        """Tmux suggestions must not flip the `doctor` exit code."""
+        from deepagents_code.multiplexer import (
+            ALLOW_PASSTHROUGH,
+            FOCUS_EVENTS,
+            SET_CLIPBOARD,
+        )
+
+        section = self._section(
+            self._tmux_status(
+                **{
+                    FOCUS_EVENTS: "off",
+                    ALLOW_PASSTHROUGH: "off",
+                    SET_CLIPBOARD: "external",
+                }
+            )
+        )
+        assert section.ok is True
 
 
 class TestCollectTracing:
@@ -759,7 +854,13 @@ class TestRunDoctorCommand:
         data = envelope["data"]
         assert data["healthy"] is True
         titles = [section["title"] for section in data["sections"]]
-        assert titles == ["Diagnostics", "Updates", "Tracing", "Configuration"]
+        assert titles == [
+            "Diagnostics",
+            "Terminal",
+            "Updates",
+            "Tracing",
+            "Configuration",
+        ]
 
     def test_unhealthy_returns_nonzero(self) -> None:
         """An unhealthy section yields a non-zero exit code."""

@@ -3533,6 +3533,116 @@ class TestDroppedVideoPaste:
             assert len(app.tracker.get_videos()) == 1
 
 
+class TestDroppedFolderPaste:
+    """Dropping a folder should stay ordinary input, not a slash command.
+
+    Terminals emit the same absolute-path payload for a dragged folder as for a
+    dragged file, so the leading `/` must not be read as a mode trigger.
+    """
+
+    async def test_dropped_folder_keeps_normal_mode_and_path(
+        self, tmp_path: Path
+    ) -> None:
+        """A dropped folder path should stay verbatim in normal mode."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            popup = chat.query_one(CompletionPopup)
+            assert chat._text_area is not None
+
+            chat._text_area.text = str(folder)
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == str(folder)
+            assert chat._current_suggestions == []
+            assert popup.styles.display == "none"
+
+    async def test_dropped_quoted_folder_keeps_normal_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """Quoted folder drops (paths with spaces) should also stay normal."""
+        folder = tmp_path / "my assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = f"'{folder}'"
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == f"'{folder}'"
+
+    async def test_typing_after_folder_drop_submits_message(
+        self, tmp_path: Path
+    ) -> None:
+        """Typing a question after a folder drop should submit it as a message."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = str(folder)
+            chat._text_area.move_cursor_to_end()
+            await _pause_for_strip(pilot)
+
+            for char in " what is in here":
+                await pilot.press("space" if char == " " else char)
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == f"{folder} what is in here"
+            assert app.submitted[0].mode == "normal"
+
+    async def test_editing_away_dropped_folder_restores_command_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """Once the dropped path is gone, `/` behaves as a mode trigger again."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = str(folder)
+            await _pause_for_strip(pilot)
+            assert chat.mode == "normal"
+
+            chat._text_area.text = "/help"
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._text_area.text == "help"
+
+    async def test_pasted_slash_command_still_enters_command_mode(self) -> None:
+        """A multi-character `/command` paste must keep slash-command behavior."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = "/help"
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "command"
+            assert chat._text_area.text == "help"
+
+
 class TestPathPayloadDetectionGating:
     """Single-keystroke edits should skip the blocking path-detection helpers.
 

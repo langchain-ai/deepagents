@@ -10,6 +10,7 @@ from deepagents_code.input import (
     extract_leading_pasted_file_path,
     normalize_pasted_path,
     parse_file_mentions,
+    parse_pasted_directory_paths,
     parse_pasted_file_paths,
     parse_pasted_path_payload,
     parse_single_pasted_file_path,
@@ -317,6 +318,73 @@ def test_parse_pasted_file_paths_handles_angle_bracket_wrapped_path(
     result = parse_pasted_file_paths(f"<{img}>")
 
     assert result == [img.resolve()]
+
+
+def test_parse_pasted_directory_paths_resolves_dropped_folder(tmp_path: Path) -> None:
+    """A dragged folder payload should resolve to the directory."""
+    folder = tmp_path / "assets"
+    folder.mkdir()
+
+    assert parse_pasted_directory_paths(str(folder)) == [folder.resolve()]
+
+
+def test_parse_pasted_directory_paths_resolves_quoted_folder(tmp_path: Path) -> None:
+    """Quoted folder payloads should resolve like quoted file payloads."""
+    folder = tmp_path / "my assets"
+    folder.mkdir()
+
+    assert parse_pasted_directory_paths(f"'{folder}'") == [folder.resolve()]
+
+
+def test_parse_pasted_directory_paths_resolves_unquoted_folder_with_spaces(
+    tmp_path: Path,
+) -> None:
+    """Terminals that paste folder paths verbatim keep spaces unescaped."""
+    folder = tmp_path / "my assets" / "raw images"
+    folder.mkdir(parents=True)
+
+    assert parse_pasted_directory_paths(str(folder)) == [folder.resolve()]
+
+
+def test_parse_pasted_directory_paths_resolves_file_url(tmp_path: Path) -> None:
+    """`file://` folder payloads should be URL-decoded and resolved."""
+    folder = tmp_path / "space name"
+    folder.mkdir()
+
+    payload = f"file://{str(folder).replace(' ', '%20')}"
+
+    assert parse_pasted_directory_paths(payload) == [folder.resolve()]
+
+
+def test_parse_pasted_directory_paths_resolves_multiple_folders(tmp_path: Path) -> None:
+    """Dropping several folders at once should resolve every path."""
+    first = tmp_path / "one"
+    second = tmp_path / "two"
+    first.mkdir()
+    second.mkdir()
+
+    result = parse_pasted_directory_paths(f"{first}\n{second}")
+
+    assert result == [first.resolve(), second.resolve()]
+
+
+def test_parse_pasted_directory_paths_ignores_files(tmp_path: Path) -> None:
+    """File payloads are handled by the file parser, not this one."""
+    target = tmp_path / "note.txt"
+    target.write_text("hi")
+
+    assert parse_pasted_directory_paths(str(target)) == []
+
+
+def test_parse_pasted_directory_paths_ignores_missing_folder(tmp_path: Path) -> None:
+    """Missing directories should fall back to regular text paste."""
+    assert parse_pasted_directory_paths(str(tmp_path / "missing")) == []
+
+
+@pytest.mark.parametrize("payload", ["", "   \n\t  ", "/help", "please inspect this"])
+def test_parse_pasted_directory_paths_ignores_non_path_payloads(payload: str) -> None:
+    """Prose and slash commands must not be read as dropped folders."""
+    assert parse_pasted_directory_paths(payload) == []
 
 
 def test_normalize_pasted_path_rejects_mixed_payload() -> None:

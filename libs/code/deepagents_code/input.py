@@ -3,6 +3,7 @@
 import logging
 import re
 import shlex
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -543,6 +544,53 @@ def parse_pasted_file_paths(text: str) -> list[Path]:
     Returns:
         List of resolved file paths, or an empty list when parsing fails.
     """
+    return _parse_pasted_payload_paths(text, _resolve_existing_pasted_path)
+
+
+def parse_pasted_directory_paths(text: str) -> list[Path]:
+    """Parse a paste payload that consists only of dropped directory paths.
+
+    Terminals deliver a dragged folder the same way they deliver a dragged file,
+    so a folder drop reads as an absolute path starting with `/` — the same
+    character that opens slash-command mode in the chat input. Callers use this
+    to recognize such a payload as a path and leave it as literal text;
+    directories are not attachable, so nothing is loaded from them.
+
+    Like `parse_pasted_file_paths`, parsing is strict: every token must resolve
+    to an existing directory, otherwise the payload is ordinary text.
+
+    Args:
+        text: Raw paste payload from the terminal.
+
+    Returns:
+        List of resolved directory paths, or an empty list when parsing fails.
+    """
+    paths = _parse_pasted_payload_paths(text, _resolve_existing_pasted_directory)
+    if paths:
+        return paths
+
+    # Terminals that paste an unquoted path verbatim leave spaces intact, which
+    # shell tokenization above splits into unresolvable tokens.
+    candidate = normalize_pasted_path(text)
+    if candidate is None:
+        return []
+    resolved = _resolve_existing_pasted_directory(candidate)
+    return [resolved] if resolved is not None else []
+
+
+def _parse_pasted_payload_paths(
+    text: str, resolve: Callable[[Path], Path | None]
+) -> list[Path]:
+    """Tokenize a paste payload and resolve every token through `resolve`.
+
+    Args:
+        text: Raw paste payload from the terminal.
+        resolve: Resolver deciding whether a path candidate exists in the shape
+            the caller accepts (file or directory).
+
+    Returns:
+        Resolved paths, or an empty list when any token fails to resolve.
+    """
     payload = text.strip()
     if not payload:
         return []
@@ -565,7 +613,7 @@ def parse_pasted_file_paths(text: str) -> list[Path]:
         path = _token_to_path(token)
         if path is None:
             return []
-        resolved = _resolve_existing_pasted_path(path)
+        resolved = resolve(path)
         if resolved is None:
             return []
         paths.append(resolved)
@@ -1009,13 +1057,41 @@ def _safe_is_dir(path: Path) -> bool:
 def _resolve_existing_pasted_path(path: Path) -> Path | None:
     """Resolve a pasted path candidate to an existing file.
 
-    Performs an exact resolution first, then a Unicode-space-tolerant lookup.
-
     Args:
         path: Parsed path candidate.
 
     Returns:
         Resolved existing file path, otherwise `None`.
+    """
+    return _resolve_existing_pasted_entry(path, _safe_is_file)
+
+
+def _resolve_existing_pasted_directory(path: Path) -> Path | None:
+    """Resolve a pasted path candidate to an existing directory.
+
+    Args:
+        path: Parsed path candidate.
+
+    Returns:
+        Resolved existing directory path, otherwise `None`.
+    """
+    return _resolve_existing_pasted_entry(path, _safe_is_dir)
+
+
+def _resolve_existing_pasted_entry(
+    path: Path, matches: Callable[[Path], bool]
+) -> Path | None:
+    """Resolve a pasted path candidate to an existing entry of one shape.
+
+    Performs an exact resolution first, then a Unicode-space-tolerant lookup.
+
+    Args:
+        path: Parsed path candidate.
+        matches: Predicate deciding whether a resolved path is the shape the
+            caller wants (a file or a directory).
+
+    Returns:
+        Resolved existing path, otherwise `None`.
     """
     try:
         resolved = path.expanduser().resolve()
@@ -1023,10 +1099,10 @@ def _resolve_existing_pasted_path(path: Path) -> Path | None:
         # ValueError covers an embedded NUL, which `resolve()` rejects outright.
         logger.debug("Path resolution failed for %r: %s", path, e)
         return None
-    if _safe_is_file(resolved):
+    if matches(resolved):
         return resolved
 
-    fuzzy = _resolve_with_unicode_space_variants(path)
+    fuzzy = _resolve_with_unicode_space_variants(path, prefer=matches)
     if fuzzy is None:
         return None
     try:
@@ -1034,7 +1110,7 @@ def _resolve_existing_pasted_path(path: Path) -> Path | None:
     except (OSError, RuntimeError, ValueError) as e:
         logger.debug("Unicode-space resolution failed for %r: %s", fuzzy, e)
         return None
-    if _safe_is_file(resolved_fuzzy):
+    if matches(resolved_fuzzy):
         return resolved_fuzzy
     return None
 
@@ -1051,11 +1127,15 @@ def _normalize_unicode_spaces(text: str) -> str:
     return text.translate(_UNICODE_SPACE_EQUIVALENTS)
 
 
-def _resolve_with_unicode_space_variants(path: Path) -> Path | None:
+def _resolve_with_unicode_space_variants(
+    path: Path, *, prefer: Callable[[Path], bool] = _safe_is_file
+) -> Path | None:
     """Resolve path by matching filename segments with Unicode space variants.
 
     Args:
         path: Path candidate that may differ from disk by space code points.
+        prefer: Predicate preferred when several entries in the same parent
+            match the final segment.
 
     Returns:
         Matching filesystem path, or `None` when no variant match exists.
@@ -1095,9 +1175,9 @@ def _resolve_with_unicode_space_variants(path: Path) -> Path | None:
 
         is_last = index == len(parts) - 1
         if is_last:
-            file_matches = [entry for entry in matches if _safe_is_file(entry)]
-            if file_matches:
-                matches = file_matches
+            preferred = [entry for entry in matches if prefer(entry)]
+            if preferred:
+                matches = preferred
         else:
             dir_matches = [entry for entry in matches if _safe_is_dir(entry)]
             if dir_matches:

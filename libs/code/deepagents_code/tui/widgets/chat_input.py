@@ -1516,6 +1516,12 @@ class ChatInput(Vertical):
         # still detecting replacement edits that insert a full path payload.
         self._prev_text = ""
 
+        # Draft text that filesystem path-detection already accepted as a
+        # dropped path. Keystrokes that only extend it (typing a question after
+        # dropping a file or folder) keep mode detection out of command mode
+        # without re-running the stat calls that single-character edits skip.
+        self._dropped_path_draft: str | None = None
+
         # Track current suggestions for click handling
         self._current_suggestions: list[tuple[str, str]] = []
         self._current_selected_index = 0
@@ -1742,6 +1748,10 @@ class ChatInput(Vertical):
             text, previous_text=previous_text, cursor_offset=self._get_cursor_offset()
         )
         self._prev_text = text
+        if self._dropped_path_draft is not None and not text.startswith(
+            self._dropped_path_draft
+        ):
+            self._dropped_path_draft = None
 
         # History handlers explicitly decide mode and stripped display text.
         # Skip mode detection here so recalled entries don't inherit stale mode.
@@ -1771,6 +1781,13 @@ class ChatInput(Vertical):
         is_path_payload = should_check_path_payload and self._is_dropped_path_payload(
             text
         )
+        if is_path_payload:
+            self._dropped_path_draft = text
+        # Keystrokes that extend a recognized dropped path (typing a question
+        # after dropping a file or folder) arrive one character at a time, so
+        # they skip the stat calls above. Remembering the accepted draft keeps
+        # its leading `/` from being re-read as a slash-command trigger.
+        keeps_dropped_path = is_path_payload or self._dropped_path_draft is not None
 
         # Guard: skip mode re-detection after we programmatically stripped
         # a prefix character.
@@ -1779,7 +1796,7 @@ class ChatInput(Vertical):
         elif detected_prefix := detect_mode_prefix(text):
             prefix, raw_detected = detected_prefix
             detected, strip_length = self._resolve_prefix_mode(prefix, raw_detected)
-            if prefix == "/" and is_path_payload:
+            if prefix == "/" and keeps_dropped_path:
                 # Absolute dropped paths stay normal input, not slash-command mode.
                 if self.mode != "normal":
                     self.mode = "normal"
@@ -1924,12 +1941,22 @@ class ChatInput(Vertical):
 
     @staticmethod
     def _is_existing_path_payload(text: str) -> bool:
-        """Return whether text is a dropped-path payload for existing files."""
+        """Return whether text is a dropped-path payload for existing entries.
+
+        Dropped folders count too: a terminal emits the same absolute-path
+        payload for a dragged directory as for a dragged file, so recognizing
+        only files would leave a folder drop looking like a slash command.
+        """
         if len(text) < 2:  # noqa: PLR2004  # Need at least '/' + one char
             return False
-        from deepagents_code.input import parse_pasted_path_payload
+        from deepagents_code.input import (
+            parse_pasted_directory_paths,
+            parse_pasted_path_payload,
+        )
 
-        return parse_pasted_path_payload(text, allow_leading_path=True) is not None
+        if parse_pasted_path_payload(text, allow_leading_path=True) is not None:
+            return True
+        return bool(parse_pasted_directory_paths(text))
 
     def _is_dropped_path_payload(self, text: str) -> bool:
         """Return whether current text looks like a dropped file-path payload."""
@@ -1941,6 +1968,16 @@ class ChatInput(Vertical):
             candidate = f"/{text.lstrip('/')}"
             return self._is_existing_path_payload(candidate)
         return False
+
+    def _starts_with_dropped_path(self, value: str) -> bool:
+        """Return whether `value` still begins with a recognized dropped path.
+
+        Lets submission treat a leading `/` as part of the dropped path instead
+        of a slash-command trigger, so a dropped folder plus a typed question is
+        sent as a message.
+        """
+        draft = self._dropped_path_draft
+        return draft is not None and value.startswith(draft.strip())
 
     def _resolve_prefix_mode(self, prefix: str, detected: str) -> tuple[str, int]:
         """Resolve target mode and strip length for a detected mode prefix.
@@ -2128,7 +2165,7 @@ class ChatInput(Vertical):
         value = self._replace_submitted_paths_with_images(value)
 
         mode = self.mode
-        if mode == "normal":
+        if mode == "normal" and not self._starts_with_dropped_path(value):
             detected = detect_mode_prefix(value)
             if detected is not None:
                 _, mode = detected

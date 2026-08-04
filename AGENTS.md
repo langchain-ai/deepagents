@@ -310,6 +310,16 @@ Avoid searching these unless explicitly needed:
 
 For dependency internals, first locate the dependency file from the package environment, then read that exact file instead of grepping all `site-packages`.
 
+### Long-turn context budget
+
+Long `gh` / `git` / CI-automation turns replay the whole turn transcript on every model call, so cumulative input grows with every step even when each individual tool result is small. A few hundred steps of ordinary PR plumbing is enough to spend millions of tokens in a single turn.
+
+- When cumulative turn input approaches roughly half of `model_context_limit`, invoke `compact_conversation` before continuing. Do not carry a multi-hundred-step turn all the way to the context limit.
+- Prefer a fresh turn over an ever-growing one. When a PR/CI task reaches a natural checkpoint — branch pushed, PR opened, workflow run green — summarize the state you need to keep, compact, and continue from there instead of chaining more work into the same turn.
+- Bound inspection output you don't need in full: `git diff --stat` / `git log --oneline -N`, `gh ... --jq` / `--limit`, `sed -n 'A,Bp'` for a file slice, and `grep -m N`. Scope greps to a package path per the search targets above rather than the repo root.
+
+One carve-out, for consistency with `execute` exit-code behavior: do **not** pipe test, lint, or build commands through `head` / `tail` when the true exit status matters — only the last stage of a pipeline reports its status, so a failing command reads as a pass. Use `-q` / `--quiet`, or write the output to a file and read a bounded slice from it.
+
 ### Deep Agents Code (`libs/code/`)
 
 The `deepagents-code` package ships the interactive terminal coding agent, launched via the `dcode` console command (`dcode` is the short alias for `deepagents-code`).

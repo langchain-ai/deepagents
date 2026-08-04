@@ -408,6 +408,7 @@ class TestMessageData:
             before="a\nunused before\n",
             after="b\nunused after\n",
             stats=DiffStats(additions=200, deletions=200),
+            changes_unknown=True,
             id="test-diff-highlight",
         )
 
@@ -416,6 +417,7 @@ class TestMessageData:
         assert isinstance(restored, DiffMessage)
         assert (restored._before, restored._after) == ("a", "b")
         assert restored._stats == (200, 200)
+        assert restored._changes_unknown is True
 
     def test_unknown_widget_serializes_as_app(self):
         """Test that unknown widget types fall back to APP MessageData."""

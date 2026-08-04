@@ -186,6 +186,9 @@ class MessageData:
     diff_stats: DiffStats | None = None
     """True change counts, which survive a truncated DIFF body."""
 
+    diff_changes_unknown: bool = False
+    """Whether the diff's pre-operation content was unavailable."""
+
     # SKILL message fields - only populated for SKILL messages
     skill_name: str | None = None
     """Name of the skill that was invoked."""
@@ -354,6 +357,7 @@ class MessageData:
                     before=self.diff_before_content or "",
                     after=self.diff_after_content or "",
                     stats=self.diff_stats,
+                    changes_unknown=self.diff_changes_unknown,
                     id=self.id,
                 )
 
@@ -467,6 +471,7 @@ class MessageData:
                 diff_before_content=widget._before,
                 diff_after_content=widget._after,
                 diff_stats=widget._stats,
+                diff_changes_unknown=widget._changes_unknown,
             )
 
         if isinstance(widget, SummarizationMessage):

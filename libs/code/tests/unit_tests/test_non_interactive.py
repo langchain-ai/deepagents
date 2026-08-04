@@ -19,7 +19,6 @@ if TYPE_CHECKING:
 from rich.style import Style
 from rich.text import Text
 
-from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code._tool_stream import (
     TOOL_OUTPUT_TRUNCATION_MARKER,
     UNRENDERABLE_TOOL_OUTPUT,
@@ -381,11 +380,8 @@ class TestSandboxTypeForwarding:
         assert kwargs["profile_overrides"] == {"max_input_tokens": 32_000}
         assert kwargs["enable_interpreter"] is None
 
-    async def test_permission_hooks_override_headless_yolo_bypass(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_permission_hooks_override_headless_yolo_bypass(self) -> None:
         """Permission hooks force client resolution while retaining YOLO context."""
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         runtime = MagicMock()
         runtime.configured_events.return_value = frozenset(
             {HookEvent.PERMISSION_REQUEST}
@@ -1679,7 +1675,6 @@ class TestMaxTurns:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """`--trust-project-hooks` loads repository hook handlers."""
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         monkeypatch.chdir(tmp_path)
         project_hooks = tmp_path / ".deepagents"
         project_hooks.mkdir()

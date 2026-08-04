@@ -2,6 +2,12 @@
 
 # Deep Agents Changelog
 
+## [0.7.4](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.3...deepagents==0.7.4) (2026-08-04)
+
+### Features
+
+- Exposed the `execute` exit code in SDK artifacts. ([#5300](https://github.com/langchain-ai/deepagents/issues/5300))
+
 ## [0.7.3](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.2...deepagents==0.7.3) (2026-08-03)
 
 ### Bug Fixes

@@ -7,6 +7,7 @@ import contextlib
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -64,6 +65,7 @@ from deepagents_code.approval_mode import (
     aread_approval_mode_from_store,
     coerce_approval_mode,
 )
+from deepagents_code.config_manifest import AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
 from deepagents_code.goal_state_notice import project_goal_state
 
 if TYPE_CHECKING:
@@ -78,7 +80,7 @@ AUTO_MODE_COUNTERS_NAMESPACE: tuple[str, str] = (
 )
 USER_PROMPT_METADATA_KEY = "deepagents_code_user_prompt"
 AUTO_MODE_EVENT_TYPE = "auto_mode"
-_CLASSIFIER_TIMEOUT_SECONDS = 20.0
+_CLASSIFIER_TIMEOUT_SECONDS = AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
 # Building a classifier is a different kind of wait than asking one for a
 # verdict: a cold provider-package import, profile resolution, and credential
 # bootstrap all land on the first review. Sharing one budget made that first
@@ -1848,6 +1850,22 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         ):
             msg = "trusted_compaction_tool must be named compact_conversation"
             raise ValueError(msg)
+        # The review deadline is a security control's budget, so reject a
+        # nonsensical one at the boundary rather than trusting every caller:
+        # a zero, negative, or NaN timeout expires immediately, silently turning
+        # Auto into "deny every gated batch, then escalate". Callers that read
+        # user config go through `resolve_auto_classifier_timeout`, which bounds
+        # the value; this guards programmatic construction.
+        for name, budget in (
+            ("classifier_timeout_seconds", classifier_timeout_seconds),
+            (
+                "classifier_construction_timeout_seconds",
+                classifier_construction_timeout_seconds,
+            ),
+        ):
+            if not math.isfinite(budget) or budget <= 0:
+                msg = f"{name} must be a positive finite number, got {budget!r}"
+                raise ValueError(msg)
         interrupt_map = dict(interrupt_on)
         interrupt_map["create_temp_artifact"] = {
             "allowed_decisions": ["approve", "reject"],

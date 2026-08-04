@@ -18,8 +18,9 @@
 #     prefix.
 #   - Validates the `<scope>` segment against the same scope list enforced by
 #     pr_lint.yml (plus `docs`, which AGENTS.md lists as a branch scope), so
-#     branch scopes and PR title scopes stay aligned. The scope list here must
-#     stay in sync with pr_lint.yml and .githooks/pre-push.
+#     branch scopes and PR title scopes stay aligned. The `branch-scopes-sync`
+#     pre-commit hook enforces that this list, pr_lint.yml and .githooks/pre-push
+#     agree.
 #   - Does NOT enforce that the username segment equals the PR author's login —
 #     branches are sometimes pushed by automation or another maintainer on the
 #     author's behalf.
@@ -38,7 +39,10 @@ permissions:
 
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened]
+    # No `edited`: a PR's head ref cannot be changed after opening, so a title
+    # or body edit can never change this check's outcome. `synchronize` and
+    # `reopened` already cover re-running after the allowed-branch rules change.
+    types: [opened, synchronize, reopened]
 
 concurrency:
   # Serialize per-PR so rapid pushes can't race the sticky comment's
@@ -61,7 +65,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Keep these three lists in sync with .githooks/pre-push.
+          # These three patterns are duplicated in .githooks/pre-push; the
+          # `branch-scopes-sync` pre-commit hook fails the commit if they drift.
           ALLOWED_RE='^(main|master|v[0-9]+\.[0-9]+.*)$'
           ALLOWED_PREFIX_RE='^(release-please--|dependabot/|copilot/|alpha/|beta/|rc/|dev/)'
           SCOPES_RE='(acp|ci|cli|code|dcode-gha|daytona|deepagents|deepagents-acp|deepagents-cli|deepagents-code|deepagents-talon|deps|deps-dev|docs|evals|examples|harbor|infra|langchain-daytona|langchain-modal|langchain-quickjs|langchain-runloop|langchain-vercel-sandbox|langsmith-sandbox|modal|quickjs|repo|runloop|sdk|talon|vercel)'
@@ -73,10 +78,10 @@ jobs:
           fi
 
           # <github-username>: a GitHub login segment; not compared to the PR
-          # author (see workflow header). Case-insensitive, because logins may
-          # contain uppercase and refs preserve it — a lowercase-only class here
-          # would warn on names the local hook accepts. Advisory only: warn,
-          # don't fail.
+          # author (see workflow header). The class accepts uppercase, because
+          # logins may contain it and refs preserve case — a lowercase-only
+          # class here would warn on names the local hook accepts. Advisory
+          # only: warn, don't fail.
           # Kebab-case description: the final group is optional so
           # one-character descriptions are valid; still no trailing hyphen.
           if [[ ! "$HEAD_REF" =~ ^[A-Za-z0-9](-?[A-Za-z0-9])*/${SCOPES_RE}/[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
@@ -105,13 +110,36 @@ jobs:
             }
             const STICKY_MARKER = '<!-- branch-name-check -->';
             const headRef = process.env.HEAD_REF;
-            const nonconformant = process.env.NONCONFORMANT === 'true';
 
+            // The verdict must be an explicit `true`/`false` from the validate
+            // step. Treating anything else as "conformant" would let a renamed
+            // step id, a renamed output key, or an early `exit 0` that forgets
+            // to write `$GITHUB_OUTPUT` pass silently — and worse, delete an
+            // existing warning comment. That is indistinguishable from "every
+            // branch is conformant", so it fails loudly. Unlike the comment API
+            // errors below, this can only come from a wiring bug in this file;
+            // it will not fix itself on a re-run.
+            const verdict = process.env.NONCONFORMANT;
+            if (verdict !== 'true' && verdict !== 'false') {
+              core.setFailed(
+                `The validate step reported no verdict (nonconformant='${verdict}') — ` +
+                `the check ran but validated nothing. Check the 'check' step's outputs ` +
+                `in branch_name_check.yml.`,
+              );
+              return;
+            }
+            const nonconformant = verdict === 'true';
+
+            // Only this workflow's own comments are eligible: the marker alone
+            // would also match a human's comment that happens to quote it,
+            // which this job may go on to edit or delete.
             async function findStickyComment() {
               const comments = await github.paginate(github.rest.issues.listComments, {
                 owner, repo, issue_number: prNumber, per_page: 100,
               });
-              return comments.find(c => c.body && c.body.startsWith(STICKY_MARKER));
+              return comments.find(
+                c => c.body && c.body.startsWith(STICKY_MARKER) && c.user?.type === 'Bot',
+              );
             }
 
             // Comment API failures must not make this explicitly advisory

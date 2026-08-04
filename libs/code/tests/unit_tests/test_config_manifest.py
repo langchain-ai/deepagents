@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -200,6 +201,136 @@ def test_is_openai_prompt_cache_key_enabled_unrecognized_env_falls_through(
         lambda: {"models": {"openai_prompt_cache_key": False}},
     )
     assert is_openai_prompt_cache_key_enabled() is False
+
+
+def test_resolve_auto_classifier_model_defaults_to_inheriting(monkeypatch) -> None:
+    """No preference leaves the Auto classifier on the main agent model."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+    assert resolve_auto_classifier_model() is None
+
+
+def test_resolve_auto_classifier_model_reads_toml(monkeypatch) -> None:
+    """`[models].auto_classifier` selects the classifier when env is unset."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "openai:gpt-5.5-mini"}},
+    )
+    assert resolve_auto_classifier_model() == "openai:gpt-5.5-mini"
+
+
+def test_resolve_auto_classifier_model_env_overrides_toml(monkeypatch) -> None:
+    """The env var wins over config.toml; a blank value means inherit."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "openai:gpt-5.5-mini"}},
+    )
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "anthropic:claude-haiku-4-5")
+    assert resolve_auto_classifier_model() == "anthropic:claude-haiku-4-5"
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "   ")
+    assert resolve_auto_classifier_model() is None
+
+
+def test_resolve_auto_classifier_model_warns_on_blank_value(
+    monkeypatch, caplog
+) -> None:
+    """A blank configured classifier is reported, not dropped in silence.
+
+    Reverting to the main agent model is a security control quietly changing
+    behavior, so it gets the same audible treatment a malformed value gets.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "   "}},
+    )
+
+    with caplog.at_level("WARNING", logger="deepagents_code.config"):
+        assert resolve_auto_classifier_model() is None
+
+    assert any(
+        "blank" in record.getMessage() and "auto_classifier" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_resolve_auto_classifier_model_reports_blank_problem(monkeypatch) -> None:
+    """A blank value is returned as a problem, not just logged.
+
+    A `logger.warning` lands in the debug log, which is not a surface the user
+    reads; the caller needs the description to show it at startup.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model_with_problem
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "   "}},
+    )
+
+    spec, problem = resolve_auto_classifier_model_with_problem()
+
+    assert spec is None
+    assert problem is not None
+    assert "blank" in problem
+    assert "main agent model" in problem
+
+
+def test_resolve_auto_classifier_model_reports_malformed_problem(monkeypatch) -> None:
+    """A wrong-typed value must not silently revert to self-review.
+
+    `resolve_scalar` coerces a non-string to the option default, making a
+    malformed entry indistinguishable from an absent one — so the agent resumed
+    grading its own actions with nothing logged at all.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model_with_problem
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": 3}},
+    )
+
+    spec, problem = resolve_auto_classifier_model_with_problem()
+
+    assert spec is None
+    assert problem is not None
+    assert "malformed" in problem
+    assert "main agent model" in problem
+
+
+def test_resolve_auto_classifier_model_reports_no_problem_when_absent(
+    monkeypatch,
+) -> None:
+    """An unconfigured classifier is the default, not a problem to report."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model_with_problem
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+
+    assert resolve_auto_classifier_model_with_problem() == (None, None)
 
 
 def test_goal_auto_accept_criteria_defaults_to_review(monkeypatch) -> None:
@@ -996,6 +1127,23 @@ def test_langsmith_project_empty_bare_is_default(monkeypatch) -> None:
     assert resolve_scalar(opt, toml_data={}) == (LANGSMITH_PROJECT_DEFAULT, "default")
 
 
+def test_onboarding_empty_env_reports_env_opt_out(monkeypatch) -> None:
+    """An explicitly empty `DEEPAGENTS_CODE_ONBOARDING` resolves as an env opt-out.
+
+    `should_run_onboarding` treats an empty value as falsy and suppresses the
+    flow, so `config` must report the option as set by the environment rather
+    than unset/default.
+    """
+    from deepagents_code.onboarding import should_run_onboarding
+
+    opt = get_option("startup.onboarding")
+    assert opt is not None
+    monkeypatch.setenv("DEEPAGENTS_CODE_ONBOARDING", "")
+    value, source = resolve_scalar(opt, toml_data={})
+    assert (value, source) == (False, "env (DEEPAGENTS_CODE_ONBOARDING)")
+    assert should_run_onboarding() is False
+
+
 def test_fallback_env_vars_yield_to_toml_when_env_unset(monkeypatch) -> None:
     """A synthetic option exercises the empty-fallback → `config.toml` path.
 
@@ -1216,6 +1364,60 @@ def test_no_update_check_resolves_inverted_persisted_check() -> None:
     assert resolve_scalar(opt, toml_data={"update": {"check": True}}) == (
         False,
         "config.toml",
+    )
+
+
+def test_prices_auto_update_default_matches_runtime(monkeypatch) -> None:
+    """The manifest default must agree with the one `_start_price_updater` uses.
+
+    They are declared independently, so a drift makes `dcode config get
+    update.prices_auto_update` report the opposite of what the updater does.
+    """
+    from deepagents_code import cost_tracking
+
+    opt = get_option("update.prices_auto_update")
+    assert opt is not None
+    monkeypatch.delenv(_env_vars.PRICES_AUTO_UPDATE, raising=False)
+    # Suite-wide fixtures set both; the updater honors OFFLINE as well.
+    monkeypatch.delenv(_env_vars.OFFLINE, raising=False)
+    # The runtime gate resolves the option, which reads the user's real
+    # `config.toml` here; an empty table keeps this test on defaults.
+    monkeypatch.setattr("deepagents_code.config_manifest.load_config_toml", dict)
+
+    started: list[object] = []
+    monkeypatch.setattr(cost_tracking, "_PRICE_UPDATER_ATTEMPTED", False)
+    monkeypatch.setattr(cost_tracking, "_PRICE_UPDATER", None)
+    monkeypatch.setattr(
+        cost_tracking,
+        "_build_price_updater",
+        lambda cls: started.append(cls) or MagicMock(),
+    )
+    cost_tracking._start_price_updater()
+
+    assert opt.default is True
+    assert bool(started) is opt.default
+
+
+def test_prices_auto_update_persists_in_toml(monkeypatch) -> None:
+    """The dotted key resolves from `config.toml`, not env vars only."""
+    opt = get_option("update.prices_auto_update")
+    assert opt is not None
+    monkeypatch.delenv(_env_vars.PRICES_AUTO_UPDATE, raising=False)
+    assert opt.toml_keys == ("update", "prices_auto_update")
+    assert resolve_scalar(opt, toml_data={"update": {"prices_auto_update": False}}) == (
+        False,
+        "config.toml",
+    )
+
+
+def test_prices_auto_update_empty_env_disables(monkeypatch) -> None:
+    """An explicitly empty env value opts out, matching `_start_price_updater`."""
+    opt = get_option("update.prices_auto_update")
+    assert opt is not None
+    monkeypatch.setenv(_env_vars.PRICES_AUTO_UPDATE, "")
+    assert resolve_scalar(opt, toml_data={}) == (
+        False,
+        f"env ({_env_vars.PRICES_AUTO_UPDATE})",
     )
 
 
@@ -2417,6 +2619,298 @@ def test_provider_dependency_metadata_is_exhaustive() -> None:
         "_PROVIDER_DEPENDENCIES must include every model-provider extra so the "
         "model selector can surface install-required recommended models"
     )
+
+
+# --- Auto classifier timeout -----------------------------------------------
+
+
+def test_auto_classifier_timeout_option_metadata() -> None:
+    """The classifier-timeout option exposes the env/TOML override surface."""
+    opt = get_option("models.auto_classifier_timeout")
+    assert opt is not None
+    assert opt.kind is OptionKind.FLOAT
+    assert opt.env_var == _env_vars.AUTO_CLASSIFIER_TIMEOUT
+    assert opt.toml_keys == ("models", "auto_classifier_timeout")
+    assert "models.auto_classifier_timeout" in option_keys()
+
+
+def test_auto_classifier_timeout_default_matches_middleware_default() -> None:
+    """The middleware constant and the manifest default stay single-sourced."""
+    from deepagents_code.auto_mode import _CLASSIFIER_TIMEOUT_SECONDS
+    from deepagents_code.config_manifest import (
+        AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        resolve_auto_classifier_timeout,
+    )
+
+    assert _CLASSIFIER_TIMEOUT_SECONDS == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+    assert (
+        resolve_auto_classifier_timeout(toml_data={})
+        == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+    )
+
+
+def test_resolve_auto_classifier_timeout_env_wins(monkeypatch) -> None:
+    """A valid env var overrides both TOML and the default."""
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "45")
+    resolved = resolve_auto_classifier_timeout(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert resolved == pytest.approx(45.0)
+
+
+def test_resolve_auto_classifier_timeout_toml_when_env_unset(monkeypatch) -> None:
+    """`config.toml` is used when no env var is set, including bare integers."""
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
+    resolved = resolve_auto_classifier_timeout(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert resolved == pytest.approx(30.0)
+
+
+@pytest.mark.parametrize(
+    "raw", ["0", "-5", "0.5", "100000", "inf", "-inf", "nan", "soon"]
+)
+def test_resolve_auto_classifier_timeout_out_of_range_falls_back(
+    monkeypatch, raw
+) -> None:
+    """Non-positive, unbounded, non-finite, or malformed values fall back."""
+    from deepagents_code.config_manifest import (
+        AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        resolve_auto_classifier_timeout,
+    )
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raw)
+    assert (
+        resolve_auto_classifier_timeout(toml_data={})
+        == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+    )
+
+
+def test_resolve_auto_classifier_timeout_invalid_env_falls_through_to_toml(
+    monkeypatch,
+) -> None:
+    """An out-of-range env value does not mask a valid TOML override."""
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
+    resolved = resolve_auto_classifier_timeout(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert resolved == pytest.approx(30.0)
+
+
+def test_resolve_auto_classifier_timeout_invalid_env_leaves_env_intact(
+    monkeypatch,
+) -> None:
+    """Fall-through resolution must restore the rejected env var afterward."""
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
+    resolve_auto_classifier_timeout(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert os.environ[_env_vars.AUTO_CLASSIFIER_TIMEOUT] == "0"
+
+
+def test_resolve_auto_classifier_timeout_invalid_env_warns(monkeypatch, caplog) -> None:
+    """The rejection warning is a user's only signal; it must not be dropped.
+
+    Nothing else surfaces a discarded timeout, so a refactor that removed the
+    warning (or lowered it to `debug`) would make the fall-through silent.
+    """
+    import logging
+
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        resolve_auto_classifier_timeout(
+            toml_data={"models": {"auto_classifier_timeout": 30}}
+        )
+    assert any(
+        "auto_classifier_timeout" in r.getMessage()
+        and _env_vars.AUTO_CLASSIFIER_TIMEOUT in r.getMessage()
+        for r in caplog.records
+    )
+
+
+@pytest.mark.parametrize("raw", [0, 0.5, 100000, True, "30"])
+def test_resolve_auto_classifier_timeout_rejects_unusable_toml(
+    monkeypatch, caplog, raw
+) -> None:
+    """An unusable `config.toml` value falls back to the default with a warning.
+
+    TOML is the only non-env surface for this option (no CLI flag, no `/auto`
+    subcommand), and the threat model claims it cannot remove the deadline — so
+    a `= 0` that reached the middleware would deny every gated batch.
+    """
+    import logging
+
+    from deepagents_code.config_manifest import (
+        AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        resolve_auto_classifier_timeout,
+    )
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        resolved = resolve_auto_classifier_timeout(
+            toml_data={"models": {"auto_classifier_timeout": raw}}
+        )
+    assert resolved == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+    assert any("auto_classifier_timeout" in r.getMessage() for r in caplog.records)
+
+
+def test_resolve_auto_classifier_timeout_malformed_env_falls_through_to_toml(
+    monkeypatch,
+) -> None:
+    """A malformed env value takes the other fall-through path than an out-of-range one.
+
+    `"soon"` is dropped inside `resolve_scalar`, so the env layer never reports
+    itself as the source and no `os.environ` pop happens; `"0"` coerces fine and
+    is rejected later, taking the pop-and-re-resolve branch. Both must land on
+    the valid TOML value.
+    """
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "soon")
+    resolved = resolve_auto_classifier_timeout(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert resolved == pytest.approx(30.0)
+    assert os.environ[_env_vars.AUTO_CLASSIFIER_TIMEOUT] == "soon"
+
+
+def test_resolve_auto_classifier_timeout_guards_unpoppable_env_source(
+    monkeypatch,
+) -> None:
+    """A source label that is not an environ key must not recurse forever.
+
+    Termination of the fall-through branch depends on the reconstructed env name
+    actually being the key `resolve_scalar` read. If it is not, the pop is a
+    no-op and re-resolving would see the same rejected value again.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config_manifest import (
+        AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        resolve_auto_classifier_timeout,
+    )
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "resolve_scalar",
+        lambda *_args, **_kwargs: (0.0, "env (NOT_AN_ENVIRON_KEY)"),
+    )
+    assert (
+        resolve_auto_classifier_timeout(toml_data={})
+        == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+    )
+
+
+def test_resolve_auto_classifier_timeout_accepts_floor_and_ceiling(
+    monkeypatch,
+) -> None:
+    """The inclusive floor and ceiling are accepted verbatim."""
+    from deepagents_code.config_manifest import (
+        AUTO_CLASSIFIER_TIMEOUT_CEILING,
+        AUTO_CLASSIFIER_TIMEOUT_FLOOR,
+        resolve_auto_classifier_timeout,
+    )
+
+    monkeypatch.setenv(
+        _env_vars.AUTO_CLASSIFIER_TIMEOUT, str(AUTO_CLASSIFIER_TIMEOUT_FLOOR)
+    )
+    assert (
+        resolve_auto_classifier_timeout(toml_data={}) == AUTO_CLASSIFIER_TIMEOUT_FLOOR
+    )
+    monkeypatch.setenv(
+        _env_vars.AUTO_CLASSIFIER_TIMEOUT, str(AUTO_CLASSIFIER_TIMEOUT_CEILING)
+    )
+    assert (
+        resolve_auto_classifier_timeout(toml_data={}) == AUTO_CLASSIFIER_TIMEOUT_CEILING
+    )
+
+
+def test_resolve_auto_classifier_timeout_with_source_reports_effective_layer(
+    monkeypatch,
+) -> None:
+    """The source variant credits the layer the runtime actually enforces."""
+    from deepagents_code.config_manifest import (
+        resolve_auto_classifier_timeout_with_source,
+    )
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
+    value, source = resolve_auto_classifier_timeout_with_source(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert value == pytest.approx(30.0)
+    assert source == "config.toml"
+
+
+def test_config_resolve_reports_effective_auto_classifier_timeout(
+    monkeypatch,
+) -> None:
+    """`config get` must not credit an out-of-range env value the runtime drops."""
+    option = get_option("models.auto_classifier_timeout")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
+    is_set, source, value = _resolve(
+        option, {"models": {"auto_classifier_timeout": 30}}
+    )
+    assert is_set is True
+    assert source == "config.toml"
+    assert value == pytest.approx(30.0)
+
+
+def test_config_resolve_discards_out_of_range_toml_auto_classifier_timeout(
+    monkeypatch,
+) -> None:
+    """`config get` reports the default when TOML provides an unusable timeout."""
+    from deepagents_code.config_manifest import AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+
+    option = get_option("models.auto_classifier_timeout")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
+    is_set, source, value = _resolve(
+        option, {"models": {"auto_classifier_timeout": 500}}
+    )
+    assert is_set is False
+    assert source == "default"
+    assert value == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+
+
+def test_config_resolve_reports_valid_env_auto_classifier_timeout(
+    monkeypatch,
+) -> None:
+    """An in-range env override still wins in the config reporting path."""
+    option = get_option("models.auto_classifier_timeout")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "45")
+    is_set, source, value = _resolve(
+        option, {"models": {"auto_classifier_timeout": 30}}
+    )
+    assert is_set is True
+    assert source == f"env ({_env_vars.AUTO_CLASSIFIER_TIMEOUT})"
+    assert value == pytest.approx(45.0)
+
+
+def test_config_resolve_reports_default_auto_classifier_timeout_as_unset(
+    monkeypatch,
+) -> None:
+    """A default-resolved timeout reports the default source, not a set value."""
+    option = get_option("models.auto_classifier_timeout")
+    assert option is not None
+    from deepagents_code.config_manifest import AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
+    is_set, source, value = _resolve(option, {})
+    assert is_set is False
+    assert source == "default"
+    assert value == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
 
 
 # --- Recursion limit -------------------------------------------------------

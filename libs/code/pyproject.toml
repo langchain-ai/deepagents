@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-code"
-version = "0.1.50"
+version = "0.1.52"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
@@ -59,6 +59,9 @@ dependencies = [
     # Tools
     "tavily-python>=0.7.26,<1.0.0",
     "langchain-quickjs>=0.3.4,<0.4.0",
+
+    # Cost estimation (bundled offline pricing data)
+    "genai-prices>=0.1.1,<0.2.0",
 
     # Clipboard
     "pyperclip>=1.11.0,<2.0.0",
@@ -331,6 +334,13 @@ omit = ["tests/*"]
 timeout = 30  # Default timeout for all tests (can be overridden per-test)
 filterwarnings = [
     "ignore:Core Pydantic V1 functionality isn't compatible with Python 3\\.14 or greater\\.:UserWarning:langchain_core\\.utils\\.pydantic",
+    # `genai_prices.Usage` only warns for a usage key it does not recognize, then
+    # drops it -- the request still prices, just without that bucket. A renamed
+    # key anywhere in the allowed range would silently undercount, so fail
+    # instead. Matched on the message rather than `genai_prices`: the warning
+    # uses `stacklevel=2`, so it is attributed to this package, not to the
+    # module that raised it.
+    "error:Unsupported usage key for standard pricing:UserWarning",
 ]
 
 addopts = "--strict-markers --strict-config --durations=5"

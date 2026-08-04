@@ -146,7 +146,10 @@ organization members: read
 repository contents: write
 issues: write
 pull requests: write
+actions: write
 ```
+
+`actions: write` is required by `release.yml`'s `bump-code-sdk-pin` job to dispatch `bump_code_sdk_pin.yml` after a `deepagents` publish. It was added to the App installation as part of [PR #5298](https://github.com/langchain-ai/deepagents/pull/5298).
 
 The App's actual installed permissions are external configuration and must be verified separately. Workflow-level `permissions` restrict `GITHUB_TOKEN`; they do not restrict a separately minted GitHub App installation token.
 

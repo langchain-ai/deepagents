@@ -4,10 +4,9 @@
 
 ## [0.7.4](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.3...deepagents==0.7.4) (2026-08-04)
 
-
 ### Features
 
-* **sdk:** expose `execute` exit code in artifact ([#5300](https://github.com/langchain-ai/deepagents/issues/5300)) ([de8bfca](https://github.com/langchain-ai/deepagents/commit/de8bfca8255d673c1e7860e8c158ed119238197e))
+- Exposed the `execute` exit code in SDK artifacts. ([#5300](https://github.com/langchain-ai/deepagents/issues/5300))
 
 ## [0.7.3](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.2...deepagents==0.7.3) (2026-08-03)
 

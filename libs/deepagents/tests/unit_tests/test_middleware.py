@@ -48,6 +48,7 @@ from deepagents.middleware.filesystem import (
     EMPTY_CONTENT_WARNING,
     GLOB_TRUNCATION_NOTE,
     GREP_TRUNCATION_NOTE,
+    NO_LINES_REQUESTED_WARNING,
     FileData,
     FilesystemMiddleware,
     FilesystemPermission,
@@ -1593,6 +1594,103 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert result.content == ("1  one\n\n[Read 1 line (lines 1-1 of 5 total). 4 lines remaining from offset 1.]")
 
+    def _read_notes(self, *, offset: int, limit: int) -> ToolMessage:
+        """Invoke `read_file` against a fixed 3-line file with the given window."""
+        files = {
+            "/notes.txt": FileData(
+                content="one\ntwo\nthree",
+                encoding="utf-8",
+            )
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": offset, "limit": limit})
+        assert isinstance(result, ToolMessage)
+        return result
+
+    @pytest.mark.parametrize("limit", [0, -3])
+    def test_read_file_non_positive_limit_does_not_claim_the_file_is_empty(self, limit):
+        """A zero-line window must not borrow the empty-file reminder.
+
+        The `read_file` description teaches the model that reminder means the
+        file itself is empty, so reusing it here would state something false
+        about a file that has contents.
+        """
+        result = self._read_notes(offset=0, limit=limit)
+
+        assert result.status == "success"
+        assert result.content == NO_LINES_REQUESTED_WARNING.format(limit=limit)
+        assert result.content != EMPTY_CONTENT_WARNING
+        assert "empty contents" not in result.content
+
+    @pytest.mark.parametrize("limit", [0, -3])
+    def test_read_file_non_positive_limit_empty_binary_keeps_empty_file_reminder(self, limit):
+        """An inspected-but-empty file must not borrow the zero-line-window warning.
+
+        Binary reads ignore `limit`, so a zero-byte binary is fully inspected
+        and comes back as empty base64; claiming it "was not inspected and may
+        have contents" would be false on both counts.
+        """
+        files = {
+            "/image.png": FileData(
+                content="",
+                encoding="base64",
+            )
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/image.png", "offset": 0, "limit": limit})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.content == EMPTY_CONTENT_WARNING
+
+    @pytest.mark.parametrize("limit", [0, -3])
+    def test_read_file_non_positive_limit_empty_text_keeps_empty_file_reminder(self, limit):
+        """A genuinely empty text file reports emptiness regardless of `limit`.
+
+        The blank-content branch in `slice_read_response` runs before the
+        zero-`limit` check, so an empty file arrives as whitespace-only text,
+        not as a backend-declared zero-line window.
+        """
+        files = {
+            "/notes.txt": FileData(
+                content="",
+                encoding="utf-8",
+            )
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": limit})
+
+        assert isinstance(result, ToolMessage)
+        assert result.status == "success"
+        assert result.content == EMPTY_CONTENT_WARNING
+
+    def test_read_file_negative_offset_clamps_and_discloses(self):
+        """A clamped offset still reads, and says so.
+
+        The window reaches EOF here, which suppresses the pagination notice, so
+        the disclosure has to come from its own notice or the model gets a
+        gutter starting at line 1 with no sign its request was reinterpreted.
+        """
+        result = self._read_notes(offset=-1, limit=100)
+
+        assert result.status == "success"
+        assert result.content == ("1  one\n2  two\n3  three\n\n[Requested offset -1 is before the start of the file; read from line 1 instead.]")
+
+    def test_read_file_non_negative_offset_has_no_clamp_notice(self):
+        """The clamp notice must not appear on ordinary reads."""
+        result = self._read_notes(offset=0, limit=100)
+
+        assert result.content == "1  one\n2  two\n3  three"
+
     def test_read_file_unknown_total_reports_next_offset(self):
         backend, _ = _make_backend()
         read_result = ReadResult(
@@ -2112,6 +2210,35 @@ class TestFilesystemMiddleware:
         result = middleware._intercept_large_tool_result(tool_message)
 
         assert result == tool_message
+
+    def test_read_file_zero_limit_on_image_still_returns_the_image(self):
+        """A zero limit must not turn a binary read into a no-lines reminder.
+
+        `limit` never applies to binary payloads, so the no-lines guard is
+        conditioned on empty content as well. Guarding on `limit` alone would
+        regress every image read that happens to carry a degenerate limit.
+        """
+
+        class ImageBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(file_data={"content": "<base64_data>", "encoding": "base64"})
+
+        middleware = FilesystemMiddleware(backend=ImageBackend())
+        runtime = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="img-zero-limit",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/app/screenshot.png", "runtime": runtime, "limit": 0})
+
+        assert isinstance(result, ToolMessage)
+        assert isinstance(result.content, list)
+        assert result.content[0]["type"] == "image"
 
     def test_read_file_image_returns_standard_image_content_block(self):
         """Test image reads return standard image blocks with base64 + mime_type."""
@@ -2769,6 +2896,7 @@ class TestFilesystemMiddleware:
         assert "Hello world\nLine 2" in result.content
         assert "succeeded" in result.content
         assert "exit code 0" in result.content
+        assert result.artifact == {"exit_code": 0}
 
     def test_execute_tool_output_formatting_with_failure(self):
         """Test execute tool formats failure output correctly."""
@@ -2805,6 +2933,78 @@ class TestFilesystemMiddleware:
         assert "Error: command not found" in result.content
         assert "failed" in result.content
         assert "exit code 127" in result.content
+        assert result.artifact == {"exit_code": 127}
+
+    def test_execute_tool_omits_artifact_exit_code_when_unknown(self):
+        """Test execute tool omits `exit_code` when the backend reports none."""
+
+        # Backends may leave exit_code unset, and the capture-offload parse falls
+        # back to None when the wrapper's meta line is unreadable. None must not be
+        # published as a value: it is falsy like a successful 0 but unequal to it, so
+        # both `!= 0` and `if not exit_code` would misclassify it.
+        class UnknownExitCodeMockSandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="some output")
+
+            @property
+            def id(self):
+                return "unknown-exit-code-mock-sandbox-backend"
+
+        rt = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="test_unknown_ec",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        middleware = FilesystemMiddleware(backend=UnknownExitCodeMockSandboxBackend())
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        result = execute_tool.invoke({"command": "echo test", "runtime": rt})
+
+        # The content omits the status line entirely for an unknown exit code, so the
+        # artifact must not imply one either.
+        assert "exit code" not in result.content
+        assert result.artifact == {}
+
+    def test_execute_tool_error_paths_carry_no_artifact(self):
+        """Test execute tool returns no artifact when no command ran."""
+
+        # Errors raised before the command runs have no exit code to report, so
+        # `artifact` stays None. Consumers must therefore guard rather than index --
+        # inventing a sentinel exit code here would be indistinguishable from a real
+        # command that exited with it.
+        class ErrorPathMockSandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                msg = "bad parameter"
+                raise ValueError(msg)
+
+            @property
+            def id(self):
+                return "error-path-mock-sandbox-backend"
+
+        rt = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="test_err_artifact",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        middleware = FilesystemMiddleware(backend=ErrorPathMockSandboxBackend())
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+
+        # Validation error: rejected before the backend is reached.
+        rejected = execute_tool.invoke({"command": "echo test", "timeout": -1, "runtime": rt})
+        assert rejected.status == "error"
+        assert rejected.artifact is None
+
+        # Backend raised: the command was attempted but produced no exit code.
+        raised = execute_tool.invoke({"command": "echo test", "runtime": rt})
+        assert raised.status == "error"
+        assert raised.artifact is None
 
     def test_execute_tool_output_formatting_with_truncation(self):
         """Test execute tool formats truncated output correctly."""

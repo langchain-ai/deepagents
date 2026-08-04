@@ -61,6 +61,8 @@ from deepagents_code.tui.widgets.diff import compose_diff_lines
 from deepagents_code.unicode_security import render_with_unicode_markers
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from rich.console import (
         Console as RichConsole,
         ConsoleOptions,
@@ -1343,6 +1345,22 @@ the grouping predicates (`is_success`/`is_failed`/`is_pending`) partition a
 known universe.
 """
 
+_TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS = "-tool-awaiting-approval-accessory"
+"""Marker class hiding a tool's accessories while an approval prompt replaces it.
+
+Deliberately distinct from `_TOOL_GROUP_COLLAPSED_ACCESSORY_CLASS`: a footer can
+be hidden for both reasons at once, and releasing one reason must not un-hide a
+footer still hidden by the other. Merging the two into a single class would make
+`ToolGroupSummary._release_collapsible` reveal a footer whose tool is still
+hidden behind an approval prompt.
+
+Applied with `set_class` rather than by assigning `display`. An inline `display`
+permanently outranks the CSS cascade, so assigning it here would strand the
+footer against the user's `/timestamps` preference forever. Styled in
+`app.tcss`, which relies on rule order to win the specificity tie against that
+preference's own class.
+"""
+
 
 class ToolCallMessage(Vertical):
     """Widget displaying a tool call with collapsible output.
@@ -1549,6 +1567,9 @@ class ToolCallMessage(Vertical):
         # Whether the widget is currently hidden because an approval prompt
         # is rendering the same content (see `set_awaiting_approval`).
         self._awaiting_approval: bool = False
+        # Transcript decorations that must follow approval visibility without
+        # losing their independent user-controlled visibility state.
+        self._visibility_accessories: list[Widget] = []
 
     def compose(self) -> ComposeResult:
         """Compose the tool call message layout.
@@ -2080,6 +2101,7 @@ class ToolCallMessage(Vertical):
         """
         self._awaiting_approval = True
         self.display = False
+        self._sync_approval_accessories()
 
     def clear_awaiting_approval(self) -> None:
         """Restore the tool call after `set_awaiting_approval`.
@@ -2091,6 +2113,32 @@ class ToolCallMessage(Vertical):
             return
         self._awaiting_approval = False
         self.display = True
+        self._sync_approval_accessories()
+
+    def _register_visibility_accessories(self, *accessories: Widget) -> None:
+        """Link transcript decorations whose visibility follows this tool.
+
+        Idempotent: `Widget` uses identity equality, so re-registering the same
+        accessory (a regroup folding an already-folded tool) cannot double-add.
+        """
+        for accessory in accessories:
+            if accessory not in self._visibility_accessories:
+                self._visibility_accessories.append(accessory)
+        self._sync_approval_accessories()
+
+    def _sync_approval_accessories(self) -> None:
+        """Mirror this row's approval hiding onto its linked decorations.
+
+        Drives both directions, so it is safe to call unconditionally from
+        `set_awaiting_approval` and `clear_awaiting_approval`. Uses `set_class`
+        rather than `display` so an accessory keeps its own visibility class
+        (e.g. the `/timestamps` preference) and returns to it afterwards.
+        """
+        for accessory in self._visibility_accessories:
+            accessory.set_class(
+                self._awaiting_approval,
+                _TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS,
+            )
 
     def toggle_output(self) -> None:
         """Toggle expansion of the tool's preview/full output."""
@@ -3779,6 +3827,14 @@ def summarize_live_tool_group(
     return _join_segments(segments)
 
 
+_TOOL_GROUP_COLLAPSED_ACCESSORY_CLASS = "-tool-group-collapsed-accessory"
+"""Marker class hiding a collapsed group's accessory widgets.
+
+See `_TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS` for why the two hide reasons carry
+separate classes and why neither may be replaced by assigning `display`.
+"""
+
+
 class ToolGroupSummary(Static):
     """Collapsed one-line stand-in for an assistant step's tool calls.
 
@@ -3827,6 +3883,7 @@ class ToolGroupSummary(Static):
         tools: list[ToolCallMessage] | None = None,
         collapsible: list[Widget] | None = None,
         *,
+        accessories: dict[Widget, list[Widget]] | None = None,
         live: bool = False,
         **kwargs: Any,
     ) -> None:
@@ -3837,6 +3894,14 @@ class ToolGroupSummary(Static):
                 empty for a live group that grows via `add_member`.
             collapsible: Every widget hidden/shown with the group, including the
                 tool widgets and any interleaved diff previews.
+            accessories: Decorations (e.g. timestamp footers) keyed by the
+                collapsible they trail, hidden and shown with that owner via a
+                marker class rather than `display`. Collapsing therefore never
+                clears an accessory's own visibility class, so the
+                `/timestamps` preference reasserts itself on expand. Keys must
+                appear in `collapsible`: `_apply_visibility` iterates
+                `collapsible`, so an accessory keyed by a non-member is never
+                synced.
             live: When True, animate progress and accept new members until
                 `close`. When False, render a finalized past-tense summary.
             **kwargs: Additional arguments passed to `Static`.
@@ -3844,6 +3909,9 @@ class ToolGroupSummary(Static):
         super().__init__("", **kwargs)
         self._tools = list(tools or [])
         self._collapsible = list(collapsible or [])
+        self._accessories: dict[Widget, list[Widget]] = {}
+        for owner, widgets in (accessories or {}).items():
+            self._attach_accessories(owner, widgets)
         self._accepting_members = live
         self._finalized = not live
         self._spinner_pos = 0
@@ -3864,25 +3932,56 @@ class ToolGroupSummary(Static):
         self._render_line()
         self._sync_timer()
 
-    def add_member(self, tool: ToolCallMessage, *extra: Widget) -> None:
-        """Add a tool (and any associated widgets) to a live group."""
+    def _attach_accessories(self, owner: Widget, accessories: Iterable[Widget]) -> None:
+        """Record `owner`'s accessories and link them to its approval hiding.
+
+        The single registration point for every fold path (constructor,
+        `add_member`, `add_collapsible`) so the group's `_accessories` map and a
+        tool's own `_visibility_accessories` cannot drift apart — a tool folded
+        via one path would otherwise hide its footer on collapse but not while
+        an approval prompt replaced it.
+        """
+        linked = [a for a in accessories if a not in self._accessories.get(owner, ())]
+        if not linked:
+            return
+        self._accessories.setdefault(owner, []).extend(linked)
+        if isinstance(owner, ToolCallMessage):
+            owner._register_visibility_accessories(*linked)
+
+    def add_member(self, tool: ToolCallMessage, *accessories: Widget) -> None:
+        """Add a tool to a live group and link its accessories.
+
+        Args:
+            tool: Tool widget folded into the group.
+            accessories: Decorations (e.g. the tool's timestamp footer) that
+                follow the tool's visibility via a marker class. Not group
+                members: they take neither `-grouped` nor a `display` flip, so
+                their own visibility class survives the fold. Also linked to
+                the tool's approval hiding.
+        """
         tool.add_class("-grouped")
         self._tools.append(tool)
         self._collapsible.append(tool)
-        for widget in extra:
-            widget.add_class("-grouped")
-            self._collapsible.append(widget)
+        self._attach_accessories(tool, accessories)
         self._present_text = self._past_text = self._present_key = None
         self._apply_visibility()
         in_progress = self._sync_lifecycle()
         self._render_line(in_progress=in_progress)
 
-    def add_collapsible(self, widget: Widget) -> None:
-        """Attach a non-tool widget (e.g. a diff) to be folded with the group."""
+    def add_collapsible(self, widget: Widget, *accessories: Widget) -> None:
+        """Attach a non-tool widget (e.g. a diff) and its accessories.
+
+        Args:
+            widget: Non-tool widget folded with the group.
+            accessories: Decorations (e.g. the widget's timestamp footer) that
+                follow the widget's visibility via a marker class. Not group
+                members, so their own visibility class survives the fold. No
+                approval linkage: only a `ToolCallMessage` can await approval.
+        """
         widget.add_class("-grouped")
         self._collapsible.append(widget)
-        if widget.is_attached:
-            widget.display = not self._collapsed
+        self._attach_accessories(widget, accessories)
+        self._apply_collapsible_visibility(widget, visible=not self._collapsed)
 
     def close(self) -> None:
         """Stop accepting members and finalize after every tool settles.
@@ -3901,7 +4000,37 @@ class ToolGroupSummary(Static):
             self._render_line(in_progress=in_progress)
         else:
             # Every tool failed and was ejected — nothing left to summarize.
+            # Release whatever is still folded first: once this summary is gone
+            # nothing can expand it, so a retained widget (and its accessories)
+            # would stay hidden for the rest of the session.
+            self._release_all_collapsible()
             self.remove()
+
+    def _release_collapsible(self, widget: Widget) -> None:
+        """Drop a widget's group linkage and clear its collapsed accessory class.
+
+        Only the *group's* hide reason is released. A tool's own approval
+        linkage (`_visibility_accessories`) intentionally survives, so a
+        revealed pending row still hides its footer when an approval prompt
+        replaces it — see `_TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS`.
+        """
+        if widget in self._collapsible:
+            self._collapsible.remove(widget)
+        widget.remove_class("-grouped")
+        for accessory in self._accessories.pop(widget, []):
+            accessory.remove_class(_TOOL_GROUP_COLLAPSED_ACCESSORY_CLASS)
+
+    def _release_all_collapsible(self) -> None:
+        """Release and reveal every remaining folded widget.
+
+        Must run before this summary is removed: a widget left folded keeps
+        `-grouped`, `display = False`, and its accessories' marker class with no
+        summary left to expand it, which no later toggle can undo.
+        """
+        for widget in list(self._collapsible):
+            self._release_collapsible(widget)
+            if widget.is_attached:
+                widget.display = True
 
     def reveal_pending(self) -> None:
         """Remove unfinished tool calls from the collapsed group."""
@@ -3910,9 +4039,7 @@ class ToolGroupSummary(Static):
             return
         for tool in pending:
             self._tools.remove(tool)
-            if tool in self._collapsible:
-                self._collapsible.remove(tool)
-            tool.remove_class("-grouped")
+            self._release_collapsible(tool)
             if tool.is_attached and not tool._awaiting_approval:
                 tool.display = True
         self._present_text = self._past_text = self._present_key = None
@@ -3920,11 +4047,7 @@ class ToolGroupSummary(Static):
         if self._tools:
             self._render_line(in_progress=in_progress)
             return
-        for widget in self._collapsible:
-            widget.remove_class("-grouped")
-            if widget.is_attached:
-                widget.display = True
-        self._collapsible.clear()
+        self._release_all_collapsible()
         if self.is_attached:
             self.remove()
 
@@ -3983,9 +4106,7 @@ class ToolGroupSummary(Static):
             return
         for tool in failed:
             self._tools.remove(tool)
-            if tool in self._collapsible:
-                self._collapsible.remove(tool)
-            tool.remove_class("-grouped")
+            self._release_collapsible(tool)
             if tool.is_attached:
                 tool.display = True
         self._present_text = self._past_text = self._present_key = None
@@ -4016,6 +4137,9 @@ class ToolGroupSummary(Static):
                 self._apply_visibility()
             if not self._tools:
                 self._sync_lifecycle(in_progress=False)
+                # Nothing can expand this summary once it is gone, so release
+                # anything still folded before removing it.
+                self._release_all_collapsible()
                 if self.is_attached:
                     self.remove()
                 return
@@ -4033,12 +4157,30 @@ class ToolGroupSummary(Static):
             logger.exception("ToolGroupSummary spinner tick failed; stopping timer")
             self._stop_timer()
 
+    def _apply_collapsible_visibility(self, widget: Widget, *, visible: bool) -> None:
+        """Apply the group's visibility to a widget and its accessories.
+
+        The owner is driven directly via `display`; accessories are driven by a
+        marker class instead, so hiding them leaves their independent visibility
+        class intact and it reasserts itself when the group expands. The two
+        mechanisms are not interchangeable — see
+        `_TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS`.
+
+        Accessories are classed even while detached: `set_class` is safe off-DOM
+        and nothing revisits a skipped accessory, so guarding on `is_attached`
+        here would leave a late-mounted footer stranded visible over a hidden
+        row.
+        """
+        if widget.is_attached and widget.display != visible:
+            widget.display = visible
+        for accessory in self._accessories.get(widget, []):
+            accessory.set_class(not visible, _TOOL_GROUP_COLLAPSED_ACCESSORY_CLASS)
+
     def _apply_visibility(self) -> None:
-        """Show or hide every folded widget per the collapsed state."""
+        """Show or hide every folded widget, and its accessories, per collapse."""
         visible = not self._collapsed
         for widget in self._collapsible:
-            if widget.is_attached and widget.display != visible:
-                widget.display = visible
+            self._apply_collapsible_visibility(widget, visible=visible)
 
     def _render_line(
         self, *, in_progress: bool | None = None, layout: bool = True

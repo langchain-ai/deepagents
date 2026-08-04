@@ -10,8 +10,9 @@ Hooks are user-configured shell commands that run at agent lifecycle events. Eac
 | --- | --- | --- |
 | User | `~/.deepagents/hooks.json` | Always (when the file exists) |
 | Project | `{project_root}/.deepagents/hooks.json` | Only after workspace trust |
+| Plugin | `hooks/hooks.json` inside an installed plugin | Whenever the plugin is enabled |
 
-When both scopes load, project matcher groups are applied first, then user groups. A project handler that stops further processing therefore wins over lower-precedence user handlers for the same event.
+Matcher groups are applied project first, then user, then plugin. Precedence decides whose answer wins, not who runs: every matching handler for an event runs concurrently, and their results are then reduced in that order, so the first handler that stops processing decides the event. A plugin handler still executes even when a project or user handler stops the event, so treat a plugin's side effects as unconditional.
 
 ### Project workspace trust
 
@@ -23,6 +24,22 @@ Project-scoped hooks can execute arbitrary commands from the repository. Before 
 - Denying skips project hooks for the session and continues with user hooks only.
 - Headless / CI runs do not prompt; pass `--trust-project-hooks` to opt in for that run.
 
+### Plugin hooks
+
+A plugin contributes hooks from `hooks/hooks.json` in its root, from a `hooks` path in its `plugin.json` manifest, or from an inline manifest `hooks` object. The document uses exactly the same shape as a user or project `hooks.json`.
+
+Installing and enabling the plugin is the consent gate — workspace trust governs project hooks only, so it neither grants nor withholds a plugin's hooks. Review a plugin before enabling it; the plugin manager lists the events each one hooks. Because the set of server-owned events is fixed when a session starts, newly enabled plugin hooks take effect after `/reload`.
+
+Plugin handlers receive their plugin's path variables in the environment. Shell-form `command` handlers expand those variables normally; direct-exec `argv` handlers resolve them before launch. Quote variables in shell commands because installation paths may contain spaces:
+
+| Variable | Value |
+| --- | --- |
+| `CLAUDE_PLUGIN_ROOT`, `PLUGIN_ROOT` | The plugin's root directory |
+| `CLAUDE_PLUGIN_DATA`, `PLUGIN_DATA` | The plugin's writable data directory |
+| `CLAUDE_PROJECT_DIR` | The project root |
+
+For example, use `"command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/format.sh\""`. Setting `argv` instead avoids shell quoting entirely because those handlers execute directly.
+
 ## Events and matchers
 
 Each top-level key under `"hooks"` is an event name. Values are lists of matcher groups. A group may omit `matcher` (or use `"*"`) to match all values for that event's matcher field. Events with no matcher field reject non-wildcard matchers at load time.
@@ -33,7 +50,7 @@ Native tools are matched by their wire names (for example `execute` → `Bash`, 
 | --- | --- | --- | --- |
 | `SessionStart` | client | `cause` | A session starts (`startup`, `resume`, `clear`, `compact`) |
 | `UserPromptSubmit` | client | _(none)_ | The user submits a prompt |
-| `SessionEnd` | client | `cause` | A session ends |
+| `SessionEnd` | client | `cause` | A session ends (`clear`, `resume`, `prompt_input_exit`, `other`) |
 | `PermissionRequest` | client | `tool_name` | The client is about to ask for tool permission |
 | `Notification` | client | `notification_type` | A client lifecycle notification is emitted |
 | `PreToolUse` | server | `tool_name` | Before a tool call runs |

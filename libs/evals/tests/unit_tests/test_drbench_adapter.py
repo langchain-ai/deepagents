@@ -452,8 +452,16 @@ def test_generated_task_ships_the_verifier_image_pinned_to_the_vendored_commit(
     assert "data" in dockerfile
     assert "assert" in dockerfile
 
+    # In separate-verifier mode Harbor passes `skip_tests_upload=True` and then executes
+    # `/tests/test.sh` directly, so the verifier files must be baked into the image --
+    # nothing puts them there at run time. Without this the trial dies with "not found".
+    assert "COPY . /tests" in dockerfile
+    # And the copy must come after the install, or a per-task `case.json` would invalidate
+    # the pip layer and rebuild pandas/faiss/pymupdf for every task.
+    assert dockerfile.index("pip install") < dockerfile.index("COPY . /tests")
+
     compose = (task_dir / "tests" / "docker-compose.yaml").read_text()
-    # Harbor uploads tests into, and runs test.sh in, the service named `main`.
+    # Harbor runs test.sh in the service named `main`.
     assert "main:" in compose
     # No app stack here: upstream resolves cited sources from the installed corpus.
     assert "drbench:" not in compose

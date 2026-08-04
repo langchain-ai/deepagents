@@ -39,4 +39,11 @@ n = len(list(tasks.iterdir())); \
 assert n > 50, 'expected the full task corpus, found ' + str(n); \
 print('drbench ok,', n, 'tasks')"
 
+# The tests have to be baked in, not uploaded. In separate-verifier mode Harbor passes
+# `skip_tests_upload=True` and then executes `/tests/test.sh` directly, so anything the
+# verifier needs must already be in the image -- and this directory IS the build context.
+# Kept last so editing `case.json` never invalidates the pip layer above.
+COPY . /tests
+RUN chmod 0755 /tests/test.sh
+
 WORKDIR /app

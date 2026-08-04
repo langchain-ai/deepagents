@@ -4746,11 +4746,6 @@ class DeepAgentsApp(App):
                 immediately. In-session resumes defer activation until the outgoing
                 runtime has received `SessionEnd`.
         """
-        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
-
-        if not is_env_truthy(EXPERIMENTAL):
-            return
-
         from deepagents_code.hooks.loading import project_hooks_path
         from deepagents_code.hooks.trust import project_root_for, trust_project_hooks
         from deepagents_code.tui.widgets.cwd_switch import HookTrustScreen

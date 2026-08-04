@@ -911,12 +911,7 @@ def test_pre_tool_allow_bypasses_hitl_and_preserves_context(
     handler.assert_called_once_with(request)
 
 
-def test_server_pre_tool_node_runs_before_stock_hitl(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from deepagents_code._env_vars import EXPERIMENTAL
-
-    monkeypatch.setenv(EXPERIMENTAL, "1")
+def test_server_pre_tool_node_runs_before_stock_hitl(tmp_path: Path) -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="done")]))
     model.profile = {"max_input_tokens": 200000}
     graph, _backend = create_cli_agent(

@@ -135,10 +135,6 @@ class HooksManager:
     ) -> HooksManager:
         """Load hook configuration and return a ready manager.
 
-        Hooks v2 is in progress, so it stays off unless
-        `DEEPAGENTS_CODE_EXPERIMENTAL` is truthy; without it the manager is
-        inert and no hook (client- or server-owned) fires.
-
         Never raises: a failed load yields an inert manager whose lifecycle
         methods are all no-ops.
 
@@ -614,16 +610,12 @@ def _load_runtime(
         plugins: Already-discovered plugins, or `None` to discover them.
 
     Returns:
-        The loaded runtime, `None` when configuration could not be loaded, and
-        `None` whenever `DEEPAGENTS_CODE_EXPERIMENTAL` is not truthy.
+        The loaded runtime, or `None` when configuration could not be loaded.
     """
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
     from deepagents_code.hooks.runtime import HooksRuntime
     from deepagents_code.plugins.adapters.hooks import discover_plugin_hook_sources
     from deepagents_code.project_utils import ProjectContext
 
-    if not is_env_truthy(EXPERIMENTAL):
-        return None
     try:
         project_context = ProjectContext.from_user_cwd(cwd)
         plugin_sources, plugin_diagnostics = discover_plugin_hook_sources(

@@ -53,7 +53,11 @@ Add `--ref <branch>` to dispatch a workflow definition other than the default br
 To iterate locally, run a single category's dataset directly through Harbor with the same LangGraph agent the CI job uses — `graph=bare` for the neutral SDK agent, `graph=dcode` for the product agent. Autonomous (`harbor-index/harbor-index-1.0`) is the simplest since it comes from the Harbor registry:
 
 ```bash
-# From libs/evals, with ANTHROPIC_API_KEY / LANGSMITH_API_KEY exported
+# From libs/evals. Export every host var the command templates below, or Harbor
+# aborts at launch: ANTHROPIC_API_KEY, LANGSMITH_API_KEY, OPENAI_API_KEY,
+# OPENAI_BASE_URL, and (for gateway routing) ANTHROPIC_BASE_URL. Harbor resolves
+# each ${VAR} from the host and raises ValueError on an unset one — use
+# ${VAR:-default} to make a reference optional, or drop the flag entirely.
 make stage-harbor-local-deps          # stage checked-out packages for the sandbox install
 
 uv run harbor run \
@@ -66,6 +70,7 @@ uv run harbor run \
   --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}' \
   --agent-env 'LANGSMITH_TRACING=true' \
   --agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}' \
+  --agent-env 'OPENAI_API_KEY=${OPENAI_API_KEY}' \
   --verifier-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}' \
   --verifier-env 'OPENAI_API_KEY=${OPENAI_API_KEY}' \
   --verifier-env 'JUDGE_PROVIDER=openai' \
@@ -85,7 +90,7 @@ uv run harbor run \
 
 `--include-task-name` (`-i`) is the local equivalent of the workflow's `include_tasks`; drop it to run the whole dataset, or repeat it to select several tasks. (`-l N` instead caps the run to the first N tasks.)
 
-The `harbor-index` (and `tau3`) verifiers are **OpenAI LLM judges** — pass the judge's key and base URL through `--verifier-env` (`--ve`) or the verifier exits without writing a reward. `JUDGE_MODELS` is the grader (defaults to `gpt-5.6-luna`; use an independent model to avoid self-grading, e.g. `gpt-5.6-terra` when testing a Luna model), and `JUDGE_PROVIDER=openai` / `JUDGE_REPEATS` / `JUDGE_CONCURRENCY` are the config the native judge requires. `OPENAI_BASE_URL` points at whichever OpenAI-compatible endpoint holds `OPENAI_API_KEY` — OpenAI directly (`https://api.openai.com/v1`) or the LangSmith gateway (`https://gateway.smith.langchain.com/openai/v1`). The same `OPENAI_BASE_URL` is forwarded to the agent so an OpenAI model-under-test resolves through the same endpoint.
+The `harbor-index` (and `tau3`) verifiers are **OpenAI LLM judges** — pass the judge's key and base URL through `--verifier-env` (`--ve`) or the verifier exits without writing a reward. `JUDGE_MODELS` is the grader (defaults to `gpt-5.6-luna`; use an independent model to avoid self-grading, e.g. `gpt-5.6-terra` when testing a Luna model), and `JUDGE_PROVIDER=openai` / `JUDGE_REPEATS` / `JUDGE_CONCURRENCY` are the config the native judge requires. `OPENAI_BASE_URL` points at whichever OpenAI-compatible endpoint holds `OPENAI_API_KEY` — OpenAI directly (`https://api.openai.com/v1`) or the LangSmith gateway (`https://gateway.smith.langchain.com/openai/v1`). `OPENAI_BASE_URL` and `OPENAI_API_KEY` are forwarded to the agent too, so switching `--model` to an `openai:` spec resolves through the same endpoint and key (the CI workflow forwards the key conditionally, per model provider).
 
 Forward `ANTHROPIC_BASE_URL` to the agent the same way when the Anthropic model-under-test routes through the LangSmith gateway (a gateway-only `sk-ant` key 403s against the default Anthropic endpoint). Drop it to hit the Anthropic API directly.
 

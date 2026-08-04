@@ -70,9 +70,7 @@ class SessionEndCause(StrEnum):
 
     CLEAR = "clear"
     RESUME = "resume"
-    LOGOUT = "logout"
     PROMPT_INPUT_EXIT = "prompt_input_exit"
-    BYPASS_PERMISSIONS_DISABLED = "bypass_permissions_disabled"
     OTHER = "other"
 
 

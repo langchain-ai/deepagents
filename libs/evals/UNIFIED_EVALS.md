@@ -19,7 +19,82 @@ Dispatched from the Actions tab (`workflow_dispatch`). Every input has a default
 - **`n_shards_autonomous` · `n_shards_conversation` · `n_shards_context`** *(defaults `10` · `3` · `3`)* — how each category's tasks are split across parallel jobs, sized to fit GitHub's 6-hour per-job limit.
 - **`sandbox_env`** *(default `langsmith`)* — where tasks execute.
 - **`force_build`** *(default `false`)* — rebuild each task's environment image/snapshot; required the first time a new dataset runs on the LangSmith sandbox.
-- **`harbor_package_override`** *(required when `categories` includes `conversation`)* — set to `harbor[langsmith] @ git+https://github.com/harbor-framework/harbor.git@a7667a073b42b34aa552034df950f963756f79de`. The pinned Harbor `0.16.1` does not forward task-environment MCP servers to the LangGraph agent, so the `tau3` harness fails without this compatible build. Runs that omit `conversation` can leave the input empty and use the pinned release.
+- **`harbor_package_override`** *(optional)* — install Harbor from an arbitrary package spec instead of the locked version, to test an unreleased Harbor build. Leave empty to use the pinned release (`harbor[langsmith] 0.20.0`, `harbor-langsmith 0.3.0`), which forwards task-environment MCP servers to the LangGraph agent and so runs every category — including `conversation` (`tau3`) — out of the box. An override is no longer required for any category.
+
+### Dispatch it in CI (`gh workflow run`)
+
+You don't have to use the Actions UI — dispatch the same workflow from the CLI. Only `models` is required; every other `-f` overrides a default shown above. Note the input is `agent_impls` (plural).
+
+```bash
+gh workflow run unified_evals.yml \
+  -f models="anthropic:claude-opus-4-8,openai:gpt-5.2" \
+  -f categories="autonomous,conversation,context" \
+  -f agent_impls="bare" \
+  -f rollouts="3"
+
+# Watch it
+gh run list --workflow unified_evals.yml --limit 1
+gh run watch <run-id>
+```
+
+To run **just one task** (a quick smoke test), pass its exact name via `include_tasks` — it filters the tasks resolved by `categories`/`profile`, and an unknown name fails during prep:
+
+```bash
+gh workflow run unified_evals.yml \
+  -f models="anthropic:claude-opus-4-8" \
+  -f categories="autonomous" \
+  -f include_tasks="hello-world"
+```
+
+Add `--ref <branch>` to dispatch a workflow definition other than the default branch's. No `harbor_package_override` is needed — the pinned Harbor runs every category out of the box (see below).
+
+### Run one category from your machine (`harbor run`)
+
+To iterate locally, run a single category's dataset directly through Harbor with the same LangGraph agent the CI job uses — `graph=bare` for the neutral SDK agent, `graph=dcode` for the product agent. Autonomous (`harbor-index/harbor-index-1.0`) is the simplest since it comes from the Harbor registry:
+
+```bash
+# From libs/evals. Export every host var the command templates below, or Harbor
+# aborts at launch: ANTHROPIC_API_KEY, LANGSMITH_API_KEY, OPENAI_API_KEY,
+# OPENAI_BASE_URL, and (for gateway routing) ANTHROPIC_BASE_URL. Harbor resolves
+# each ${VAR} from the host and raises ValueError on an unset one — use
+# ${VAR:-default} to make a reference optional, or drop the flag entirely.
+make stage-harbor-local-deps          # stage checked-out packages for the sandbox install
+
+uv run harbor run \
+  --agent langgraph \
+  --agent-kwarg project_path=deepagents_harbor/langgraph_project \
+  --agent-kwarg config=langgraph.json \
+  --agent-kwarg graph=bare \
+  --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
+  --agent-env 'ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL}' \
+  --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}' \
+  --agent-env 'LANGSMITH_TRACING=true' \
+  --agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}' \
+  --agent-env 'OPENAI_API_KEY=${OPENAI_API_KEY}' \
+  --verifier-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}' \
+  --verifier-env 'OPENAI_API_KEY=${OPENAI_API_KEY}' \
+  --verifier-env 'JUDGE_PROVIDER=openai' \
+  --verifier-env 'JUDGE_MODELS=gpt-5.6-luna' \
+  --verifier-env 'JUDGE_REPEATS=1' \
+  --verifier-env 'JUDGE_CONCURRENCY=1' \
+  --dataset harbor-index/harbor-index-1.0 \
+  --model anthropic:claude-opus-4-8 \
+  --include-task-name hello-world \
+  -n 4 \
+  --jobs-dir harbor-jobs/unified \
+  --env langsmith \
+  --plugin langsmith \
+  --plugin-kwarg dataset_name=harbor-index/harbor-index-1.0 \
+  --plugin-kwarg experiment_name=unified-local-smoke
+```
+
+`--include-task-name` (`-i`) is the local equivalent of the workflow's `include_tasks`; drop it to run the whole dataset, or repeat it to select several tasks. (`-l N` instead caps the run to the first N tasks.)
+
+The `harbor-index` (and `tau3`) verifiers are **OpenAI LLM judges** — pass the judge's key and base URL through `--verifier-env` (`--ve`) or the verifier exits without writing a reward. `JUDGE_MODELS` is the grader (defaults to `gpt-5.6-luna`; use an independent model to avoid self-grading, e.g. `gpt-5.6-terra` when testing a Luna model), and `JUDGE_PROVIDER=openai` / `JUDGE_REPEATS` / `JUDGE_CONCURRENCY` are the config the native judge requires. `OPENAI_BASE_URL` points at whichever OpenAI-compatible endpoint holds `OPENAI_API_KEY` — OpenAI directly (`https://api.openai.com/v1`) or the LangSmith gateway (`https://gateway.smith.langchain.com/openai/v1`). `OPENAI_BASE_URL` and `OPENAI_API_KEY` are forwarded to the agent too, so switching `--model` to an `openai:` spec resolves through the same endpoint and key (the CI workflow forwards the key conditionally, per model provider).
+
+Forward `ANTHROPIC_BASE_URL` to the agent the same way when the Anthropic model-under-test routes through the LangSmith gateway (a gateway-only `sk-ant` key 403s against the default Anthropic endpoint). Drop it to hit the Anthropic API directly.
+
+Full local setup — env vars, `.env`, the `context` / `conversation` local datasets, and Makefile shortcuts — is in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 The `prep` job writes a **run-configuration summary** — every input plus the values it derived (resolved model list, effective `shard_parallel` after clamping) — to the run summary, so a dispatch's exact settings are visible for debugging. The run then publishes one cross-model comparison — a leaderboard and (for full runs) a radar chart — to the same run summary.
 
@@ -62,7 +137,7 @@ Four principles cut across all three categories and explain why the task sets lo
 
 **Why this benchmark.** [τ³-bench](https://github.com/sierra-research/tau2-bench) (the Harbor dataset `sierra-research/tau3-bench`; τ³ ships inside the `tau2-bench` repo) is a standard for tool-using conversational agents. The `conversation` category runs it through the `tau3` harness, whose user simulator (an OpenAI model, currently `gpt-5.2`) drives a live back-and-forth — this is the only category that scores *dialogue* rather than a single-shot task.
 
-**How the harness works (tau3 = bare DA + MCP user sim).** `tau3` is not a different agent from the deep-agents categories: it is the same `create_deep_agent`. What changes is only what the graph is wired to. Where `bare` / `dcode` attach a local shell backend (filesystem and command tools), the `tau3` graph attaches the task environment's `tau3-runtime` **MCP** tools (`start_conversation`, `send_message_to_user`, `end_conversation`, plus the domain tools) that Harbor forwards from the sandbox into `configurable["mcp_servers"]`. The **simulated user lives on that MCP server, not in the agent**: the agent holds the conversation by calling `send_message_to_user`, which returns the user's next turn, and a system prompt tells it to converse via those tools rather than finish silently. So the conversation category is really bare deep-agent capability measured through an MCP-hosted user simulator, which is exactly why it needs the Harbor build that forwards task-environment MCP servers (see `harbor_package_override`).
+**How the harness works (tau3 = bare DA + MCP user sim).** `tau3` is not a different agent from the deep-agents categories: it is the same `create_deep_agent`. What changes is only what the graph is wired to. Where `bare` / `dcode` attach a local shell backend (filesystem and command tools), the `tau3` graph attaches the task environment's `tau3-runtime` **MCP** tools (`start_conversation`, `send_message_to_user`, `end_conversation`, plus the domain tools) that Harbor forwards from the sandbox into `configurable["mcp_servers"]`. The **simulated user lives on that MCP server, not in the agent**: the agent holds the conversation by calling `send_message_to_user`, which returns the user's next turn, and a system prompt tells it to converse via those tools rather than finish silently. So the conversation category is really bare deep-agent capability measured through an MCP-hosted user simulator, which is exactly why it depends on Harbor forwarding task-environment MCP servers — the pinned `harbor[langsmith] 0.20.0` does this, so no `harbor_package_override` is needed.
 
 **Why these tasks.** We run a curated **30-task subset** ([`tau3_subset.py`](deepagents_evals/tau3_subset.py)) drawn from two τ³ domains that exercise different conversational skills:
 

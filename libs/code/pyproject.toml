@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-code"
-version = "0.1.51"
+version = "0.1.52"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
@@ -60,8 +60,14 @@ dependencies = [
     "tavily-python>=0.7.26,<1.0.0",
     "langchain-quickjs>=0.3.4,<0.4.0",
 
-    # Cost estimation (bundled offline pricing data)
-    "genai-prices>=0.1.0,<0.2.0",
+    # Cost estimation (bundled offline pricing data).
+    # The local pricing overrides resolve through two *private* upstream names,
+    # `genai_prices.types._providers_from_raw` and
+    # `genai_prices.data_snapshot.find_provider_by_id`. Neither is covered by any
+    # compatibility promise, and this range spans every 0.1.x patch, so re-verify
+    # both against `cost_tracking._build_price_overrides` and
+    # `cost_tracking._find_override_model` when widening it.
+    "genai-prices>=0.1.1,<0.2.0",
 
     # Clipboard
     "pyperclip>=1.11.0,<2.0.0",
@@ -191,6 +197,9 @@ include = [
     "deepagents_code/**/*.py",
     "deepagents_code/**/*.md",
     "deepagents_code/**/*.tcss",
+    # Maintainer-curated pricing overrides consulted when the genai-prices
+    # catalog misses (see `cost_tracking._override_price`).
+    "deepagents_code/bundled_prices.json",
 ]
 
 [tool.hatch.build.targets.wheel.shared-data]
@@ -341,6 +350,10 @@ filterwarnings = [
     # uses `stacklevel=2`, so it is attributed to this package, not to the
     # module that raised it.
     "error:Unsupported usage key for standard pricing:UserWarning",
+    # `google.genai.types` builds a union alias out of `typing._UnionGenericAlias`
+    # at import time, which Python 3.14 deprecates. Nothing here can act on it --
+    # it fires before any of our code runs and is fixed by upgrading the SDK.
+    "ignore:'_UnionGenericAlias' is deprecated:DeprecationWarning:google\\.genai\\.types",
 ]
 
 addopts = "--strict-markers --strict-config --durations=5"

@@ -12,6 +12,7 @@ import shlex
 import shutil
 import sys
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
@@ -22,6 +23,8 @@ from urllib.request import url2pathname
 
 from deepagents_code._constants import FIREWORKS_PROVIDER_ID_PREFIX
 from deepagents_code._env_vars import (
+    AUTO_CLASSIFIER_MODEL,
+    AUTO_CLASSIFIER_TIMEOUT,
     DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
     DISABLED_PROJECT_MCP_SERVERS,
     HIDE_SPLASH_VERSION,
@@ -170,12 +173,14 @@ _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
     {
         DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         DISABLED_PROJECT_MCP_SERVERS,
+        AUTO_CLASSIFIER_MODEL,
+        AUTO_CLASSIFIER_TIMEOUT,
     }
 )
 """Env keys a *project* `.env` must not inject, even though they are otherwise
 safe process-env inputs.
 
-These two vars are the env form of the user-level project-MCP allow/deny lists
+The first two are the env form of the user-level project-MCP allow/deny lists
 (`model_config.load_mcp_server_trust_lists`). Their whole purpose is to be a
 *user-level* decision: naming a project MCP server here pre-approves it from an
 untrusted `.mcp.json` (stdio → local command execution; remote → SSRF and
@@ -183,6 +188,22 @@ untrusted `.mcp.json` (stdio → local command execution; remote → SSRF and
 travels with a cloned repo, so honoring it would let an attacker commit
 `.mcp.json` + `.env` and self-approve their own servers — exactly the trust
 boundary the feature exists to hold.
+
+`AUTO_CLASSIFIER_MODEL` chooses the model that authorizes gated tool calls in
+Auto approval mode. Honoring it from a project `.env` would let a cloned repo
+silently point that review at a weaker model — degrading the control, including
+its resistance to prompt injection in the untrusted material it reads — which is
+a repo-supplied downgrade of a user-level security decision, not a project build
+setting. Choosing a classifier stays available through the trusted surfaces:
+shell exports, the global `~/.deepagents/.env`, `[models].auto_classifier` in
+`~/.deepagents/config.toml`, `--auto-classifier-model`, and `/auto model`.
+
+`AUTO_CLASSIFIER_TIMEOUT` tunes the same control's review deadline, so it is
+denied for the same reason: a cloned repo could otherwise stall every gated
+batch up to the ceiling, or squeeze the budget until reviews time out and the
+session degrades into repeated denials and approval prompts.
+`[models].auto_classifier_timeout` in
+`~/.deepagents/config.toml` and the trusted env surfaces still set it.
 
 Unlike `_DOTENV_DENIED_ENV_KEYS` (denied from *any* `.env` because they turn
 `.env` loading into code execution), these are denied only from the *project*
@@ -260,7 +281,8 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
                 continue
             if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # Mirror `_load_dotenv`: a project `.env` cannot preview-set a
-                # user-level MCP trust decision (the global `.env`/shell can).
+                # user-level trust decision — MCP trust lists or the Auto
+                # classifier model/deadline (the global `.env`/shell can).
                 logger.debug(
                     "Ignoring project-denied env key %r from %s", key, dotenv_path
                 )
@@ -367,8 +389,10 @@ def _load_dotenv(
                 logger.debug("Ignoring denied env key %r from %s", key, dotenv_path)
                 continue
             if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
-                # A committed project `.env` must not set a user-level MCP trust
-                # decision; the global `.env` and shell may (is_project=False).
+                # A committed project `.env` must not set a user-level trust
+                # decision — MCP trust lists or the Auto classifier model and
+                # deadline that authorize this repo's own tool calls; the
+                # global `.env` and shell may (is_project=False).
                 logger.debug(
                     "Ignoring project-denied env key %r from %s", key, dotenv_path
                 )
@@ -531,6 +555,7 @@ class _LangSmithProfileConfig(Protocol):
 
 _QUIET_SDK_LOGGER_NAMES = (
     "deepagents.profiles.harness.harness_profiles",
+    "genai-prices",
     "langchain",
     "langsmith",
 )
@@ -539,10 +564,13 @@ _QUIET_SDK_LOGGER_NAMES = (
 def _quiet_sdk_logging() -> None:
     """Keep non-actionable SDK diagnostics off the terminal.
 
-    The harness-profile resolver and tracing SDKs emit diagnostics on their own
-    logger hierarchies. With no handler attached, warnings reach Python's
-    last-resort stderr handler and can bleed into command output or the
-    alternate-screen TUI. Route them to the debug log when
+    The harness-profile resolver, tracing SDKs, and the `genai-prices` price
+    updater emit diagnostics on their own logger hierarchies. With no handler
+    attached, warnings reach Python's last-resort stderr handler and can bleed
+    into command output or the alternate-screen TUI -- the price updater logs
+    at ERROR from a background thread once an hour, so an offline or
+    proxied session would otherwise get a stderr line over the TUI on every
+    failed refresh. Route them to the debug log when
     `DEEPAGENTS_CODE_DEBUG` is set, otherwise attach a `NullHandler` so they stay
     off the terminal. Other Deep Agents loggers remain untouched so actionable
     runtime warnings are still visible.
@@ -3317,6 +3345,77 @@ def is_openai_prompt_cache_key_enabled() -> bool:
     return bool(value)
 
 
+def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None]:
+    """Resolve the Auto classifier spec and any reason it was ignored.
+
+    Reads the `models.auto_classifier` option from env/`config.toml`. `None`
+    means the classifier inherits the main agent model, which is the historical
+    behavior and the default.
+
+    A configured-but-unusable value (blank, or a non-string such as
+    `auto_classifier = 3`, which `resolve_scalar` drops to the default) silently
+    reverts authorization review to the main agent model — the agent grading its
+    own actions. The caller gets a description so it can say so on a surface the
+    user actually reads; a log line alone is not that surface.
+
+    Returns:
+        `(spec, problem)`. `spec` is a `provider:model` spec, or `None` when the
+            classifier should inherit. `problem` is a one-line description when a
+            configured value was ignored, else `None`.
+    """
+    from deepagents_code.config_manifest import (
+        get_option,
+        load_config_toml,
+        resolve_scalar,
+    )
+
+    option = get_option("models.auto_classifier")
+    if option is None:
+        return None, None
+    toml_data = load_config_toml()
+    value, source = resolve_scalar(option, toml_data=toml_data)
+    if isinstance(value, str) and value.strip():
+        return value.strip(), None
+    if isinstance(value, str) and source != "default":
+        problem = (
+            f"Ignoring blank {source} auto_classifier model; the Auto approval "
+            "classifier will review with the main agent model."
+        )
+        logger.warning("%s", problem)
+        return None, problem
+    # `resolve_scalar` coerces a wrong-typed TOML value to the option default, so
+    # a malformed entry is indistinguishable here from an absent one. Re-read the
+    # raw table to tell them apart rather than reverting in silence.
+    raw = _raw_toml_auto_classifier(toml_data)
+    if raw is not None and not isinstance(raw, str):
+        problem = (
+            f"Ignoring malformed config.toml auto_classifier model {raw!r} "
+            "(expected a provider:model string); the Auto approval classifier "
+            "will review with the main agent model."
+        )
+        logger.warning("%s", problem)
+        return None, problem
+    return None, None
+
+
+def _raw_toml_auto_classifier(toml_data: Mapping[str, Any]) -> object | None:
+    """Return the raw `[models].auto_classifier` entry, or `None` if absent."""
+    models = toml_data.get("models")
+    if not isinstance(models, Mapping):
+        return None
+    return models.get("auto_classifier")
+
+
+def resolve_auto_classifier_model() -> str | None:
+    """Resolve the model spec the Auto approval classifier should use.
+
+    Returns:
+        A `provider:model` spec, or `None` when the classifier should inherit.
+    """
+    spec, _problem = resolve_auto_classifier_model_with_problem()
+    return spec
+
+
 def resolve_goal_auto_accept_criteria() -> tuple[bool, str]:
     """Resolve whether Auto mode applies generated goal criteria without review.
 
@@ -4227,9 +4326,9 @@ def _get_default_model_spec() -> str:
     # list, switch to checking `state` against the relevant
     # `ProviderAuthState` members directly.
     if get_provider_auth_status("openai").as_legacy_bool() is True:
-        return "openai:gpt-5.5"
+        return "openai:gpt-5.6-terra"
     if get_provider_auth_status("anthropic").as_legacy_bool() is True:
-        return "anthropic:claude-opus-4-7"
+        return "anthropic:claude-opus-5"
     if get_provider_auth_status("google_genai").as_legacy_bool() is True:
         return "google_genai:gemini-3.1-pro-preview"
 

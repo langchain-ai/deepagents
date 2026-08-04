@@ -31,6 +31,7 @@ prefix resolution) is imported lazily inside functions.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass
 from enum import Enum
@@ -57,6 +58,31 @@ INTERPRETER_MAX_PTC_CALLS_DEFAULT = 256
 INTERPRETER_MAX_RESULT_CHARS_DEFAULT = 4000
 INTERPRETER_PTC_DEFAULT: str | bool | list[str] = "safe"
 INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT = False
+
+AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT = 20.0
+"""Default wall-clock budget for one Auto classifier decision batch.
+
+Single source of truth shared by the manifest option, the middleware default,
+and the resolver, so the three cannot drift (pinned by test).
+"""
+
+AUTO_CLASSIFIER_TIMEOUT_FLOOR = 1.0
+"""Smallest accepted Auto classifier timeout.
+
+A sanity bound, not a workable budget: at least a second is required for any
+provider round trip to have a chance, and below that every gated batch would be
+denied as `classifier_unavailable`. A resolved value under the floor is rejected
+and falls through to the next layer / default.
+"""
+
+AUTO_CLASSIFIER_TIMEOUT_CEILING = 300.0
+"""Largest accepted Auto classifier timeout.
+
+The deadline is what stops a stalled classifier from hanging every gated tool
+call indefinitely, so it stays bounded: a mistyped or hostile override cannot
+effectively remove it. A resolved value above the ceiling is rejected and falls
+through to the next layer / default.
+"""
 
 RECURSION_LIMIT_DEFAULT = 2000
 """Default LangGraph `recursion_limit` for the main agent.
@@ -724,6 +750,114 @@ def resolve_interpreter_kwargs(
     return resolved
 
 
+def _is_valid_auto_classifier_timeout(value: object) -> bool:
+    """Return whether `value` is an accepted Auto classifier timeout.
+
+    Expects the `float` that `OptionKind.FLOAT` resolution produces on every
+    layer (`_coerce_env` and `_coerce_toml` both widen to `float`, and the typed
+    default is a `float`); a bare `int` is rejected.
+    """
+    return (
+        isinstance(value, float)
+        and math.isfinite(value)
+        and AUTO_CLASSIFIER_TIMEOUT_FLOOR <= value <= AUTO_CLASSIFIER_TIMEOUT_CEILING
+    )
+
+
+def resolve_auto_classifier_timeout_with_source(
+    *, toml_data: dict[str, Any] | None = None
+) -> tuple[float, str]:
+    """Resolve the Auto classifier decision-batch budget and its source.
+
+    Args:
+        toml_data: Parsed `config.toml`; loaded automatically when omitted.
+
+    Returns:
+        `(timeout_seconds, source)`, where `source` is the layer that supplied
+            the effective value (`env (<name>)`, `config.toml`, or `default`).
+            The timeout is guaranteed within
+            `[AUTO_CLASSIFIER_TIMEOUT_FLOOR, AUTO_CLASSIFIER_TIMEOUT_CEILING]`;
+            an out-of-range layer is discarded in favor of the next one, so the
+            returned source never credits a rejected layer.
+    """
+    data = load_config_toml() if toml_data is None else toml_data
+    option = get_option("models.auto_classifier_timeout")
+    if option is None:
+        return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT, "default"
+
+    value, source = resolve_scalar(option, toml_data=data)
+    if _is_valid_auto_classifier_timeout(value):
+        return value, source
+
+    # Invalid higher-precedence values must fall through instead of jumping
+    # straight to the default. Hide the rejected env var and re-resolve so
+    # `config.toml` and then the typed default still apply, mirroring
+    # `resolve_recursion_limit`.
+    if source.startswith("env (") and source.endswith(")"):
+        env_name = source[len("env (") : -1]
+        logger.warning(
+            "Ignoring %s auto_classifier_timeout %r (expected seconds in "
+            "[%g, %g]); falling through to the next config source",
+            source,
+            value,
+            AUTO_CLASSIFIER_TIMEOUT_FLOOR,
+            AUTO_CLASSIFIER_TIMEOUT_CEILING,
+        )
+        previous = os.environ.pop(env_name, None)
+        if previous is None:
+            # The name reconstructed from `source` is not the key `resolve_scalar`
+            # read, so re-resolving would see the same rejected value and recurse
+            # forever. Unreachable today (the source label is built from the
+            # environ key), but this runs on the startup path where a
+            # `RecursionError` would surface only as an opaque launch failure.
+            logger.warning(
+                "Unexpected auto_classifier_timeout env source %r; using %g",
+                source,
+                AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+            )
+            return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT, "default"
+        try:
+            return resolve_auto_classifier_timeout_with_source(toml_data=data)
+        finally:
+            os.environ[env_name] = previous
+
+    if source != "default":
+        logger.warning(
+            "Ignoring %s auto_classifier_timeout %r (expected seconds in "
+            "[%g, %g]); using %g",
+            source,
+            value,
+            AUTO_CLASSIFIER_TIMEOUT_FLOOR,
+            AUTO_CLASSIFIER_TIMEOUT_CEILING,
+            AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        )
+    return AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT, "default"
+
+
+def resolve_auto_classifier_timeout(
+    *, toml_data: dict[str, Any] | None = None
+) -> float:
+    """Resolve the wall-clock budget for one Auto classifier decision batch.
+
+    Resolves `models.auto_classifier_timeout` through the standard env →
+    `config.toml` → default precedence. An out-of-range value (below
+    `AUTO_CLASSIFIER_TIMEOUT_FLOOR` or above `AUTO_CLASSIFIER_TIMEOUT_CEILING`)
+    is discarded with a logged warning and the next lower-precedence layer is
+    tried, so a bad higher-precedence override cannot mask a valid TOML setting
+    (or the default) and can never remove the deadline that keeps a stalled
+    classifier from hanging every gated tool call.
+
+    Args:
+        toml_data: Parsed `config.toml`; loaded automatically when omitted.
+
+    Returns:
+        The resolved timeout in seconds, guaranteed within
+            `[AUTO_CLASSIFIER_TIMEOUT_FLOOR, AUTO_CLASSIFIER_TIMEOUT_CEILING]`.
+    """
+    value, _ = resolve_auto_classifier_timeout_with_source(toml_data=toml_data)
+    return value
+
+
 def _is_valid_recursion_limit(value: object) -> bool:
     """Return whether `value` is an accepted main-agent `recursion_limit`."""
     return (
@@ -1115,6 +1249,31 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STR,
         toml_keys=("models", "recent"),
     ),
+    ConfigOption(
+        key="models.auto_classifier",
+        group="Models",
+        summary=(
+            "Model spec ('provider:model') used by the Auto approval classifier; "
+            "unset reuses the main agent model. A weaker model weakens Auto's "
+            "review of gated actions."
+        ),
+        kind=OptionKind.STR,
+        env_var=_env_vars.AUTO_CLASSIFIER_MODEL,
+        toml_keys=("models", "auto_classifier"),
+        cli_flag="--auto-classifier-model",
+    ),
+    ConfigOption(
+        key="models.auto_classifier_timeout",
+        group="Models",
+        summary=(
+            "Seconds the Auto approval classifier may take to review one batch "
+            "(1-300); a batch that misses the deadline is denied."
+        ),
+        kind=OptionKind.FLOAT,
+        default=AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        env_var=_env_vars.AUTO_CLASSIFIER_TIMEOUT,
+        toml_keys=("models", "auto_classifier_timeout"),
+    ),
     # --- Tracing -------------------------------------------------------
     ConfigOption(
         key="tracing.langsmith_project",
@@ -1430,6 +1589,18 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         toml_keys=("update", "check"),
         invert_toml_bool=True,
     ),
+    ConfigOption(
+        key="update.prices_auto_update",
+        group="Updates",
+        summary=(
+            "Refresh the model pricing catalog from upstream hourly in the background."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.PRICES_AUTO_UPDATE,
+        toml_keys=("update", "prices_auto_update"),
+        empty_env_is_false=True,
+    ),
     # --- Runtime --------------------------------------------------------
     ConfigOption(
         key="runtime.recursion_limit",
@@ -1458,6 +1629,17 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.RIPGREP_INSTALLER,
     ),
     # --- Startup --------------------------------------------------------
+    ConfigOption(
+        key="startup.onboarding",
+        group="Startup",
+        summary=(
+            "Force the first-run onboarding flow to open on every interactive "
+            "startup, or disable it entirely; unset follows the completion marker."
+        ),
+        kind=OptionKind.BOOL,
+        env_var=_env_vars.ONBOARDING,
+        empty_env_is_false=True,
+    ),
     ConfigOption(
         key="startup.mode",
         group="Startup",
@@ -1506,14 +1688,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.LOG_LEVEL_DELEGATE,
         env_var=_env_vars.LOG_LEVEL,
-    ),
-    ConfigOption(
-        key="debug.onboarding",
-        group="Debug",
-        summary="Force the onboarding flow to open on every interactive startup.",
-        kind=OptionKind.BOOL,
-        default=False,
-        env_var=_env_vars.DEBUG_ONBOARDING,
     ),
     ConfigOption(
         key="debug.notifications",

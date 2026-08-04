@@ -937,6 +937,7 @@ class TestFilesystemMiddlewareAsync:
         assert "Async Hello world\nAsync Line 2" in result.content
         assert "succeeded" in result.content
         assert "exit code 0" in result.content
+        assert result.artifact == {"exit_code": 0}
 
     async def test_aexecute_tool_output_formatting_with_failure(self):
         """Test async execute tool formats failure output correctly."""
@@ -980,6 +981,7 @@ class TestFilesystemMiddlewareAsync:
         assert "Async Error: command not found" in result.content
         assert "failed" in result.content
         assert "exit code 127" in result.content
+        assert result.artifact == {"exit_code": 127}
 
     async def test_aexecute_tool_output_formatting_with_truncation(self):
         """Test async execute tool formats truncated output correctly."""

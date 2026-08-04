@@ -2896,6 +2896,7 @@ class TestFilesystemMiddleware:
         assert "Hello world\nLine 2" in result.content
         assert "succeeded" in result.content
         assert "exit code 0" in result.content
+        assert result.artifact == {"exit_code": 0}
 
     def test_execute_tool_output_formatting_with_failure(self):
         """Test execute tool formats failure output correctly."""
@@ -2932,6 +2933,7 @@ class TestFilesystemMiddleware:
         assert "Error: command not found" in result.content
         assert "failed" in result.content
         assert "exit code 127" in result.content
+        assert result.artifact == {"exit_code": 127}
 
     def test_execute_tool_output_formatting_with_truncation(self):
         """Test execute tool formats truncated output correctly."""

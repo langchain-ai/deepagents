@@ -1688,6 +1688,7 @@ class TestExecuteCaptureOffload:
 
         assert "oops" in result.content
         assert "exit code 3" in result.content
+        assert result.artifact == {"exit_code": 3}
 
     def test_runaway_output_is_capped_and_flagged(self, tools: tuple, sandbox: LocalSubprocessSandbox, monkeypatch: pytest.MonkeyPatch) -> None:
         # Cap must exceed the eviction budget so a capped result still offloads

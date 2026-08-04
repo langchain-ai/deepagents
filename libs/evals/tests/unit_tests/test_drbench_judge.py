@@ -106,6 +106,14 @@ def _install_fake_drbench(
 
     # Upstream's second, independent registry. It disagrees with the first -- `gpt-4.1` is
     # in `OPENAI_MODELS` but not here -- which is why the judge takes the intersection.
+    # The cited-URL guard wraps this; a bare pass-through unless a test replaces it.
+    class SourceReader:
+        def parse_website(self, url: str) -> Any:
+            recorded.setdefault("fetched", []).append(url)
+            return f"content of {url}"
+
+    utils.SourceReader = SourceReader
+
     gen_agent: Any = types.ModuleType("drbench.gen_agent")
     gen_agent.SERVICE_TO_MODELS = (
         {"openai": ["gpt-4o-mini", "gpt-4o"], "vllm": [], "together": []}
@@ -117,6 +125,19 @@ def _install_fake_drbench(
     agents.utils = utils
 
     root = types.ModuleType("drbench")
+
+    requests: Any = types.ModuleType("requests")
+
+    class _Session:
+        def request(self, method: str, url: str, **kwargs: Any) -> Any:
+            recorded.setdefault("requests", []).append((url, kwargs.get("timeout")))
+            return {"url": url}
+
+        def resolve_redirects(self, resp: Any, req: Any, **kwargs: Any) -> Any:
+            yield from recorded.get("hops", [])
+
+    requests.Session = _Session
+    monkeypatch.setitem(sys.modules, "requests", requests)
 
     for name, module in (
         ("drbench", root),
@@ -707,3 +728,139 @@ def test_grade_installs_batching_and_skips_the_per_insight_pass(
     # The per-insight results are only written to `savedir`, which we never pass, so the
     # pass costs a judge call per insight plus retries and returns nothing readable.
     assert calls["score_report_kwargs"]["include_per_insight_scores"] is False
+
+
+# --- cited-URL fetch guard ------------------------------------------------------------
+# `get_content` resolves an http citation through
+# `drbench.agents.utils.SourceReader.parse_website`, whose live body is a bare
+# `session.get(url)`: no host validation, no timeout, no exception handling. A single
+# unreachable citation therefore zeroed all four metrics for a task in a real run.
+
+
+def _fake_requests() -> Any:
+    """The `requests` stand-in `_install_fake_drbench` registered."""
+    return sys.modules["requests"]
+
+
+def test_url_guard_turns_a_failed_fetch_into_no_content(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: dict[str, Any] = {}
+    _install_fake_drbench(monkeypatch, scores={})
+    from drbench.agents import utils  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    def boom(self: Any, url: str) -> Any:
+        raise OSError("name resolution failed")
+
+    utils.SourceReader = type("SourceReader", (), {"parse_website": boom})
+
+    failures: list[dict[str, str]] = []
+    judge._install_url_fetch_guard(failures)
+
+    # None, not an exception: `get_content`'s contract already treats None as an
+    # unresolvable citation, so the claim goes unsupported and the task still scores.
+    assert utils.SourceReader().parse_website("https://example.com/x") is None
+    assert len(failures) == 1
+    assert "OSError" in failures[0]["error"]
+    assert failures[0]["url"] == "https://example.com/x"
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["169.254.169.254", "127.0.0.1", "10.0.0.5", "192.168.1.1"],
+)
+def test_url_guard_refuses_a_non_public_host(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    # Citations are written by the model under test, so a cited URL is untrusted input.
+    # Upstream performs no host check at all; this restores the guard.
+    calls: dict[str, Any] = {}
+    _install_fake_drbench(monkeypatch, scores={}, calls=calls)
+    requests = _fake_requests()
+    monkeypatch.setattr(judge.socket, "getaddrinfo", lambda h, _p: [(0, 0, 0, "", (h, 0))])
+    judge._install_url_fetch_guard([])
+
+    with pytest.raises(judge._BlockedHostError):
+        requests.Session().request("GET", f"http://{host}/meta")
+    # Refused before the request was made, not after.
+    assert calls.get("requests") is None
+
+
+def test_url_guard_allows_a_public_host_and_sets_a_timeout(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: dict[str, Any] = {}
+    _install_fake_drbench(monkeypatch, scores={}, calls=calls)
+    requests = _fake_requests()
+    monkeypatch.setattr(
+        judge.socket, "getaddrinfo", lambda _h, _p: [(0, 0, 0, "", ("93.184.216.34", 0))]
+    )
+    judge._install_url_fetch_guard([])
+
+    requests.Session().request("GET", "https://example.com/page")
+    (url, timeout) = calls["requests"][0]
+    assert url == "https://example.com/page"
+    # Upstream passes no timeout, so one slow host could consume the verifier budget.
+    assert timeout == judge._URL_FETCH_TIMEOUT
+
+
+def test_url_guard_revalidates_every_redirect_hop(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Checking only the original URL is not enough: a public host can 302 to a private
+    # address, so each hop is validated as it is followed.
+    calls: dict[str, Any] = {"hops": [type("R", (), {"url": "http://169.254.169.254/"})()]}
+    _install_fake_drbench(monkeypatch, scores={}, calls=calls)
+    requests = _fake_requests()
+    monkeypatch.setattr(judge.socket, "getaddrinfo", lambda h, _p: [(0, 0, 0, "", (h, 0))])
+    judge._install_url_fetch_guard([])
+
+    with pytest.raises(judge._BlockedHostError):
+        list(requests.Session().resolve_redirects(None, None))
+
+
+def test_url_guard_is_idempotent(judge: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: dict[str, Any] = {}
+    _install_fake_drbench(monkeypatch, scores={}, calls=calls)
+    requests = _fake_requests()
+    monkeypatch.setattr(
+        judge.socket, "getaddrinfo", lambda _h, _p: [(0, 0, 0, "", ("93.184.216.34", 0))]
+    )
+    judge._install_url_fetch_guard([])
+    judge._install_url_fetch_guard([])
+
+    requests.Session().request("GET", "https://example.com/")
+    assert len(calls["requests"]) == 1, "double-wrapping would re-enter the guard"
+
+
+def test_grade_reports_unfetchable_citations(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A depressed factuality is only interpretable next to the list of sources the
+    # verifier could not read, so the breakdown must carry it even when empty.
+    _install_fake_drbench(monkeypatch, scores=dict(_SCORES))
+    _stage_paths(judge, monkeypatch, tmp_path)
+
+    _, breakdown = judge._grade()
+    assert breakdown["unfetchable_citations"] == []
+
+
+def test_main_records_a_traceback_on_failure(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # An earlier failure reported only "ConnectionError: ..." with no frame, which made
+    # locating it far slower than reading a traceback would have been.
+    reward_path, breakdown_path = _stage_paths(judge, monkeypatch, tmp_path, report=None)
+
+    def boom() -> None:
+        msg = "kaboom"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(judge, "_grade", boom)
+    judge.main()
+
+    breakdown = json.loads(breakdown_path.read_text())
+    assert "kaboom" in breakdown["error"]
+    assert "Traceback" in breakdown["traceback"]
+    assert "boom" in breakdown["traceback"]
+    assert json.loads(reward_path.read_text()) == judge._zero_rewards()

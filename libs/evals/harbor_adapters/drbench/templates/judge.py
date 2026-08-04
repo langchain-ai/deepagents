@@ -29,9 +29,13 @@ key is ever printed or written to a reward or breakdown file.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
+import socket
+import traceback
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -137,6 +141,123 @@ def _embedding_model() -> str | None:
 # Ceiling for one embeddings request, under the API's 300k-token limit with headroom for
 # the tokenizer estimate being approximate.
 _EMBED_TOKEN_BUDGET = 200_000
+
+# Upstream fetches cited URLs with no timeout at all, so one slow host could otherwise
+# consume the whole verifier budget.
+_URL_FETCH_TIMEOUT = 30.0
+# Bound on redirect hops we will follow while re-validating each one.
+_MAX_REDIRECTS = 5
+
+
+def _is_public_host(host: str) -> bool:
+    """True when a hostname resolves only to public addresses.
+
+    Citations come from the agent's report, so a cited URL is untrusted input. Without
+    this, a citation could point the verifier at cloud instance metadata or another
+    service on the runner. Upstream performs no such check -- it fetches whatever the
+    citation says -- so this restores the guard our own earlier verifier had.
+    """
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0])
+        if (
+            address.is_private
+            or address.is_loopback
+            or address.is_link_local
+            or address.is_reserved
+            or address.is_multicast
+        ):
+            return False
+    return bool(infos)
+
+
+class _BlockedHostError(Exception):
+    """A cited URL resolved to an address the verifier must not fetch."""
+
+
+def _install_url_fetch_guard(failures: list[dict[str, str]]) -> None:
+    """Make cited-URL fetching safe, bounded, and non-fatal.
+
+    `get_content` resolves an `http...` citation through
+    `drbench.agents.utils.SourceReader.parse_website`, whose live body is a bare
+    `session.get(url)` -- no host validation, no timeout, no exception handling. Three
+    consequences, all observed or reachable:
+
+      1. A network error propagates out of `score_report`, so ONE unreachable citation
+         zeroes all four metrics for the task, discarding metrics that already computed.
+         This cost 1 of 15 tasks (~0.03 on the dataset mean) in a real run.
+      2. Nothing stops a citation naming a private or link-local address, which would aim
+         a server-side request from inside the runner at, say, cloud metadata.
+      3. With no timeout, one slow host can burn the entire verifier budget.
+
+    So this installs three wrappers:
+
+      * `Session.request` validates the target host and supplies a default timeout.
+      * `Session.resolve_redirects` re-validates every hop, because a public host may 302
+         to a private address and validating only the original URL would miss it.
+      * `parse_website` catches, records, and returns None -- exactly what `get_content`'s
+         own contract already expects (`return result if result is not None else None`),
+         so an unfetchable citation becomes an unsupported claim rather than a dead task.
+
+    Failures are appended to `failures` and surface in the breakdown, so a fetch that was
+    skipped is never silent -- the alternative, swallowing them, would make a low
+    factuality score indistinguishable from an unreachable corpus.
+
+    Nothing here changes how a resolved citation is judged.
+    """
+    import requests  # noqa: PLC0415 - a drbench dependency
+
+    from drbench.agents import utils  # noqa: PLC0415
+
+    def _check(url: str) -> None:
+        host = urllib.parse.urlsplit(url).hostname or ""
+        if not _is_public_host(host):
+            msg = f"refusing to fetch non-public host {host!r}"
+            raise _BlockedHostError(msg)
+
+    original_request = requests.Session.request
+    if not getattr(original_request, "_deepagents_guarded", False):
+
+        def request(self: Any, method: str, url: str, **kwargs: Any) -> Any:
+            _check(url)
+            kwargs.setdefault("timeout", _URL_FETCH_TIMEOUT)
+            return original_request(self, method, url, **kwargs)
+
+        request._deepagents_guarded = True  # type: ignore[attr-defined]
+        requests.Session.request = request  # type: ignore[method-assign]
+
+    original_resolve = requests.Session.resolve_redirects
+    if not getattr(original_resolve, "_deepagents_guarded", False):
+
+        def resolve_redirects(self: Any, resp: Any, req: Any, **kwargs: Any) -> Any:
+            kwargs.setdefault("timeout", _URL_FETCH_TIMEOUT)
+            for hop, response in enumerate(original_resolve(self, resp, req, **kwargs)):
+                if hop >= _MAX_REDIRECTS:
+                    return
+                _check(response.url)
+                yield response
+
+        resolve_redirects._deepagents_guarded = True  # type: ignore[attr-defined]
+        requests.Session.resolve_redirects = resolve_redirects  # type: ignore[method-assign]
+
+    original_parse = utils.SourceReader.parse_website
+    if not getattr(original_parse, "_deepagents_guarded", False):
+
+        def parse_website(self: Any, url: str) -> Any:
+            try:
+                return original_parse(self, url)
+            except Exception as exc:  # noqa: BLE001 - a bad citation must not end the run
+                failures.append(
+                    {"url": url[:300], "error": f"{type(exc).__name__}: {exc}"[:300]}
+                )
+                print(f"  could not fetch cited URL {url[:120]}: {type(exc).__name__}")
+                return None
+
+        parse_website._deepagents_guarded = True  # type: ignore[attr-defined]
+        utils.SourceReader.parse_website = parse_website  # type: ignore[method-assign]
 
 
 def _install_embedding_batching() -> None:
@@ -283,6 +404,8 @@ def _grade() -> tuple[dict[str, float], dict[str, Any]]:
     # package, which is also where `CitationFactuality` resolves cited documents from --
     # so email, chat, file-browser, and Nextcloud sources all resolve as plain files.
     _install_embedding_batching()
+    url_failures: list[dict[str, str]] = []
+    _install_url_fetch_guard(url_failures)
     task = task_loader.get_task_from_id(task_id)
     scores = score_report(
         predicted_report_text=report_text,
@@ -330,8 +453,14 @@ def _grade() -> tuple[dict[str, float], dict[str, Any]]:
             "upstream_scores": {name: scores[name] for name in _UPSTREAM_METRICS},
             "components": components,
             "composite": rewards["reward"],
+            # Cited URLs the verifier could not read. Each one cost the report a claim it
+            # might otherwise have supported, so a depressed `factuality` is only
+            # interpretable next to this list.
+            "unfetchable_citations": url_failures,
         }
     )
+    if url_failures:
+        print(f"{len(url_failures)} cited URL(s) could not be fetched; see the breakdown")
     return rewards, breakdown
 
 
@@ -341,8 +470,13 @@ def main() -> None:
         rewards, breakdown = _grade()
     except Exception as exc:  # noqa: BLE001 - a verifier crash must still write a reward
         print(f"grading failed: {type(exc).__name__}: {exc}")
+        # The traceback, not just the message: an earlier failure here reported only
+        # "ConnectionError: ..." and locating the frame it came from took far longer than
+        # reading one would have.
+        formatted = traceback.format_exc()
+        print(formatted)
         rewards = _zero_rewards()
-        breakdown = {"error": f"{type(exc).__name__}: {exc}"}
+        breakdown = {"error": f"{type(exc).__name__}: {exc}", "traceback": formatted}
 
     rewards = {name: max(0.0, min(1.0, value)) for name, value in rewards.items()}
     _REWARD_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)

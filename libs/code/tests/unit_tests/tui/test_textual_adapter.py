@@ -44,6 +44,7 @@ from deepagents_code.client.non_interactive import (
     _process_message_chunk,
 )
 from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
+from deepagents_code.hooks.client_lifecycle import ClientHookStopError
 from deepagents_code.hooks.manager import HooksManager, PromptOutcome
 from deepagents_code.hooks.models.domain import (
     HookEvent,
@@ -1454,6 +1455,15 @@ class TestIsAutoModeClassifierChunk:
         metadata = {"lc_source": "auto_mode_classifier"}
         assert _is_auto_mode_classifier_chunk(metadata) is True
 
+    def test_returns_true_for_distinct_classifier_model(self) -> None:
+        """Filtering keys on the source, so a separate classifier stays hidden."""
+        metadata = {
+            "lc_source": "auto_mode_classifier",
+            "classifier_model": "openai:gpt-5.5-mini",
+            "ls_model_name": "gpt-5.5-mini",
+        }
+        assert _is_auto_mode_classifier_chunk(metadata) is True
+
     def test_returns_false_for_unrelated_metadata(self) -> None:
         """Regular and missing metadata remain visible."""
         assert _is_auto_mode_classifier_chunk(None) is False
@@ -1827,23 +1837,28 @@ class _FailingApprovalStoreAgent(_SequencedAgent):
 class TestExecuteTaskTextualStreamCompletion:
     """Report only clean stream endings to the app."""
 
-    async def test_clean_stream_calls_completion_callback(self) -> None:
+    async def test_hook_stop_after_clean_stream_calls_completion_callback(self) -> None:
+        mount_message = AsyncMock()
         adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
+            mount_message=mount_message,
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
         callback = MagicMock()
         adapter._on_stream_complete = callback
 
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent([]),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=False),
-            adapter=adapter,
-        )
+        stop = ClientHookStopError("intentional stop")
+        with patch.object(HooksManager, "notify", side_effect=stop):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent([]),
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+            )
 
+        message = mount_message.await_args_list[0].args[0]
+        assert str(message._content) == f"Operation stopped by hook: {stop}"
         callback.assert_called_once_with()
 
     async def test_interrupted_stream_skips_completion_callback(self) -> None:
@@ -7239,6 +7254,7 @@ class TestToolHooksTextual:
         )
 
         with (
+            patch.object(ToolCallMessage, "set_rejected", side_effect=RuntimeError),
             patch(
                 "deepagents_code.tui.textual_adapter.dispatch_hook",
                 new_callable=AsyncMock,

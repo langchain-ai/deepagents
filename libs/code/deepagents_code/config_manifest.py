@@ -1115,6 +1115,19 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         kind=OptionKind.STR,
         toml_keys=("models", "recent"),
     ),
+    ConfigOption(
+        key="models.auto_classifier",
+        group="Models",
+        summary=(
+            "Model spec ('provider:model') used by the Auto approval classifier; "
+            "unset reuses the main agent model. A weaker model weakens Auto's "
+            "review of gated actions."
+        ),
+        kind=OptionKind.STR,
+        env_var=_env_vars.AUTO_CLASSIFIER_MODEL,
+        toml_keys=("models", "auto_classifier"),
+        cli_flag="--auto-classifier-model",
+    ),
     # --- Tracing -------------------------------------------------------
     ConfigOption(
         key="tracing.langsmith_project",
@@ -1429,6 +1442,18 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         env_var=_env_vars.NO_UPDATE_CHECK,
         toml_keys=("update", "check"),
         invert_toml_bool=True,
+    ),
+    ConfigOption(
+        key="update.prices_auto_update",
+        group="Updates",
+        summary=(
+            "Refresh the model pricing catalog from upstream hourly in the background."
+        ),
+        kind=OptionKind.BOOL,
+        default=True,
+        env_var=_env_vars.PRICES_AUTO_UPDATE,
+        toml_keys=("update", "prices_auto_update"),
+        empty_env_is_false=True,
     ),
     # --- Runtime --------------------------------------------------------
     ConfigOption(

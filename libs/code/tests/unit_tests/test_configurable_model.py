@@ -168,6 +168,32 @@ class TestNoOverride:
         assert ctx.auto_approve is True
         assert ctx.approval_mode_key is None
 
+    def test_dict_context_carries_classifier_model(self) -> None:
+        """A serialized context must keep the Auto classifier override."""
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context={"classifier_model": "openai:gpt-5.5-mini"},
+        )
+
+        ctx = _get_context(request)
+
+        assert ctx is not None
+        assert ctx.classifier_model == "openai:gpt-5.5-mini"
+
+    @pytest.mark.parametrize("classifier_model", [None, 1, object()])
+    def test_dict_context_coerces_non_string_classifier_model(
+        self, classifier_model: object
+    ) -> None:
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context={"classifier_model": classifier_model},
+        )
+
+        ctx = _get_context(request)
+
+        assert ctx is not None
+        assert ctx.classifier_model is None
+
     @pytest.mark.parametrize("thread_id", [None, 1, object()])
     def test_dict_context_coerces_non_string_thread_id(self, thread_id: object) -> None:
         request = _make_request(

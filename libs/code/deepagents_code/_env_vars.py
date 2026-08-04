@@ -30,6 +30,25 @@ import os
 # Keep alphabetically sorted by constant name.
 # ---------------------------------------------------------------------------
 
+AUTO_CLASSIFIER_MODEL = "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL"
+"""Model spec (`provider:model`) used by the Auto approval-mode classifier.
+
+Unset (the default) reuses the main agent model, preserving the historical
+behavior. A `provider:model` value points the authorization classifier at a
+separate — typically faster and cheaper — model without changing the model that
+writes code. The classifier is a security control: a model that cannot be
+resolved (bad spec, missing credentials, uninstalled provider package) never
+falls back to the main model — reviewed actions are denied, and repeated
+failures escalate to your approval. Also settable via `[models].auto_classifier`
+in config.toml and `--auto-classifier-model`.
+
+This is user-controlled process env, not a repo file: a committed *project*
+`.env` cannot set it (see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`), so a cloned
+repository cannot point the review that authorizes its own tool calls at a weaker
+model. Only the shell, the launch environment, or the global `~/.deepagents/.env`
+can.
+"""
+
 AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
 """Toggle automatic app updates. Enabled by default; set to a falsy value
 ('0', 'false', 'no', 'off', or empty) to opt out."""
@@ -313,6 +332,22 @@ PLUGIN_CACHE_DIR = "DEEPAGENTS_CODE_PLUGIN_CACHE_DIR"
 """Override the plugin install/marketplace cache root.
 
 When unset, plugins are stored under `DEFAULT_CONFIG_DIR / "plugins"`.
+"""
+
+PRICES_AUTO_UPDATE = "DEEPAGENTS_CODE_PRICES_AUTO_UPDATE"
+"""Toggle hourly background refresh of the `genai-prices` pricing catalog.
+
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to keep using only the pricing data bundled with the installed `genai-prices`
+package. `DEEPAGENTS_CODE_OFFLINE` suppresses the refresh too, along with
+every other network fetch.
+
+Parsed by `is_env_truthy` on each pricing call until the updater starts, and
+never read again after that -- so disabling it mid-process has no effect on a
+running updater, while enabling it mid-process starts one on the next priced
+request. Also the escape hatch for hosts embedding this package that manage
+`genai_prices.UpdatePrices` themselves: genai-prices permits one updater per
+process, so an embedder that starts its own would otherwise race this one.
 """
 
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"

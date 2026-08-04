@@ -50,6 +50,7 @@ jobs:
     outputs:
       should-run: ${{ steps.validate.outputs.should-run }}
       command: ${{ steps.validate.outputs.command }}
+      instructions: ${{ steps.validate.outputs.instructions }}
       number: ${{ steps.validate.outputs.number }}
       version: ${{ steps.validate.outputs.version }}
       head: ${{ steps.validate.outputs.head }}
@@ -79,7 +80,7 @@ jobs:
               botId: process.env.BOT_ID,
             });
             core.setOutput('should-run', String(result.shouldRun === true));
-            for (const key of ['command', 'number', 'version', 'head', 'branch']) {
+            for (const key of ['command', 'instructions', 'number', 'version', 'head', 'branch']) {
               core.setOutput(key, result[key] ?? '');
             }
 
@@ -138,6 +139,7 @@ jobs:
         env:
           PR_NUMBER: ${{ needs.validate.outputs.number }}
           PR_HEAD: ${{ needs.validate.outputs.head }}
+          INSTRUCTIONS: ${{ needs.validate.outputs.instructions }}
         with:
           script: |
             const { prepareDraft } = require('./trusted-source/.github/scripts/release/release-notes.js');
@@ -148,6 +150,7 @@ jobs:
                 number: Number(process.env.PR_NUMBER),
                 expectedHead: process.env.PR_HEAD,
                 runnerTemp: process.env.RUNNER_TEMP,
+                instructions: process.env.INSTRUCTIONS ?? '',
               });
               for (const [key, value] of Object.entries(result)) core.setOutput(key, value);
             } catch (error) {

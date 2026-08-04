@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import inspect
 import logging
 import subprocess
 import sys
+import threading
 import warnings
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast, get_type_hints
-from unittest.mock import patch
+from unittest.mock import MagicMock, create_autospec, patch
 from uuid import uuid4
 
 import pytest
@@ -55,6 +57,7 @@ from deepagents_code.cost_tracking import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
 
+    from genai_prices import UpdatePrices
     from langchain_core.callbacks import CallbackManagerForLLMRun
     from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
@@ -828,6 +831,400 @@ class TestEstimateCost:
             text=True,
         )
         assert result.returncode == 0, result.stderr
+
+
+class TestPriceUpdater:
+    """Process-wide background refresh of the genai-prices catalog."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_updater_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Isolate the process-wide updater state between tests.
+
+        `monkeypatch.setattr` restores this module's latches after each test.
+        genai-prices' own module globals are rolled back too: a leaked handle
+        in `_global_update_prices` would make a later `start()` raise, and a
+        leaked `_custom_snapshot` would silently re-price every later test off
+        fetched data. Note this does *not* stop a daemon thread that a real
+        `start()` already spawned -- it only clears the guard and the catalog.
+        Nothing here starts a real one; the conftest opt-out keeps the rest of
+        the suite from doing so either.
+
+        `DEEPAGENTS_CODE_OFFLINE` is cleared because the suite-wide
+        `_skip_managed_tool_downloads` fixture sets it, and it now suppresses
+        this updater too -- leaving it set would make every test here pass
+        vacuously. The test that covers the offline gate sets it back.
+        """
+        from deepagents_code._env_vars import OFFLINE
+
+        monkeypatch.delenv(OFFLINE, raising=False)
+        monkeypatch.setattr(cost_tracking, "_PRICE_UPDATER_ATTEMPTED", False)
+        monkeypatch.setattr(cost_tracking, "_PRICE_UPDATER", None)
+        monkeypatch.setattr(cost_tracking, "_TRUNCATED_CATALOG_REPORTED", False)
+        # The opt-out gate reads the user's real `config.toml` unless the
+        # read is stubbed, so a local `[update].prices_auto_update = false`
+        # would silently disable the updater under test.
+        monkeypatch.setattr("deepagents_code.config_manifest.load_config_toml", dict)
+        import genai_prices.data_snapshot
+        import genai_prices.update_prices
+
+        monkeypatch.setattr(genai_prices.update_prices, "_global_update_prices", None)
+        monkeypatch.setattr(genai_prices.data_snapshot, "_custom_snapshot", None)
+
+    def _patch_updater(
+        self, monkeypatch: pytest.MonkeyPatch, instance: MagicMock
+    ) -> MagicMock:
+        """Bind `_build_price_updater` to a factory returning *instance*.
+
+        The factory rather than `genai_prices.UpdatePrices` is patched because
+        `_build_price_updater` subclasses whatever it is handed, which a
+        `MagicMock` cannot stand in for. Callers pass an autospec instance so
+        `start(wait=False)` is checked against the real signature.
+        """
+        factory = MagicMock(return_value=instance)
+        monkeypatch.setattr(cost_tracking, "_build_price_updater", factory)
+        return factory
+
+    @staticmethod
+    def _enable_auto_update(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Clear the conftest opt-out so the updater under test may start."""
+        from deepagents_code._env_vars import PRICES_AUTO_UPDATE
+
+        monkeypatch.delenv(PRICES_AUTO_UPDATE, raising=False)
+
+    @staticmethod
+    def _autospec_updater() -> MagicMock:
+        """An `UpdatePrices` stand-in that enforces the real method signatures.
+
+        Returns:
+            An autospec instance whose `start` rejects a call the real class
+                would reject.
+        """
+        from genai_prices import UpdatePrices
+
+        return create_autospec(UpdatePrices, instance=True)
+
+    @staticmethod
+    def _stub_calc_price(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Price every request at $0.01 without touching the catalog."""
+        import genai_prices
+
+        monkeypatch.setattr(
+            genai_prices,
+            "calc_price",
+            lambda *_args, **_kwargs: SimpleNamespace(total_price=0.01),
+        )
+
+    def test_first_pricing_call_starts_updater_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from genai_prices import UpdatePrices
+
+        self._enable_auto_update(monkeypatch)
+        updater = self._autospec_updater()
+        factory = self._patch_updater(monkeypatch, updater)
+        # Repeated calls keep exercising the real `_load_pricing` import path.
+        self._stub_calc_price(monkeypatch)
+
+        for _ in range(3):
+            assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is not None
+
+        factory.assert_called_once_with(UpdatePrices)
+        updater.start.assert_called_once_with(wait=False)
+        assert cost_tracking._PRICE_UPDATER is updater
+
+    def test_starting_claims_the_genai_prices_logger(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The updater's logger never reaches `logging.lastResort`.
+
+        `config._quiet_sdk_logging` covers the CLI, but the server graph and
+        embedded hosts never call it -- and an unhandled ERROR from the hourly
+        refresh prints over the TUI. Starting the updater must claim the logger
+        on its own.
+        """
+        self._enable_auto_update(monkeypatch)
+        gp_logger = logging.getLogger("genai-prices")
+        monkeypatch.setattr(gp_logger, "handlers", [])
+        self._patch_updater(monkeypatch, self._autospec_updater())
+        self._stub_calc_price(monkeypatch)
+
+        assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is not None
+
+        assert gp_logger.handlers
+
+    def test_real_updater_accepts_the_start_call_this_module_makes(self) -> None:
+        """Pin the genai-prices API the start call depends on.
+
+        Every other test here stands the updater in with an autospec, so this
+        is what fails if a `>=0.1.1,<0.2.0` release renames `start`'s keyword.
+        Without it, that drift kills the feature in production -- the broad
+        `except` downgrades it to a warning -- while the suite stays green.
+        """
+        from genai_prices import UpdatePrices
+
+        signature = inspect.signature(UpdatePrices.start)
+        wait = signature.parameters["wait"]
+        assert wait.kind is inspect.Parameter.KEYWORD_ONLY
+        assert wait.default is False
+
+    @pytest.mark.parametrize("value", ["false", "0", "off", ""])
+    def test_disabled_env_var_never_starts_updater(
+        self, monkeypatch: pytest.MonkeyPatch, value: str
+    ) -> None:
+        from deepagents_code._env_vars import PRICES_AUTO_UPDATE
+
+        monkeypatch.setenv(PRICES_AUTO_UPDATE, value)
+        factory = self._patch_updater(monkeypatch, self._autospec_updater())
+        self._stub_calc_price(monkeypatch)
+
+        assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is not None
+
+        factory.assert_not_called()
+
+    def test_toml_opt_out_never_starts_updater(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The TOML opt-out gates the updater, not just `config get`."""
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_config_toml",
+            lambda: {"update": {"prices_auto_update": False}},
+        )
+        factory = self._patch_updater(monkeypatch, self._autospec_updater())
+        self._stub_calc_price(monkeypatch)
+
+        assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is not None
+
+        factory.assert_not_called()
+
+    def test_env_var_overrides_toml_opt_out(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A truthy env var wins over a persisted TOML opt-out."""
+        from deepagents_code._env_vars import PRICES_AUTO_UPDATE
+
+        monkeypatch.setenv(PRICES_AUTO_UPDATE, "1")
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_config_toml",
+            lambda: {"update": {"prices_auto_update": False}},
+        )
+        factory = self._patch_updater(monkeypatch, self._autospec_updater())
+        self._stub_calc_price(monkeypatch)
+
+        assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is not None
+
+        factory.assert_called_once()
+
+    def test_offline_mode_never_starts_updater(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`DEEPAGENTS_CODE_OFFLINE` suppresses this fetch like every other."""
+        from deepagents_code._env_vars import OFFLINE
+
+        monkeypatch.setenv(OFFLINE, "1")
+        factory = self._patch_updater(monkeypatch, self._autospec_updater())
+        self._stub_calc_price(monkeypatch)
+
+        assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) is not None
+
+        factory.assert_not_called()
+
+    def test_the_start_attempt_is_serialized_by_a_lock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The latch is read and set inside `_PRICE_UPDATER_LOCK`.
+
+        `estimate_cost` runs on the event loop and on the executor threads that
+        price drained records, so an unguarded check-then-set lets two threads
+        both reach `start()`. The loser trips genai-prices' process-wide
+        singleton guard and its `RuntimeError` gets reported as a failed start
+        -- a warning claiming the updater is down while the winner's runs fine.
+
+        Holding the lock here and watching a pricing thread block on it tests
+        that directly, rather than trying to lose a race on purpose.
+        """
+        from genai_prices import UpdatePrices
+
+        self._enable_auto_update(monkeypatch)
+        self._stub_calc_price(monkeypatch)
+        factory = self._patch_updater(monkeypatch, self._autospec_updater())
+
+        priced = threading.Event()
+
+        def _price() -> None:
+            estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
+            priced.set()
+
+        thread = threading.Thread(target=_price)
+        with cost_tracking._PRICE_UPDATER_LOCK:
+            thread.start()
+            # Without the lock the thread sails through the start attempt.
+            assert not priced.wait(0.25)
+            factory.assert_not_called()
+
+        thread.join(timeout=5)
+        assert priced.is_set()
+        factory.assert_called_once_with(UpdatePrices)
+
+    def test_failed_start_still_prices_and_logs_once(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A broken updater must not break pricing or spam the log.
+
+        The failure is latched because nothing a later request does can fix an
+        incompatible genai-prices release or a claimed singleton -- retrying
+        would only repeat the warning on every model call while pricing works.
+        """
+        self._enable_auto_update(monkeypatch)
+        updater = self._autospec_updater()
+        updater.start.side_effect = RuntimeError("unexpected genai-prices API")
+        self._patch_updater(monkeypatch, updater)
+        self._stub_calc_price(monkeypatch)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            for _ in range(3):
+                assert estimate_cost(
+                    _usage(), KNOWN_MODEL, KNOWN_PROVIDER
+                ) == pytest.approx(0.01)
+
+        updater.start.assert_called_once_with(wait=False)
+        warning = "Could not start the genai-prices background updater"
+        records = [r for r in caplog.records if warning in r.getMessage()]
+        assert len(records) == 1
+        # Asserted on the formatted message, not `caplog.text`: `exc_info=True`
+        # appends a traceback naming the same exception, so a check against the
+        # full text would pass even if the message dropped the type entirely.
+        assert "RuntimeError: unexpected genai-prices API" in records[0].getMessage()
+        assert cost_tracking.pricing_data_available()
+        assert cost_tracking._PRICE_UPDATER is None
+
+    def test_a_start_failure_does_not_price_from_a_half_built_updater(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failure inside the factory itself is caught like any other."""
+        self._enable_auto_update(monkeypatch)
+        monkeypatch.setattr(
+            cost_tracking,
+            "_build_price_updater",
+            MagicMock(side_effect=AttributeError("no UpdatePrices")),
+        )
+        self._stub_calc_price(monkeypatch)
+
+        assert estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER) == pytest.approx(
+            0.01
+        )
+        assert cost_tracking._PRICE_UPDATER is None
+
+
+class TestPriceCatalogGuard:
+    """`_build_price_updater` gating on what a fetch is allowed to install."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_report_latch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cost_tracking, "_TRUNCATED_CATALOG_REPORTED", False)
+
+    @staticmethod
+    def _guarded_updater(
+        monkeypatch: pytest.MonkeyPatch, fetched: int | None
+    ) -> tuple[UpdatePrices, int]:
+        """Build the real guarded updater over a fetch returning *fetched* providers.
+
+        `fetched=None` stands in for the `None` snapshot that
+        `UpdatePrices.fetch` is typed to allow.
+
+        Returns:
+            The guarded instance and the bundled provider count it is judged
+                against.
+        """
+        from genai_prices import UpdatePrices
+        from genai_prices.data import providers as bundled
+
+        snapshot = (
+            None if fetched is None else SimpleNamespace(providers=[object()] * fetched)
+        )
+        monkeypatch.setattr(UpdatePrices, "fetch", lambda _self: snapshot)
+        return cost_tracking._build_price_updater(UpdatePrices), len(bundled)
+
+    def test_a_complete_catalog_is_installed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from genai_prices.data import providers as bundled
+
+        updater, _ = self._guarded_updater(monkeypatch, len(bundled))
+
+        snapshot = updater.fetch()
+
+        assert snapshot is not None
+        assert len(snapshot.providers) == len(bundled)
+
+    def test_a_grown_catalog_is_installed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Upstream adding providers is the normal case, not a truncation."""
+        from genai_prices.data import providers as bundled
+
+        updater, _ = self._guarded_updater(monkeypatch, len(bundled) + 5)
+
+        snapshot = updater.fetch()
+
+        assert snapshot is not None
+        assert len(snapshot.providers) == len(bundled) + 5
+
+    @pytest.mark.parametrize("fetched", [0, 1, None])
+    def test_a_truncated_catalog_is_refused(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        fetched: int | None,
+    ) -> None:
+        """An empty or half-published data.json must not replace bundled data.
+
+        genai-prices validates only that the payload is an array of well-formed
+        providers, so `[]` installs cleanly and makes every later `calc_price`
+        raise `LookupError` -- which this module reports as an unpriced model
+        rather than a broken catalog, so costs stop with no visible cause.
+        """
+        updater, bundled_count = self._guarded_updater(monkeypatch, fetched)
+
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"),
+            pytest.raises(ValueError, match="Refused pricing catalog"),
+        ):
+            updater.fetch()
+
+        assert f"{bundled_count} bundled" in caplog.text
+
+    def test_a_refusal_is_reported_once_not_hourly(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The refusal recurs every hour while upstream stays broken."""
+        updater, _ = self._guarded_updater(monkeypatch, 0)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
+            for _ in range(3):
+                with pytest.raises(ValueError, match="Refused pricing catalog"):
+                    updater.fetch()
+
+        assert caplog.text.count("Refusing an upstream pricing catalog") == 1
+
+    def test_a_refusal_leaves_the_installed_catalog_alone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Raising, not returning `None`, is what preserves the last good fetch.
+
+        `UpdatePrices._update_prices` installs whatever `fetch` returns --
+        including `None`, which reverts to bundled data. Raising instead makes
+        the background loop treat the refresh as failed and retry later.
+        """
+        import genai_prices.data_snapshot as snapshot_mod
+
+        updater, _ = self._guarded_updater(monkeypatch, 0)
+        good = SimpleNamespace(providers=[object()], from_auto_update=True)
+        monkeypatch.setattr(snapshot_mod, "_custom_snapshot", good)
+
+        with pytest.raises(ValueError, match="Refused pricing catalog"):
+            updater._update_prices()
+
+        assert snapshot_mod._custom_snapshot is good
 
 
 class TestCostTrackingMiddleware:

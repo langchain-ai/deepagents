@@ -106,15 +106,23 @@ The hooks run `make format lint` for changed packages and validate commit messag
 
 ### Branch-name pre-push hook
 
-The `pre-push` stage also runs a branch-name check (`.githooks/pre-push`, registered in `.pre-commit-config.yaml`) that rejects pushes of branches that don't follow the `<github-username>/<scope>/<short-description>` convention (e.g. `mdrxy/cli/startup-cmd-flag`). Because it runs through pre-commit, the same `pre-commit install --install-hooks` setup above enables it — no separate `core.hooksPath` wiring, which would shadow the other installed hooks.
+The `pre-push` stage also runs a branch-name check (`.githooks/pre-push`, registered in `.pre-commit-config.yaml`) that rejects pushes of branches that don't follow the `<github-username>/<scope>/<short-description>` convention (e.g. `mdrxy/cli/startup-cmd-flag`). Because it runs through pre-commit, `pre-commit install --install-hooks` enables it — no separate `core.hooksPath` wiring, which would shadow the other installed hooks.
 
-The hook resolves your GitHub login from `git config github.user`, falling back to `gh api user` and then the local part of `user.email`. If the fallback is wrong, set it explicitly:
+**If you installed the hooks before this check was added, re-run the install command.** `pre-commit` writes one hook file per type at install time, so an existing checkout has no `.git/hooks/pre-push` and gets no enforcement until you re-run:
+
+```bash
+pre-commit install --install-hooks
+```
+
+The hook resolves your GitHub login from `git config github.user`, falling back to `gh api user` and then the local part of `user.email`. The fallbacks are best-effort — setting it explicitly is the reliable option, and required if your commit email is a `users.noreply.github.com` or `first.last@` address that doesn't match your login:
 
 ```bash
 git config github.user <your-github-login>
 ```
 
-Protected branches (`main`, `vX.Y`) and automation branches (`release-please--*`, `dependabot/*`, `copilot/*`) are always allowed. The hook is a local convenience and can be skipped with `git push --no-verify` or `SKIP=branch-name git push`; CI surfaces the same rule as a non-blocking warning on PR head branches (see `.github/workflows/branch_name_check.yml`).
+Protected branches (`main`, `master`, `vX.Y`), automation branches (`release-please--*`, `dependabot/*`, `copilot/*`) and release branches (`alpha/*`, `beta/*`, `rc/*`, `dev/*`) are always allowed.
+
+The hook is a local convenience and can be skipped with `git push --no-verify` or `SKIP=branch-name git push`. Two cases it cannot catch, both consequences of running through pre-commit rather than as a raw git hook: pushing several refs at once validates only one of them, and pushing a branch that carries no new commits runs no hooks at all. `.github/workflows/branch_name_check.yml` covers both, as a non-blocking warning on the PR head branch — note that CI deliberately does not check the username segment against the PR author, so it is a slightly looser rule than the local hook.
 
 ## Contributing conventions
 

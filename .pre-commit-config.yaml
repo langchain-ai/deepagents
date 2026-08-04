@@ -1,5 +1,10 @@
 default_install_hook_types: [pre-commit, commit-msg, pre-push]
 
+# 2.11.0 is the first release that exports `PRE_COMMIT_REMOTE_BRANCH`, which the
+# `branch-name` pre-push hook needs to know which branch is being pushed. On an
+# older pre-commit that hook would install and then silently never validate.
+minimum_pre_commit_version: '2.11.0'
+
 repos:
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v3.6.0

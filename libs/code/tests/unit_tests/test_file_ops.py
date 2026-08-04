@@ -271,6 +271,83 @@ def test_backend_read_failure_is_flagged_as_unreadable() -> None:
     assert record.before_content == ""
 
 
+def test_backend_response_without_content_or_error_is_flagged_as_unreadable() -> None:
+    """Neither content nor an error breaks the backend contract both ways.
+
+    `content=None` means failure and `error=None` means success, so this
+    response asserts both at once. Treating it as an absent file would hand the
+    diff a fabricated empty pre-image with nothing marking it untrustworthy —
+    the whole file would render as a confident insertion.
+    """
+    from deepagents.backends.protocol import FileDownloadResponse
+
+    backend = mock.Mock()
+    backend.download_files.return_value = [FileDownloadResponse(path="/x.txt")]
+    tracker = FileOpTracker(assistant_id=None, backend=backend)
+
+    tracker.start_operation("edit_file", {"file_path": "/x.txt"}, "contract-1")
+
+    record = tracker.active["contract-1"]
+    assert record.before_unreadable is True
+    assert record.before_content == ""
+
+
+def test_empty_backend_response_list_is_flagged_as_unreadable() -> None:
+    """No response at all is a lost pre-image, not an absent file."""
+    backend = mock.Mock()
+    backend.download_files.return_value = []
+    tracker = FileOpTracker(assistant_id=None, backend=backend)
+
+    tracker.start_operation("edit_file", {"file_path": "/y.txt"}, "contract-2")
+
+    record = tracker.active["contract-2"]
+    assert record.before_unreadable is True
+    assert record.before_content == ""
+
+
+def test_trailing_newline_only_edit_is_not_reported_as_unchanged(
+    tmp_path: Path,
+) -> None:
+    """A change `splitlines()` erases is still a change.
+
+    `compute_unified_diff` compares line lists, so adding a trailing newline
+    produces no diff. Left unflagged, the edit row is superseded by a diff
+    header reading "no changes" — the file changed, and the tool's own output
+    saying so has been hidden.
+    """
+    path = tmp_path / "eof.txt"
+    path.write_text("alpha\nbeta")
+    tracker = FileOpTracker(assistant_id=None)
+    tracker.start_operation("edit_file", {"file_path": str(path)}, "eof-1")
+    path.write_text("alpha\nbeta\n")
+
+    record = tracker.complete_with_message(
+        ToolMessage(content="Updated file", tool_call_id="eof-1", name="edit_file")
+    )
+
+    assert record is not None
+    assert record.diff is None
+    assert record.change_invisible_to_line_diff is True
+
+
+def test_genuine_noop_edit_is_not_flagged_as_an_invisible_change(
+    tmp_path: Path,
+) -> None:
+    """An edit that truly changed nothing must stay eligible for "no changes"."""
+    path = tmp_path / "same.txt"
+    path.write_text("alpha\nbeta\n")
+    tracker = FileOpTracker(assistant_id=None)
+    tracker.start_operation("edit_file", {"file_path": str(path)}, "same-1")
+
+    record = tracker.complete_with_message(
+        ToolMessage(content="Updated file", tool_call_id="same-1", name="edit_file")
+    )
+
+    assert record is not None
+    assert record.diff is None
+    assert record.change_invisible_to_line_diff is False
+
+
 def test_unreadable_after_content_sets_its_own_flag(tmp_path: Path) -> None:
     """Succeeded-but-undisplayable must be distinguishable from a tool error.
 

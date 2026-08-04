@@ -3015,6 +3015,40 @@ class TestExecuteTaskTextualFileOpDiffs:
         assert tool.display is True
         assert not any(isinstance(m, DiffMessage) for m in mounted)
 
+    async def test_line_invisible_change_keeps_the_tool_row_visible(
+        self, tmp_path: Path
+    ) -> None:
+        """Claiming "no changes" over a real change is worse than showing none.
+
+        A trailing-newline-only edit has no line diff to render, so an empty
+        `DiffMessage` would head it "no changes" — while hiding the tool row
+        that correctly reports the file was updated.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        # Return the pre-image without its trailing newline so the only
+        # difference from the read-back is one `splitlines()` discards.
+        real_safe_read = file_ops_module._safe_read
+        calls = {"n": 0}
+
+        def newline_stripping_read(path: Path) -> str | None:
+            calls["n"] += 1
+            content = real_safe_read(path)
+            if calls["n"] == 1 and content is not None:
+                return content.rstrip("\n")
+            return content
+
+        with patch(
+            "deepagents_code.file_ops._safe_read", side_effect=newline_stripping_read
+        ):
+            mounted = await self._run_edit(target, "value = 1")
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert tool.display is True
+        assert not any(isinstance(m, DiffMessage) for m in mounted)
+
     async def test_unreadable_pre_image_keeps_the_tool_row_visible(
         self, tmp_path: Path
     ) -> None:

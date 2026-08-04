@@ -136,6 +136,14 @@ class FileOperationRecord:
     Distinct from a tool-reported failure: the operation itself succeeded, only
     its result could not be displayed.
     """
+    change_invisible_to_line_diff: bool = False
+    """The file's bytes changed, but `diff` is empty because the change lives
+    entirely in line terminators — a trailing newline added or removed, or a
+    CRLF conversion — which `splitlines()` discards.
+
+    A real change with nothing to render, so "no changes" would be a lie and the
+    tool's own output must stay visible in its place.
+    """
 
 
 def resolve_physical_path(
@@ -405,9 +413,17 @@ class FileOpTracker:
                     else:
                         # A missing file is the normal create case, not a
                         # failure; anything else means we lost the pre-image
-                        # and every downstream diff is suspect.
-                        error = responses[0].error if responses else "no response"
-                        if error is not None and error != FILE_NOT_FOUND:
+                        # and every downstream diff is suspect. A response
+                        # carrying neither content nor an error violates the
+                        # backend contract, so it counts as "anything else" —
+                        # never as an absent file.
+                        if not responses:
+                            error = "no response"
+                        else:
+                            error = (
+                                responses[0].error or "no content and no error reported"
+                            )
+                        if error != FILE_NOT_FOUND:
                             logger.warning(
                                 "Could not read pre-edit content for %s: %s",
                                 path_str,
@@ -523,12 +539,12 @@ class FileOpTracker:
                 record.diff is None
                 and (record.before_content or "") != record.after_content
             ):
-                record.diff, _ = compute_unified_diff(
-                    record.before_content or "",
-                    record.after_content,
-                    record.display_path,
-                    max_lines=100,
-                )
+                # `compute_unified_diff` works on `splitlines()`, which erases
+                # line terminators, so a change confined to them (adding or
+                # removing a trailing newline, CRLF conversion) yields no diff
+                # at all. Recomputing cannot help — the inputs are identical.
+                # Flag it so no caller claims the file is unchanged.
+                record.change_invisible_to_line_diff = True
             if record.diff is None and before_lines != record.metrics.lines_written:
                 record.metrics.lines_added = max(
                     record.metrics.lines_written - before_lines, 0

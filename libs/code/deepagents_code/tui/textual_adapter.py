@@ -2070,10 +2070,14 @@ async def execute_task_textual(
                                 pending_text_by_namespace[ns_key] = ""
                             # The diff replaces this row, so it mounts even with
                             # an empty body — something has to stand in for what
-                            # gets hidden.
+                            # gets hidden. Not when the change is real but has
+                            # no line diff to show, though: an empty body there
+                            # would render "no changes" over an edit that did
+                            # change the file, so leave the row to speak for it.
                             replaces_row = (
                                 record.tool_name == _TOOL_SUPERSEDED_BY_DIFF
                                 and record.status == "success"
+                                and not record.change_invisible_to_line_diff
                             )
                             if record.diff or replaces_row:
                                 await adapter._mount_message(

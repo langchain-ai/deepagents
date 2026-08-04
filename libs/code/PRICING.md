@@ -81,7 +81,7 @@ id from the warning.
 
 ## Diagnosing a file that is not working
 
-Everything below is logged to the Debug Console (`Ctrl+O`), each message once per
+Everything below is logged to the Debug Console (`Ctrl+\`), each message once per
 session:
 
 | What you see | What it means |

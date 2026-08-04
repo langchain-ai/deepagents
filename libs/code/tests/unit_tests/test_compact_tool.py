@@ -7,14 +7,17 @@ Core compact tool logic tests live in the SDK at
 from __future__ import annotations
 
 import warnings
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 from deepagents.backends.protocol import FileDownloadResponse, WriteResult
+from langchain.agents.middleware.types import ModelRequest
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.config import CLI_MAX_RETRIES_KEY, MODEL_RETRIES_ATTR
@@ -203,6 +206,70 @@ class TestCLICompactionMiddleware:
 
         assert summary == "Recovered summary"
         assert model.ainvoke.await_count == 2
+
+    @pytest.mark.parametrize("overflow", [False, True])
+    async def test_auto_compaction_runs_precompact_hook(self, overflow: bool) -> None:
+        """Every automatic compaction must ask `PreCompact` before summarizing."""
+        from deepagents.middleware.summarization import SummarizationMiddleware
+
+        from deepagents_code.hooks.models.domain import (
+            HookEvent,
+            PreCompactDecision,
+        )
+
+        messages: list[AnyMessage] = [HumanMessage("one"), HumanMessage("two")]
+        summarization = self._summarization()
+        summarization._get_effective_messages.return_value = messages
+        summarization._count_tokens.return_value = 2
+        summarization._truncate_args.return_value = (messages, False)
+        summarization._should_summarize.return_value = not overflow
+        summarization._determine_cutoff_index.return_value = 1
+        if overflow:
+            summarization.awrap_model_call = MethodType(
+                SummarizationMiddleware.awrap_model_call, summarization
+            )
+
+        middleware = CLICompactionMiddleware(summarization)
+        request: ModelRequest[None] = ModelRequest(
+            model=MagicMock(),
+            messages=messages,
+            state={"messages": messages},
+            runtime=Runtime(context=None),
+        )
+        handler = AsyncMock(
+            side_effect=ContextOverflowError("too large") if overflow else None
+        )
+        invoke = MagicMock(
+            return_value=PreCompactDecision(
+                event=HookEvent.PRE_COMPACT,
+                continue_processing=False,
+                stop_reason="preserve context",
+            )
+        )
+
+        with (
+            patch(
+                "deepagents_code.offload_middleware._event_enabled", return_value=True
+            ),
+            patch("deepagents_code.offload_middleware._invoke_hook", invoke),
+        ):
+            if overflow:
+                with pytest.raises(ContextOverflowError, match="too large"):
+                    await middleware.awrap_model_call(request, handler)
+            else:
+                await middleware.awrap_model_call(request, handler)
+
+        event = invoke.call_args.args[1]
+        assert event.trigger.value == "auto"
+        logical_id = invoke.call_args.kwargs["logical_event_id"]
+        assert logical_id == middleware._auto_compaction_id(request)
+        assert logical_id != middleware._auto_compaction_id(
+            request.override(messages=[*messages, HumanMessage("three")])
+        )
+        invoke.assert_called_once()
+        handler.assert_awaited_once()
+        summarization._aoffload_to_backend.assert_not_awaited()
+        summarization._acreate_summary.assert_not_awaited()
 
     async def test_force_bypasses_sdk_eligibility_gate(self) -> None:
         """Forced compaction partitions directly even below the proactive gate."""
@@ -757,6 +824,7 @@ class TestCLICompactionMiddleware:
 
         sdk = MagicMock()
         sdk._summarization = MagicMock()
+        sdk._summarization.name = "SummarizationMiddleware"
         sdk.system_prompt = "SYSTEM PROMPT"
         backend: Any = object()
         with patch.object(
@@ -770,6 +838,7 @@ class TestCLICompactionMiddleware:
 
         factory.assert_called_once_with("provider:model", backend)
         assert isinstance(result, om.CLICompactionMiddleware)
+        assert result.name == "SummarizationMiddleware"
         assert result.system_prompt == "SYSTEM PROMPT"
         assert result._summarization is sdk._summarization
         assert result._model_retry_fallback == 0

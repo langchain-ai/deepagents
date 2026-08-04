@@ -245,8 +245,8 @@ def _clear_provider_base_url_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _clear_onboarding_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prevent local debug onboarding env vars from affecting tests."""
-    monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_ONBOARDING", raising=False)
+    """Prevent local onboarding env overrides from affecting tests."""
+    monkeypatch.delenv("DEEPAGENTS_CODE_ONBOARDING", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -272,6 +272,24 @@ def _pin_invoked_name(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, 
     yield
     invoked_name.cache_clear()
     log_nonstandard_invoked_name.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _disable_prices_auto_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep cost-pricing tests from starting the genai-prices updater thread.
+
+    The first `estimate_cost` call of a process starts the `UpdatePrices`
+    daemon thread, whose hourly catalog fetch hits the network — pytest-socket
+    reports it under `--disable-socket` (which `make test` passes), and the
+    thread would otherwise linger for the whole test session. Set the
+    production opt-out env var by default so subprocess tests inherit the same
+    no-network behavior. Tests that cover the updater stand `UpdatePrices` in
+    with an autospec and override this env var themselves, so the real thread
+    never starts anywhere in the suite.
+    """
+    from deepagents_code._env_vars import PRICES_AUTO_UPDATE
+
+    monkeypatch.setenv(PRICES_AUTO_UPDATE, "0")
 
 
 @pytest.fixture(autouse=True)

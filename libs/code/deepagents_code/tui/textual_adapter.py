@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import math
 import time
 import uuid
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
@@ -13,7 +14,14 @@ from typing import TYPE_CHECKING, Any, NamedTuple, cast
 import httpx
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+    from collections.abc import (
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Iterable,
+        Mapping,
+        Sequence,
+    )
     from pathlib import Path
     from typing import Protocol
 
@@ -30,6 +38,7 @@ if TYPE_CHECKING:
     from pydantic import TypeAdapter
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_code._session_stats import SpinnerStatus
     from deepagents_code.hooks.models.domain import ToolCallData
     from deepagents_code.resume_state import RubricResult
 
@@ -46,7 +55,35 @@ if TYPE_CHECKING:
 
         def __call__(self, *, approximate: bool = False) -> None: ...
 
+    class _SessionCostCallback(Protocol):
+        """Callback signature for `_on_session_cost`.
 
+        Positional-only: the total is always passed positionally, so a consumer
+        is free to name the parameter for its own domain (a restored checkpoint
+        total, say) rather than matching this one. `thread_id` is keyword-only
+        and may be `""` when the event did not name a thread. `pricing_ok` is
+        `None` when the event did not report pricing health.
+        """
+
+        def __call__(
+            self,
+            total_usd: float,
+            /,
+            *,
+            thread_id: str = "",
+            pricing_ok: bool | None = None,
+        ) -> None: ...
+
+    class _ProvisionalCostCallback(Protocol):
+        """Callback signature for `_on_provisional_cost`.
+
+        Positional-only for the same reason as `_SessionCostCallback`.
+        """
+
+        def __call__(self, cost_usd: float, /) -> None: ...
+
+
+from deepagents_code import _session_stats
 from deepagents_code._ask_user_types import (
     ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
     ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY,
@@ -58,14 +95,6 @@ from deepagents_code._ask_user_types import (
 )
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
-from deepagents_code._session_stats import (
-    ModelStats as ModelStats,
-    ModelStatsKey as ModelStatsKey,
-    SessionStats as SessionStats,
-    SpinnerStatus as SpinnerStatus,
-    format_token_count as format_token_count,
-    print_usage_table as print_usage_table,
-)
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
@@ -104,6 +133,9 @@ _hitl_adapter_cache: TypeAdapter | None = None
 """Lazy singleton for the HITL request validator."""
 
 _ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
+
+_REJECT_REASON_PREFIX = "User rejected the tool call with reason: "
+"""Synthetic framing prepended to a user-typed HITL rejection reason."""
 
 
 def _permission_tool_calls(
@@ -406,9 +438,29 @@ def _reject_tracked_rows(
     """
     rejected = _pop_rows_not_awaiting_deferred_result(adapter._current_tool_messages)
     for tool_msg in rejected.values():
-        tool_msg.set_rejected(reason=reason)
-        adapter._sync_tool_widget(tool_msg)
+        # DOM teardown may fail; cleanup must not mask the originating exception.
+        with contextlib.suppress(Exception):
+            tool_msg.set_rejected(reason=reason)
+            adapter._sync_tool_widget(tool_msg)
     return _dispatch_terminal_tool_result_hooks(rejected, "Tool approval rejected")
+
+
+def _frame_reject_reason(reason: str) -> str:
+    """Frame a user-typed rejection reason for the model.
+
+    Stock HITL uses the supplied message as the *entire* synthetic
+    `ToolMessage`, replacing its canned "user rejected the tool call" wording.
+    A bare reason ("no", "wrong file") therefore reaches the model with no
+    indication of who produced it or why the tool never ran, so the framing is
+    reattached here while the raw text is what the tool row renders.
+
+    Args:
+        reason: Non-empty reason typed into the rejection reason field.
+
+    Returns:
+        The reason prefixed with the synthetic rejection framing.
+    """
+    return f"{_REJECT_REASON_PREFIX}{reason}"
 
 
 def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
@@ -615,7 +667,8 @@ class TextualUIAdapter:
         on_auto_approve_enabled: Callable[[], Awaitable[bool] | bool | None]
         | None = None,
         on_switch_to_manual: Callable[[], Awaitable[bool] | bool] | None = None,
-        set_spinner: Callable[[SpinnerStatus], Awaitable[None]] | None = None,
+        set_spinner: Callable[[_session_stats.SpinnerStatus], Awaitable[None]]
+        | None = None,
         set_active_message: Callable[[str | None], None] | None = None,
         on_user_visible_output_started: Callable[[], None] | None = None,
         sync_message_content: Callable[[str, str], None] | None = None,
@@ -705,6 +758,24 @@ class TextualUIAdapter:
 
         self._on_tokens_show: _TokensShowCallback | None = None
         """Called to restore the token display with the cached value."""
+
+        self._on_session_cost: _SessionCostCallback | None = None
+        """Called with the graph's absolute cumulative thread cost.
+
+        The graph owns the durable total and streams it after each step, so this
+        is the only input the displayed lifetime figure is built from.
+        """
+
+        self._on_provisional_cost: _ProvisionalCostCallback | None = None
+        """Called with a streamed request's estimate for the live display only.
+
+        Keeps the status bar moving during work whose cost the graph has not
+        checkpointed yet — a long subagent run, say — without making the client
+        a second authority: every server total replaces what this accumulated.
+        """
+
+        self._on_stream_complete: Callable[[], None] | None = None
+        """Called only after the agent stream reaches a clean end."""
 
     def _sync_tool_widget(self, tool_msg: ToolCallMessage) -> None:
         """Sync a tool widget when the app provided a store callback.
@@ -818,38 +889,38 @@ def _interrupt_owned_tool_rows(
 
     Used by `_interrupt_tool_rows` for a nested (non-main-agent) checkpoint,
     whose pause/resume must touch only the specific tool calls it carries so
-    unrelated outer ``task`` rows keep running. Because a `HITLRequest`'s
+    unrelated outer `task` rows keep running. Because a `HITLRequest`'s
     `ActionRequest` carries no tool-call id, ownership is matched by tool name
-    plus argument value-equality (order-independent ``dict`` comparison). Each
+    plus argument value-equality (order-independent `dict` comparison). Each
     candidate row is claimed at most once, so two identical calls map to two
     distinct rows.
 
     Two caveats follow from matching on args value rather than an id:
 
     - It relies on the human-in-the-loop middleware surfacing the tool call's
-      ``args`` unchanged in the action request (true as of the pinned
-      ``langchain`` middleware). If that ever diverges — normalization, a JSON
-      round-trip, redaction — the match degrades silently to returning fewer
-      rows; ``test_matches_row_by_name_and_args`` guards the current contract.
+        `args` unchanged in the action request (true as of the pinned
+        `langchain` middleware). If that ever diverges — normalization, a JSON
+        round-trip, redaction — the match degrades silently to returning fewer
+        rows; `test_matches_row_by_name_and_args` guards the current contract.
     - A nested action request that happens to share a name and args with a
-      concurrently tracked row (e.g. an identical ``execute`` call at another
-      nesting level) can misattribute that row. This is strictly rarer than
-      pausing every row and self-corrects, since the same helper drives both
-      pause and resume.
+        concurrently tracked row (e.g. an identical `execute` call at another
+        nesting level) can misattribute that row. This is strictly rarer than
+        pausing every row and self-corrects, since the same helper drives both
+        pause and resume.
 
     A nested subagent's own child tool call is not tracked in
-    ``current_tool_messages`` — message-stream tool rows are gated to the main
-    agent (see the ``is_main_agent`` check) — so a purely nested interrupt
+    `current_tool_messages` — message-stream tool rows are gated to the main
+    agent (see the `is_main_agent` check) — so a purely nested interrupt
     normally matches nothing and leaves every outer row untouched, keeping the
-    still-running ``task`` timers monotonic across the checkpoint.
+    still-running `task` timers monotonic across the checkpoint.
 
     Args:
-        action_requests: The interrupt's action requests (``name`` + ``args``).
+        action_requests: The interrupt's action requests (`name` + `args`).
         current_tool_messages: Live map of tool-call id to tracked tool row.
 
     Returns:
-        The subset of tracked rows owned by these action requests, in request
-        order.
+        The subset of tracked rows owned by these action requests, in
+            request order.
     """
     candidates = list(current_tool_messages.values())
     claimed_ids: set[int] = set()
@@ -886,7 +957,7 @@ def _interrupt_tool_rows(
 
     Returns:
         Every tracked row for a main-agent interrupt, otherwise only rows owned
-        by the nested interrupt's action requests.
+            by the nested interrupt's action requests.
     """
     if not namespace:
         return list(current_tool_messages.values())
@@ -933,6 +1004,71 @@ def _is_renderable_subagent_event(data: Any, *, is_main_agent: bool) -> bool:  #
     return is_main_agent and isinstance(data, dict) and data.get("type") == "subagent"
 
 
+def _session_cost_total(data: Any, *, is_main_agent: bool) -> float | None:  # noqa: ANN401  # custom-stream payload is dynamic
+    """Return the absolute thread cost carried by a session-cost event.
+
+    Args:
+        data: The `custom` stream payload.
+        is_main_agent: Whether the payload came from the top-level namespace.
+            Only the main agent owns the cost channel, so a nested emit is
+            treated as malformed rather than applied to the displayed total.
+
+    Returns:
+        The finite non-negative total in US dollars, or `None` when the payload
+            is not a well-formed session-cost event from the main agent.
+    """
+    from deepagents_code.cost_tracking import SESSION_COST_EVENT_TYPE
+
+    if (
+        not is_main_agent
+        or not isinstance(data, dict)
+        or data.get("type") != SESSION_COST_EVENT_TYPE
+    ):
+        return None
+    total = data.get("total")
+    if isinstance(total, bool) or not isinstance(total, int | float):
+        return None
+    total_usd = float(total)
+    if not math.isfinite(total_usd) or total_usd < 0:
+        return None
+    return total_usd
+
+
+def _session_cost_thread_id(data: Any) -> str:  # noqa: ANN401  # custom-stream payload is dynamic
+    """Return the thread a session-cost event belongs to.
+
+    Args:
+        data: The `custom` stream payload, already validated as a cost event.
+
+    Returns:
+        The event's thread ID, or `""` when the payload omits one. An empty
+            result means the total cannot be attributed, so the client applies
+            it rather than discarding a legitimate update.
+    """
+    if not isinstance(data, dict):
+        return ""
+    thread_id = data.get("thread_id")
+    return thread_id if isinstance(thread_id, str) else ""
+
+
+def _session_cost_pricing_ok(data: Any) -> bool | None:  # noqa: ANN401  # custom-stream payload is dynamic
+    """Return whether the pricing process reported healthy price data.
+
+    Args:
+        data: The `custom` stream payload, already validated as a cost event.
+
+    Returns:
+        The event's `pricing_ok` flag, or `None` when the payload omits it or
+            states a non-boolean. `None` means "unknown", which leaves the
+            client's own view of pricing health untouched rather than
+            overriding it with a guess.
+    """
+    if not isinstance(data, dict):
+        return None
+    pricing_ok = data.get("pricing_ok")
+    return pricing_ok if isinstance(pricing_ok, bool) else None
+
+
 def _require_approval_mode_key(value: str | None) -> str:
     """Return a written Store key for fail-closed startup.
 
@@ -963,6 +1099,26 @@ def _is_renderable_auto_mode_event(data: Any, *, is_main_agent: bool) -> bool:  
     )
 
 
+async def _finalize_usage_round(
+    stream: AsyncIterator[Any],
+    recorded_requests: dict[str, _session_stats.RecordedRequest],
+) -> AsyncIterator[Any]:
+    """Close streamed usage records when one graph stream pass ends.
+
+    Args:
+        stream: One invocation of the graph's event stream.
+        recorded_requests: Turn ledger shared across resume passes.
+
+    Yields:
+        Each graph event from the wrapped stream.
+    """
+    try:
+        async for chunk in stream:
+            yield chunk
+    finally:
+        _session_stats.finalize_recorded_requests(recorded_requests)
+
+
 async def execute_task_textual(
     user_input: str,
     agent: Any,  # noqa: ANN401  # Dynamic agent graph type
@@ -979,8 +1135,8 @@ async def execute_task_textual(
     rubric: str | None = None,
     goal_active: bool = False,
     on_rubric_evaluation_end: Callable[[RubricEvaluationEnd], None] | None = None,
-    turn_stats: SessionStats | None = None,
-) -> SessionStats:
+    turn_stats: _session_stats.SessionStats | None = None,
+) -> _session_stats.SessionStats:
     """Execute a task with output directed to Textual UI.
 
     This is the Textual-compatible version of execute_task() that uses
@@ -1037,6 +1193,7 @@ async def execute_task_textual(
 
     from deepagents_code.approval_mode import ApprovalMode, awrite_approval_mode
     from deepagents_code.auto_mode import USER_PROMPT_METADATA_KEY, user_prompt_metadata
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
     from deepagents_code.hooks.models.domain import HookEvent
 
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
@@ -1107,8 +1264,9 @@ async def execute_task_textual(
 
     captured_input_tokens = 0
     captured_output_tokens = 0
+    recorded_usage_requests: dict[str, _session_stats.RecordedRequest] = {}
     if turn_stats is None:
-        turn_stats = SessionStats()
+        turn_stats = _session_stats.SessionStats()
     start_time = time.monotonic()
 
     # Warn if token display callbacks are only partially wired — all three
@@ -1348,13 +1506,17 @@ async def execute_task_textual(
             if adapter._set_spinner and not adapter._current_tool_messages:
                 await adapter._set_spinner("Thinking")
 
-            async for chunk in agent.astream(
+            stream = agent.astream(
                 stream_input,
                 stream_mode=["messages", "updates", "custom"],
                 subgraphs=True,
                 config=config,
                 context=context,
                 durability="exit",
+            )
+            async for chunk in _finalize_usage_round(
+                stream,
+                recorded_usage_requests,
             ):
                 if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # stream chunk is a 3-tuple (namespace, mode, data)
                     logger.debug("Skipping non-3-tuple chunk: %s", type(chunk).__name__)
@@ -1397,6 +1559,27 @@ async def execute_task_textual(
                                     exc_info=True,
                                 )
                         continue
+                    # The graph owns the cumulative thread cost and streams the
+                    # new absolute total after each step it charges, because the
+                    # channel is schema-private and never reaches the state
+                    # stream. Applying it outright keeps the client a reader.
+                    session_cost_total = _session_cost_total(
+                        data, is_main_agent=is_main_agent
+                    )
+                    if session_cost_total is not None:
+                        if adapter._on_session_cost is not None:
+                            try:
+                                adapter._on_session_cost(
+                                    session_cost_total,
+                                    thread_id=_session_cost_thread_id(data),
+                                    pricing_ok=_session_cost_pricing_ok(data),
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "on_session_cost callback failed", exc_info=True
+                                )
+                        continue
+
                     rubric_message = data if isinstance(data, dict) else None
                     formatted_rubric_event = (
                         _format_rubric_event(rubric_message) if rubric_message else None
@@ -1618,16 +1801,54 @@ async def execute_task_textual(
                             metadata if isinstance(metadata, dict) else None,
                             main_agent=is_main_agent,
                         )
-                    # Skip subagent outputs - only render main agent content in chat
-                    if not is_main_agent:
-                        logger.debug("Skipping subagent message ns=%s", ns_key)
-                        continue
                     logger.debug(
                         "Processing message: type=%s id=%s has_content_blocks=%s",
                         type(message).__name__,
                         getattr(message, "id", None),
                         hasattr(message, "content_blocks"),
                     )
+
+                    # Account cost/tokens before render filters. Subagent
+                    # namespaces and summarization/auto-classifier calls still
+                    # spend money even though their text stays out of the chat.
+                    recorded_usage = None
+                    if getattr(message, "usage_metadata", None):
+                        from deepagents_code.config import settings
+
+                        recorded_usage = _session_stats.record_message_usage(
+                            turn_stats,
+                            message,
+                            fallback_model=settings.model_name or "",
+                            fallback_provider=settings.model_provider or "",
+                            request_metadata=(
+                                metadata if isinstance(metadata, dict) else None
+                            ),
+                            kind=_session_stats.classify_usage_kind(
+                                is_main_agent=is_main_agent,
+                                metadata=(
+                                    metadata if isinstance(metadata, dict) else None
+                                ),
+                            ),
+                            recorded_requests=recorded_usage_requests,
+                        )
+                    if recorded_usage is not None and (
+                        recorded_usage.cost_usd is not None
+                        and adapter._on_provisional_cost
+                    ):
+                        # Display-only: the graph checkpoints the same spend
+                        # and streams the authoritative total, which
+                        # supersedes this estimate.
+                        try:
+                            adapter._on_provisional_cost(recorded_usage.cost_usd)
+                        except Exception:
+                            logger.warning(
+                                "on_provisional_cost callback failed", exc_info=True
+                            )
+
+                    # Skip subagent outputs - only render main agent content in chat
+                    if not is_main_agent:
+                        logger.debug("Skipping subagent message ns=%s", ns_key)
+                        continue
 
                     # Filter out summarization model output, but keep UI feedback.
                     # The summarization model streams AIMessage chunks tagged
@@ -1641,44 +1862,19 @@ async def execute_task_textual(
                                 await adapter._set_spinner("Offloading")
                         continue
 
-                    # Extract token usage before filtering hidden model output.
-                    # Usage may be attached to any message chunk, including the
-                    # internal Auto mode classifier response.
-                    if hasattr(message, "usage_metadata"):
-                        usage = message.usage_metadata
-                        if usage:
-                            input_toks = usage.get("input_tokens", 0)
-                            output_toks = usage.get("output_tokens", 0)
-                            total_toks = usage.get("total_tokens", 0)
-                            from deepagents_code.config import settings
-
-                            active_model = settings.model_name or ""
-                            active_provider = settings.model_provider or ""
-                            if input_toks or output_toks:
-                                # Model gives split counts — preferred path
-                                turn_stats.record_request(
-                                    active_model,
-                                    input_toks,
-                                    output_toks,
-                                    active_provider,
-                                )
-                                captured_input_tokens = max(
-                                    captured_input_tokens, input_toks + output_toks
-                                )
-                            elif total_toks:
-                                # Fallback: model gives only total (no split)
-                                turn_stats.record_request(
-                                    active_model, total_toks, 0, active_provider
-                                )
-                                captured_input_tokens = max(
-                                    captured_input_tokens, total_toks
-                                )
-
                     # The Auto mode authorization classifier is a nested model
                     # call. Its structured JSON is internal policy machinery,
                     # not assistant output for the conversation transcript.
                     if _is_auto_mode_classifier_chunk(metadata):
                         continue
+
+                    # Only a visible top-level model call represents the active
+                    # conversation context. Hidden usage was still recorded above.
+                    if recorded_usage is not None:
+                        captured_input_tokens = max(
+                            captured_input_tokens,
+                            recorded_usage.request_tokens,
+                        )
 
                     # Regular (non-summarization) chunks resumed — summarization
                     # has finished. Mount the notification and reset the spinner.
@@ -2654,7 +2850,8 @@ async def execute_task_textual(
                                 )
                                 reject_decision: RejectDecision = (
                                     RejectDecision(
-                                        type="reject", message=reject_message
+                                        type="reject",
+                                        message=_frame_reject_reason(reject_message),
                                     )
                                     if reject_message
                                     else RejectDecision(type="reject")
@@ -2872,14 +3069,22 @@ async def execute_task_textual(
                     DcodeNotificationKind,
                 )
 
-                await hooks.notify(
-                    DcodeNotificationKind.AGENT_COMPLETED,
-                    "Agent completed",
-                )
+                try:
+                    await hooks.notify(
+                        DcodeNotificationKind.AGENT_COMPLETED,
+                        "Agent completed",
+                    )
+                except ClientHookStopError as exc:
+                    await adapter._mount_message(
+                        AppMessage(f"Operation stopped by hook: {exc}")
+                    )
                 if not hooks.has_handlers(HookEvent.NOTIFICATION):
                     await dispatch_hook("task.complete", {"thread_id": thread_id})
                 break
 
+    except ClientHookStopError:
+        _reject_tracked_rows(adapter)
+        raise
     except (asyncio.CancelledError, KeyboardInterrupt):
         await _handle_interrupt_cleanup(
             adapter=adapter,
@@ -2976,6 +3181,11 @@ async def execute_task_textual(
         captured_input_tokens,
         captured_output_tokens,
     )
+    if adapter._on_stream_complete:
+        try:
+            adapter._on_stream_complete()
+        except Exception:
+            logger.warning("on_stream_complete callback failed", exc_info=True)
     return turn_stats
 
 
@@ -3009,7 +3219,7 @@ async def _handle_interrupt_cleanup(
     assistant_message_by_namespace: dict[tuple, Any] | None = None,
     captured_input_tokens: int,
     captured_output_tokens: int,
-    turn_stats: SessionStats,
+    turn_stats: _session_stats.SessionStats,
     start_time: float,
     recover_interrupted_turn: bool = True,
 ) -> None:

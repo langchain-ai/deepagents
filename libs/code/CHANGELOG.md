@@ -2,6 +2,42 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.52](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.51...deepagents-code==0.1.52) (2026-08-04)
+
+### Features
+
+- Hooks v2 is now generally available, with support for loading hooks from installed plugins. ([#5307](https://github.com/langchain-ai/deepagents/issues/5307), [#5198](https://github.com/langchain-ai/deepagents/issues/5198))
+- Auto approval classifier configuration now supports selecting the classifier model and setting a review timeout. ([#5205](https://github.com/langchain-ai/deepagents/issues/5205), [#5302](https://github.com/langchain-ai/deepagents/issues/5302))
+- HITL rejection reasons are now framed for the model, and the approval menu makes reject-with-feedback easier to discover. ([#5259](https://github.com/langchain-ai/deepagents/issues/5259), [#5260](https://github.com/langchain-ai/deepagents/issues/5260))
+- Added a tri-state `DEEPAGENTS_CODE_ONBOARDING` environment variable. ([#5301](https://github.com/langchain-ai/deepagents/issues/5301))
+- The `/model` footer Ctrl+N hint now follows the current display mode. ([#5247](https://github.com/langchain-ai/deepagents/issues/5247))
+- The price catalog now refreshes hourly in the background. ([#5264](https://github.com/langchain-ai/deepagents/issues/5264))
+- Updated recommendations to include DeepSeek V4 Flash 0731. ([#5244](https://github.com/langchain-ai/deepagents/issues/5244))
+
+### Bug Fixes
+
+- Fixed several Hooks v2 lifecycle issues: session-end teardown is now bounded, hooks refresh after cwd switches, malformed hook resumes are handled, hook stops surface without agent errors, and unused `SessionEndCause` members were removed. ([#5248](https://github.com/langchain-ai/deepagents/issues/5248), [#5249](https://github.com/langchain-ai/deepagents/issues/5249), [#5233](https://github.com/langchain-ai/deepagents/issues/5233), [#5276](https://github.com/langchain-ai/deepagents/issues/5276), [#5240](https://github.com/langchain-ai/deepagents/issues/5240))
+- `PreCompact` now fires before auto-compaction. ([#5277](https://github.com/langchain-ai/deepagents/issues/5277))
+
+## [0.1.51](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.50...deepagents-code==0.1.51) (2026-07-31)
+
+### Features
+
+- The status bar and usage view now show the running session cost. ([#5036](https://github.com/langchain-ai/deepagents/issues/5036))
+- Removed redundant `shell` and `web_search` prompt guidance. ([#5213](https://github.com/langchain-ai/deepagents/issues/5213))
+- After switching threads, Deep Agents now points back to the previous thread. ([#5172](https://github.com/langchain-ai/deepagents/issues/5172))
+- Leaving `/mcp` with pending toggles now prompts you to reconnect. ([#5211](https://github.com/langchain-ai/deepagents/issues/5211))
+- `dcode config get` now accepts configuration sections. ([#5134](https://github.com/langchain-ai/deepagents/issues/5134))
+
+### Fixes
+
+- Kept the `/goal` criteria prompt responsive. ([#5142](https://github.com/langchain-ai/deepagents/issues/5142))
+- Improved goal handling so underspecified objectives can be resolved from conversation context. ([#5201](https://github.com/langchain-ai/deepagents/issues/5201))
+- Released the turn when an interrupted worker never starts. ([#5196](https://github.com/langchain-ai/deepagents/issues/5196))
+- Hid timestamp footers together with their associated rows. ([#5167](https://github.com/langchain-ai/deepagents/issues/5167))
+- Fixed editable SDK detection by scanning and correlating SDK locations more accurately. ([#5199](https://github.com/langchain-ai/deepagents/issues/5199))
+- Improved `doctor` output to explain why it may not have a latest-version answer. ([#5209](https://github.com/langchain-ai/deepagents/issues/5209))
+
 ## [0.1.50](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.49...deepagents-code==0.1.50) (2026-07-30)
 
 ### Highlights

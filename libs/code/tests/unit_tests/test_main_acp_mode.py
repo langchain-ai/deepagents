@@ -23,10 +23,34 @@ def _make_acp_args(**overrides: object) -> argparse.Namespace:
         mcp_config=None,
         no_mcp=False,
         trust_project_mcp=False,
+        auto_classifier_model=None,
     )
     for key, value in overrides.items():
         setattr(args, key, value)
     return args
+
+
+def test_acp_mode_rejects_auto_classifier_model(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ACP must reject an authorization setting it cannot apply."""
+    args = _make_acp_args(auto_classifier_model="openai:gpt-5.5-mini")
+
+    with (
+        patch.object(
+            sys,
+            "argv",
+            ["deepagents", "--acp", "--auto-classifier-model", "openai:gpt-5.5-mini"],
+        ),
+        patch("deepagents_code.main.parse_args", return_value=args),
+        patch("deepagents_code.main._resolve_agent_arg") as resolve_agent,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 2
+    assert "--auto-classifier-model is only supported" in capsys.readouterr().err
+    resolve_agent.assert_not_called()
 
 
 def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:

@@ -630,13 +630,31 @@ def _load_runtime(
             project_dir=project_context.project_root or project_context.user_cwd,
             plugins=plugins,
         )
-        return HooksRuntime.create(
+        runtime = HooksRuntime.create(
             cwd=cwd,
             workspace_trusted=trust.allows(cwd),
             presenter=presenter,
             plugin_sources=plugin_sources,
             plugin_diagnostics=plugin_diagnostics,
         )
+        if runtime.project_hooks_loaded and (
+            runtime.project_hooks_fingerprint is None
+            or not trust.allows(
+                cwd,
+                project_hooks_fingerprint=runtime.project_hooks_fingerprint,
+            )
+        ):
+            logger.warning(
+                "Project hooks changed while loading; reloading without project hooks"
+            )
+            runtime = HooksRuntime.create(
+                cwd=cwd,
+                workspace_trusted=False,
+                presenter=presenter,
+                plugin_sources=plugin_sources,
+                plugin_diagnostics=plugin_diagnostics,
+            )
     except Exception:
         logger.exception("Failed to load hook configuration; hooks disabled")
         return None
+    return runtime

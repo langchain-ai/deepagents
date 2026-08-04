@@ -136,6 +136,9 @@ class LoadedHooksConfig:
     canonical deduplication (symlinks / shared config dirs can alias paths).
     """
 
+    project_source_fingerprint: str | None = None
+    """SHA-256 fingerprint of the exact project source bytes that were loaded."""
+
 
 def project_hooks_path(project_root: Path) -> Path:
     """Return the project-scoped hooks configuration path.
@@ -193,20 +196,22 @@ def load_hooks_config(
     merged: dict[HookEvent, list[SourcedGroup]] = {}
     loaded_paths: list[Path] = []
     project_source_loaded = False
+    project_source_fingerprint: str | None = None
 
     def _merge(document: HooksConfig, source: HooksSource) -> None:
         for event, groups in document.hooks.items():
             merged.setdefault(event, []).extend((source, group) for group in groups)
 
     def _ingest(path: Path, *, as_project: bool) -> None:
-        nonlocal project_source_loaded
+        nonlocal project_source_fingerprint, project_source_loaded
         resolved = path.expanduser().resolve(strict=False)
-        document, file_diagnostics = _read_hooks_document(resolved)
+        document, file_diagnostics, fingerprint = _read_hooks_document(resolved)
         diagnostics.extend(file_diagnostics)
         if document is None:
             return
         if as_project:
             project_source_loaded = True
+            project_source_fingerprint = fingerprint
         loaded_paths.append(resolved)
         _merge(document, FileHooksSource(location=str(resolved)))
 
@@ -250,6 +255,7 @@ def load_hooks_config(
         snapshot_id=compute_snapshot_id(config, groups=groups),
         groups=groups,
         project_source_loaded=project_source_loaded,
+        project_source_fingerprint=project_source_fingerprint,
     )
 
 
@@ -334,25 +340,21 @@ def _canonical_group(group: MatcherGroup, *, source: HooksSource) -> dict[str, o
 
 def read_hooks_json(
     path: Path,
-) -> tuple[bool, JsonValue, tuple[HookDiagnostic, ...]]:
-    """Decode one hooks JSON document, reporting read failures as diagnostics.
-
-    Shared by the project/user file loader and by callers that must transform a
-    document before it is validated, so every hooks document on disk reports
-    unreadable bytes, invalid UTF-8, and malformed JSON the same way instead of
-    raising into an unrelated caller.
+) -> tuple[bool, JsonValue, tuple[HookDiagnostic, ...], str | None]:
+    """Decode one hooks document and fingerprint the exact bytes read.
 
     Args:
         path: Document path.
 
     Returns:
-        Whether decoding succeeded, the decoded JSON value, and any diagnostics.
-        An absent file is not a diagnostic.
+        Whether decoding succeeded, the decoded document, diagnostics, and the
+        exact-byte SHA-256 fingerprint. An absent file is not a diagnostic.
     """
     if not path.is_file():
-        return False, None, ()
+        return False, None, (), None
     try:
-        decoded: JsonValue = json.loads(path.read_text(encoding="utf-8"))
+        content = path.read_bytes()
+        decoded: JsonValue = json.loads(content.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         message = f"Failed to read hooks config at {path}: {exc}"
         logger.warning(message)
@@ -367,21 +369,22 @@ def read_hooks_json(
                     field=str(path),
                 ),
             ),
+            None,
         )
-    return True, decoded, ()
+    return True, decoded, (), hashlib.sha256(content).hexdigest()
 
 
 def _read_hooks_document(
     path: Path,
-) -> tuple[HooksConfig | None, tuple[HookDiagnostic, ...]]:
-    decoded, data, read_diagnostics = read_hooks_json(path)
+) -> tuple[HooksConfig | None, tuple[HookDiagnostic, ...], str | None]:
+    decoded, data, read_diagnostics, fingerprint = read_hooks_json(path)
     if not decoded:
-        return None, read_diagnostics
+        return None, read_diagnostics, None
 
     if is_legacy_hooks_document(data):
         hooks = data.get("hooks", []) if isinstance(data, dict) else []
         if not isinstance(hooks, list):
-            return None, (
+            diagnostics = (
                 HookDiagnostic(
                     code="invalid_config",
                     severity="warning",
@@ -389,6 +392,7 @@ def _read_hooks_document(
                     field=str(path),
                 ),
             )
+            return None, diagnostics, fingerprint
         legacy_entries: list[dict[str, object]] = [
             {str(key): value for key, value in item.items()}
             for item in hooks
@@ -404,7 +408,7 @@ def _read_hooks_document(
                 "migrate to Hooks v2"
             )
         )
-        return migrated, (
+        diagnostics = (
             HookDiagnostic(
                 code="legacy_deprecated",
                 severity="warning",
@@ -421,8 +425,10 @@ def _read_hooks_document(
                 field=str(path),
             ),
         )
+        return migrated, diagnostics, fingerprint
 
-    return _validate_hooks_document(data, path)
+    document, diagnostics = _validate_hooks_document(data, path)
+    return document, diagnostics, fingerprint
 
 
 def _validate_hooks_document(

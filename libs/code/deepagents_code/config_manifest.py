@@ -1630,6 +1630,17 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ),
     # --- Startup --------------------------------------------------------
     ConfigOption(
+        key="startup.onboarding",
+        group="Startup",
+        summary=(
+            "Force the first-run onboarding flow to open on every interactive "
+            "startup, or disable it entirely; unset follows the completion marker."
+        ),
+        kind=OptionKind.BOOL,
+        env_var=_env_vars.ONBOARDING,
+        empty_env_is_false=True,
+    ),
+    ConfigOption(
         key="startup.mode",
         group="Startup",
         summary="Default approval mode at launch ('manual', 'auto', or 'yolo').",
@@ -1677,14 +1688,6 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.LOG_LEVEL_DELEGATE,
         env_var=_env_vars.LOG_LEVEL,
-    ),
-    ConfigOption(
-        key="debug.onboarding",
-        group="Debug",
-        summary="Force the onboarding flow to open on every interactive startup.",
-        kind=OptionKind.BOOL,
-        default=False,
-        env_var=_env_vars.DEBUG_ONBOARDING,
     ),
     ConfigOption(
         key="debug.notifications",

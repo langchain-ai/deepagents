@@ -18366,7 +18366,11 @@ class DeepAgentsApp(App):
                     from deepagents_code.hooks.models.domain import SessionEndCause
 
                     client_session_end_task = asyncio.ensure_future(
-                        self._hooks.on_session_end(SessionEndCause.PROMPT_INPUT_EXIT)
+                        _wait_for_session_end(
+                            self._hooks.on_session_end(
+                                SessionEndCause.PROMPT_INPUT_EXIT
+                            )
+                        )
                     )
 
                 async def _drain_hooks() -> None:
@@ -18606,7 +18610,7 @@ class DeepAgentsApp(App):
                             )
                     if client_session_end_task is not None:
                         try:
-                            await _wait_for_session_end(client_session_end_task)
+                            await client_session_end_task
                         except BaseException:
                             logger.debug(
                                 "SessionEnd await interrupted during teardown",

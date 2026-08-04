@@ -18777,6 +18777,7 @@ class TestExitGracefulWorkerHandoff:
 
         calls = 0
         cancelled = asyncio.Event()
+        drain_observed_cancellation = asyncio.Event()
 
         async def invoke(_invocation: object) -> SessionEndDecision:
             nonlocal calls
@@ -18787,6 +18788,13 @@ class TestExitGracefulWorkerHandoff:
                 cancelled.set()
                 raise
             return SessionEndDecision(event=HookEvent.SESSION_END)
+
+        async def drain_pending() -> None:
+            try:
+                await asyncio.wait_for(cancelled.wait(), timeout=0.1)
+            except TimeoutError:
+                return
+            drain_observed_cancellation.set()
 
         runtime = MagicMock()
         runtime.cwd = Path.cwd()
@@ -18815,6 +18823,8 @@ class TestExitGracefulWorkerHandoff:
                     "deepagents_code.app.SESSION_END_DRAIN_TIMEOUT_SECONDS",
                     0.01,
                 ),
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch("deepagents_code.hooks.drain_pending_hooks", new=drain_pending),
                 patch.object(App, "exit") as super_exit,
             ):
                 started = loop.time()
@@ -18828,6 +18838,7 @@ class TestExitGracefulWorkerHandoff:
 
         assert elapsed < 0.5
         assert cancelled.is_set()
+        assert drain_observed_cancellation.is_set()
         assert calls == 1
         assert any(
             record.levelno == logging.WARNING

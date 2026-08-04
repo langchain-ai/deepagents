@@ -99,3 +99,10 @@ repos:
         entry: python3 .github/scripts/checks/check_version_equality.py
         files: (^libs/deepagents/pyproject\.toml|^libs/deepagents/deepagents/_version\.py|^libs/cli/pyproject\.toml|^libs/cli/deepagents_cli/_version\.py)$
         pass_filenames: false
+      - id: branch-name
+        name: check pushed branch name follows the naming convention
+        language: system
+        entry: bash .githooks/pre-push
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true

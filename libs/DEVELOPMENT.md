@@ -106,11 +106,7 @@ The hooks run `make format lint` for changed packages and validate commit messag
 
 ### Branch-name pre-push hook
 
-The repo also commits a `pre-push` hook under `.githooks/` that rejects pushes of branches that don't follow the `<github-username>/<scope>/<short-description>` convention (e.g. `mdrxy/cli/startup-cmd-flag`). To enable it, point git at that directory once per clone:
-
-```bash
-git config core.hooksPath .githooks
-```
+The `pre-push` stage also runs a branch-name check (`.githooks/pre-push`, registered in `.pre-commit-config.yaml`) that rejects pushes of branches that don't follow the `<github-username>/<scope>/<short-description>` convention (e.g. `mdrxy/cli/startup-cmd-flag`). Because it runs through pre-commit, the same `pre-commit install --install-hooks` setup above enables it — no separate `core.hooksPath` wiring, which would shadow the other installed hooks.
 
 The hook resolves your GitHub login from `git config github.user`, falling back to `gh api user` and then the local part of `user.email`. If the fallback is wrong, set it explicitly:
 
@@ -118,7 +114,7 @@ The hook resolves your GitHub login from `git config github.user`, falling back 
 git config github.user <your-github-login>
 ```
 
-Protected branches (`main`, `vX.Y`) and automation branches (`release-please--*`, `dependabot/*`, `copilot/*`) are always allowed. The hook is a local convenience and can be skipped with `git push --no-verify`; CI surfaces the same rule as a non-blocking warning on PR head branches (see `.github/workflows/branch_name_check.yml`).
+Protected branches (`main`, `vX.Y`) and automation branches (`release-please--*`, `dependabot/*`, `copilot/*`) are always allowed. The hook is a local convenience and can be skipped with `git push --no-verify` or `SKIP=branch-name git push`; CI surfaces the same rule as a non-blocking warning on PR head branches (see `.github/workflows/branch_name_check.yml`).
 
 ## Contributing conventions
 

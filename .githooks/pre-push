@@ -1,12 +1,19 @@
 #!/usr/bin/env bash
-# pre-push hook: enforce the repo branch naming convention
+# Branch-name check for pre-push: enforce the repo branch naming convention
 #   <github-username>/<scope>/<short-description>
 # on branches pushed to this repo. See the "Branch naming" section of AGENTS.md.
 #
-# Install (wires core.hooksPath to the committed .githooks/ directory):
-#   git config core.hooksPath .githooks
+# This script runs as a pre-commit `pre-push` hook (see .pre-commit-config.yaml),
+# so it is installed by the usual `pre-commit install --install-hooks` setup —
+# no separate `core.hooksPath` wiring (which would shadow the other installed
+# hooks). Under pre-commit, the pushed branch arrives as
+# `PRE_COMMIT_REMOTE_BRANCH` (pre-commit does not forward the raw pre-push
+# stdin). The script also accepts direct git pre-push invocation with the
+# standard "<local ref> <local sha> <remote ref> <remote sha>" lines on stdin,
+# so it can be tested standalone.
 #
-# This is a local convenience only — it can be skipped with `git push --no-verify`.
+# This is a local convenience only — it can be skipped with `git push --no-verify`
+# (or the standard `SKIP=branch-name git push` for the pre-commit integration).
 # Server-side enforcement lives in .github/workflows/branch_name_check.yml.
 
 set -euo pipefail
@@ -21,6 +28,10 @@ ALLOWED_PREFIX_RE='^(release-please--|dependabot/|copilot/)'
 # CI check in .github/workflows/branch_name_check.yml.
 SCOPES_RE='(acp|ci|cli|code|dcode-gha|daytona|deepagents|deepagents-acp|deepagents-cli|deepagents-code|deepagents-talon|deps|deps-dev|docs|evals|examples|harbor|infra|langchain-daytona|langchain-modal|langchain-quickjs|langchain-runloop|langchain-vercel-sandbox|langsmith-sandbox|modal|quickjs|repo|runloop|sdk|talon|vercel)'
 
+# Kebab-case description: alphanumerics and single hyphens, no leading/trailing
+# hyphen. The final group is optional so one-character descriptions are valid.
+DESC_RE='[a-z0-9]([a-z0-9-]*[a-z0-9])?'
+
 # Resolve the expected GitHub login. `github.user` is not set by default; the
 # cleanest fallback is the GitHub login recorded by the GitHub CLI (`gh`), then
 # the local part of the committer email (a common personal convention).
@@ -33,30 +44,24 @@ if [ -z "$github_user" ]; then
     github_user="${email%@*}"
 fi
 
-fail=0
-# pre-push receives "<local ref> <local sha> <remote ref> <remote sha>" per line
-# on stdin. A local sha of all zeros means the branch is being deleted remotely;
-# nothing to validate in that case.
-while read -r local_ref local_sha remote_ref remote_sha; do
-    [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
-
-    branch="${remote_ref#refs/heads/}"
-    [ "$branch" = "$remote_ref" ] && continue  # not a branch push (e.g. a tag)
-
-    if [[ "$branch" =~ $ALLOWED_RE ]] || [[ "$branch" =~ $ALLOWED_PREFIX_RE ]]; then
-        continue
-    fi
-
-    if [ -z "$github_user" ]; then
-        cat >&2 <<'EOF'
+if [ -z "$github_user" ]; then
+    cat >&2 <<'EOF'
 error: could not determine your GitHub username to validate the branch name.
 Set it with: git config github.user <your-github-login>
 EOF
-        fail=1
-        continue
+    exit 1
+fi
+
+fail=0
+
+check_branch() {
+    local branch="$1"
+
+    if [[ "$branch" =~ $ALLOWED_RE ]] || [[ "$branch" =~ $ALLOWED_PREFIX_RE ]]; then
+        return 0
     fi
 
-    if [[ ! "$branch" =~ ^${github_user}/${SCOPES_RE}/[a-z0-9][a-z0-9-]*[a-z0-9]$ ]]; then
+    if [[ ! "$branch" =~ ^${github_user}/${SCOPES_RE}/${DESC_RE}$ ]]; then
         cat >&2 <<EOF
 error: branch '$branch' does not follow the repo naming convention.
 
@@ -67,10 +72,28 @@ Your resolved GitHub username is '$github_user' (override with: git config githu
 Scopes: $(echo "$SCOPES_RE" | tr -d '()' | tr '|' ' ') (see pr_lint.yml for the authoritative list).
 
 Rename with: git branch -m <new-name>
-Bypass with: git push --no-verify
+Bypass with: git push --no-verify (or SKIP=branch-name git push under pre-commit)
 EOF
         fail=1
     fi
-done
+}
+
+if [ -n "${PRE_COMMIT_REMOTE_BRANCH:-}" ]; then
+    # pre-commit pre-push integration: refs/heads/... form.
+    branch="${PRE_COMMIT_REMOTE_BRANCH#refs/heads/}"
+    [ "$branch" != "$PRE_COMMIT_REMOTE_BRANCH" ] && check_branch "$branch"
+else
+    # Direct git pre-push invocation: "<local ref> <local sha> <remote ref>
+    # <remote sha>" per line on stdin. A local sha of all zeros is a remote
+    # branch deletion; nothing to validate.
+    while read -r local_ref local_sha remote_ref remote_sha; do
+        [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+
+        branch="${remote_ref#refs/heads/}"
+        [ "$branch" = "$remote_ref" ] && continue  # not a branch push (e.g. a tag)
+
+        check_branch "$branch"
+    done
+fi
 
 exit "$fail"

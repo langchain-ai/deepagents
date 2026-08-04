@@ -72,7 +72,9 @@ jobs:
 
           # <github-username>: lowercase GitHub login segment; not compared to
           # the PR author (see workflow header). Advisory only: warn, don't fail.
-          if [[ ! "$HEAD_REF" =~ ^[a-z0-9](-?[a-z0-9])*/${SCOPES_RE}/[a-z0-9][a-z0-9-]*[a-z0-9]$ ]]; then
+          # Kebab-case description: the final group is optional so
+          # one-character descriptions are valid; still no trailing hyphen.
+          if [[ ! "$HEAD_REF" =~ ^[a-z0-9](-?[a-z0-9])*/${SCOPES_RE}/[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
             echo "::warning::Branch '$HEAD_REF' does not follow the repo naming convention '<github-username>/<scope>/<short-description>'."
             echo "nonconformant=true" >> "$GITHUB_OUTPUT"
           else

@@ -19206,6 +19206,89 @@ class TestExitGracefulWorkerHandoff:
             for record in caplog.records
         )
 
+    async def test_client_session_end_timeout_is_bounded_and_at_most_once(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A slow Hooks v2 `SessionEnd` cannot stall or fire twice on TUI exit."""
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.hooks.manager import HookSessionIdentity
+        from deepagents_code.hooks.models.domain import (
+            HookEvent,
+            SessionEndDecision,
+        )
+
+        calls = 0
+        cancelled = asyncio.Event()
+        drain_observed_cancellation = asyncio.Event()
+
+        async def invoke(_invocation: object) -> SessionEndDecision:
+            nonlocal calls
+            calls += 1
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+            return SessionEndDecision(event=HookEvent.SESSION_END)
+
+        async def drain_pending() -> None:
+            try:
+                await asyncio.wait_for(cancelled.wait(), timeout=0.1)
+            except TimeoutError:
+                return
+            drain_observed_cancellation.set()
+
+        runtime = MagicMock()
+        runtime.cwd = Path.cwd()
+        runtime.configured_events.return_value = frozenset({HookEvent.SESSION_END})
+        runtime.invoke = invoke
+        hooks = HooksManager.adopting(
+            runtime,
+            identity=lambda: HookSessionIdentity(
+                thread_id="t1",
+                approval_mode=ApprovalMode.MANUAL,
+            ),
+        )
+        app = DeepAgentsApp()
+        loop = asyncio.get_running_loop()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            if app._session_state is None:
+                app._detached_hooks = hooks
+            else:
+                app._session_state.hooks = hooks
+
+            with (
+                caplog.at_level(logging.WARNING, logger="deepagents_code.app"),
+                patch(
+                    "deepagents_code.app.SESSION_END_DRAIN_TIMEOUT_SECONDS",
+                    0.01,
+                ),
+                patch("deepagents_code.hooks.has_pending_hooks", return_value=True),
+                patch("deepagents_code.hooks.drain_pending_hooks", new=drain_pending),
+                patch.object(App, "exit") as super_exit,
+            ):
+                started = loop.time()
+                app.exit()
+                assert app._graceful_exit_task is not None
+                await app._graceful_exit_task
+                elapsed = loop.time() - started
+                app.exit()
+
+                assert super_exit.call_count == 2
+
+        assert elapsed < 0.5
+        assert cancelled.is_set()
+        assert drain_observed_cancellation.is_set()
+        assert calls == 1
+        assert any(
+            record.levelno == logging.WARNING
+            and "SessionEnd hook drain did not finish" in record.message
+            for record in caplog.records
+        )
+
     async def test_second_exit_force_quits_pending_graceful_exit(self) -> None:
         """A second exit() during a pending graceful exit force-quits.
 
@@ -27660,15 +27743,9 @@ class TestLiveApprovalModeWrites:
         assert app._session_state.approval_mode is ApprovalMode.MANUAL
         assert app._approval_mode_blocked is False
 
-    async def test_session_init_keeps_mode_changed_during_construction(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code._env_vars import EXPERIMENTAL
+    async def test_session_init_keeps_mode_changed_during_construction(self) -> None:
         from deepagents_code.approval_mode import ApprovalMode
 
-        # `HooksRuntime.create` is the construction seam probed below, and it
-        # only runs in experimental mode.
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         app = DeepAgentsApp(approval_mode=ApprovalMode.MANUAL)
 
         def change_mode_during_construction(**_kwargs: object) -> None:
@@ -27683,19 +27760,12 @@ class TestLiveApprovalModeWrites:
         assert app._session_state is not None
         assert app._session_state.approval_mode is ApprovalMode.AUTO
 
-    async def test_session_init_builds_one_state_for_concurrent_callers(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_session_init_builds_one_state_for_concurrent_callers(self) -> None:
         """The startup worker and the inline startup fallback must not race.
 
         Idempotency rests on construction staying free of `await`; reintroducing
         one would let both callers pass the guard and build two states.
         """
-        from deepagents_code._env_vars import EXPERIMENTAL
-
-        # `HooksRuntime.create` is the construction seam counted below, and it
-        # only runs in experimental mode.
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         app = DeepAgentsApp()
         creations = 0
 
@@ -33011,12 +33081,18 @@ class TestStatusBarConnectionMirroring:
 class TestResumeThreadCwdSwitch:
     """Tests for cwd mismatch handling while resuming threads."""
 
+    @pytest.mark.parametrize(
+        ("abort", "reload_manager"),
+        [(None, True), ("thread_switch", False)],
+    )
     async def test_offer_switch_changes_process_cwd_and_widgets(
         self,
+        abort: Literal["thread_switch"] | None,
+        reload_manager: bool,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Accepting the prompt switches process and UI cwd before startup."""
+        """Accepting the prompt switches process and UI cwd."""
         from deepagents_code.config import settings
 
         current = tmp_path / "current"
@@ -33037,6 +33113,8 @@ class TestResumeThreadCwdSwitch:
         status_bar = MagicMock()
         status_bar.cwd = str(current)
         app._status_bar = status_bar
+        retarget = AsyncMock()
+        monkeypatch.setattr(app, "_retarget_hooks_after_cwd_switch", retarget)
         reload_calls: list[Path | None] = []
 
         def reload_from_environment(*, start_path: Path | None = None) -> list[str]:
@@ -33053,7 +33131,9 @@ class TestResumeThreadCwdSwitch:
             patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)),
             patch("deepagents_code.model_config.clear_caches") as clear_caches,
         ):
-            ok = await app._offer_thread_cwd_switch("thread-1", restart_server=False)
+            ok = await app._offer_thread_cwd_switch(
+                "thread-1", restart_server=False, abort=abort
+            )
 
         assert ok == "continue"
         assert Path.cwd() == target
@@ -33064,6 +33144,7 @@ class TestResumeThreadCwdSwitch:
         clear_caches.assert_called_once_with()
         screen = push_wait.call_args.args[0]
         assert screen._project_settings_change_detected is True
+        retarget.assert_awaited_once_with(reload_manager=reload_manager)
 
     async def test_offer_switch_preserves_launch_relative_server_paths(
         self,
@@ -33213,6 +33294,8 @@ class TestResumeThreadCwdSwitch:
         app._replace_server_after_cwd_switch = replace  # ty: ignore[invalid-assignment]
         mount = AsyncMock()
         app._mount_message = mount  # ty: ignore[invalid-assignment]
+        retarget = AsyncMock()
+        monkeypatch.setattr(app, "_retarget_hooks_after_cwd_switch", retarget)
 
         with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
             outcome = await app._offer_thread_cwd_switch(
@@ -33221,6 +33304,7 @@ class TestResumeThreadCwdSwitch:
 
         assert outcome == "abort"
         replace.assert_awaited_once()
+        retarget.assert_not_awaited()
         # The failed switch must be surfaced as a durable message, distinct from
         # the transient toast `_replace_server_after_cwd_switch` already raised.
         mount.assert_awaited_once()
@@ -33316,6 +33400,8 @@ class TestResumeThreadCwdSwitch:
         set_spinner = AsyncMock()
         app._set_spinner = set_spinner  # ty: ignore[invalid-assignment]
         app._update_status = MagicMock()  # ty: ignore[invalid-assignment]
+        reload_hooks = AsyncMock()
+        monkeypatch.setattr(app, "_reload_hooks", reload_hooks)
         replace_calls: list[Path] = []
 
         def replace_server(cwd: Path) -> str:
@@ -33337,6 +33423,7 @@ class TestResumeThreadCwdSwitch:
         assert app._lc_thread_id == "old-thread"
         set_spinner.assert_has_awaits([call("Loading thread"), call(None)])
         load_thread_history.assert_not_awaited()
+        reload_hooks.assert_awaited_once_with()
 
     async def test_threads_switch_offers_abort_and_cancels(
         self,

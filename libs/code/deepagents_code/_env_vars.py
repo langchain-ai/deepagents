@@ -49,6 +49,23 @@ model. Only the shell, the launch environment, or the global `~/.deepagents/.env
 can.
 """
 
+AUTO_CLASSIFIER_TIMEOUT = "DEEPAGENTS_CODE_AUTO_CLASSIFIER_TIMEOUT"
+"""Seconds the Auto approval-mode classifier may take to review one batch.
+
+Raise this when reviews time out on a slow or heavily loaded classifier model:
+a batch that misses the deadline is denied as `classifier_unavailable`, so the
+tool call does not run and repeated misses escalate to your approval. This
+covers the wait for a verdict only — the separate budget for *building* the
+classifier model (cold provider import, credential bootstrap), which denies with
+"could not be built within 30s", is fixed. Values outside 1-300 seconds are
+ignored in favor of the next config source, so the deadline can never be
+removed. Also settable via `[models].auto_classifier_timeout` in config.toml.
+Resolved once per `dcode` start, so a change takes effect on the next launch.
+
+Like `AUTO_CLASSIFIER_MODEL`, a committed *project* `.env` cannot set it (see
+`config._PROJECT_DOTENV_DENIED_ENV_KEYS`).
+"""
+
 AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
 """Toggle automatic app updates. Enabled by default; set to a falsy value
 ('0', 'false', 'no', 'off', or empty) to opt out."""
@@ -141,12 +158,6 @@ center UI can be exercised without waiting for real conditions.
 Does not auto-open the update modal (use `DEEPAGENTS_CODE_DEBUG_UPDATE` for that).
 
 Any non-empty value enables the flag (including `"0"` or `"false"`).
-"""
-
-DEBUG_ONBOARDING = "DEEPAGENTS_CODE_DEBUG_ONBOARDING"
-"""Force the onboarding flow to open on every interactive startup.
-
-Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 """
 
 DEBUG_UPDATE = "DEEPAGENTS_CODE_DEBUG_UPDATE"
@@ -301,6 +312,22 @@ offline or the probe latency is undesirable. The probe is lazy and never
 runs on the startup hot path. When enabled, discovery may call `/api/tags`
 and `/api/show`. See `_ollama_discovery_enabled` for accepted truthy/falsy
 values.
+"""
+
+ONBOARDING = "DEEPAGENTS_CODE_ONBOARDING"
+"""Override whether the first-run onboarding flow opens at interactive startup.
+
+Three-state, parsed by `classify_env_bool`:
+
+- Unset (or an unrecognized token): keep the default first-run behavior, i.e.
+  run onboarding until the completion marker exists.
+- Falsy (`0`, `false`, `no`, `off`, or empty): never open onboarding, even on a
+  fresh install with no completion marker.
+- Truthy (`1`, `true`, `yes`, `on`): force onboarding to open on every
+  interactive startup, ignoring the completion marker.
+
+Read by `should_run_onboarding`; skipping the flow this way does not write the
+completion marker, so unsetting the variable restores first-run behavior.
 """
 
 ONBOARDING_INTEGRATIONS_SCREEN = "DEEPAGENTS_CODE_ONBOARDING_INTEGRATIONS_SCREEN"

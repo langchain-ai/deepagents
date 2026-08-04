@@ -3714,14 +3714,11 @@ def _check_project_hooks_trust(
     Returns:
         The trust policy to run the session under, `INTERRUPTED` when the user
         presses Ctrl+C, or `CANCELLED` when the user presses Esc or Ctrl+D to
-        abort startup. Nothing is trusted, and no prompt is shown, unless
-        `DEEPAGENTS_CODE_EXPERIMENTAL` is truthy, since hooks stay off without
-        it.
+        abort startup.
     """
     from rich.console import Console
     from rich.text import Text
 
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
     from deepagents_code.hooks.loading import project_hooks_path
     from deepagents_code.hooks.trust import (
         WorkspaceTrust,
@@ -3730,8 +3727,6 @@ def _check_project_hooks_trust(
     )
     from deepagents_code.project_utils import ProjectContext
 
-    if not is_env_truthy(EXPERIMENTAL):
-        return WorkspaceTrust.none()
     try:
         context = ProjectContext.from_user_cwd(Path.cwd())
         project_root = context.project_root or context.user_cwd

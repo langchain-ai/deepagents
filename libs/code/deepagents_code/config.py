@@ -24,6 +24,7 @@ from urllib.request import url2pathname
 from deepagents_code._constants import FIREWORKS_PROVIDER_ID_PREFIX
 from deepagents_code._env_vars import (
     AUTO_CLASSIFIER_MODEL,
+    AUTO_CLASSIFIER_TIMEOUT,
     DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
     DISABLED_PROJECT_MCP_SERVERS,
     HIDE_SPLASH_VERSION,
@@ -173,6 +174,7 @@ _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
         DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         DISABLED_PROJECT_MCP_SERVERS,
         AUTO_CLASSIFIER_MODEL,
+        AUTO_CLASSIFIER_TIMEOUT,
     }
 )
 """Env keys a *project* `.env` must not inject, even though they are otherwise
@@ -195,6 +197,13 @@ a repo-supplied downgrade of a user-level security decision, not a project build
 setting. Choosing a classifier stays available through the trusted surfaces:
 shell exports, the global `~/.deepagents/.env`, `[models].auto_classifier` in
 `~/.deepagents/config.toml`, `--auto-classifier-model`, and `/auto model`.
+
+`AUTO_CLASSIFIER_TIMEOUT` tunes the same control's review deadline, so it is
+denied for the same reason: a cloned repo could otherwise stall every gated
+batch up to the ceiling, or squeeze the budget until reviews time out and the
+session degrades into repeated denials and approval prompts.
+`[models].auto_classifier_timeout` in
+`~/.deepagents/config.toml` and the trusted env surfaces still set it.
 
 Unlike `_DOTENV_DENIED_ENV_KEYS` (denied from *any* `.env` because they turn
 `.env` loading into code execution), these are denied only from the *project*
@@ -273,7 +282,7 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
             if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # Mirror `_load_dotenv`: a project `.env` cannot preview-set a
                 # user-level trust decision — MCP trust lists or the Auto
-                # classifier model (the global `.env`/shell can).
+                # classifier model/deadline (the global `.env`/shell can).
                 logger.debug(
                     "Ignoring project-denied env key %r from %s", key, dotenv_path
                 )
@@ -381,9 +390,9 @@ def _load_dotenv(
                 continue
             if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # A committed project `.env` must not set a user-level trust
-                # decision — MCP trust lists or the Auto classifier model that
-                # authorizes this repo's own tool calls; the global `.env` and
-                # shell may (is_project=False).
+                # decision — MCP trust lists or the Auto classifier model and
+                # deadline that authorize this repo's own tool calls; the
+                # global `.env` and shell may (is_project=False).
                 logger.debug(
                     "Ignoring project-denied env key %r from %s", key, dotenv_path
                 )

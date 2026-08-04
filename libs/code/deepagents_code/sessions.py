@@ -105,10 +105,10 @@ def _guard_sqlite_handle(conn: aiosqlite.Connection) -> None:
     window leaves the handle unreachable from the cleanup that follows:
 
     - Cancelled while the worker is still opening, the library has no handle
-      recorded yet, so the cleanup it queues closes nothing.
+        recorded yet, so the cleanup it queues closes nothing.
     - Cancelled after the handle is delivered but before the coroutine resumes,
-      the library clears its own record before that queued cleanup can run, so
-      again it closes nothing.
+        the library clears its own record before that queued cleanup can run, so
+        again it closes nothing.
 
     Either way the garbage collector is left to report `ResourceWarning:
     unclosed database`. Recording the handle from the worker thread covers the

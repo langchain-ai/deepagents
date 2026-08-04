@@ -89,6 +89,12 @@ def _install_fake_drbench(
     score_report_mod.score_report = score_report
 
     utils: Any = types.ModuleType("drbench.agents.utils")
+
+    def get_embeddings(texts: list[str], *_a: Any, **_kw: Any) -> list[list[float]]:
+        recorded.setdefault("embed_batches", []).append(len(texts))
+        return [[float(len(text)), 0.0] for text in texts]
+
+    utils.get_embeddings = get_embeddings
     utils.OPENAI_MODELS = (
         ["gpt-4o", "gpt-4o-mini", "gpt-4.1"] if openai_models is None else openai_models
     )
@@ -599,3 +605,92 @@ def test_documented_citation_forms_resolve_through_upstreams_normalizer() -> Non
     assert not str(
         utils.clean_citation("**Re: Q2 Compliance Update** - Email from David Lee on 15 July 2025")
     ).startswith("roundcube<sep>")
+
+
+# --- embedding request batching -------------------------------------------------------
+# `get_most_relevant_chunks` embeds up to 200 chunks of 2048 characters in ONE request.
+# At ~4 chars/token that is ~100k tokens, but content that tokenizes badly (a web page or
+# PDF parsed into near-binary text) approaches 1 token/char and exceeds the API's 300k
+# ceiling, failing factuality outright. Upstream batches in `semantic_retriever` but not
+# on this path.
+
+
+def _dense(count: int, size: int = 2048) -> list[str]:
+    """Texts that tokenize close to one token per character."""
+    return [
+        "".join(chr(0x4E00 + (index * 37 + offset) % 900) for offset in range(size))
+        for index in range(count)
+    ]
+
+
+def test_embedding_batching_splits_an_oversized_request(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: dict[str, Any] = {}
+    _install_fake_drbench(monkeypatch, scores={}, calls=calls)
+    from drbench.agents import utils  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    judge._install_embedding_batching()
+    vectors = utils.get_embeddings(_dense(200))
+
+    batches = calls["embed_batches"]
+    assert len(batches) > 1, "an oversized request must be split"
+    assert sum(batches) == 200
+    assert len(vectors) == 200
+
+
+def test_embedding_batching_preserves_the_vectors_exactly(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The whole point: this is a request-framing change, not a scoring change. Batched and
+    # unbatched calls must produce identical vectors in identical order, or metrics move.
+    _install_fake_drbench(monkeypatch, scores={})
+    from drbench.agents import utils  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    texts = _dense(200)
+    unbatched = utils.get_embeddings(texts)
+    judge._install_embedding_batching()
+    assert utils.get_embeddings(texts) == unbatched
+
+
+def test_embedding_batching_leaves_a_normal_request_alone(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: dict[str, Any] = {}
+    _install_fake_drbench(monkeypatch, scores={}, calls=calls)
+    from drbench.agents import utils  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    judge._install_embedding_batching()
+    utils.get_embeddings(["short text"] * 10)
+    assert calls["embed_batches"] == [10], "a small request must not be fanned out"
+
+
+def test_embedding_batching_is_idempotent(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `_grade` installs it on every call; double-wrapping would batch the batches.
+    calls: dict[str, Any] = {}
+    _install_fake_drbench(monkeypatch, scores={}, calls=calls)
+    from drbench.agents import utils  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    judge._install_embedding_batching()
+    judge._install_embedding_batching()
+    utils.get_embeddings(["a", "b"])
+    assert calls["embed_batches"] == [2]
+
+
+def test_grade_installs_batching_and_skips_the_per_insight_pass(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: dict[str, Any] = {}
+    _install_fake_drbench(monkeypatch, scores=dict(_SCORES), calls=calls)
+    _stage_paths(judge, monkeypatch, tmp_path)
+
+    judge._grade()
+
+    from drbench.agents import utils  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    assert getattr(utils.get_embeddings, "_deepagents_batched", False)
+    # The per-insight results are only written to `savedir`, which we never pass, so the
+    # pass costs a judge call per insight plus retries and returns nothing readable.
+    assert calls["score_report_kwargs"]["include_per_insight_scores"] is False

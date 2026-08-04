@@ -134,6 +134,64 @@ def _embedding_model() -> str | None:
     return os.environ.get("JUDGE_EMBEDDING_MODEL") or None
 
 
+# Ceiling for one embeddings request, under the API's 300k-token limit with headroom for
+# the tokenizer estimate being approximate.
+_EMBED_TOKEN_BUDGET = 200_000
+
+
+def _install_embedding_batching() -> None:
+    """Split upstream's embedding requests so one large source cannot exceed the API limit.
+
+    `get_most_relevant_chunks` embeds up to 200 chunks of 2048 characters in a single
+    request. At a typical 4 characters per token that is ~100k tokens, but content that
+    tokenizes badly -- a web page or PDF that parsed into near-binary text -- approaches
+    one token per character and blows past the 300k-token request ceiling, failing
+    factuality with a `BadRequestError`. Upstream already batches in
+    `metrics/utils/semantic_retriever.py`; this path simply does not.
+
+    This changes no scores. The same texts are embedded, in the same order, producing the
+    same vectors -- only the request framing differs. It is applied here rather than
+    upstream because the chunk cap is not reachable through `score_report`.
+    """
+    from drbench.agents import utils  # noqa: PLC0415 - installed only in the sandbox
+
+    original = utils.get_embeddings
+    if getattr(original, "_deepagents_batched", False):
+        return
+
+    def batched(texts: list[str], *args: Any, **kwargs: Any) -> list:
+        items = list(texts)
+        if len(items) <= 1:
+            return original(items, *args, **kwargs)
+
+        try:
+            import tiktoken  # noqa: PLC0415 - a drbench dependency
+
+            encoder = tiktoken.get_encoding("cl100k_base")
+            sizes = [len(encoder.encode(text)) for text in items]
+        except Exception:  # noqa: BLE001 - fall back to a character estimate
+            sizes = [max(1, len(text) // 3) for text in items]
+
+        out: list = []
+        batch: list[str] = []
+        budget = 0
+        for text, size in zip(items, sizes, strict=True):
+            if batch and budget + size > _EMBED_TOKEN_BUDGET:
+                out.extend(original(batch, *args, **kwargs))
+                batch, budget = [], 0
+            batch.append(text)
+            budget += size
+        if batch:
+            out.extend(original(batch, *args, **kwargs))
+        if len(out) != len(items):
+            msg = f"embedding batching returned {len(out)} vectors for {len(items)} texts"
+            raise RuntimeError(msg)
+        return out
+
+    batched._deepagents_batched = True  # type: ignore[attr-defined]
+    utils.get_embeddings = batched
+
+
 def composite(components: dict[str, float]) -> float:
     """Harmonic mean of the scored components, each floored at EPSILON.
 
@@ -206,6 +264,7 @@ def _grade() -> tuple[dict[str, float], dict[str, Any]]:
     # `task` supplies both the task config and the ground truth from the installed
     # package, which is also where `CitationFactuality` resolves cited documents from --
     # so email, chat, file-browser, and Nextcloud sources all resolve as plain files.
+    _install_embedding_batching()
     task = task_loader.get_task_from_id(task_id)
     scores = score_report(
         predicted_report_text=report_text,
@@ -213,6 +272,10 @@ def _grade() -> tuple[dict[str, float], dict[str, Any]]:
         metrics=list(_UPSTREAM_METRICS),
         model=model,
         embedding_model=embedding_model,
+        # Off because the results are only written to `savedir`, which we do not pass, so
+        # they are absent from the return value: the pass costs an extra judge call per
+        # insight plus up to five retries and yields nothing we can read.
+        include_per_insight_scores=False,
         verbose=True,
     )
     if not isinstance(scores, dict):

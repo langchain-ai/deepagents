@@ -1492,6 +1492,7 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
         ),
         kind=OptionKind.BOOL,
         env_var=_env_vars.ONBOARDING,
+        empty_env_is_false=True,
     ),
     ConfigOption(
         key="startup.mode",

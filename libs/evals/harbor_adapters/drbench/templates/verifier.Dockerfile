@@ -19,9 +19,20 @@ RUN apt-get update \
 # Pinned by commit, not a branch: the metrics, their prompts, and the corpus all come
 # from here, so an upstream push must not silently change eval results. Keep in step
 # with `vendor/README.md`, which records the same commit for the vendored task configs.
+#
+# Installed EDITABLE from a checkout rather than as a built wheel. Upstream declares
+# `package-data = {{drbench = ["data/**/*"]}}`, which packages the corpus but not
+# `drbench/prompts/`, so a wheel install is missing the prompt files the metrics read at
+# run time (`prompts/eval_metrics/insight_scoring.txt`) and dies partway through scoring.
+# Upstream never hits this because it runs from a checkout; an editable install reproduces
+# that layout, so everything they have on disk is present rather than only what they
+# happened to declare.
 ARG DRBENCH_REF={drbench_ref}
-RUN /usr/local/bin/python3 -m pip install --no-cache-dir \
-        "drbench @ git+https://github.com/ServiceNow/drbench@${{DRBENCH_REF}}"
+RUN git init -q /opt/drbench \
+    && git -C /opt/drbench remote add origin https://github.com/ServiceNow/drbench.git \
+    && git -C /opt/drbench fetch -q --depth 1 origin ${{DRBENCH_REF}} \
+    && git -C /opt/drbench checkout -q FETCH_HEAD \
+    && /usr/local/bin/python3 -m pip install --no-cache-dir -e /opt/drbench
 
 # Fail the build, not the run, if the install is unusable. Without this a broken import
 # surfaces as a mid-verification crash and a zero score that looks like a bad report.
@@ -37,11 +48,14 @@ import pathlib; \
 from drbench import task_loader; \
 from drbench.score_report import score_report; \
 from drbench.metrics import get_metric; \
-tasks = pathlib.Path(task_loader.__file__).parent / 'data' / 'tasks'; \
+root = pathlib.Path(task_loader.__file__).parent; \
+tasks = root / 'data' / 'tasks'; \
 assert tasks.is_dir(), 'drbench package data is missing: ' + str(tasks); \
 n = sum(1 for p in tasks.iterdir() if (p / 'config' / 'eval.json').is_file()); \
 assert n > 50, 'expected the full task corpus, found ' + str(n); \
-print('drbench ok:', n, 'tasks with ground truth')"
+prompts = sorted(str(p.relative_to(root)) for p in (root / 'prompts').rglob('*.txt')); \
+assert prompts, 'no prompt files under ' + str(root / 'prompts'); \
+print('drbench ok:', n, 'tasks with ground truth,', len(prompts), 'prompt files', prompts)"
 
 # The tests have to be baked in, not uploaded. In separate-verifier mode Harbor passes
 # `skip_tests_upload=True` and then executes `/tests/test.sh` directly, so anything the

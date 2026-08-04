@@ -4,29 +4,20 @@
 
 ## [0.1.52](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.51...deepagents-code==0.1.52) (2026-08-04)
 
-
 ### Features
 
-* **code:** `/model` footer Ctrl+N hint follows display mode ([#5247](https://github.com/langchain-ai/deepagents/issues/5247)) ([cf87266](https://github.com/langchain-ai/deepagents/commit/cf87266105ee6ed79e56d72dea58c1c5f431228f))
-* **code:** configurable Auto classifier review timeout ([#5302](https://github.com/langchain-ai/deepagents/issues/5302)) ([7bd977b](https://github.com/langchain-ai/deepagents/commit/7bd977bc9d4c11aad90dbef7872d83c2affd584e))
-* **code:** frame HITL rejection reasons for the model ([#5259](https://github.com/langchain-ai/deepagents/issues/5259)) ([89c814b](https://github.com/langchain-ai/deepagents/commit/89c814b29249b44a8a6122f6c359db3601a6802e))
-* **code:** load hooks from installed plugins ([#5198](https://github.com/langchain-ai/deepagents/issues/5198)) ([0828b02](https://github.com/langchain-ai/deepagents/commit/0828b02d30c7b5557ecfce7c4a4039e0d9c4c571))
-* **code:** make Hooks v2 generally available ([#5307](https://github.com/langchain-ai/deepagents/issues/5307)) ([4edebde](https://github.com/langchain-ai/deepagents/commit/4edebdedd61d6793f0f7b666f5ee26b414576805))
-* **code:** recommend DeepSeek V4 Flash 0731 ([#5244](https://github.com/langchain-ai/deepagents/issues/5244)) ([fbe4ec8](https://github.com/langchain-ai/deepagents/commit/fbe4ec8046c35313c6c05a986779111d84fe2536))
-* **code:** refresh price catalog hourly in the background ([#5264](https://github.com/langchain-ai/deepagents/issues/5264)) ([2454afa](https://github.com/langchain-ai/deepagents/commit/2454afa58521f9dddb64bbde364a475694f45f4d))
-* **code:** selectable model for the Auto approval classifier ([#5205](https://github.com/langchain-ai/deepagents/issues/5205)) ([1d3feb1](https://github.com/langchain-ai/deepagents/commit/1d3feb1275a875f84f96f04a07e47cb6ec974b78))
-* **code:** tri-state `DEEPAGENTS_CODE_ONBOARDING` env var ([#5301](https://github.com/langchain-ai/deepagents/issues/5301)) ([43293e9](https://github.com/langchain-ai/deepagents/commit/43293e95cb072c8b92a734eca8c0292e45d279e8))
-
+- Hooks v2 is now generally available, with support for loading hooks from installed plugins. ([#5307](https://github.com/langchain-ai/deepagents/issues/5307), [#5198](https://github.com/langchain-ai/deepagents/issues/5198))
+- Auto approval classifier configuration now supports selecting the classifier model and setting a review timeout. ([#5205](https://github.com/langchain-ai/deepagents/issues/5205), [#5302](https://github.com/langchain-ai/deepagents/issues/5302))
+- HITL rejection reasons are now framed for the model, and the approval menu makes reject-with-feedback easier to discover. ([#5259](https://github.com/langchain-ai/deepagents/issues/5259), [#5260](https://github.com/langchain-ai/deepagents/issues/5260))
+- Added a tri-state `DEEPAGENTS_CODE_ONBOARDING` environment variable. ([#5301](https://github.com/langchain-ai/deepagents/issues/5301))
+- The `/model` footer Ctrl+N hint now follows the current display mode. ([#5247](https://github.com/langchain-ai/deepagents/issues/5247))
+- The price catalog now refreshes hourly in the background. ([#5264](https://github.com/langchain-ai/deepagents/issues/5264))
+- Updated recommendations to include DeepSeek V4 Flash 0731. ([#5244](https://github.com/langchain-ai/deepagents/issues/5244))
 
 ### Bug Fixes
 
-* **code:** bound Hooks v2 session-end teardown ([#5248](https://github.com/langchain-ai/deepagents/issues/5248)) ([28a7d5b](https://github.com/langchain-ai/deepagents/commit/28a7d5bdd3f78044b4f3612f71e13ce38ef47bf4))
-* **code:** fire `PreCompact` before auto-compaction ([#5277](https://github.com/langchain-ai/deepagents/issues/5277)) ([f4cc516](https://github.com/langchain-ai/deepagents/commit/f4cc5160c75eb44e8ddee8b049048690ea0f8616))
-* **code:** handle malformed hook resumes ([#5233](https://github.com/langchain-ai/deepagents/issues/5233)) ([bd562c8](https://github.com/langchain-ai/deepagents/commit/bd562c879ad3a8eec0a930bba23ef57fee163c05))
-* **code:** make reject-with-feedback discoverable in approval menu ([#5260](https://github.com/langchain-ai/deepagents/issues/5260)) ([b1e3240](https://github.com/langchain-ai/deepagents/commit/b1e324038771c55460793e2e35d9d9ce5ea7b3f5))
-* **code:** refresh hooks after cwd switches ([#5249](https://github.com/langchain-ai/deepagents/issues/5249)) ([6f48dd5](https://github.com/langchain-ai/deepagents/commit/6f48dd59efd27c3476cf32cb8c965155c59993a5))
-* **code:** remove undispatched `SessionEndCause` members ([#5240](https://github.com/langchain-ai/deepagents/issues/5240)) ([ee1e0f5](https://github.com/langchain-ai/deepagents/commit/ee1e0f50bfaff3690c6164147cdf22c94c289768))
-* **code:** surface hook stops without agent errors ([#5276](https://github.com/langchain-ai/deepagents/issues/5276)) ([ed0e3e2](https://github.com/langchain-ai/deepagents/commit/ed0e3e236eea691d7c8c586ac1f9c82eba352b1a))
+- Fixed several Hooks v2 lifecycle issues: session-end teardown is now bounded, hooks refresh after cwd switches, malformed hook resumes are handled, hook stops surface without agent errors, and unused `SessionEndCause` members were removed. ([#5248](https://github.com/langchain-ai/deepagents/issues/5248), [#5249](https://github.com/langchain-ai/deepagents/issues/5249), [#5233](https://github.com/langchain-ai/deepagents/issues/5233), [#5276](https://github.com/langchain-ai/deepagents/issues/5276), [#5240](https://github.com/langchain-ai/deepagents/issues/5240))
+- `PreCompact` now fires before auto-compaction. ([#5277](https://github.com/langchain-ai/deepagents/issues/5277))
 
 ## [0.1.51](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.50...deepagents-code==0.1.51) (2026-07-31)
 

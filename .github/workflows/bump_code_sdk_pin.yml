@@ -163,7 +163,7 @@ jobs:
             echo "::error::Expected exactly 1 '$pattern' in $code_pyproject, found $before"
             exit 1
           fi
-          sed -i '' -E "s/\"deepagents==[^\"]+\"/$replacement/" "$code_pyproject"
+          sed -i -E "s/\"deepagents==[^\"]+\"/$replacement/" "$code_pyproject"
           after=$(grep -cF "$replacement" "$code_pyproject")
           if [ "$after" -ne 1 ]; then
             echo "::error::Expected exactly 1 '$replacement' after sed, found $after"

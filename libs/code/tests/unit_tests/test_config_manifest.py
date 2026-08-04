@@ -1127,6 +1127,23 @@ def test_langsmith_project_empty_bare_is_default(monkeypatch) -> None:
     assert resolve_scalar(opt, toml_data={}) == (LANGSMITH_PROJECT_DEFAULT, "default")
 
 
+def test_onboarding_empty_env_reports_env_opt_out(monkeypatch) -> None:
+    """An explicitly empty `DEEPAGENTS_CODE_ONBOARDING` resolves as an env opt-out.
+
+    `should_run_onboarding` treats an empty value as falsy and suppresses the
+    flow, so `config` must report the option as set by the environment rather
+    than unset/default.
+    """
+    from deepagents_code.onboarding import should_run_onboarding
+
+    opt = get_option("startup.onboarding")
+    assert opt is not None
+    monkeypatch.setenv("DEEPAGENTS_CODE_ONBOARDING", "")
+    value, source = resolve_scalar(opt, toml_data={})
+    assert (value, source) == (False, "env (DEEPAGENTS_CODE_ONBOARDING)")
+    assert should_run_onboarding() is False
+
+
 def test_fallback_env_vars_yield_to_toml_when_env_unset(monkeypatch) -> None:
     """A synthetic option exercises the empty-fallback → `config.toml` path.
 

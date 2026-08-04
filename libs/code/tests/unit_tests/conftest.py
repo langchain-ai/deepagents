@@ -245,8 +245,8 @@ def _clear_provider_base_url_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _clear_onboarding_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prevent local debug onboarding env vars from affecting tests."""
-    monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_ONBOARDING", raising=False)
+    """Prevent local onboarding env overrides from affecting tests."""
+    monkeypatch.delenv("DEEPAGENTS_CODE_ONBOARDING", raising=False)
 
 
 @pytest.fixture(autouse=True)

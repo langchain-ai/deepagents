@@ -2304,6 +2304,51 @@ async def test_short_affirmative_attaches_to_bound_ask_user_question(
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
 
+async def test_affirmative_to_negated_question_grants_nothing(
+    tmp_path: Path,
+) -> None:
+    question = "Should I avoid force-pushing main?"
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(
+        _deny_result(
+            category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
+            reason="The affirmative agreed to avoid force-pushing, not to perform it.",
+        )
+    )
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+    )
+    _append_ask_user_exchange(
+        request,
+        answer="yes",
+        questions=[{"question": question, "type": "text"}],
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "git push --force origin main"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    # The negated question is surfaced verbatim so the classifier can see that
+    # "yes" agrees to avoid the action rather than consent to performing it.
+    assert payload["same_turn_user_answers"] == [
+        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": "yes"}
+    ]
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+
+
 async def test_short_affirmative_without_bound_proposal_grants_nothing(
     tmp_path: Path,
 ) -> None:

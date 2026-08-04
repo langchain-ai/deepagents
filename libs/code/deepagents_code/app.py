@@ -439,6 +439,13 @@ otherwise wedge the thread with only a log warning; surfacing this tells the
 user why an unrelated next turn might fail and how to recover.
 """
 
+_OFFLOAD_MAX_RESUME_ROUNDS = 10
+"""Bound on hook-interrupt resume rounds during a server-side `/offload`.
+
+A hook that keeps returning `ask`-style outcomes would otherwise loop the
+fulfill/resume cycle forever; the bound matches the seeded driver's drain cap.
+"""
+
 
 def _summarization_cutoff(event: Any) -> int:  # noqa: ANN401
     """Return the absolute cutoff index of a `_summarization_event`.
@@ -14965,7 +14972,10 @@ class DeepAgentsApp(App):
         Raises:
             RuntimeError: If the app is not connected to its server graph.
         """
+        from langgraph.types import Command
+
         from deepagents_code.config import settings
+        from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
 
         agent = self._agent
         if agent is None:
@@ -15011,19 +15021,60 @@ class DeepAgentsApp(App):
         # `_sync_session_cost_from_state` reads back. Only the per-kind token
         # breakdown is unavailable, and recovering it needs a usage channel on
         # the checkpoint that does not exist yet.
-        async for _chunk in remote.for_graph("offload").astream(
-            cast("Any", stream_input),
-            stream_mode=["updates"],
-            config=config,
-            context=stream_context,
-            # Accepted for signature parity and documented as ignored by
-            # `RemoteAgent.astream` (the server owns durability), so this is not
-            # a guarantee that the event is committed when the stream ends. The
-            # caller re-reads committed state and reconciles rather than trusting
-            # the stream.
-            durability="exit",
-        ):
-            pass
+        offload_agent = remote.for_graph("offload")
+        # Configured `PreCompact`/`PreToolUse` server hooks interrupt the graph
+        # at the hook boundary rather than returning a decision; fulfill each
+        # interrupt against the client hook engine and resume, mirroring the
+        # seeded driver's drain loop. HITL approvals are not resumed: the
+        # operation graph has no HITL middleware, so any approval-shaped
+        # interrupt is left pending for the caller's reconciliation.
+        resume_input: Any = cast("Any", stream_input)
+        try:
+            for _ in range(_OFFLOAD_MAX_RESUME_ROUNDS):
+                pending: dict[str, Any] = {}
+                async for chunk in offload_agent.astream(
+                    resume_input,
+                    stream_mode=["updates"],
+                    config=config,
+                    context=stream_context,
+                    # Accepted for signature parity and documented as ignored by
+                    # `RemoteAgent.astream` (the server owns durability), so
+                    # this is not a guarantee that the event is committed when
+                    # the stream ends. The caller re-reads committed state and
+                    # reconciles rather than trusting the stream.
+                    durability="exit",
+                ):
+                    if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # (namespace, mode, data)
+                        continue
+                    _namespace, mode, data = chunk
+                    if mode != "updates" or not isinstance(data, dict):
+                        continue
+                    for interrupt_obj in data.get("__interrupt__") or []:
+                        iid = getattr(interrupt_obj, "id", None)
+                        value = getattr(interrupt_obj, "value", None)
+                        if iid and is_hook_interrupt_payload(value):
+                            pending[iid] = await self._hooks.fulfill_interrupt(value)
+                if not pending:
+                    break
+                resume_input = Command(resume=pending)
+        finally:
+            # A run on the named `offload` graph rebinds the server thread's
+            # `graph_id`, so a later out-of-run `aupdate_state(as_node="model")`
+            # through the main client (e.g. `_aupdate_thread_state` for
+            # goal/rubric commands) would resolve against a graph with no
+            # `model` node and fail. Restore the binding through the main
+            # client's own graph so those writes persist again. Best-effort:
+            # the offload result must not be misreported when only this
+            # bookkeeping fails, and the caller already reconciles committed
+            # state for error reporting.
+            try:
+                await remote.aupdate_state(config, {})
+            except Exception:
+                logger.warning(
+                    "Failed to restore the thread's main graph association "
+                    "after /offload; the next agent turn will rebind it",
+                    exc_info=True,
+                )
         return None
 
     async def _drive_legacy_seeded_compaction(

@@ -104,20 +104,13 @@ async def _read_file_through_agent(agent, *, thread_id: str, file_path: str) -> 
             {"name": "read_file", "args": {"file_path": file_path}, "id": tool_call_id}
         ],
     )
-    # The `/offload` run rewrites the thread row's `graph_id` to "offload", so
-    # a plain `aupdate_state(as_node="model")` would resolve against the
-    # operation graph, which has no `model` node. Advance the interactive
-    # `agent` graph once with no new messages to restore the thread's
-    # `graph_id` to "agent" before seeding.
+    # `/offload` restores the thread's main-graph association before returning,
+    # so this seeds the read straight through the interactive `agent` graph's
+    # model node. Seeding against that client (rather than the app's default
+    # graph) also keeps the test pinned to the interactive graph `/offload`
+    # shares its checkpoint with.
     agent_graph = agent.for_graph("agent")
     await agent_graph.aensure_thread(config)
-    async for _chunk in agent_graph.astream(
-        {"messages": []},
-        stream_mode=["updates"],
-        config=config,
-        durability="exit",
-    ):
-        pass
     await agent_graph.aupdate_state(config, {"messages": [seed]}, as_node="model")
 
     interrupt_ids: list[str] = []

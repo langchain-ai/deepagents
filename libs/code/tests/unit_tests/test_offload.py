@@ -1819,6 +1819,170 @@ class TestServerOperationOffload:
         assert isinstance(context, dict)
         assert "offload_tool_call_id" not in context
 
+    async def test_restores_main_graph_association(self) -> None:
+        """A `graph_id` rebind from the named-graph run is reset before returning.
+
+        The server records the last-run graph on the thread; leaving it at
+        `offload` would send later out-of-run `as_node="model"` state writes to
+        a graph with no model node. The driver writes an empty update through
+        the main client to bind the thread back to the interactive graph.
+        """
+        app = DeepAgentsApp()
+        operation = MagicMock()
+
+        async def stream(*_args: object, **_kwargs: object):  # noqa: ANN202, RUF029
+            yield (), "updates", {"force_compact": {}}
+
+        operation.astream = stream
+        remote = MagicMock()
+        remote.aensure_thread = AsyncMock()
+        remote.aupdate_state = AsyncMock()
+        remote.for_graph.return_value = operation
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = MagicMock()
+            app._lc_thread_id = "test-thread"
+            with patch.object(app, "_remote_agent", return_value=remote):
+                await app._drive_offload_operation_graph(
+                    {"configurable": {"thread_id": "test-thread"}},
+                    {"messages": [{"type": "human", "content": "hi"}]},
+                )
+
+        remote.aupdate_state.assert_awaited_once_with(
+            {"configurable": {"thread_id": "test-thread"}}, {}
+        )
+
+    async def test_graph_restore_failure_does_not_mask_offload(self) -> None:
+        """A failed `graph_id` restore logs and still reports the offload result."""
+        app = DeepAgentsApp()
+        operation = MagicMock()
+
+        async def stream(*_args: object, **_kwargs: object):  # noqa: ANN202, RUF029
+            yield (), "updates", {"force_compact": {}}
+
+        operation.astream = stream
+        remote = MagicMock()
+        remote.aensure_thread = AsyncMock()
+        remote.aupdate_state = AsyncMock(side_effect=RuntimeError("server gone"))
+        remote.for_graph.return_value = operation
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = MagicMock()
+            app._lc_thread_id = "test-thread"
+            with patch.object(app, "_remote_agent", return_value=remote):
+                result = await app._drive_offload_operation_graph(
+                    {"configurable": {"thread_id": "test-thread"}},
+                    {"messages": [{"type": "human", "content": "hi"}]},
+                )
+
+        assert result is None
+
+    @staticmethod
+    def _hooks_patch(manager: MagicMock):  # noqa: ANN205
+        """Swap the read-only `_hooks` property for a stubbed manager."""
+        return patch.object(
+            DeepAgentsApp,
+            "_hooks",
+            new_callable=lambda: property(lambda _app: manager),
+        )
+
+    async def test_fulfills_hook_interrupts_and_resumes(self) -> None:
+        """A hook interrupt is answered through the hook engine and the graph resumed.
+
+        With a configured `PreCompact`/`PreToolUse` hook the node interrupts at
+        the hook boundary instead of returning; without this loop `/offload`
+        would park there and report "Nothing to offload".
+        """
+        from deepagents_code.hooks.manager import HooksManager
+
+        app = DeepAgentsApp()
+        operation = MagicMock()
+        streams: list[object] = []
+        hook_payload = {"type": "hook_invocation", "invocation_id": "inv-1"}
+        hook_interrupt = MagicMock()
+        hook_interrupt.id = "interrupt-1"
+        hook_interrupt.value = hook_payload
+
+        async def stream(input_: object, **_kwargs: object):  # noqa: ANN202, RUF029
+            streams.append(input_)
+            if len(streams) == 1:
+                yield (), "updates", {"__interrupt__": [hook_interrupt]}
+            else:
+                yield (), "updates", {"force_compact": {}}
+
+        operation.astream = stream
+        remote = MagicMock()
+        remote.aensure_thread = AsyncMock()
+        remote.aupdate_state = AsyncMock()
+        remote.for_graph.return_value = operation
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = MagicMock()
+            app._lc_thread_id = "test-thread"
+            manager = MagicMock(spec=HooksManager)
+            manager.apply_graph_context = MagicMock()
+            manager.fulfill_interrupt = AsyncMock(return_value={"decision": "ok"})
+            with (
+                patch.object(app, "_remote_agent", return_value=remote),
+                self._hooks_patch(manager),
+            ):
+                result = await app._drive_offload_operation_graph(
+                    {"configurable": {"thread_id": "test-thread"}},
+                    {"messages": [{"type": "human", "content": "hi"}]},
+                )
+
+        assert result is None
+        manager.fulfill_interrupt.assert_awaited_once_with(hook_payload)
+        assert len(streams) == 2
+        resume = streams[1]
+        # The resume command carries the fulfilled hook decision keyed by the
+        # server-supplied interrupt id.
+        assert getattr(resume, "resume", None) == {"interrupt-1": {"decision": "ok"}}
+
+    async def test_unbounded_hook_interrupts_stop_at_resume_cap(self) -> None:
+        """A hook that interrupts every round cannot loop the driver forever."""
+        app = DeepAgentsApp()
+        operation = MagicMock()
+        hook_interrupt = MagicMock()
+        hook_interrupt.id = "interrupt-1"
+        hook_interrupt.value = {"type": "hook_invocation", "invocation_id": "inv-1"}
+        rounds = 0
+
+        async def stream(_input: object, **_kwargs: object):  # noqa: ANN202, RUF029
+            nonlocal rounds
+            rounds += 1
+            yield (), "updates", {"__interrupt__": [hook_interrupt]}
+
+        operation.astream = stream
+        remote = MagicMock()
+        remote.aensure_thread = AsyncMock()
+        remote.aupdate_state = AsyncMock()
+        remote.for_graph.return_value = operation
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = MagicMock()
+            app._lc_thread_id = "test-thread"
+            manager = MagicMock(spec=HooksManager)
+            manager.apply_graph_context = MagicMock()
+            manager.fulfill_interrupt = AsyncMock(return_value={})
+            with (
+                patch.object(app, "_remote_agent", return_value=remote),
+                self._hooks_patch(manager),
+            ):
+                result = await app._drive_offload_operation_graph(
+                    {"configurable": {"thread_id": "test-thread"}},
+                    {"messages": [{"type": "human", "content": "hi"}]},
+                )
+
+        from deepagents_code.app import _OFFLOAD_MAX_RESUME_ROUNDS
+
+        assert result is None
+        assert rounds == _OFFLOAD_MAX_RESUME_ROUNDS
+
 
 class TestDriveLegacySeededCompaction:
     """Unit-test the seeded in-process `compact_conversation` trigger.

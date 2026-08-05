@@ -141,23 +141,33 @@ a file name for a document, a full URL for a web page,
 character for character, and a display name resolves nothing — every pattern in upstream's
 `normalize_email_citation` requires an `@`.
 
-## Regenerating
+## Building the dataset
 
-The invariant build and verifier files are git-ignored and must be laid down before a run
-(there is no document corpus to fetch — the images carry it):
+**No task directory is committed.** All 100 are generated from upstream's configs at the
+commit pinned as `UPSTREAM_SHA` in `harbor_adapters/drbench/adapter.py`, so this directory
+holds only its `README.md`, `dataset.toml`, and `.gitignore` until you build it:
 
 ```bash
 cd libs/evals
-python -m harbor_adapters.drbench.main --populate datasets/drbench-evals
+make dataset          # == python -m harbor_adapters.drbench.main --populate datasets/drbench-evals
 ```
 
-To regenerate the committed task directories from the vendored configs:
+That fetches upstream with a blobless, depth-1, **sparse** checkout — the 5 config files
+per task (~2.4 MiB), skipping `drbench/data/tasks/*/files/` (~69 MiB), because in app mode
+upstream's per-task image serves the documents. The whole build takes about two seconds and
+is cached under `harbor_adapters/drbench/.upstream/`.
 
-```bash
-python -m harbor_adapters.drbench.main --output-dir datasets/drbench-evals --all
-```
+CI runs the same command in every research shard before `harbor run --path`, and the prep
+job runs it before enumerating tasks to shard.
 
-To re-pin the images after upstream republishes them (the only step needing network):
+Two reasons the tasks are generated rather than committed: `solution/solve.sh` is the
+benchmark's answer key (its gold insights), which does not belong in a public repository;
+and 1,100 files that are a pure function of one commit hash add nothing to a diff.
+
+`make dataset-check` builds twice and diffs, which is how CI proves generation is
+deterministic now that the output is no longer reviewable in a PR.
+
+To re-pin the images after upstream republishes them (the only step that talks to a registry):
 
 ```bash
 python -m harbor_adapters.drbench.main --refresh-digests

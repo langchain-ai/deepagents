@@ -51,6 +51,22 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--refresh-labels",
+        action="store_true",
+        help=(
+            "Rewrite vendor/task_labels.json from the pinned upstream configs. Run after "
+            "bumping UPSTREAM_SHA. Mutually exclusive with the other modes."
+        ),
+    )
+    parser.add_argument(
+        "--check-labels",
+        action="store_true",
+        help=(
+            "Verify vendor/task_labels.json still matches the pinned upstream configs, "
+            "writing nothing. Exits non-zero on any mismatch."
+        ),
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         help=(
@@ -98,12 +114,48 @@ def main(argv: list[str] | None = None) -> None:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    # Each of the three maintenance modes is exclusive of every other mode, so that a
+    # read-only check can never be combined with a flag that writes.
+    exclusive = (
+        args.refresh_digests,
+        args.refresh_labels,
+        args.check_labels,
+        args.populate is not None,
+        bool(args.task_ids),
+        args.limit is not None,
+        args.all,
+    )
+
     if args.refresh_digests:
-        if args.populate is not None or args.task_ids or args.limit is not None or args.all:
+        if sum(map(bool, exclusive)) > 1:
             msg = "`--refresh-digests` is mutually exclusive with the other modes"
             raise ValueError(msg)
         count = adapter.refresh_image_digests()
         print(f"Refreshed {count} DRBench image digest(s)")
+        return
+
+    if args.refresh_labels:
+        if sum(map(bool, exclusive)) > 1:
+            msg = "`--refresh-labels` is mutually exclusive with the other modes"
+            raise ValueError(msg)
+        count = adapter.refresh_task_labels()
+        print(f"Refreshed labels for {count} DRBench task(s)")
+        return
+
+    if args.check_labels:
+        if sum(map(bool, exclusive)) > 1:
+            msg = "`--check-labels` is mutually exclusive with the other modes"
+            raise ValueError(msg)
+        problems = adapter.verify_task_labels()
+        if problems:
+            for problem in problems:
+                print(f"vendor/task_labels.json: {problem}")
+            msg = (
+                f"{len(problems)} DRBench label mismatch(es); refresh with "
+                "`--refresh-labels`"
+            )
+            raise ValueError(msg)
+        print("DRBench task labels match the pinned upstream configs")
         return
 
     if args.populate is not None:

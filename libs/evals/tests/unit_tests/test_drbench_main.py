@@ -20,12 +20,21 @@ pytestmark = pytest.mark.usefixtures("vendor")
 
 @pytest.fixture
 def vendor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point the adapter at a fixture vendor directory holding three tasks."""
+    """Point the adapter at fixture pins and a fixture upstream checkout of three tasks.
+
+    `ensure_upstream_checkout` is the only seam that would reach the network, so replacing
+    it keeps these tests offline while every config-reading path stays under test.
+    """
     vendor_dir = tmp_path / "vendor"
+    (vendor_dir / "subsets").mkdir(parents=True)
+    checkout = tmp_path / "upstream"
+    upstream_tasks = checkout / "drbench" / "data" / "tasks"
+    monkeypatch.setattr(adapter, "vendor_dir", lambda: vendor_dir)
+    monkeypatch.setattr(adapter, "ensure_upstream_checkout", lambda: checkout)
     for task_id in ("DR0001", "DR0002", "DR0003"):
-        task_root = vendor_dir / "tasks" / task_id
-        task_root.mkdir(parents=True)
-        (task_root / "task.json").write_text(
+        task_root = upstream_tasks / task_id
+        (task_root / "config").mkdir(parents=True)
+        (task_root / "config" / "task.json").write_text(
             json.dumps(
                 {
                     "task_id": task_id,
@@ -36,7 +45,7 @@ def vendor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                 }
             )
         )
-        (task_root / "env.json").write_text(
+        (task_root / "config" / "env.json").write_text(
             json.dumps(
                 {
                     "env_files": [
@@ -50,7 +59,7 @@ def vendor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
                 }
             )
         )
-        (task_root / "eval.json").write_text(
+        (task_root / "config" / "eval.json").write_text(
             json.dumps(
                 {
                     "dr_report_evaluation_qa": [
@@ -67,6 +76,14 @@ def vendor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         (task_root / "info.json").write_text(
             json.dumps({"industry": "retail", "domain": "compliance", "difficulty": "easy"})
         )
+    # `available_task_ids` reads upstream's own subset list, which stays vendored so the
+    # ids resolve offline and before any task directory exists.
+    (vendor_dir / "subsets" / "val.jsonl").write_text(
+        "".join(
+            json.dumps({"task_id": task_id, "path": f"drbench/data/tasks/{task_id}/config"}) + "\n"
+            for task_id in ("DR0001", "DR0002", "DR0003")
+        )
+    )
     # Task generation pins the image by digest, so the record must exist offline.
     (vendor_dir / "image_digests.json").write_text(
         json.dumps(
@@ -79,7 +96,6 @@ def vendor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
             }
         )
     )
-    monkeypatch.setattr(adapter, "vendor_dir", lambda: vendor_dir)
     return vendor_dir
 
 
@@ -87,13 +103,16 @@ def test_available_task_ids_is_sorted() -> None:
     assert adapter.available_task_ids() == ["DR0001", "DR0002", "DR0003"]
 
 
-def test_available_task_ids_excludes_the_sanity_task(vendor: Path) -> None:
+def test_available_task_ids_excludes_the_sanity_task() -> None:
     # SANITY0 is upstream's install smoke test, not a scored task; including it in
     # `--all` would skew the dataset average.
-    sanity = vendor / "tasks" / "SANITY0"
-    sanity.mkdir(parents=True)
-    for name in ("task.json", "env.json", "eval.json", "info.json"):
-        (sanity / name).write_text("{}")
+    # Upstream's `val.jsonl` lists only the 100 scored tasks, so SANITY0 can exist in the
+    # checkout without ever entering `--all`.
+    sanity = adapter.ensure_upstream_checkout() / "drbench" / "data" / "tasks" / "SANITY0"
+    (sanity / "config").mkdir(parents=True)
+    for name in ("task.json", "env.json", "eval.json"):
+        (sanity / "config" / name).write_text("{}")
+    (sanity / "info.json").write_text("{}")
     assert "SANITY0" not in adapter.available_task_ids()
     # ...but it stays reachable by name for debugging.
     assert adapter.parse_task_id("SANITY0") == "SANITY0"

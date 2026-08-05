@@ -16,26 +16,48 @@ directory and started only after the agent's is torn down. That is what lets it 
 upstream `drbench` and score with upstream's own metrics: the package ships both the gold
 `eval.json` and the whole document corpus, neither of which may exist while the agent is
 running. See `README.md` in the generated dataset for the runtime contract.
+
+No task directory is committed. `populate_corpus` builds all 100 from upstream's configs
+at `UPSTREAM_SHA`, fetched with a sparse checkout that skips the document corpus. That
+keeps ~1,100 generated and copied files -- including the gold `solve.sh` answer keys --
+out of this repository, and makes the dataset a function of one commit hash.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 import shutil
+import subprocess
 import urllib.request
 from pathlib import Path
 
 UPSTREAM_REPO = "ServiceNow/drbench"
-# The vendored task configs come from this commit. The images are pinned separately, by
-# digest, in vendor/image_digests.json.
+# Task configs are fetched from this commit at generation time rather than committed.
+# A git commit hash is a hash of the content, so this pins the configs as firmly as a
+# vendored copy would. The images are pinned separately, by digest, in
+# vendor/image_digests.json, because a digest is the only thing a git tree cannot carry.
 UPSTREAM_SHA = "0d699ecf6aa96b1de378595b432e9b16a82f0ed9"
+UPSTREAM_REMOTE = f"https://github.com/{UPSTREAM_REPO}.git"
+
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+# Fetched with a blobless, depth-1, sparse checkout: the five config files per task are
+# ~2.4 MiB, while `drbench/data/tasks/*/files/` is a ~69 MiB document corpus that app
+# mode never needs, because upstream's per-task image serves the documents itself.
+_SPARSE_PATTERNS = (
+    "/drbench/data/tasks/*/config",
+    "/drbench/data/tasks/*/*.json",
+)
+
+_GIT_TIMEOUT_SEC = 600
 
 IMAGE_REGISTRY = "ghcr.io/mmunozm/drbench-services"
 # Upstream publishes the per-task images for arm64 only ("amd64 images are coming
-# soon"), so these tasks need an arm64 runner with `sandbox_env: docker`.
-IMAGE_PLATFORM = "linux/arm64"
+# soon"), so these tasks need an arm64 runner with `sandbox_env: docker`. The generated
+# compose file deliberately sets no `platform:` -- see docker-compose.yaml.tmpl.
 
 _MANIFEST_ACCEPT = ",".join(
     (
@@ -125,14 +147,25 @@ def _credential_env(credentials: dict[str, dict[str, str]], apps: list[str]) -> 
         env[f"{prefix}_PASS"] = credentials[app]["password"]
     return env
 
+# Upstream `info.json` fields that decide how a task is stratified. Vendored per task in
+# task_labels.json so a proportional-sample check can run without building the dataset.
+_LABEL_FIELDS = ("difficulty", "industry", "domain")
+
 _INSIGHT_QA_TYPE = "insight"
 _DISTRACTOR_QA_TYPE = "distractor"
 
-_CONFIG_FILENAMES = ("task.json", "env.json", "eval.json", "info.json")
+# Record key -> path of that config inside an upstream task directory. Upstream splits
+# them: the three scoring configs live under `config/`, the label file at the task root.
+_CONFIG_SOURCES: dict[str, tuple[str, ...]] = {
+    "task": ("config", "task.json"),
+    "env": ("config", "env.json"),
+    "eval": ("config", "eval.json"),
+    "info": ("info.json",),
+}
 
 
 def vendor_dir() -> Path:
-    """Return the directory containing vendored DRBench task configs.
+    """Return the directory containing the vendored DRBench pins.
 
     Defined as a function (rather than a module-level constant) so tests can
     monkeypatch it to point at a fixture directory.
@@ -146,6 +179,92 @@ def vendor_dir() -> Path:
 def _templates_dir() -> Path:
     """Return the directory holding the task-invariant files."""
     return Path(__file__).resolve().parent / "templates"
+
+
+def upstream_dir() -> Path:
+    """Return the directory holding the pinned upstream checkout.
+
+    Override with `DRBENCH_UPSTREAM_DIR` to share one checkout across dataset builds.
+
+    Returns:
+        Path to the local checkout, which may not exist yet.
+    """
+    override = os.environ.get("DRBENCH_UPSTREAM_DIR", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(__file__).resolve().parent / ".upstream"
+
+
+def _git(*args: str, cwd: Path | None = None) -> str:
+    """Run one git command with a list argv and return its stdout.
+
+    Raises:
+        RuntimeError: If git exits non-zero, with its stderr attached.
+    """
+    command = ["git", *args]
+    result = subprocess.run(  # noqa: S603 - fixed argv, no shell, no interpolated input
+        command,
+        cwd=None if cwd is None else str(cwd),
+        capture_output=True,
+        text=True,
+        timeout=_GIT_TIMEOUT_SEC,
+        check=False,
+    )
+    if result.returncode != 0:
+        msg = f"`{shlex.join(command)}` failed ({result.returncode}): {result.stderr.strip()}"
+        raise RuntimeError(msg)
+    return result.stdout
+
+
+def ensure_upstream_checkout() -> Path:
+    """Fetch upstream's task configs at `UPSTREAM_SHA`, and return the checkout root.
+
+    Idempotent: a checkout already at the pinned commit is reused, so only the first
+    call in a fresh environment touches the network.
+
+    Returns:
+        Path to the checkout root.
+
+    Raises:
+        ValueError: If `UPSTREAM_SHA` is not a full 40-character commit hash.
+        RuntimeError: If a git command fails.
+    """
+    if _SHA_RE.match(UPSTREAM_SHA) is None:
+        msg = f"UPSTREAM_SHA must be a full 40-character commit hash, got {UPSTREAM_SHA!r}"
+        raise ValueError(msg)
+
+    checkout = upstream_dir()
+    if (checkout / ".git").is_dir():
+        try:
+            if _git("rev-parse", "HEAD", cwd=checkout).strip() == UPSTREAM_SHA:
+                return checkout
+        except RuntimeError:
+            # An interrupted fetch can leave a repo with no HEAD; fall through and redo it.
+            shutil.rmtree(checkout)
+
+    checkout.mkdir(parents=True, exist_ok=True)
+    _git("init", "-q", str(checkout))
+    # `config` rather than `remote add`, which fails when a prior attempt already added
+    # it -- reached whenever UPSTREAM_SHA is bumped over an existing checkout.
+    _git("config", "remote.origin.url", UPSTREAM_REMOTE, cwd=checkout)
+    _git("sparse-checkout", "set", "--no-cone", *_SPARSE_PATTERNS, cwd=checkout)
+    _git(
+        "fetch",
+        "-q",
+        "--depth",
+        "1",
+        "--filter=blob:none",
+        "origin",
+        UPSTREAM_SHA,
+        cwd=checkout,
+    )
+    _git("checkout", "-q", "FETCH_HEAD", cwd=checkout)
+    return checkout
+
+
+def _upstream_tasks_root() -> Path:
+    """Return the directory holding upstream's per-task config directories."""
+    return ensure_upstream_checkout() / "drbench" / "data" / "tasks"
 
 
 def parse_task_id(task_id: str) -> str:
@@ -176,25 +295,62 @@ def available_task_ids() -> list[str]:
     and cannot skew a dataset average; generate it explicitly with `--task-ids SANITY0`
     when debugging.
 
+    Read from the vendored copy of upstream's own `val.jsonl` subset rather than by
+    listing directories, so the ids resolve with no network and before any task directory
+    exists. That is what lets the workflow's prep phase shard the category while the
+    dataset is still ungenerated.
+
     Returns:
-        Sorted `DR<nnnn>` task ids that have a vendored config.
+        Sorted `DR<nnnn>` task ids.
 
     Raises:
-        FileNotFoundError: If the vendored configs are missing.
+        FileNotFoundError: If the vendored subset file is missing.
+        ValueError: If the subset file is malformed or holds a malformed task id.
     """
-    tasks_root = vendor_dir() / "tasks"
-    if not tasks_root.is_dir():
-        msg = f"No vendored DRBench configs at {tasks_root}"
+    return sorted(read_subset_task_ids(vendor_dir() / "subsets" / "val.jsonl"))
+
+
+def read_subset_task_ids(path: Path) -> list[str]:
+    """Return the task ids listed in one upstream subset file.
+
+    Args:
+        path: Path to an upstream `*.jsonl` subset file.
+
+    Returns:
+        Task ids in file order.
+
+    Raises:
+        FileNotFoundError: If `path` does not exist.
+        ValueError: If a line is not a JSON object, carries no string `task_id`, or the
+            id is not a bare DRBench id.
+    """
+    if not path.is_file():
+        msg = f"No DRBench subset file at {path}"
         raise FileNotFoundError(msg)
-    return sorted(
-        entry.name
-        for entry in tasks_root.iterdir()
-        if entry.is_dir() and entry.name.startswith("DR") and (entry / "task.json").is_file()
-    )
+    task_ids: list[str] = []
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        entry = json.loads(line)
+        if not isinstance(entry, dict):
+            msg = f"{path}:{lineno} must hold a JSON object"
+            raise ValueError(msg)
+        task_id = entry.get("task_id")
+        if not isinstance(task_id, str):
+            msg = f"{path}:{lineno} has no string `task_id`"
+            raise ValueError(msg)
+        task_ids.append(parse_task_id(task_id))
+    if not task_ids:
+        msg = f"{path} lists no tasks"
+        raise ValueError(msg)
+    return task_ids
 
 
 def record_for_task_id(task_id: str) -> dict[str, dict]:
-    """Load the vendored DRBench config bundle for one task.
+    """Load one task's DRBench config bundle from the pinned upstream checkout.
+
+    Fetches the checkout on first use. `task_id` is validated before it is joined to a
+    path, so it can only ever name a direct child of upstream's tasks directory.
 
     Args:
         task_id: Identifier of the form `DR0001` or `SANITY0`.
@@ -205,23 +361,135 @@ def record_for_task_id(task_id: str) -> dict[str, dict]:
 
     Raises:
         ValueError: If `task_id` is not a bare DRBench id.
-        FileNotFoundError: If no vendored config exists for `task_id`.
+        FileNotFoundError: If upstream has no config for `task_id`.
         TypeError: If a config file does not hold a JSON object.
+        RuntimeError: If the upstream checkout cannot be fetched.
     """
     parse_task_id(task_id)
-    task_root = vendor_dir() / "tasks" / task_id
+    task_root = _upstream_tasks_root() / task_id
     record: dict[str, dict] = {}
-    for filename in _CONFIG_FILENAMES:
-        path = task_root / filename
+    for key, relative in _CONFIG_SOURCES.items():
+        path = task_root.joinpath(*relative)
         if not path.is_file():
-            msg = f"No vendored DRBench config for {task_id!r} (expected {path})"
+            msg = f"No upstream DRBench config for {task_id!r} (expected {path})"
             raise FileNotFoundError(msg)
         parsed = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(parsed, dict):
             msg = f"DRBench config {path} must hold a JSON object"
             raise TypeError(msg)
-        record[path.stem] = parsed
+        record[key] = parsed
     return record
+
+
+def _labels_path() -> Path:
+    """Return the path of the vendored per-task label record."""
+    return vendor_dir() / "task_labels.json"
+
+
+def load_task_labels() -> dict[str, dict[str, str]]:
+    """Return the vendored `task_id -> {difficulty, industry, domain}` mapping.
+
+    Committed rather than read from a task config because these labels are what make the
+    `research` full profile's 30-task sample checkable as a proportional slice of the
+    corpus, and that check has to run in test suites that never build the dataset.
+
+    Returns:
+        A mapping of task id to its three upstream labels.
+
+    Raises:
+        FileNotFoundError: If the label record is missing.
+        ValueError: If the record is malformed, names a non-DRBench id, or holds a
+            non-string label.
+    """
+    path = _labels_path()
+    if not path.is_file():
+        msg = (
+            f"No vendored DRBench task labels at {path}. Generate them with "
+            "`python -m harbor_adapters.drbench.main --refresh-labels`."
+        )
+        raise FileNotFoundError(msg)
+    parsed = json.loads(path.read_text(encoding="utf-8"))
+    labels = parsed.get("labels") if isinstance(parsed, dict) else None
+    if not isinstance(labels, dict):
+        msg = f"{path} must hold a `labels` object"
+        raise ValueError(msg)
+    validated: dict[str, dict[str, str]] = {}
+    for task_id, entry in labels.items():
+        parse_task_id(task_id)
+        if not isinstance(entry, dict):
+            msg = f"{path} entry for {task_id!r} must be an object"
+            raise ValueError(msg)
+        missing = [field for field in _LABEL_FIELDS if not isinstance(entry.get(field), str)]
+        if missing:
+            msg = f"{path} entry for {task_id!r} is missing string {missing}"
+            raise ValueError(msg)
+        validated[task_id] = {field: entry[field] for field in _LABEL_FIELDS}
+    return validated
+
+
+def _labels_from_upstream() -> dict[str, dict[str, str]]:
+    """Return each task's labels as read from the pinned upstream checkout."""
+    return {
+        task_id: {
+            field: str(record_for_task_id(task_id)["info"].get(field, "")) for field in _LABEL_FIELDS
+        }
+        for task_id in available_task_ids()
+    }
+
+
+def refresh_task_labels() -> int:
+    """Rewrite the vendored label record from the pinned upstream checkout.
+
+    Returns:
+        The number of tasks written.
+
+    Raises:
+        RuntimeError: If the upstream checkout cannot be fetched.
+    """
+    labels = _labels_from_upstream()
+    _labels_path().write_text(
+        json.dumps(
+            {
+                "_comment": (
+                    "Per-task DRBench stratification labels, read from the upstream commit "
+                    "below. Regenerate with `python -m harbor_adapters.drbench.main "
+                    "--refresh-labels`."
+                ),
+                "upstream_sha": UPSTREAM_SHA,
+                "labels": dict(sorted(labels.items())),
+            },
+            indent=2,
+            sort_keys=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return len(labels)
+
+
+def verify_task_labels() -> list[str]:
+    """Return a description of every way the vendored labels disagree with upstream.
+
+    Returns:
+        Human-readable mismatches, empty when the record is consistent. Writes nothing.
+
+    Raises:
+        RuntimeError: If the upstream checkout cannot be fetched.
+    """
+    problems: list[str] = []
+    recorded_sha = json.loads(_labels_path().read_text(encoding="utf-8")).get("upstream_sha")
+    if recorded_sha != UPSTREAM_SHA:
+        problems.append(f"records upstream_sha {recorded_sha!r}, expected {UPSTREAM_SHA!r}")
+    recorded = load_task_labels()
+    upstream = _labels_from_upstream()
+    for task_id in sorted(set(recorded) | set(upstream)):
+        if task_id not in recorded:
+            problems.append(f"{task_id}: missing from the record")
+        elif task_id not in upstream:
+            problems.append(f"{task_id}: recorded but not in upstream")
+        elif recorded[task_id] != upstream[task_id]:
+            problems.append(f"{task_id}: {recorded[task_id]} != upstream {upstream[task_id]}")
+    return problems
 
 
 def _digests_path() -> Path:
@@ -287,7 +555,7 @@ def refresh_image_digests(task_ids: list[str] | None = None) -> int:
     """Resolve each task's image tag to an immutable digest and vendor the result.
 
     Args:
-        task_ids: Task ids to resolve. Defaults to every vendored task.
+        task_ids: Task ids to resolve. Defaults to every benchmark task.
 
     Returns:
         The number of digests written.
@@ -513,7 +781,7 @@ def app_credentials(task_config: dict) -> dict[str, dict[str, str]]:
 
 
 def generate_task(*, output_dir: Path, task_id: str) -> Path:
-    """Generate one self-contained Harbor task from a vendored DRBench record.
+    """Generate one self-contained Harbor task from its upstream DRBench record.
 
     Args:
         output_dir: Dataset directory that will contain the generated task.
@@ -525,9 +793,9 @@ def generate_task(*, output_dir: Path, task_id: str) -> Path:
     Raises:
         ValueError: If `task_id` is not a bare DRBench id, or the record declares an
             unusable manifest or persona.
-        FileNotFoundError: If no vendored config exists for `task_id`.
+        FileNotFoundError: If upstream has no config for `task_id`.
         KeyError: If no image digest is vendored for `task_id`.
-        TypeError: If a vendored config has an unexpected shape.
+        TypeError: If an upstream config has an unexpected shape.
     """
     parse_task_id(task_id)
     record = record_for_task_id(task_id)
@@ -536,8 +804,12 @@ def generate_task(*, output_dir: Path, task_id: str) -> Path:
     task_dir = output_dir / task_id
     if task_dir.exists():
         # Regenerate cleanly: replace any existing task dir so a rerun overwrites
-        # instead of failing on already-created subdirectories. Safe because
-        # `parse_task_id` proved `task_id` is a single path component.
+        # instead of failing on already-created subdirectories. `parse_task_id` proved
+        # `task_id` is a single path component; re-check containment so a symlinked task
+        # directory cannot redirect the removal outside the dataset.
+        if task_dir.resolve().parent != output_dir.resolve():
+            msg = f"Refusing to remove {task_dir}: not a direct child of {output_dir}"
+            raise ValueError(msg)
         shutil.rmtree(task_dir)
     (task_dir / "environment").mkdir(parents=True)
 
@@ -546,36 +818,32 @@ def generate_task(*, output_dir: Path, task_id: str) -> Path:
 
 
 def populate_corpus(dataset_dir: Path) -> int:
-    """Regenerate each DRBench task's single-sourced, git-ignored files.
+    """Build the whole DRBench dataset into `dataset_dir`.
 
-    App mode needs no document corpus on disk — upstream's per-task image already
-    serves the documents — so the only single-sourced files are the ones that are
-    byte-identical across every task: the `main` service's build inputs and the
-    verifier. They live in `templates/` and are laid down here so Harbor can build and
-    grade each task. Run before `harbor run --path <dataset_dir>`.
+    No task directory is committed: every one is generated here from the configs at
+    `UPSTREAM_SHA`, then given the task-invariant files that are single-sourced in
+    `templates/`. App mode needs no document corpus on disk — upstream's per-task image
+    serves the documents — so the fetch is only the ~2.4 MiB of config JSON.
 
     The name is retained because it is the contract the workflow's shared dispatcher
     calls (`--populate`), alongside the other local datasets.
 
     Args:
-        dataset_dir: Dataset directory containing generated task directories.
+        dataset_dir: Dataset directory that will contain the generated tasks.
 
     Returns:
-        The number of DRBench task directories populated.
+        The number of DRBench task directories built.
+
+    Raises:
+        RuntimeError: If the upstream checkout cannot be fetched.
     """
     dataset_root = dataset_dir.resolve()
-    populated = 0
-    for task_toml in sorted(dataset_root.glob("*/task.toml")):
-        task_dir = task_toml.parent
-        # Containment: only populate direct children of the dataset directory.
-        if task_dir.resolve().parent != dataset_root:
-            continue
-        if 'source = "drbench"' not in task_toml.read_text(encoding="utf-8"):
-            continue
-        _copy_environment_invariants(task_dir / "environment")
-        _copy_verifier_invariants(task_dir / "tests")
-        populated += 1
-    return populated
+    dataset_root.mkdir(parents=True, exist_ok=True)
+    built = 0
+    for task_id in available_task_ids():
+        generate_task(output_dir=dataset_root, task_id=task_id)
+        built += 1
+    return built
 
 
 def _copy_environment_invariants(environment_dir: Path) -> None:
@@ -610,7 +878,7 @@ def _copy_verifier_invariants(tests_dir: Path) -> None:
         templates_dir / "verifier-compose.yaml.tmpl", tests_dir / "docker-compose.yaml"
     )
     # The only substitution: pin the upstream commit the metrics, prompts, ground truth,
-    # and corpus all come from, so it cannot drift from the vendored task configs.
+    # and corpus all come from, so it cannot drift from the fetched task configs.
     dockerfile = (templates_dir / "verifier.Dockerfile").read_text(encoding="utf-8")
     (tests_dir / "Dockerfile").write_text(
         dockerfile.format(drbench_ref=UPSTREAM_SHA), encoding="utf-8"
@@ -762,7 +1030,7 @@ def _write_task_files(task_dir: Path, *, record: dict[str, dict], image: str) ->
         encoding="utf-8"
     )
     (environment_dir / "docker-compose.yaml").write_text(
-        compose_template.format(image=image, platform=IMAGE_PLATFORM),
+        compose_template.format(image=image),
         encoding="utf-8",
     )
     (environment_dir / ".dockerignore").write_text(_DOCKERIGNORE, encoding="utf-8")

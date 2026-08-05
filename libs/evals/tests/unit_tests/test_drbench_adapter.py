@@ -32,10 +32,15 @@ def _write_vendor(
     persona: dict | None = None,
     task_id: str = _TASK_ID,
 ) -> None:
-    """Write a minimal vendored config bundle plus a pinned image digest."""
-    task_root = vendor / "tasks" / task_id
-    task_root.mkdir(parents=True)
-    (task_root / "task.json").write_text(
+    """Write a minimal upstream config bundle plus the vendored pins for one task.
+
+    Configs go into the fixture checkout in upstream's own layout (the three scoring
+    configs under `config/`, the label file at the task root); the subset list and image
+    digest go into the fixture vendor directory, which is where they stay committed.
+    """
+    task_root = adapter.ensure_upstream_checkout() / "drbench" / "data" / "tasks" / task_id
+    (task_root / "config").mkdir(parents=True)
+    (task_root / "config" / "task.json").write_text(
         json.dumps(
             {
                 "task_id": task_id,
@@ -53,10 +58,13 @@ def _write_vendor(
             }
         )
     )
-    (task_root / "env.json").write_text(json.dumps({"env_files": env_files}))
-    (task_root / "eval.json").write_text(json.dumps({"dr_report_evaluation_qa": qa}))
+    (task_root / "config" / "env.json").write_text(json.dumps({"env_files": env_files}))
+    (task_root / "config" / "eval.json").write_text(json.dumps({"dr_report_evaluation_qa": qa}))
     (task_root / "info.json").write_text(
         json.dumps({"industry": "retail", "domain": "compliance", "difficulty": "easy"})
+    )
+    (vendor / "subsets" / "val.jsonl").write_text(
+        json.dumps({"task_id": task_id, "path": f"drbench/data/tasks/{task_id}/config"}) + "\n"
     )
     (vendor / "image_digests.json").write_text(
         json.dumps({"registry": adapter.IMAGE_REGISTRY, "digests": {task_id: _DIGEST}})
@@ -80,10 +88,18 @@ def _qa(
 
 @pytest.fixture
 def vendor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point the adapter at a fixture vendor directory."""
+    """Point the adapter at fixture pins and a fixture upstream checkout.
+
+    `ensure_upstream_checkout` is the single seam that would otherwise reach the network;
+    replacing it keeps these tests offline while leaving every path that reads a config
+    under test.
+    """
     vendor_dir = tmp_path / "vendor"
-    vendor_dir.mkdir()
+    (vendor_dir / "subsets").mkdir(parents=True)
+    checkout = tmp_path / "upstream"
+    checkout.mkdir()
     monkeypatch.setattr(adapter, "vendor_dir", lambda: vendor_dir)
+    monkeypatch.setattr(adapter, "ensure_upstream_checkout", lambda: checkout)
     return vendor_dir
 
 
@@ -241,7 +257,9 @@ def test_generate_task_creates_a_two_service_app_mode_task(vendor: Path, tmp_pat
     compose = yaml.safe_load((task_dir / "environment" / "docker-compose.yaml").read_text())
     assert sorted(compose["services"]) == ["drbench", "main"]
     assert compose["services"]["drbench"]["image"].endswith(_DIGEST)
-    assert compose["services"]["drbench"]["platform"] == adapter.IMAGE_PLATFORM
+    # No `platform:`: upstream ships a single-entry arm64 OCI index, so letting Docker
+    # match the host makes an amd64 runner fail at pull rather than silently emulate.
+    assert "platform" not in compose["services"]["drbench"]
     # Harbor only ever overrides `command`, and only for `main`. Overriding either key
     # on the sidecar would stop its entrypoint starting supervisord, and the app stack
     # would never come up.
@@ -531,3 +549,131 @@ def test_no_generated_file_carries_a_literal_curl_credential_pair(
         and re.search(r"-u\s+[A-Za-z0-9._@-]+:[A-Za-z0-9._@-]+", path.read_text(errors="replace"))
     ]
     assert offenders == []
+
+
+def test_populate_builds_every_task_from_an_empty_dataset_directory(
+    vendor: Path, tmp_path: Path
+) -> None:
+    """No task directory is committed, so populate has to create them, not just fill them."""
+    _write_vendor(vendor, env_files=[_env_file("report.pdf")], qa=[_qa("IN1", "kept")])
+    dataset_dir = tmp_path / "dataset"
+
+    assert adapter.populate_corpus(dataset_dir) == 1
+    task_dir = dataset_dir / _TASK_ID
+    for relative in (
+        "task.toml",
+        "instruction.md",
+        "solution/solve.sh",
+        "environment/docker-compose.yaml",
+        "environment/main.Dockerfile",
+        "tests/case.json",
+        "tests/judge.py",
+        "tests/Dockerfile",
+    ):
+        assert (task_dir / relative).is_file(), relative
+
+
+def test_record_reads_upstreams_split_config_layout(vendor: Path) -> None:
+    """Upstream keeps the scoring configs under `config/` and the labels at the task root."""
+    _write_vendor(vendor, env_files=[_env_file("report.pdf")], qa=[_qa("IN1", "kept")])
+    record = adapter.record_for_task_id(_TASK_ID)
+
+    assert sorted(record) == ["env", "eval", "info", "task"]
+    assert record["task"]["task_id"] == _TASK_ID
+    assert record["info"]["difficulty"] == "easy"
+
+
+def test_generate_refuses_to_remove_a_task_dir_outside_the_dataset(
+    vendor: Path, tmp_path: Path
+) -> None:
+    """A symlinked task directory must not redirect the pre-generation cleanup."""
+    _write_vendor(vendor, env_files=[_env_file("report.pdf")], qa=[_qa("IN1", "kept")])
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("must survive")
+    (dataset_dir / _TASK_ID).symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="not a direct child"):
+        adapter.generate_task(output_dir=dataset_dir, task_id=_TASK_ID)
+    assert (outside / "keep.txt").is_file()
+
+
+def test_upstream_checkout_rejects_a_sha_that_is_not_a_full_commit_hash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Validated before any git command runs, so a typo cannot become a fetch argument."""
+    monkeypatch.setenv("DRBENCH_UPSTREAM_DIR", str(tmp_path / "upstream"))
+    monkeypatch.setattr(adapter, "UPSTREAM_SHA", "main")
+
+    with pytest.raises(ValueError, match="full 40-character commit hash"):
+        adapter.ensure_upstream_checkout()
+    assert not (tmp_path / "upstream").exists()
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [
+        ('["DR0001"]', "must hold a JSON object"),
+        ('{"path": "x"}', "no string `task_id`"),
+        ('{"task_id": 1}', "no string `task_id`"),
+        ('{"task_id": "../escape"}', "must be a DRBench id"),
+    ],
+)
+def test_subset_reader_rejects_a_malformed_entry(tmp_path: Path, line: str, message: str) -> None:
+    subset = tmp_path / "val.jsonl"
+    subset.write_text(line + "\n")
+
+    with pytest.raises(ValueError, match=message):
+        adapter.read_subset_task_ids(subset)
+
+
+def test_the_vendored_pins_cover_exactly_the_same_tasks() -> None:
+    """The two committed pins must agree, or generation fails partway through a run.
+
+    `val.jsonl` decides which tasks `--all` builds and `image_digests.json` supplies the
+    image each one runs, so a task in the first without an entry in the second is a
+    `KeyError` after the dataset is already half written.
+    """
+    task_ids = adapter.available_task_ids()
+
+    assert len(task_ids) == 100
+    assert sorted(adapter.load_image_digests()) == task_ids
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ('{"labels": []}', "must hold a `labels` object"),
+        ('{"labels": {"DR0001": "easy"}}', "must be an object"),
+        ('{"labels": {"DR0001": {"difficulty": "easy"}}}', "missing string"),
+        ('{"labels": {"../escape": {}}}', "must be a DRBench id"),
+    ],
+)
+def test_label_reader_rejects_a_malformed_record(vendor: Path, payload: str, message: str) -> None:
+    (vendor / "task_labels.json").write_text(payload)
+
+    with pytest.raises(ValueError, match=message):
+        adapter.load_task_labels()
+
+
+def test_label_verification_reports_a_stale_record(vendor: Path) -> None:
+    """A bumped `UPSTREAM_SHA` with unrefreshed labels is the one drift worth catching."""
+    _write_vendor(vendor, env_files=[_env_file("report.pdf")], qa=[_qa("IN1", "kept")])
+    assert adapter.refresh_task_labels() == 1
+    assert adapter.verify_task_labels() == []
+
+    record = json.loads((vendor / "task_labels.json").read_text())
+    record["labels"][_TASK_ID]["difficulty"] = "hard"
+    record["upstream_sha"] = "0" * 40
+    (vendor / "task_labels.json").write_text(json.dumps(record))
+
+    problems = adapter.verify_task_labels()
+    assert any("upstream_sha" in problem for problem in problems)
+    assert any(_TASK_ID in problem for problem in problems)
+
+
+def test_the_committed_labels_cover_every_task() -> None:
+    """The label record and the subset list must name the same tasks."""
+    assert sorted(adapter.load_task_labels()) == adapter.available_task_ids()

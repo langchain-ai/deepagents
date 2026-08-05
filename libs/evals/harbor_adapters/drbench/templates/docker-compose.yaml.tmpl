@@ -21,9 +21,11 @@ services:
     # namespace, so a re-push would otherwise silently change eval results. Refresh
     # with `python -m harbor_adapters.drbench.main --refresh-digests`.
     image: {image}
-    # arm64-only upstream ("amd64 images are coming soon"), so this task must run on an
-    # arm64 runner. Declared so a mismatched host fails loudly at `up` rather than
-    # silently emulating and blowing the build timeout.
-    platform: {platform}
+    # No `platform:` override. Upstream publishes this image for arm64 only ("amd64
+    # images are coming soon"), as a single-entry OCI index, so letting Docker match the
+    # host means an amd64 runner fails immediately at pull with `no matching manifest for
+    # linux/amd64`. Pinning `linux/arm64` here would instead force qemu emulation (slow
+    # enough to blow the build timeout) or a late `exec format error`, and would keep
+    # forcing emulation once upstream does publish amd64.
     # No `command` or `entrypoint` override: the image's own /entrypoint.sh execs
     # supervisord, which brings the app stack up and stays in the foreground.

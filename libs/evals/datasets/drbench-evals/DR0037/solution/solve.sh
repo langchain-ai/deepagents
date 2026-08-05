@@ -1,9 +1,0 @@
-#!/bin/sh
-set -eu
-printf '%s\n' '# Reference report
-
-1. In August 2024, Lee'"'"'s Market pioneered a new Ethical Governance System to monitor its ethical behavior. As part of the new EGS, the board of directors reviews the company'"'"'s performance in its environment, social, and ethical initiatives every three months and publishes a report to stakeholders via the blog on the company website and a direct email to subscribers.
-
-2. In December 2023, after a third-party review of Lee'"'"'s Market operational footprint, it was discovered that all of its stores in total created over 4200 tons of packaging trash annually and that most of it, over 80%, was not made from recycled materials.
-
-3. On an internal survey conducted by the public relations research team during Q3 of 2024, only 35% of Lee'"'"'s Market employees agreed that Lee'"'"'s Market "is an ethical alternative to large retailers." This contrasts with 65% of the general public who agreed, in a parallel external survey conducted by the public relations research team.' > /app/report.md

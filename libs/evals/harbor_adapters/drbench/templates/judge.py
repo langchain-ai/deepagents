@@ -45,6 +45,19 @@ _REPORT_PATH = Path("/app/report.md")
 _REWARD_JSON_PATH = Path("/logs/verifier/reward.json")
 _BREAKDOWN_PATH = Path("/logs/verifier/drbench_metrics.json")
 
+# Packages whose version can change a score, recorded in every breakdown. `drbench`
+# itself is pinned by commit in the Dockerfile, but it declares only version ranges for
+# these, so the image resolves them fresh from PyPI on each build: scikit-learn and
+# faiss-cpu drive factuality's embedding and retrieval, tiktoken drives chunking, and
+# openai is the judge transport.
+_SCORING_PACKAGES = (
+    "drbench",
+    "faiss-cpu",
+    "openai",
+    "scikit-learn",
+    "tiktoken",
+)
+
 # The metric names upstream's `get_metric` accepts, in report order.
 _UPSTREAM_METRICS = (
     "insights_recall",
@@ -646,8 +659,38 @@ def _grade() -> tuple[dict[str, float], dict[str, Any]]:
     return rewards, breakdown
 
 
+def _scoring_package_versions() -> dict[str, str]:
+    """Return the installed version of each package that can move a score.
+
+    Upstream declares version *ranges*, not pins, so `pip install -e /opt/drbench`
+    resolves these fresh from PyPI on every image build. Recording what actually got
+    installed makes a score shift between two runs diagnosable by diffing their
+    breakdowns, instead of leaving the resolver as an untracked variable.
+
+    Only names and versions of an explicit allowlist are read, so nothing about the
+    environment beyond the scoring surface is ever written out.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    versions: dict[str, str] = {}
+    for name in _SCORING_PACKAGES:
+        try:
+            versions[name] = version(name)
+        except PackageNotFoundError:
+            versions[name] = "absent"
+    return versions
+
+
 def _write_breakdown(breakdown: dict[str, Any]) -> None:
     """Write the diagnostic file, which has to survive a run that writes no reward."""
+    if "scoring_package_versions" not in breakdown:
+        # Recorded here rather than in `_grade` so an error breakdown carries it too --
+        # a resolver change is exactly the kind of thing that turns a working verifier
+        # into a crashing one.
+        try:
+            breakdown["scoring_package_versions"] = _scoring_package_versions()
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never fail the verifier
+            breakdown["scoring_package_versions"] = {"error": f"{type(exc).__name__}: {exc}"}
     try:
         _BREAKDOWN_PATH.parent.mkdir(parents=True, exist_ok=True)
         _BREAKDOWN_PATH.write_text(

@@ -1,16 +1,9 @@
-# App mode carries no document corpus on disk — upstream's per-task image serves the
-# documents to the agent, and the verifier reads them from the `drbench` package it
-# installs — so the only uncommitted files are the ones byte-identical across every task.
-# They are single-sourced in harbor_adapters/drbench/templates/ and laid down by
-# `python -m harbor_adapters.drbench.main --populate <dir>`.
+# No task directory is committed. All 100 are generated from upstream's configs at the
+# commit pinned in harbor_adapters/drbench/adapter.py (`UPSTREAM_SHA`), which is what
+# keeps the gold `solution/solve.sh` answer keys out of this repository.
 #
-# Only tests/case.json (this task's id and the upstream commit it is scored against) is
-# committed per task.
-*/environment/main.Dockerfile
-*/environment/extract_text.py
-*/tests/test.sh
-*/tests/judge.py
-# The verifier runs in its own environment, built from tests/ after the agent is done.
-*/tests/Dockerfile
-*/tests/docker-compose.yaml
-*/tests/.dockerignore
+# Build them with `make dataset` from libs/evals, or
+# `python -m harbor_adapters.drbench.main --populate datasets/drbench-evals`. CI runs the
+# same command in every research shard before `harbor run --path`.
+DR*/
+SANITY*/

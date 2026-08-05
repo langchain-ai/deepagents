@@ -798,13 +798,17 @@ def test_research_full_extends_lite_and_matches_the_benchmark_split():
     assert len(set(full)) == 30, "duplicate ids"
     assert set(lite) <= set(full)
 
-    vendor = (
+    # Read the committed label record rather than a task config: no task directory is
+    # committed any more (they are generated from a pinned upstream commit), and this
+    # suite must stay offline.
+    labels_path = (
         Path(up.__file__).resolve().parents[3]
-        / "libs/evals/harbor_adapters/drbench/vendor/tasks"
+        / "libs/evals/harbor_adapters/drbench/vendor/task_labels.json"
     )
+    labels = json.loads(labels_path.read_text(encoding="utf-8"))["labels"]
 
     def info(task_id: str) -> dict:
-        return json.loads((vendor / task_id / "info.json").read_text(encoding="utf-8"))
+        return labels[task_id]
 
     def industry(raw: object) -> str:
         text = str(raw).lower()
@@ -815,11 +819,7 @@ def test_research_full_extends_lite_and_matches_the_benchmark_split():
     difficulty = collections.Counter(info(t).get("difficulty") for t in full)
     assert dict(difficulty) == {"easy": 6, "medium": 7, "hard": 17}
     # Same ratio as the whole corpus, which is what makes 30 tasks a fair estimate of it.
-    whole = collections.Counter(
-        info(p.name).get("difficulty")
-        for p in sorted(vendor.iterdir())
-        if p.name.startswith("DR")
-    )
+    whole = collections.Counter(entry.get("difficulty") for entry in labels.values())
     assert dict(whole) == {"easy": 20, "medium": 23, "hard": 57}
     for level in ("easy", "medium", "hard"):
         assert difficulty[level] == round(whole[level] / 100 * 30)

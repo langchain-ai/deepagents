@@ -1336,6 +1336,38 @@ class TestBuildStreamConfig:
         config = build_stream_config("t-default-approve", assistant_id=None)
         assert "dcode_auto_approve" not in config["metadata"]
 
+    def test_term_program_included_when_set(self) -> None:
+        """The launch terminal should be identifiable in trace metadata."""
+        with patch.dict("os.environ", {"TERM_PROGRAM": "iTerm.app"}):
+            config = build_stream_config("t-term", assistant_id=None)
+        assert config["metadata"]["dcode_term_program"] == "iTerm.app"
+
+    def test_term_program_absent_when_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Terminals that never set `TERM_PROGRAM` omit the key entirely."""
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+        config = build_stream_config("t-no-term", assistant_id=None)
+        assert "dcode_term_program" not in config["metadata"]
+
+    def test_term_program_absent_when_empty(self) -> None:
+        """Shells that export `TERM_PROGRAM=""` are treated as unset."""
+        with patch.dict("os.environ", {"TERM_PROGRAM": ""}):
+            config = build_stream_config("t-empty-term", assistant_id=None)
+        assert "dcode_term_program" not in config["metadata"]
+
+    def test_term_program_absent_when_whitespace_only(self) -> None:
+        """A whitespace-only `TERM_PROGRAM` must not form a grouping bucket."""
+        with patch.dict("os.environ", {"TERM_PROGRAM": "   "}):
+            config = build_stream_config("t-blank-term", assistant_id=None)
+        assert "dcode_term_program" not in config["metadata"]
+
+    def test_term_program_stripped(self) -> None:
+        """A padded `TERM_PROGRAM` groups with its unpadded form."""
+        with patch.dict("os.environ", {"TERM_PROGRAM": "  vscode\n"}):
+            config = build_stream_config("t-padded-term", assistant_id=None)
+        assert config["metadata"]["dcode_term_program"] == "vscode"
+
 
 class TestGetGitBranch:
     """Tests for `_get_git_branch` caching."""

@@ -2002,6 +2002,51 @@ class TestDetectShadowedDcode:
         ):
             assert detect_shadowed_dcode() is None
 
+    def test_reports_shadow_when_resolution_cannot_be_verified(self, tmp_path) -> None:
+        """An unresolvable PATH entry falls back to reporting the shadow.
+
+        `Path.resolve` is non-strict, so a missing target does not raise — an
+        `OSError` here means something abnormal (`ELOOP`, `EACCES` on a path
+        component), which no realistic fixture produces. Patch it directly: the
+        fallback direction is the point. Suppressing the warning on an
+        unverifiable alias could strand the user on an old binary with no
+        explanation, while a false positive only costs an extra notice.
+        """
+        uv_bin = tmp_path / "uv-bin"
+        uv_bin.mkdir()
+        other_bin = tmp_path / "usr-local-bin"
+        other_bin.mkdir()
+        stale = other_bin / "dcode"
+        stale.write_text("")
+
+        def _which(name: str) -> str | None:
+            return str(stale) if name == "dcode" else None
+
+        real_resolve = Path.resolve
+
+        def _resolve(self: Path, strict: bool = False) -> Path:
+            # Fail only for the shadowing entry point. Failing every `resolve`
+            # would also break `_uv_tool_bin_dir`, which bails out earlier and
+            # would make this pass for the wrong reason.
+            if self == stale:
+                msg = "too many levels of symlinks"
+                raise OSError(msg)
+            return real_resolve(self, strict)
+
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch.dict(os.environ, {"UV_TOOL_BIN_DIR": str(uv_bin)}),
+            patch("shutil.which", side_effect=_which),
+            patch.object(Path, "resolve", _resolve),
+        ):
+            shadow = detect_shadowed_dcode()
+
+        assert shadow is not None
+        assert shadow.shadowing_bin == stale
+
     def test_returns_none_when_no_dcode_on_path(self, tmp_path) -> None:
         """Without any `dcode` on PATH there's nothing to be shadowed by."""
         uv_bin = tmp_path / "uv-bin"

@@ -1460,8 +1460,10 @@ def dependency_refresh_supported(
 class ShadowedDcode:
     """A different dcode entry point is winning on PATH than the one we upgraded.
 
-    Returned by `detect_shadowed_dcode` after a successful upgrade so the TUI can
-    warn the user that re-launching will pick up the wrong binary. The most
+    Returned by `detect_shadowed_dcode` after a successful upgrade so the user
+    can be warned that a *manually* launched `dcode` will pick up the wrong
+    binary. The startup auto-update's own restart is unaffected: it re-execs
+    `upgraded_bin` directly rather than going through a `PATH` lookup. The most
     common cause is a pre-uv install (e.g. a leftover from a previous
     `pipx`/`pip`-based install) earlier on `PATH` than the uv tool shims.
 
@@ -1589,7 +1591,7 @@ def _resolves_to_upgraded_entry_point(
     upgraded_bin_dir: Path,
     name: str,
 ) -> bool:
-    """Report whether a PATH entry point is the upgraded shim under another name.
+    """Report whether a PATH entry point resolves to the upgraded shim.
 
     Complements the directory comparison in `detect_shadowed_dcode`: a symlink
     outside uv's bin dir that points at uv's own shim runs the upgraded install,
@@ -1610,7 +1612,14 @@ def _resolves_to_upgraded_entry_point(
     try:
         return Path(path_entry).resolve() == (upgraded_bin_dir / name).resolve()
     except OSError:
-        logger.debug(
+        # `Path.resolve` is non-strict, so a merely missing path does not land
+        # here — an `OSError` means something abnormal (`ELOOP`, `EACCES` on a
+        # path component, `ENAMETOOLONG`). The consequence is user-visible: a
+        # false-positive warning telling them to fix a PATH conflict that may
+        # not exist. Log at `warning` for the same reason the sibling
+        # `path_dir.resolve()` guard in `detect_shadowed_dcode` does — an
+        # indeterminate result is worth surfacing to a developer, not masking.
+        logger.warning(
             "Could not compare %s at %s against the upgraded shim",
             name,
             path_entry,
@@ -1623,13 +1632,15 @@ def detect_shadowed_dcode() -> ShadowedDcode | None:
     """Return the shadowing dcode entry point on the user's PATH, if any.
 
     After a successful `uv tool upgrade`, the upgraded binary only takes effect
-    on the next launch if the user's `PATH` resolves to uv's tool bin dir for
-    `dcode` (and `deepagents-code`). A pre-uv install earlier on `PATH` will
-    silently win and report the old version, which looks like "the upgrade
+    on the next manual launch if the user's `PATH` resolves to uv's tool bin dir
+    for `dcode` (and `deepagents-code`) — or to a link into it, which the
+    resolved-target check below also accepts. A pre-uv install earlier on `PATH`
+    will silently win and report the old version, which looks like "the upgrade
     didn't work" to the user.
 
     This compares each supported console script against uv's tool bin dir. A
-    mismatch means a different binary will run next launch for that entry point.
+    mismatch means a different binary will run the next time the user launches
+    that entry point themselves.
 
     The primary comparison is between *directories* rather than resolved
     symlink targets (see the inline note below for why), but a directory
@@ -1641,9 +1652,10 @@ def detect_shadowed_dcode() -> ShadowedDcode | None:
 
     Returns:
         A `ShadowedDcode` describing the conflict, or `None` when there is no
-            shadowing binary (the common case) or when detection is not
-            applicable (non-uv install, uv bin dir unknown, no supported entry
-            point on `PATH` at all).
+            shadowing binary (the common case), when every entry point found on
+            `PATH` resolves into the upgraded install despite living elsewhere,
+            or when detection is not applicable (non-uv install, uv bin dir
+            unknown, no supported entry point on `PATH` at all).
     """
     if detect_install_method() != "uv":
         return None
@@ -1745,7 +1757,7 @@ def format_shadowed_dcode_warning(shadow: ShadowedDcode) -> str:
     indented_command = fix_command.replace("\n", "\n  ")
     return (
         "Update installed, but another `dcode` is earlier on your PATH and "
-        "will keep running the old version on relaunch:\n"
+        "will run the old version the next time you launch it yourself:\n"
         f"  Shadowing binary: {shadow.shadowing_bin}\n"
         f"  Upgraded shim:    {shadow.upgraded_bin}\n"
         "After closing dcode, run this to make the upgraded shim win in this "

@@ -21,12 +21,23 @@ REPOSITORY = "langchain-ai/deepagents"
 
 
 def _git(repo: Path, *args: str) -> str:
+    """Run git in *repo*, raising with git's own diagnosis when it fails.
+
+    `check=True` would raise a `CalledProcessError` whose message carries only
+    argv and the exit status, which turns an infrastructure failure into an
+    undebuggable report.
+    """
     result = subprocess.run(
         ["git", "-C", str(repo), *args],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    if result.returncode != 0:
+        raise AssertionError(
+            f"git {' '.join(args)} failed (exit {result.returncode}):\n"
+            f"{result.stdout}\n{result.stderr}"
+        )
     return result.stdout.strip()
 
 
@@ -35,6 +46,10 @@ def _init_repo(repo: Path) -> None:
     _git(repo, "config", "user.email", "release-test@example.com")
     _git(repo, "config", "user.name", "Release Test")
     _git(repo, "config", "commit.gpgSign", "false")
+    # Background maintenance forked by `git commit` can hold the repository
+    # locks while the next command runs, failing it with a lock error.
+    _git(repo, "config", "gc.auto", "0")
+    _git(repo, "config", "maintenance.auto", "false")
 
 
 def _commit(repo: Path, path: Path, content: str, message: str) -> str:

@@ -4,9 +4,11 @@ Precedence (highest first, earlier in reduction order):
 
 1. Project: `{project_root}/.deepagents/hooks.json`
 2. User: `~/.deepagents/hooks.json` (or `config_dir/hooks.json` in tests)
+3. Plugin: `hooks.json` documents contributed by enabled plugins
 
-Sources are concatenated per event. Project groups precede user groups so a
-project `continue: false` wins before lower-precedence handlers run.
+Sources are concatenated per event. Precedence is reduction order, not execution
+order: every matching handler runs, and the first one that stops processing
+decides the event.
 
 Legacy list-shaped documents are migrated only for events whose lifecycle
 semantics genuinely match Hooks v2.
@@ -17,13 +19,16 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from pathlib import (  # noqa: TC003 - used in runtime dataclass fields and path ops
-    Path,
-)
+from dataclasses import dataclass, field
+from pathlib import Path
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Final
 
 from pydantic import ValidationError
+from typing_extensions import override
 
 from deepagents_code.hooks.migration import (
     is_legacy_hooks_document,
@@ -37,8 +42,79 @@ from deepagents_code.hooks.models.config import (
 from deepagents_code.hooks.models.domain import HookDiagnostic, HookEvent
 from deepagents_code.model_config import DEFAULT_CONFIG_DIR
 
+if TYPE_CHECKING:
+    from deepagents_code.json_types import JsonValue
+
 logger = logging.getLogger(__name__)
 _LEGACY_HOOKS_REMOVAL_DATE = "September 1, 2026"
+
+
+@dataclass(frozen=True, slots=True)
+class HooksSource(ABC):
+    """Origin of the matcher groups contributed by one hooks document."""
+
+    location: str
+
+    @abstractmethod
+    def resolve_variables(self, value: str, *, shell_syntax: bool = False) -> str:
+        """Resolve the variable references this source defines.
+
+        Args:
+            value: One `argv` element, or a shell-form `command`.
+            shell_syntax: Whether a shell interprets `value`, in which case a
+                reference is rewritten for the shell instead of substituted.
+
+        Returns:
+            The resolved argument or command.
+        """
+
+
+@dataclass(frozen=True, slots=True)
+class FileHooksSource(HooksSource):
+    """A project or user hooks file, which defines no variables."""
+
+    @override
+    def resolve_variables(self, value: str, *, shell_syntax: bool = False) -> str:
+        """Return `value` as authored.
+
+        Returns:
+            The unchanged argument or command.
+        """
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class PluginHooksSource(HooksSource):
+    """Origin and environment for groups one enabled plugin contributed."""
+
+    plugin_id: str
+    env: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Freeze the environment overlay so the snapshot cannot be mutated."""
+        object.__setattr__(self, "env", MappingProxyType(dict(self.env)))
+
+    @override
+    def resolve_variables(self, value: str, *, shell_syntax: bool = False) -> str:
+        """Substitute direct arguments, or adapt shell references for Windows.
+
+        Returns:
+            The resolved argument or command.
+        """
+        if shell_syntax and os.name != "nt":
+            return value
+        for key, replacement in self.env.items():
+            value = value.replace(
+                f"${{{key}}}", f"%{key}%" if shell_syntax else replacement
+            )
+        return value
+
+
+SourcedGroup = tuple[HooksSource, MatcherGroup]
+
+
+UNSOURCED: Final = FileHooksSource(location="")
+"""Provenance for groups handled without it, adding no origin or env overlay."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +125,9 @@ class LoadedHooksConfig:
     diagnostics: tuple[HookDiagnostic, ...]
     sources: tuple[Path, ...]
     snapshot_id: str
+    groups: Mapping[HookEvent, tuple[SourcedGroup, ...]]
+    """Merged matcher groups with provenance, in the same order as `config`."""
+
     project_source_loaded: bool = False
     """Whether the project-scoped source was selected and successfully loaded.
 
@@ -56,6 +135,9 @@ class LoadedHooksConfig:
     contributed configuration. Never inferred from path membership after
     canonical deduplication (symlinks / shared config dirs can alias paths).
     """
+
+    project_source_fingerprint: str | None = None
+    """SHA-256 fingerprint of the exact project source bytes that were loaded."""
 
 
 def project_hooks_path(project_root: Path) -> Path:
@@ -88,6 +170,8 @@ def load_hooks_config(
     workspace_trusted: bool,
     config_dir: Path | None = None,
     paths: Sequence[Path] | None = None,
+    documents: Sequence[tuple[HooksSource, JsonValue]] = (),
+    document_diagnostics: Sequence[HookDiagnostic] = (),
 ) -> LoadedHooksConfig:
     """Load, validate, merge, and hash Hooks v2 configuration.
 
@@ -98,28 +182,38 @@ def load_hooks_config(
         paths: Explicit trusted source paths in precedence order (highest first).
             When omitted, project hooks are included only for trusted workspaces,
             followed by user hooks.
+        documents: Already-decoded plugin documents with their provenance, merged
+            after every file source so they hold the least authority. Validated
+            here, so a malformed one is reported rather than dropped.
+        document_diagnostics: Diagnostics the caller collected while producing
+            `documents`, carried into the load result.
 
     Returns:
         Frozen load result with canonical `snapshot_id` and explicit project
         source provenance.
     """
-    diagnostics: list[HookDiagnostic] = []
-    merged: dict[HookEvent, list[MatcherGroup]] = {}
+    diagnostics: list[HookDiagnostic] = list(document_diagnostics)
+    merged: dict[HookEvent, list[SourcedGroup]] = {}
     loaded_paths: list[Path] = []
     project_source_loaded = False
+    project_source_fingerprint: str | None = None
+
+    def _merge(document: HooksConfig, source: HooksSource) -> None:
+        for event, groups in document.hooks.items():
+            merged.setdefault(event, []).extend((source, group) for group in groups)
 
     def _ingest(path: Path, *, as_project: bool) -> None:
-        nonlocal project_source_loaded
+        nonlocal project_source_fingerprint, project_source_loaded
         resolved = path.expanduser().resolve(strict=False)
-        document, file_diagnostics = _read_hooks_document(resolved)
+        document, file_diagnostics, fingerprint = _read_hooks_document(resolved)
         diagnostics.extend(file_diagnostics)
         if document is None:
             return
         if as_project:
             project_source_loaded = True
+            project_source_fingerprint = fingerprint
         loaded_paths.append(resolved)
-        for event, groups in document.hooks.items():
-            merged.setdefault(event, []).extend(groups)
+        _merge(document, FileHooksSource(location=str(resolved)))
 
     if paths is not None:
         for path in dict.fromkeys(
@@ -137,43 +231,77 @@ def load_hooks_config(
     else:
         _ingest(user_hooks_path(config_dir), as_project=False)
 
-    config = HooksConfig(hooks=merged)
+    for source, raw_document in documents:
+        document, validation_diagnostics = _validate_hooks_document(
+            raw_document, Path(source.location)
+        )
+        diagnostics.extend(validation_diagnostics)
+        if document is not None:
+            _merge(document, source)
+
+    groups = MappingProxyType(
+        {event: tuple(sourced) for event, sourced in merged.items()}
+    )
+    config = HooksConfig(
+        hooks={
+            event: [group for _source, group in sourced_groups]
+            for event, sourced_groups in groups.items()
+        }
+    )
     return LoadedHooksConfig(
         config=config,
         diagnostics=tuple(diagnostics),
         sources=tuple(loaded_paths),
-        snapshot_id=compute_snapshot_id(config),
+        snapshot_id=compute_snapshot_id(config, groups=groups),
+        groups=groups,
         project_source_loaded=project_source_loaded,
+        project_source_fingerprint=project_source_fingerprint,
     )
 
 
-def compute_snapshot_id(config: HooksConfig) -> str:
+def compute_snapshot_id(
+    config: HooksConfig,
+    *,
+    groups: Mapping[HookEvent, Sequence[SourcedGroup]] | None = None,
+) -> str:
     """Return the canonical SHA-256 snapshot id for `config`.
 
     Args:
         config: Validated Hooks v2 configuration.
+        groups: Matching sourced groups, so provenance participates in the hash.
 
     Returns:
         Lowercase hex digest of the canonical JSON serialization.
     """
-    return hashlib.sha256(canonical_hooks_bytes(config)).hexdigest()
+    return hashlib.sha256(canonical_hooks_bytes(config, groups=groups)).hexdigest()
 
 
-def canonical_hooks_bytes(config: HooksConfig) -> bytes:
+def canonical_hooks_bytes(
+    config: HooksConfig,
+    *,
+    groups: Mapping[HookEvent, Sequence[SourcedGroup]] | None = None,
+) -> bytes:
     """Serialize configuration into a stable byte representation.
 
     Args:
         config: Validated Hooks v2 configuration.
+        groups: Matching sourced groups. When supplied, each group additionally
+            records its non-file origin and environment overlay, so enabling a
+            plugin that contributes hooks changes the snapshot id. Groups from
+            the project and user files serialize identically either way.
 
     Returns:
         UTF-8 JSON with sorted keys, event order fixed to `HookEvent`, and
         `None` fields omitted. Unsupported fields such as `async` are
         excluded so equivalent configs hash identically.
     """
+    known = groups or {}
     payload = {
         "hooks": {
             event.value: [
-                _canonical_group(group) for group in config.hooks.get(event, [])
+                _canonical_group(group, source=source)
+                for source, group in known.get(event)
+                or [(UNSOURCED, group) for group in config.hooks[event]]
             ]
             for event in HookEvent
             if event in config.hooks
@@ -187,7 +315,7 @@ def canonical_hooks_bytes(config: HooksConfig) -> bytes:
     ).encode("utf-8")
 
 
-def _canonical_group(group: MatcherGroup) -> dict[str, object]:
+def _canonical_group(group: MatcherGroup, *, source: HooksSource) -> dict[str, object]:
     raw = group.model_dump(
         mode="json", by_alias=True, exclude_none=True, exclude_defaults=True
     )
@@ -203,33 +331,60 @@ def _canonical_group(group: MatcherGroup) -> dict[str, object]:
     matcher = raw.get("matcher")
     if matcher is not None:
         result["matcher"] = matcher
+    if isinstance(source, PluginHooksSource):
+        result["origin"] = source.plugin_id
+        if source.env:
+            result["env"] = dict(sorted(source.env.items()))
     return result
+
+
+def read_hooks_json(
+    path: Path,
+) -> tuple[bool, JsonValue, tuple[HookDiagnostic, ...], str | None]:
+    """Decode one hooks document and fingerprint the exact bytes read.
+
+    Args:
+        path: Document path.
+
+    Returns:
+        Whether decoding succeeded, the decoded document, diagnostics, and the
+        exact-byte SHA-256 fingerprint. An absent file is not a diagnostic.
+    """
+    if not path.is_file():
+        return False, None, (), None
+    try:
+        content = path.read_bytes()
+        decoded: JsonValue = json.loads(content.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        message = f"Failed to read hooks config at {path}: {exc}"
+        logger.warning(message)
+        return (
+            False,
+            None,
+            (
+                HookDiagnostic(
+                    code="config_read_failed",
+                    severity="warning",
+                    message=message,
+                    field=str(path),
+                ),
+            ),
+            None,
+        )
+    return True, decoded, (), hashlib.sha256(content).hexdigest()
 
 
 def _read_hooks_document(
     path: Path,
-) -> tuple[HooksConfig | None, tuple[HookDiagnostic, ...]]:
-    if not path.is_file():
-        return None, ()
-    try:
-        raw = path.read_text(encoding="utf-8")
-        data: object = json.loads(raw)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        message = f"Failed to read hooks config at {path}: {exc}"
-        logger.warning(message)
-        return None, (
-            HookDiagnostic(
-                code="config_read_failed",
-                severity="warning",
-                message=message,
-                field=str(path),
-            ),
-        )
+) -> tuple[HooksConfig | None, tuple[HookDiagnostic, ...], str | None]:
+    decoded, data, read_diagnostics, fingerprint = read_hooks_json(path)
+    if not decoded:
+        return None, read_diagnostics, None
 
     if is_legacy_hooks_document(data):
         hooks = data.get("hooks", []) if isinstance(data, dict) else []
         if not isinstance(hooks, list):
-            return None, (
+            diagnostics = (
                 HookDiagnostic(
                     code="invalid_config",
                     severity="warning",
@@ -237,6 +392,7 @@ def _read_hooks_document(
                     field=str(path),
                 ),
             )
+            return None, diagnostics, fingerprint
         legacy_entries: list[dict[str, object]] = [
             {str(key): value for key, value in item.items()}
             for item in hooks
@@ -252,7 +408,7 @@ def _read_hooks_document(
                 "migrate to Hooks v2"
             )
         )
-        return migrated, (
+        diagnostics = (
             HookDiagnostic(
                 code="legacy_deprecated",
                 severity="warning",
@@ -269,8 +425,10 @@ def _read_hooks_document(
                 field=str(path),
             ),
         )
+        return migrated, diagnostics, fingerprint
 
-    return _validate_hooks_document(data, path)
+    document, diagnostics = _validate_hooks_document(data, path)
+    return document, diagnostics, fingerprint
 
 
 def _validate_hooks_document(

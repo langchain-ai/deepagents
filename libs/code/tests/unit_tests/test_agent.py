@@ -2794,6 +2794,11 @@ class TestMiddlewareStackConformance:
         """
         from langchain.agents.middleware.types import AgentMiddleware
 
+        from deepagents_code.cost_tracking import CostTrackingMiddleware
+        from deepagents_code.goal_tools import GoalToolsMiddleware
+        from deepagents_code.reliable_rubric import ReliableRubricMiddleware
+        from deepagents_code.resume_state import ResumeStateMiddleware
+
         agent_dir = tmp_path / "agent"
         agent_dir.mkdir()
         skills_dir = tmp_path / "skills"
@@ -2852,6 +2857,28 @@ class TestMiddlewareStackConformance:
             assert isinstance(mw, AgentMiddleware), (
                 f"{type(mw).__name__} does not inherit from AgentMiddleware"
             )
+
+        middleware_types = [type(middleware) for middleware in middleware_list]
+        assert middleware_types.count(CostTrackingMiddleware) == 1
+        assert (
+            middleware_types.index(ResumeStateMiddleware)
+            < middleware_types.index(CostTrackingMiddleware)
+            < middleware_types.index(GoalToolsMiddleware)
+        )
+        # `after_agent` hooks run in reverse list order, so cost tracking must
+        # stay *before* the rubric middleware. Reversed, the grading agent's
+        # spend lands in the next turn's checkpoint or is lost outright on a
+        # session's final turn. The two are registered ~460 lines apart in
+        # different functions, so nothing but this assertion pins the order.
+        assert middleware_types.index(CostTrackingMiddleware) < middleware_types.index(
+            ReliableRubricMiddleware
+        )
+        # The main agent owns the thread's cumulative cost; only nested
+        # instances opt out of writing it.
+        cost_middleware = next(
+            mw for mw in middleware_list if isinstance(mw, CostTrackingMiddleware)
+        )
+        assert cost_middleware._nested is False
 
 
 class TestEnableAskUser:
@@ -3516,21 +3543,20 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 isinstance(mw, ShellAllowListMiddleware) for mw in middleware
             ), f"Unexpected shell middleware on subagent {name!r}"
 
-    def test_subagent_middleware_combines_shell_and_configurable_model(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    def test_subagent_middleware_combines_shell_configurable_model_and_cost(
+        self, tmp_path: Path
     ) -> None:
-        """Restrictive shell + implicit model should yield both middlewares.
+        """Restrictive shell + implicit model should yield shell, model, and cost.
 
-        Explicitly pinned subagents keep shell restriction but must not gain
-        `ConfigurableModelMiddleware`, which would let a runtime `/model` switch
-        clobber the pinned model.
+        Explicitly pinned subagents keep shell restriction and cost tracking but
+        must not gain `ConfigurableModelMiddleware`, which would let a runtime
+        `/model` switch clobber the pinned model.
         """
-        from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.agent import ShellAllowListMiddleware
         from deepagents_code.configurable_model import ConfigurableModelMiddleware
+        from deepagents_code.cost_tracking import CostTrackingMiddleware
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent
@@ -3588,10 +3614,18 @@ class TestCreateCliAgentShellMiddlewareWiring:
             ]
             assert middleware_types == [
                 ConfigurableModelMiddleware,
+                CostTrackingMiddleware,
                 ShellAllowListMiddleware,
                 ServerHooksMiddleware,
             ], f"Unexpected middleware on subagent {name!r}: {middleware_types}"
             assert subagents_by_name[name]["middleware"][-1]._emit_stop is False
+            # Nested spend is priced once by the main agent, so a subagent's
+            # instance must not also write the shared cost channel.
+            assert all(
+                mw._nested
+                for mw in subagents_by_name[name]["middleware"]
+                if isinstance(mw, CostTrackingMiddleware)
+            ), f"Subagent {name!r} must install cost tracking in nested mode"
 
         pinned = subagents_by_name["pinned"]
         assert pinned["model"] == "anthropic:claude-haiku-4-5"
@@ -3599,6 +3633,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
         assert any(
             isinstance(mw, ShellAllowListMiddleware) for mw in pinned_middleware
         ), "Pinned subagent should retain shell middleware"
+        assert any(
+            isinstance(mw, CostTrackingMiddleware) and mw._nested
+            for mw in pinned_middleware
+        ), "Pinned subagent should retain nested cost tracking"
         assert not any(
             isinstance(mw, ConfigurableModelMiddleware) for mw in pinned_middleware
         ), "Pinned subagent must not gain configurable model middleware"
@@ -4844,11 +4882,144 @@ class TestCreateCliAgentInterpreterWiring:
             compaction_middleware
         )
 
+    def test_auto_classifier_model_argument_reaches_middleware(
+        self, tmp_path: Path
+    ) -> None:
+        """An explicit classifier model is handed to the Auto middleware."""
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        middleware = self._capture_middleware(
+            tmp_path,
+            auto_mode_enabled=True,
+            auto_classifier_model="openai:gpt-5.5-mini",
+        )
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert auto_middleware._configured_classifier_model == "openai:gpt-5.5-mini"
+
+    def test_auto_classifier_model_falls_back_to_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without an argument, env / `config.toml` decide the classifier."""
+        from deepagents_code._env_vars import AUTO_CLASSIFIER_MODEL
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        monkeypatch.setenv(AUTO_CLASSIFIER_MODEL, "anthropic:claude-haiku-4-5")
+        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert (
+            auto_middleware._configured_classifier_model == "anthropic:claude-haiku-4-5"
+        )
+
+    def test_auto_classifier_model_argument_beats_env(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The explicit argument outranks env / `config.toml`.
+
+        The tiers are only ever exercised separately elsewhere, so an inverted
+        precedence would let a stale exported env var quietly authorize actions
+        with a model the caller did not choose.
+        """
+        from deepagents_code._env_vars import AUTO_CLASSIFIER_MODEL
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        monkeypatch.setenv(AUTO_CLASSIFIER_MODEL, "anthropic:stale-from-env")
+        middleware = self._capture_middleware(
+            tmp_path,
+            auto_mode_enabled=True,
+            auto_classifier_model="openai:gpt-5.5-mini",
+        )
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert auto_middleware._configured_classifier_model == "openai:gpt-5.5-mini"
+
+    def test_auto_classifier_model_defaults_to_inheriting(self, tmp_path: Path) -> None:
+        """Nothing configured leaves the classifier on the main agent model."""
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert auto_middleware._configured_classifier_model is None
+
+    def test_auto_classifier_timeout_comes_from_the_resolver(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The middleware deadline is whatever the bounded resolver returned.
+
+        Asserting the manifest default here would be a tautology — the
+        middleware's own parameter default *is* that constant, so the assertion
+        would hold even if `create_cli_agent` stopped passing the keyword. A
+        sentinel that differs from the default pins the wiring itself.
+        """
+        from deepagents_code import config_manifest
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+        from deepagents_code.config_manifest import (
+            AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        )
+
+        sentinel = 7.5
+        assert sentinel != AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+        monkeypatch.setattr(
+            config_manifest,
+            "resolve_auto_classifier_timeout",
+            lambda **_kwargs: sentinel,
+        )
+
+        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert auto_middleware._classifier_timeout_seconds == pytest.approx(sentinel)
+
+    def test_auto_classifier_timeout_defaults_to_manifest_default(
+        self, tmp_path: Path
+    ) -> None:
+        """Nothing configured leaves the classifier on the default deadline."""
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+        from deepagents_code.config_manifest import (
+            AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        )
+
+        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert (
+            auto_middleware._classifier_timeout_seconds
+            == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+        )
+
+    def test_auto_classifier_timeout_reads_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A configured deadline reaches the Auto middleware."""
+        from deepagents_code._env_vars import AUTO_CLASSIFIER_TIMEOUT
+        from deepagents_code.auto_mode import AutoModeHITLMiddleware
+
+        monkeypatch.setenv(AUTO_CLASSIFIER_TIMEOUT, "45")
+        middleware = self._capture_middleware(tmp_path, auto_mode_enabled=True)
+
+        auto_middleware = next(
+            item for item in middleware if isinstance(item, AutoModeHITLMiddleware)
+        )
+        assert auto_middleware._classifier_timeout_seconds == pytest.approx(45.0)
+
     @pytest.mark.parametrize("auto_mode_enabled", [True, False])
     def test_single_hitl_slot_precedes_server_hooks(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
         *,
         auto_mode_enabled: bool,
     ) -> None:
@@ -4860,10 +5031,8 @@ class TestCreateCliAgentInterpreterWiring:
         stay behind whichever one is installed so its `after_model` `PreToolUse`
         pass resolves before approval routing.
         """
-        from deepagents_code._env_vars import EXPERIMENTAL
         from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
-        monkeypatch.setenv(EXPERIMENTAL, "1")
         middleware = self._capture_middleware(
             tmp_path, auto_mode_enabled=auto_mode_enabled
         )

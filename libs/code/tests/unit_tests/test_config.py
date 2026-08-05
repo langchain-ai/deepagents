@@ -14,6 +14,7 @@ from deepagents_code import _git as git_module, model_config
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._version import __version__
 from deepagents_code.config import (
+    _MCP_STREAMABLE_HTTP_LOGGER_NAME,
     _QUIET_SDK_LOGGER_NAMES,
     CLI_MAX_RETRIES_KEY,
     LANGSMITH_EU_ENDPOINT,
@@ -31,6 +32,7 @@ from deepagents_code.config import (
     _create_model_via_init,
     _disable_orphaned_tracing,
     _get_provider_kwargs,
+    _McpShutdownRaceFilter,
     _quiet_sdk_logging,
     _read_config_toml_retries,
     _resolve_retry_kwargs,
@@ -3752,22 +3754,111 @@ class TestQuietSdkLogging:
         assert genai_prices.update_prices.logger.name in _QUIET_SDK_LOGGER_NAMES
 
     def test_covers_the_logger_mcp_actually_uses(self) -> None:
-        """The MCP streamable-HTTP transport's logger must be quieted.
+        """The shutdown-race filter targets the transport's real logger.
 
         When the app quits while an HTTP MCP response is in flight, the
         transport's response task finds the session stream already closed and
         logs `logger.exception("Error parsing JSON response")` with an
-        `anyio.ClosedResourceError` traceback. Unhandled, that clears
-        `logging.lastResort`'s WARNING threshold and prints over the terminal.
-        The transport logs under `mcp.client.streamable_http`, a child of the
-        quieted `mcp` logger. Reading the name off the module pins the
-        coupling, so an upstream rename fails here rather than in a user's
-        terminal.
+        `anyio.ClosedResourceError` traceback. The filter must sit on that
+        exact logger -- logger-level filters do not run for records propagated
+        from children, so filtering the `mcp` root would miss these records.
+        Reading the name off the module pins the coupling, so an upstream
+        rename fails here rather than in a user's terminal.
         """
         import mcp.client.streamable_http
 
-        assert mcp.client.streamable_http.logger.name.startswith("mcp")
-        assert "mcp" in _QUIET_SDK_LOGGER_NAMES
+        assert (
+            mcp.client.streamable_http.logger.name == _MCP_STREAMABLE_HTTP_LOGGER_NAME
+        )
+
+    def test_mcp_shutdown_race_record_is_dropped(self) -> None:
+        """A closed/broken-resource exception record is filtered out."""
+        import anyio
+
+        f = _McpShutdownRaceFilter()
+        for exc in (anyio.ClosedResourceError(), anyio.BrokenResourceError()):
+            record = logging.LogRecord(
+                _MCP_STREAMABLE_HTTP_LOGGER_NAME,
+                logging.ERROR,
+                __file__,
+                0,
+                "Error parsing JSON response",
+                (),
+                (type(exc), exc, None),
+            )
+            assert f.filter(record) is False
+
+    def test_mcp_shutdown_race_filter_unwraps_exception_groups(self) -> None:
+        """Task-group cancellation wraps the closed-resource error in a group."""
+        import anyio
+
+        f = _McpShutdownRaceFilter()
+        grouped = BaseExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [ValueError("other"), anyio.ClosedResourceError()],
+        )
+        record = logging.LogRecord(
+            _MCP_STREAMABLE_HTTP_LOGGER_NAME,
+            logging.ERROR,
+            __file__,
+            0,
+            "Error parsing JSON response",
+            (),
+            (type(grouped), grouped, None),
+        )
+        assert f.filter(record) is False
+
+    def test_mcp_shutdown_race_filter_keeps_other_records(self) -> None:
+        """Other transport diagnostics -- OAuth, SSE, parse errors -- pass through."""
+        f = _McpShutdownRaceFilter()
+        no_exc = logging.LogRecord(
+            _MCP_STREAMABLE_HTTP_LOGGER_NAME,
+            logging.WARNING,
+            __file__,
+            0,
+            "Unknown SSE event: ping",
+            (),
+            None,
+        )
+        assert f.filter(no_exc) is True
+
+        err = ValueError("boom")
+        with_exc = logging.LogRecord(
+            _MCP_STREAMABLE_HTTP_LOGGER_NAME,
+            logging.ERROR,
+            __file__,
+            0,
+            "Error parsing SSE message",
+            (),
+            (type(err), err, None),
+        )
+        assert f.filter(with_exc) is True
+
+    def test_mcp_shutdown_race_filter_installation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The filter is installed once without debug, removed with debug on."""
+        from deepagents_code._env_vars import DEBUG
+
+        transport_logger = logging.getLogger(_MCP_STREAMABLE_HTTP_LOGGER_NAME)
+        for f in list(transport_logger.filters):
+            transport_logger.removeFilter(f)
+        monkeypatch.delenv(DEBUG, raising=False)
+
+        _quiet_sdk_logging()
+        _quiet_sdk_logging()
+
+        installed = [
+            f for f in transport_logger.filters if isinstance(f, _McpShutdownRaceFilter)
+        ]
+        assert len(installed) == 1
+
+        monkeypatch.setenv(DEBUG, "1")
+        _quiet_sdk_logging()
+
+        assert not [
+            f for f in transport_logger.filters if isinstance(f, _McpShutdownRaceFilter)
+        ]
 
     def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Repeated calls do not stack duplicate handlers."""

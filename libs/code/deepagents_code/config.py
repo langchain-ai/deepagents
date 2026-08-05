@@ -558,23 +558,85 @@ _QUIET_SDK_LOGGER_NAMES = (
     "genai-prices",
     "langchain",
     "langsmith",
-    "mcp",
 )
+
+_MCP_STREAMABLE_HTTP_LOGGER_NAME = "mcp.client.streamable_http"
+
+
+class _McpShutdownRaceFilter(logging.Filter):
+    """Drop the MCP streamable-HTTP transport's shutdown-race record.
+
+    When the app quits while an HTTP MCP response is in flight, the
+    transport's response task finds the session stream already closed and
+    logs `logger.exception("Error parsing JSON response")` with the closed-
+    resource exception. The record is redundant: the transport also sends the
+    exception into the read stream, so the caller already surfaces the error.
+    Dropping it here keeps the traceback off the terminal without quieting
+    the rest of the `mcp` hierarchy -- OAuth failures, SSE parse errors, and
+    other diagnostics users actually troubleshoot with stay on stderr.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Return `False` for shutdown-race records, `True` for everything else."""
+        if record.exc_info is None or record.exc_info[1] is None:
+            return True
+        return not self._is_closed_resource(record.exc_info[1])
+
+    @classmethod
+    def _is_closed_resource(cls, exc: BaseException) -> bool:
+        """Check for anyio closed/broken-resource errors, including grouped ones.
+
+        Args:
+            exc: The exception from the log record's `exc_info`.
+
+        Returns:
+            `True` if *exc* is (or wraps, via `BaseExceptionGroup`) an anyio
+            closed/broken-resource error, `False` otherwise.
+        """
+        import anyio
+
+        if isinstance(exc, (anyio.ClosedResourceError, anyio.BrokenResourceError)):
+            return True
+        # Task-group cancellation can wrap the closed-resource error in an
+        # `ExceptionGroup`; anyio 4.x also exposes `BaseExceptionGroup` itself.
+        if isinstance(exc, BaseExceptionGroup):
+            return any(cls._is_closed_resource(sub) for sub in exc.exceptions)
+        return False
+
+
+def _install_mcp_shutdown_race_filter() -> None:
+    """Filter the MCP shutdown-race record unless debug logging is on.
+
+    The filter must live on the `mcp.client.streamable_http` logger itself:
+    logger-level filters only run for records logged directly on that logger,
+    so attaching it to the `mcp` root would never see the transport's records.
+    With `DEEPAGENTS_CODE_DEBUG` set, no filter is installed so the race (and
+    everything else) still lands in the debug log.
+    """
+    from deepagents_code._env_vars import DEBUG, is_env_truthy
+
+    transport_logger = logging.getLogger(_MCP_STREAMABLE_HTTP_LOGGER_NAME)
+    existing = [
+        f for f in transport_logger.filters if isinstance(f, _McpShutdownRaceFilter)
+    ]
+    if is_env_truthy(DEBUG):
+        for f in existing:
+            transport_logger.removeFilter(f)
+        return
+    if not existing:
+        transport_logger.addFilter(_McpShutdownRaceFilter())
 
 
 def _quiet_sdk_logging() -> None:
     """Keep non-actionable SDK diagnostics off the terminal.
 
-    The harness-profile resolver, tracing SDKs, the `genai-prices` price
-    updater, and the MCP SDK emit diagnostics on their own logger hierarchies.
-    With no handler attached, warnings reach Python's last-resort stderr handler
-    and can bleed into command output or the alternate-screen TUI -- the price
-    updater logs at ERROR from a background thread once an hour, and the MCP
-    streamable-HTTP transport logs `logger.exception("Error parsing JSON
-    response")` when its response-handling task races a quick exit and finds
-    the session stream already closed (`anyio.ClosedResourceError`), so an
-    offline, proxied, or quickly-quit session would otherwise get a stderr
-    traceback over the TUI. Route them to the debug log when
+    The harness-profile resolver, tracing SDKs, and the `genai-prices` price
+    updater emit diagnostics on their own logger hierarchies. With no handler
+    attached, warnings reach Python's last-resort stderr handler and can bleed
+    into command output or the alternate-screen TUI -- the price updater logs
+    at ERROR from a background thread once an hour, so an offline or
+    proxied session would otherwise get a stderr line over the TUI on every
+    failed refresh. Route them to the debug log when
     `DEEPAGENTS_CODE_DEBUG` is set, otherwise attach a `NullHandler` so they stay
     off the terminal. Other Deep Agents loggers remain untouched so actionable
     runtime warnings are still visible.
@@ -582,6 +644,7 @@ def _quiet_sdk_logging() -> None:
     from deepagents_code._debug import configure_debug_logging
     from deepagents_code._env_vars import DEBUG, is_env_truthy
 
+    _install_mcp_shutdown_race_filter()
     debug_enabled = is_env_truthy(DEBUG)
     for name in _QUIET_SDK_LOGGER_NAMES:
         sdk_logger = logging.getLogger(name)

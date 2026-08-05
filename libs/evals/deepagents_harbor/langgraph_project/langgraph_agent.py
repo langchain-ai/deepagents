@@ -314,9 +314,16 @@ def make_graph(config: dict[str, object] | None = None) -> object:
         # route `get_system_prompt` through `get_default_working_dir(sandbox_type)`,
         # which raises `ValueError` for any provider not in dcode's sandbox registry
         # (e.g. "harbor", which is not a registered provider).
+        # `web_search` on the same terms as the bare graph. Without it the deep-research
+        # tasks are unwinnable as written: every DRBench prompt tells the agent to research
+        # the open web, and part of each task's ground truth exists only there. The
+        # research preflight hard-fails on a missing TAVILY_API_KEY for exactly this
+        # reason, which would have been defeated by handing dcode the key and not the tool.
+        search_tool = _web_search_tool()
         graph, _backend = create_cli_agent(
             model=model,
             assistant_id=assistant_id,
+            tools=[search_tool] if search_tool is not None else None,
             sandbox=None,
             interactive=False,
             auto_approve=True,

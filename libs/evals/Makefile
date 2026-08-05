@@ -122,8 +122,9 @@ eval-catalog: ## Regenerate EVAL_CATALOG.md from eval test files
 dataset: ## Build the DRBench task dataset from the pinned upstream commit
 	uv run python -m harbor_adapters.drbench.main --populate datasets/drbench-evals
 
-dataset-check: ## Verify DRBench labels match upstream and generation is deterministic
+dataset-check: ## Verify DRBench pins match upstream and generation is deterministic
 	uv run python -m harbor_adapters.drbench.main --check-labels
+	uv run python -m harbor_adapters.drbench.main --check-subsets
 	@set -eu; \
 	first=$$(mktemp -d); second=$$(mktemp -d); \
 	trap 'rm -rf "$$first" "$$second"' EXIT; \

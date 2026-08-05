@@ -835,3 +835,51 @@ def test_mcp_connections_rejects_stdio_servers() -> None:
 def test_mcp_connections_requires_forwarded_servers() -> None:
     with pytest.raises(ValueError, match="mcp_servers"):
         langgraph_agent._mcp_connections({})
+
+
+def test_make_graph_offers_dcode_the_web_search_tool(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`research` advertises both harnesses, so dcode needs the tool the prompt assumes.
+
+    Every DRBench prompt tells the agent to research the open web, and part of each task's
+    ground truth exists only there. The research preflight hard-fails on a missing
+    TAVILY_API_KEY for exactly this reason -- which handing dcode the key and not the tool
+    would have defeated silently.
+    """
+    captured: list[object] = []
+
+    def fake_create_cli_agent(**kwargs: object) -> tuple[object, object]:
+        captured.append(kwargs.get("tools"))
+        return object(), object()
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: object())
+    monkeypatch.setattr(langgraph_agent, "create_cli_agent", fake_create_cli_agent)
+    monkeypatch.setenv("HARBOR_MODEL", "anthropic:test-model")
+    monkeypatch.setenv("TAVILY_API_KEY", "present")
+
+    langgraph_agent.make_graph({"configurable": {"cwd": str(tmp_path)}})
+
+    tools = captured[0]
+    assert isinstance(tools, list)
+    assert [getattr(t, "name", None) for t in tools] == ["web_search"]
+
+
+def test_make_graph_passes_no_tools_when_the_search_key_is_absent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Without a key the tool cannot work, and an unusable tool is worse than none."""
+    captured: list[object] = []
+
+    def fake_create_cli_agent(**kwargs: object) -> tuple[object, object]:
+        captured.append(kwargs.get("tools"))
+        return object(), object()
+
+    monkeypatch.setattr(langgraph_agent, "init_chat_model", lambda *_a, **_k: object())
+    monkeypatch.setattr(langgraph_agent, "create_cli_agent", fake_create_cli_agent)
+    monkeypatch.setenv("HARBOR_MODEL", "anthropic:test-model")
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+    langgraph_agent.make_graph({"configurable": {"cwd": str(tmp_path)}})
+
+    assert captured[0] is None

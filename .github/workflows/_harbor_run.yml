@@ -107,6 +107,13 @@ on:
         # registries; that needs OPENROUTER_API_KEY in the `evals` environment.
         type: string
         default: "gpt-5.6-luna"
+      research_judge_models:
+        # Grader for the `research` (DRBench) verifier only, when it must differ from the
+        # suite-wide `judge_models`. Empty means: use `judge_models` if DRBench can drive
+        # it, otherwise fall back to `gpt-4o` with a warning. Set explicitly and DRBench
+        # must be able to drive the value, or the run fails rather than being rewritten.
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -310,8 +317,16 @@ jobs:
       # DRBench's judge is tracked separately because it cannot use the suite-wide default:
       # upstream routes on the model name and drives only `gpt-4o`/`gpt-4o-mini` directly.
       # Sharing one variable would leave the verifier unable to tell that default from a
-      # deliberate override. An override applies to both.
-      HARBOR_DRBENCH_JUDGE: ${{ inputs.judge_models || 'gpt-4o' }}
+      # deliberate override.
+      #
+      # `research_judge_models` wins, then `judge_models`, then `gpt-4o`. The middle case is
+      # why the preflight falls back rather than failing: the ordinary independent-grader
+      # flow sets one suite-wide `judge_models` for tau3 and harbor-index, and a value
+      # DRBench cannot drive must not take the whole research leaf down with it.
+      HARBOR_DRBENCH_JUDGE: ${{ inputs.research_judge_models || inputs.judge_models || 'gpt-4o' }}
+      # Empty unless the research judge was pinned deliberately, which is what lets the
+      # preflight tell an explicit wrong value (fail) from suite-wide spillover (fall back).
+      HARBOR_DRBENCH_JUDGE_EXPLICIT: ${{ inputs.research_judge_models }}
       LANGSMITH_TRACING: "true"
       OPENAI_BASE_URL: "https://api.openai.com/v1"
       OLLAMA_HOST: "https://ollama.com"
@@ -397,8 +412,23 @@ jobs:
             case "$HARBOR_DRBENCH_JUDGE" in
               gpt-4o|gpt-4o-mini|openrouter/*) ;;
               *)
-                echo "::error::research judge must be gpt-4o, gpt-4o-mini, or openrouter/<vendor>/<model>; got '$HARBOR_DRBENCH_JUDGE'"
-                exit 1
+                if [ -n "$HARBOR_DRBENCH_JUDGE_EXPLICIT" ]; then
+                  echo "::error::research_judge_models must be gpt-4o, gpt-4o-mini, or openrouter/<vendor>/<model>; got '$HARBOR_DRBENCH_JUDGE'"
+                  exit 1
+                fi
+                # Suite-wide spillover, not a decision about DRBench. Fall back loudly:
+                # failing here would take the research leaf down on every mixed run that
+                # sets an independent grader for tau3 or harbor-index.
+                echo "::warning::DRBench cannot drive judge '$HARBOR_DRBENCH_JUDGE'; grading research with gpt-4o instead. Pass research_judge_models to choose explicitly (gpt-4o-mini, or openrouter/<vendor>/<model>)."
+                {
+                  echo "> ⚠️ **research judge fell back to \`gpt-4o\`** — the suite-wide"
+                  echo "> \`judge_models: $HARBOR_DRBENCH_JUDGE\` is not one DRBench can drive."
+                  echo "> Scores are not comparable to a run graded by another model."
+                } >> "$GITHUB_STEP_SUMMARY"
+                # A distinct name, not HARBOR_DRBENCH_JUDGE: job-level `env:` is
+                # reapplied to every step, so a GITHUB_ENV write of the same name is
+                # silently discarded. The run step prefers this when it is set.
+                echo "HARBOR_DRBENCH_JUDGE_RESOLVED=gpt-4o" >> "$GITHUB_ENV"
                 ;;
             esac
           fi
@@ -918,7 +948,7 @@ jobs:
             --verifier-env "JUDGE_MODELS=$HARBOR_JUDGE_MODELS"
             # The DRBench verifier reads this in preference to JUDGE_MODELS; see the
             # HARBOR_DRBENCH_JUDGE comment above. Ignored by every other verifier.
-            --verifier-env "DRBENCH_JUDGE_MODEL=$HARBOR_DRBENCH_JUDGE"
+            --verifier-env "DRBENCH_JUDGE_MODEL=${HARBOR_DRBENCH_JUDGE_RESOLVED:-$HARBOR_DRBENCH_JUDGE}"
             --verifier-env 'JUDGE_REPEATS=1'
             --verifier-env 'JUDGE_CONCURRENCY=1'
           )

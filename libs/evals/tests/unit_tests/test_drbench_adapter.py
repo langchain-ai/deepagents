@@ -703,3 +703,65 @@ def test_every_env_var_the_prompt_names_is_actually_declared(vendor: Path, tmp_p
     )
     assert referenced, "the prompt names no DRBench variable at all"
     assert referenced <= declared, f"undeclared: {sorted(referenced - declared)}"
+
+
+def test_populate_prunes_a_task_that_left_the_authoritative_set(
+    vendor: Path, tmp_path: Path
+) -> None:
+    """A reused checkout must not keep serving tasks the current pin dropped.
+
+    Harbor enumerates a local dataset by listing directories, so a leftover directory is
+    a task that runs and scores while being outside the set the numbers claim to cover.
+    `make dataset-check` cannot catch this: it builds into fresh directories.
+    """
+    _write_vendor(vendor, env_files=[_env_file("report.pdf")], qa=[_qa("IN1", "kept")])
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    # A task from an earlier pin: this adapter generated it, and it is no longer listed.
+    stale = dataset_dir / "DR0099"
+    stale.mkdir()
+    (stale / "task.toml").write_text('version = "1.3"\n\n[metadata]\nsource = "drbench"\n')
+
+    assert adapter.populate_corpus(dataset_dir) == 1
+
+    assert not (dataset_dir / "DR0099").exists()
+    assert (dataset_dir / _TASK_ID / "task.toml").is_file()
+
+
+def test_pruning_leaves_directories_this_adapter_did_not_generate(
+    vendor: Path, tmp_path: Path
+) -> None:
+    """Four conditions gate the removal; failing any one keeps the directory."""
+    _write_vendor(vendor, env_files=[_env_file("report.pdf")], qa=[_qa("IN1", "kept")])
+    dataset_dir = tmp_path / "dataset"
+    dataset_dir.mkdir()
+    # Right name shape, but another adapter's task.
+    foreign = dataset_dir / "DR0098"
+    foreign.mkdir()
+    (foreign / "task.toml").write_text('version = "1.3"\n\n[metadata]\nsource = "contextbench"\n')
+    # Not a DRBench id at all.
+    unrelated = dataset_dir / "cb-cloud-1"
+    unrelated.mkdir()
+    (unrelated / "task.toml").write_text('version = "1.3"\n\n[metadata]\nsource = "contextbench"\n')
+
+    assert adapter.prune_stale_tasks(dataset_dir, keep={_TASK_ID}) == []
+    assert (foreign / "task.toml").is_file()
+    assert (unrelated / "task.toml").is_file()
+
+
+def test_subset_verification_reports_a_vendored_copy_that_drifted(
+    vendor: Path, tmp_path: Path
+) -> None:
+    """The vendored list is the denominator of every score, so it must match the pin."""
+    upstream_subsets = adapter.ensure_upstream_checkout() / "drbench" / "data" / "subsets"
+    upstream_subsets.mkdir(parents=True)
+    payload = json.dumps({"task_id": _TASK_ID, "path": "x"}) + "\n"
+    (upstream_subsets / "val.jsonl").write_text(payload)
+    (vendor / "subsets" / "val.jsonl").write_text(payload)
+    assert adapter.verify_subsets() == []
+
+    (vendor / "subsets" / "val.jsonl").write_text(payload + payload)
+    assert [p for p in adapter.verify_subsets() if "differs" in p]
+
+    (vendor / "subsets" / "extra.jsonl").write_text(payload)
+    assert [p for p in adapter.verify_subsets() if "absent from upstream" in p]

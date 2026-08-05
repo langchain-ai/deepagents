@@ -569,9 +569,13 @@ def render_markdown(combined: dict, k: int) -> str:
     )
     ranked = sorted(
         combined["rows"],
+        # Ranked on avg@K, not pass@K. A graded category contributes a structural 0 to
+        # the pass@K macro, so a row whose graded leaf SUCCEEDED was averaged over that 0
+        # while a row whose leaf FAILED was averaged over the remaining categories only --
+        # ranking failure above success.
         key=lambda r: (
-            r["macro"]["pass_at_k"] is None,
-            -(r["macro"]["pass_at_k"] or 0.0),
+            r["macro"]["avg_at_k"] is None,
+            -(r["macro"]["avg_at_k"] or 0.0),
         ),
     )
     rows = []
@@ -707,9 +711,13 @@ def render_usage_markdown(combined: dict) -> str:
     ]
     ranked = sorted(
         combined["rows"],
+        # Ranked on avg@K, not pass@K. A graded category contributes a structural 0 to
+        # the pass@K macro, so a row whose graded leaf SUCCEEDED was averaged over that 0
+        # while a row whose leaf FAILED was averaged over the remaining categories only --
+        # ranking failure above success.
         key=lambda r: (
-            r["macro"]["pass_at_k"] is None,
-            -(r["macro"]["pass_at_k"] or 0.0),
+            r["macro"]["avg_at_k"] is None,
+            -(r["macro"]["avg_at_k"] or 0.0),
         ),
     )
     lines = [
@@ -737,10 +745,14 @@ def render_usage_markdown(combined: dict) -> str:
 def radar_results(combined: dict) -> list[dict]:
     out = []
     for r in combined["rows"]:
+        # A graded category's pass@K is 0.000 by construction, so plotting it would pin
+        # that axis at the origin for every model and read as a total failure. Use the
+        # mean reward, which is the number the summary table already tells readers to
+        # read for these categories.
         scores = {
-            c: v["pass_at_k"]
+            c: (v["avg_at_k"] if is_continuous_category(c) else v["pass_at_k"])
             for c, v in r["categories"].items()
-            if v.get("pass_at_k") is not None
+            if (v["avg_at_k"] if is_continuous_category(c) else v["pass_at_k"]) is not None
         }
         out.append(
             {"model": f"{r['model']} / {r['branch']} / {r['config']}", "scores": scores}

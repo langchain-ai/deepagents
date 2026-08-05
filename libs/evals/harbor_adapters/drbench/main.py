@@ -67,6 +67,14 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--check-subsets",
+        action="store_true",
+        help=(
+            "Verify the vendored vendor/subsets/*.jsonl still match the pinned upstream "
+            "commit byte for byte, writing nothing. Exits non-zero on any mismatch."
+        ),
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         help=(
@@ -120,6 +128,7 @@ def main(argv: list[str] | None = None) -> None:
         args.refresh_digests,
         args.refresh_labels,
         args.check_labels,
+        args.check_subsets,
         args.populate is not None,
         bool(args.task_ids),
         args.limit is not None,
@@ -156,6 +165,19 @@ def main(argv: list[str] | None = None) -> None:
             )
             raise ValueError(msg)
         print("DRBench task labels match the pinned upstream configs")
+        return
+
+    if args.check_subsets:
+        if sum(map(bool, exclusive)) > 1:
+            msg = "`--check-subsets` is mutually exclusive with the other modes"
+            raise ValueError(msg)
+        problems = adapter.verify_subsets()
+        if problems:
+            for problem in problems:
+                print(f"vendor/subsets: {problem}")
+            msg = f"{len(problems)} DRBench subset mismatch(es) against {adapter.UPSTREAM_SHA}"
+            raise ValueError(msg)
+        print("DRBench subset lists match the pinned upstream commit")
         return
 
     if args.populate is not None:

@@ -1481,3 +1481,79 @@ def test_render_markdown_omits_the_section_without_components():
         "issues": [],
     }
     assert "### Score components" not in au.render_markdown(combined, 1)
+
+
+def test_radar_plots_a_graded_category_on_avg_at_k():
+    # `research` is scored on a continuous reward, so its pass@K is 0.000 by construction.
+    # Plotting that would pin the axis at the origin for every model and read as a total
+    # failure -- on the default scorecard, since research is in the default category set.
+    combined = {
+        "categories": ["autonomous", "research"],
+        "rows": [
+            {
+                "model": "m",
+                "branch": "current",
+                "config": "bare",
+                "categories": {
+                    "autonomous": {"pass_at_k": 0.5, "avg_at_k": 0.4},
+                    "research": {"pass_at_k": 0.0, "avg_at_k": 0.52},
+                },
+                "macro": {"pass_at_k": 0.25, "avg_at_k": 0.46},
+                "micro": {"pass_at_k": 0.25, "avg_at_k": 0.46},
+                "incomplete": False,
+            }
+        ],
+    }
+    assert au.radar_results(combined)[0]["scores"] == {"autonomous": 0.5, "research": 0.52}
+
+
+def test_a_failed_graded_leaf_does_not_outrank_one_that_succeeded():
+    # The macro is a mean over the leaves that produced results, so ranking on pass@K meant
+    # a row whose research leaf SUCCEEDED was averaged over that leaf's structural 0 --
+    # research contributes 0 to a pass@K macro no matter how well it scored -- while a row
+    # whose leaf FAILED was averaged over the remaining categories only. Failing research
+    # therefore paid better than completing it.
+    #
+    # Ranking on avg@K removes the construction artifact: research's avg@K is a real score.
+    # It does not remove the general property that an absent leaf leaves the mean, which
+    # applies to every category equally and is surfaced by the `incomplete` warning.
+    def row(model, cats, macro):
+        return {
+            "model": model,
+            "branch": "current",
+            "config": "bare",
+            "categories": cats,
+            "macro": macro,
+            "micro": macro,
+            "missing_categories": [],
+            "incomplete": False,
+            "usage": {"status": "complete"},
+        }
+
+    combined = {
+        "categories": ["autonomous", "research"],
+        "k": 1,
+        "rows": [
+            # research completed, and scored well: pass@K macro = mean(0.8, 0.0) = 0.4,
+            # avg@K macro = mean(0.8, 0.9) = 0.85
+            row(
+                "completed",
+                {
+                    "autonomous": {"pass_at_k": 0.8, "avg_at_k": 0.8, "tasks": 1},
+                    "research": {"pass_at_k": 0.0, "avg_at_k": 0.9, "tasks": 1},
+                },
+                {"pass_at_k": 0.4, "avg_at_k": 0.85},
+            ),
+            # research leaf produced nothing, so it is absent from both macros:
+            # pass@K macro = mean(0.8) = 0.8, avg@K macro = mean(0.8) = 0.8
+            row(
+                "research-failed",
+                {"autonomous": {"pass_at_k": 0.8, "avg_at_k": 0.8, "tasks": 1}},
+                {"pass_at_k": 0.8, "avg_at_k": 0.8},
+            ),
+        ],
+    }
+    # pass@K would rank research-failed (0.8) above completed (0.4). avg@K reads research's
+    # real reward instead of its construction artifact, so completing it can win.
+    md = au.render_markdown(combined, 1)
+    assert md.index("completed /") < md.index("research-failed /")

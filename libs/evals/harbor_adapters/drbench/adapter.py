@@ -50,6 +50,10 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _SPARSE_PATTERNS = (
     "/drbench/data/tasks/*/config",
     "/drbench/data/tasks/*/*.json",
+    # Fetched only so `verify_subsets` can check the vendored copies against the pin. The
+    # vendored copies are what `available_task_ids` reads, because the prep phase resolves
+    # the task list offline; without this pattern that list would be an unverified pin.
+    "/drbench/data/subsets",
 )
 
 _GIT_TIMEOUT_SEC = 600
@@ -494,6 +498,46 @@ def verify_task_labels() -> list[str]:
     return problems
 
 
+def _subsets_dir() -> Path:
+    """Return the directory holding the vendored upstream subset lists."""
+    return vendor_dir() / "subsets"
+
+
+def verify_subsets() -> list[str]:
+    """Return a description of every way the vendored subset lists differ from upstream.
+
+    `available_task_ids` reads the vendored `val.jsonl` rather than the checkout, so that
+    the workflow's prep phase can shard a category before the dataset exists. That makes
+    the vendored copy the denominator of every published score, and this is what keeps it
+    honest across an `UPSTREAM_SHA` bump.
+
+    Returns:
+        Human-readable mismatches, empty when every vendored list matches. Writes nothing.
+
+    Raises:
+        FileNotFoundError: If no subset list is vendored at all.
+        RuntimeError: If the upstream checkout cannot be fetched.
+    """
+    vendored = sorted(_subsets_dir().glob("*.jsonl"))
+    if not vendored:
+        msg = f"No vendored DRBench subset lists at {_subsets_dir()}"
+        raise FileNotFoundError(msg)
+    upstream_root = ensure_upstream_checkout() / "drbench" / "data" / "subsets"
+    problems: list[str] = []
+    for path in vendored:
+        # `glob` yields real children, so the name is a single component; assert it rather
+        # than trust it, since it is about to be joined onto the checkout path.
+        if path.name != Path(path.name).name:
+            problems.append(f"{path.name}: not a plain file name")
+            continue
+        counterpart = upstream_root / path.name
+        if not counterpart.is_file():
+            problems.append(f"{path.name}: absent from upstream at {UPSTREAM_SHA}")
+        elif counterpart.read_bytes() != path.read_bytes():
+            problems.append(f"{path.name}: differs from upstream at {UPSTREAM_SHA}")
+    return problems
+
+
 def _digests_path() -> Path:
     """Return the path of the vendored image-digest record."""
     return vendor_dir() / "image_digests.json"
@@ -841,11 +885,54 @@ def populate_corpus(dataset_dir: Path) -> int:
     """
     dataset_root = dataset_dir.resolve()
     dataset_root.mkdir(parents=True, exist_ok=True)
+    task_ids = available_task_ids()
+    prune_stale_tasks(dataset_root, keep=set(task_ids))
     built = 0
-    for task_id in available_task_ids():
+    for task_id in task_ids:
         generate_task(output_dir=dataset_root, task_id=task_id)
         built += 1
     return built
+
+
+def prune_stale_tasks(dataset_dir: Path, *, keep: set[str]) -> list[str]:
+    """Remove generated task directories that are no longer in the authoritative set.
+
+    Regenerating alone is not enough on a reused checkout: a bumped `UPSTREAM_SHA` or an
+    earlier partial `--task-ids` build leaves directories behind, and Harbor enumerates a
+    local dataset by listing directories, so it would run tasks outside the set the scores
+    claim to cover. `make dataset-check` cannot see this because it builds fresh
+    directories.
+
+    A directory is removed only when every one of these holds, which is what keeps this
+    from touching anything the adapter did not generate:
+
+      - it is a direct child of the resolved dataset directory,
+      - its name is a bare DRBench task id,
+      - that id is not in `keep`,
+      - it holds a `task.toml` declaring `source = "drbench"`.
+
+    Args:
+        dataset_dir: Resolved dataset directory.
+        keep: Task ids that must survive.
+
+    Returns:
+        The ids removed, sorted.
+    """
+    dataset_root = dataset_dir.resolve()
+    removed: list[str] = []
+    for entry in sorted(dataset_root.iterdir()):
+        if not entry.is_dir() or _TASK_ID_RE.match(entry.name) is None or entry.name in keep:
+            continue
+        if entry.resolve().parent != dataset_root:
+            continue
+        task_toml = entry / "task.toml"
+        if not task_toml.is_file():
+            continue
+        if 'source = "drbench"' not in task_toml.read_text(encoding="utf-8"):
+            continue
+        shutil.rmtree(entry)
+        removed.append(entry.name)
+    return removed
 
 
 def _copy_environment_invariants(environment_dir: Path) -> None:

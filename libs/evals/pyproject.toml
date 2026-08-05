@@ -33,7 +33,7 @@ dependencies = [
     "dockerfile-parse>=2.0.1",
     "modal>=1.4.3",
     # LangChain model providers (evals run against many providers)
-    "langchain-anthropic>=1.5.3,<2.0.0",
+    "langchain-anthropic>=1.5.4,<2.0.0",
     "langchain-baseten>=0.2.1,<0.3.0",
     "langchain-deepseek>=1.1.0,<1.2.0",
     "langchain-fireworks>=1.4.4,<1.5.0",

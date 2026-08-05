@@ -4,9 +4,11 @@
 # `deepagents*`) that declares a concrete lower bound (`>=` / `~=`) in the
 # selected package's manifest(s) — across `[project.dependencies]`,
 # `[project.optional-dependencies]`, and `[dependency-groups]` — this rewrites
-# that lower bound in place to the newest non-yanked stable PyPI version,
-# preserving upper bounds, extras, and markers. Exact `==` pins are left to
-# `bump_code_sdk_pin.yml`, and a floor already ahead of the latest stable
+# that lower bound in place to the newest stable PyPI release that still has a
+# non-yanked file and stays within the requirement's existing range, preserving
+# upper bounds, extras, and markers. Exact `==` pins are left alone (the only
+# in-scope one today, `deepagents==` in `libs/code`, is bumped by
+# `bump_code_sdk_pin.yml`), and a floor already ahead of the latest stable
 # release (intentional prerelease coordination) is never lowered.
 #
 # Triggering:
@@ -16,17 +18,25 @@
 #   package or `all`.
 #
 # Notes:
-# - One PR is opened per run containing every raised bound plus the
-#   regenerated `uv.lock` for each edited package (raising a floor makes the
-#   adjacent lockfile stale; committing it keeps `check_lockfiles.yml` green).
+# - One PR is opened per run containing every raised bound plus the regenerated
+#   `uv.lock` for each affected package. That is not only the edited packages: a
+#   lockfile embeds the specifiers of anything it resolves from a local
+#   `[tool.uv.sources]` path, so raising a floor in `libs/deepagents` also
+#   staleness-marks `libs/evals/uv.lock` and friends. The script computes that
+#   closure and reports it as `lock_specs`.
+# - The PR body lists every raised bound, and — when a PyPI lookup or a manifest
+#   rewrite failed — says explicitly what was *not* raised, so a partial run
+#   never reads as a complete one.
 # - The PR title is `chore(deps):` on purpose: a bump-worthy type touching
 #   files inside a managed package would make release-please open a separate
 #   release PR (multi-component fan-out).
 # - The PR is created with the Org Membership App installation token rather
 #   than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
 #   `pull_request` workflows, so the required checks would never run.
-# - Idempotent: if a PR for the selected package is already open (or no bound
-#   needs raising), the workflow exits without creating a duplicate.
+# - Idempotent per package: if a PR is already open for the selected package (or
+#   no bound needs raising), the workflow exits without creating a duplicate. A
+#   cron `all` run and a manual single-package run use different branches, so
+#   they are not serialized against each other.
 
 name: "Raise dependency minimums"
 
@@ -69,6 +79,9 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      # `gh pr list` below reads with `github.token`; without this the
+      # duplicate-PR guard would fail open and post a second PR.
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -84,29 +97,49 @@ jobs:
           PACKAGE: ${{ inputs.package || 'all' }}
         run: |
           set -euo pipefail
-          uv run --no-project --with packaging \
+          uv run --no-project --with "packaging>=26.2" \
             python .github/scripts/release/raise_langchain_minimums.py \
             --package "$PACKAGE"
           echo "branch=chore/raise-dependency-minimums-${PACKAGE}" >> "$GITHUB_OUTPUT"
 
-      - name: Regenerate lockfiles for edited packages
-        # Raising a floor makes the edited package's adjacent uv.lock stale
-        # (it embeds the direct requirement specifiers). Regenerate it so the
-        # required check_lockfiles.yml job passes on the opened PR. The Python
-        # version mirrors check_lockfiles_pre_commit.py: 3.14 for acp, else 3.12.
+      - name: Regenerate lockfiles for affected packages
+        # Raising a floor makes a package's uv.lock stale (it embeds the direct
+        # requirement specifiers), as well as the lockfile of anything that
+        # path-depends on it. `lock_specs` carries `dir=python` pairs computed
+        # from check_lockfiles_pre_commit, so the interpreter here always matches
+        # the one the required check_lockfiles.yml job will verify against.
         if: steps.raise.outputs.changed == 'true'
         env:
-          LOCK_DIRS: ${{ steps.raise.outputs.lock_dirs }}
+          LOCK_SPECS: ${{ steps.raise.outputs.lock_specs }}
         run: |
           set -euo pipefail
-          IFS=',' read -ra dirs <<< "$LOCK_DIRS"
-          for dir in "${dirs[@]}"; do
-            py="3.12"
-            if [ "$dir" = "libs/acp" ]; then
-              py="3.14"
-            fi
+          IFS=',' read -ra specs <<< "$LOCK_SPECS"
+          for spec in "${specs[@]}"; do
+            dir="${spec%%=*}"
+            py="${spec##*=}"
             echo "Regenerating $dir/uv.lock (python $py)"
             uv lock --directory "$dir" --python "$py"
+            if [ ! -f "$dir/uv.lock" ]; then
+              echo "::error::Expected $dir/uv.lock to exist after uv lock"
+              exit 1
+            fi
+          done
+
+      - name: Verify the edits landed
+        # The script reports what it intended to write; confirm the working tree
+        # agrees before building a PR around it. A manifest listed as changed but
+        # identical on disk means a rewrite silently no-opped.
+        if: steps.raise.outputs.changed == 'true'
+        env:
+          CHANGED_FILES: ${{ steps.raise.outputs.changed_files }}
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra files <<< "$CHANGED_FILES"
+          for file in "${files[@]}"; do
+            if git diff --quiet -- "$file"; then
+              echo "::error::$file was reported as edited but is unchanged on disk"
+              exit 1
+            fi
           done
 
       - name: Log if nothing to do
@@ -149,31 +182,53 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PACKAGE: ${{ inputs.package || 'all' }}
           BRANCH: ${{ steps.raise.outputs.branch }}
+          CHANGED_FILES: ${{ steps.raise.outputs.changed_files }}
           LOCK_DIRS: ${{ steps.raise.outputs.lock_dirs }}
+          SUMMARY: ${{ steps.raise.outputs.summary }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          BOT_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com"
         run: |
           set -euo pipefail
 
-          changed_files="${{ steps.raise.outputs.changed_files }}"
-
-          # Reuse-or-recreate orphan branch from a prior run that pushed but
-          # failed before `gh pr create` (no open PR sits on it). The delete can
-          # race a concurrent run; fall through with a warning so a losing race
-          # does not kill an otherwise-clean job mid-state.
-          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+          # Recreate an orphan branch from a prior run that pushed but failed
+          # before `gh pr create` (the no-open-PR check above already ran, so any
+          # branch still on origin carries no open PR). Distinguish "absent" from
+          # "could not reach origin": `--exit-code` returns 2 for no match, and
+          # anything else is a real error worth failing on rather than
+          # misreading as "no branch there".
+          set +e
+          git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null
+          ls_remote_status=$?
+          set -e
+          if [ "$ls_remote_status" -eq 0 ]; then
+            # Never discard someone else's work: only delete a branch whose tip
+            # this workflow authored.
+            git fetch --depth=1 origin "$BRANCH"
+            tip_email=$(git log -1 --format='%ce' FETCH_HEAD)
+            if [ "$tip_email" != "$BOT_EMAIL" ]; then
+              echo "::error::Branch $BRANCH exists on origin and its tip was authored by $tip_email, not this workflow. Refusing to delete it; resolve the branch manually."
+              exit 1
+            fi
             echo "::warning::Branch $BRANCH exists on origin without an open PR; deleting before recreating."
+            # The delete can race a concurrent run; fall through with a warning
+            # so a losing race does not kill an otherwise-clean job mid-state.
+            # The push below is not forced, so a delete that failed for any
+            # other reason surfaces as a rejected push.
             if ! git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" --delete "$BRANCH"; then
               echo "::warning::Delete of $BRANCH failed (concurrent run, or branch already gone); the subsequent push will surface any real conflict."
             fi
+          elif [ "$ls_remote_status" -ne 2 ]; then
+            echo "::error::Could not query origin for $BRANCH (git ls-remote exited $ls_remote_status)."
+            exit 1
           fi
 
           git config --local user.name "github-actions[bot]"
-          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config --local user.email "$BOT_EMAIL"
           git checkout -b "$BRANCH"
 
-          # Stage the edited manifests plus the regenerated lockfile for each
-          # edited package (raising a floor makes the adjacent uv.lock stale).
-          IFS=',' read -ra files <<< "$changed_files"
+          # Stage the edited manifests plus every lockfile the edits invalidated
+          # (the package's own, and any package that path-depends on it).
+          IFS=',' read -ra files <<< "$CHANGED_FILES"
           IFS=',' read -ra dirs <<< "$LOCK_DIRS"
           lockfiles=()
           for dir in "${dirs[@]}"; do
@@ -185,7 +240,8 @@ jobs:
 
           body_file="$(mktemp)"
           {
-            printf 'Raises the LangChain-ecosystem dependency lower bounds (`langchain*`, `langgraph*`, `langsmith*`, `deepagents*`) for `%s` to the latest stable PyPI release, and regenerates the affected `uv.lock` files. Upper bounds, extras, and markers are preserved; exact `==` pins are left to `bump_code_sdk_pin.yml`.\n\n' "$PACKAGE"
+            printf 'Raises the LangChain-ecosystem dependency lower bounds (`langchain*`, `langgraph*`, `langsmith*`, `deepagents*`) for `%s` to the latest compatible stable PyPI release, and regenerates every affected `uv.lock`. Upper bounds, extras, and markers are preserved; exact `==` pins are left alone.\n\n' "$PACKAGE"
+            printf '%s\n\n' "$SUMMARY"
             printf 'Opened automatically by `raise_langchain_minimums.yml`. Review the raised bounds against any compatibility notes in the manifest comments before merging.\n'
           } > "$body_file"
 

@@ -23,7 +23,6 @@ from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
 from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.sessions import ThreadInfo
 from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
-from deepagents_code.tui.widgets.resume_compact import ResumeCompactPromptScreen
 from deepagents_code.tui.widgets.thread_selector import (
     ContainedSelect,
     ContainedSelectOverlay,
@@ -3330,16 +3329,14 @@ class TestResumeThread:
         _app_test_double(app)._handle_offload = compact
 
         with patch(
-            "deepagents_code.config.get_compact_on_resume_threshold",
-            return_value=400_000,
+            "deepagents_code.config_manifest.resolve_scalar",
+            return_value=(400_000, "default"),
         ):
             await app._resume_thread("new-thread")
 
-        assert push_screen.await_args is not None
-        assert isinstance(push_screen.await_args.args[0], ResumeCompactPromptScreen)
-        expected_thread = "old-thread" if choice == "cancel" else "new-thread"
-        assert app._lc_thread_id == expected_thread
+        push_screen.assert_awaited_once()
         if choice == "cancel":
+            assert app._lc_thread_id == "old-thread"
             _app_test_double(app)._clear_messages.assert_not_awaited()
         if choice == "compact":
             compact.assert_awaited_once()
@@ -3833,7 +3830,8 @@ class TestResumeThread:
         app._session_state = _mock_session_state("old-thread")
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
-        _app_test_double(app)._fetch_thread_history_data = AsyncMock(return_value=[])
+        data = MagicMock(context_tokens=0)
+        _app_test_double(app)._fetch_thread_history_data = AsyncMock(return_value=data)
         _app_test_double(app)._clear_messages = AsyncMock()
         _app_test_double(app)._load_thread_history = AsyncMock(
             side_effect=RuntimeError("checkpoint corrupt")

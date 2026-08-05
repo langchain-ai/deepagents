@@ -16538,17 +16538,21 @@ class DeepAgentsApp(App):
         Returns:
             The user's choice, or `"continue"` when no prompt is needed or it fails.
         """
-        from deepagents_code.config import get_compact_on_resume_threshold
+        from deepagents_code import config_manifest
 
-        threshold = get_compact_on_resume_threshold()
-        if (
-            not isinstance(context_tokens, int)
-            or isinstance(context_tokens, bool)
-            or context_tokens <= threshold
-        ):
+        default = config_manifest.COMPACT_ON_RESUME_THRESHOLD_DEFAULT
+        option = config_manifest.get_option("threads.compact_on_resume_threshold")
+        threshold = default
+        if option is not None:
+            threshold, _ = config_manifest.resolve_scalar(
+                option, toml_data=config_manifest.load_config_toml()
+            )
+            if threshold < 0:
+                threshold = default
+        if context_tokens <= threshold:
             return "continue"
 
-        from deepagents_code.tui.widgets.resume_compact import (
+        from deepagents_code.tui.widgets.thread_selector import (
             ResumeCompactPromptScreen,
         )
 
@@ -24555,9 +24559,7 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            compact_choice = await self._offer_resume_compaction(
-                getattr(payload, "context_tokens", 0)
-            )
+            compact_choice = await self._offer_resume_compaction(payload.context_tokens)
             if compact_choice == "cancel":
                 await self._mount_message(
                     AppMessage(
@@ -25292,7 +25294,6 @@ class DeepAgentsApp(App):
         if self._chat_input:
             self._chat_input.set_cursor_active(active=False)
 
-        prefetched_payload: _ThreadHistoryPayload | None = None
         compact_before_resume = False
         switch_started = False
         outgoing_ended = False
@@ -25304,7 +25305,7 @@ class DeepAgentsApp(App):
             self._update_status("")
 
             compact_choice = await self._offer_resume_compaction(
-                getattr(prefetched_payload, "context_tokens", 0)
+                prefetched_payload.context_tokens
             )
             if compact_choice == "cancel":
                 await self._restore_cwd_after_failed_thread_switch(prev_cwd)

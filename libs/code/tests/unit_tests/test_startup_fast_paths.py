@@ -114,6 +114,7 @@ def _read_marker(stderr: str, prefix: str) -> object:
     ("argv", "expected"),
     [
         (["help"], "Start interactive thread"),
+        (["models", "--help"], "dcode models [options]"),
         (["agents"], "dcode agents <command>"),
         (["skills"], "dcode skills <command>"),
         (["threads"], "dcode threads <command>"),

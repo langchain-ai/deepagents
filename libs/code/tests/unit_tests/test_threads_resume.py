@@ -392,7 +392,7 @@ class TestCrossAgentResume:
         app._server_kwargs = {"assistant_id": "agent"}
         app._server_proc = MagicMock()
         (tmp_path / "researcher").mkdir()
-        payload = MagicMock()
+        payload = MagicMock(context_tokens=0)
         app._push_screen_wait = AsyncMock(return_value="switch")  # ty: ignore
         app._fetch_thread_history_data = AsyncMock(return_value=payload)  # ty: ignore
         app._offer_thread_cwd_switch = AsyncMock(return_value="continue")  # ty: ignore

@@ -101,6 +101,7 @@ def show_help() -> None:
         "  dcode [OPTIONS]                           Start interactive thread"
     )
     console.print("  dcode agents <list|reset>                 Manage agents")
+    console.print("  dcode models                              List available models")
     console.print("  dcode skills <list|create|info|delete>    Manage agent skills")
     console.print(
         "  dcode threads <list|delete>               Manage conversation threads"
@@ -283,6 +284,22 @@ def show_help() -> None:
         "  dcode --skill code-review -m 'review this patch'",
         style=theme.MUTED,
     )
+    console.print()
+
+
+def show_models_help() -> None:
+    """Show help information for the `models` command."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode models [options]", markup=False)
+    console.print()
+    console.print("List models discovered from installed and configured providers.")
+    console.print()
+    _print_option_section()
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode models")
+    console.print("  dcode models --json")
     console.print()
 
 

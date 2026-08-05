@@ -101,8 +101,19 @@ _CAPTURED_FIELDS = (
 
 
 def _requested_judge_model() -> str:
-    """First model in the harness-injected ``JUDGE_MODELS``, or the default."""
-    raw = os.environ.get("JUDGE_MODELS") or os.environ.get("JUDGE_MODEL") or ""
+    """The judge asked for: DRBench's own variable first, then the suite-wide one.
+
+    ``DRBENCH_JUDGE_MODEL`` exists because the harness sets ``JUDGE_MODELS`` for every
+    category and its default there is a model DRBench cannot drive. Without a separate
+    channel the verifier cannot tell that default from a deliberate override, and would
+    have to treat every run as an override of a judge it has to reject.
+    """
+    raw = (
+        os.environ.get("DRBENCH_JUDGE_MODEL")
+        or os.environ.get("JUDGE_MODELS")
+        or os.environ.get("JUDGE_MODEL")
+        or ""
+    )
     for token in re.split(r"[\s,]+", raw.strip()):
         if token:
             return token
@@ -126,15 +137,16 @@ def _supported_judge_models() -> set[str]:
 
 
 def _judge_model() -> str:
-    """Return a judge model the installed DRBench can drive.
+    """Return the judge to score with, or raise when upstream cannot drive it.
 
-    An ``openrouter/<vendor>/<model>`` slug passes straight through, because upstream
-    resolves the prefix before consulting either registry -- that is the supported route to
-    a frontier judge, and the only route to a non-OpenAI one.
+    `gpt-4o` is the default. A bare name is honored only if upstream natively drives it;
+    an ``openrouter/<vendor>/<model>`` slug is honored as-is, because upstream resolves the
+    prefix ahead of its registries -- that is the route to any other model, and the only
+    route to a non-OpenAI one.
 
-    Any other request must be in the intersection of both registries or scoring fails
-    partway through, so an unsupported one falls back to a model that is and says so;
-    `_grade` records the requested and actual names either way.
+    An unusable name raises instead of falling back. Quietly substituting a different judge
+    publishes numbers under the wrong model's name, and a run of 30 tasks is a poor place
+    to discover a typo.
 
     Note that DRBench's prompts and thresholds were calibrated with a GPT-4o-class judge,
     so a different judge produces scores that are not comparable to the paper's or to
@@ -144,17 +156,14 @@ def _judge_model() -> str:
     if _OPENROUTER_SLUG_RE.match(requested):
         return requested
     supported = _supported_judge_models()
-    if not supported:
-        print(f"upstream exposes no usable judge model; trying {requested!r} anyway")
-        return requested
     if requested in supported:
         return requested
-    fallback = _DEFAULT_JUDGE_MODEL if _DEFAULT_JUDGE_MODEL in supported else min(supported)
-    print(
+    msg = (
         f"judge model {requested!r} is not one upstream DRBench can drive "
-        f"({sorted(supported)}); scoring with {fallback!r} instead"
+        f"({sorted(supported) or 'none'}). Reach any other model through OpenRouter as "
+        f"'openrouter/<vendor>/<model>', e.g. 'openrouter/openai/{requested}'."
     )
-    return fallback
+    raise ValueError(msg)
 
 
 def _embedding_model() -> str | None:
@@ -593,6 +602,19 @@ def _grade() -> tuple[dict[str, float], dict[str, Any]]:
 
 def main() -> None:
     """Score the report and write Harbor's rewards plus a per-metric breakdown."""
+    # Resolved outside the guard below, so a judge upstream cannot drive exits non-zero and
+    # Harbor records a failed verifier. Inside it the same error would become a 0.0 reward,
+    # which is indistinguishable from a report that genuinely scored nothing.
+    #
+    # Only that one check is fatal. Anything else this touches -- a missing `drbench`, a
+    # broken image -- stays on the guarded path, which still writes a reward and a
+    # traceback rather than leaving Harbor with no reward file at all.
+    try:
+        _judge_model()
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - deferred to the guarded path below
+        print(f"could not pre-check the judge model ({type(exc).__name__}: {exc})")
     try:
         rewards, breakdown = _grade()
     except Exception as exc:  # noqa: BLE001 - a verifier crash must still write a reward

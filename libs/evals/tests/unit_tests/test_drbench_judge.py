@@ -231,8 +231,20 @@ def test_requested_judge_model_reads_first_of_judge_models(
 def test_requested_judge_model_falls_back_when_unset(
     judge: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.delenv("DRBENCH_JUDGE_MODEL", raising=False)
     monkeypatch.delenv("JUDGE_MODELS", raising=False)
     monkeypatch.delenv("JUDGE_MODEL", raising=False)
+    assert judge._requested_judge_model() == "gpt-4o"
+
+
+def test_requested_judge_model_prefers_drbenchs_own_variable(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The harness sets JUDGE_MODELS for every category to a model DRBench cannot drive.
+    # Without the dedicated variable winning, that default is indistinguishable from a
+    # deliberate override and every run would be rejected.
+    monkeypatch.setenv("JUDGE_MODELS", "gpt-5.6-luna")
+    monkeypatch.setenv("DRBENCH_JUDGE_MODEL", "gpt-4o")
     assert judge._requested_judge_model() == "gpt-4o"
 
 
@@ -255,25 +267,30 @@ def test_judge_model_keeps_a_supported_request(
     assert judge._judge_model() == "gpt-4o-mini"
 
 
-def test_judge_model_falls_back_off_an_unsupported_request(
-    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys
+def test_judge_model_raises_on_an_unsupported_request(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The harness default is a reasoning model upstream cannot drive: absent from both
-    # registries, and it rejects the `temperature=0` upstream sends on every call. Forcing
-    # it through would mean patching three upstream internals, so fall back and say so.
+    # Raising rather than substituting: a quiet fallback publishes scores under the wrong
+    # model's name, and the message has to name the route that does work.
     _install_fake_drbench(monkeypatch, scores={})
-    monkeypatch.setenv("JUDGE_MODELS", "gpt-5.6-luna")
-    assert judge._judge_model() == "gpt-4o"
-    assert "gpt-5.6-luna" in capsys.readouterr().out
+    monkeypatch.setenv("DRBENCH_JUDGE_MODEL", "gpt-5.6-luna")
+
+    with pytest.raises(ValueError, match="openrouter/openai/gpt-5.6-luna") as excinfo:
+        judge._judge_model()
+
+    assert "gpt-5.6-luna" in str(excinfo.value)
 
 
 def test_judge_model_rejects_a_model_in_only_one_registry(
     judge: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # `gpt-4.1` is the trap: allowlisted by `prompt_llm`, unknown to `AIAgentManager`.
+    # `gpt-4.1` is the trap: allowlisted by `prompt_llm`, unknown to `AIAgentManager`, so it
+    # would get past the first gate and die inside QASimilarityV2.
     _install_fake_drbench(monkeypatch, scores={})
-    monkeypatch.setenv("JUDGE_MODELS", "gpt-4.1")
-    assert judge._judge_model() == "gpt-4o"
+    monkeypatch.setenv("DRBENCH_JUDGE_MODEL", "gpt-4.1")
+
+    with pytest.raises(ValueError, match="gpt-4.1"):
+        judge._judge_model()
 
 
 def test_judge_model_passes_an_openrouter_slug_through(
@@ -309,26 +326,27 @@ def test_judge_model_rejects_a_malformed_openrouter_slug(
     judge: ModuleType, monkeypatch: pytest.MonkeyPatch, slug: str
 ) -> None:
     # The slug becomes the `model` field of an outbound request, so only the published
-    # `<vendor>/<model>[:variant]` shape passes. A malformed one falls back rather than
-    # raising, because `main` turns any exception into a 0.0 reward that reads as a real
-    # score; the CI preflight is what fails the job outright on a typo.
+    # `<vendor>/<model>[:variant]` shape passes. A malformed one is a typo, and scoring it
+    # with a substitute judge would publish numbers under the wrong model's name.
     _install_fake_drbench(monkeypatch, scores={})
-    monkeypatch.setenv("JUDGE_MODELS", slug)
-    assert judge._judge_model() == "gpt-4o"
+    monkeypatch.setenv("DRBENCH_JUDGE_MODEL", slug)
+
+    with pytest.raises(ValueError):
+        judge._judge_model()
 
 
 def test_judge_model_picks_from_whatever_upstream_offers(
     judge: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The set is read from upstream, not hardcoded, so a future bump is honored without
-    # a change here -- including one that drops today's default.
+    # The set is read from upstream, not hardcoded, so a model a future bump adds is
+    # honored without a change here.
     _install_fake_drbench(
         monkeypatch,
         scores={},
         openai_models=["gpt-6-omni"],
         service_to_models={"openai": ["gpt-6-omni"]},
     )
-    monkeypatch.setenv("JUDGE_MODELS", "gpt-5.6-luna")
+    monkeypatch.setenv("DRBENCH_JUDGE_MODEL", "gpt-6-omni")
     assert judge._judge_model() == "gpt-6-omni"
 
 
@@ -469,15 +487,14 @@ def test_grade_records_the_upstream_scores_verbatim(
 ) -> None:
     _install_fake_drbench(monkeypatch, scores=dict(_SCORES))
     _stage_paths(judge, monkeypatch, tmp_path)
-    monkeypatch.setenv("JUDGE_MODELS", "gpt-5.6-luna")
+    monkeypatch.setenv("DRBENCH_JUDGE_MODEL", "gpt-4o-mini")
 
     _, breakdown = judge._grade()
     assert breakdown["upstream_scores"] == _SCORES
     assert breakdown["task_id"] == "DR0001"
-    # Both the model asked for and the one that ran, so a score is never misattributed
-    # to a judge that was silently substituted.
-    assert breakdown["judge_model"] == "gpt-4o"
-    assert breakdown["requested_judge_model"] == "gpt-5.6-luna"
+    # Both the model asked for and the one that ran, so a score is never misattributed.
+    assert breakdown["judge_model"] == "gpt-4o-mini"
+    assert breakdown["requested_judge_model"] == "gpt-4o-mini"
 
 
 def test_grade_rejects_a_missing_metric(
@@ -893,6 +910,43 @@ def test_grade_raises_the_output_cap_only_for_an_openrouter_judge(
     judge._grade()
 
     assert getattr(reinstalled.AIAgentManager.__init__, "_deepagents_sampling", False)
+
+
+# --- a misconfigured judge is fatal, a broken image is not ----------------------------
+
+
+def test_main_refuses_to_score_with_an_unusable_judge(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The check sits outside `main`'s catch-all on purpose. Inside it, the same error would
+    # be written as a 0.0 reward -- and a 0.0 is exactly what a genuinely bad report scores,
+    # so the misconfiguration would be invisible on the scorecard.
+    _install_fake_drbench(monkeypatch, scores=dict(_SCORES))
+    reward_path, _ = _stage_paths(judge, monkeypatch, tmp_path)
+    monkeypatch.setenv("DRBENCH_JUDGE_MODEL", "gpt-5.6-luna")
+
+    with pytest.raises(ValueError, match="openrouter"):
+        judge.main()
+
+    assert not reward_path.exists()
+
+
+def test_main_still_writes_a_reward_when_drbench_is_missing(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Only the judge-name check is fatal. An unimportable `drbench` means a broken verifier
+    # image, and leaving Harbor with no reward file at all loses the diagnostic entirely, so
+    # that failure stays on the guarded path.
+    for name in ("drbench", "drbench.gen_agent", "drbench.agents.utils"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    monkeypatch.setattr(sys, "path", [])
+    reward_path, breakdown_path = _stage_paths(judge, monkeypatch, tmp_path)
+    monkeypatch.setenv("DRBENCH_JUDGE_MODEL", "gpt-4o")
+
+    judge.main()
+
+    assert json.loads(reward_path.read_text())["reward"] == 0.0
+    assert "traceback" in json.loads(breakdown_path.read_text())
 
 
 # --- per-insight verdict capture ------------------------------------------------------

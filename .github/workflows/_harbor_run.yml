@@ -304,6 +304,11 @@ jobs:
       HARBOR_CATEGORY: ${{ matrix.category || inputs.category }}
       HARBOR_LS_DATASET_OVERRIDE: ${{ inputs.langsmith_dataset }}
       HARBOR_JUDGE_MODELS: ${{ inputs.judge_models || 'gpt-5.6-luna' }}
+      # DRBench's judge is tracked separately because it cannot use the suite-wide default:
+      # upstream routes on the model name and drives only `gpt-4o`/`gpt-4o-mini` directly.
+      # Sharing one variable would leave the verifier unable to tell that default from a
+      # deliberate override. An override applies to both.
+      HARBOR_DRBENCH_JUDGE: ${{ inputs.judge_models || 'gpt-4o' }}
       LANGSMITH_TRACING: "true"
       OPENAI_BASE_URL: "https://api.openai.com/v1"
       OLLAMA_HOST: "https://ollama.com"
@@ -368,6 +373,20 @@ jobs:
 
           if [[ "$HARBOR_DATASET" == *tau3* ]] && [ "$model_provider" != "openai" ] && [ -z "$OPENAI_API_KEY" ]; then
             missing+=("OPENAI_API_KEY")
+          fi
+
+          # DRBench drives only gpt-4o/gpt-4o-mini directly, because upstream routes on the
+          # model name; anything else has to be an OpenRouter slug. The verifier enforces
+          # this too, but it only runs after the agent has, so a typo would cost a full
+          # trial before reporting.
+          if [ "$HARBOR_CATEGORY" = "research" ]; then
+            case "$HARBOR_DRBENCH_JUDGE" in
+              gpt-4o|gpt-4o-mini|openrouter/*) ;;
+              *)
+                echo "::error::research judge must be gpt-4o, gpt-4o-mini, or openrouter/<vendor>/<model>; got '$HARBOR_DRBENCH_JUDGE'"
+                exit 1
+                ;;
+            esac
           fi
 
           # An OpenRouter judge needs its own key and a well-formed slug, neither of which
@@ -883,6 +902,9 @@ jobs:
             # and writes no reward. Non-judge verifiers ignore the unused vars.
             --verifier-env 'JUDGE_PROVIDER=openai'
             --verifier-env "JUDGE_MODELS=$HARBOR_JUDGE_MODELS"
+            # The DRBench verifier reads this in preference to JUDGE_MODELS; see the
+            # HARBOR_DRBENCH_JUDGE comment above. Ignored by every other verifier.
+            --verifier-env "DRBENCH_JUDGE_MODEL=$HARBOR_DRBENCH_JUDGE"
             --verifier-env 'JUDGE_REPEATS=1'
             --verifier-env 'JUDGE_CONCURRENCY=1'
           )

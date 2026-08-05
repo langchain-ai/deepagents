@@ -787,11 +787,16 @@ def _dense(count: int, size: int = 2048) -> list[str]:
 def test_embedding_batching_splits_an_oversized_request_with_tiktoken(
     judge: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Pins the tiktoken estimator explicitly. An earlier version of this test asserted the
-    # split without pinning either estimator, so it passed locally (tiktoken installed,
-    # ~1 token per CJK character) and failed in CI (tiktoken absent, `len // 3`), where the
-    # same input fit in one batch.
-    pytest.importorskip("tiktoken")
+    # Skips unless the real token estimator is usable. Importing tiktoken is not enough:
+    # `get_encoding` downloads its BPE file on first use, so on a fresh CI runner with
+    # sockets blocked it raises, `_install_embedding_batching` falls back to the character
+    # estimate, and the same input fits in one batch. Guarding on the import alone is what
+    # made an earlier version of this test pass locally (cached BPE) and fail in CI.
+    tiktoken = pytest.importorskip("tiktoken")
+    try:
+        tiktoken.get_encoding("cl100k_base")
+    except Exception as exc:  # noqa: BLE001 - any failure means the encoder is unusable here
+        pytest.skip(f"cl100k_base unavailable ({type(exc).__name__}); fallback test covers it")
     calls: dict[str, Any] = {}
     _install_fake_drbench(monkeypatch, scores={}, calls=calls)
     from drbench.agents import utils  # noqa: PLC0415  # ty: ignore[unresolved-import]

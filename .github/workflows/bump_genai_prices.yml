@@ -1,0 +1,185 @@
+# Daily bump of `genai-prices` in `libs/code/uv.lock`.
+#
+# genai-prices ships new model pricing frequently and dcode's runtime
+# auto-updater depends on its schema staying compatible, so it should not
+# wait for the monthly Dependabot sweep. Dependabot cannot express
+# "one dependency daily, the rest monthly" inside a single directory —
+# GitHub rejects config with two `uv` blocks covering the same directory,
+# and `allow`/`ignore` filters do not create an exception to that rule —
+# so the daily cadence lives here instead of in `dependabot.yml`.
+#
+# Notes:
+# - Only the lockfile moves: `uv lock --upgrade-package` re-resolves
+#   genai-prices within the existing `>=0.1.1,<0.2.0` range in
+#   `libs/code/pyproject.toml`, so the manifest stays untouched.
+# - The PR title is `chore(deps):` on purpose. A bump-worthy type touching
+#   files inside the managed `libs/code` package would make release-please
+#   open a separate `release(deepagents-code)` PR (multi-component fan-out).
+# - The PR is created with the Org Membership App installation token rather
+#   than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
+#   `pull_request` workflows, so the required checks would never run.
+# - Idempotent: if the lock pin is already current (or a bump PR for that
+#   version is already open), the workflow exits without creating a
+#   duplicate. An existing open PR is force-pushed to the newest version
+#   rather than stacked with a second PR.
+
+name: "Bump genai-prices in deepagents-code"
+
+on:
+  schedule:
+    - cron: "17 13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bump-genai-prices
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: "Open PR if the genai-prices lock pin is stale"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python and uv
+        uses: "./.github/actions/uv_setup"
+        with:
+          enable-cache: "false"
+
+      - name: Resolve locked and latest genai-prices versions
+        id: versions
+        run: |
+          set -euo pipefail
+          lockfile="libs/code/uv.lock"
+
+          locked=$(uv run --no-project python - <<'PY'
+          import tomllib
+
+          with open("libs/code/uv.lock", "rb") as f:
+              lock = tomllib.load(f)
+          versions = [p["version"] for p in lock["package"] if p["name"] == "genai-prices"]
+          assert len(versions) == 1, f"expected 1 genai-prices entry in uv.lock, got {versions}"
+          print(versions[0])
+          PY
+          )
+
+          latest=$(uv run --no-project python - <<'PY'
+          import json
+          import urllib.request
+
+          with urllib.request.urlopen("https://pypi.org/pypi/genai-prices/json") as r:
+              print(json.load(r)["info"]["version"])
+          PY
+          )
+
+          stale=$(LOCKED="$locked" LATEST="$latest" uv run --no-project --with packaging python - <<'PY'
+          import os
+          import sys
+
+          from packaging.version import Version
+
+          sys.stdout.write("true" if Version(os.environ["LOCKED"]) < Version(os.environ["LATEST"]) else "false")
+          PY
+          )
+
+          echo "locked=$locked" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "stale=$stale" >> "$GITHUB_OUTPUT"
+          echo "branch=chore/bump-genai-prices" >> "$GITHUB_OUTPUT"
+          echo "Locked: $locked"
+          echo "Latest: $latest"
+          echo "Stale:  $stale"
+
+      - name: Log if nothing to do
+        # The actual skip is implemented by the `if:` guards on every
+        # subsequent step; this step only emits a log line so the run
+        # history shows why no PR was opened.
+        if: steps.versions.outputs.stale != 'true'
+        run: echo "genai-prices lock pin is already current; nothing to do."
+
+      - name: Check for an existing open bump PR
+        id: existing
+        if: steps.versions.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.versions.outputs.branch }}
+        run: |
+          set -euo pipefail
+          existing_json=$(gh pr list --head "$BRANCH" --state open --json number,url)
+          count=$(printf '%s' "$existing_json" | jq 'length')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" -gt 0 ]; then
+            pr_url=$(printf '%s' "$existing_json" | jq -r '.[0].url')
+            echo "Open bump PR already exists on $BRANCH ($pr_url); will force-push the newest version to it."
+            echo "::notice::Refreshing existing genai-prices bump PR: $pr_url"
+          fi
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: steps.versions.outputs.stale == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Re-lock genai-prices and push bump branch
+        if: steps.versions.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          LOCKED: ${{ steps.versions.outputs.locked }}
+          LATEST: ${{ steps.versions.outputs.latest }}
+          BRANCH: ${{ steps.versions.outputs.branch }}
+        run: |
+          set -euo pipefail
+          lockfile="libs/code/uv.lock"
+
+          # Re-resolve only genai-prices; every other package keeps its
+          # locked version, and the pyproject range stays as-is.
+          uv lock --directory libs/code --python 3.12 --upgrade-package genai-prices
+
+          if git diff --quiet "$lockfile"; then
+            echo "::error::uv lock --upgrade-package genai-prices produced no change (locked=$LOCKED, latest=$LATEST)"
+            exit 1
+          fi
+
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add "$lockfile"
+          git commit -m "chore(deps): bump genai-prices in deepagents-code to $LATEST"
+          # Force-with-lease refreshes a prior bump branch whose PR was
+          # never merged; there is no shared history worth preserving on it.
+          git push --force-with-lease "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
+
+      - name: Open bump PR
+        if: steps.versions.outputs.stale == 'true' && steps.existing.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          LOCKED: ${{ steps.versions.outputs.locked }}
+          LATEST: ${{ steps.versions.outputs.latest }}
+          BRANCH: ${{ steps.versions.outputs.branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          body_file="$(mktemp)"
+          {
+            printf 'Bumps `genai-prices` in `libs/code/uv.lock` from `%s` to `%s` (latest on PyPI) via `uv lock --upgrade-package genai-prices`. The `>=0.1.1,<0.2.0` range in `libs/code/pyproject.toml` is unchanged.\n\n' "$LOCKED" "$LATEST"
+            printf 'Opened automatically by `bump_genai_prices.yml`, which runs daily because genai-prices ships new model pricing frequently and dcode'\''s runtime auto-updater depends on its schema staying compatible. If a newer version lands before this PR merges, the next daily run force-pushes it onto this branch.\n'
+          } > "$body_file"
+
+          pr_url=$(gh pr create \
+            --head "$BRANCH" \
+            --base "$DEFAULT_BRANCH" \
+            --title "chore(deps): bump genai-prices in deepagents-code to $LATEST" \
+            --body-file "$body_file")
+          echo "Opened genai-prices bump PR: $pr_url"
+          echo "::notice::Opened genai-prices bump PR: $pr_url"

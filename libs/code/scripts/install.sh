@@ -1928,7 +1928,11 @@ rewrite_managed_path_block() {
   if [ -n "$mode" ]; then
     chmod "$mode" "$tmp_profile" 2>/dev/null || true
   fi
-  mv "$tmp_profile" "$profile"
+  mv "$tmp_profile" "$profile" || return 1
+  # `profile` is the final target when the caller supplied a symlink. The
+  # caller still fixes ownership on the original symlink, so also restore the
+  # target's ownership after this root-created atomic replacement.
+  fix_file_owner "$profile"
 }
 
 # Ensure dcode is on PATH for new shell sessions. Creates symlinks and/or

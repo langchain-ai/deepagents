@@ -2868,6 +2868,46 @@ def test_install_script_preserves_symlinked_profile(tmp_path: Path) -> None:
     assert 'export PATH="$HOME/.local/bin:$PATH"' in real_zshrc.read_text()
 
 
+def test_rewrite_managed_path_block_fixes_resolved_symlink_target_owner(
+    tmp_path: Path,
+) -> None:
+    """A root rewrite restores ownership of the replaced dotfile target."""
+    target = tmp_path / "dotfiles/zshrc"
+    target.parent.mkdir()
+    target.write_text(
+        "# >>> deepagents-code installer >>>\n"
+        "export PATH=/stale/entry:$PATH\n"
+        "# <<< deepagents-code installer <<<\n"
+    )
+    profile = tmp_path / ".zshrc"
+    profile.symlink_to(target)
+    chown_log = tmp_path / "chown-paths.txt"
+    harness = tmp_path / "rewrite_profile.sh"
+    harness.write_text(
+        "log_warn() { :; }\n"
+        "register_temp() { :; }\n"
+        'fix_file_owner() { printf \'%s\\n\' "$1" >>"$CHOWN_LOG"; }\n'
+        f"{_extract_shell_function('resolve_link_target')}\n"
+        f"{_extract_shell_function('rewrite_managed_path_block')}\n"
+        "rewrite_managed_path_block "
+        f"{str(profile)!r} 'export PATH=/fresh/entry:$PATH'\n",
+        encoding="utf-8",
+    )
+
+    proc = subprocess.run(
+        ["bash", str(harness)],
+        env={**_clean_environ(), "CHOWN_LOG": str(chown_log)},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert profile.is_symlink()
+    assert chown_log.read_text().splitlines() == [str(target)]
+    assert "export PATH=/fresh/entry:$PATH" in target.read_text()
+
+
 def test_install_script_follows_symlink_chain_to_final_target(tmp_path: Path) -> None:
     """A symlink chain (~/.zshrc -> links/zshrc -> ../dotfiles/zshrc) is followed.
 

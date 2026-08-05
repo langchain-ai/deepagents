@@ -1,27 +1,48 @@
 # Daily bump of `genai-prices` in `libs/code/uv.lock`.
 #
-# genai-prices ships new model pricing frequently and dcode's runtime
-# auto-updater depends on its schema staying compatible, so it should not
-# wait for the monthly Dependabot sweep. Dependabot cannot express
-# "one dependency daily, the rest monthly" inside a single directory —
-# GitHub rejects config with two `uv` blocks covering the same directory,
-# and `allow`/`ignore` filters do not create an exception to that rule —
-# so the daily cadence lives here instead of in `dependabot.yml`.
+# genai-prices ships model pricing as *data*, which dcode's hourly price
+# auto-updater already fetches at runtime — so a package bump is not how
+# users get new prices. What the pinned package governs is the code that
+# reads that catalog: when upstream evolves the data schema, an outdated pin
+# can fail to parse a freshly fetched snapshot. Tracking the newest
+# compatible release daily keeps that window short; the monthly Dependabot
+# sweep does not.
+#
+# Dependabot cannot express "one dependency daily, the rest monthly" inside a
+# single directory — GitHub rejects config with two `uv` blocks covering the
+# same directory, and `allow`/`ignore` filters do not create an exception to
+# that rule (tried and reverted in 6355d1af). So the daily cadence lives
+# here, and `dependabot.yml` ignores `genai-prices` under `/libs/code` so the
+# monthly sweep does not race this workflow for the same lock entry.
 #
 # Notes:
 # - Only the lockfile moves: `uv lock --upgrade-package` re-resolves
-#   genai-prices within the existing `>=0.1.1,<0.2.0` range in
-#   `libs/code/pyproject.toml`, so the manifest stays untouched.
+#   genai-prices within the range already declared in
+#   `libs/code/pyproject.toml`, so the manifest stays untouched. Staleness is
+#   defined as "`uv lock` moved the pin", never as "PyPI has something
+#   newer" — otherwise a release above the declared ceiling (or a yanked or
+#   pre-release version uv correctly refuses) would fail this job every day
+#   forever with nothing a bump could fix.
 # - The PR title is `chore(deps):` on purpose. A bump-worthy type touching
 #   files inside the managed `libs/code` package would make release-please
 #   open a separate `release(deepagents-code)` PR (multi-component fan-out).
 # - The PR is created with the Org Membership App installation token rather
 #   than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
 #   `pull_request` workflows, so the required checks would never run.
-# - Idempotent: if the lock pin is already current (or a bump PR for that
-#   version is already open), the workflow exits without creating a
-#   duplicate. An existing open PR is force-pushed to the newest version
-#   rather than stacked with a second PR.
+# - Idempotent. If `uv lock` cannot move the pin, nothing is pushed. If an
+#   open bump PR already carries the resolved version, the branch is left
+#   alone — a daily no-op force-push would re-run CI and dismiss approvals
+#   for an unchanged tree. If the branch already carries that version but no
+#   PR points at it (a prior run pushed, then died before `gh pr create`),
+#   the branch is reused and only the PR is opened. Otherwise the existing
+#   branch is force-pushed to the newer version and its PR title and body are
+#   rewritten to match, rather than stacking a second PR.
+# - A bump branch whose tip was authored by a human is never force-pushed.
+#   The run warns and exits, so a hand-applied compatibility fix on an open
+#   bump PR is not silently discarded.
+# - Because this runs unattended, a failure would otherwise be invisible: the
+#   final step files (or refreshes) a tracking issue so a broken bump does
+#   not just stop happening.
 
 name: "Bump genai-prices in deepagents-code"
 
@@ -44,81 +65,104 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      # `gh pr list` below runs under `github.token`. Public-repo reads work
+      # without this, but declaring it keeps the job working if the repo ever
+      # goes private or default token scopes tighten.
+      pull-requests: read
+      # For the failure-tracking issue in the final step.
+      issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python and uv
         uses: "./.github/actions/uv_setup"
         with:
+          python-version: "3.12"
           enable-cache: "false"
 
-      - name: Resolve locked and latest genai-prices versions
+      - name: Re-lock genai-prices and resolve the version change
         id: versions
         run: |
           set -euo pipefail
-          lockfile="libs/code/uv.lock"
 
-          locked=$(uv run --no-project python - <<'PY'
+          # Read the single genai-prices pin out of the lockfile. Kept as a
+          # function because it is called on both sides of `uv lock`, and the
+          # post-lock read is what the commit message and PR body quote — so
+          # they can never claim a version the lockfile does not contain.
+          read_pin() {
+            uv run --no-project python - <<'PY'
+          import sys
           import tomllib
 
           with open("libs/code/uv.lock", "rb") as f:
               lock = tomllib.load(f)
-          versions = [p["version"] for p in lock["package"] if p["name"] == "genai-prices"]
-          assert len(versions) == 1, f"expected 1 genai-prices entry in uv.lock, got {versions}"
+          packages = lock.get("package")
+          if packages is None:
+              print("::error::libs/code/uv.lock has no [[package]] table; uv.lock schema changed?", file=sys.stderr)
+              raise SystemExit(1)
+          versions = [p["version"] for p in packages if p["name"] == "genai-prices"]
+          if len(versions) != 1:
+              print(
+                  f"::error::Expected exactly 1 genai-prices entry in libs/code/uv.lock, found {versions}. "
+                  "If genai-prices is no longer a dependency of libs/code, delete this workflow.",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
           print(versions[0])
           PY
-          )
+          }
 
-          latest=$(uv run --no-project python - <<'PY'
-          import json
-          import urllib.request
+          locked=$(read_pin)
 
-          with urllib.request.urlopen("https://pypi.org/pypi/genai-prices/json") as r:
-              print(json.load(r)["info"]["version"])
-          PY
-          )
+          # Resolve the newest version the manifest permits. Doing the lock
+          # first (rather than asking PyPI what is newest) means the ceiling
+          # in `libs/code/pyproject.toml`, yanks and pre-releases are all
+          # honoured by uv itself, and a version we could never adopt simply
+          # reads as "not stale".
+          uv lock --directory libs/code --python 3.12 --upgrade-package genai-prices
 
-          stale=$(LOCKED="$locked" LATEST="$latest" uv run --no-project --with packaging python - <<'PY'
-          import os
-          import sys
+          latest=$(read_pin)
 
-          from packaging.version import Version
+          # `uv run` should keep progress output on stderr, but a polluted
+          # value here would silently poison the commit message and PR title,
+          # so reject anything that is not a bare version.
+          version_re='^[0-9]+(\.[0-9]+)*([a-z0-9.+-]*)$'
+          for value in "$locked" "$latest"; do
+            if [[ ! "$value" =~ $version_re ]]; then
+              echo "::error::Could not parse a genai-prices version from the lockfile (got '$value')"
+              exit 1
+            fi
+          done
 
-          sys.stdout.write("true" if Version(os.environ["LOCKED"]) < Version(os.environ["LATEST"]) else "false")
-          PY
-          )
+          # Compare the two pins rather than diffing the lockfile: `uv lock`
+          # can touch unrelated lines (a lock revision bump, a re-resolved
+          # transitive), and a "bump genai-prices" PR that does not move
+          # genai-prices is worse than no PR. Nothing is lost by dropping a
+          # diff check here — if the pin moved, the lockfile necessarily
+          # changed, and an empty `git commit` in the push step would fail
+          # loudly anyway.
+          if [ "$locked" = "$latest" ]; then
+            stale=false
+          else
+            stale=true
+          fi
 
-          echo "locked=$locked" >> "$GITHUB_OUTPUT"
-          echo "latest=$latest" >> "$GITHUB_OUTPUT"
-          echo "stale=$stale" >> "$GITHUB_OUTPUT"
-          echo "branch=chore/bump-genai-prices" >> "$GITHUB_OUTPUT"
+          {
+            echo "locked=$locked"
+            echo "latest=$latest"
+            echo "stale=$stale"
+            echo "branch=chore/bump-genai-prices"
+          } >> "$GITHUB_OUTPUT"
           echo "Locked: $locked"
           echo "Latest: $latest"
           echo "Stale:  $stale"
 
       - name: Log if nothing to do
-        # The actual skip is implemented by the `if:` guards on every
-        # subsequent step; this step only emits a log line so the run
-        # history shows why no PR was opened.
+        # The actual skip is implemented by the `if:` guards on the steps that
+        # can open a PR; this step only emits a log line so the run history
+        # shows why no PR was opened.
         if: steps.versions.outputs.stale != 'true'
-        run: echo "genai-prices lock pin is already current; nothing to do."
-
-      - name: Check for an existing open bump PR
-        id: existing
-        if: steps.versions.outputs.stale == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BRANCH: ${{ steps.versions.outputs.branch }}
-        run: |
-          set -euo pipefail
-          existing_json=$(gh pr list --head "$BRANCH" --state open --json number,url)
-          count=$(printf '%s' "$existing_json" | jq 'length')
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-          if [ "$count" -gt 0 ]; then
-            pr_url=$(printf '%s' "$existing_json" | jq -r '.[0].url')
-            echo "Open bump PR already exists on $BRANCH ($pr_url); will force-push the newest version to it."
-            echo "::notice::Refreshing existing genai-prices bump PR: $pr_url"
-          fi
+        run: echo "genai-prices lock pin is already the newest the manifest permits; nothing to do."
 
       - name: Generate GitHub App token
         id: app-token
@@ -130,56 +174,170 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
-      - name: Re-lock genai-prices and push bump branch
+      # Push and PR management live in one step on purpose. Split across two
+      # steps, the open-PR lookup is a snapshot taken before a multi-minute
+      # `uv lock`, and a PR closed inside that window leaves a pushed branch
+      # with no PR pointing at it — and a green run saying otherwise.
+      - name: Push bump branch and open or refresh its PR
         if: steps.versions.outputs.stale == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           LOCKED: ${{ steps.versions.outputs.locked }}
           LATEST: ${{ steps.versions.outputs.latest }}
           BRANCH: ${{ steps.versions.outputs.branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPO_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
           lockfile="libs/code/uv.lock"
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
-          # Re-resolve only genai-prices; every other package keeps its
-          # locked version, and the pyproject range stays as-is.
-          uv lock --directory libs/code --python 3.12 --upgrade-package genai-prices
+          # Scope to head branches in this repository: `gh pr list --head`
+          # matches by branch *name*, so a fork PR that happens to use the
+          # same name would otherwise make this workflow think its own PR is
+          # already open and never file one again.
+          existing_json=$(gh pr list --head "$BRANCH" --state open \
+            --json number,url,headRepositoryOwner)
+          pr_number=$(printf '%s' "$existing_json" \
+            | jq -r --arg owner "$REPO_OWNER" \
+              'map(select(.headRepositoryOwner.login == $owner)) | .[0].number // ""')
+          pr_url=$(printf '%s' "$existing_json" \
+            | jq -r --arg owner "$REPO_OWNER" \
+              'map(select(.headRepositoryOwner.login == $owner)) | .[0].url // ""')
 
-          if git diff --quiet "$lockfile"; then
-            echo "::error::uv lock --upgrade-package genai-prices produced no change (locked=$LOCKED, latest=$LATEST)"
-            exit 1
+          remote_sha=$(git ls-remote --heads "$remote" "$BRANCH" | cut -f1)
+
+          needs_push=true
+          if [ -n "$remote_sha" ]; then
+            git fetch --no-tags "$remote" "+refs/heads/${BRANCH}:refs/remotes/bump/${BRANCH}"
+
+            # Never clobber a human. If someone pushed a compatibility fix
+            # onto the open bump PR, refreshing it would silently drop their
+            # work; bail out and let them drive.
+            tip_author=$(git log -1 --format='%an' "refs/remotes/bump/${BRANCH}")
+            if [ "$tip_author" != "github-actions[bot]" ]; then
+              echo "::warning::$BRANCH tip is authored by '$tip_author', not the bot; leaving it alone. Land or close ${pr_url:-the branch} to resume automatic bumps."
+              exit 0
+            fi
+
+            # `main` still carries the old pin while a bump PR is open, so
+            # staleness alone would be true every day. Compare against what
+            # the branch already has: an identical lockfile means a
+            # force-push would only churn CI and dismiss approvals.
+            # `git diff --quiet` exits 1 for "differs" but >1 for a real
+            # error, so capture the code instead of branching on truthiness.
+            set +e
+            git diff --quiet "refs/remotes/bump/${BRANCH}" -- "$lockfile"
+            diff_rc=$?
+            set -e
+            if [ "$diff_rc" -gt 1 ]; then
+              echo "::error::git diff failed comparing $lockfile against $BRANCH (exit=$diff_rc)"
+              exit 1
+            fi
+            if [ "$diff_rc" -eq 0 ]; then
+              if [ -n "$pr_number" ]; then
+                echo "::notice::${pr_url} already carries genai-prices $LATEST; nothing to push."
+                exit 0
+              fi
+              # Orphan branch: a prior run pushed but died before opening the
+              # PR. The content is already correct, so reuse the branch and
+              # fall through to `gh pr create` rather than exiting — exiting
+              # here would strand the branch and never file a PR for it.
+              echo "::warning::$BRANCH already carries genai-prices $LATEST but has no open PR; opening one for the existing branch."
+              needs_push=false
+            fi
           fi
 
-          git config --local user.name "github-actions[bot]"
-          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
-          git add "$lockfile"
-          git commit -m "chore(deps): bump genai-prices in deepagents-code to $LATEST"
-          # Force-with-lease refreshes a prior bump branch whose PR was
-          # never merged; there is no shared history worth preserving on it.
-          git push --force-with-lease "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
+          if [ "$needs_push" = true ]; then
+            git config --local user.name "github-actions[bot]"
+            git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git checkout -b "$BRANCH"
+            git add "$lockfile"
+            git commit -m "chore(deps): bump genai-prices in deepagents-code to $LATEST"
 
-      - name: Open bump PR
-        if: steps.versions.outputs.stale == 'true' && steps.existing.outputs.count == '0'
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          LOCKED: ${{ steps.versions.outputs.locked }}
-          LATEST: ${{ steps.versions.outputs.latest }}
-          BRANCH: ${{ steps.versions.outputs.branch }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-        run: |
-          set -euo pipefail
+            # The bump branch is rebuilt on top of `main` every run, so there
+            # is no shared history worth preserving and the push must be
+            # forced. The lease needs an explicit expected sha: bare
+            # `--force-with-lease` resolves against a remote-tracking ref, and
+            # pushing to a URL rather than a named remote means there is none
+            # — it would be rejected as `stale info` on every run after the
+            # first, i.e. exactly when the refresh path matters.
+            if [ -n "$remote_sha" ]; then
+              git push --force-with-lease="refs/heads/${BRANCH}:$remote_sha" \
+                "$remote" "${BRANCH}:refs/heads/${BRANCH}"
+            else
+              git push "$remote" "${BRANCH}:refs/heads/${BRANCH}"
+            fi
+          fi
 
           body_file="$(mktemp)"
           {
-            printf 'Bumps `genai-prices` in `libs/code/uv.lock` from `%s` to `%s` (latest on PyPI) via `uv lock --upgrade-package genai-prices`. The `>=0.1.1,<0.2.0` range in `libs/code/pyproject.toml` is unchanged.\n\n' "$LOCKED" "$LATEST"
-            printf 'Opened automatically by `bump_genai_prices.yml`, which runs daily because genai-prices ships new model pricing frequently and dcode'\''s runtime auto-updater depends on its schema staying compatible. If a newer version lands before this PR merges, the next daily run force-pushes it onto this branch.\n'
+            printf 'Bumps `genai-prices` in `libs/code/uv.lock` from `%s` to `%s` — the newest version permitted by the range declared in `libs/code/pyproject.toml`, which is unchanged — via `uv lock --upgrade-package genai-prices`.\n\n' "$LOCKED" "$LATEST"
+            printf 'Opened automatically by `bump_genai_prices.yml`. It runs daily because dcode fetches the genai-prices catalog at runtime, so the pinned package needs to stay new enough to parse a freshly fetched snapshot. If a newer compatible version lands before this PR merges, the next daily run force-pushes it onto this branch and rewrites this description.\n'
           } > "$body_file"
 
-          pr_url=$(gh pr create \
-            --head "$BRANCH" \
-            --base "$DEFAULT_BRANCH" \
-            --title "chore(deps): bump genai-prices in deepagents-code to $LATEST" \
-            --body-file "$body_file")
-          echo "Opened genai-prices bump PR: $pr_url"
-          echo "::notice::Opened genai-prices bump PR: $pr_url"
+          title="chore(deps): bump genai-prices in deepagents-code to $LATEST"
+
+          if [ -n "$pr_number" ]; then
+            # Retitle and rewrite the body: the branch just moved to a newer
+            # version than the one the PR was opened for, and a PR whose title
+            # disagrees with its own diff is worse than no automation.
+            gh pr edit "$pr_number" --title "$title" --body-file "$body_file"
+            echo "Refreshed genai-prices bump PR to $LATEST: $pr_url"
+            echo "::notice::Refreshed genai-prices bump PR to $LATEST: $pr_url"
+          else
+            new_url=$(gh pr create \
+              --head "$BRANCH" \
+              --base "$DEFAULT_BRANCH" \
+              --title "$title" \
+              --body-file "$body_file")
+            echo "Opened genai-prices bump PR: $new_url"
+            echo "::notice::Opened genai-prices bump PR: $new_url"
+          fi
+
+      - name: File a tracking issue on failure
+        # Nobody watches a green cron, and nobody watches a red one either
+        # once it has been red for a week. Funnel every failure into a single
+        # deduplicated issue so the bump stopping is visible exactly once.
+        if: failure()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const marker = '<!-- bump-genai-prices-failure -->';
+            const { owner, repo } = context.repo;
+            const runUrl = process.env.RUN_URL;
+            const title = 'Daily genai-prices bump is failing';
+            const body = [
+              marker,
+              '`bump_genai_prices.yml` failed, so `genai-prices` in `libs/code/uv.lock` is no longer being bumped daily.',
+              '',
+              `Most recent failed run: ${runUrl}`,
+              '',
+              'This issue is reused by later failures rather than duplicated. Close it once the workflow is green again.',
+            ].join('\n');
+
+            try {
+              const existing = await github.paginate(
+                github.rest.issues.listForRepo,
+                { owner, repo, state: 'open', per_page: 100 },
+              );
+              const found = existing.find(
+                i => !i.pull_request && (i.body ?? '').startsWith(marker),
+              );
+              if (found) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: found.number,
+                  body: `Still failing: ${runUrl}`,
+                });
+                core.info(`Commented on existing tracking issue #${found.number}.`);
+              } else {
+                const created = await github.rest.issues.create({ owner, repo, title, body });
+                core.info(`Filed tracking issue #${created.data.number}.`);
+              }
+            } catch (err) {
+              // Never mask the real failure with a reporting failure — the job
+              // is already red for the reason that matters.
+              core.warning(`Could not file the genai-prices bump tracking issue: ${err.message}`);
+            }

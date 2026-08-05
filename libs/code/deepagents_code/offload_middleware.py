@@ -667,9 +667,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                         context_limit,
                         exc_info=True,
                     )
-        summarization = create_summarization_middleware(
-            model, self._summarization._backend
-        )
+        backend = self._summarization._backend
+        summarization = create_summarization_middleware(model, backend)
         summarization._backend = self._guarded_backend()
         return summarization
 

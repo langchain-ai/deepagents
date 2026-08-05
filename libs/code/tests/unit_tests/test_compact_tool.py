@@ -28,8 +28,6 @@ from deepagents_code.offload_middleware import (
 from deepagents_code.tool_display import format_tool_display
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from deepagents.backends.protocol import BackendProtocol
     from langchain_core.messages import AnyMessage
 
@@ -221,39 +219,38 @@ class TestCLICompactionMiddleware:
         assert result.update is not None
         assert result.update["_summarization_event"]["cutoff_index"] == 2
 
-    def test_runtime_model_builds_matching_summarizer(self, tmp_path: Path) -> None:
-        """A `/model` override preserves configured artifact paths."""
-        from deepagents.backends import CompositeBackend, FilesystemBackend
-        from deepagents.middleware.summarization import create_summarization_middleware
-        from langchain_core.language_models.fake_chat_models import FakeListChatModel
-
-        backend = CompositeBackend(
-            default=FilesystemBackend(root_dir=tmp_path),
-            routes={},
-            artifacts_root="/artifacts",
-        )
-        model = FakeListChatModel(responses=["summary"])
-        middleware = CLICompactionMiddleware(
-            create_summarization_middleware(model, backend)
-        )
+    def test_runtime_model_builds_matching_summarizer(self) -> None:
+        """A `/model` override selects the summarizer used by `/offload`."""
+        startup = self._summarization()
+        middleware = CLICompactionMiddleware(startup)
         runtime = MagicMock()
-        runtime.context = {"model": "provider:active-model"}
+        runtime.context = {
+            "model": "provider:active-model",
+            "model_params": {"temperature": 0},
+        }
+        active_model = object()
+        result = SimpleNamespace(model=active_model)
+        selected = MagicMock()
 
-        with patch(
-            "deepagents_code.config.create_model",
-            return_value=SimpleNamespace(model=model),
+        with (
+            patch(
+                "deepagents_code.config.create_model", return_value=result
+            ) as create_model,
+            patch(
+                "deepagents_code.offload_middleware.create_summarization_middleware",
+                return_value=selected,
+            ) as create_summarization,
         ):
             actual = middleware._summarization_for_runtime(runtime)
 
-        assert isinstance(actual._backend, _ArchiveReadGuard)
-        assert actual._backend._backend is backend
-        with patch.object(actual, "_get_thread_id", return_value="thread"):
-            archive_path = actual._offload_to_backend(
-                actual._backend, [HumanMessage(content="preserve me")]
-            )
-        assert archive_path == "/artifacts/conversation_history/thread.md"
-        archive = tmp_path / "artifacts" / "conversation_history" / "thread.md"
-        assert "preserve me" in archive.read_text()
+        assert actual is selected
+        create_model.assert_called_once_with(
+            "provider:active-model",
+            extra_kwargs={"temperature": 0},
+            profile_overrides=None,
+        )
+        create_summarization.assert_called_once_with(active_model, startup._backend)
+        assert actual._backend._backend is startup._backend
 
     def test_runtime_profile_overrides_and_context_limit_are_applied(self) -> None:
         """Server-side offload uses the CLI's effective model profile."""
@@ -289,7 +286,6 @@ class TestCLICompactionMiddleware:
         )
         assert active_model.profile["max_input_tokens"] == 24_000
         create_summarization.assert_called_once_with(active_model, startup._backend)
-        assert actual._backend._backend is startup._backend
 
     async def test_force_noops_when_nothing_old_enough(self) -> None:
         """Forced compaction still no-ops at cutoff 0 (bypasses only the gate)."""

@@ -5351,7 +5351,16 @@ class TestExecuteTaskTextualAskUser:
         tool_rows = [w for w in mounted if isinstance(w, ToolCallMessage)]
         assert len(tool_rows) == 1
 
-    async def test_ask_user_cancelled_marks_row_rejected_and_halts(self) -> None:
+    @pytest.mark.parametrize(
+        ("question_count", "expected_message"),
+        [
+            (1, "Question dismissed. Tell the agent what you'd like instead."),
+            (2, "Questions dismissed. Tell the agent what you'd like instead."),
+        ],
+    )
+    async def test_ask_user_cancelled_marks_row_rejected_and_halts(
+        self, question_count: int, expected_message: str
+    ) -> None:
         """Cancelled result should reject the row and not resume generation."""
         mounted: list[object] = []
         token_events: list[str] = []
@@ -5374,7 +5383,10 @@ class TestExecuteTaskTextualAskUser:
                     _ask_user_interrupt_chunk(
                         {
                             "type": "ask_user",
-                            "questions": [{"question": "Name?", "type": "text"}],
+                            "questions": [
+                                {"question": f"Question {index}?", "type": "text"}
+                                for index in range(question_count)
+                            ],
                             "tool_call_id": "tool-1",
                         }
                     )
@@ -5405,7 +5417,7 @@ class TestExecuteTaskTextualAskUser:
         assert "tool-1" not in adapter._current_tool_messages
         app_messages = [widget for widget in mounted if isinstance(widget, AppMessage)]
         assert len(app_messages) == 1
-        assert "Question cancelled" in str(app_messages[0]._content)
+        assert str(app_messages[0]._content) == expected_message
         assert token_events == ["pending", "show:False"]
 
     async def test_hitl_rejection_restores_token_display_before_halt(self) -> None:

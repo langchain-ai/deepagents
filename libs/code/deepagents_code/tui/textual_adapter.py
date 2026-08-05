@@ -2312,7 +2312,7 @@ async def execute_task_textual(
             # Handle HITL after stream completes
             if interrupt_occurred:
                 any_rejected = False
-                ask_user_cancelled = False
+                dismissed_question_count = 0
                 resume_payload: dict[str, Any] = dict(pending_hook_resumes)
 
                 # Tools mounted above start their spinner immediately, but a
@@ -2484,7 +2484,7 @@ async def execute_task_textual(
                             any_rejected = True
                             # Halt the turn on cancel; error branches still
                             # resume so the agent can react to the failure.
-                            ask_user_cancelled = True
+                            dismissed_question_count += len(questions)
                             tool_msg = adapter._current_tool_messages.pop(tool_id, None)
                             output = ASK_USER_CANCELLED_SUMMARY
                             _dispatch_tool_error_hook("ask_user")
@@ -2909,7 +2909,7 @@ async def execute_task_textual(
 
             if interrupt_occurred and resume_payload:
                 if suppress_resumed_output and (
-                    ask_user_cancelled or not pending_ask_user
+                    dismissed_question_count > 0 or not pending_ask_user
                 ):
                     # An answered `ask_user` can still be tracked here when a
                     # *separate* `ask_user` call in the same batch was cancelled
@@ -2948,16 +2948,20 @@ async def execute_task_textual(
                                 tool_id,
                             )
 
+                    dismissed_subject = (
+                        "Questions" if dismissed_question_count > 1 else "Question"
+                    )
                     message = (
-                        "Question cancelled. Tell the agent what you'd like instead."
-                        if ask_user_cancelled
+                        f"{dismissed_subject} dismissed. Tell the agent what you'd "
+                        "like instead."
+                        if dismissed_question_count > 0
                         else "Command rejected. Tell the agent what you'd like instead."
                     )
                     if undelivered:
                         # The user typed answers and they are now gone; saying so
                         # is the only way they learn not to wait for a response.
                         message = (
-                            "Question cancelled, so answers to the other "
+                            f"{dismissed_subject} dismissed, so answers to the other "
                             "question(s) in this batch were not sent. Tell the "
                             "agent what you'd like instead."
                         )

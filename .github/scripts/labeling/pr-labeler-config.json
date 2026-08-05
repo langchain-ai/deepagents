@@ -50,6 +50,8 @@
     "ci": "infra",
     "cli": "cli",
     "cli-gha": "github_actions",
+    "cloud-run": "cloud_run",
+    "cloud_run": "cloud_run",
     "code": "dcode",
     "daytona": "daytona",
     "deepagents": "deepagents",
@@ -63,6 +65,7 @@
     "examples": "examples",
     "harbor": "harbor",
     "infra": "infra",
+    "langchain-cloud-run": "cloud_run",
     "langchain-daytona": "daytona",
     "langchain-modal": "modal",
     "langchain-quickjs": "quickjs",
@@ -116,6 +119,11 @@
     {
       "label": "daytona",
       "prefix": "libs/partners/daytona/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "cloud_run",
+      "prefix": "libs/partners/cloud_run/",
       "skipExcludedFiles": true
     },
     {

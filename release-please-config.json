@@ -145,6 +145,21 @@
         "libs/partners/daytona/tests"
       ]
     },
+    "libs/partners/cloud_run": {
+      "release-type": "python",
+      "package-name": "langchain-cloud-run",
+      "component": "langchain-cloud-run",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_cloud_run/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/cloud_run/tests"
+      ]
+    },
     "libs/partners/modal": {
       "release-type": "python",
       "package-name": "langchain-modal",

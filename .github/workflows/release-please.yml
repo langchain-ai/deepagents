@@ -130,6 +130,7 @@ jobs:
       code-release: ${{ steps.check-releases.outputs.code-release }}
       talon-release: ${{ steps.check-releases.outputs.talon-release }}
       daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
+      cloud-run-release: ${{ steps.check-releases.outputs.cloud-run-release }}
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
       runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
       vercel-release: ${{ steps.check-releases.outputs.vercel-release }}
@@ -235,6 +236,14 @@ jobs:
             echo "Daytona release detected: $COMMIT_MSG"
           else
             echo "daytona-release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if echo "$CHANGED" | grep -q "^libs/partners/cloud_run/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-cloud-run\):"; then
+            echo "cloud-run-release=true" >> "$GITHUB_OUTPUT"
+            ANY_PACKAGE=true
+            echo "Cloud Run release detected: $COMMIT_MSG"
+          else
+            echo "cloud-run-release=false" >> "$GITHUB_OUTPUT"
           fi
 
           if echo "$CHANGED" | grep -q "^libs/partners/modal/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-modal\):"; then
@@ -946,6 +955,7 @@ jobs:
       needs.detect-release-commit.outputs.code-release == 'true' ||
       needs.detect-release-commit.outputs.talon-release == 'true' ||
       needs.detect-release-commit.outputs.daytona-release == 'true' ||
+      needs.detect-release-commit.outputs.cloud-run-release == 'true' ||
       needs.detect-release-commit.outputs.modal-release == 'true' ||
       needs.detect-release-commit.outputs.runloop-release == 'true' ||
       needs.detect-release-commit.outputs.vercel-release == 'true' ||
@@ -968,6 +978,7 @@ jobs:
       CODE_RELEASE: ${{ needs.detect-release-commit.outputs.code-release }}
       TALON_RELEASE: ${{ needs.detect-release-commit.outputs.talon-release }}
       DAYTONA_RELEASE: ${{ needs.detect-release-commit.outputs.daytona-release }}
+      CLOUD_RUN_RELEASE: ${{ needs.detect-release-commit.outputs.cloud-run-release }}
       MODAL_RELEASE: ${{ needs.detect-release-commit.outputs.modal-release }}
       RUNLOOP_RELEASE: ${{ needs.detect-release-commit.outputs.runloop-release }}
       VERCEL_RELEASE: ${{ needs.detect-release-commit.outputs.vercel-release }}
@@ -1244,8 +1255,9 @@ jobs:
           if [ "$ACP_RELEASE" = "true" ];     then dispatch deepagents-acp;      fi
           if [ "$CODE_RELEASE" = "true" ];    then dispatch deepagents-code;     fi
           if [ "$TALON_RELEASE" = "true" ];   then dispatch deepagents-talon;    fi
-          if [ "$DAYTONA_RELEASE" = "true" ]; then dispatch langchain-daytona;   fi
-          if [ "$MODAL_RELEASE" = "true" ];   then dispatch langchain-modal;     fi
+          if [ "$DAYTONA_RELEASE" = "true" ];   then dispatch langchain-daytona;   fi
+          if [ "$CLOUD_RUN_RELEASE" = "true" ]; then dispatch langchain-cloud-run; fi
+          if [ "$MODAL_RELEASE" = "true" ];     then dispatch langchain-modal;     fi
           if [ "$RUNLOOP_RELEASE" = "true" ]; then dispatch langchain-runloop;   fi
           if [ "$VERCEL_RELEASE" = "true" ];   then dispatch langchain-vercel-sandbox; fi
           if [ "$QUICKJS_RELEASE" = "true" ]; then dispatch langchain-quickjs;   fi

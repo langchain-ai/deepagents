@@ -34,6 +34,7 @@ on:
           - deepagents-talon
           - deepagents-evals
           - langchain-daytona
+          - langchain-cloud-run
           - langchain-modal
           - langchain-quickjs
           - langchain-runloop
@@ -133,6 +134,9 @@ jobs:
               ;;
             langchain-daytona)
               echo "working-dir=libs/partners/daytona" >> $GITHUB_OUTPUT
+              ;;
+            langchain-cloud-run)
+              echo "working-dir=libs/partners/cloud_run" >> $GITHUB_OUTPUT
               ;;
             langchain-modal)
               echo "working-dir=libs/partners/modal" >> $GITHUB_OUTPUT

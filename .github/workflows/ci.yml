@@ -39,6 +39,7 @@ jobs:
       evals: ${{ steps.filter.outputs.evals }}
       acp: ${{ steps.filter.outputs.acp }}
       daytona: ${{ steps.filter.outputs.daytona }}
+      cloud_run: ${{ steps.filter.outputs.cloud_run }}
       modal: ${{ steps.filter.outputs.modal }}
       runloop: ${{ steps.filter.outputs.runloop }}
       vercel: ${{ steps.filter.outputs.vercel }}
@@ -116,6 +117,12 @@ jobs:
               - '.github/actions/**'
             daytona:
               - 'libs/partners/daytona/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
+            cloud_run:
+              - 'libs/partners/cloud_run/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
@@ -206,6 +213,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/daytona"
+      python-version: "3.11"
+
+  lint-cloud-run:
+    name: "🧹 Lint cloud_run"
+    needs: changes
+    if: needs.changes.outputs.cloud_run == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/cloud_run"
       python-version: "3.11"
 
   lint-modal:
@@ -313,6 +329,16 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/daytona"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+      coverage-python-version: "3.12"
+
+  test-cloud-run:
+    name: "🧪 Test cloud_run"
+    needs: changes
+    if: needs.changes.outputs.cloud_run == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/cloud_run"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       coverage-python-version: "3.12"
 

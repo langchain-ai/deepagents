@@ -5,6 +5,7 @@
   "libs/code": "0.1.49",
   "libs/talon": "0.0.3",
   "libs/partners/daytona": "0.0.8",
+  "libs/partners/cloud_run": "0.0.0",
   "libs/partners/modal": "0.0.6",
   "libs/partners/runloop": "0.0.7",
   "libs/partners/vercel": "0.0.2",

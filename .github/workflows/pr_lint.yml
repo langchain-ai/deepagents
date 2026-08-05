@@ -112,6 +112,8 @@ jobs:
             cli
             code
             dcode-gha
+            cloud-run
+            cloud_run
             daytona
             deepagents
             deepagents-acp
@@ -124,6 +126,7 @@ jobs:
             examples
             harbor
             infra
+            langchain-cloud-run
             langchain-daytona
             langchain-modal
             langchain-quickjs

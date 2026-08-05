@@ -43,6 +43,8 @@ jobs:
               "evals": "evals",
               "harbor": "harbor",
               "daytona": "daytona",
+              "cloud_run": "cloud_run",
+              "cloud-run": "cloud_run",
               "modal": "modal",
               "quickjs": "quickjs",
               "runloop": "runloop",

@@ -3751,6 +3751,24 @@ class TestQuietSdkLogging:
 
         assert genai_prices.update_prices.logger.name in _QUIET_SDK_LOGGER_NAMES
 
+    def test_covers_the_logger_mcp_actually_uses(self) -> None:
+        """The MCP streamable-HTTP transport's logger must be quieted.
+
+        When the app quits while an HTTP MCP response is in flight, the
+        transport's response task finds the session stream already closed and
+        logs `logger.exception("Error parsing JSON response")` with an
+        `anyio.ClosedResourceError` traceback. Unhandled, that clears
+        `logging.lastResort`'s WARNING threshold and prints over the terminal.
+        The transport logs under `mcp.client.streamable_http`, a child of the
+        quieted `mcp` logger. Reading the name off the module pins the
+        coupling, so an upstream rename fails here rather than in a user's
+        terminal.
+        """
+        import mcp.client.streamable_http
+
+        assert mcp.client.streamable_http.logger.name.startswith("mcp")
+        assert "mcp" in _QUIET_SDK_LOGGER_NAMES
+
     def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Repeated calls do not stack duplicate handlers."""
         from deepagents_code._env_vars import DEBUG

@@ -2868,6 +2868,41 @@ def test_install_script_preserves_symlinked_profile(tmp_path: Path) -> None:
     assert 'export PATH="$HOME/.local/bin:$PATH"' in real_zshrc.read_text()
 
 
+def test_install_script_follows_symlink_chain_to_final_target(tmp_path: Path) -> None:
+    """A symlink chain (~/.zshrc -> links/zshrc -> ../dotfiles/zshrc) is followed.
+
+    Resolving only the first hop would `mv` over the intermediate link with a
+    regular file: the real dotfile-manager source stays stale, and the next
+    restow recreates the link and reverts the PATH entry. The rewrite must
+    land on the final regular file, leaving both links intact.
+    """
+
+    def seed(home: Path) -> None:
+        dotfiles = home / "dotfiles"
+        links = home / "links"
+        dotfiles.mkdir()
+        links.mkdir()
+        target = dotfiles / "zshrc"
+        target.write_text(
+            "# managed by dotfiles\n"
+            "# >>> deepagents-code installer >>>\n"
+            "export PATH=/stale/entry:$PATH\n"
+            "# <<< deepagents-code installer <<<\n"
+        )
+        (links / "zshrc").symlink_to("../dotfiles/zshrc")
+        (home / ".zshrc").symlink_to("links/zshrc")
+
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path, seed_home=seed)
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    real_zshrc = home / "dotfiles/zshrc"
+    assert (home / ".zshrc").is_symlink()
+    assert (home / "links/zshrc").is_symlink()
+    assert "/stale/entry" not in real_zshrc.read_text()
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in real_zshrc.read_text()
+
+
 @pytest.mark.parametrize("value", ["true", "yes", "TRUE", " 1 ", "banana"])
 def test_install_script_no_modify_path_accepts_truthy_spellings(
     tmp_path: Path, value: str

@@ -1844,15 +1844,27 @@ append_managed_path_block() {
   } >>"$profile"
 }
 
-# Resolve a symlink to the absolute path of its target. Read-only; used to
-# pick the directory an atomic temp-file rewrite must live in.
+# Resolve a symlink to the absolute path of the final regular file in the
+# chain. Read-only; used to pick the directory an atomic temp-file rewrite
+# must live in. Chains (a -> b -> c) must be followed to the end: resolving
+# one hop and `mv`-ing over it would replace an intermediate link with a
+# regular file, so the real dotfile-manager source stays stale and the next
+# restow recreates the link, reverting the PATH entry. The hop count is
+# capped to bound symlink loops (ELOOP), which we can't detect portably.
 resolve_link_target() {
-  local link="$1" target
-  target=$(readlink "$link") || return 1
-  case "$target" in
-    /*) printf '%s\n' "$target" ;;
-    *)  printf '%s\n' "$(dirname "$link")/$target" ;;
-  esac
+  local link="$1" target hops=0
+  while [ -L "$link" ]; do
+    hops=$((hops + 1))
+    if [ "$hops" -gt 40 ]; then
+      return 1
+    fi
+    target=$(readlink "$link") || return 1
+    case "$target" in
+      /*) link="$target" ;;
+      *)  link="$(dirname "$link")/$target" ;;
+    esac
+  done
+  printf '%s\n' "$link"
 }
 
 rewrite_managed_path_block() {
@@ -1861,7 +1873,7 @@ rewrite_managed_path_block() {
     # Dotfile managers (chezmoi, stow, nix home-manager) symlink startup files
     # into a repo. Replacing the link with a regular file means the next
     # `apply`/`restow` silently reverts the PATH entry — after we printed a
-    # success message. Write the target instead, through the same atomic
+    # success message. Write the chain's final target instead, through the same atomic
     # temp-file + mv used below: `cat > "$profile"` would truncate the target
     # in place, so an interrupted install (we trap INT/TERM/HUP) would leave
     # the dotfile-manager source empty or partial. Resolving the target first

@@ -1977,6 +1977,67 @@ class TestCutoffIndexEdgeCases:
         assert len(backend.write_calls) == 0
 
 
+class TestSummaryGenerationFailure:
+    """Test that a failed summary (`None`) never gets fabricated into a fake compaction.
+
+    `_create_summary`/`_acreate_summary` on the underlying LangChain
+    `SummarizationMiddleware` return `None` (instead of a fabricated error
+    string) when the summary model call fails. `wrap_model_call`/`awrap_model_call`
+    must treat that as "skip compaction this turn," not build a `_summarization_event`
+    or interpolate `None` into a fake summary message.
+    """
+
+    def test_sync_skips_compaction_when_summary_is_none(self) -> None:
+        """A `None` summary must skip compaction and fall through to a plain handler call."""
+        backend = MockBackend()
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 3),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=3)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config(), patch.object(middleware, "_create_summary", return_value=None):
+            result, captured_request = call_wrap_model_call(middleware, state, runtime)
+
+        # No _summarization_event should be created - a plain ModelResponse instead.
+        assert not isinstance(result, ExtendedModelResponse)
+        # The handler must have received the original (untouched) messages, not a
+        # fabricated summary built from `None`.
+        assert captured_request is not None
+        assert captured_request.messages == messages
+
+    @pytest.mark.anyio
+    async def test_async_skips_compaction_when_summary_is_none(self) -> None:
+        """Async: a `None` summary must skip compaction and fall through to the handler."""
+        backend = MockBackend()
+        mock_model = make_mock_model()
+
+        middleware = SummarizationMiddleware(
+            model=mock_model,
+            backend=backend,
+            trigger=("messages", 3),
+            keep=("messages", 2),
+        )
+
+        messages = make_conversation_messages(num_old=6, num_recent=3)
+        state = cast("AgentState[Any]", {"messages": messages})
+        runtime = make_mock_runtime()
+
+        with mock_get_config(), patch.object(middleware, "_acreate_summary", return_value=None):
+            result, captured_request = await call_awrap_model_call(middleware, state, runtime)
+
+        assert not isinstance(result, ExtendedModelResponse)
+        assert captured_request is not None
+        assert captured_request.messages == messages
+
+
 # -----------------------------------------------------------------------------
 # Argument truncation tests
 # -----------------------------------------------------------------------------

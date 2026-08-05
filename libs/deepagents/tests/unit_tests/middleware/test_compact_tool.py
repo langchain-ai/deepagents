@@ -410,6 +410,68 @@ class TestCompactErrorHandling:
         assert "Compaction failed" in msg.content
         assert "_summarization_event" not in result.update
 
+    def test_sync_none_summary_returns_error_tool_message(self) -> None:
+        """Sync: a `None` summary must not be fabricated into a fake success.
+
+        Unlike the RuntimeError-raising case above, this covers the failure
+        signal langchain's `SummarizationMiddleware` actually uses: a `None`
+        return, not a raised exception.
+        """
+        mw = _make_middleware()
+        messages = _make_messages(10)
+        runtime = _make_runtime(messages)
+
+        with (
+            patch.object(mw._summarization, "_determine_cutoff_index", return_value=4),
+            patch.object(
+                mw._summarization,
+                "_partition_messages",
+                side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
+            ),
+            patch.object(mw._summarization, "_offload_to_backend", return_value=None) as offload_mock,
+            patch.object(mw._summarization, "_create_summary", return_value=None),
+        ):
+            result = mw._run_compact(runtime)
+
+        assert isinstance(result, Command)
+        assert result.update is not None
+        msg = result.update["messages"][0]
+        assert "Compaction failed" in msg.content
+        assert "None" not in msg.content
+        # Should NOT have a _summarization_event (state not modified) and must not
+        # have reported "Conversation compacted" success text.
+        assert "_summarization_event" not in result.update
+        assert "Conversation compacted" not in msg.content
+        # Must not proceed to offload once the summary is known to have failed.
+        offload_mock.assert_not_called()
+
+    async def test_async_none_summary_returns_error_tool_message(self) -> None:
+        """Async: a `None` summary must return an error `ToolMessage`, not a fake success."""
+        mw = _make_middleware()
+        messages = _make_messages(10)
+        runtime = _make_runtime(messages)
+
+        with (
+            patch.object(mw._summarization, "_determine_cutoff_index", return_value=4),
+            patch.object(
+                mw._summarization,
+                "_partition_messages",
+                side_effect=lambda msgs, idx: (msgs[:idx], msgs[idx:]),
+            ),
+            patch.object(mw._summarization, "_aoffload_to_backend", return_value=None) as offload_mock,
+            patch.object(mw._summarization, "_acreate_summary", return_value=None),
+        ):
+            result = await mw._arun_compact(runtime)
+
+        assert isinstance(result, Command)
+        assert result.update is not None
+        msg = result.update["messages"][0]
+        assert "Compaction failed" in msg.content
+        assert "None" not in msg.content
+        assert "_summarization_event" not in result.update
+        assert "Conversation compacted" not in msg.content
+        offload_mock.assert_not_called()
+
     def test_offload_failure_returns_error_tool_message(self) -> None:
         """Offload failure should return an error ToolMessage."""
         mw = _make_middleware()

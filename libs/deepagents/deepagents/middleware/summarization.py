@@ -639,12 +639,20 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         """Partition messages into those to summarize and those to preserve."""
         return self._lc_helper._partition_messages(conversation_messages, cutoff_index)
 
-    def _create_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
-        """Generate summary for the given messages."""
+    def _create_summary(self, messages_to_summarize: list[AnyMessage]) -> str | None:
+        """Generate summary for the given messages.
+
+        Returns `None` if summary generation failed. Callers must treat a `None`
+        return as "skip compaction this turn," never as valid summary text.
+        """
         return self._lc_helper._create_summary(messages_to_summarize)
 
-    async def _acreate_summary(self, messages_to_summarize: list[AnyMessage]) -> str:
-        """Generate summary for the given messages (async)."""
+    async def _acreate_summary(self, messages_to_summarize: list[AnyMessage]) -> str | None:
+        """Generate summary for the given messages (async).
+
+        Returns `None` if summary generation failed. Callers must treat a `None`
+        return as "skip compaction this turn," never as valid summary text.
+        """
         return await self._lc_helper._acreate_summary(messages_to_summarize)
 
     def _get_thread_id(self) -> str:
@@ -1427,6 +1435,12 @@ A condensed summary follows:
 
         # Generate summary
         summary = self._create_summary(offloaded_media_messages)
+        if summary is None:
+            # Summary generation failed (e.g. a transient model error). Never
+            # fabricate a summary from `None` - skip compaction this turn and
+            # retry once the underlying model recovers, the same way a missing
+            # safe cutoff is handled above.
+            return handler(request.override(messages=truncated_messages))
 
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
@@ -1562,6 +1576,13 @@ A condensed summary follows:
             )
             logger.warning(msg)
             warnings.warn(msg, stacklevel=2)
+
+        if summary is None:
+            # Summary generation failed (e.g. a transient model error). Never
+            # fabricate a summary from `None` - skip compaction this turn and
+            # retry once the underlying model recovers, the same way a missing
+            # safe cutoff is handled above.
+            return await handler(request.override(messages=truncated_messages))
 
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
@@ -2036,6 +2057,10 @@ class SummarizationToolMiddleware(AgentMiddleware):
         try:
             to_summarize, _ = s._partition_messages(effective, cutoff)
             summary = s._create_summary(to_summarize)
+            if summary is None:
+                # Never fabricate a summary from `None` - report the failure
+                # honestly instead of claiming the conversation was compacted.
+                return self._compact_error(tool_call_id, RuntimeError("the summarization model failed to generate a summary"))
             file_path = s._offload_to_backend(s._backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")
@@ -2069,6 +2094,10 @@ class SummarizationToolMiddleware(AgentMiddleware):
         try:
             to_summarize, _ = s._partition_messages(effective, cutoff)
             summary = await s._acreate_summary(to_summarize)
+            if summary is None:
+                # Never fabricate a summary from `None` - report the failure
+                # honestly instead of claiming the conversation was compacted.
+                return self._compact_error(tool_call_id, RuntimeError("the summarization model failed to generate a summary"))
             file_path = await s._aoffload_to_backend(s._backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise
             logger.exception("compact_conversation tool failed")

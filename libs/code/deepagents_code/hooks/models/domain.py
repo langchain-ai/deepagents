@@ -43,6 +43,7 @@ class HookEvent(StrEnum):
     NOTIFICATION = "Notification"
     PRE_TOOL_USE = "PreToolUse"
     POST_TOOL_USE = "PostToolUse"
+    POST_TOOL_USE_FAILURE = "PostToolUseFailure"
     PRE_COMPACT = "PreCompact"
     STOP = "Stop"
     SUBAGENT_START = "SubagentStart"
@@ -251,6 +252,16 @@ class PostToolUseEvent(_DomainModel):
         )
 
 
+class PostToolUseFailureEvent(_DomainModel):
+    """Domain payload for `PostToolUseFailure`."""
+
+    event: Literal[HookEvent.POST_TOOL_USE_FAILURE]
+    call: ToolCallData
+    error: str
+    is_interrupt: bool = False
+    duration_ms: int | None = None
+
+
 class PreCompactEvent(_DomainModel):
     """Domain payload for `PreCompact`."""
 
@@ -304,6 +315,7 @@ HookDomainEvent: TypeAlias = Annotated[
     | NotificationEvent
     | PreToolUseEvent
     | PostToolUseEvent
+    | PostToolUseFailureEvent
     | PreCompactEvent
     | StopEvent
     | SubagentStartEvent
@@ -397,6 +409,14 @@ class PostToolUseDecision(BaseHookDecision):
     context: list[str] = Field(default_factory=list)
 
 
+class PostToolUseFailureDecision(BaseHookDecision):
+    """Decision returned for `PostToolUseFailure`."""
+
+    event: Literal[HookEvent.POST_TOOL_USE_FAILURE]
+    feedback: list[str] = Field(default_factory=list)
+    context: list[str] = Field(default_factory=list)
+
+
 class PreCompactDecision(BaseHookDecision):
     """Decision returned for `PreCompact`."""
 
@@ -433,6 +453,7 @@ HookDecision: TypeAlias = Annotated[
     | NotificationDecision
     | PreToolUseDecision
     | PostToolUseDecision
+    | PostToolUseFailureDecision
     | PreCompactDecision
     | StopDecision
     | SubagentStartDecision

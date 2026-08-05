@@ -3772,7 +3772,7 @@ class TestQuietSdkLogging:
         )
 
     def test_mcp_shutdown_race_record_is_dropped(self) -> None:
-        """A closed/broken-resource exception record is filtered out."""
+        """The targeted JSON-response closed-resource record is filtered out."""
         import anyio
 
         f = _McpShutdownRaceFilter()
@@ -3807,6 +3807,26 @@ class TestQuietSdkLogging:
             (type(grouped), grouped, None),
         )
         assert f.filter(record) is False
+
+    def test_mcp_shutdown_race_filter_keeps_other_closed_resource_records(
+        self,
+    ) -> None:
+        """Closed streams do not hide unrelated transport diagnostics."""
+        import anyio
+
+        f = _McpShutdownRaceFilter()
+        exc = anyio.ClosedResourceError()
+        record = logging.LogRecord(
+            _MCP_STREAMABLE_HTTP_LOGGER_NAME,
+            logging.ERROR,
+            __file__,
+            0,
+            "Error parsing SSE message",
+            (),
+            (type(exc), exc, None),
+        )
+
+        assert f.filter(record) is True
 
     def test_mcp_shutdown_race_filter_keeps_other_records(self) -> None:
         """Other transport diagnostics -- OAuth, SSE, parse errors -- pass through."""
@@ -3893,6 +3913,25 @@ class TestQuietSdkLogging:
 
         assert any(call.args == (harness_logger,) for call in configure.call_args_list)
         assert harness_logger.propagate is True
+
+    def test_routes_mcp_diagnostics_to_debug_log(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Debug mode configures a file handler for MCP transport diagnostics."""
+        from deepagents_code._env_vars import DEBUG
+
+        monkeypatch.setenv(DEBUG, "1")
+        transport_logger = logging.getLogger(_MCP_STREAMABLE_HTTP_LOGGER_NAME)
+        transport_logger.handlers.clear()
+        monkeypatch.setattr(transport_logger, "propagate", True)
+
+        with patch("deepagents_code._debug.configure_debug_logging") as configure:
+            _quiet_sdk_logging()
+
+        assert any(
+            call.args == (transport_logger,) for call in configure.call_args_list
+        )
+        assert transport_logger.propagate is True
 
     def test_leaves_other_deepagents_loggers_untouched(
         self, monkeypatch: pytest.MonkeyPatch

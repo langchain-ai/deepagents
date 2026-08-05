@@ -578,6 +578,8 @@ class _McpShutdownRaceFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         """Return `False` for shutdown-race records, `True` for everything else."""
+        if record.msg != "Error parsing JSON response":
+            return True
         if record.exc_info is None or record.exc_info[1] is None:
             return True
         return not self._is_closed_resource(record.exc_info[1])
@@ -646,6 +648,8 @@ def _quiet_sdk_logging() -> None:
 
     _install_mcp_shutdown_race_filter()
     debug_enabled = is_env_truthy(DEBUG)
+    if debug_enabled:
+        configure_debug_logging(logging.getLogger(_MCP_STREAMABLE_HTTP_LOGGER_NAME))
     for name in _QUIET_SDK_LOGGER_NAMES:
         sdk_logger = logging.getLogger(name)
         if debug_enabled:

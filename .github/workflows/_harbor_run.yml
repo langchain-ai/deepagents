@@ -347,10 +347,9 @@ jobs:
           # model even when its judge is routed through OpenRouter.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           # Granted when OpenRouter serves either side: the model under test
-          # (`openrouter:<vendor>/<model>`) or the verifier's judge, which upstream DRBench
-          # addresses with a slash (`judge_models: openrouter/<vendor>/<model>`). The two
-          # are independent, so a non-OpenRouter model can still need this key.
-          OPENROUTER_API_KEY: ${{ (startsWith(matrix.model, 'openrouter:') || startsWith(inputs.judge_models, 'openrouter/')) && secrets.OPENROUTER_API_KEY || '' }}
+          # (`openrouter:<vendor>/<model>`) or a verifier's judge (slash syntax). A
+          # research-only judge grants the key only to the research leaf.
+          OPENROUTER_API_KEY: ${{ (startsWith(matrix.model, 'openrouter:') || startsWith(inputs.judge_models, 'openrouter/') || ((matrix.category || inputs.category) == 'research' && startsWith(inputs.research_judge_models, 'openrouter/'))) && secrets.OPENROUTER_API_KEY || '' }}
           # Checked, not used, here: `research` agents lose their `web_search` tool
           # silently when this is absent, while the prompts still tell them to search.
           TAVILY_API_KEY: ${{ (matrix.category || inputs.category) == 'research' && secrets.TAVILY_API_KEY || '' }}
@@ -410,7 +409,14 @@ jobs:
           # trial before reporting.
           if [ "$HARBOR_CATEGORY" = "research" ]; then
             case "$HARBOR_DRBENCH_JUDGE" in
-              gpt-4o|gpt-4o-mini|openrouter/*) ;;
+              gpt-4o|gpt-4o-mini) ;;
+              openrouter/*)
+                [ -z "$OPENROUTER_API_KEY" ] && missing+=("OPENROUTER_API_KEY")
+                if [[ ! "$HARBOR_DRBENCH_JUDGE" =~ ^openrouter/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(:[A-Za-z0-9._-]+)?$ ]]; then
+                  echo "::error::research_judge_models must be a single openrouter/<vendor>/<model> slug: $HARBOR_DRBENCH_JUDGE"
+                  exit 1
+                fi
+                ;;
               *)
                 if [ -n "$HARBOR_DRBENCH_JUDGE_EXPLICIT" ]; then
                   echo "::error::research_judge_models must be gpt-4o, gpt-4o-mini, or openrouter/<vendor>/<model>; got '$HARBOR_DRBENCH_JUDGE'"
@@ -644,10 +650,9 @@ jobs:
           # model even when its judge is routed through OpenRouter.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           # Granted when OpenRouter serves either side: the model under test
-          # (`openrouter:<vendor>/<model>`) or the verifier's judge, which upstream DRBench
-          # addresses with a slash (`judge_models: openrouter/<vendor>/<model>`). The two
-          # are independent, so a non-OpenRouter model can still need this key.
-          OPENROUTER_API_KEY: ${{ (startsWith(matrix.model, 'openrouter:') || startsWith(inputs.judge_models, 'openrouter/')) && secrets.OPENROUTER_API_KEY || '' }}
+          # (`openrouter:<vendor>/<model>`) or a verifier's judge (slash syntax). A
+          # research-only judge grants the key only to the research leaf.
+          OPENROUTER_API_KEY: ${{ (startsWith(matrix.model, 'openrouter:') || startsWith(inputs.judge_models, 'openrouter/') || ((matrix.category || inputs.category) == 'research' && startsWith(inputs.research_judge_models, 'openrouter/'))) && secrets.OPENROUTER_API_KEY || '' }}
           # Open-web search for the deep-research category only; empty elsewhere, which
           # is what keeps the agent's `web_search` tool absent for every other category.
           TAVILY_API_KEY: ${{ (matrix.category || inputs.category) == 'research' && secrets.TAVILY_API_KEY || '' }}

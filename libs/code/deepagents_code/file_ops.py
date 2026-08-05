@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from deepagents_code._constants import FILE_NOT_FOUND
-from deepagents_code.diff_utils import DiffStats, count_diff_change_lines
+from deepagents_code.diff_utils import (
+    DIFF_TRUNCATION_MARKER,
+    DiffStats,
+    count_diff_change_lines,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,17 +34,33 @@ class ApprovalPreview:
     error: str | None = None
 
 
+def _read_with_reason(path: Path) -> tuple[str | None, str | None]:
+    """Read file content, keeping the reason a failure happened.
+
+    The reason is the point: collapsing every failure to `None` leaves the user
+    with "content could not be read", which restates the problem. A permission
+    error, a directory, and a binary file are all actionable, and only the
+    exception says which one it was.
+
+    Returns:
+        The content and `None`, or `None` and a human-readable reason.
+    """
+    try:
+        return path.read_text(encoding="utf-8"), None
+    except (OSError, UnicodeDecodeError) as e:
+        return None, str(e)
+
+
 def _safe_read(path: Path) -> str | None:
     """Read file content, returning None on failure.
 
     Returns:
         File content as string, or None if reading fails.
     """
-    try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as e:
-        logger.debug("Failed to read file %s: %s", path, e)
-        return None
+    content, reason = _read_with_reason(path)
+    if content is None:
+        logger.debug("Failed to read file %s: %s", path, reason)
+    return content
 
 
 def _count_lines(text: str) -> int:
@@ -89,7 +109,7 @@ def compute_unified_diff(
         return None, DiffStats(0, 0)
     stats = count_diff_change_lines(diff_lines)
     if max_lines is not None and len(diff_lines) > max_lines:
-        diff_lines = [*diff_lines[: max_lines - 1], "..."]
+        diff_lines = [*diff_lines[: max_lines - 1], DIFF_TRUNCATION_MARKER]
     return "\n".join(diff_lines), stats
 
 
@@ -119,6 +139,14 @@ class FileOperationRecord:
     error: str | None = None
     metrics: FileOpMetrics = field(default_factory=FileOpMetrics)
     diff: str | None = None
+    diff_stats: DiffStats = field(default_factory=lambda: DiffStats(0, 0))
+    """Change counts for `diff`, taken before it was truncated for display.
+
+    The single provenance for what a `DiffMessage` shows. Deliberately not
+    `metrics.lines_added`/`lines_removed`, which are session accounting and do
+    not always mean diff lines: a new-file `write_file` sets `lines_added` from
+    the whole file rather than from a diff.
+    """
     before_content: str | None = None
     after_content: str | None = None
     read_output: str | None = None
@@ -139,14 +167,17 @@ class FileOperationRecord:
     after_read_error: str | None = None
     """Why the post-operation read failed, as reported by the backend or OS.
 
-    Carried separately from `error`, which holds the fixed caller-facing summary;
-    without this the user is told only that the content could not be read, which
-    restates the problem instead of explaining it.
+    Carried separately from `error`, which on this path holds a fixed
+    caller-facing summary (elsewhere it holds the tool's own output). Without
+    this the user is told only that the content could not be read, which
+    restates the problem instead of explaining it. Always set alongside
+    `after_unreadable`.
     """
     change_invisible_to_line_diff: bool = False
     """The file's bytes changed, but `diff` is empty because the change lives
-    entirely in line terminators — a trailing newline added or removed, or a
-    CRLF conversion — which `splitlines()` discards.
+    entirely in line terminators — a trailing newline added or removed, a CRLF
+    conversion, or any of the other boundaries `splitlines()` recognizes — which
+    `splitlines()` discards.
 
     A real change with nothing to render, so "no changes" would be a lie and the
     tool's own output must stay visible in its place.
@@ -450,10 +481,23 @@ class FileOpTracker:
                     record.before_unreadable = True
                     record.before_content = ""
             elif record.physical_path:
-                content = _safe_read(record.physical_path)
-                if content is None and record.physical_path.exists():
+                content, reason = _read_with_reason(record.physical_path)
+                if content is None and (
+                    tool_name != "write_file" or record.physical_path.exists()
+                ):
+                    # Same rule as the backend branch above: absence is the
+                    # normal create case only for `write_file`. For an edit or a
+                    # delete it means we lost the pre-image, whether the read
+                    # raised or the path is simply not there (a broken symlink, a
+                    # physical path that diverged from the backend's, a file
+                    # replaced since `start_operation`). Gating this on
+                    # `exists()` alone let those render as a confident whole-file
+                    # insertion — and, because the row then qualifies to be
+                    # superseded, as the *only* account of the edit.
                     logger.warning(
-                        "Could not read pre-edit content for %s", record.physical_path
+                        "Could not read pre-edit content for %s: %s",
+                        record.physical_path,
+                        reason or "file not found",
                     )
                     record.before_unreadable = True
                 record.before_content = content or ""
@@ -526,6 +570,16 @@ class FileOpTracker:
                     record.status = "error"
                     record.after_unreadable = True
                     record.error = "Could not read updated file content."
+                    # Record what the *request* knows before bailing. The write
+                    # itself succeeded, so reporting zero lines and zero bytes to
+                    # session accounting would understate real work with a
+                    # plausible-looking number. Only `write_file` carries its
+                    # full result in its args; an edit's does not, so its metrics
+                    # stay unknown rather than guessed.
+                    written = record.args.get("content")
+                    if record.tool_name == "write_file" and isinstance(written, str):
+                        record.metrics.lines_written = _count_lines(written)
+                        record.metrics.bytes_written = len(written.encode("utf-8"))
                     self._finalize(record)
                     return record
             record.metrics.lines_written = _count_lines(record.after_content)
@@ -537,6 +591,7 @@ class FileOpTracker:
                 max_lines=100,
             )
             record.diff = diff
+            record.diff_stats = stats
             if diff:
                 record.metrics.lines_added = stats.additions
                 record.metrics.lines_removed = stats.deletions
@@ -548,10 +603,12 @@ class FileOpTracker:
                 and (record.before_content or "") != record.after_content
             ):
                 # `compute_unified_diff` works on `splitlines()`, which erases
-                # line terminators, so a change confined to them (adding or
-                # removing a trailing newline, CRLF conversion) yields no diff
-                # at all. Recomputing cannot help — the inputs are identical.
-                # Flag it so no caller claims the file is unchanged.
+                # line terminators, so a change confined to them yields no diff
+                # at all — a trailing newline added or removed, a CRLF
+                # conversion, or a rewrite between any of the other boundaries
+                # `splitlines()` recognizes. Recomputing cannot help; the inputs
+                # are identical. Flag it so no caller claims the file is
+                # unchanged.
                 record.change_invisible_to_line_diff = True
             if record.diff is None and before_lines != record.metrics.lines_written:
                 record.metrics.lines_added = max(
@@ -606,6 +663,13 @@ class FileOpTracker:
                         record.after_read_error = reason
                         record.after_content = None
                 else:
+                    reason = "the tool call carried no file path"
+                    logger.warning(
+                        "Could not read post-edit content for %s: %s",
+                        record.display_path,
+                        reason,
+                    )
+                    record.after_read_error = reason
                     record.after_content = None
             except (OSError, UnicodeDecodeError, AttributeError) as e:
                 logger.warning(
@@ -616,11 +680,30 @@ class FileOpTracker:
                 record.after_read_error = str(e)
                 record.after_content = None
         else:
-            # Fallback: direct filesystem read when no backend provided
+            # Fallback: direct filesystem read when no backend provided. Reports
+            # its reason at warning like the backend branch above — the same
+            # failures (permission denied, a binary write, a file removed by
+            # another process) are just as opaque to the user here, and the
+            # earlier debug-only read left nothing in the logs to work from.
             if record.physical_path is None:
+                reason = "no physical path could be resolved"
+                logger.warning(
+                    "Could not read post-edit content for %s: %s",
+                    record.display_path,
+                    reason,
+                )
+                record.after_read_error = reason
                 record.after_content = None
                 return
-            record.after_content = _safe_read(record.physical_path)
+            content, reason = _read_with_reason(record.physical_path)
+            if content is None:
+                logger.warning(
+                    "Could not read post-edit content for %s: %s",
+                    record.physical_path,
+                    reason,
+                )
+                record.after_read_error = reason
+            record.after_content = content
 
     def _finalize(self, record: FileOperationRecord) -> None:
         self.completed.append(record)

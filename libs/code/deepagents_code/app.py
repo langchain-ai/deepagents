@@ -190,9 +190,11 @@ only when its collapsed one-line summary would hide something the user needs to
 see.
 
 `edit_file` is here because its successful row hides itself in favour of the
-`DiffMessage` that replaces it, and the group-reveal paths force `display =
-True` without consulting `_diff_superseded` — a groupable superseded row would
-have two independent owners of one `display` flag.
+`DiffMessage` that replaces it. The group-reveal paths do consult
+`has_own_hide_reason`, so a groupable superseded row would stay hidden — but the
+group summary would still count and phrase a row the user cannot see, and one
+`display` flag with two independent owners is a standing hazard even when both
+currently agree.
 """
 
 _MESSAGE_TIMESTAMP_FOOTER_CLASS = "message-timestamp-footer"
@@ -16833,7 +16835,11 @@ class DeepAgentsApp(App):
 
     @staticmethod
     def _link_message_timestamp_footer(widget: Widget, footer: Static | None) -> None:
-        """Make a tool footer follow its owning row's visibility."""
+        """Make a tool footer follow its owning row's visibility.
+
+        A no-op when there is no footer or the row is not a `ToolCallMessage`,
+        which is why most call sites can invoke it unconditionally.
+        """
         if footer is not None and isinstance(widget, ToolCallMessage):
             widget._register_visibility_accessories(footer)
 

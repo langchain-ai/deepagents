@@ -37,7 +37,12 @@ from deepagents_code.config import (
     get_glyphs,
     is_ascii_mode,
 )
-from deepagents_code.diff_utils import DiffStats, count_diff_changes
+from deepagents_code.diff_utils import (
+    DIFF_TRUNCATION_MARKER,
+    DiffStats,
+    count_diff_changes,
+    split_diff_lines,
+)
 from deepagents_code.file_ops import is_sensitive_file_path
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
@@ -1364,8 +1369,9 @@ _TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS = "-tool-awaiting-approval-accessory"
 """Marker class hiding a tool's accessories while an approval prompt replaces it.
 
 Deliberately distinct from `_TOOL_GROUP_COLLAPSED_ACCESSORY_CLASS`: a footer can
-be hidden for both reasons at once, and releasing one reason must not un-hide a
-footer still hidden by the other. Merging the two into a single class would make
+be hidden for more than one reason at once, and releasing one reason must not
+un-hide a footer still hidden by another. Merging reasons into a single class
+would make
 `ToolGroupSummary._release_collapsible` reveal a footer whose tool is still
 hidden behind an approval prompt.
 
@@ -2015,8 +2021,23 @@ class ToolCallMessage(Vertical):
         self._status_widget.display = True
 
     def mark_superseded_by_diff(self) -> None:
-        """Hide a successful file-tool row after its diff has mounted."""
+        """Hide a successful file-tool row after its diff has mounted.
+
+        A no-op for any tool other than `_TOOL_SUPERSEDED_BY_DIFF`. That guard is
+        load-bearing rather than defensive: `MessageStore.to_widget` routes a
+        stored flag through this method precisely to inherit it, so rehydration
+        cannot hide a row the live path would have left visible.
+        """
         if self._tool_name != _TOOL_SUPERSEDED_BY_DIFF:
+            # A broken invariant, not a routine skip: the caller decided this row
+            # was superseded from a *different* name source (the adapter gates on
+            # `record.tool_name`), so a divergence leaves an empty-bodied diff
+            # rendering "no changes" beside a row that stayed visible.
+            logger.warning(
+                "mark_superseded_by_diff called on %r; only %r may be superseded",
+                self._tool_name,
+                _TOOL_SUPERSEDED_BY_DIFF,
+            )
             return
         self._diff_superseded = True
         self._apply_own_visibility()
@@ -2178,9 +2199,11 @@ class ToolCallMessage(Vertical):
         Only touches `display` when a self-hide reason applies or is being
         released, so a row the group has collapsed stays collapsed. The other
         direction is `has_own_hide_reason`, which group code checks before
-        revealing.
+        revealing — and which this reads, so the set of hide reasons is defined in
+        exactly one place and a new one cannot be honoured by the group checks
+        while being ignored here.
         """
-        if self._awaiting_approval or self._superseded_by_diff:
+        if self.has_own_hide_reason:
             self.display = False
             self._self_hidden = True
         elif self._self_hidden:
@@ -2189,7 +2212,13 @@ class ToolCallMessage(Vertical):
         self._sync_own_hide_accessories()
 
     def _sync_own_hide_accessories(self) -> None:
-        """Mirror this row's hide reasons onto linked decorations."""
+        """Mirror this row's hide reasons onto linked decorations.
+
+        Tests each reason individually rather than reading `has_own_hide_reason`:
+        each carries its own class so the reasons release independently, which the
+        aggregate cannot express. A new hide reason needs a class and an entry
+        here as well as a term in `has_own_hide_reason`.
+        """
         for accessory in self._visibility_accessories:
             accessory.set_class(
                 self._awaiting_approval,
@@ -3928,8 +3957,8 @@ def summarize_live_tool_group(
 _TOOL_GROUP_COLLAPSED_ACCESSORY_CLASS = "-tool-group-collapsed-accessory"
 """Marker class hiding a collapsed group's accessory widgets.
 
-See `_TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS` for why the two hide reasons carry
-separate classes and why neither may be replaced by assigning `display`.
+See `_TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS` for why each hide reason carries its
+own class and why none may be replaced by assigning `display`.
 """
 
 
@@ -4425,11 +4454,7 @@ class DiffMessage(Static):
                 Content.styled("Diff hidden — file may contain credentials", "dim")
             )
         else:
-            stats = (
-                self._stats
-                if self._stats is not None
-                else count_diff_changes(self._diff_content)
-            )
+            stats = self._stats if self._stats is not None else self._recount()
             if self._changes_unknown:
                 # The pre-edit content was lost, so both the counts and an empty
                 # diff would be fiction. Say so rather than assert either.
@@ -4449,6 +4474,20 @@ class DiffMessage(Static):
                     before=self._before,
                     after=self._after,
                 )
+
+    def _recount(self) -> DiffStats:
+        """Recount the diff body when no authoritative counts were supplied.
+
+        Returns:
+            Counts from the body, or zeros when the body was clipped. A truncated
+            diff is missing lines by construction, so counting it would assert a
+            number that is known to be short and indistinguishable from a correct
+            one. Zeros render no counts at all, which is the honest answer.
+        """
+        lines = split_diff_lines(self._diff_content)
+        if lines and lines[-1].strip() == DIFF_TRUNCATION_MARKER:
+            return DiffStats(0, 0)
+        return count_diff_changes(self._diff_content)
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""

@@ -1,5 +1,7 @@
 """Tests for message store and serialization."""
 
+import logging
+
 import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Static
@@ -206,6 +208,26 @@ class TestMessageData:
 
         async with _App().run_test():
             assert restored.display is True
+
+    def test_rejected_supersession_is_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The guard protects an invariant, so tripping it must leave a trace.
+
+        Two name sources decide one outcome — the adapter gates on
+        `record.tool_name`, the widget on its own. A divergence mounts an
+        empty-bodied diff reading "no changes" *beside* a row that stayed visible,
+        and a silent return leaves nothing to debug that from.
+        """
+        widget = ToolCallMessage("shell")
+
+        with caplog.at_level(logging.WARNING):
+            widget.mark_superseded_by_diff()
+
+        assert widget._diff_superseded is False
+        assert any(
+            "may be superseded" in record.getMessage() for record in caplog.records
+        ), caplog.text
 
     def test_error_message_roundtrip(self):
         """Test ErrorMessage serialization and deserialization."""

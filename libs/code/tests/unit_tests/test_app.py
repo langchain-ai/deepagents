@@ -14126,6 +14126,33 @@ class TestMessageTimestampFooters:
             assert stored.tool_duration is not None
             assert not app._message_store.is_protected("tool-sync")
 
+    async def test_tool_state_sync_persists_diff_supersession(self) -> None:
+        """Supersession is set after the row is stored, so it must be synced back.
+
+        The row is stored when it mounts, before its diff exists. Without this
+        keyword the store keeps that mount-time `False` and scrolling the row back
+        in resurrects it beside the diff that replaced it.
+        """
+        app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            tool = ToolCallMessage(
+                "edit_file", {"file_path": "a.py"}, id="tool-superseded"
+            )
+            await app._mount_message(tool)
+            await pilot.pause()
+
+            tool.set_success("Updated file")
+            app._sync_tool_message_state(tool)
+            stored = app._message_store.get_message("tool-superseded")
+            assert stored is not None
+            assert stored.tool_diff_superseded is False
+
+            tool.mark_superseded_by_diff()
+            app._sync_tool_message_state(tool)
+            assert stored.tool_diff_superseded is True
+
     async def test_transcript_mounts_stay_chronological_around_spinner(self) -> None:
         """Rows mounted while the spinner is active stay above the bottom spacer."""
         app = DeepAgentsApp()

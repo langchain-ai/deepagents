@@ -1188,6 +1188,7 @@ UNICODE_GLYPHS = Glyphs(
     box_horizontal="─",
     # Diff-specific
     hunk_break="⋮",
+    # Status bar
     git_branch="↗",
 )
 """Glyph set for terminals with full Unicode support."""
@@ -1217,6 +1218,7 @@ ASCII_GLYPHS = Glyphs(
     box_horizontal="-",
     # Diff-specific
     hunk_break=":",
+    # Status bar
     git_branch="git:",
 )
 """Glyph set for terminals limited to 7-bit ASCII."""

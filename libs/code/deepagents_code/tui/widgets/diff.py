@@ -20,7 +20,13 @@ from textual.widgets import Static
 
 from deepagents_code import theme
 from deepagents_code.config import get_glyphs
-from deepagents_code.diff_utils import HUNK_RE, DiffStats, file_header_indexes
+from deepagents_code.diff_utils import (
+    DIFF_TRUNCATION_MARKER,
+    HUNK_RE,
+    DiffStats,
+    file_header_indexes,
+    split_diff_lines,
+)
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
@@ -48,7 +54,7 @@ _MAX_EMPHASIS_LEN = 400
 single-line JSON would stall the compose path. Longer lines render unemphasised.
 """
 
-_MAX_HIGHLIGHT_CHARS = 200_000
+_MAX_HIGHLIGHT_CHARS = 100_000
 """Largest source prefix worth lexing for syntax highlighting.
 
 Above this the side is skipped and its rows render as plain text.
@@ -56,16 +62,21 @@ Above this the side is skipped and its rows render as plain text.
 The prefix has to start at line 1 — the lexer needs the preceding source to know
 whether the changed lines sit inside a string or comment — so its size is set by
 how far into the file the edit is, not by how much of it is rendered. That makes
-this constant the bound on two separate costs: lexing runs synchronously in
-`compose`, measured at roughly 0.34 ms per 1,000 characters (~70 ms here, plus a
-one-off ~150 ms to build the lexer on the session's first diff), and the prefix
-is retained per message by `MessageData` so a rehydrated diff can re-highlight.
-Raising it slows the diff mount and grows the transcript's memory in step.
+this constant the bound on two separate costs.
+
+Lexing runs synchronously in `compose`, measured at roughly 0.72 ms per 1,000
+characters (~70 ms at this limit, per side, plus a one-off ~150 ms to build the
+lexer on the session's first diff). Both sides of a first-time diff are lexed
+back to back, so the limit buys a worst case of about 150 ms of blocked message
+pump rather than 70.
+
+The prefix is also retained per message by `MessageData` so a rehydrated diff can
+re-highlight, at up to this many characters per side. Raising it slows the diff
+mount and grows the transcript's memory in step, and the transcript has no cap.
 """
 
 _Range = tuple[int, int]
 _DiffRowKind = Literal["context", "added", "removed"]
-_ChangedRowKind = Literal["added", "removed"]
 _RowKind = Literal["context", "added", "removed", "separator", "truncated", "note"]
 
 # A changed row's color builds up in three tiers of the same hue, each darker
@@ -134,7 +145,7 @@ def compose_diff_lines(
         path: Path of the diffed file, used to pick a syntax highlighter.
         before: Source aligned to the diff's *old* line numbers. May be a
             truncated prefix or empty; rows whose text does not match the
-            lexed source are silently left unhighlighted.
+            lexed source are left unhighlighted (logged at debug).
         after: Source aligned to the diff's *new* line numbers, same contract.
         show_numbers: Whether to render the line-number gutter. Pass `False`
             when the diff's line numbers are not the file's — e.g. a diff of
@@ -142,7 +153,9 @@ def compose_diff_lines(
 
     Yields:
         One `Static` per rendered row, plus a trailing count when rows were
-        dropped to fit `max_lines`.
+        dropped to fit `max_lines`. An empty `diff` yields a single "no changes"
+        row; both callers already distinguish that case in their own headers, so
+        this is a defensive fallback rather than the live path.
     """
     if not diff:
         yield Static(Content.styled("No changes detected", "dim"))
@@ -156,7 +169,8 @@ def format_diff_stats(stats: DiffStats) -> Content:
     """Format addition/deletion counts as styled `+N -M` content.
 
     Takes the pair as a `DiffStats` rather than two ints so the counts cannot be
-    transposed on the way to the one place the user reads them.
+    transposed on the way to the places the user reads them — the `DiffMessage`
+    header and the approval prompt's `File:` header.
 
     Args:
         stats: Line counts for the change.
@@ -178,15 +192,22 @@ def format_diff_stats(stats: DiffStats) -> Content:
 def highlight_source_prefixes(diff: str, before: str, after: str) -> tuple[str, str]:
     """Keep the bounded source prefixes needed to highlight a diff.
 
+    Idempotent, and rehydration depends on it: `DiffMessage.__init__` calls this
+    on whatever it is handed, which is the full file from the live path but an
+    already-trimmed prefix from `MessageData`. Re-trimming a prefix must return it
+    unchanged, so any future trimming rule has to stay keyed on the diff's line
+    numbers rather than on a count relative to the input.
+
     Args:
         diff: Unified diff string.
-        before: Full content before the change.
-        after: Full content after the change.
+        before: Content before the change — the whole file, or a prefix this
+            function previously returned.
+        after: Content after the change, same contract.
 
     Returns:
         Before and after prefixes, with oversized sides omitted.
     """
-    rows = _parse_rows(diff.splitlines())
+    rows = _parse_rows(split_diff_lines(diff))
     before_line = max(
         (row.number for row in rows if row.kind in {"removed", "context"}),
         default=0,
@@ -205,7 +226,19 @@ def _highlight_source_prefix(source: str, line: int) -> str:
     """Return the highlightable prefix ending at `line`."""
     if not source or line <= 0:
         return ""
-    prefix = "\n".join(source.splitlines()[:line])
+    # Never split more than the limit itself. An edit near the end of a large
+    # file asks for a prefix that is going to be rejected anyway, and splitting
+    # the whole source first would allocate a near-full copy of the file per
+    # side, per compose, only to throw it away. One char past the limit is
+    # enough to tell "fits" from "does not".
+    oversized = len(source) > _MAX_HIGHLIGHT_CHARS
+    lines = (source[: _MAX_HIGHLIGHT_CHARS + 1] if oversized else source).splitlines()
+    # With a truncated head, `line` is only reached within the limit when a
+    # further line follows it — otherwise the last entry is a partial line and
+    # the real prefix runs past the limit.
+    if oversized and len(lines) <= line:
+        return ""
+    prefix = "\n".join(lines[:line])
     return prefix if len(prefix) <= _MAX_HIGHLIGHT_CHARS else ""
 
 
@@ -220,7 +253,7 @@ def _compose_diff_content(
 ) -> ComposeResult:
     """Yield styled widgets for a non-empty diff."""
     glyphs = get_glyphs()
-    rows = _parse_rows(diff.splitlines())
+    rows = _parse_rows(split_diff_lines(diff))
     hidden = 0 if max_lines is None else max(0, len(rows) - max_lines)
     rows = rows[: len(rows) - hidden]
     emphasis = _emphasis_by_row(rows)
@@ -262,10 +295,13 @@ def _highlighted_rows(
 ) -> dict[int, Content]:
     """Return a `{row index: highlighted content}` map.
 
-    Each side is lexed from the file start through the last referenced line so
-    multi-line constructs (docstrings, block comments) resolve correctly rather
-    than reopening at the hunk boundary. Rows outside that prefix, or whose text
-    has drifted from the source, are omitted and render as plain text.
+    Each side is lexed from the start of the supplied source through the last
+    referenced line so multi-line constructs (docstrings, block comments) resolve
+    correctly rather than reopening at the hunk boundary. That holds only as far
+    as the caller's source really is file-aligned: the approval path passes edit
+    fragments, where the lexer does start mid-file and the drift check below
+    mostly rejects the result. Rows outside the prefix, or whose text has drifted
+    from the source, are omitted and render as plain text.
 
     Assumes a single-file diff, as `before`/`after` are one file's contents: rows
     are matched to source by line number, which restarts per file in a multi-file
@@ -284,31 +320,46 @@ def _highlighted_rows(
         lines = _highlight_lines(head, path)
         if lines is None:
             continue
+        drifted = 0
         for number, index in wanted.items():
             line = lines[number - 1] if 0 < number <= len(lines) else None
             if line is None:
                 continue
             if line.plain != rows[index].text:
-                # The source no longer matches the diff it came with — a stale
-                # rehydration, or `before`/`after` belonging to another file.
-                # Rendering plain is right, but it also hides a real
-                # misalignment, so leave a trace.
-                logger.debug(
-                    "Highlight source drifted from diff at %s line %d", path, number
-                )
+                drifted += 1
                 continue
             highlighted[index] = line
+        if drifted:
+            # The source no longer matches the diff it came with — a stale
+            # rehydration, or `before`/`after` belonging to another file.
+            # Rendering plain is right, but it also hides a real misalignment,
+            # so leave a trace. Once per side at warning rather than per row at
+            # debug: a whole drifted side reports thousands of rows, and debug
+            # sits below both the default level and the in-app console's ring
+            # buffer, so the trace was invisible where it mattered.
+            logger.warning(
+                "Highlight source drifted from diff at %s (%s): %d of %d rows",
+                path,
+                "/".join(kinds),
+                drifted,
+                len(wanted),
+            )
     return highlighted
 
 
-@lru_cache(maxsize=16)
+@lru_cache(maxsize=4)
 def _highlight_lines(code: str, path: str) -> tuple[Content, ...] | None:
     """Return highlighted source lines, or `None` if lexing fails.
 
     Cached because scrolling rebuilds a `DiffMessage` from `MessageData` on every
     pass, and each mount would otherwise re-lex both sides. Two entries per diff,
-    so this holds the last eight — enough that paging through recent history
-    stays free, bounded by `_MAX_HIGHLIGHT_CHARS` per entry.
+    so this holds the last two — the scrolling case it exists for.
+
+    Sized small on purpose. `_MAX_HIGHLIGHT_CHARS` bounds the *input*, not what is
+    retained: an entry is one `Content` per line, each carrying a span list, and
+    measures several times its source. Nothing clears this cache, so its cost is
+    held for the process lifetime — size it against measured entries, not against
+    the character limit.
 
     Failures are cached too: a file whose lexer cannot parse it will not parse on
     the next scroll either, and retrying would pay the cost to fail again.
@@ -353,7 +404,7 @@ def _parse_rows(lines: list[str]) -> list[_Row]:
             rows.append(_Row("context", line[1:], old))
             old += 1
             new += 1
-        elif line.strip() == "...":
+        elif line.strip() == DIFF_TRUNCATION_MARKER:
             rows.append(_Row("truncated", "", 0))
         else:
             rows.append(_Row("note", line, 0))

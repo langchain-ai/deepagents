@@ -13,11 +13,42 @@ count. Either count is absent for a single-line range, where it defaults to 1.
 """
 
 
+DIFF_TRUNCATION_MARKER = "..."
+"""Stand-in line marking where a diff body was clipped for display.
+
+Written by `compute_unified_diff`, rendered as a `truncated` row, and the signal
+that counts taken from the body would be short.
+"""
+
+
 class DiffStats(NamedTuple):
     """Line counts for a change, named so the pair cannot be swapped silently."""
 
     additions: int
     deletions: int
+
+
+def split_diff_lines(diff: str) -> list[str]:
+    r"""Split a unified diff back into the lines it was assembled from.
+
+    Deliberately not `splitlines()`. Producers join their lines with `"\n"`
+    (`compute_unified_diff`, `EditFileRenderer._generate_diff`), so `"\n"` is
+    the exact inverse; `splitlines()` also breaks on `\r`, `\v`, `\f`, U+2028,
+    U+2029 and U+0085, which splits a single diff line into fragments. The tail
+    fragment carries no `+`/`-` marker, so it would render as an unmarked note —
+    on the approval prompt that means changed content shown as neutral metadata.
+
+    Args:
+        diff: Unified diff string.
+
+    Returns:
+        The diff's lines, without a trailing empty entry for a terminating
+        newline.
+    """
+    lines = diff.split("\n")
+    if lines and not lines[-1]:
+        lines.pop()
+    return lines
 
 
 def file_header_indexes(lines: list[str]) -> set[int]:
@@ -94,4 +125,4 @@ def count_diff_changes(diff: str) -> DiffStats:
     Returns:
         Additions and deletions, excluding file headers.
     """
-    return count_diff_change_lines(diff.splitlines())
+    return count_diff_change_lines(split_diff_lines(diff))

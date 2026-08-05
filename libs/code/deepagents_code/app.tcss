@@ -41,7 +41,8 @@ Screen {
 
 /*
  * Hide a footer whose owning row is hidden — folded into a collapsed tool
- * group, or replaced by an approval prompt.
+ * group, replaced by an approval prompt, or superseded by the diff that took
+ * the row's place.
  *
  * Must stay *below* the `-visible` rule above: both selectors are two classes,
  * so Textual breaks the specificity tie by source order and the later rule
@@ -49,8 +50,9 @@ Screen {
  *
  * These hide via a class rather than by assigning `display` so the footer keeps
  * its own `-visible` class and returns to the `/timestamps` preference once the
- * row comes back. Two classes, not one: a footer can be hidden for both reasons
- * at once, and releasing one must not reveal it while the other still applies.
+ * row comes back. One class per reason, never a shared one: a footer can be
+ * hidden for more than one reason at once, and releasing one must not reveal it
+ * while another still applies.
  */
 .message-timestamp-footer.-tool-group-collapsed-accessory,
 .message-timestamp-footer.-tool-awaiting-approval-accessory,

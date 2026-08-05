@@ -188,10 +188,13 @@ class EditFileApprovalWidget(ToolApprovalWidget):
         elif not diff_lines and not old_string and not new_string:
             yield Static("No changes to display", classes="approval-description")
         elif diff_lines:
-            # Neither caller has file line numbers worth showing: an edit's
-            # diff is built from the replacement fragments rather than the
-            # file, and a delete's covers the whole file from line 1. Showing
-            # the gutter would assert wrong numbers on an approval prompt.
+            # Neither caller has file line numbers worth showing, for different
+            # reasons. An edit's diff is built from the replacement fragments
+            # rather than the file, so its hunks start at 1 and a gutter would
+            # assert numbers that are simply wrong. A delete's covers the whole
+            # file from line 1, so its numbers are correct but say nothing —
+            # every line is going. Wrong numbers on an approval prompt are the
+            # worse of the two, and neither earns the column.
             yield from compose_diff_lines(
                 "\n".join(diff_lines),
                 max_lines=_MAX_DIFF_LINES,

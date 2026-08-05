@@ -1,12 +1,14 @@
 import shutil
 import textwrap
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from unittest import mock
 
 import pytest
 from langchain_core.messages import ToolMessage
 
+from deepagents_code.diff_utils import DiffStats, count_diff_changes
 from deepagents_code.file_ops import (
     FileOpTracker,
     build_approval_preview,
@@ -205,7 +207,10 @@ def test_unreadable_before_content_is_flagged(tmp_path: Path) -> None:
     path.write_text("alpha\nbeta\n")
     tracker = FileOpTracker(assistant_id=None)
 
-    with mock.patch("deepagents_code.file_ops._safe_read", return_value=None):
+    with mock.patch(
+        "deepagents_code.file_ops._read_with_reason",
+        return_value=(None, "Permission denied"),
+    ):
         tracker.start_operation("edit_file", {"file_path": str(path)}, "locked-1")
 
     record = tracker.active["locked-1"]
@@ -221,6 +226,114 @@ def test_missing_before_content_is_not_flagged_as_unreadable(tmp_path: Path) -> 
 
     record = tracker.active["new-1"]
     assert record.before_unreadable is False
+
+
+def test_absent_local_pre_image_is_flagged_for_an_edit(tmp_path: Path) -> None:
+    """An edit whose pre-image is simply gone still lost the pre-image.
+
+    Gating the flag on `exists()` meant a path that diverged from the backend's,
+    a broken symlink, or a file replaced mid-operation produced
+    `before_content == ""` with no caveat — which renders a three-line edit as a
+    confident whole-file insertion, and lets the tool row be hidden behind it.
+    """
+    path = tmp_path / "vanished.txt"
+    tracker = FileOpTracker(assistant_id=None)
+
+    tracker.start_operation("edit_file", {"file_path": str(path)}, "gone-1")
+
+    record = tracker.active["gone-1"]
+    assert record.before_unreadable is True
+    assert record.before_content == ""
+
+
+def test_absent_local_pre_image_is_flagged_for_a_delete(tmp_path: Path) -> None:
+    """Same rule for a delete: no pre-image means nothing to show as removed."""
+    path = tmp_path / "vanished.txt"
+    tracker = FileOpTracker(assistant_id=None)
+
+    tracker.start_operation("delete", {"file_path": str(path)}, "gone-2")
+
+    assert tracker.active["gone-2"].before_unreadable is True
+
+
+def test_record_diff_stats_survive_truncation(tmp_path: Path) -> None:
+    """The record's counts describe the change, not the clipped rendering.
+
+    `metrics.lines_added` is session accounting and does not always mean diff
+    lines — a new-file `write_file` sets it from the whole file. Keeping the real
+    counts on the record gives the diff header one provenance whose "counted
+    before truncation" contract is true by construction.
+    """
+    path = tmp_path / "big.txt"
+    path.write_text("".join(f"line {i}\n" for i in range(500)), encoding="utf-8")
+    tracker = FileOpTracker(assistant_id=None)
+    tracker.start_operation("write_file", {"file_path": str(path)}, "big-1")
+    path.write_text("".join(f"changed {i}\n" for i in range(500)), encoding="utf-8")
+
+    record = tracker.complete_with_message(
+        SimpleNamespace(content="Updated file", tool_call_id="big-1", status="success")
+    )
+
+    assert record is not None
+    assert record.diff is not None
+    assert record.diff.rstrip().endswith("..."), "expected a truncated body"
+    assert record.diff_stats == DiffStats(500, 500)
+    assert count_diff_changes(record.diff) != record.diff_stats, (
+        "the body no longer carries the true counts, which is the point"
+    )
+
+
+def test_failed_read_back_still_reports_what_the_request_knew(
+    tmp_path: Path,
+) -> None:
+    """A write that landed must not report zero lines to session accounting.
+
+    The early return for an unreadable post-image skipped every metric, so real
+    work came out as a plausible-looking zero. `write_file` carries its full
+    result in its args, so that much is knowable without the read-back — and the
+    reason for the failure has to reach the caller.
+    """
+    path = tmp_path / "written.txt"
+    content = "alpha\nbeta\ngamma\n"
+    tracker = FileOpTracker(assistant_id=None)
+    tracker.start_operation(
+        "write_file", {"file_path": str(path), "content": content}, "w-1"
+    )
+
+    with mock.patch(
+        "deepagents_code.file_ops._read_with_reason",
+        return_value=(None, "Permission denied"),
+    ):
+        record = tracker.complete_with_message(
+            SimpleNamespace(content="Wrote file", tool_call_id="w-1", status="success")
+        )
+
+    assert record is not None
+    assert record.after_unreadable is True
+    assert record.after_read_error == "Permission denied"
+    assert record.metrics.lines_written == 3
+    assert record.metrics.bytes_written == len(content.encode("utf-8"))
+
+
+def test_unreadable_existing_file_is_flagged_even_for_write_file(
+    tmp_path: Path,
+) -> None:
+    """Absence is the create case for `write_file`; a failed read is not.
+
+    The file is there and we could not read it, so whatever diff follows is
+    against a pre-image we do not have.
+    """
+    path = tmp_path / "locked.txt"
+    path.write_text("alpha\n")
+    tracker = FileOpTracker(assistant_id=None)
+
+    with mock.patch(
+        "deepagents_code.file_ops._read_with_reason",
+        return_value=(None, "Permission denied"),
+    ):
+        tracker.start_operation("write_file", {"file_path": str(path)}, "locked-2")
+
+    assert tracker.active["locked-2"].before_unreadable is True
 
 
 def test_backend_file_not_found_is_not_flagged_as_unreadable() -> None:

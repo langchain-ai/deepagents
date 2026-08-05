@@ -8,11 +8,46 @@ from deepagents_code.diff_utils import (
     DiffStats,
     count_diff_changes,
     file_header_indexes,
+    split_diff_lines,
 )
 
 
 def _diff(*lines: str) -> str:
     return "\n".join(lines)
+
+
+class TestSplitDiffLines:
+    """The renderer has to split a diff exactly where its producer joined it."""
+
+    @pytest.mark.parametrize(
+        "separator",
+        ["\u2028", "\u2029", "\v", "\f", "\x85", "\r"],
+        ids=["line-sep", "para-sep", "vtab", "formfeed", "nel", "cr"],
+    )
+    def test_other_line_separators_stay_inside_their_line(self, separator: str) -> None:
+        r"""Only `"\n"` separates diff lines; everything else is content.
+
+        `splitlines()` breaks on all of these, which strands the tail of a line as
+        a fragment with no `+`/`-` marker — content that then renders as neutral
+        metadata.
+        """
+        line = f"+value = {separator}payload"
+        assert split_diff_lines(_diff("@@ -1 +1 @@", line)) == [
+            "@@ -1 +1 @@",
+            line,
+        ]
+
+    def test_a_terminating_newline_adds_no_empty_line(self) -> None:
+        """A trailing newline terminates the last line rather than starting one."""
+        assert split_diff_lines("@@ -1 +1 @@\n+a\n") == ["@@ -1 +1 @@", "+a"]
+
+    def test_a_blank_line_inside_the_diff_is_kept(self) -> None:
+        """Only the trailing empty entry is dropped, never an interior one."""
+        assert split_diff_lines("@@ -1 +1 @@\n\n+a") == ["@@ -1 +1 @@", "", "+a"]
+
+    def test_counts_follow_the_same_boundary(self) -> None:
+        """A separator inside a line must not be counted as a second line."""
+        assert count_diff_changes("@@ -1 +1 @@\n+a b") == DiffStats(1, 0)
 
 
 class TestFileHeaderIndexes:

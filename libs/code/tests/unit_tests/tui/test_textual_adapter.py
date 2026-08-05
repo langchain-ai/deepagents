@@ -3029,18 +3029,19 @@ class TestExecuteTaskTextualFileOpDiffs:
 
         # Return the pre-image without its trailing newline so the only
         # difference from the read-back is one `splitlines()` discards.
-        real_safe_read = file_ops_module._safe_read
+        real_read = file_ops_module._read_with_reason
         calls = {"n": 0}
 
-        def newline_stripping_read(path: Path) -> str | None:
+        def newline_stripping_read(path: Path) -> tuple[str | None, str | None]:
             calls["n"] += 1
-            content = real_safe_read(path)
+            content, reason = real_read(path)
             if calls["n"] == 1 and content is not None:
-                return content.rstrip("\n")
-            return content
+                return content.rstrip("\n"), reason
+            return content, reason
 
         with patch(
-            "deepagents_code.file_ops._safe_read", side_effect=newline_stripping_read
+            "deepagents_code.file_ops._read_with_reason",
+            side_effect=newline_stripping_read,
         ):
             mounted = await self._run_edit(target, "value = 1")
 
@@ -3048,6 +3049,74 @@ class TestExecuteTaskTextualFileOpDiffs:
         assert tool._status == "success"
         assert tool.display is True
         assert not any(isinstance(m, DiffMessage) for m in mounted)
+
+    async def test_unreadable_read_back_keeps_the_row_successful(
+        self, tmp_path: Path
+    ) -> None:
+        """A display problem is not a tool failure.
+
+        The write landed; only reading it back to build a diff did not. Marking
+        the row "Error" makes a completed edit count toward every failure surface
+        and invites a retry of something that already applied — and routing the
+        caveat through `set_error` also overwrote the tool's own output with it.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        real_read = file_ops_module._read_with_reason
+        calls = {"n": 0}
+
+        def failing_read_back(path: Path) -> tuple[str | None, str | None]:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return real_read(path)
+            return None, "Permission denied"
+
+        with patch(
+            "deepagents_code.file_ops._read_with_reason", side_effect=failing_read_back
+        ):
+            mounted = await self._run_edit(target, "value = 2")
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert tool.display is True
+        assert "Updated file" in tool._output, "the tool's own output was discarded"
+        assert "could not be displayed" in tool._output
+        assert "Permission denied" in tool._output, (
+            "the caveat restates the problem instead of explaining it"
+        )
+
+    async def test_line_invisible_change_names_what_it_cannot_show(
+        self, tmp_path: Path
+    ) -> None:
+        """A terminator-only change is the one edit no other view will reveal.
+
+        Suppressing the misleading "no changes" diff is only half the fix: with
+        nothing in its place the user is never told the file was rewritten, and
+        finds out later from `git`.
+        """
+        target = tmp_path / "a.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+
+        real_read = file_ops_module._read_with_reason
+        calls = {"n": 0}
+
+        def newline_stripping_read(path: Path) -> tuple[str | None, str | None]:
+            calls["n"] += 1
+            content, reason = real_read(path)
+            if calls["n"] == 1 and content is not None:
+                return content.rstrip("\n"), reason
+            return content, reason
+
+        with patch(
+            "deepagents_code.file_ops._read_with_reason",
+            side_effect=newline_stripping_read,
+        ):
+            mounted = await self._run_edit(target, "value = 1")
+
+        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
+        assert tool._status == "success"
+        assert "line terminators" in tool._output
 
     async def test_unreadable_pre_image_keeps_the_tool_row_visible(
         self, tmp_path: Path
@@ -3062,14 +3131,18 @@ class TestExecuteTaskTextualFileOpDiffs:
 
         # Fail only the pre-image read; the read-back must still succeed so
         # this exercises the before-side failure in isolation.
-        real_safe_read = file_ops_module._safe_read
+        real_read = file_ops_module._read_with_reason
         calls = {"n": 0}
 
-        def flaky_read(path: Path) -> str | None:
+        def flaky_read(path: Path) -> tuple[str | None, str | None]:
             calls["n"] += 1
-            return None if calls["n"] == 1 else real_safe_read(path)
+            if calls["n"] == 1:
+                return None, "Permission denied"
+            return real_read(path)
 
-        with patch("deepagents_code.file_ops._safe_read", side_effect=flaky_read):
+        with patch(
+            "deepagents_code.file_ops._read_with_reason", side_effect=flaky_read
+        ):
             mounted = await self._run_edit(target, "value = 2")
 
         tool = next(m for m in mounted if isinstance(m, ToolCallMessage))

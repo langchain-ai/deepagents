@@ -107,8 +107,7 @@ from deepagents_code._tool_stream import (
     tool_call_buffer_key,
 )
 from deepagents_code.config import build_stream_config, get_glyphs
-from deepagents_code.diff_utils import DiffStats
-from deepagents_code.file_ops import FileOpTracker
+from deepagents_code.file_ops import FileOperationRecord, FileOpTracker
 from deepagents_code.hooks import (
     dispatch_hook,
     dispatch_hook_fire_and_forget,
@@ -411,6 +410,45 @@ def _set_running_unless_deferred(tool_msg: ToolCallMessage) -> None:
     if tool_msg.is_awaiting_deferred_result:
         return
     tool_msg.set_running()
+
+
+def _display_caveat(record: FileOperationRecord | None) -> str:
+    """Return what a successful file operation could not show, if anything.
+
+    Both cases leave the tool row as the user's only account of a change the
+    transcript cannot render, so both have to name what is missing. Silence would
+    read as a complete report.
+
+    Args:
+        record: Completed file-operation record, or `None` for a non-file tool.
+
+    Returns:
+        A caveat to show alongside the tool's own output, or empty when the
+        operation's changes are fully displayable.
+    """
+    if record is None:
+        return ""
+    if record.after_unreadable:
+        # Gate on the dedicated flag, not on `record.status == "error"`: that is
+        # also set when the tool's own output reports a failure, where claiming
+        # the operation succeeded would be a false statement. Reachable for
+        # `write_file` and `edit_file` only; `delete` synthesizes an empty
+        # post-image instead of reading one back, so it has no read to fail.
+        #
+        # `record.error` is deliberately not a fallback here: on this path it is
+        # the fixed string "Could not read updated file content.", so using it
+        # would restate the sentence it is meant to explain.
+        detail = record.after_read_error or "the reason was not reported"
+        return (
+            f"The {record.tool_name} succeeded, but its changes "
+            f"could not be displayed: {detail}"
+        )
+    if record.change_invisible_to_line_diff:
+        return (
+            f"The {record.tool_name} succeeded. The change is confined to line "
+            "terminators, so there is no line-level diff to show."
+        )
+    return ""
 
 
 def _reject_tracked_rows(
@@ -1958,31 +1996,23 @@ async def execute_task_textual(
                             # set_error failure must not abort the turn and drop
                             # the remaining tools' hooks.
                             try:
-                                if (
-                                    tool_status == "success"
-                                    and record is not None
-                                    and record.after_unreadable
-                                ):
-                                    # Gate on the dedicated flag, not on
-                                    # `record.status == "error"`: that is also
-                                    # set when the tool's own output reports a
-                                    # failure, where claiming the operation
-                                    # succeeded would be a false statement.
-                                    # Reachable for `write_file` and `edit_file`
-                                    # only; `delete` synthesizes an empty
-                                    # post-image instead of reading one back, so
-                                    # it has no read to fail.
-                                    detail = (
-                                        record.after_read_error
-                                        or record.error
-                                        or "Diff tracking failed."
+                                if tool_status == "success":
+                                    # A display problem is not a tool failure.
+                                    # Prepend the caveat to the row's own output
+                                    # rather than routing through `set_error`,
+                                    # which would stamp the row "Error", overwrite
+                                    # the tool's success message with the caveat,
+                                    # and make a completed operation count toward
+                                    # every failure surface — so a user would
+                                    # retry an edit that already applied.
+                                    # Prepended, not appended, so the caveat
+                                    # survives the collapsed output preview.
+                                    caveat = _display_caveat(record)
+                                    tool_msg.set_success(
+                                        f"{caveat}\n\n{output_str}"
+                                        if caveat and output_str
+                                        else caveat or output_str
                                     )
-                                    tool_msg.set_error(
-                                        f"The {record.tool_name} succeeded, but its "
-                                        f"changes could not be displayed: {detail}"
-                                    )
-                                elif tool_status == "success":
-                                    tool_msg.set_success(output_str)
                                 else:
                                     tool_msg.set_error(output_str or "Error")
                                 adapter._sync_tool_widget(tool_msg)
@@ -2089,10 +2119,7 @@ async def execute_task_textual(
                                         tool_name=record.tool_name,
                                         before=record.before_content or "",
                                         after=record.after_content or "",
-                                        stats=DiffStats(
-                                            additions=record.metrics.lines_added,
-                                            deletions=record.metrics.lines_removed,
-                                        ),
+                                        stats=record.diff_stats,
                                         changes_unknown=record.before_unreadable,
                                     )
                                 )

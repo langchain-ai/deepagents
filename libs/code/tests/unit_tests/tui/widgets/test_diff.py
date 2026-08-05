@@ -4,16 +4,32 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+import pytest
 from textual.widgets import Static
 
+from deepagents_code.config import get_glyphs
 from deepagents_code.diff_utils import count_diff_changes
 from deepagents_code.tui.widgets import diff as diff_module
 from deepagents_code.tui.widgets.diff import compose_diff_lines
 
 if TYPE_CHECKING:
-    import pytest
+    from collections.abc import Iterator
+
     from textual.app import ComposeResult
     from textual.content import Content
+
+
+@pytest.fixture(autouse=True)
+def _clear_highlight_cache() -> Iterator[None]:
+    """Keep the module-level highlight cache from leaking between tests.
+
+    `_highlight_lines` is an `lru_cache` on `(code, path)`, so one test's
+    highlighted lines — or its cached lexer *failure* — would otherwise be served
+    to the next test using the same snippet.
+    """
+    diff_module._highlight_lines.cache_clear()
+    yield
+    diff_module._highlight_lines.cache_clear()
 
 
 def _rendered(diff: str, max_lines: int | None = 100) -> list[Static]:
@@ -42,6 +58,36 @@ def _plain(widget: Static) -> str:
         The widget's rendered text without style markup.
     """
     return cast("Content", widget.render()).plain
+
+
+def _emphasized(widget: Static, style: str) -> list[str]:
+    """Return the substrings a diff row marks with word-level emphasis.
+
+    Args:
+        widget: A rendered diff row.
+        style: The emphasis style to look for, e.g. `on $success 30%`.
+
+    Returns:
+        The emphasized substrings, in span order.
+    """
+    content = cast("Content", widget.render())
+    return [content.plain[s.start : s.end] for s in content.spans if s.style == style]
+
+
+def _keyword_spans(content: Content) -> list[object]:
+    """Return the syntax-highlighting spans on a row.
+
+    Every rendered row carries gutter and marker spans regardless, so "was this
+    row highlighted" has to be asked of the lexer's own style — the accent
+    Textual paints keywords with.
+
+    Args:
+        content: A rendered diff row.
+
+    Returns:
+        The keyword spans, empty when the row rendered as plain text.
+    """
+    return [s for s in content.spans if s.style == "$text-accent"]
 
 
 def _contents(widgets: ComposeResult) -> list[Content]:
@@ -191,6 +237,67 @@ class TestComposeDiffLines:
         ]
         assert emphasized == ["new_arg"]
 
+    def test_removed_side_is_emphasized_too(self) -> None:
+        """The pair is only readable when both halves point at the change."""
+        diff = "@@ -1 +1 @@\n-value = compute(old_arg)\n+value = compute(new_arg)"
+        removed = next(w for w in _rendered(diff) if "old_arg" in _plain(w))
+        assert _emphasized(removed, "on $error 30%") == ["old_arg"]
+
+    def test_unrelated_rewrites_get_no_emphasis(self) -> None:
+        """Tinting every word is noise, not information.
+
+        Below `_SIMILARITY_FLOOR` the two lines are not versions of each other, so
+        "what changed" is the whole line and marking it says nothing.
+        """
+        diff = "@@ -1 +1 @@\n-import os\n+CONSTANT_TABLE = {1: 'a', 2: 'b'}"
+        added = next(w for w in _rendered(diff) if "CONSTANT_TABLE" in _plain(w))
+        assert _emphasized(added, "on $success 30%") == []
+
+    def test_unequal_removed_and_added_runs_get_no_emphasis(self) -> None:
+        """Pairing by offset only means anything when the runs are the same size.
+
+        With two removals against one addition there is no defensible pairing, so
+        emphasis is dropped rather than guessed.
+        """
+        diff = "@@ -1,2 +1 @@\n-alpha = 1\n-beta = 2\n+alpha = 3"
+        added = next(w for w in _rendered(diff) if "alpha = 3" in _plain(w))
+        assert _emphasized(added, "on $success 30%") == []
+
+    def test_long_lines_are_not_emphasized(self) -> None:
+        """The length guard keeps a quadratic match off the compose path.
+
+        Minified JS or single-line JSON would otherwise stall the UI while
+        `SequenceMatcher` runs over per-character tokens.
+        """
+        old = "a" * (diff_module._MAX_EMPHASIS_LEN + 1)
+        new = f"{'a' * diff_module._MAX_EMPHASIS_LEN}b"
+        added = next(
+            w for w in _rendered(f"@@ -1 +1 @@\n-{old}\n+{new}") if new in _plain(w)
+        )
+        assert _emphasized(added, "on $success 30%") == []
+
+    @pytest.mark.parametrize(
+        ("old", "new", "changed"),
+        [
+            ('label = "你好世界 old"', 'label = "你好世界 new"', "new"),
+            ('label = "😀🎉 old"', 'label = "😀🎉 new"', "new"),
+        ],
+        ids=["cjk", "astral"],
+    )
+    def test_emphasis_offsets_hold_for_non_ascii(
+        self, old: str, new: str, changed: str
+    ) -> None:
+        """Token offsets index the line by code point, not by byte.
+
+        `_TOKEN_RE` is total over its input so a running sum of token lengths is a
+        valid offset. A non-total pattern, or byte offsets, would pass every
+        ASCII test and silently mis-highlight anything wider.
+        """
+        added = next(
+            w for w in _rendered(f"@@ -1 +1 @@\n-{old}\n+{new}") if changed in _plain(w)
+        )
+        assert _emphasized(added, "on $success 30%") == [changed]
+
     def test_rows_are_highlighted_with_whole_file_lexer_state(self) -> None:
         """Highlighting reads the file, not the hunk, so string state is right."""
         after = 'def f():\n    """Doc.\n\n    More.\n    """\n    if x:\n\tpass\n'
@@ -216,12 +323,54 @@ class TestComposeDiffLines:
             raise RuntimeError(msg)
 
         monkeypatch.setattr(diff_module, "highlight", _boom)
-        diff_module._highlight_lines.cache_clear()
         rows = _contents(
             compose_diff_lines("@@ -1 +1 @@\n+if x:", path="m.py", after="if x:\n")
         )
-        diff_module._highlight_lines.cache_clear()
         assert any("if x:" in r.plain for r in rows)
+
+    def test_source_that_drifted_from_the_diff_renders_plain(self) -> None:
+        """Highlighting is only safe while the source still matches the diff.
+
+        A stale rehydration, or `before`/`after` belonging to another file, would
+        otherwise paint a row with spans lifted from an unrelated line — colors
+        that look authoritative and describe different code. Matching by line
+        number cannot detect that; comparing the text can.
+        """
+        # Line 1 of `after` is not the line the diff says was added there.
+        rows = _contents(
+            compose_diff_lines(
+                "@@ -1 +1 @@\n+if x:", path="m.py", after="something_else = 1\n"
+            )
+        )
+        row = next(r for r in rows if "if x:" in r.plain)
+        assert not _keyword_spans(row), f"drifted row was highlighted: {row.spans}"
+
+    def test_oversized_source_is_rejected_and_renders_plain(self) -> None:
+        """The size guard is the only thing bounding compose-time lexing.
+
+        Past the limit the side is skipped and its rows render plain, rather than
+        stalling the message pump lexing a whole large file — twice, once per
+        side — inside `compose`. Rejecting the prefix must also not cost a
+        near-full copy of the file first: an edit near the end of a large file
+        asks for a prefix that is going to be refused anyway, and building it to
+        measure it allocated and discarded megabytes per side, per compose.
+        """
+        line = 199_000
+        source = "y = 2\n" * 200_000
+        assert len(source) > diff_module._MAX_HIGHLIGHT_CHARS
+        assert diff_module._highlight_source_prefix(source, line) == ""
+        # A prefix that does fit still comes back whole.
+        assert diff_module._highlight_source_prefix(source, 10) == "\n".join(
+            ["y = 2"] * 10
+        )
+
+        rows = _contents(
+            compose_diff_lines(
+                f"@@ -{line} +{line} @@\n+y = 2", path="m.py", after=source
+            )
+        )
+        row = next(r for r in rows if "y = 2" in r.plain)
+        assert not row.spans[2:], f"an oversized source was lexed anyway: {row.spans}"
 
 
 class TestRowKinds:
@@ -239,3 +388,26 @@ class TestRowKinds:
         widgets = _rendered("@@ -1 +1 @@\n-a\n+b\n...")
         assert any("truncated" in _plain(w) for w in widgets)
         assert not any("diff-hunk-break" in w.classes for w in widgets)
+
+    def test_hunk_break_uses_the_configured_glyph(self) -> None:
+        """The separator must go through `Glyphs` so ASCII terminals get `:`."""
+        widget = next(
+            w
+            for w in _rendered("@@ -1 +1 @@\n-a\n+b\n@@ -50 +50 @@\n-c\n+d")
+            if "diff-hunk-break" in w.classes
+        )
+        assert _plain(widget) == get_glyphs().hunk_break
+
+    def test_unrecognized_lines_render_as_unnumbered_notes(self) -> None:
+        r"""A line with no diff marker is metadata, not content.
+
+        `\ No newline at end of file` is the common case: it belongs to the
+        preceding row rather than being a line of its own, so it gets no gutter
+        and no `+`/`-`.
+        """
+        note = r"\ No newline at end of file"
+        widget = next(
+            w for w in _rendered(f"@@ -1 +1 @@\n-a\n+b\n{note}") if note in _plain(w)
+        )
+        assert _plain(widget) == note
+        assert not widget.classes

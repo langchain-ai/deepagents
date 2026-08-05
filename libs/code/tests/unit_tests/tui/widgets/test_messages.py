@@ -792,6 +792,17 @@ class TestDiffMessageNoChanges:
         texts = self._texts(DiffMessage(diff, "m.py", tool_name="edit_file"))
         assert texts[0] == "Edited m.py  +1 -1"
 
+    def test_truncated_body_without_stats_reports_no_counts(self) -> None:
+        """A number known to be short is worse than no number.
+
+        Recounting a clipped body silently undercounts — an 800-row clip of a
+        900-line change would render `+799`, indistinguishable from correct. With
+        no authoritative counts to fall back on, the honest answer is none.
+        """
+        diff = "--- a/m.py\n+++ b/m.py\n@@ -1,1 +1,1 @@\n-old\n+new\n..."
+        texts = self._texts(DiffMessage(diff, "m.py", tool_name="edit_file"))
+        assert texts[0] == "Edited m.py"
+
     def test_zero_stats_do_not_suppress_a_recount(self) -> None:
         """`DiffStats(0, 0)` is a truthy tuple, so `or` would let it win.
 

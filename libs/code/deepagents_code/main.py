@@ -1506,7 +1506,7 @@ Command groups whose bare invocation performs an action instead belong in
 exactly one collection.
 """
 
-_BARE_ACTION_GROUPS = frozenset({"config", "models"})
+_BARE_ACTION_GROUPS = frozenset({"config"})
 """Command groups that perform their primary action without a subcommand."""
 
 
@@ -1637,14 +1637,6 @@ def parse_args() -> argparse.Namespace:
         add_help=False,
         parents=help_parent(_lazy_help("show_help")),
     )
-
-    models_parser = subparsers.add_parser(
-        "models",
-        help="List available models",
-        add_help=False,
-        parents=help_parent(_lazy_help("show_models_help")),
-    )
-    add_json_output_arg(models_parser)
 
     agents_parser = subparsers.add_parser(
         "agents",
@@ -3911,11 +3903,6 @@ def cli_main() -> None:
         # fast path so neither argparse's `--help`/`-h` exit nor
         # `deepagents <group>` pays the settings bootstrap cost.
         from deepagents_code.config import console, settings
-
-        if command == "models":
-            from deepagents_code.client.commands.models import run_models_command
-
-            sys.exit(run_models_command(args))
 
         if command == "auth":
             from deepagents_code.client.commands.auth import run_auth_command

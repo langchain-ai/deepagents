@@ -16,6 +16,19 @@ updates:
         update-types:
           - "major"
 
+  # genai-prices ships new model pricing frequently and dcode's runtime
+  # auto-updater depends on its schema staying compatible, so it gets its own
+  # daily entry instead of waiting for the monthly sweep below. The monthly
+  # block ignores it (allow/ignore merge across same-directory entries, so
+  # without the ignore the monthly groups would still sweep it up).
+  - package-ecosystem: "uv"
+    directory: "/libs/code"
+    schedule:
+      interval: "daily"
+    allow:
+      - dependency-name: "genai-prices"
+    versioning-strategy: increase
+
   - package-ecosystem: "uv"
     directories:
       - "/libs/deepagents"
@@ -49,6 +62,8 @@ updates:
       - dependency-name: "langchain-daytona"
       - dependency-name: "langchain-modal"
       - dependency-name: "langchain-quickjs"
+      # Checked daily in the dedicated /libs/code entry above.
+      - dependency-name: "genai-prices"
       - dependency-name: "langchain-runloop"
       - dependency-name: "langchain-vercel-sandbox"
     groups:

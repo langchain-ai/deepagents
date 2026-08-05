@@ -529,6 +529,9 @@ def test_instruction_passes_app_passwords_through_the_environment(
 
     assert re.search(r"-u\s+[A-Za-z0-9._@-]+:[A-Za-z0-9._@-]+", instruction) is None
     assert "$DRBENCH_NEXTCLOUD_PASS" in instruction
+    # `_USER` too, not just `_PASS`: the login-name substitution once rewrote the token
+    # inside this variable's own name, and `_PASS` has no `USER` substring to notice it.
+    assert "$DRBENCH_NEXTCLOUD_USER" in instruction
 
     env = tomllib.loads((task_dir / "task.toml").read_text())["environment"]["env"]
     assert env["DRBENCH_NEXTCLOUD_USER"] == "dana.ray"
@@ -677,3 +680,26 @@ def test_label_verification_reports_a_stale_record(vendor: Path) -> None:
 def test_the_committed_labels_cover_every_task() -> None:
     """The label record and the subset list must name the same tasks."""
     assert sorted(adapter.load_task_labels()) == adapter.available_task_ids()
+
+
+def test_every_env_var_the_prompt_names_is_actually_declared(vendor: Path, tmp_path: Path) -> None:
+    """The stronger invariant: no prompt may reference a variable the task does not set.
+
+    Checked as a property rather than per variable, because the way this breaks is a
+    placeholder substitution *inventing* a name -- `$DRBENCH_NEXTCLOUD_USER` became
+    `$DRBENCH_NEXTCLOUD_admin` in 96 of 100 prompts, which expands to nothing and sends an
+    empty login. Asserting each known name individually would not have caught it.
+    """
+    _write_vendor(
+        vendor,
+        env_files=[_env_file("report.pdf"), _env_file("thread.jsonl", app="email")],
+        qa=[_qa("IN1", "A fact.")],
+    )
+    task_dir = adapter.generate_task(output_dir=tmp_path / "dataset", task_id=_TASK_ID)
+
+    declared = set(tomllib.loads((task_dir / "task.toml").read_text())["environment"]["env"])
+    referenced = set(
+        re.findall(r"\$(DRBENCH_[A-Za-z0-9_]+)", (task_dir / "instruction.md").read_text())
+    )
+    assert referenced, "the prompt names no DRBench variable at all"
+    assert referenced <= declared, f"undeclared: {sorted(referenced - declared)}"

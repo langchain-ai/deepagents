@@ -92,14 +92,16 @@ _APP_DEFAULT_CREDENTIALS: dict[str, dict[str, str]] = {
     "file_system": {"username": "admin", "password": "admin_pwd"},
 }
 
-# Per-app access notes for the prompt. `USER` is substituted with the task's login name;
-# the password is never written into the prompt -- see `_credential_env` for why.
+# Per-app access notes for the prompt. `{user}` is substituted with the task's login name;
+# the password is never written into the prompt -- see `_credential_env` for why. The token
+# is braced rather than a bare `USER` because these strings also *name* the
+# `DRBENCH_<APP>_USER` variable, and a bare token rewrites that name too.
 _APP_GUIDANCE: dict[str, str] = {
     "nextcloud": (
         "the company cloud drive. HTTP Basic auth over WebDAV. List one level with "
         "`curl -u \"$DRBENCH_NEXTCLOUD_USER:$DRBENCH_NEXTCLOUD_PASS\" -X PROPFIND "
         "-H 'Depth: 1' -H 'Host: localhost' "
-        "http://drbench:8081/remote.php/dav/files/USER/`, then repeat on any directory "
+        "http://drbench:8081/remote.php/dav/files/{user}/`, then repeat on any directory "
         "it returns (they end in `/`) to walk deeper, and GET any file path to download "
         "it. Both extra headers matter: this server answers `400 Bad Request` to "
         "`Depth: infinity`, and it only trusts the Host `localhost`, so a request "
@@ -944,7 +946,9 @@ def _instruction(
     app_lines = "\n".join(
         f"- **{app}** (log in as `{credentials[app]['username']}`, password in "
         f"`$DRBENCH_{app.upper()}_PASS`) — "
-        + _APP_GUIDANCE[app].replace("USER", credentials[app]["username"])
+        # `str.replace`, not `str.format`: this is prose that may carry literal braces
+        # (the Mattermost entry describes a JSON body), which `format` would raise on.
+        + _APP_GUIDANCE[app].replace("{user}", credentials[app]["username"])
         for app in apps
     )
     return f"""# Deep research request

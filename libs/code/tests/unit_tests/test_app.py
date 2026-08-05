@@ -615,6 +615,11 @@ class TestStartupSequence:
             startup_cmd="echo hi",
         )
         order: list[str] = []
+        payload = _ThreadHistoryPayload(
+            messages=[], context_tokens=400_001, model_spec=""
+        )
+        app._fetch_thread_history_data = AsyncMock(return_value=payload)
+        app._offer_resume_compaction = AsyncMock(return_value="compact")
 
         async def capture_history(  # noqa: RUF029
             *,
@@ -634,18 +639,58 @@ class TestStartupSequence:
             order.append("hook")
             return True
 
+        async def capture_compaction() -> None:  # noqa: RUF029
+            order.append("compact")
+
         async def capture_goal_review() -> None:  # noqa: RUF029
             order.append("goal")
 
         app._load_thread_history = capture_history  # ty: ignore
         app._run_session_start_hook = capture_hook  # ty: ignore[invalid-assignment]
         app._run_startup_command = capture_startup  # ty: ignore
+        app._handle_offload = capture_compaction  # ty: ignore
         app._remount_pending_goal_rubric_review = capture_goal_review  # ty: ignore
 
         await app._run_session_start_sequence()
 
-        assert order == ["history", "hook", "startup", "goal"]
+        assert order == ["history", "hook", "startup", "compact", "goal"]
         assert app._startup_sequence_running is False
+
+    async def test_cancel_compaction_restores_launch_agent(self) -> None:
+        """Canceling a launch-time resume should preserve the selected agent."""
+        server_proc = MagicMock()
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            assistant_id="launch-agent",
+            thread_id="resumed-thread",
+            resume_thread="resumed-thread",
+            server_proc=server_proc,
+            server_kwargs={"assistant_id": "resumed-agent"},
+        )
+        app._assistant_id = "resumed-agent"
+        app._fetch_thread_history_data = AsyncMock(
+            return_value=_ThreadHistoryPayload(
+                messages=[], context_tokens=400_001, model_spec=""
+            )
+        )
+        app._offer_resume_compaction = AsyncMock(return_value="cancel")
+        respawn = AsyncMock(return_value=True)
+        app._respawn_server = respawn
+        app._reload_hooks = AsyncMock()
+        app._load_thread_history = AsyncMock()
+        app._run_session_start_hook = AsyncMock(return_value=True)
+        app._mount_message = AsyncMock()
+
+        with patch.object(app, "run_worker", side_effect=_closing_run_worker_mock):
+            await app._run_session_start_sequence()
+
+        assert app._assistant_id == "launch-agent"
+        assert app._server_kwargs is not None
+        assert app._server_kwargs["assistant_id"] == "launch-agent"
+        server_proc.update_env.assert_called_once()
+        assert "launch-agent" in server_proc.update_env.call_args.kwargs.values()
+        respawn.assert_awaited_once()
+        assert app._initial_resume_requested is False
 
     @pytest.mark.parametrize(
         "kwargs",
@@ -33386,24 +33431,17 @@ class TestResumeThreadCwdSwitch:
         assert ok == "continue"
         push_wait.assert_not_called()
 
-    async def test_resume_prefetch_failure_restores_server_backed_cwd_switch(
+    async def test_resume_prefetch_failure_skips_cwd_switch(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Failed `/threads` prefetch restores cwd/server after accepted switch."""
-        current = tmp_path / "current"
-        target = tmp_path / "target"
-        current.mkdir()
-        target.mkdir()
-        monkeypatch.chdir(current)
-        app = DeepAgentsApp(thread_id="old-thread", cwd=current)
+        """Failed `/threads` prefetch should leave cwd and server untouched."""
+        monkeypatch.chdir(tmp_path)
+        app = DeepAgentsApp(thread_id="old-thread", cwd=tmp_path)
         app._agent = MagicMock()
         app._session_state = TextualSessionState(thread_id="old-thread")
         app._lc_thread_id = "old-thread"
-        app._server_kwargs = {"assistant_id": "agent"}
-        app._server_proc = MagicMock()
-        app._push_screen_wait = AsyncMock(return_value="switch")  # ty: ignore[invalid-assignment]
         app._fetch_thread_history_data = AsyncMock(  # ty: ignore[invalid-assignment]
             side_effect=RuntimeError("history unavailable")
         )
@@ -33413,30 +33451,18 @@ class TestResumeThreadCwdSwitch:
         set_spinner = AsyncMock()
         app._set_spinner = set_spinner  # ty: ignore[invalid-assignment]
         app._update_status = MagicMock()  # ty: ignore[invalid-assignment]
-        reload_hooks = AsyncMock()
-        monkeypatch.setattr(app, "_reload_hooks", reload_hooks)
-        replace_calls: list[Path] = []
+        offer_cwd_switch = AsyncMock(return_value="continue")
+        app._offer_thread_cwd_switch = offer_cwd_switch  # ty: ignore[invalid-assignment]
 
-        def replace_server(cwd: Path) -> str:
-            replace_calls.append(cwd)
-            app._switch_process_cwd(cwd)
-            return "continue"
+        await app._resume_thread("new-thread")
 
-        app._replace_server_after_cwd_switch = AsyncMock(  # ty: ignore[invalid-assignment]
-            side_effect=replace_server
-        )
-
-        with patch("deepagents_code.sessions.get_thread_cwd", return_value=str(target)):
-            await app._resume_thread("new-thread")
-
-        assert replace_calls == [target, current]
-        assert Path.cwd() == current
-        assert app._cwd == str(current)
+        offer_cwd_switch.assert_not_awaited()
+        assert Path.cwd() == tmp_path
+        assert app._cwd == str(tmp_path)
         assert app._session_state.thread_id == "old-thread"
         assert app._lc_thread_id == "old-thread"
         set_spinner.assert_has_awaits([call("Loading thread"), call(None)])
         load_thread_history.assert_not_awaited()
-        reload_hooks.assert_awaited_once_with()
 
     async def test_threads_switch_offers_abort_and_cancels(
         self,
@@ -33450,8 +33476,14 @@ class TestResumeThreadCwdSwitch:
         app._session_state = TextualSessionState(thread_id="old-thread")
         app._lc_thread_id = "old-thread"
         app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
-        fetch = AsyncMock()
+        fetch = AsyncMock(
+            return_value=_ThreadHistoryPayload(
+                messages=[], context_tokens=0, model_spec=""
+            )
+        )
         app._fetch_thread_history_data = fetch  # ty: ignore[invalid-assignment]
+        app._set_spinner = AsyncMock()  # ty: ignore[invalid-assignment]
+        app._update_status = MagicMock()  # ty: ignore[invalid-assignment]
         offer = AsyncMock(return_value="abort")
         app._offer_thread_cwd_switch = offer  # ty: ignore[invalid-assignment]
 
@@ -33459,12 +33491,9 @@ class TestResumeThreadCwdSwitch:
 
         assert offer.await_args is not None
         assert offer.await_args.kwargs["abort"] == "thread_switch"
-        # Aborting must not switch threads or load history.
         assert app._session_state.thread_id == "old-thread"
         assert app._lc_thread_id == "old-thread"
-        fetch.assert_not_awaited()
-        # Abort returns before the switch lock is acquired; leaving it set would
-        # permanently block `/threads` for the session.
+        fetch.assert_awaited_once_with("new-thread")
         assert app._thread_switching is False
 
     async def test_threads_reselect_offers_abort(

@@ -3320,13 +3320,15 @@ class TestResumeThread:
                 messages=[], context_tokens=400_001, model_spec=""
             )
         )
-        _app_test_double(app)._offer_thread_cwd_switch = AsyncMock(
-            return_value="continue"
-        )
+        cwd_switch = AsyncMock(return_value="continue")
+        _app_test_double(app)._offer_thread_cwd_switch = cwd_switch
         push_screen = AsyncMock(return_value=choice)
         _app_test_double(app)._push_screen_wait = push_screen
-        compact = AsyncMock()
+        order: list[str] = []
+        compact = AsyncMock(side_effect=lambda: order.append("compact"))
+        restore_goal = AsyncMock(side_effect=lambda: order.append("goal"))
         _app_test_double(app)._handle_offload = compact
+        _app_test_double(app)._remount_pending_goal_rubric_review = restore_goal
 
         with patch(
             "deepagents_code.config_manifest.resolve_scalar",
@@ -3338,10 +3340,22 @@ class TestResumeThread:
         if choice == "cancel":
             assert app._lc_thread_id == "old-thread"
             _app_test_double(app)._clear_messages.assert_not_awaited()
-        if choice == "compact":
-            compact.assert_awaited_once()
+            cwd_switch.assert_not_awaited()
+            restore_goal.assert_not_awaited()
+            assert order == []
         else:
-            compact.assert_not_awaited()
+            cwd_switch.assert_awaited_once_with(
+                "new-thread",
+                restart_server=True,
+                abort="thread_switch",
+            )
+            restore_goal.assert_awaited_once()
+            if choice == "compact":
+                compact.assert_awaited_once()
+                assert order == ["compact", "goal"]
+            else:
+                compact.assert_not_awaited()
+                assert order == ["goal"]
 
     @staticmethod
     def _switch_app() -> DeepAgentsApp:
@@ -3982,15 +3996,18 @@ class TestFetchThreadHistoryData:
 
         assert payload.model_spec == ""
 
-    async def test_none_context_tokens_coerced_to_zero(self) -> None:
-        """`_context_tokens: None` in checkpoint should coerce to 0."""
+    @pytest.mark.parametrize("raw_tokens", [None, True])
+    async def test_invalid_context_tokens_coerced_to_zero(
+        self, raw_tokens: object
+    ) -> None:
+        """Invalid checkpoint token counts should coerce to 0."""
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
         app._agent = MagicMock()
         raw_messages = [object()]
         state = MagicMock()
-        state.values = {"messages": raw_messages, "_context_tokens": None}
+        state.values = {"messages": raw_messages, "_context_tokens": raw_tokens}
         app._agent.aget_state = AsyncMock(return_value=state)
         converted = [MessageData(type=MessageType.USER, content="hello")]
 

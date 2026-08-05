@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from textual.widget import MountError
 
 from deepagents_code.app import (
@@ -383,9 +384,15 @@ class TestResolveResumeTarget:
 class TestCrossAgentResume:
     """Confirmation and orchestration for a cross-agent resume target."""
 
+    @pytest.mark.parametrize(
+        ("compaction_choice", "compact_on_resume"),
+        [("continue", False), ("compact", True)],
+    )
     async def test_confirmation_switches_agent_and_exact_thread(
         self,
         tmp_path: Path,
+        compaction_choice: str,
+        compact_on_resume: bool,
     ) -> None:
         """Accepting performs one combined, session-only transition."""
         app = _make_app()
@@ -395,6 +402,9 @@ class TestCrossAgentResume:
         payload = MagicMock(context_tokens=0)
         app._push_screen_wait = AsyncMock(return_value="switch")  # ty: ignore
         app._fetch_thread_history_data = AsyncMock(return_value=payload)  # ty: ignore
+        app._offer_resume_compaction = AsyncMock(  # ty: ignore
+            return_value=compaction_choice
+        )
         app._offer_thread_cwd_switch = AsyncMock(return_value="continue")  # ty: ignore
         app._restart_server_for_agent_swap = AsyncMock(return_value=True)  # ty: ignore
 
@@ -405,6 +415,7 @@ class TestCrossAgentResume:
             )
 
         app._fetch_thread_history_data.assert_awaited_once_with("research-thread")  # ty: ignore
+        app._offer_resume_compaction.assert_awaited_once_with(0)  # ty: ignore
         app._offer_thread_cwd_switch.assert_awaited_once_with(  # ty: ignore
             "research-thread",
             restart_server=False,
@@ -415,7 +426,7 @@ class TestCrossAgentResume:
             resume_thread_id="research-thread",
             preloaded_payload=payload,
             persist_default_agent=False,
-            compact_on_resume=False,
+            compact_on_resume=compact_on_resume,
         )
 
     async def test_cancel_keeps_current_session_untouched(self, tmp_path: Path) -> None:

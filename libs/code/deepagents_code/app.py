@@ -739,6 +739,7 @@ if TYPE_CHECKING:
     from deepagents_code.resume_state import GoalProposalKind, GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
     from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
+    from deepagents_code.tui.modals.resume_compact import ResumeCompactChoice
     from deepagents_code.tui.textual_adapter import TextualUIAdapter
     from deepagents_code.tui.widgets.approval import ApprovalMenu
     from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
@@ -9327,7 +9328,8 @@ class DeepAgentsApp(App):
                         resume_payload.context_tokens
                     )
                     if choice == "cancel":
-                        await self._cancel_initial_resume()
+                        if not await self._cancel_initial_resume():
+                            return
                         resume_payload = None
                     else:
                         compact_before_resume = choice == "compact"
@@ -9376,14 +9378,14 @@ class DeepAgentsApp(App):
                 return
             self._initial_session_started = True
 
-            if compact_before_resume:
-                await self._handle_offload()
-
             if self._startup_cmd:
                 cmd = self._startup_cmd
                 # One-shot: clear to avoid re-running on any subsequent server swap.
                 self._startup_cmd = None
                 await self._run_startup_command(cmd)
+
+            if compact_before_resume:
+                await self._handle_offload()
 
             if should_load_history:
                 await self._remount_pending_goal_rubric_review()
@@ -16529,7 +16531,7 @@ class DeepAgentsApp(App):
 
     async def _offer_resume_compaction(
         self, context_tokens: int
-    ) -> Literal["compact", "continue", "cancel"]:
+    ) -> ResumeCompactChoice:
         """Offer to compact a large-context thread before resuming it.
 
         Args:
@@ -16552,9 +16554,7 @@ class DeepAgentsApp(App):
         if context_tokens <= threshold:
             return "continue"
 
-        from deepagents_code.tui.widgets.thread_selector import (
-            ResumeCompactPromptScreen,
-        )
+        from deepagents_code.tui.modals.resume_compact import ResumeCompactPromptScreen
 
         try:
             choice = await self._push_screen_wait(
@@ -16574,8 +16574,12 @@ class DeepAgentsApp(App):
             return "continue"
         return choice or "cancel"
 
-    async def _cancel_initial_resume(self) -> None:
-        """Start a fresh thread after canceling the launch-time resume."""
+    async def _cancel_initial_resume(self) -> bool:
+        """Start a fresh thread on the launch-default agent.
+
+        Returns:
+            Whether the fresh session is ready to continue startup.
+        """
         if self._session_state is not None:
             thread_id = self._session_state.reset_thread()
         else:
@@ -16584,6 +16588,36 @@ class DeepAgentsApp(App):
         self._initial_resume_requested = False
         self._should_adopt_resumed_model = False
         self._resuming = False
+
+        launch_agent = self._default_assistant_id or DEFAULT_ASSISTANT_ID
+        if self._assistant_id != launch_agent:
+            self._assistant_id = launch_agent
+            if self._server_kwargs is not None:
+                self._server_kwargs["assistant_id"] = launch_agent
+            if self._server_kwargs is not None and self._server_proc is not None:
+                from deepagents_code._env_vars import SERVER_ENV_PREFIX
+
+                self._server_proc.update_env(
+                    **{f"{SERVER_ENV_PREFIX}ASSISTANT_ID": launch_agent}
+                )
+                restarted = await self._respawn_server(
+                    log_message=(
+                        "Failed to restore the launch agent after resume cancel"
+                    ),
+                    mcp_failure_log=("MCP metadata preload after resume cancel failed"),
+                    mcp_failure_toast=(
+                        "MCP tool metadata could not be refreshed. Use /mcp to check."
+                    ),
+                )
+                if not restarted:
+                    return False
+            await self._reload_hooks()
+            self.run_worker(
+                self._discover_skills(),
+                exclusive=True,
+                group="resume-cancel-skill-discovery",
+            )
+
         self._sync_status_connection()
         self._update_welcome_banner(
             thread_id,
@@ -16591,6 +16625,7 @@ class DeepAgentsApp(App):
             warn_if_missing=False,
         )
         await self._mount_message(AppMessage("Resume canceled. Started a new thread."))
+        return True
 
     async def _fetch_thread_history_data(self, thread_id: str) -> _ThreadHistoryPayload:
         """Fetch and convert stored messages for a thread.
@@ -16605,7 +16640,11 @@ class DeepAgentsApp(App):
         state_values = await self._get_thread_state_values(thread_id)
         raw_tokens = state_values.get("_context_tokens")
         context_tokens = (
-            raw_tokens if isinstance(raw_tokens, int) and raw_tokens >= 0 else 0
+            raw_tokens
+            if isinstance(raw_tokens, int)
+            and not isinstance(raw_tokens, bool)
+            and raw_tokens >= 0
+            else 0
         )
         raw_spec = state_values.get("_model_spec")
         model_spec = raw_spec if isinstance(raw_spec, str) else ""
@@ -25282,14 +25321,6 @@ class DeepAgentsApp(App):
         prev_previous_thread = self._session_state.previous_thread_id
         prev_cwd = Path(self._cwd)
 
-        cwd_choice = await self._offer_thread_cwd_switch(
-            thread_id,
-            restart_server=True,
-            abort="thread_switch",
-        )
-        if cwd_choice == "abort":
-            return
-
         self._thread_switching = True
         if self._chat_input:
             self._chat_input.set_cursor_active(active=False)
@@ -25308,9 +25339,16 @@ class DeepAgentsApp(App):
                 prefetched_payload.context_tokens
             )
             if compact_choice == "cancel":
-                await self._restore_cwd_after_failed_thread_switch(prev_cwd)
                 return
             compact_before_resume = compact_choice == "compact"
+
+            cwd_choice = await self._offer_thread_cwd_switch(
+                thread_id,
+                restart_server=True,
+                abort="thread_switch",
+            )
+            if cwd_choice == "abort":
+                return
             switch_started = True
 
             self._update_status(f"Loading thread: {thread_id}")
@@ -25385,22 +25423,24 @@ class DeepAgentsApp(App):
             # or failed load leaves the hint under something else.
             await self._mount_previous_thread_hint(prev_session_thread)
 
-            # Deferred above so it lands last, keeping the interactive prompt
-            # at the bottom of the transcript. Guarded because this runs inside
-            # the rollback handler's `try`: failing to restore a review must
-            # not undo a switch that already completed.
+            # Landing on a new thread re-arms the same-thread toast, so stepping
+            # back to a thread and re-selecting it announces itself again.
+            self._last_thread_unchanged = None
+            session_started = await self._run_session_start_hook(
+                SessionStartCause.RESUME
+            )
+            if session_started and compact_before_resume:
+                await self._handle_offload()
+
+            # Deferred above so it lands below both the previous-thread hint and
+            # any compaction output. Guarded because a cosmetic restore failure
+            # must not undo a switch that already completed.
             try:
                 await self._remount_pending_goal_rubric_review()
             except Exception:
                 logger.exception("Failed to restore pending goal review")
-
-            # Landing on a new thread re-arms the same-thread toast, so stepping
-            # back to a thread and re-selecting it announces itself again.
-            self._last_thread_unchanged = None
-            if not await self._run_session_start_hook(SessionStartCause.RESUME):
+            if not session_started:
                 return
-            if compact_before_resume:
-                await self._handle_offload()
         except Exception as exc:
             if not switch_started:
                 logger.exception("Failed to prepare thread %s for resume", thread_id)

@@ -1436,10 +1436,7 @@ A condensed summary follows:
         # Generate summary
         summary = self._create_summary(offloaded_media_messages)
         if summary is None:
-            # Summary generation failed (e.g. a transient model error). Never
-            # fabricate a summary from `None` - skip compaction this turn and
-            # retry once the underlying model recovers, the same way a missing
-            # safe cutoff is handled above.
+            # Summary generation failed; skip compaction this turn and retry later.
             return handler(request.override(messages=truncated_messages))
 
         # Build summary message with file path reference
@@ -1578,10 +1575,7 @@ A condensed summary follows:
             warnings.warn(msg, stacklevel=2)
 
         if summary is None:
-            # Summary generation failed (e.g. a transient model error). Never
-            # fabricate a summary from `None` - skip compaction this turn and
-            # retry once the underlying model recovers, the same way a missing
-            # safe cutoff is handled above.
+            # Summary generation failed; skip compaction this turn and retry later.
             return await handler(request.override(messages=truncated_messages))
 
         # Build summary message with file path reference
@@ -2058,8 +2052,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
             to_summarize, _ = s._partition_messages(effective, cutoff)
             summary = s._create_summary(to_summarize)
             if summary is None:
-                # Never fabricate a summary from `None` - report the failure
-                # honestly instead of claiming the conversation was compacted.
+                # Summary generation failed; return an error instead of reporting false success.
                 return self._compact_error(tool_call_id, RuntimeError("the summarization model failed to generate a summary"))
             file_path = s._offload_to_backend(s._backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise
@@ -2095,8 +2088,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
             to_summarize, _ = s._partition_messages(effective, cutoff)
             summary = await s._acreate_summary(to_summarize)
             if summary is None:
-                # Never fabricate a summary from `None` - report the failure
-                # honestly instead of claiming the conversation was compacted.
+                # Summary generation failed; return an error instead of reporting false success.
                 return self._compact_error(tool_call_id, RuntimeError("the summarization model failed to generate a summary"))
             file_path = await s._aoffload_to_backend(s._backend, to_summarize)
         except Exception as exc:  # tool must return a ToolMessage, not raise

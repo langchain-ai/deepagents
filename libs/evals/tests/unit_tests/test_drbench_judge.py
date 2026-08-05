@@ -82,9 +82,29 @@ def _install_fake_drbench(
     task_loader.get_task_from_id = get_task_from_id
 
     score_report_mod: Any = types.ModuleType("drbench.score_report")
+    metrics_mod: Any = types.ModuleType("drbench.metrics")
+
+    class _Metric:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def compute(self, **_kwargs: Any) -> dict[str, Any]:
+            return _verdict_rows()
+
+    def get_metric(name: str, **_kwargs: Any) -> _Metric:
+        return _Metric(name)
+
+    # Upstream binds this into `score_report`'s namespace with `from drbench.metrics import
+    # get_metric`, so both names exist and only the `score_report` one is what gets called.
+    metrics_mod.get_metric = get_metric
+    score_report_mod.get_metric = get_metric
 
     def score_report(**kwargs: Any) -> object:
         recorded["score_report_kwargs"] = kwargs
+        # Mirrors upstream's loop: every metric is resolved through the name in this
+        # module's own namespace and computed, which is what the detail capture wraps.
+        for name in kwargs.get("metrics") or []:
+            score_report_mod.get_metric(name).compute()
         return scores
 
     score_report_mod.score_report = score_report
@@ -168,6 +188,7 @@ def _install_fake_drbench(
         ("drbench.gen_agent", gen_agent),
         ("drbench.task_loader", task_loader),
         ("drbench.score_report", score_report_mod),
+        ("drbench.metrics", metrics_mod),
     ):
         monkeypatch.setitem(sys.modules, name, module)
 
@@ -872,6 +893,116 @@ def test_grade_raises_the_output_cap_only_for_an_openrouter_judge(
     judge._grade()
 
     assert getattr(reinstalled.AIAgentManager.__init__, "_deepagents_sampling", False)
+
+
+# --- per-insight verdict capture ------------------------------------------------------
+
+
+def _verdict_rows(count: int = 2, justification: str = "no matching claim") -> dict[str, Any]:
+    """A metric result shaped like `QASimilarityV2.compute`'s return value."""
+    return {
+        "score": 0.0,
+        "per_question_results": [
+            {
+                "question": f"q{i}",
+                "expected_insight": f"gold {i}",
+                "predicted_insight": None,
+                "expected_supporting_paths": ["/corpus/a.pdf"],
+                "score": 0.0,
+                "justification": justification,
+                "confidence": "high",
+            }
+            for i in range(count)
+        ],
+    }
+
+
+def test_trim_captured_keeps_only_the_allowlisted_fields(judge: ModuleType) -> None:
+    rows = judge._trim_captured(_verdict_rows(count=1))
+
+    assert len(rows) == 1
+    # `question` and `expected_supporting_paths` are dropped: the paths are corpus text and
+    # the question is already recoverable from the task.
+    assert set(rows[0]) == set(judge._CAPTURED_FIELDS)
+    assert rows[0]["expected_insight"] == "gold 0"
+    assert rows[0]["justification"] == "no matching claim"
+
+
+def test_trim_captured_bounds_length_and_count(judge: ModuleType) -> None:
+    # A long report must not be able to inflate the breakdown artifact without limit.
+    over = judge._MAX_CAPTURED_VERDICTS + 5
+    rows = judge._trim_captured(_verdict_rows(count=over, justification="x" * 5_000))
+
+    assert len(rows) == judge._MAX_CAPTURED_VERDICTS
+    assert all(len(row["justification"]) == judge._MAX_CAPTURED_CHARS for row in rows)
+
+
+@pytest.mark.parametrize(
+    "result", [None, "not a dict", {}, {"score": 0.0}, {"per_question_results": "nope"}]
+)
+def test_trim_captured_ignores_a_result_without_verdicts(judge: ModuleType, result: object) -> None:
+    # factuality and report_quality return no `per_question_results`; they are skipped
+    # rather than partially recorded.
+    assert judge._trim_captured(result) == []
+
+
+def test_metric_detail_capture_patches_the_name_score_report_actually_calls(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `score_report` does `from drbench.metrics import get_metric`, binding the function in
+    # its own namespace at import time. Patching `drbench.metrics.get_metric` would leave
+    # that reference untouched and capture nothing -- the same class of trap as upstream's
+    # `AVAILABLE_MODELS` fallback.
+    _install_fake_drbench(monkeypatch, scores={})
+    from drbench import metrics, score_report  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    before = metrics.get_metric
+    judge._install_metric_detail_capture({})
+
+    assert score_report.get_metric is not before
+    assert metrics.get_metric is before
+
+
+def test_metric_detail_capture_records_each_metrics_verdicts(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_drbench(monkeypatch, scores={})
+    from drbench import score_report  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    sink: dict[str, Any] = {}
+    judge._install_metric_detail_capture(sink)
+    metric = score_report.get_metric("insights_recall")
+    returned = metric.compute()
+
+    assert sink["insights_recall"][0]["expected_insight"] == "gold 0"
+    # The wrapper must hand upstream its own result untouched, or scoring changes.
+    assert returned == _verdict_rows()
+
+
+def test_metric_detail_capture_is_idempotent(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_drbench(monkeypatch, scores={})
+    from drbench import score_report  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    judge._install_metric_detail_capture({})
+    first = score_report.get_metric
+    judge._install_metric_detail_capture({})
+
+    assert score_report.get_metric is first
+
+
+def test_grade_reports_the_judges_verdicts(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _install_fake_drbench(monkeypatch, scores=dict(_SCORES))
+    _stage_paths(judge, monkeypatch, tmp_path)
+
+    _, breakdown = judge._grade()
+
+    assert breakdown["metric_detail"]["insights_recall"][0]["justification"] == (
+        "no matching claim"
+    )
 
 
 # --- cited-URL fetch guard ------------------------------------------------------------

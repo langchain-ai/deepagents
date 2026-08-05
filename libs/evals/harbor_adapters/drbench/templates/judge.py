@@ -86,6 +86,19 @@ _OPENROUTER_SLUG_RE = re.compile(
 # 1000 tokens suffice there and because it is what earlier runs scored with.
 _OPENROUTER_JUDGE_MAX_TOKENS = 32_000
 
+# Bounds on the captured judge verdicts, which are model-written free text serialized into
+# a CI artifact: enough to read every gold insight's verdict, not enough for a long or
+# adversarial report to inflate the breakdown file.
+_MAX_CAPTURED_VERDICTS = 32
+_MAX_CAPTURED_CHARS = 600
+_CAPTURED_FIELDS = (
+    "expected_insight",
+    "predicted_insight",
+    "score",
+    "justification",
+    "confidence",
+)
+
 
 def _requested_judge_model() -> str:
     """First model in the harness-injected ``JUDGE_MODELS``, or the default."""
@@ -266,9 +279,7 @@ def _install_url_fetch_guard(failures: list[dict[str, str]]) -> None:
             try:
                 return original_parse(self, url)
             except Exception as exc:  # noqa: BLE001 - a bad citation must not end the run
-                failures.append(
-                    {"url": url[:300], "error": f"{type(exc).__name__}: {exc}"[:300]}
-                )
+                failures.append({"url": url[:300], "error": f"{type(exc).__name__}: {exc}"[:300]})
                 print(f"  could not fetch cited URL {url[:120]}: {type(exc).__name__}")
                 return None
 
@@ -375,6 +386,70 @@ def _install_judge_sampling(max_tokens: int = _OPENROUTER_JUDGE_MAX_TOKENS) -> N
     gen_agent.AIAgentManager.__init__ = patched  # type: ignore[method-assign]
 
 
+def _trim_captured(result: object) -> list[dict[str, Any]]:
+    """Reduce a metric result to its per-gold-insight verdicts, bounded in count and length.
+
+    The fields are judge-written free text that ends up in a CI artifact, so only an
+    allowlist is kept and every string is truncated: a long report must not be able to
+    inflate the breakdown file.
+    """
+    if not isinstance(result, dict):
+        return []
+    rows = result.get("per_question_results")
+    if not isinstance(rows, list):
+        return []
+
+    trimmed: list[dict[str, Any]] = []
+    for row in rows[:_MAX_CAPTURED_VERDICTS]:
+        if not isinstance(row, dict):
+            continue
+        entry: dict[str, Any] = {}
+        for field in _CAPTURED_FIELDS:
+            value = row.get(field)
+            if isinstance(value, str):
+                entry[field] = value[:_MAX_CAPTURED_CHARS]
+            elif value is None or isinstance(value, bool | int | float):
+                entry[field] = value
+        trimmed.append(entry)
+    return trimmed
+
+
+def _install_metric_detail_capture(sink: dict[str, list[dict[str, Any]]]) -> None:
+    """Record the per-insight verdicts `score_report` computes and then discards.
+
+    Upstream keeps each `metric.compute` result in a local list and returns only the four
+    scores, so the judge's per-gold-insight `justification`, `predicted_insight`, and
+    `confidence` are lost -- the very fields that distinguish a real zero from a parse
+    failure. Capturing them costs no extra model call, unlike `include_per_insight_scores`.
+
+    The patch target is `score_report`'s own `get_metric`: it binds the function with
+    `from drbench.metrics import get_metric`, so rebinding `drbench.metrics.get_metric`
+    would leave that already-bound reference untouched.
+    """
+    from drbench import score_report as upstream  # noqa: PLC0415 - installed only in the sandbox
+
+    original = upstream.get_metric
+    if getattr(original, "_deepagents_captured", False):
+        return
+
+    def capturing(name: str, *args: Any, **kwargs: Any) -> Any:
+        metric = original(name, *args, **kwargs)
+        inner = metric.compute
+
+        def compute(*inner_args: Any, **inner_kwargs: Any) -> Any:
+            result = inner(*inner_args, **inner_kwargs)
+            captured = _trim_captured(result)
+            if captured:
+                sink[name] = captured
+            return result
+
+        metric.compute = compute
+        return metric
+
+    capturing._deepagents_captured = True  # type: ignore[attr-defined]
+    upstream.get_metric = capturing
+
+
 def composite(components: dict[str, float]) -> float:
     """Harmonic mean of the scored components, each floored at EPSILON.
 
@@ -452,6 +527,8 @@ def _grade() -> tuple[dict[str, float], dict[str, Any]]:
         _install_judge_sampling()
     url_failures: list[dict[str, str]] = []
     _install_url_fetch_guard(url_failures)
+    metric_detail: dict[str, list[dict[str, Any]]] = {}
+    _install_metric_detail_capture(metric_detail)
     task = task_loader.get_task_from_id(task_id)
     scores = score_report(
         predicted_report_text=report_text,
@@ -503,6 +580,10 @@ def _grade() -> tuple[dict[str, float], dict[str, Any]]:
             # might otherwise have supported, so a depressed `factuality` is only
             # interpretable next to this list.
             "unfetchable_citations": url_failures,
+            # The judge's own verdict per gold insight and per distractor. Without this a
+            # zero is ambiguous: a report that missed everything and a judge whose replies
+            # failed to parse both score 0.0.
+            "metric_detail": metric_detail,
         }
     )
     if url_failures:

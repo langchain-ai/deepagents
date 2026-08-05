@@ -803,6 +803,12 @@ class TestDiffMessageNoChanges:
         texts = self._texts(DiffMessage(diff, "m.py", tool_name="edit_file"))
         assert texts[0] == "Edited m.py"
 
+    def test_context_line_matching_marker_does_not_suppress_counts(self) -> None:
+        """A unified-diff context line retains its leading space."""
+        diff = "--- a/m.py\n+++ b/m.py\n@@ -1,2 +1,2 @@\n-old\n+new\n ..."
+        texts = self._texts(DiffMessage(diff, "m.py", tool_name="edit_file"))
+        assert texts[0] == "Edited m.py  +1 -1"
+
     def test_zero_stats_do_not_suppress_a_recount(self) -> None:
         """`DiffStats(0, 0)` is a truthy tuple, so `or` would let it win.
 

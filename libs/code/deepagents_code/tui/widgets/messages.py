@@ -4485,7 +4485,7 @@ class DiffMessage(Static):
             one. Zeros render no counts at all, which is the honest answer.
         """
         lines = split_diff_lines(self._diff_content)
-        if lines and lines[-1].strip() == DIFF_TRUNCATION_MARKER:
+        if lines and lines[-1] == DIFF_TRUNCATION_MARKER:
             return DiffStats(0, 0)
         return count_diff_changes(self._diff_content)
 

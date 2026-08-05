@@ -175,6 +175,7 @@ _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
         DISABLED_PROJECT_MCP_SERVERS,
         AUTO_CLASSIFIER_MODEL,
         AUTO_CLASSIFIER_TIMEOUT,
+        "TERM_PROGRAM",
     }
 )
 """Env keys a *project* `.env` must not inject, even though they are otherwise
@@ -204,6 +205,11 @@ batch up to the ceiling, or squeeze the budget until reviews time out and the
 session degrades into repeated denials and approval prompts.
 `[models].auto_classifier_timeout` in
 `~/.deepagents/config.toml` and the trusted env surfaces still set it.
+
+`TERM_PROGRAM` identifies the terminal from which the user launched Deep
+Agents Code and is included in trace metadata. A project `.env` must not
+replace it: python-dotenv expands environment-variable references, which could
+otherwise forward a launch-environment value to the trace backend.
 
 Unlike `_DOTENV_DENIED_ENV_KEYS` (denied from *any* `.env` because they turn
 `.env` loading into code execution), these are denied only from the *project*
@@ -1779,6 +1785,15 @@ def build_stream_config(
     metadata. This is a diagnostic key, not the contract-scoped `approval_policy`
     key (see above), so it is safe to stamp trace-wide.
 
+    Also records `dcode_term_program` from `TERM_PROGRAM` when that is non-empty
+    after stripping, so traces are groupable by launch environment (e.g.
+    "iTerm.app", "vscode", "Apple_Terminal"). Blank values are treated as unset
+    to match every other reader of this variable — some shells export
+    `TERM_PROGRAM=""` rather than leaving it unset, and terminals that never set
+    it (Windows Terminal, ssh, the Linux console) omit the key entirely rather
+    than forming a junk grouping bucket. This is a diagnostic key, not part of
+    the contract.
+
     Args:
         thread_id: The app session thread identifier. Set both on
             `configurable.thread_id` and as the top-level `metadata.thread_id`
@@ -1823,6 +1838,12 @@ def build_stream_config(
     # Mark auto-approve ("YOLO") runs so they are filterable in trace metadata.
     if auto_approve:
         metadata["dcode_auto_approve"] = True
+
+    # Record the launch environment so traces are groupable by terminal.
+    # Blank is treated as unset, matching the other readers. Not a contract key.
+    term_program = os.environ.get("TERM_PROGRAM", "").strip()
+    if term_program:
+        metadata["dcode_term_program"] = term_program
 
     # Legacy / diagnostic keys preserved for backward-compatibility during the
     # coding-agent-v1 rollout (not part of the contract).

@@ -3108,11 +3108,11 @@ class TestDroppedImagePaste:
             ]
 
     async def test_paste_non_image_path_keeps_original_text(self, tmp_path) -> None:
-        """Non-image dropped paths should keep the default path paste behavior."""
+        """Non-image dropped paths should submit verbatim in normal mode."""
         file_path = tmp_path / "notes.txt"
         file_path.write_text("hello")
 
-        app = _ImagePasteApp()
+        app = _ImagePasteRecordingApp()
         async with app.run_test() as pilot:
             chat = app.query_one(ChatInput)
             assert chat._text_area is not None
@@ -3120,8 +3120,36 @@ class TestDroppedImagePaste:
             await chat._text_area._on_paste(events.Paste(str(file_path)))
             await pilot.pause()
 
-            assert chat._text_area.text.endswith(str(file_path).lstrip("/"))
+            assert chat.mode == "normal"
+            assert chat._text_area.text == str(file_path)
             assert app.tracker.get_images() == []
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == str(file_path)
+            assert app.submitted[0].mode == "normal"
+
+    async def test_submit_existing_non_image_path_without_drop_draft_stays_normal(
+        self, tmp_path
+    ) -> None:
+        """Submission should revalidate paths when transient drop state is absent."""
+        file_path = tmp_path / "anthropic_top_level_anyof_repro.ipynb"
+        file_path.write_text("{}")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+
+            assert chat.mode == "normal"
+            assert chat._dropped_path_draft is None
+            chat._submit_value(str(file_path))
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == str(file_path)
+            assert app.submitted[0].mode == "normal"
 
     async def test_inline_quoted_path_payload_rewrites_to_placeholder(
         self, tmp_path

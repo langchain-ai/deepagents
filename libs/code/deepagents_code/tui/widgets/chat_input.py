@@ -1969,13 +1969,14 @@ class ChatInput(Vertical):
             return self._is_existing_path_payload(candidate)
         return False
 
-    def _starts_with_dropped_path(self, value: str) -> bool:
-        """Return whether `value` still begins with a recognized dropped path.
+    def _is_dropped_path_submission(self, value: str) -> bool:
+        """Return whether a normal-mode submission begins with an existing path."""
+        if self._starts_with_dropped_path(value):
+            return True
+        return self._is_existing_path_payload(value)
 
-        Lets submission treat a leading `/` as part of the dropped path instead
-        of a slash-command trigger, so a dropped folder plus a typed question is
-        sent as a message.
-        """
+    def _starts_with_dropped_path(self, value: str) -> bool:
+        """Return whether `value` still begins with a recognized dropped path."""
         draft = self._dropped_path_draft
         return draft is not None and value.startswith(draft.strip())
 
@@ -2165,9 +2166,9 @@ class ChatInput(Vertical):
         value = self._replace_submitted_paths_with_images(value)
 
         mode = self.mode
-        if mode == "normal" and not self._starts_with_dropped_path(value):
+        if mode == "normal":
             detected = detect_mode_prefix(value)
-            if detected is not None:
+            if detected is not None and not self._is_dropped_path_submission(value):
                 _, mode = detected
 
         # Prepend mode prefix so the app layer receives the original trigger

@@ -34,6 +34,7 @@ from deepagents_code.model_config import (
     ProviderAuthSource,
     ProviderAuthState,
     ProviderAuthStatus,
+    ProviderConfig,
     _get_builtin_providers,
     _get_provider_profile_modules,
     _is_local_endpoint,
@@ -1897,6 +1898,20 @@ models = ["llama3"]
 class TestModelConfigGetAllModels:
     """Tests for ModelConfig.get_all_models() method."""
 
+    def test_positional_providers_argument_remains_third(self):
+        """Existing positional callers continue to populate `providers`.
+
+        `auto_classifier_model` was added to this dataclass; declaring it before
+        `providers` would silently bind a positional third argument to the wrong
+        field.
+        """
+        providers: dict[str, ProviderConfig] = {"openai": {"models": ["gpt-5.5"]}}
+
+        config = ModelConfig("openai:gpt-5.5", "openai:gpt-5.4", providers)
+
+        assert config.providers == providers
+        assert config.auto_classifier_model is None
+
     def test_returns_empty_list_when_no_providers(self):
         """Returns empty list when no providers configured."""
         config = ModelConfig()
@@ -2510,6 +2525,107 @@ class TestAutoClassifierModelPersistence:
         config = model_config.ModelConfig.load(config_path)
 
         assert config.auto_classifier_model == "openai:gpt-5.6-luna"
+
+    def test_round_trips_through_the_launch_resolver(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """What Ctrl+S writes must be what the launcher reads.
+
+        `ModelConfig.auto_classifier_model` (the picker's `(default)` marker) and
+        `config.resolve_auto_classifier_model_with_problem` (what actually
+        configures the classifier) reach the same key by different routes, so
+        nothing else in the suite would catch them drifting apart.
+        """
+        from deepagents_code import config as config_module
+
+        config_path = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL", raising=False)
+        model_config.clear_caches()
+
+        assert model_config.save_auto_classifier_model("openai:gpt-5.6-luna") is True
+        assert config_module.resolve_auto_classifier_model_with_problem() == (
+            "openai:gpt-5.6-luna",
+            None,
+        )
+
+        assert model_config.clear_auto_classifier_model() is True
+        assert config_module.resolve_auto_classifier_model_with_problem() == (
+            None,
+            None,
+        )
+
+    def test_clear_returns_false_and_leaves_no_temp_file_on_write_error(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An I/O failure mid-write is reported, not swallowed."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nauto_classifier = "anthropic:claude-sonnet-5"\n',
+            encoding="utf-8",
+        )
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            msg = "disk full"
+            raise OSError(msg)
+
+        monkeypatch.setattr(model_config.tomli_w, "dump", _boom)
+
+        assert model_config.clear_auto_classifier_model(config_path) is False
+        assert list(tmp_path.glob("*.tmp")) == []
+        # The original file survives an aborted write.
+        assert "auto_classifier" in config_path.read_text()
+
+    def test_clear_invalidates_the_default_config_cache(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A cleared key must not linger in the process-wide cache.
+
+        The selector's `(default)` marker re-reads through `ModelConfig.load()`
+        after Ctrl+S, so a stale cache would keep marking a cleared row.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nauto_classifier = "anthropic:claude-sonnet-5"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        model_config.clear_caches()
+
+        assert (
+            model_config.ModelConfig.load().auto_classifier_model
+            == "anthropic:claude-sonnet-5"
+        )
+
+        assert model_config.clear_auto_classifier_model() is True
+
+        assert model_config.ModelConfig.load().auto_classifier_model is None
+
+    def test_clear_reports_success_but_warns_on_non_table_models(
+        self, caplog: pytest.LogCaptureFixture, tmp_path: Path
+    ) -> None:
+        """A structurally broken `[models]` is logged, not silently 'cleared'."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("models = 1\n", encoding="utf-8")
+
+        with caplog.at_level(logging.WARNING):
+            assert model_config.clear_auto_classifier_model(config_path) is True
+
+        assert "non-table [models] section" in caplog.text
+
+    def test_validate_warns_when_spec_lacks_provider(
+        self, caplog: pytest.LogCaptureFixture, tmp_path: Path
+    ) -> None:
+        """A provider-less spec gets the same warning as `default`/`recent`."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nauto_classifier = "claude-sonnet-5"\n', encoding="utf-8"
+        )
+
+        with caplog.at_level(logging.WARNING):
+            model_config.ModelConfig.load(config_path)
+
+        assert "auto_classifier_model 'claude-sonnet-5'" in caplog.text
 
     def test_load_drops_non_string_spec(self, tmp_path: Path) -> None:
         """A malformed entry resolves to `None` instead of a non-spec value."""

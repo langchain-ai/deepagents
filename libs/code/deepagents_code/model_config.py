@@ -2548,15 +2548,23 @@ class ModelConfig:
     recent_model: str | None = None
     """The most recently switched-to model (from config file `[models].recent`)."""
 
+    providers: Mapping[str, ProviderConfig] = field(default_factory=dict)
+    """Read-only mapping of provider names to their configurations."""
+
     auto_classifier_model: str | None = None
     """The stored Auto classifier model (from config file `[models].auto_classifier`).
 
-    Non-string entries resolve to `None`; `config.resolve_auto_classifier_model`
-    owns reporting a malformed value, so this field only carries a usable spec.
-    """
+    Carries the raw string with only a `str` type guard, so a blank or
+    unbuildable spec reaches this field. The sole consumer is the `/auto model`
+    picker's `(default)` marker, which needs the stored text rather than a
+    resolved model, so validation would be misplaced here:
+    `config.resolve_auto_classifier_model_with_problem` reports a malformed
+    value at launch, and an unbuildable spec fails closed at review time.
 
-    providers: Mapping[str, ProviderConfig] = field(default_factory=dict)
-    """Read-only mapping of provider names to their configurations."""
+    Not the resolution path — a `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` export
+    or `--auto-classifier-model` flag outranks this value at launch, so it may
+    differ from the classifier Auto actually reviews with.
+    """
 
     def __post_init__(self) -> None:
         """Freeze the providers dict into a read-only proxy."""
@@ -2660,6 +2668,14 @@ class ModelConfig:
                 "recent_model '%s' should use provider:model format "
                 "(e.g., 'anthropic:claude-sonnet-4-5')",
                 self.recent_model,
+            )
+
+        # Warn if auto_classifier_model is set but doesn't use provider:model format
+        if self.auto_classifier_model and ":" not in self.auto_classifier_model:
+            logger.warning(
+                "auto_classifier_model '%s' should use provider:model format "
+                "(e.g., 'anthropic:claude-sonnet-4-5')",
+                self.auto_classifier_model,
             )
 
         # Validate enabled field type and class_path format / params references
@@ -3132,6 +3148,9 @@ def save_auto_classifier_model(
 
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
+
+    Note:
+        This function does not preserve comments in the config file.
     """
     return _save_model_field("auto_classifier", model_spec, config_path)
 
@@ -3166,6 +3185,9 @@ def clear_auto_classifier_model(config_path: Path | None = None) -> bool:
 
     Returns:
         True if the key was removed (or was already absent), False on I/O error.
+
+    Note:
+        This function does not preserve comments in the config file.
     """
     return _clear_model_field("auto_classifier", config_path)
 
@@ -3181,6 +3203,9 @@ def _clear_model_field(field: str, config_path: Path | None = None) -> bool:
 
     Returns:
         True if the key was removed (or was already absent), False on I/O error.
+
+    Note:
+        This function does not preserve comments in the config file.
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
@@ -3194,7 +3219,19 @@ def _clear_model_field(field: str, config_path: Path | None = None) -> bool:
                 data = tomllib.load(f)
 
             models_section = data.get("models")
-            if not isinstance(models_section, dict) or field not in models_section:
+            if not isinstance(models_section, dict):
+                # Valid TOML of the wrong shape (e.g. a scalar `models = 1`).
+                # Nothing to delete, but log it rather than reporting a clean
+                # clear for a file the user has to fix by hand.
+                logger.warning(
+                    "Config file %s has a non-table [models] section (%s); "
+                    "cannot clear models.%s",
+                    config_path,
+                    type(models_section).__name__,
+                    field,
+                )
+                return True
+            if field not in models_section:
                 return True  # Already absent
 
             del models_section[field]

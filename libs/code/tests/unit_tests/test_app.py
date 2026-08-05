@@ -9337,6 +9337,24 @@ class TestGoalCommand:
             assert "rubric" not in screen._title.lower()
             assert "/rubric" not in screen._description
 
+    async def test_grader_model_selector_disables_ctrl_s(self) -> None:
+        """Ctrl+S must not persist the agent's model from a grader picker.
+
+        Grader models have no config key of their own yet, so the picker opts out
+        of persistence entirely rather than inheriting the main-model scope and
+        rewriting `[models].default`.
+        """
+        for source in ("goal", "rubric"):
+            app = DeepAgentsApp(agent=MagicMock())
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                with patch.object(app, "push_screen") as push_screen:
+                    await app._show_rubric_model_selector(source=source)
+                    await pilot.pause()
+
+                screen = push_screen.call_args.args[0]
+                assert screen._default_scope is None
+
     async def test_grader_model_selector_bare_default_without_startup_model(
         self,
     ) -> None:
@@ -13099,6 +13117,7 @@ class TestAutoClassifierModelCommand:
 
     async def test_auto_model_selector_persists_to_auto_classifier_key(self) -> None:
         """Ctrl+S in the classifier picker must not retarget the agent's model."""
+        from deepagents_code.model_config import save_auto_classifier_model
         from deepagents_code.tui.widgets.model_selector import (
             AUTO_CLASSIFIER_DEFAULT_SCOPE,
         )
@@ -13108,7 +13127,8 @@ class TestAutoClassifierModelCommand:
             await app._show_auto_classifier_model_selector()
 
         screen = push.call_args.args[0]
-        assert screen._default_scope == AUTO_CLASSIFIER_DEFAULT_SCOPE
+        assert screen._default_scope is AUTO_CLASSIFIER_DEFAULT_SCOPE
+        assert screen._default_scope.save is save_auto_classifier_model
 
     async def test_bare_auto_still_switches_approval_mode(self) -> None:
         """`/auto` without arguments keeps switching approval mode."""

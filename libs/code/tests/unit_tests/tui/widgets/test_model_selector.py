@@ -647,7 +647,7 @@ class TestDefaultModelScope:
 
         with config_path.open("rb") as handle:
             data = tomllib.load(handle)
-        assert "auto_classifier" not in data.get("models", {})
+        assert "auto_classifier" not in data["models"]
 
     async def test_classifier_scope_marks_stored_model_as_default(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -673,6 +673,97 @@ class TestDefaultModelScope:
 
             assert screen._default_spec == "anthropic:claude-sonnet-5"
             assert "(default)" in str(screen._option_widgets[0].content)
+
+    async def test_no_scope_disables_ctrl_s_and_omits_hint(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A scopeless picker must not persist the *agent's* model.
+
+        The grader pickers (`/goal model`, `/rubric model`) have no config key
+        of their own; inheriting the default scope would make Ctrl+S there
+        rewrite `[models].default`.
+        """
+        self._stub_catalog(monkeypatch)
+        config_path = tmp_path / "config.toml"
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=None)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+S" not in str(help_widget.content)
+            # Ctrl+R/Ctrl+N still advertised — only the Ctrl+S hint drops out.
+            assert "Ctrl+R recommended" in str(help_widget.content)
+
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert screen._default_spec is None
+
+        assert not config_path.exists()
+
+    async def test_clear_failure_shows_persistent_error(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A failed clear reports the noun and does not erase itself."""
+        from deepagents_code.tui.widgets import model_selector
+
+        self._stub_catalog(monkeypatch)
+        (tmp_path / "config.toml").write_text(
+            '[models]\nauto_classifier = "anthropic:claude-sonnet-5"\n',
+            encoding="utf-8",
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(
+                default_scope=model_selector.AUTO_CLASSIFIER_DEFAULT_SCOPE._replace(
+                    clear=lambda: False
+                )
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert "Failed to clear default classifier model" in str(
+                help_widget.content
+            )
+            assert screen._help_error_shown is True
+            # The stored spec is untouched, so the row keeps its marker.
+            assert screen._default_spec == "anthropic:claude-sonnet-5"
+
+    async def test_ctrl_s_refuses_install_required_row(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A spec whose provider is missing can never build, so don't store it."""
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        config_path = tmp_path / "config.toml"
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._install_extras = {"anthropic": "anthropic"}
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert "not installed" in str(help_widget.content)
+            assert screen._default_spec is None
+
+        assert not config_path.exists()
 
 
 class TestNamesToggle:

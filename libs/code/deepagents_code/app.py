@@ -13523,6 +13523,11 @@ class DeepAgentsApp(App):
             cli_profile_override=self._profile_override,
             title=title,
             description=description,
+            # Grader models have no persistent config key yet, so there is
+            # nothing for Ctrl+S to own here. Passing `None` disables it: the
+            # default scope would persist `[models].default` and retarget the
+            # model the agent itself runs on.
+            default_scope=None,
         )
         self.push_screen(screen, handle_result)
 
@@ -19170,9 +19175,11 @@ class DeepAgentsApp(App):
             description=(
                 "Recommended models favor lower latency and cost for repeated "
                 "reviews. A faster, cheaper model may review actions less "
-                "carefully. Enter applies the pick to this session; Ctrl+S "
-                "stores it as `[models].auto_classifier`. Clear it with `/auto "
-                "model clear` to reuse the main agent model."
+                "carefully. Enter applies the pick to this session; `/auto "
+                "model clear` undoes that and reuses the main agent model. "
+                "Ctrl+S additionally stores the pick as "
+                "`[models].auto_classifier` for future launches; press Ctrl+S "
+                "again on the stored model to remove it."
             ),
             default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE,
         )

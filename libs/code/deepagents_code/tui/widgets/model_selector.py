@@ -134,12 +134,19 @@ class DefaultModelScope(NamedTuple):
     The selector is reused for pickers that choose something other than the
     main agent model (for example the `/auto` classifier), where persisting
     `[models].default` would silently retarget the model the agent itself runs
-    on. Each caller supplies the config key its Ctrl+S owns.
+    on. Each caller supplies the config key its Ctrl+S owns, or `None` to
+    disable Ctrl+S entirely (see `ModelSelectorScreen.__init__`).
+
+    Nothing ties `load`, `save`, and `clear` to a single `[models]` key — that
+    they agree is a property of how each instance is built, so define scopes as
+    module-level constants next to each other rather than assembling them at a
+    call site.
 
     Attributes:
-        noun: Sentence-initial name of the preference, used to build the
-            success/failure notices (e.g. `'default'` renders "Default set
-            to …" and "Failed to save default").
+        noun: Lowercase name of the preference, used verbatim mid-sentence
+            ("Failed to save default") and capitalized on the first character
+            for sentence-initial use ("Default set to …", "Default cleared").
+            Must be non-empty and read correctly in both positions.
         hint: Footer hint text following `'Ctrl+S '`.
         load: Reads the currently stored spec, for the `(default)` marker.
         save: Persists a spec, returning `False` on I/O failure.
@@ -172,10 +179,16 @@ AUTO_CLASSIFIER_DEFAULT_SCOPE = DefaultModelScope(
 """Ctrl+S target for `/auto model`: the Auto approval classifier
 (`[models].auto_classifier`).
 
-Persisting is validation-free, like `/model`'s Ctrl+S. A stored classifier that
-cannot be built fails closed at review time — those actions are denied and
-repeated failures escalate to human approval — rather than quietly reverting to
-the main agent model.
+Persisting is validation-free, like `/model`'s Ctrl+S, except that
+`action_set_default` refuses rows whose provider integration is not installed
+(those can never build). A stored classifier that cannot be built for any other
+reason fails closed at review time — those actions are denied and repeated
+failures escalate to human approval — rather than quietly reverting to the main
+agent model.
+
+Unlike `[models].default`, this key is outranked by
+`DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` and `--auto-classifier-model`, so a
+stored value is not necessarily the classifier in force.
 """
 
 
@@ -186,7 +199,7 @@ class _ModelData(NamedTuple):
         all_models: `(provider:model spec, provider)` pairs for every model to
             surface, including install-required recommended models.
         default_spec: The stored spec for the screen's `DefaultModelScope`, or
-            `None`.
+            `None` when nothing is stored or the screen has no scope.
         profiles: Spec string to profile entry mapping.
         recent_specs: Most-recent-first `provider:model` specs read from
             `~/.deepagents/.state/recent_models.json`.
@@ -308,11 +321,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     """Key bindings for model navigation, selection, defaulting, and cancel.
 
     Arrows move the cursor, Page Up/Down jump by a visual page, Tab copies
-    the highlighted spec into the filter input, Enter selects, Ctrl+S
-    toggles the default model, Ctrl+R toggles between showing all installed
-    models and the hand-curated "recommended" subset, Ctrl+N toggles rows
-    between friendly display names and raw `provider:model` specs (the analog
-    of the `/theme` picker's `n` key), and Esc dismisses. All bindings use
+    the highlighted spec into the filter input, Enter selects, Ctrl+S toggles
+    the screen's stored default (which preference that is comes from its
+    `DefaultModelScope`; inert when the screen has none), Ctrl+R toggles
+    between showing all installed models and the hand-curated "recommended"
+    subset, Ctrl+N toggles rows between friendly display names and raw
+    `provider:model` specs (the analog of the `/theme` picker's `n` key), and
+    Esc dismisses. All bindings use
     `priority=True` so they take precedence over the embedded `Input`;
     vim-style `j`/`k` bindings — and a bare `n` mirroring the `/theme`
     picker — are deliberately omitted because they would prevent typing those
@@ -434,7 +449,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         include_recent_models: bool = True,
         title: str | None = None,
         description: str | Content | None = None,
-        default_scope: DefaultModelScope = MAIN_MODEL_DEFAULT_SCOPE,
+        default_scope: DefaultModelScope | None = MAIN_MODEL_DEFAULT_SCOPE,
         result_callback: Callable[[tuple[str, str] | None], None] | None = None,
     ) -> None:
         """Initialize the ModelSelectorScreen.
@@ -459,7 +474,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             default_scope: Preference Ctrl+S toggles. Defaults to the main agent
                 model; pickers that choose a different model (e.g. the `/auto`
                 classifier) must pass their own so Ctrl+S does not retarget the
-                agent's model.
+                agent's model. `None` disables Ctrl+S and drops its footer hint,
+                for pickers whose choice has no persistent config key (e.g. the
+                `/goal model` and `/rubric model` graders) — leaving the default
+                there would persist the *agent's* model instead.
             result_callback: Optional callback for selector results when the
                 screen is displayed without a `push_screen` result callback.
         """
@@ -553,7 +571,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         current mode, so it reads "Ctrl+N IDs" while friendly names are shown
         and "Ctrl+N names" once rows are flipped to raw `provider:model` specs.
         The Ctrl+S hint comes from the screen's `DefaultModelScope`, so a picker
-        that stores something other than the main agent model says so.
+        that stores something other than the main agent model says so, and a
+        picker with no scope (`default_scope=None`) omits the hint the way
+        curated mode does rather than advertising a key that does nothing.
 
         Returns:
             The bullet-separated help line.
@@ -566,13 +586,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         ]
         if not self._curated:
             names_hint = "Ctrl+N names" if self._show_specs else "Ctrl+N IDs"
-            parts.extend(
-                (
-                    f"Ctrl+S {self._default_scope.hint}",
-                    "Ctrl+R recommended",
-                    names_hint,
-                )
-            )
+            if self._default_scope is not None:
+                parts.append(f"Ctrl+S {self._default_scope.hint}")
+            parts.extend(("Ctrl+R recommended", names_hint))
         sep = f" {glyphs.bullet} "
         return sep.join(parts)
 
@@ -651,7 +667,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         include_uninstalled: bool = True,
         include_recent: bool = True,
         recommended_models: Mapping[str, str] | None = None,
-        default_scope: DefaultModelScope = MAIN_MODEL_DEFAULT_SCOPE,
+        default_scope: DefaultModelScope | None = MAIN_MODEL_DEFAULT_SCOPE,
     ) -> _ModelData:
         """Gather model discovery data synchronously.
 
@@ -675,7 +691,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             recommended_models: Recommendation set whose missing provider models
                 should be surfaced. `None` uses the standard model shortlist.
             default_scope: Preference whose stored spec is read for the
-                `(default)` marker.
+                `(default)` marker. `None` yields no marker.
 
         Returns:
             A `_ModelData` bundle of the discovered models, default spec,
@@ -749,7 +765,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         recent_specs = load_recent_models() if include_recent else []
         return _ModelData(
             all_models,
-            default_scope.load(),
+            default_scope.load() if default_scope is not None else None,
             profiles,
             recent_specs,
             install_extras,
@@ -1451,7 +1467,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             selected: Whether this option is currently highlighted.
             current: Whether this is the active model.
             auth_status: Provider auth/readiness status.
-            is_default: Whether this is the configured default model.
+            is_default: Whether this is the spec stored for the screen's
+                `DefaultModelScope` — the main agent model under `/model`, but
+                e.g. the stored classifier under `/auto model`.
             status: Model status from profile (e.g., `'deprecated'`,
                 `'beta'`, `'alpha'`). `'deprecated'` renders in red;
                 other non-None values render in yellow.
@@ -1968,16 +1986,51 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         If the highlighted model is already stored, clears it. Otherwise stores
         it. Which preference is written — and how the footer names it — comes
         from the screen's `DefaultModelScope`, so the `/auto` classifier picker
-        cannot silently retarget the main agent model.
+        cannot silently retarget the main agent model. A screen constructed with
+        `default_scope=None` has nothing to write and returns early.
+
+        Rows whose provider integration is missing are refused rather than
+        persisted: unlike the session-only Enter path (which offers to install
+        the package), a stored spec that can never build would degrade every
+        future launch with no prompt at the moment of the keypress.
+
+        Failures leave their notice in place instead of scheduling a restore
+        timer, and raise a toast naming the remedy — a 3-second footer flash is
+        not enough to read, let alone act on.
         """
         if not self._filtered_models or not self._option_widgets:
             return
 
         scope = self._default_scope
-        model_spec, _provider = self._filtered_models[self._selected_index]
+        if scope is None:
+            return
+
+        model_spec, provider = self._filtered_models[self._selected_index]
         help_widget = self.query_one(".model-selector-help", Static)
         noun = scope.noun
-        sentence_noun = noun[0].upper() + noun[1:]
+        # `noun[:1]` rather than `noun[0]` so a malformed empty scope degrades to
+        # an odd message instead of an IndexError inside a key handler.
+        sentence_noun = noun[:1].upper() + noun[1:]
+
+        def _fail(message: str, remedy: str) -> None:
+            help_widget.update(
+                Content.styled(
+                    message,
+                    f"bold {theme.get_theme_colors(self).error}",
+                )
+            )
+            self._help_error_shown = True
+            if self.is_running:
+                self.notify(remedy, severity="error", timeout=10, markup=False)
+
+        if provider in self._install_extras:
+            _fail(
+                f"Cannot store {noun}: {provider} not installed",
+                f"{provider} is not installed, so {model_spec} could never be "
+                f"used. Install it with: pip install "
+                f"'deepagents-code[{self._install_extras[provider]}]'",
+            )
+            return
 
         if model_spec == self._default_spec:
             # Already stored — clear it
@@ -1987,14 +2040,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 help_widget.update(Content.styled(f"{sentence_noun} cleared", "bold"))
                 self.set_timer(3.0, self._restore_help_text)
             else:
-                help_widget.update(
-                    Content.styled(
-                        f"Failed to clear {noun}",
-                        f"bold {theme.get_theme_colors(self).error}",
-                    )
+                _fail(
+                    f"Failed to clear {noun}",
+                    "Could not write ~/.deepagents/config.toml. "
+                    "Check permissions for ~/.deepagents/",
                 )
-                self._help_error_shown = True
-                self.set_timer(3.0, self._restore_help_text)
         elif await asyncio.to_thread(scope.save, model_spec):
             self._default_spec = model_spec
             self.call_after_refresh(self._update_display)
@@ -2007,14 +2057,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             )
             self.set_timer(3.0, self._restore_help_text)
         else:
-            help_widget.update(
-                Content.styled(
-                    f"Failed to save {noun}",
-                    f"bold {theme.get_theme_colors(self).error}",
-                )
+            _fail(
+                f"Failed to save {noun}",
+                "Could not write ~/.deepagents/config.toml. "
+                "Check permissions for ~/.deepagents/",
             )
-            self._help_error_shown = True
-            self.set_timer(3.0, self._restore_help_text)
 
     def _restore_help_text(self) -> None:
         """Restore the default help text after a temporary message.

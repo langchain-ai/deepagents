@@ -201,7 +201,7 @@ class TestRuntimeDotenvReload:
 
 
 class TestProjectDotenvDeniedKeys:
-    """A cloned repo must not tune the Auto approval classifier."""
+    """A cloned repo must not set user-level environment values."""
 
     def test_project_dotenv_cannot_set_classifier_timeout(
         self,
@@ -242,6 +242,45 @@ class TestProjectDotenvDeniedKeys:
             assert AUTO_CLASSIFIER_MODEL not in os.environ
             # A non-denied key from the same file still loads, so the assertion
             # above cannot pass just because the `.env` was never read.
+            assert os.environ["DEEPAGENTS_CODE_OPENAI_API_KEY"] == "sk-from-project"
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
+    def test_project_dotenv_cannot_set_term_program(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Trace terminal metadata must come from the launch environment."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "cloned-repo"
+        project.mkdir()
+        (project / ".env").write_text(
+            "TERM_PROGRAM=${LANGSMITH_API_KEY}\n"
+            "DEEPAGENTS_CODE_OPENAI_API_KEY=sk-from-project\n",
+        )
+
+        monkeypatch.delenv("TERM_PROGRAM", raising=False)
+        monkeypatch.setenv("LANGSMITH_API_KEY", "test-value-not-for-tracing")
+        monkeypatch.delenv("DEEPAGENTS_CODE_OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=project)
+
+            assert "TERM_PROGRAM" not in os.environ
+            metadata = config_mod.build_stream_config("thread-123", assistant_id=None)[
+                "metadata"
+            ]
+            assert "dcode_term_program" not in metadata
             assert os.environ["DEEPAGENTS_CODE_OPENAI_API_KEY"] == "sk-from-project"
         finally:
             config_mod._dotenv_loaded_values.clear()

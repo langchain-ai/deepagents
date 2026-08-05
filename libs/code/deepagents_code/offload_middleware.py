@@ -667,8 +667,10 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                         context_limit,
                         exc_info=True,
                     )
-        backend = self._guarded_backend()
-        return create_summarization_middleware(model, backend)
+        backend = self._summarization._backend
+        summarization = create_summarization_middleware(model, backend)
+        summarization._backend = self._guarded_backend()
+        return summarization
 
     def _run_forced_compact(self, runtime: ToolRuntime) -> Command:
         """Synchronously compact without the SDK eligibility gate.

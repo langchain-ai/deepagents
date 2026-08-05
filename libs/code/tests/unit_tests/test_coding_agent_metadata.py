@@ -223,6 +223,24 @@ class TestContractValueSemantics:
         assert isinstance(metadata["turn_number"], int)
 
 
+class TestDiagnosticKeys:
+    """Non-contract `dcode_*` diagnostic keys stamped by `build_stream_config`."""
+
+    def test_term_program_stamped_when_set(self) -> None:
+        with patch.dict("os.environ", {"TERM_PROGRAM": "iTerm.app"}):
+            config = build_stream_config(
+                "thread-123", assistant_id=None, turn_id=None, turn_number=None
+            )
+        assert config["metadata"]["dcode_term_program"] == "iTerm.app"
+
+    def test_term_program_omitted_when_unset(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            config = build_stream_config(
+                "thread-123", assistant_id=None, turn_id=None, turn_number=None
+            )
+        assert "dcode_term_program" not in config["metadata"]
+
+
 class TestUnknownKeysOmitted:
     """Keys with unknown values are omitted regardless of environment."""
 

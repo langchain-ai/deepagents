@@ -1779,6 +1779,10 @@ def build_stream_config(
     metadata. This is a diagnostic key, not the contract-scoped `approval_policy`
     key (see above), so it is safe to stamp trace-wide.
 
+    Also records `dcode_term_program` from `TERM_PROGRAM` when set, so traces
+    are groupable by host terminal (e.g. "iTerm.app", "vscode"). This is a
+    diagnostic key, not part of the contract.
+
     Args:
         thread_id: The app session thread identifier. Set both on
             `configurable.thread_id` and as the top-level `metadata.thread_id`
@@ -1823,6 +1827,12 @@ def build_stream_config(
     # Mark auto-approve ("YOLO") runs so they are filterable in trace metadata.
     if auto_approve:
         metadata["dcode_auto_approve"] = True
+
+    # Record the host terminal (e.g. "iTerm.app", "vscode", "Apple_Terminal")
+    # so traces are groupable by launch environment. Not a contract key.
+    term_program = os.environ.get("TERM_PROGRAM")
+    if term_program:
+        metadata["dcode_term_program"] = term_program
 
     # Legacy / diagnostic keys preserved for backward-compatibility during the
     # coding-agent-v1 rollout (not part of the contract).

@@ -1,0 +1,159 @@
+# Raise `langchain*` dependency lower bounds to the latest stable PyPI release.
+#
+# For each `langchain*` requirement that declares a concrete lower bound
+# (`>=` / `~=`) in the selected package's manifest(s) — across
+# `[project.dependencies]`, `[project.optional-dependencies]`, and
+# `[dependency-groups]` — this rewrites that lower bound in place to the newest
+# non-yanked stable PyPI version, preserving upper bounds, extras, and markers.
+# Exact `==` pins are left to `bump_code_sdk_pin.yml`, and a floor already ahead
+# of the latest stable release (intentional prerelease coordination) is never
+# lowered.
+#
+# Notes:
+# - One PR is opened per run containing every raised bound. The PR title is
+#   `chore(deps):` on purpose: a bump-worthy type touching files inside a
+#   managed package would make release-please open a separate release PR
+#   (multi-component fan-out).
+# - The PR is created with the Org Membership App installation token rather
+#   than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
+#   `pull_request` workflows, so the required checks would never run.
+# - Idempotent: if a PR for the selected package is already open (or no bound
+#   needs raising), the workflow exits without creating a duplicate.
+
+name: "Raise langchain minimums"
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Release package whose langchain* minimums to raise"
+        required: true
+        type: choice
+        default: "deepagents-code"
+        options:
+          - "deepagents-code"
+          - "all"
+          - "deepagents"
+          - "deepagents-cli"
+          - "deepagents-acp"
+          - "deepagents-talon"
+          - "langchain-daytona"
+          - "langchain-modal"
+          - "langchain-quickjs"
+          - "langchain-runloop"
+          - "langchain-vercel-sandbox"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: raise-langchain-minimums-${{ inputs.package }}
+  cancel-in-progress: false
+
+jobs:
+  raise:
+    name: "Raise langchain minimums for ${{ inputs.package }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python and uv
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.14"
+          enable-cache: "false"
+
+      - name: Raise langchain minimums
+        id: raise
+        env:
+          PACKAGE: ${{ inputs.package }}
+        run: |
+          set -euo pipefail
+          uv run --no-project --with packaging \
+            python .github/scripts/release/raise_langchain_minimums.py \
+            --package "$PACKAGE"
+          echo "branch=chore/raise-langchain-minimums-${PACKAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Log if nothing to do
+        # The actual skip is implemented by the `if:` guards on every
+        # subsequent step; this step only emits a log line so the run
+        # history shows why no PR was opened.
+        if: steps.raise.outputs.changed != 'true'
+        run: echo "No langchain* minimum needed raising for ${{ inputs.package }}; nothing to do."
+
+      - name: Skip if PR already open for this package
+        id: existing
+        if: steps.raise.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.raise.outputs.branch }}
+        run: |
+          set -euo pipefail
+          existing_json=$(gh pr list --head "$BRANCH" --state open --json number,url)
+          count=$(printf '%s' "$existing_json" | jq 'length')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" -gt 0 ]; then
+            pr_url=$(printf '%s' "$existing_json" | jq -r '.[0].url')
+            echo "Open PR already exists for $BRANCH; skipping."
+            echo "::notice::Open langchain minimums PR already exists: $pr_url"
+          fi
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: steps.raise.outputs.changed == 'true' && steps.existing.outputs.count == '0'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Open minimums bump PR
+        if: steps.raise.outputs.changed == 'true' && steps.existing.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PACKAGE: ${{ inputs.package }}
+          BRANCH: ${{ steps.raise.outputs.branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          changed_files="${{ steps.raise.outputs.changed_files }}"
+
+          # Reuse-or-recreate orphan branch from a prior run that pushed but
+          # failed before `gh pr create` (no open PR sits on it). The delete can
+          # race a concurrent run; fall through with a warning so a losing race
+          # does not kill an otherwise-clean job mid-state.
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "::warning::Branch $BRANCH exists on origin without an open PR; deleting before recreating."
+            if ! git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" --delete "$BRANCH"; then
+              echo "::warning::Delete of $BRANCH failed (concurrent run, or branch already gone); the subsequent push will surface any real conflict."
+            fi
+          fi
+
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+
+          # Stage only the manifests the script edited.
+          IFS=',' read -ra files <<< "$changed_files"
+          git add -- "${files[@]}"
+          git commit -m "chore(deps): raise langchain* minimums for $PACKAGE"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
+
+          body_file="$(mktemp)"
+          {
+            printf 'Raises the `langchain*` dependency lower bounds for `%s` to the latest stable PyPI release. Upper bounds, extras, and markers are preserved; exact `==` pins are left to `bump_code_sdk_pin.yml`.\n\n' "$PACKAGE"
+            printf 'Opened automatically by `raise_langchain_minimums.yml`. Review the raised bounds against any compatibility notes in the manifest comments before merging.\n'
+          } > "$body_file"
+
+          pr_url=$(gh pr create \
+            --head "$BRANCH" \
+            --base "$DEFAULT_BRANCH" \
+            --title "chore(deps): raise langchain* minimums for $PACKAGE" \
+            --body-file "$body_file")
+          echo "Opened langchain minimums PR: $pr_url"
+          echo "::notice::Opened langchain minimums PR: $pr_url"

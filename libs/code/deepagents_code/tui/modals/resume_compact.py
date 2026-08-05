@@ -1,8 +1,8 @@
-"""Prompt for compacting a large thread before resuming it."""
+"""Prompt for compacting a large resumed thread."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
@@ -16,15 +16,14 @@ if TYPE_CHECKING:
     from textual.app import ComposeResult
 
 
-class ResumeCompactPromptScreen(ModalScreen[Literal["compact", "continue", "cancel"]]):
-    """Ask whether to compact a large thread before resuming it."""
+class ResumeCompactPromptScreen(ModalScreen[bool]):
+    """Ask whether to compact a just-resumed thread before the next turn."""
 
     can_focus = True
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "compact", "Compact", show=False, priority=True),
-        Binding("c", "continue", "Continue", show=False, priority=True),
-        Binding("escape", "cancel", "Cancel", show=False, priority=True),
+        Binding("escape", "skip", "Skip", show=False, priority=True),
         Binding(
             "ctrl+c",
             "quit_or_interrupt",
@@ -89,7 +88,7 @@ class ResumeCompactPromptScreen(ModalScreen[Literal["compact", "continue", "canc
         """
         with Vertical():
             yield Static(
-                "Compact before resuming?",
+                "Compact this thread?",
                 classes="resume-compact-title",
                 markup=False,
             )
@@ -97,17 +96,13 @@ class ResumeCompactPromptScreen(ModalScreen[Literal["compact", "continue", "canc
                 f"This thread uses {format_token_count(self._context_tokens)} context "
                 "tokens, above the configured "
                 f"{format_token_count(self._threshold)} token threshold. Compacting "
-                "summarizes older messages to reduce context usage and cost.",
+                "summarizes older messages so later turns cost less.",
                 classes="resume-compact-body",
                 markup=False,
             )
             yield Static(
                 f" {get_glyphs().bullet} ".join(
-                    (
-                        "Enter: compact and resume",
-                        "C: resume without compact",
-                        "Esc: cancel",
-                    )
+                    ("Enter: compact now", "Esc: keep full context")
                 ),
                 classes="resume-compact-help",
                 markup=False,
@@ -118,13 +113,9 @@ class ResumeCompactPromptScreen(ModalScreen[Literal["compact", "continue", "canc
         self.focus()
 
     def action_compact(self) -> None:
-        """Resume after compacting the thread."""
-        self.dismiss("compact")
+        """Compact the thread before the next turn."""
+        self.dismiss(True)
 
-    def action_continue(self) -> None:
-        """Resume without compacting the thread."""
-        self.dismiss("continue")
-
-    def action_cancel(self) -> None:
-        """Cancel the resume."""
-        self.dismiss("cancel")
+    def action_skip(self) -> None:
+        """Leave the thread's context untouched."""
+        self.dismiss(False)

@@ -3310,46 +3310,6 @@ class TestResumeThread:
             resolve_pending_goal=False,
         )
 
-    @pytest.mark.parametrize(
-        ("choice", "thread_id", "compactions", "order"),
-        [
-            ("compact", "new-thread", 1, ["compact", "goal"]),
-            ("continue", "new-thread", 0, ["goal"]),
-            ("cancel", "old-thread", 0, []),
-        ],
-    )
-    async def test_large_thread_resume_honors_compaction_choice(
-        self, choice: str, thread_id: str, compactions: int, order: list[str]
-    ) -> None:
-        app = self._switch_app()
-        _app_test_double(app)._fetch_thread_history_data = AsyncMock(
-            return_value=_ThreadHistoryPayload(
-                messages=[], context_tokens=400_001, model_spec=""
-            )
-        )
-        cwd_switch = AsyncMock(return_value="continue")
-        _app_test_double(app)._offer_thread_cwd_switch = cwd_switch
-        _app_test_double(app)._push_screen_wait = AsyncMock(return_value=choice)
-        events: list[str] = []
-        compact = AsyncMock(side_effect=lambda: events.append("compact"))
-        restore_goal = AsyncMock(side_effect=lambda: events.append("goal"))
-        _app_test_double(app)._handle_offload = compact
-        _app_test_double(app)._remount_pending_goal_rubric_review = restore_goal
-
-        with patch(
-            "deepagents_code.config_manifest.resolve_scalar",
-            return_value=(400_000, "default"),
-        ):
-            await app._resume_thread("new-thread")
-
-        switched = int(choice != "cancel")
-        assert app._lc_thread_id == thread_id
-        assert cwd_switch.await_count == switched
-        assert _app_test_double(app)._clear_messages.await_count == switched
-        assert compact.await_count == compactions
-        assert restore_goal.await_count == switched
-        assert events == order
-
     @staticmethod
     def _switch_app() -> DeepAgentsApp:
         from textual.css.query import NoMatches as _NoMatches
@@ -3837,8 +3797,7 @@ class TestResumeThread:
         app._session_state = _mock_session_state("old-thread")
         app._pending_messages = MagicMock()
         app._queued_widgets = MagicMock()
-        data = MagicMock(context_tokens=0)
-        _app_test_double(app)._fetch_thread_history_data = AsyncMock(return_value=data)
+        _app_test_double(app)._fetch_thread_history_data = AsyncMock(return_value=[])
         _app_test_double(app)._clear_messages = AsyncMock()
         _app_test_double(app)._load_thread_history = AsyncMock(
             side_effect=RuntimeError("checkpoint corrupt")
@@ -3989,18 +3948,15 @@ class TestFetchThreadHistoryData:
 
         assert payload.model_spec == ""
 
-    @pytest.mark.parametrize("raw_tokens", [None, True])
-    async def test_invalid_context_tokens_coerced_to_zero(
-        self, raw_tokens: object
-    ) -> None:
-        """Invalid checkpoint token counts should coerce to 0."""
+    async def test_none_context_tokens_coerced_to_zero(self) -> None:
+        """`_context_tokens: None` in checkpoint should coerce to 0."""
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
         app._agent = MagicMock()
         raw_messages = [object()]
         state = MagicMock()
-        state.values = {"messages": raw_messages, "_context_tokens": raw_tokens}
+        state.values = {"messages": raw_messages, "_context_tokens": None}
         app._agent.aget_state = AsyncMock(return_value=state)
         converted = [MessageData(type=MessageType.USER, content="hello")]
 

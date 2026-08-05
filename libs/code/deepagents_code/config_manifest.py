@@ -109,7 +109,10 @@ and falls through to the next layer / default.
 """
 
 COMPACT_ON_RESUME_THRESHOLD_DEFAULT = 400_000
-"""Default context size that triggers the compact-on-resume suggestion."""
+"""Context size above which a resumed thread is offered compaction.
+
+Zero or negative disables the suggestion.
+"""
 
 LANGSMITH_PROJECT_DEFAULT = "deepagents-code"
 """Project agent traces fall back to when no project env var is set.
@@ -1478,7 +1481,9 @@ _STATIC_OPTIONS: tuple[ConfigOption, ...] = (
     ConfigOption(
         key="threads.compact_on_resume_threshold",
         group="Threads",
-        summary="Suggest compaction when a resumed thread exceeds this token count.",
+        summary=(
+            "Offer to compact a resumed thread above this context size (0 disables)."
+        ),
         kind=OptionKind.INT,
         default=COMPACT_ON_RESUME_THRESHOLD_DEFAULT,
         toml_keys=("threads", "compact_on_resume_threshold"),

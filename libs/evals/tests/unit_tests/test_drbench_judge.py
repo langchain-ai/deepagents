@@ -404,10 +404,30 @@ def test_composite_of_nothing_is_zero(judge: ModuleType) -> None:
     assert judge.composite({}) == 0.0
 
 
+def test_zero_rewards_keeps_distractor_avoidance_the_complement_of_recall(
+    judge: ModuleType,
+) -> None:
+    # `distractor_avoidance` is defined as `1 - distractor_recall`, so a report that does
+    # not exist -- having recalled no distractors -- avoided all of them. Zeroing both broke
+    # the identity, and since the aggregation sums each component over expected trials, the
+    # pair stopped summing to 1.0 on the scorecard and read as a metric bug.
+    rewards = judge._zero_rewards()
+
+    assert rewards["distractor_recall"] == 0.0
+    assert rewards["distractor_avoidance"] == 1.0
+    assert rewards["distractor_avoidance"] + rewards["distractor_recall"] == 1.0
+    # The composite still earns nothing; it is deliberately not the mean of the components.
+    assert rewards["reward"] == 0.0
+    assert all(rewards[name] == 0.0 for name in ("insights_recall", "factuality", "report_quality"))
+
+
 def test_zero_rewards_covers_every_reported_metric(judge: ModuleType) -> None:
     rewards = judge._zero_rewards()
     assert set(rewards) == {"reward", *judge._METRIC_NAMES}
-    assert set(rewards.values()) == {0.0}
+    # Every metric is unearned except `distractor_avoidance`, which is the complement of
+    # `distractor_recall` by definition rather than something the report earns.
+    assert set(rewards.values()) == {0.0, 1.0}
+    assert [name for name, value in rewards.items() if value] == ["distractor_avoidance"]
 
 
 # --- reading the report ----------------------------------------------------------------

@@ -506,8 +506,22 @@ def composite(components: dict[str, float]) -> float:
 
 
 def _zero_rewards() -> dict[str, float]:
-    """Reward mapping for a run that produced nothing to score."""
-    return dict.fromkeys(("reward", *_METRIC_NAMES), 0.0)
+    """Reward mapping for a run that produced nothing to score.
+
+    `distractor_avoidance` is 1.0, not 0.0: it is *defined* as `1 - distractor_recall`, and
+    a report that does not exist recalled no distractors. Zeroing it alongside the others
+    broke that identity, and because the aggregation sums each component over expected
+    trials, the two stopped summing to 1.0 -- which read as a metric bug rather than as
+    trials that scored nothing. With the identity restored, `distractor_avoidance +
+    distractor_recall` equals the fraction of expected trials that produced a reward at
+    all, which is a useful thing to be able to read off the scorecard.
+
+    `reward` stays 0.0. An unearned composite is what the aggregate is meant to reflect,
+    and it is deliberately not the harmonic mean of the components below for this one case.
+    """
+    rewards = dict.fromkeys(("reward", *_METRIC_NAMES), 0.0)
+    rewards["distractor_avoidance"] = 1.0
+    return rewards
 
 
 def _read_report() -> str:

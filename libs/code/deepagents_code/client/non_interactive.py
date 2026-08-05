@@ -1978,6 +1978,16 @@ async def run_non_interactive(
 
             skills, allowed_roots = await asyncio.to_thread(discover_all_skills)
             skill = next((s for s in skills if s["name"] == normalized_skill), None)
+            from deepagents_code.skills.invocation import get_skill_load_failures
+
+            skill_failures = get_skill_load_failures()
+            if skill_failures:
+                count = len(skill_failures)
+                suffix = "" if count == 1 else "s"
+                console.print(
+                    f"[yellow]Warning: {count} skill{suffix} failed to load. "
+                    "Run 'dcode skills list' for details.[/yellow]"
+                )
         except OSError as e:
             console.print(
                 "[bold red]Error:[/bold red] "

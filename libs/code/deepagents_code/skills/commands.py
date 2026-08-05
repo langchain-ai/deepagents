@@ -13,6 +13,12 @@ if TYPE_CHECKING:
     from deepagents.middleware.skills import SkillMetadata
 
     from deepagents_code.output import OutputFormat
+    from deepagents_code.skills.load import SkillLoadFailure
+
+from deepagents.middleware.skills import (
+    MAX_SKILL_COMPATIBILITY_LENGTH,
+    MAX_SKILL_DESCRIPTION_LENGTH,
+)
 
 from deepagents_code import theme
 
@@ -147,7 +153,7 @@ def _list(
     from rich.markup import escape as escape_markup
 
     from deepagents_code.config import Settings, console, get_glyphs
-    from deepagents_code.skills.load import list_skills
+    from deepagents_code.skills.load import list_skills_with_failures
 
     settings = Settings.from_environment()
     user_skills_dir = settings.get_user_skills_dir(agent)
@@ -200,7 +206,7 @@ def _list(
             )
             return
 
-        skills = list_skills(
+        skills, failures = list_skills_with_failures(
             user_skills_dir=None,
             project_skills_dir=project_skills_dir,
             user_agent_skills_dir=None,
@@ -210,13 +216,19 @@ def _list(
         if output_format == "json":
             from deepagents_code.output import write_json
 
-            write_json("skills list", [dict(s) for s in skills])
+            write_json(
+                "skills list",
+                {
+                    "skills": [dict(s) for s in skills],
+                    "failures": [dict(f) for f in failures],
+                },
+            )
             return
 
         console.print("\n[bold]Project Skills:[/bold]\n", style=theme.PRIMARY)
     else:
         # Load skills from all directories (including built-in)
-        skills = list_skills(
+        skills, failures = list_skills_with_failures(
             built_in_skills_dir=settings.get_built_in_skills_dir(),
             user_skills_dir=user_skills_dir,
             project_skills_dir=project_skills_dir,
@@ -227,7 +239,13 @@ def _list(
         if output_format == "json":
             from deepagents_code.output import write_json
 
-            write_json("skills list", [dict(s) for s in skills])
+            write_json(
+                "skills list",
+                {
+                    "skills": [dict(s) for s in skills],
+                    "failures": [dict(f) for f in failures],
+                },
+            )
             return
 
         if not skills:
@@ -314,6 +332,43 @@ def _list(
                 style=theme.MUTED,
             )
             console.print()
+
+    if failures:
+        _print_skill_failures(failures)
+
+
+def _print_skill_failures(failures: list[SkillLoadFailure]) -> None:
+    """Print a warning section listing skills that failed to load.
+
+    Args:
+        failures: Per-skill load failures collected during discovery.
+    """
+    from rich.markup import escape as escape_markup
+
+    from deepagents_code.config import console, get_glyphs
+
+    count = len(failures)
+    suffix = "" if count == 1 else "s"
+    bullet = get_glyphs().bullet
+    console.print()
+    console.print(
+        f"[bold yellow]⚠ {count} skill{suffix} failed to load:[/bold yellow]",
+        highlight=False,
+    )
+    for failure in failures:
+        console.print(
+            f"  {bullet} {escape_markup(failure['path'])}: "
+            f"{escape_markup(failure['error'])}",
+            style=theme.MUTED,
+            highlight=False,
+        )
+    console.print()
+    console.print(
+        "[dim]Fix the listed SKILL.md files, or run 'dcode skills validate' "
+        "for full frontmatter checks.[/dim]",
+        style=theme.MUTED,
+        highlight=False,
+    )
 
 
 def _generate_template(skill_name: str) -> str:
@@ -978,6 +1033,242 @@ def _trust(args: argparse.Namespace) -> None:
         show_skills_trust_help()
 
 
+_ALLOWED_FRONTMATTER_KEYS = frozenset(
+    {"name", "description", "license", "compatibility", "allowed-tools", "metadata"}
+)
+
+
+def _validate_skill_frontmatter(
+    frontmatter: dict[str, Any],
+    directory_name: str,
+) -> list[str]:
+    """Check parsed `SKILL.md` frontmatter against the Agent Skills spec.
+
+    Args:
+        frontmatter: Parsed YAML frontmatter mapping.
+        directory_name: Parent directory name the `name` field must match.
+
+    Returns:
+        List of error messages (empty when the frontmatter is valid).
+    """
+    errors: list[str] = []
+    unexpected = sorted(
+        str(key) for key in frontmatter if key not in _ALLOWED_FRONTMATTER_KEYS
+    )
+    if unexpected:
+        allowed = ", ".join(sorted(_ALLOWED_FRONTMATTER_KEYS))
+        errors.append(
+            f"unexpected key(s) {', '.join(unexpected)}; "
+            f"allowed properties are: {allowed}"
+        )
+
+    raw_name = frontmatter.get("name", "")
+    if not isinstance(raw_name, str):
+        errors.append(f"'name' must be a string, got {type(raw_name).__name__}")
+    else:
+        name = raw_name.strip()
+        if not name:
+            errors.append("missing required 'name'")
+        else:
+            if name.startswith("-") or name.endswith("-") or "--" in name:
+                errors.append(
+                    f"'name' {name!r} cannot start/end with a hyphen "
+                    "or contain consecutive hyphens"
+                )
+            elif any(
+                not ((c.isalpha() and c.islower()) or c.isdigit() or c == "-")
+                for c in name
+            ):
+                errors.append(
+                    f"'name' {name!r} must be lowercase alphanumeric "
+                    "with single hyphens only"
+                )
+            if len(name) > MAX_SKILL_NAME_LENGTH:
+                errors.append(
+                    f"'name' is too long ({len(name)} characters); "
+                    f"maximum is {MAX_SKILL_NAME_LENGTH}"
+                )
+            if name != directory_name:
+                errors.append(
+                    f"'name' {name!r} must match directory name {directory_name!r}"
+                )
+
+    raw_description = frontmatter.get("description", "")
+    if not isinstance(raw_description, str):
+        errors.append(
+            f"'description' must be a string, got {type(raw_description).__name__}"
+        )
+    else:
+        description = raw_description.strip()
+        if not description:
+            errors.append("missing required 'description'")
+        else:
+            if "<" in description or ">" in description:
+                errors.append("'description' cannot contain angle brackets (< or >)")
+            if len(description) > MAX_SKILL_DESCRIPTION_LENGTH:
+                errors.append(
+                    f"'description' is too long ({len(description)} characters); "
+                    f"maximum is {MAX_SKILL_DESCRIPTION_LENGTH}"
+                )
+
+    compatibility = frontmatter.get("compatibility", "")
+    if (
+        isinstance(compatibility, str)
+        and len(compatibility.strip()) > MAX_SKILL_COMPATIBILITY_LENGTH
+    ):
+        errors.append(
+            f"'compatibility' is too long ({len(compatibility.strip())} characters); "
+            f"maximum is {MAX_SKILL_COMPATIBILITY_LENGTH}"
+        )
+
+    return errors
+
+
+def _validate_skill_dir(skill_dir: Path) -> list[str]:
+    """Validate a single skill directory's `SKILL.md`.
+
+    Runs the same checks as the skill-creator's `quick_validate.py` script.
+
+    Args:
+        skill_dir: Directory containing the `SKILL.md` to validate.
+
+    Returns:
+        List of error messages (empty when the skill is valid).
+    """
+    import re
+
+    import yaml
+
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.exists():
+        return ["SKILL.md not found"]
+    try:
+        content = skill_md.read_text()
+    except OSError as exc:
+        return [f"could not read SKILL.md: {exc}"]
+    match = re.match(r"^---\s*\n(.*?)\n---", content, re.DOTALL)
+    if not match:
+        return ["no valid YAML frontmatter found"]
+    try:
+        frontmatter = yaml.safe_load(match.group(1))
+    except yaml.YAMLError as exc:
+        return [f"invalid YAML in frontmatter: {exc}"]
+    if not isinstance(frontmatter, dict):
+        return ["frontmatter must be a YAML dictionary"]
+    return _validate_skill_frontmatter(frontmatter, skill_dir.name)
+
+
+def _validate(
+    agent: str,
+    *,
+    project: bool = False,
+    output_format: OutputFormat = "text",
+) -> None:
+    """Validate all discovered skills for the specified agent.
+
+    Checks every skill directory under the discovered skill roots against
+    the Agent Skills frontmatter spec (the same checks the skill-creator's
+    `quick_validate.py` runs). Exits non-zero when any skill is invalid.
+
+    Args:
+        agent: Agent identifier for skills (default: agent).
+        project: If True, validate only project skills.
+        output_format: Output format — `'text'` (Rich) or `'json'`.
+
+    Raises:
+        SystemExit: Exit code 1 when any skill fails validation.
+    """
+    from rich.markup import escape as escape_markup
+
+    from deepagents_code.config import Settings, console, get_glyphs
+
+    settings = Settings.from_environment()
+    if project:
+        candidate_dirs = [
+            settings.get_project_skills_dir(),
+            settings.get_project_agent_skills_dir(),
+        ]
+    else:
+        candidate_dirs = [
+            settings.get_built_in_skills_dir(),
+            settings.get_user_skills_dir(agent),
+            settings.get_project_skills_dir(),
+            settings.get_user_agent_skills_dir(),
+            settings.get_project_agent_skills_dir(),
+            settings.get_user_claude_skills_dir(),
+            settings.get_project_claude_skills_dir(),
+        ]
+
+    results: list[tuple[Path, list[str]]] = []
+    for candidate in candidate_dirs:
+        if candidate is None or not candidate.exists():
+            continue
+        results.extend(
+            (skill_dir, _validate_skill_dir(skill_dir))
+            for skill_dir in sorted(p for p in candidate.iterdir() if p.is_dir())
+        )
+
+    invalid = [(skill_dir, errors) for skill_dir, errors in results if errors]
+    checked = len(results)
+
+    if output_format == "json":
+        from deepagents_code.output import write_json
+
+        write_json(
+            "skills validate",
+            {
+                "checked": checked,
+                "valid": [
+                    str(skill_dir) for skill_dir, errors in results if not errors
+                ],
+                "invalid": [
+                    {"path": str(skill_dir), "errors": errors}
+                    for skill_dir, errors in invalid
+                ],
+            },
+        )
+        if invalid:
+            raise SystemExit(1)
+        return
+
+    checkmark = get_glyphs().checkmark
+    bullet = get_glyphs().bullet
+    if not results:
+        console.print("[yellow]No skill directories found to validate.[/yellow]")
+        return
+    if not invalid:
+        suffix = "" if checked == 1 else "s"
+        console.print(
+            f"{checkmark} All {checked} skill{suffix} valid.",
+            style=theme.PRIMARY,
+        )
+        return
+    suffix = "" if len(invalid) == 1 else "s"
+    console.print(
+        f"\n[bold yellow]⚠ {len(invalid)} of {checked} skill{suffix} "
+        "failed validation:[/bold yellow]",
+        highlight=False,
+    )
+    for skill_dir, errors in invalid:
+        console.print(
+            f"  {bullet} [bold]{escape_markup(skill_dir.name)}[/bold]",
+            style=theme.PRIMARY,
+        )
+        console.print(
+            f"    {escape_markup(str(skill_dir))}",
+            style=theme.MUTED,
+            highlight=False,
+        )
+        for error in errors:
+            console.print(
+                f"    - {escape_markup(error)}",
+                style=theme.MUTED,
+                highlight=False,
+            )
+    console.print()
+    raise SystemExit(1)
+
+
 def setup_skills_parser(
     subparsers: Any,  # noqa: ANN401  # argparse subparsers uses dynamic typing
     *,
@@ -1138,6 +1429,32 @@ def setup_skills_parser(
         help="Show what would happen without making changes",
     )
 
+    # Skills validate
+    validate_parser = skills_subparsers.add_parser(
+        "validate",
+        help="Validate all discovered skills against the Agent Skills spec",
+        description=(
+            "Check every skill directory under the discovered skill roots "
+            "against the Agent Skills frontmatter spec (the same checks the "
+            "skill-creator's quick_validate.py runs). Exits non-zero when "
+            "any skill is invalid."
+        ),
+        add_help=False,
+        parents=help_parent(_lazy_help("show_skills_validate_help")),
+    )
+    if add_output_args is not None:
+        add_output_args(validate_parser)
+    validate_parser.add_argument(
+        "--agent",
+        default="agent",
+        help="Agent identifier for skills (default: agent)",
+    )
+    validate_parser.add_argument(
+        "--project",
+        action="store_true",
+        help="Validate only project-level skills",
+    )
+
     # Skills trust — manage directories approved to be read outside the
     # standard skill roots (the persistent counterpart to the in-TUI prompt).
     trust_parser = skills_subparsers.add_parser(
@@ -1237,6 +1554,12 @@ def execute_skills_command(args: argparse.Namespace) -> None:
             project=args.project,
             force=args.force,
             dry_run=args.dry_run,
+            output_format=output_format,
+        )
+    elif args.skills_command == "validate":
+        _validate(
+            agent=args.agent,
+            project=args.project,
             output_format=output_format,
         )
     else:

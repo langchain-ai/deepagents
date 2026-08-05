@@ -27119,6 +27119,67 @@ class TestPrewarmAwait:
         guarded_discover_mock.assert_called_once()
         raw_discover_mock.assert_not_called()
 
+    async def test_discover_skills_notifies_on_load_failures(self) -> None:
+        """Skills that fail to parse surface as a startup toast, not just logs."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        failures = [
+            {
+                "path": "/home/user/.deepagents/agent/skills/broken/SKILL.md",
+                "error": "Invalid YAML in frontmatter: ...",
+                "source": "user",
+            },
+            {
+                "path": "/repo/.deepagents/skills/half-written/SKILL.md",
+                "error": "missing required 'description'",
+                "source": "project",
+            },
+        ]
+
+        with (
+            patch.object(app, "_await_prewarm_imports", AsyncMock()),
+            patch.object(
+                app,
+                "_discover_skills_and_roots_with_import_lock",
+                return_value=([], []),
+            ),
+            patch(
+                "deepagents_code.skills.invocation.get_skill_load_failures",
+                return_value=failures,
+            ),
+            patch.object(app, "notify") as notify_mock,
+        ):
+            ok = await app._discover_skills()
+
+        assert ok is True
+        notify_mock.assert_called_once()
+        message = notify_mock.call_args.args[0]
+        assert "2 skills failed to load" in message
+        assert "dcode skills list" in message
+        assert notify_mock.call_args.kwargs["severity"] == "warning"
+        assert notify_mock.call_args.kwargs["markup"] is False
+
+    async def test_discover_skills_no_notify_when_clean(self) -> None:
+        """A discovery run without failures does not toast."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        with (
+            patch.object(app, "_await_prewarm_imports", AsyncMock()),
+            patch.object(
+                app,
+                "_discover_skills_and_roots_with_import_lock",
+                return_value=([], []),
+            ),
+            patch(
+                "deepagents_code.skills.invocation.get_skill_load_failures",
+                return_value=[],
+            ),
+            patch.object(app, "notify") as notify_mock,
+        ):
+            ok = await app._discover_skills()
+
+        assert ok is True
+        notify_mock.assert_not_called()
+
     async def test_start_server_waits_for_skill_discovery_import_gate(
         self,
     ) -> None:

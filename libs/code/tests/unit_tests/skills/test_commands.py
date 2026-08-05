@@ -1623,3 +1623,292 @@ class TestSkillsTrustCommand:
             execute_skills_command(args)
 
         mock_trust.assert_called_once_with(args)
+
+
+class TestListFailuresDisplay:
+    """`skills list` surfaces per-skill load failures at the bottom."""
+
+    def test_failures_section_rendered(self, tmp_path: Path) -> None:
+        """Failed skills appear in a warning section with path and reason."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        good = skills_dir / "good-skill"
+        good.mkdir()
+        (good / "SKILL.md").write_text(
+            "---\nname: good-skill\ndescription: Works\n---\nContent\n"
+        )
+        broken = skills_dir / "broken-skill"
+        broken.mkdir()
+        broken_md = broken / "SKILL.md"
+        broken_md.write_text("---\nname: [unclosed\n---\nbody\n")
+
+        mock_settings = patch(
+            "deepagents_code.config.Settings.from_environment",
+            return_value=type(
+                "FakeSettings",
+                (),
+                {
+                    "get_built_in_skills_dir": staticmethod(lambda: None),
+                    "get_user_skills_dir": lambda _, _a: skills_dir,
+                    "get_project_skills_dir": lambda _: None,
+                    "get_user_agent_skills_dir": lambda _: None,
+                    "get_project_agent_skills_dir": lambda _: None,
+                },
+            )(),
+        )
+
+        output: list[str] = []
+
+        def capture_print(*args_p: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args_p))
+
+        with (
+            mock_settings,
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _list(agent="agent")
+
+        joined = "\n".join(output)
+        assert "good-skill" in joined
+        assert "1 skill failed to load" in joined
+        assert str(broken_md) in joined
+        assert "Invalid YAML" in joined
+        assert "skills validate" in joined
+
+    def test_no_failures_no_section(self, tmp_path: Path) -> None:
+        """A clean listing does not render the failures section."""
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        good = skills_dir / "good-skill"
+        good.mkdir()
+        (good / "SKILL.md").write_text(
+            "---\nname: good-skill\ndescription: Works\n---\nContent\n"
+        )
+
+        mock_settings = patch(
+            "deepagents_code.config.Settings.from_environment",
+            return_value=type(
+                "FakeSettings",
+                (),
+                {
+                    "get_built_in_skills_dir": staticmethod(lambda: None),
+                    "get_user_skills_dir": lambda _, _a: skills_dir,
+                    "get_project_skills_dir": lambda _: None,
+                    "get_user_agent_skills_dir": lambda _: None,
+                    "get_project_agent_skills_dir": lambda _: None,
+                },
+            )(),
+        )
+
+        output: list[str] = []
+
+        def capture_print(*args_p: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args_p))
+
+        with (
+            mock_settings,
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _list(agent="agent")
+
+        joined = "\n".join(output)
+        assert "failed to load" not in joined
+
+
+class TestSkillsValidate:
+    """Tests for the `skills validate` subcommand."""
+
+    def _fake_settings(self, **overrides: object) -> object:
+        defaults: dict[str, object] = {
+            "get_built_in_skills_dir": staticmethod(lambda: None),
+            "get_user_skills_dir": lambda _, _a: None,
+            "get_project_skills_dir": lambda _: None,
+            "get_user_agent_skills_dir": lambda _: None,
+            "get_project_agent_skills_dir": lambda _: None,
+            "get_user_claude_skills_dir": lambda _: None,
+            "get_project_claude_skills_dir": lambda _: None,
+        }
+        defaults.update(overrides)
+        return type("FakeSettings", (), defaults)()
+
+    def _capture_console(self) -> tuple[list[str], object]:
+        output: list[str] = []
+
+        def capture_print(*args_p: str, **_: str) -> None:
+            output.append(" ".join(str(a) for a in args_p))
+
+        return output, capture_print
+
+    def test_all_valid_exits_zero(self, tmp_path: Path) -> None:
+        """A directory of valid skills prints a success line and does not exit."""
+        from deepagents_code.skills.commands import _validate
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        good = skills_dir / "good-skill"
+        good.mkdir()
+        (good / "SKILL.md").write_text(
+            "---\nname: good-skill\ndescription: Works\n---\nContent\n"
+        )
+
+        output, capture_print = self._capture_console()
+        with (
+            patch(
+                "deepagents_code.config.Settings.from_environment",
+                return_value=self._fake_settings(
+                    get_user_skills_dir=lambda _, _a: skills_dir
+                ),
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _validate(agent="agent")
+
+        joined = "\n".join(output)
+        assert "All 1 skill" in joined
+
+    def test_invalid_skill_exits_nonzero_with_details(self, tmp_path: Path) -> None:
+        """An invalid skill exits 1 and prints the directory and reasons."""
+        from deepagents_code.skills.commands import _validate
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        broken = skills_dir / "broken-skill"
+        broken.mkdir()
+        (broken / "SKILL.md").write_text("---\nname: [unclosed\n---\nbody\n")
+
+        output, capture_print = self._capture_console()
+        with (
+            patch(
+                "deepagents_code.config.Settings.from_environment",
+                return_value=self._fake_settings(
+                    get_user_skills_dir=lambda _, _a: skills_dir
+                ),
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            with pytest.raises(SystemExit) as exc_info:
+                _validate(agent="agent")
+
+        assert exc_info.value.code == 1
+        joined = "\n".join(output)
+        assert "1 of 1 skill" in joined
+        assert "broken-skill" in joined
+        assert "YAML" in joined
+
+    def test_no_directories_is_not_an_error(self) -> None:
+        """No discovered skill directories prints a notice and exits zero."""
+        from deepagents_code.skills.commands import _validate
+
+        output, capture_print = self._capture_console()
+        with (
+            patch(
+                "deepagents_code.config.Settings.from_environment",
+                return_value=self._fake_settings(),
+            ),
+            patch("deepagents_code.config.console") as mock_console,
+        ):
+            mock_console.print = capture_print
+            _validate(agent="agent")
+
+        joined = "\n".join(output)
+        assert "No skill directories found" in joined
+
+    def test_unexpected_frontmatter_key_reported(self, tmp_path: Path) -> None:
+        """Spec-unknown frontmatter keys are flagged by validation."""
+        from deepagents_code.skills.commands import _validate_skill_dir
+
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: Works\nbogus-key: x\n---\nContent\n"
+        )
+
+        errors = _validate_skill_dir(skill_dir)
+        assert any("bogus-key" in error for error in errors)
+
+    def test_directory_name_mismatch_reported(self, tmp_path: Path) -> None:
+        """A `name` that does not match the directory is flagged."""
+        from deepagents_code.skills.commands import _validate_skill_dir
+
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: other-skill\ndescription: Works\n---\nContent\n"
+        )
+
+        errors = _validate_skill_dir(skill_dir)
+        assert any("must match directory name" in error for error in errors)
+
+    def test_missing_skill_md_reported(self, tmp_path: Path) -> None:
+        """A directory without SKILL.md is flagged."""
+        from deepagents_code.skills.commands import _validate_skill_dir
+
+        skill_dir = tmp_path / "empty-skill"
+        skill_dir.mkdir()
+
+        assert _validate_skill_dir(skill_dir) == ["SKILL.md not found"]
+
+    def test_valid_skill_passes(self, tmp_path: Path) -> None:
+        """A spec-compliant SKILL.md yields no errors."""
+        from deepagents_code.skills.commands import _validate_skill_dir
+
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: Works\nlicense: MIT\n---\nContent\n"
+        )
+
+        assert _validate_skill_dir(skill_dir) == []
+
+    def test_json_output(self, tmp_path: Path) -> None:
+        """JSON mode emits the standard envelope and still exits non-zero."""
+        import json
+        from io import StringIO
+
+        from deepagents_code.skills.commands import _validate
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        broken = skills_dir / "broken-skill"
+        broken.mkdir()
+        (broken / "SKILL.md").write_text("# No frontmatter\n")
+
+        buf = StringIO()
+        with (
+            patch(
+                "deepagents_code.config.Settings.from_environment",
+                return_value=self._fake_settings(
+                    get_user_skills_dir=lambda _, _a: skills_dir
+                ),
+            ),
+            patch("sys.stdout", buf),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            _validate(agent="agent", output_format="json")
+
+        assert exc_info.value.code == 1
+        result = json.loads(buf.getvalue())
+        assert result["command"] == "skills validate"
+        assert result["data"]["checked"] == 1
+        assert result["data"]["valid"] == []
+        assert len(result["data"]["invalid"]) == 1
+        assert result["data"]["invalid"][0]["path"].endswith("broken-skill")
+
+    def test_execute_dispatches_validate(self) -> None:
+        """`execute_skills_command` routes `validate` to `_validate`."""
+        args = argparse.Namespace(
+            skills_command="validate",
+            agent="agent",
+            project=False,
+            output_format="text",
+        )
+        with patch("deepagents_code.skills.commands._validate") as mock_validate:
+            execute_skills_command(args)
+
+        mock_validate.assert_called_once_with(
+            agent="agent", project=False, output_format="text"
+        )

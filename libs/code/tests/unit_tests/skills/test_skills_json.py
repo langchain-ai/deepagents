@@ -12,7 +12,7 @@ class TestSkillsListJson:
     """Tests for _list JSON output."""
 
     def test_json_output_with_skills(self, tmp_path: Path) -> None:
-        """JSON mode returns skill metadata array."""
+        """JSON mode returns skill metadata and load failures."""
         fake_skills = [
             {
                 "name": "web-research",
@@ -21,10 +21,20 @@ class TestSkillsListJson:
                 "path": str(tmp_path / "web-research" / "SKILL.md"),
             }
         ]
+        fake_failures = [
+            {
+                "path": str(tmp_path / "broken-skill" / "SKILL.md"),
+                "error": "Invalid YAML in frontmatter: ...",
+                "source": "user",
+            }
+        ]
         buf = StringIO()
         with (
             patch("deepagents_code.config.Settings") as mock_settings_cls,
-            patch("deepagents_code.skills.load.list_skills", return_value=fake_skills),
+            patch(
+                "deepagents_code.skills.load.list_skills_with_failures",
+                return_value=(fake_skills, fake_failures),
+            ),
             patch("sys.stdout", buf),
         ):
             settings = mock_settings_cls.from_environment.return_value
@@ -37,15 +47,20 @@ class TestSkillsListJson:
 
         result = json.loads(buf.getvalue())
         assert result["command"] == "skills list"
-        assert len(result["data"]) == 1
-        assert result["data"][0]["name"] == "web-research"
+        assert len(result["data"]["skills"]) == 1
+        assert result["data"]["skills"][0]["name"] == "web-research"
+        assert len(result["data"]["failures"]) == 1
+        assert result["data"]["failures"][0]["path"].endswith("broken-skill/SKILL.md")
 
     def test_json_output_empty(self, tmp_path: Path) -> None:
-        """JSON mode returns empty array when no skills found."""
+        """JSON mode returns empty arrays when no skills found."""
         buf = StringIO()
         with (
             patch("deepagents_code.config.Settings") as mock_settings_cls,
-            patch("deepagents_code.skills.load.list_skills", return_value=[]),
+            patch(
+                "deepagents_code.skills.load.list_skills_with_failures",
+                return_value=([], []),
+            ),
             patch("sys.stdout", buf),
         ):
             settings = mock_settings_cls.from_environment.return_value
@@ -57,7 +72,7 @@ class TestSkillsListJson:
             _list(agent="agent", output_format="json")
 
         result = json.loads(buf.getvalue())
-        assert result["data"] == []
+        assert result["data"] == {"skills": [], "failures": []}
 
 
 class TestSkillsInfoJson:

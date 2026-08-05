@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from deepagents_code.skills.load import ExtendedSkillMetadata
+    from deepagents_code.skills.load import ExtendedSkillMetadata, SkillLoadFailure
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,32 @@ class SkillInvocationEnvelope:
 
     prompt: str
     message_kwargs: dict[str, Any]
+
+
+@dataclass
+class _SkillLoadFailureSnapshot:
+    """Module-level snapshot of the most recent discovery's load failures.
+
+    `discover_skills_and_roots` keeps its 2-tuple return shape for existing
+    callers, so per-skill failures are exposed through this snapshot instead.
+    Discovery runs serially behind the import lock, so a plain replacement on
+    each run is sufficient.
+    """
+
+    failures: list[SkillLoadFailure] = field(default_factory=list)
+
+
+_failure_snapshot = _SkillLoadFailureSnapshot()
+
+
+def get_skill_load_failures() -> list[SkillLoadFailure]:
+    """Return the failures recorded by the most recent `discover_skills_and_roots` call.
+
+    Returns:
+        A copy of the `(path, error, source)` failure records from the last
+            discovery run (empty if none or discovery has not run yet).
+    """
+    return list(_failure_snapshot.failures)
 
 
 def discover_skills_and_roots(
@@ -41,12 +67,14 @@ def discover_skills_and_roots(
 
     Returns:
         Tuple of `(skill metadata list, pre-resolved containment roots)`.
+            Per-skill load failures are recorded on the module snapshot and
+            retrievable via `get_skill_load_failures()`.
     """
     from deepagents_code.config import settings
-    from deepagents_code.skills.load import list_skills
+    from deepagents_code.skills.load import list_skills_with_failures
     from deepagents_code.skills.trust import load_trusted_skill_dirs
 
-    skills = list_skills(
+    skills, failures = list_skills_with_failures(
         built_in_skills_dir=settings.get_built_in_skills_dir(),
         plugin_skill_sources=plugin_skill_sources,
         user_skills_dir=settings.get_user_skills_dir(assistant_id),
@@ -56,6 +84,7 @@ def discover_skills_and_roots(
         user_claude_skills_dir=settings.get_user_claude_skills_dir(),
         project_claude_skills_dir=settings.get_project_claude_skills_dir(),
     )
+    _failure_snapshot.failures = failures
     roots = [
         path.resolve()
         for path in (

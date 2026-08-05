@@ -12,7 +12,7 @@ deepagents.middleware.skills.SkillsMiddleware directly.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 from deepagents.backends.filesystem import FilesystemBackend
 
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 from deepagents.middleware.skills import (
     SkillMetadata,
-    _list_skills as list_skills_from_backend,  # noqa: PLC2701  # Intentional access to internal skill listing
+    _list_skills_with_failures as list_skills_with_failures_from_backend,  # noqa: PLC2701  # Intentional access to internal skill listing
 )
 
 from deepagents_code._version import __version__ as _cli_version
@@ -41,11 +41,32 @@ class ExtendedSkillMetadata(SkillMetadata):
     source: Literal["built-in", "plugin", "user", "project", "claude (experimental)"]
 
 
+class SkillLoadFailure(TypedDict):
+    """A skill that failed to load, for CLI display.
+
+    Attributes:
+        path: Path to the `SKILL.md` file (or skill source root) that failed.
+        error: Human-readable reason the skill could not be loaded.
+        source: Origin label for the skill's directory. One of `'built-in'`,
+            `'plugin'`, `'user'`, `'project'`, or `'claude (experimental)'`.
+    """
+
+    path: str
+    error: str
+    source: str
+
+
 # Re-export for CLI commands
-__all__ = ["SkillMetadata", "list_skills", "load_skill_content"]
+__all__ = [
+    "SkillLoadFailure",
+    "SkillMetadata",
+    "list_skills",
+    "list_skills_with_failures",
+    "load_skill_content",
+]
 
 
-def list_skills(
+def list_skills_with_failures(
     *,
     built_in_skills_dir: Path | None = None,
     plugin_skill_sources: Sequence[tuple[Path, str]] = (),
@@ -55,7 +76,7 @@ def list_skills(
     project_agent_skills_dir: Path | None = None,
     user_claude_skills_dir: Path | None = None,
     project_claude_skills_dir: Path | None = None,
-) -> list[ExtendedSkillMetadata]:
+) -> tuple[list[ExtendedSkillMetadata], list[SkillLoadFailure]]:
     """List skills from built-in, user, and/or project directories.
 
     This is a dcode-specific wrapper around the prebuilt middleware's skill loading
@@ -84,11 +105,14 @@ def list_skills(
         project_claude_skills_dir: Path to `.claude/skills/` (experimental).
 
     Returns:
-        Merged list of skill metadata from all sources, with higher-precedence
-            directories taking priority when names conflict.
+        Tuple of `(merged skills, load failures)`. The skills list is merged
+            with higher-precedence directories taking priority when names
+            conflict. Failures carry the `SKILL.md` path and reason for each
+            skill that could not be loaded, so callers can surface them.
     """
     all_skills: dict[str, ExtendedSkillMetadata] = {}
     merged_source_labels: dict[str, str | None] = {}
+    failures: list[SkillLoadFailure] = []
 
     sources: list[tuple[Path | None, str, bool, str]] = [
         (built_in_skills_dir, "built-in", False, ""),
@@ -127,8 +151,19 @@ def list_skills(
                 skills = load_namespaced_skills(
                     backend, str(skill_dir.resolve()), namespace
                 )
+                # Plugin namespaces load through their own walker, which only
+                # returns successfully parsed skills; per-file failures are
+                # logged by the SDK parser but not collected here.
             else:
-                skills = list_skills_from_backend(backend=backend, source_path=".")
+                skills, source_failures, _source_error = (
+                    list_skills_with_failures_from_backend(
+                        backend=backend, source_path="."
+                    )
+                )
+                failures.extend(
+                    SkillLoadFailure(path=path, error=error, source=source_label)
+                    for path, error in source_failures
+                )
             if experimental and skills:
                 logger.info(
                     "Discovered %d skill(s) from experimental Claude path: %s",
@@ -160,7 +195,40 @@ def list_skills(
                 exc_info=True,
             )
 
-    return list(all_skills.values())
+    return list(all_skills.values()), failures
+
+
+def list_skills(
+    *,
+    built_in_skills_dir: Path | None = None,
+    plugin_skill_sources: Sequence[tuple[Path, str]] = (),
+    user_skills_dir: Path | None = None,
+    project_skills_dir: Path | None = None,
+    user_agent_skills_dir: Path | None = None,
+    project_agent_skills_dir: Path | None = None,
+    user_claude_skills_dir: Path | None = None,
+    project_claude_skills_dir: Path | None = None,
+) -> list[ExtendedSkillMetadata]:
+    """List skills from built-in, user, and/or project directories.
+
+    See `list_skills_with_failures` for the full documentation; this wrapper
+    returns only the merged skill metadata and discards load failures.
+
+    Returns:
+        Merged list of skill metadata from all sources, with higher-precedence
+            directories taking priority when names conflict.
+    """
+    skills, _failures = list_skills_with_failures(
+        built_in_skills_dir=built_in_skills_dir,
+        plugin_skill_sources=plugin_skill_sources,
+        user_skills_dir=user_skills_dir,
+        project_skills_dir=project_skills_dir,
+        user_agent_skills_dir=user_agent_skills_dir,
+        project_agent_skills_dir=project_agent_skills_dir,
+        user_claude_skills_dir=user_claude_skills_dir,
+        project_claude_skills_dir=project_claude_skills_dir,
+    )
+    return skills
 
 
 def load_skill_content(

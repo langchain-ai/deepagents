@@ -9,7 +9,7 @@ This document explains the *decisions* behind that battery: which benchmarks we 
 Dispatched from the Actions tab (`workflow_dispatch`). Every input has a default except `models`:
 
 - **`models`** *(required)* — comma-separated `provider:model` specs (e.g. `anthropic:claude-opus-4-8,openai:gpt-5.2`). The set of models compared in one run; everything else is applied identically across them.
-- **`categories`** *(default `autonomous,conversation,context`)* — which capability axes to run; `research` is available but opt-in. The radar chart is produced whenever at least three axes run.
+- **`categories`** *(default `autonomous,conversation,research`)* — which capability axes to run, replacing the default set rather than adding to it; `context` is available but not in the default set. `research` pins its own runner, sandbox, and concurrency (see below), so it needs no other input changed. The radar chart is produced whenever at least three axes run.
 - **`agent_impl`** *(default `bare`, options `bare` / `dcode`)* — the deep-agents harness for the **autonomous**, **context**, and **research** categories: `bare` (`create_deep_agent`, the neutral SDK agent) or `dcode` (the deep-agents-code product agent). The **conversation** category ignores this and always uses `tau3`: `tau3` is not just a harness but the τ³-bench runtime that hosts the **user simulator** the agent has to converse with, so the category is bound to it — `bare`/`dcode` are single-shot deep-agents graphs and can't drive the multi-turn simulated-user protocol.
 - **`rollouts`** *(default `3`)* — trials per task, i.e. **K** in the two scores reported per `(model × category)`:
   - **pass@K** — fraction of tasks that passed at least once within K rollouts.
@@ -28,7 +28,7 @@ You don't have to use the Actions UI — dispatch the same workflow from the CLI
 ```bash
 gh workflow run unified_evals.yml \
   -f models="anthropic:claude-opus-4-8,openai:gpt-5.2" \
-  -f categories="autonomous,conversation,context" \
+  -f categories="autonomous,conversation,research" \
   -f agent_impls="bare" \
   -f rollouts="3"
 
@@ -109,15 +109,15 @@ A "deep agent" is not one skill, so a single benchmark can't score one. We split
 | **context** | Retrieval + reasoning over a large, multi-file corpus | [`context-retrieval-evals`](https://github.com/letta-ai/letta-evals) (Context-Bench) | bare · dcode |
 | **research** | Open-ended research across a live enterprise app stack **and** the open web, synthesized into a cited report | [`drbench-evals`](https://github.com/ServiceNow/drbench) (DRBench, app mode) | bare · dcode |
 
-The default run exercises the first three (`categories: "autonomous,conversation,context"`). A radar chart needs at least three axes to be meaningful, so it is emitted only once that many categories run.
+The default run exercises `autonomous`, `conversation`, and `research` (`categories: "autonomous,conversation,research"`); `context` runs only when named explicitly. A radar chart needs at least three axes to be meaningful, so it is emitted only once that many categories run.
 
-**`research`** is opt-in, and it is the odd one out in five ways worth knowing before dispatching it:
+**`research`** is in the default set, and it is the odd one out in five ways worth knowing — it now configures each of these itself, so a default dispatch handles them without extra inputs:
 
-- **It needs two non-default settings**: `sandbox_env: docker` and `runner_label: ubuntu-24.04-arm`. Upstream publishes DRBench's per-task images for arm64 only, and a runner's architecture only matters when the containers run *on* the runner — with the default LangSmith sandbox they run off-runner and the label has no effect.
+- **It pins `sandbox_env: docker` and `runner_label: ubuntu-24.04-arm` for itself**, through `CATEGORY_MAP` in `unified_prep.py`, so one dispatch can run it beside categories that use the dispatch inputs. Upstream publishes DRBench's per-task images for arm64 only, and a runner's architecture only matters when the containers run *on* the runner — with the LangSmith sandbox they run off-runner and the label has no effect.
 - **`network_mode = "public"`**, because DRBench's ground truth includes facts that exist only on the open web. It is also the only category granted `TAVILY_API_KEY`, which is what activates the agent's `web_search` tool.
 - **Scores are continuous, and there are five of them.** Rather than pass/fail, each trial emits `insights_recall`, `distractor_recall`, `factuality`, and `report_quality`, plus a composite under `reward`. The composite is the **harmonic mean** of `insights_recall`, `factuality`, `report_quality`, and `1 − distractor_recall` — the paper's own aggregate (arXiv 2510.00172, Table 2), computed here because upstream's released code ships the four metrics but not the mean. Our only deviation is a 0.01 floor per component. Publish the components beside it regardless.
 - **`research` is reported differently from the other categories.** Because its reward is graded, `pass@K` is 0 by construction (nothing scores a perfect 1.0) and is *suppressed* from its summary rather than shown as a result. It reports `avg@K` — the mean reward over expected trials — plus `macro_avg@K`, the mean of per-task means over the trials that actually ran. The two agree on a complete run, so a divergence means rollouts are missing. The **Overall pass@K** columns in the cross-model table still average every category, so a graded one drags them; read **Overall avg@K** instead.
-- **Disk-bound, so run it at `concurrency: 1`.** Each trial runs a full Nextcloud/Mattermost/Postgres/Roundcube stack from a ~1.22 GiB image on a runner with ~14 GB free, and builds a second image for the verifier (which installs upstream `drbench` and its document parsers). The agent stack is stopped before the verifier starts, so the two never run at once, but both images stay resident on disk.
+- **Disk-bound, so it pins `concurrency: 1` for itself** while other categories keep the dispatch value. Each trial runs a full Nextcloud/Mattermost/Postgres/Roundcube stack from a ~1.22 GiB image on a runner with ~14 GB free, and builds a second image for the verifier (which installs upstream `drbench` and its document parsers). The agent stack is stopped before the verifier starts, so the two never run at once, but both images stay resident on disk.
 
 See [`datasets/drbench-evals/README.md`](datasets/drbench-evals/README.md) for the runtime contract, the two credential regimes, and scoring detail.
 

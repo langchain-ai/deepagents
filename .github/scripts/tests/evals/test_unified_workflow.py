@@ -16,6 +16,7 @@ HARBOR_DISPATCH_WORKFLOW = ROOT / ".github/workflows/harbor.yml"
 EVALS_WORKFLOW = ROOT / ".github/workflows/evals.yml"
 CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 PREP_SCRIPT = ROOT / ".github/scripts/evals/unified_prep.py"
+UNIFIED_EVALS_DOC = ROOT / "libs/evals/UNIFIED_EVALS.md"
 
 
 def _indented_block(text: str, marker: str) -> str:
@@ -123,6 +124,33 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     assert '"dataset": "tau3-subset"' in conversation
     assert '"dataset_path": ""' in conversation
     assert '"agent_impl": "tau3"' in conversation
+
+
+def test_the_documented_default_categories_match_the_workflow() -> None:
+    """The runbook's stated default must be the workflow's actual default.
+
+    These drifted once: the workflow default changed to include `research` while
+    UNIFIED_EVALS.md still said `context` and called research opt-in. Someone following
+    the runbook would dispatch the default expecting Context-Bench and start DRBench
+    instead -- different runner, sandbox, credentials, and cost. `unified_prep`'s own
+    fallback is checked too, since it defines the default a second time.
+    """
+    workflow = UNIFIED_WORKFLOW.read_text()
+    categories = _indented_block(_indented_block(workflow, "  workflow_dispatch:"), "      categories:")
+    match = re.search(r'default: "([^"]+)"', categories)
+    assert match is not None, "categories input has no default"
+    default = match.group(1)
+
+    doc = UNIFIED_EVALS_DOC.read_text()
+    assert default in doc, f"UNIFIED_EVALS.md does not document the default {default!r}"
+
+    # The prep script repeats the default for the case where the env var is absent.
+    assert f'"UNIFIED_CATEGORIES", "{default}"' in PREP_SCRIPT.read_text()
+
+    # And no stale copy of a previous default survives anywhere in the runbook.
+    others = {"autonomous,conversation,context"} - {default}
+    for stale in others:
+        assert stale not in doc, f"UNIFIED_EVALS.md still cites the old default {stale!r}"
 
 
 def test_eval_job_uses_single_flat_pool_matrix() -> None:

@@ -10,6 +10,7 @@ from deepagents_code.input import (
     extract_leading_pasted_file_path,
     normalize_pasted_path,
     parse_file_mentions,
+    parse_pasted_any_entry_paths,
     parse_pasted_directory_paths,
     parse_pasted_file_paths,
     parse_pasted_path_payload,
@@ -385,6 +386,42 @@ def test_parse_pasted_directory_paths_ignores_missing_folder(tmp_path: Path) -> 
 def test_parse_pasted_directory_paths_ignores_non_path_payloads(payload: str) -> None:
     """Prose and slash commands must not be read as dropped folders."""
     assert parse_pasted_directory_paths(payload) == []
+
+
+def test_parse_pasted_any_entry_paths_resolves_mixed_folder_then_file(
+    tmp_path: Path,
+) -> None:
+    """A folder followed by a file resolves as a mixed drop."""
+    folder = tmp_path / "assets"
+    folder.mkdir()
+    note = tmp_path / "note.txt"
+    note.write_text("hi")
+
+    result = parse_pasted_any_entry_paths(f"{folder} {note}")
+
+    assert result == [folder.resolve(), note.resolve()]
+
+
+def test_parse_pasted_any_entry_paths_resolves_mixed_file_then_folder(
+    tmp_path: Path,
+) -> None:
+    """A file followed by a folder resolves as a mixed drop."""
+    note = tmp_path / "note.txt"
+    note.write_text("hi")
+    folder = tmp_path / "assets"
+    folder.mkdir()
+
+    result = parse_pasted_any_entry_paths(f"{note} {folder}")
+
+    assert result == [note.resolve(), folder.resolve()]
+
+
+def test_parse_pasted_any_entry_paths_rejects_missing_token(tmp_path: Path) -> None:
+    """Any unresolvable token rejects the whole payload as ordinary text."""
+    folder = tmp_path / "assets"
+    folder.mkdir()
+
+    assert parse_pasted_any_entry_paths(f"{folder} {tmp_path / 'missing'}") == []
 
 
 def test_normalize_pasted_path_rejects_mixed_payload() -> None:

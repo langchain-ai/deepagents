@@ -1946,17 +1946,24 @@ class ChatInput(Vertical):
         Dropped folders count too: a terminal emits the same absolute-path
         payload for a dragged directory as for a dragged file, so recognizing
         only files would leave a folder drop looking like a slash command.
+
+        Mixed drops (a folder and one or more files) are accepted as well:
+        requiring every token to share one shape leaves those payloads
+        unrecognized even though the terminal delivers them the same way.
         """
         if len(text) < 2:  # noqa: PLR2004  # Need at least '/' + one char
             return False
         from deepagents_code.input import (
+            parse_pasted_any_entry_paths,
             parse_pasted_directory_paths,
             parse_pasted_path_payload,
         )
 
         if parse_pasted_path_payload(text, allow_leading_path=True) is not None:
             return True
-        return bool(parse_pasted_directory_paths(text))
+        if parse_pasted_directory_paths(text):
+            return True
+        return bool(parse_pasted_any_entry_paths(text))
 
     def _is_dropped_path_payload(self, text: str) -> bool:
         """Return whether current text looks like a dropped file-path payload."""
@@ -2542,9 +2549,13 @@ class ChatInput(Vertical):
             return replacement.strip()
         return value
 
-    @staticmethod
-    def _history_entry_mode_and_text(entry: str) -> tuple[str, str]:
+    def _history_entry_mode_and_text(self, entry: str) -> tuple[str, str]:
         """Return mode and stripped display text for a history entry.
+
+        A leading `/` is only treated as a mode trigger when the entry does not
+        resolve to an existing filesystem entry. Dropped paths are stored in
+        history verbatim, so without this disambiguation a recalled
+        `/tmp/assets` would re-enter command mode and lose its leading slash.
 
         Args:
             entry: Raw entry value read from history storage.
@@ -2555,6 +2566,8 @@ class ChatInput(Vertical):
         """
         if mode_match := detect_mode_prefix(entry):
             prefix, mode = mode_match
+            if prefix == "/" and self._is_existing_path_payload(entry):
+                return "normal", entry
             return mode, entry[len(prefix) :]
         return "normal", entry
 

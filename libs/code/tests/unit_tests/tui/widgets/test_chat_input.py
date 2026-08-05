@@ -3670,6 +3670,45 @@ class TestDroppedFolderPaste:
             assert chat.mode == "command"
             assert chat._text_area.text == "help"
 
+    async def test_mixed_folder_then_file_drop_keeps_normal_mode(
+        self, tmp_path: Path
+    ) -> None:
+        """A folder followed by a file resolves as a drop, not a command."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+        note = tmp_path / "note.txt"
+        note.write_text("hi")
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = f"{folder} {note}"
+            await _pause_for_strip(pilot)
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == f"{folder} {note}"
+
+    async def test_recalled_dropped_path_stays_normal_text(
+        self, tmp_path: Path
+    ) -> None:
+        """Recalling a submitted dropped path must not re-enter command mode."""
+        folder = tmp_path / "assets"
+        folder.mkdir()
+
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._history._entries.append(str(folder))
+            await pilot.press("up")
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == str(folder)
+
 
 class TestPathPayloadDetectionGating:
     """Single-keystroke edits should skip the blocking path-detection helpers.

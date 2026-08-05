@@ -578,6 +578,24 @@ def parse_pasted_directory_paths(text: str) -> list[Path]:
     return [resolved] if resolved is not None else []
 
 
+def parse_pasted_any_entry_paths(text: str) -> list[Path]:
+    """Parse a paste payload resolving every token to any existing entry.
+
+    Unlike `parse_pasted_file_paths` / `parse_pasted_directory_paths`, this
+    parser does not require a uniform shape: a mixed multi-drop of files and
+    directories is accepted as long as every token resolves to an existing
+    filesystem entry.
+
+    Args:
+        text: Raw paste payload from the terminal.
+
+    Returns:
+        List of resolved paths, or an empty list when any token fails to
+        resolve.
+    """
+    return _parse_pasted_payload_paths(text, _resolve_existing_pasted_entry_any)
+
+
 def _parse_pasted_payload_paths(
     text: str, resolve: Callable[[Path], Path | None]
 ) -> list[Path]:
@@ -1076,6 +1094,18 @@ def _resolve_existing_pasted_directory(path: Path) -> Path | None:
         Resolved existing directory path, otherwise `None`.
     """
     return _resolve_existing_pasted_entry(path, _safe_is_dir)
+
+
+def _resolve_existing_pasted_entry_any(path: Path) -> Path | None:
+    """Resolve a pasted path candidate to any existing filesystem entry.
+
+    Args:
+        path: Parsed path candidate.
+
+    Returns:
+        Resolved existing path (file or directory), otherwise `None`.
+    """
+    return _resolve_existing_pasted_entry(path, _safe_exists)
 
 
 def _resolve_existing_pasted_entry(

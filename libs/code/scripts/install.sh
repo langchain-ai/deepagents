@@ -1806,17 +1806,19 @@ resolve_zdotdir() {
     "\$HOME"/*)    value="$HOME/${value#\$HOME/}" ;;
     "\${HOME}"/*)  value="$HOME/${value#\$\{HOME\}/}" ;;
   esac
-  # Only accept an absolute path that actually exists. The loop above takes the
-  # last ZDOTDIR= assignment in the file and can't evaluate control flow, so a
-  # conditional assignment (`if [[ -d A ]]; then ZDOTDIR=A; else ZDOTDIR=B; fi`)
-  # resolves to the branch zsh may never take. Requiring the directory to exist
-  # keeps us from creating a stray zshrc somewhere zsh will never read; an
-  # unresolved ZDOTDIR falls back to ~/.zshrc, which is the safe default.
-  if [ -d "$value" ]; then
-    case "$value" in
-      /*) printf '%s\n' "$value" ;;
-    esac
-  fi
+  # Any absolute path is accepted, whether or not it exists yet. A ZDOTDIR=
+  # line in ~/.zshenv tells zsh "look here" — and zsh looks only there — so a
+  # valid absolute ZDOTDIR is authoritative for where the zshrc must go even
+  # when the directory hasn't been created. An existence check would have the
+  # failure mode backwards: on a fresh setup with `ZDOTDIR=$HOME/.config/zsh`,
+  # rejecting the value writes ~/.zshrc, a file zsh never reads once ZDOTDIR
+  # is set, so `dcode` stays off PATH. The caller creates a missing candidate
+  # directory before writing. The parser's actual limit is that the loop above
+  # takes the last ZDOTDIR= assignment and can't evaluate control flow; the
+  # candidate builder's ~/.zshrc handling covers that case.
+  case "$value" in
+    /*) printf '%s\n' "$value" ;;
+  esac
   return 0
 }
 
@@ -1842,8 +1844,37 @@ append_managed_path_block() {
   } >>"$profile"
 }
 
+# Resolve a symlink to the absolute path of its target. Read-only; used to
+# pick the directory an atomic temp-file rewrite must live in.
+resolve_link_target() {
+  local link="$1" target
+  target=$(readlink "$link") || return 1
+  case "$target" in
+    /*) printf '%s\n' "$target" ;;
+    *)  printf '%s\n' "$(dirname "$link")/$target" ;;
+  esac
+}
+
 rewrite_managed_path_block() {
   local profile="$1" path_export="$2" tmp_profile mode
+  if [ -L "$profile" ]; then
+    # Dotfile managers (chezmoi, stow, nix home-manager) symlink startup files
+    # into a repo. Replacing the link with a regular file means the next
+    # `apply`/`restow` silently reverts the PATH entry — after we printed a
+    # success message. Write the target instead, through the same atomic
+    # temp-file + mv used below: `cat > "$profile"` would truncate the target
+    # in place, so an interrupted install (we trap INT/TERM/HUP) would leave
+    # the dotfile-manager source empty or partial. Resolving the target first
+    # puts the temp file in the target's directory, keeping the mv atomic.
+    local link_target
+    if link_target=$(resolve_link_target "$profile"); then
+      log_warn "$profile is a symlink — editing its target instead of replacing the link."
+      profile="$link_target"
+    else
+      log_warn "Could not resolve the symlink target of $profile; skipping."
+      return 1
+    fi
+  fi
   tmp_profile=$(mktemp "$(dirname "$profile")/.deepagents-code-profile.XXXXXX") || return 1
   register_temp "$tmp_profile"
 
@@ -1884,17 +1915,6 @@ rewrite_managed_path_block() {
   mode=$(stat -f '%OLp' "$profile" 2>/dev/null || stat -c '%a' "$profile" 2>/dev/null || true)
   if [ -n "$mode" ]; then
     chmod "$mode" "$tmp_profile" 2>/dev/null || true
-  fi
-  if [ -L "$profile" ]; then
-    # Dotfile managers (chezmoi, stow, nix home-manager) symlink startup files
-    # into a repo. `mv` would replace the symlink with a regular file, so the
-    # next `apply`/`restow` silently reverts the PATH entry — after we printed
-    # a success message. Write *through* the link instead, so the managed copy
-    # is the one that changes and the link survives.
-    log_warn "$profile is a symlink — editing its target instead of replacing the link."
-    cat "$tmp_profile" >"$profile" || return 1
-    rm -f "$tmp_profile"
-    return 0
   fi
   mv "$tmp_profile" "$profile"
 }
@@ -2026,13 +2046,29 @@ ensure_path_setup() {
     esac
   }
   case "$shell_name" in
-    zsh|bash)
+    zsh)
+      # When ZDOTDIR is set (from the environment or ~/.zshenv) and names a
+      # directory other than $HOME, the zsh-branch add_candidate below already
+      # covers the zshrc zsh actually reads. detect_shell_profile doesn't know
+      # about ZDOTDIR, so its $HOME/.zshrc would add a second, wrong file.
+      # With no ZDOTDIR, that same line *is* the zshrc candidate, so skipping
+      # it here loses nothing.
+      if [ -z "$zdotdir" ] || [ "$zdotdir" = "$HOME" ]; then
+        [ -n "$SHELL_PROFILE" ] && add_candidate "$SHELL_PROFILE"
+      fi
+      ;;
+    bash)
       [ -n "$SHELL_PROFILE" ] && add_candidate "$SHELL_PROFILE"
       ;;
     # fish is covered solely by its conf.d file below — never edit config.fish.
   esac
   if [ "$shell_name" = "zsh" ] || [ -f "$HOME/.zshrc" ]; then
     add_candidate "${zdotdir:-$HOME}/.zshrc"
+    # ~/.zshrc is added alongside a ZDOTDIR zshrc only when it already exists.
+    # ZDOTDIR relocates zsh's dotfiles entirely: zsh sources
+    # ${ZDOTDIR}/.zshenv first and never reads ~/.zshenv, so zsh's own ZDOTDIR
+    # can differ from what resolve_zdotdir found there — and on a machine that
+    # had ZDOTDIR set for a previous install, ~/.zshrc may not exist at all.
     if [ -n "$zdotdir" ] && [ "$zdotdir" != "$HOME" ] && [ -f "$HOME/.zshrc" ]; then
       add_candidate "$HOME/.zshrc"
     fi

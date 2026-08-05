@@ -2894,32 +2894,89 @@ def test_install_script_no_modify_path_accepts_truthy_spellings(
     assert "deepagents-code installer" not in zshrc
 
 
-def test_install_script_ignores_zdotdir_pointing_at_missing_dir(
+def test_install_script_uses_zdotdir_pointing_at_missing_dir(
     tmp_path: Path,
 ) -> None:
-    """A ~/.zshenv ZDOTDIR naming a nonexistent directory is not used.
+    """A ~/.zshenv ZDOTDIR naming a nonexistent directory is still honored.
 
-    The parser takes the last ZDOTDIR= assignment and cannot evaluate control
-    flow, so a conditional assignment can name a branch zsh never takes. Acting
-    on it created a stray zshrc in a directory zsh would never read.
+    ZDOTDIR is authoritative for zsh even when the directory doesn't exist
+    yet: zsh reads only ${ZDOTDIR}/.zshrc, so writing ~/.zshrc instead would
+    leave `dcode` off PATH. The installer creates the missing directory and
+    writes the PATH block into the zshrc at the ZDOTDIR location.
     """
 
     def seed(home: Path) -> None:
-        (home / ".zshrc").write_text("# pre-existing zsh config\n")
-        (home / ".zshenv").write_text(
-            "if [ -d ~/.config/zsh ]; then\n"
-            "  ZDOTDIR=~/.config/zsh\n"
-            "else\n"
-            "  ZDOTDIR=~/.zsh-does-not-exist\n"
-            "fi\n"
-        )
+        (home / ".zshenv").write_text("ZDOTDIR=$HOME/.config/zsh\n")
 
     proc = _invoke_with_local_dcode_not_on_path(tmp_path, seed_home=seed)
 
     assert proc.returncode == 0, proc.stderr
     home = tmp_path / "home"
-    assert not (home / ".zsh-does-not-exist").exists()
-    assert "deepagents-code installer" in (home / ".zshrc").read_text()
+    zshrc = home / ".config/zsh/.zshrc"
+    assert zshrc.exists()
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in zshrc.read_text()
+    assert not (home / ".zshrc").exists()
+
+
+def test_install_script_writes_both_zdotdir_and_legacy_zshrc(
+    tmp_path: Path,
+) -> None:
+    """A ZDOTDIR zshrc and a legacy ~/.zshrc both get the PATH block.
+
+    The shell itself reads only the ZDOTDIR zshrc, but a stale ~/.zshrc is a
+    trap for any later unset of ZDOTDIR, so it is updated too.
+    """
+
+    def seed(home: Path) -> None:
+        zdot = home / ".config/zsh"
+        zdot.mkdir(parents=True)
+        (zdot / ".zshrc").write_text("# zdotdir config\n")
+        (home / ".zshrc").write_text("# legacy config\n")
+
+    proc = _invoke_with_local_dcode_not_on_path(
+        tmp_path,
+        extra_env={"ZDOTDIR": str(tmp_path / "home/.config/zsh")},
+        seed_home=seed,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    assert (
+        'export PATH="$HOME/.local/bin:$PATH"'
+        in (home / ".config/zsh/.zshrc").read_text()
+    )
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in (home / ".zshrc").read_text()
+
+
+def test_install_script_preserves_relative_symlinked_profile(tmp_path: Path) -> None:
+    """A relative symlink (~/.zshrc -> dotfiles/zshrc) is rewritten atomically.
+
+    The rewrite resolves the link target relative to the link's directory, so
+    the temp file lands in the target's directory and the `mv` over it is
+    atomic — an interrupted install can't leave the dotfile-manager source
+    truncated, which the earlier `cat >` write-through could.
+    """
+
+    def seed(home: Path) -> None:
+        dotfiles = home / "dotfiles"
+        dotfiles.mkdir()
+        target = dotfiles / "zshrc"
+        target.write_text(
+            "# managed by dotfiles\n"
+            "# >>> deepagents-code installer >>>\n"
+            "export PATH=/stale/entry:$PATH\n"
+            "# <<< deepagents-code installer <<<\n"
+        )
+        (home / ".zshrc").symlink_to("dotfiles/zshrc")
+
+    proc = _invoke_with_local_dcode_not_on_path(tmp_path, seed_home=seed)
+
+    assert proc.returncode == 0, proc.stderr
+    home = tmp_path / "home"
+    real_zshrc = home / "dotfiles/zshrc"
+    assert (home / ".zshrc").is_symlink()
+    assert "/stale/entry" not in real_zshrc.read_text()
+    assert 'export PATH="$HOME/.local/bin:$PATH"' in real_zshrc.read_text()
 
 
 def test_install_script_uses_uv_env_file_path_hint_when_available(

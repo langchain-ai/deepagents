@@ -181,7 +181,41 @@ def test_research_category_points_at_the_drbench_dataset():
         "dataset_path": "datasets/drbench-evals",
         "agent_impl": "bare",
         "fan_out": True,
+        # Pinned, not inherited: upstream's task images are arm64-only and served by the
+        # local docker sandbox, and one runner cannot hold two concurrent app stacks.
+        "runner": "ubuntu-24.04-arm",
+        "sandbox_env": "docker",
+        "concurrency": 1,
     }
+
+
+def test_only_research_pins_its_runtime():
+    # Every other category must inherit the dispatch inputs, or a mixed run would silently
+    # move autonomous/conversation onto a runner they have never been validated on.
+    for category, entry in up.CATEGORY_MAP.items():
+        pinned = {key for key in up._CATEGORY_OVERRIDES if key in entry}
+        assert pinned == (set(up._CATEGORY_OVERRIDES) if category == "research" else set()), (
+            f"{category} pins {sorted(pinned)}"
+        )
+
+
+def test_flat_matrix_entries_always_carry_the_override_keys():
+    # The workflow reads `matrix.<key> || inputs.<key>`. A missing key makes that expression
+    # evaluate against an undefined matrix value, so every entry carries all three.
+    entries = up.build_flat_matrix(
+        model="anthropic:claude-opus-5",
+        categories=["autonomous", "research"],
+        tasks_by_cat={"autonomous": ["a1"], "research": ["DR0001"]},
+    )
+    by_cat = {e["category"]: e for e in entries}
+    for key in up._CATEGORY_OVERRIDES:
+        assert key in by_cat["autonomous"] and key in by_cat["research"]
+    assert by_cat["autonomous"]["runner"] == ""
+    assert by_cat["autonomous"]["sandbox_env"] == ""
+    assert by_cat["autonomous"]["concurrency"] == ""
+    assert by_cat["research"]["runner"] == "ubuntu-24.04-arm"
+    assert by_cat["research"]["sandbox_env"] == "docker"
+    assert by_cat["research"]["concurrency"] == 1
 
 def test_local_dataset_categories_exist_on_disk():
     # A CATEGORY_MAP dataset_path that does not exist would fail only mid-run, after the

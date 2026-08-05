@@ -171,12 +171,24 @@ def _install_fake_drbench(
     requests: Any = types.ModuleType("requests")
 
     class _Session:
+        """Models the one thing that matters here: every hop goes through `send`.
+
+        Real `requests` routes `request` and each redirect hop through `Session.send`, so
+        `sent` is the record of what actually left the process -- the only way to show a
+        blocked host was never contacted rather than merely reported after the fact.
+        """
+
+        def send(self, request: Any, **kwargs: Any) -> Any:
+            recorded.setdefault("sent", []).append((request.url, kwargs.get("timeout")))
+            return type("R", (), {"url": request.url})()
+
         def request(self, method: str, url: str, **kwargs: Any) -> Any:
             recorded.setdefault("requests", []).append((url, kwargs.get("timeout")))
-            return {"url": url}
+            return self.send(type("P", (), {"url": url})(), **kwargs)
 
         def resolve_redirects(self, resp: Any, req: Any, **kwargs: Any) -> Any:
-            yield from recorded.get("hops", [])
+            for hop in recorded.get("hops", []):
+                yield self.send(type("P", (), {"url": hop.url})(), **kwargs)
 
     requests.Session = _Session
     monkeypatch.setitem(sys.modules, "requests", requests)
@@ -548,11 +560,12 @@ def test_main_writes_rewards_and_breakdown(
     assert json.loads(breakdown_path.read_text())["upstream_scores"] == _SCORES
 
 
-def test_main_still_writes_a_reward_when_grading_crashes(
+def test_main_fails_the_verifier_when_grading_crashes(
     judge: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # Harbor treats a missing reward file as an infrastructure error rather than a score,
-    # so a crash must still land a zero plus the reason.
+    # Harbor reads a missing reward file as an errored trial and a 0.0 as a real score, so
+    # an infrastructure failure must write no reward: otherwise a judge outage on 3 of 30
+    # tasks silently drags the model's average down instead of being reported.
     reward_path, breakdown_path = _stage_paths(judge, monkeypatch, tmp_path, report=None)
 
     def boom() -> None:
@@ -560,10 +573,31 @@ def test_main_still_writes_a_reward_when_grading_crashes(
         raise RuntimeError(msg)
 
     monkeypatch.setattr(judge, "_grade", boom)
+
+    with pytest.raises(RuntimeError, match="judge exploded"):
+        judge.main()
+
+    assert not reward_path.exists(), "an infra failure must not be scored"
+    # The diagnostic still lands, which is the whole reason not to just let it propagate.
+    assert "judge exploded" in json.loads(breakdown_path.read_text())["error"]
+
+
+def test_main_scores_zero_when_the_agent_wrote_no_report(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The one failure that is genuinely the model's: it finished without producing a report.
+    # That is a failed attempt, so it is scored zero rather than errored.
+    reward_path, breakdown_path = _stage_paths(judge, monkeypatch, tmp_path, report=None)
+
+    def missing() -> None:
+        msg = "no report at /app/report.md"
+        raise judge._MissingReportError(msg)
+
+    monkeypatch.setattr(judge, "_grade", missing)
     judge.main()
 
     assert json.loads(reward_path.read_text()) == judge._zero_rewards()
-    assert "judge exploded" in json.loads(breakdown_path.read_text())["error"]
+    assert "no report" in json.loads(breakdown_path.read_text())["error"]
 
 
 def test_main_clamps_rewards_into_range(
@@ -750,9 +784,14 @@ def _dense(count: int, size: int = 2048) -> list[str]:
     ]
 
 
-def test_embedding_batching_splits_an_oversized_request(
+def test_embedding_batching_splits_an_oversized_request_with_tiktoken(
     judge: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Pins the tiktoken estimator explicitly. An earlier version of this test asserted the
+    # split without pinning either estimator, so it passed locally (tiktoken installed,
+    # ~1 token per CJK character) and failed in CI (tiktoken absent, `len // 3`), where the
+    # same input fit in one batch.
+    pytest.importorskip("tiktoken")
     calls: dict[str, Any] = {}
     _install_fake_drbench(monkeypatch, scores={}, calls=calls)
     from drbench.agents import utils  # noqa: PLC0415  # ty: ignore[unresolved-import]
@@ -764,6 +803,27 @@ def test_embedding_batching_splits_an_oversized_request(
     assert len(batches) > 1, "an oversized request must be split"
     assert sum(batches) == 200
     assert len(vectors) == 200
+
+
+def test_embedding_batching_splits_an_oversized_request_without_tiktoken(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The character-estimate fallback, which is what runs wherever tiktoken is missing.
+    # Setting the module to None makes `import tiktoken` raise, and the count is sized so
+    # `len // 3` alone exceeds the budget.
+    monkeypatch.setitem(sys.modules, "tiktoken", None)
+    count = (3 * judge._EMBED_TOKEN_BUDGET) // 2048 + 50
+    calls: dict[str, Any] = {}
+    _install_fake_drbench(monkeypatch, scores={}, calls=calls)
+    from drbench.agents import utils  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    judge._install_embedding_batching()
+    vectors = utils.get_embeddings(_dense(count))
+
+    batches = calls["embed_batches"]
+    assert len(batches) > 1, "an oversized request must be split"
+    assert sum(batches) == count
+    assert len(vectors) == count
 
 
 def test_embedding_batching_preserves_the_vectors_exactly(
@@ -931,21 +991,22 @@ def test_main_refuses_to_score_with_an_unusable_judge(
     assert not reward_path.exists()
 
 
-def test_main_still_writes_a_reward_when_drbench_is_missing(
+def test_main_fails_the_verifier_when_drbench_is_missing(
     judge: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    # Only the judge-name check is fatal. An unimportable `drbench` means a broken verifier
-    # image, and leaving Harbor with no reward file at all loses the diagnostic entirely, so
-    # that failure stays on the guarded path.
+    # A broken verifier image is infrastructure, not a model failure. The judge pre-check
+    # deliberately swallows the import error so this lands on the graded path, which then
+    # records the traceback and fails rather than scoring the model zero.
     for name in ("drbench", "drbench.gen_agent", "drbench.agents.utils"):
         monkeypatch.delitem(sys.modules, name, raising=False)
     monkeypatch.setattr(sys, "path", [])
     reward_path, breakdown_path = _stage_paths(judge, monkeypatch, tmp_path)
     monkeypatch.setenv("DRBENCH_JUDGE_MODEL", "gpt-4o")
 
-    judge.main()
+    with pytest.raises(ModuleNotFoundError):
+        judge.main()
 
-    assert json.loads(reward_path.read_text())["reward"] == 0.0
+    assert not reward_path.exists()
     assert "traceback" in json.loads(breakdown_path.read_text())
 
 
@@ -1133,12 +1194,15 @@ def test_url_guard_allows_a_public_host_and_sets_a_timeout(
     assert timeout == judge._URL_FETCH_TIMEOUT
 
 
-def test_url_guard_revalidates_every_redirect_hop(
+def test_url_guard_blocks_a_redirect_hop_before_it_is_sent(
     judge: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Checking only the original URL is not enough: a public host can 302 to a private
-    # address, so each hop is validated as it is followed.
-    calls: dict[str, Any] = {"hops": [type("R", (), {"url": "http://169.254.169.254/"})()]}
+    # The assertion that matters is `sent`, not the exception. The previous guard validated
+    # each hop's *response* URL, which `resolve_redirects` only yields after sending it --
+    # so a cited public URL answering `302 Location: http://169.254.169.254/...` reached the
+    # metadata endpoint and then raised. Raising is not the fix; not sending is.
+    metadata = "http://169.254.169.254/latest/meta-data/"
+    calls: dict[str, Any] = {"hops": [type("R", (), {"url": metadata})()]}
     _install_fake_drbench(monkeypatch, scores={}, calls=calls)
     requests = _fake_requests()
     monkeypatch.setattr(judge.socket, "getaddrinfo", lambda h, _p: [(0, 0, 0, "", (h, 0))])
@@ -1146,6 +1210,10 @@ def test_url_guard_revalidates_every_redirect_hop(
 
     with pytest.raises(judge._BlockedHostError):
         list(requests.Session().resolve_redirects(None, None))
+
+    sent = [url for url, _timeout in calls.get("sent", [])]
+    assert metadata not in sent, "the blocked host was contacted before the guard fired"
+    assert sent == []
 
 
 def test_url_guard_is_idempotent(judge: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1186,10 +1254,12 @@ def test_main_records_a_traceback_on_failure(
         raise RuntimeError(msg)
 
     monkeypatch.setattr(judge, "_grade", boom)
-    judge.main()
+
+    with pytest.raises(RuntimeError, match="kaboom"):
+        judge.main()
 
     breakdown = json.loads(breakdown_path.read_text())
     assert "kaboom" in breakdown["error"]
     assert "Traceback" in breakdown["traceback"]
     assert "boom" in breakdown["traceback"]
-    assert json.loads(reward_path.read_text()) == judge._zero_rewards()
+    assert not reward_path.exists()

@@ -216,6 +216,16 @@ class _BlockedHostError(Exception):
     """A cited URL resolved to an address the verifier must not fetch."""
 
 
+class _MissingReportError(FileNotFoundError):
+    """The agent produced no report.
+
+    Distinct from every other failure so `main` can score it zero -- a task the agent did
+    not finish -- while still failing the verifier on infrastructure errors. A bare
+    `FileNotFoundError` would conflate it with, say, a missing `case.json`, which is a
+    broken task rather than a failed attempt.
+    """
+
+
 def _install_url_fetch_guard(failures: list[dict[str, str]]) -> None:
     """Make cited-URL fetching safe, bounded, and non-fatal.
 
@@ -233,9 +243,12 @@ def _install_url_fetch_guard(failures: list[dict[str, str]]) -> None:
 
     So this installs three wrappers:
 
-      * `Session.request` validates the target host and supplies a default timeout.
-      * `Session.resolve_redirects` re-validates every hop, because a public host may 302
-         to a private address and validating only the original URL would miss it.
+      * `Session.send` validates the host of every outbound request before it is sent,
+         which is what catches a public host that 302s to a private address: redirect
+         hops go through `send`, not back through `request`.
+      * `Session.request` repeats the check for a caller that bypasses `send`, and
+         supplies a default timeout.
+      * `Session.resolve_redirects` caps the hop count.
       * `parse_website` catches, records, and returns None -- exactly what `get_content`'s
          own contract already expects (`return result if result is not None else None`),
          so an unfetchable citation becomes an unsupported claim rather than a dead task.
@@ -256,10 +269,29 @@ def _install_url_fetch_guard(failures: list[dict[str, str]]) -> None:
             msg = f"refusing to fetch non-public host {host!r}"
             raise _BlockedHostError(msg)
 
+    # `send` is the only chokepoint every request passes through before any network I/O,
+    # including each redirect hop: `resolve_redirects` calls `self.send()` per hop rather
+    # than going back through `request`. Validating a hop's *response* URL, as an earlier
+    # version did, ran after that hop had already been fetched -- so a cited public URL
+    # answering `302 Location: http://169.254.169.254/...` reached the metadata endpoint
+    # before the guard fired.
+    original_send = requests.Session.send
+    if not getattr(original_send, "_deepagents_guarded", False):
+
+        def send(self: Any, request: Any, **kwargs: Any) -> Any:
+            _check(request.url)
+            kwargs.setdefault("timeout", _URL_FETCH_TIMEOUT)
+            return original_send(self, request, **kwargs)
+
+        send._deepagents_guarded = True  # type: ignore[attr-defined]
+        requests.Session.send = send  # type: ignore[method-assign]
+
     original_request = requests.Session.request
     if not getattr(original_request, "_deepagents_guarded", False):
 
         def request(self: Any, method: str, url: str, **kwargs: Any) -> Any:
+            # Redundant with `send` above, kept so a caller that bypasses `send` is still
+            # checked, and so the failure names the cited URL rather than a redirect target.
             _check(url)
             kwargs.setdefault("timeout", _URL_FETCH_TIMEOUT)
             return original_request(self, method, url, **kwargs)
@@ -271,11 +303,11 @@ def _install_url_fetch_guard(failures: list[dict[str, str]]) -> None:
     if not getattr(original_resolve, "_deepagents_guarded", False):
 
         def resolve_redirects(self: Any, resp: Any, req: Any, **kwargs: Any) -> Any:
+            # Hop cap only. Host validation happens in `send`, before each hop is sent.
             kwargs.setdefault("timeout", _URL_FETCH_TIMEOUT)
             for hop, response in enumerate(original_resolve(self, resp, req, **kwargs)):
                 if hop >= _MAX_REDIRECTS:
                     return
-                _check(response.url)
                 yield response
 
         resolve_redirects._deepagents_guarded = True  # type: ignore[attr-defined]
@@ -498,7 +530,7 @@ def _read_report() -> str:
             continue
         print(f"  {probe}: {listing[:40] or 'empty'}")
     msg = f"no report at {_REPORT_PATH}"
-    raise FileNotFoundError(msg)
+    raise _MissingReportError(msg)
 
 
 def _grade() -> tuple[dict[str, float], dict[str, Any]]:
@@ -600,6 +632,17 @@ def _grade() -> tuple[dict[str, float], dict[str, Any]]:
     return rewards, breakdown
 
 
+def _write_breakdown(breakdown: dict[str, Any]) -> None:
+    """Write the diagnostic file, which has to survive a run that writes no reward."""
+    try:
+        _BREAKDOWN_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _BREAKDOWN_PATH.write_text(
+            json.dumps(breakdown, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError as exc:
+        print(f"could not write breakdown: {exc}")
+
+
 def main() -> None:
     """Score the report and write Harbor's rewards plus a per-metric breakdown."""
     # Resolved outside the guard below, so a judge upstream cannot drive exits non-zero and
@@ -617,27 +660,34 @@ def main() -> None:
         print(f"could not pre-check the judge model ({type(exc).__name__}: {exc})")
     try:
         rewards, breakdown = _grade()
-    except Exception as exc:  # noqa: BLE001 - a verifier crash must still write a reward
-        print(f"grading failed: {type(exc).__name__}: {exc}")
+    except _MissingReportError as exc:
+        # The agent finished without writing a report. That is a failed attempt, not a
+        # broken harness, so it is scored zero like any other unearned metric.
+        formatted = traceback.format_exc()
+        print(f"no report to score: {type(exc).__name__}: {exc}")
+        rewards = _zero_rewards()
+        breakdown = {"error": f"{type(exc).__name__}: {exc}", "traceback": formatted}
+    except Exception as exc:
+        # Everything else is infrastructure: a judge outage, an unloadable task, a response
+        # that would not parse. A 0.0 here would enter the model's average as though the
+        # report had earned nothing, so write the diagnostic and let the verifier fail --
+        # the harness then counts the trial as errored rather than scored.
+        #
         # The traceback, not just the message: an earlier failure here reported only
         # "ConnectionError: ..." and locating the frame it came from took far longer than
         # reading one would have.
         formatted = traceback.format_exc()
+        print(f"grading failed: {type(exc).__name__}: {exc}")
         print(formatted)
-        rewards = _zero_rewards()
-        breakdown = {"error": f"{type(exc).__name__}: {exc}", "traceback": formatted}
+        _write_breakdown({"error": f"{type(exc).__name__}: {exc}", "traceback": formatted})
+        raise
 
     rewards = {name: max(0.0, min(1.0, value)) for name, value in rewards.items()}
     _REWARD_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
     # reward.json takes precedence over reward.txt in Harbor, and `reward` is the key the
     # deepagents aggregation reads for its dataset-level metrics.
     _REWARD_JSON_PATH.write_text(json.dumps(rewards, indent=2) + "\n", encoding="utf-8")
-    try:
-        _BREAKDOWN_PATH.write_text(
-            json.dumps(breakdown, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
-    except OSError as exc:
-        print(f"could not write breakdown: {exc}")
+    _write_breakdown(breakdown)
     print("rewards=" + json.dumps(rewards))
 
 

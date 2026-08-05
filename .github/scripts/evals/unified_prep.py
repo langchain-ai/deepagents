@@ -74,8 +74,21 @@ CATEGORY_MAP: dict[str, dict] = {
         "dataset_path": "datasets/drbench-evals",
         "agent_impl": "bare",
         "fan_out": True,
+        # DRBench cannot use the dispatch-wide values, so it pins its own (see
+        # `_CATEGORY_OVERRIDES`): upstream publishes its task images for arm64 only and
+        # only the local docker sandbox can serve them, and each rollout starts a full
+        # Nextcloud/Mattermost/Roundcube/filebrowser stack -- roughly 5 GB of a runner's
+        # 14 GB -- so concurrent rollouts on one runner exhaust the disk.
+        "runner": "ubuntu-24.04-arm",
+        "sandbox_env": "docker",
+        "concurrency": 1,
     },
 }
+
+# Per-category values that override the dispatch inputs, carried on each flat-matrix entry.
+# An empty string means "inherit the dispatch input", which is what every category without
+# an entry above resolves to.
+_CATEGORY_OVERRIDES = ("runner", "sandbox_env", "concurrency")
 
 # Harness used when the `agent_impls` input (UNIFIED_AGENT_IMPLS) is unset or blank.
 DEFAULT_AGENT_IMPL = "bare"
@@ -480,20 +493,22 @@ def build_flat_matrix(
         cm = CATEGORY_MAP[cat]
         budget = budgets.get((cat, impl), shard_matrix.MAX_SHARDS)
         for group in shard_matrix.pack_tasks(tasks, budget):
-            entries.append(
-                {
-                    "model": model,
-                    "provider": prov,
-                    "category": cat,
-                    "dataset": cm["dataset"],
-                    "dataset_path": cm["dataset_path"],
-                    "agent_impl": impl,
-                    "include_tasks": " ".join(group),
-                    "langsmith_dataset": "",
-                    "n_shards": 1,
-                    "shard": 0,
-                }
-            )
+            entry = {
+                "model": model,
+                "provider": prov,
+                "category": cat,
+                "dataset": cm["dataset"],
+                "dataset_path": cm["dataset_path"],
+                "agent_impl": impl,
+                "include_tasks": " ".join(group),
+                "langsmith_dataset": "",
+                "n_shards": 1,
+                "shard": 0,
+            }
+            # Always present, so the workflow's `matrix.<key> || inputs.<key>` fallback is
+            # reading a defined value rather than relying on a missing matrix key.
+            entry.update({key: cm.get(key, "") for key in _CATEGORY_OVERRIDES})
+            entries.append(entry)
     return entries
 
 
@@ -516,7 +531,7 @@ def main(argv: list[str] | None = None) -> int:
     categories = list(
         dict.fromkeys(
             c.strip()
-            for c in os.environ.get("UNIFIED_CATEGORIES", "autonomous,conversation,context").split(
+            for c in os.environ.get("UNIFIED_CATEGORIES", "autonomous,conversation,research").split(
                 ","
             )
             if c.strip()

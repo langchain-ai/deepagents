@@ -89,7 +89,7 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     assert "Leave empty to use the pinned Harbor" in harbor_override
 
     categories = _indented_block(dispatch, "      categories:")
-    assert 'default: "autonomous,conversation,context"' in categories
+    assert 'default: "autonomous,conversation,research"' in categories
 
     # The deep-agents harness list for autonomous/context defaults to bare.
     agent_impls = _indented_block(dispatch, "      agent_impls:")
@@ -286,10 +286,16 @@ def test_runner_label_is_an_input_constrained_to_known_labels() -> None:
     # Defaulted in the reusable workflow so its other caller (harbor.yml) is unaffected.
     assert "runner_label:" in reusable
     assert 'default: "ubuntu-latest"' in reusable
-    assert "runs-on: ${{ inputs.runner_label }}" in reusable
+    # Per-leaf with an input fallback: a category that pins a runner (research, arm64-only)
+    # must be able to run in the same dispatch as categories that use the input.
+    assert "runs-on: ${{ matrix.runner || inputs.runner_label }}" in reusable
 
     harbor = _indented_block(reusable, "  harbor:")
-    assert "runs-on: ${{ inputs.runner_label }}" in harbor
+    assert "runs-on: ${{ matrix.runner || inputs.runner_label }}" in harbor
+    # Sandbox and concurrency take the same override path, so research keeps the docker
+    # sandbox and one-rollout-at-a-time regardless of what the dispatch asked for.
+    assert "HARBOR_SANDBOX_ENV: ${{ matrix.sandbox_env || inputs.sandbox_env }}" in harbor
+    assert "HARBOR_CONCURRENCY: ${{ matrix.concurrency || inputs.concurrency }}" in harbor
     # prep and aggregate run no containers, so they stay on the default runner.
     for job in ("  prep:", "  aggregate:"):
         assert "runs-on: ubuntu-latest" in _indented_block(reusable, job)

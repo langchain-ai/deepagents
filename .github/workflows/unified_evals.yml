@@ -8,9 +8,9 @@ on:
         type: string
         required: true
       categories:
-        description: "Comma list of capability axes: autonomous, conversation, context, research. `research` (DRBench enterprise deep research) is opt-in and not in the default set."
+        description: "Comma list of capability axes: autonomous, conversation, context, research. Replaces the default set rather than adding to it. `research` (DRBench enterprise deep research) pins its own runner, sandbox, and concurrency regardless of the inputs below; `context` is available but not in the default set."
         type: string
-        default: "autonomous,conversation,context"
+        default: "autonomous,conversation,research"
       agent_impls:
         description: "Comma-separated deep-agents harnesses for the autonomous and context categories (conversation always uses tau3). Each must be bare (SDK create_deep_agent) or dcode (deep-agents-code product agent). Every listed config runs as its own (model, config) row."
         type: string
@@ -48,7 +48,7 @@ on:
         type: string
         default: "langsmith"
       runner_label:
-        description: "Runner for the eval jobs. `ubuntu-24.04-arm` is required for the `research` (DRBench) category, whose task images are published for arm64 only — and it only has any effect with `sandbox_env: docker`, since the LangSmith sandbox runs containers off-runner. A closed choice so a run cannot be pointed at an unintended runner pool."
+        description: "Default runner for eval jobs that do not pin their own. `research` always runs on `ubuntu-24.04-arm` with the docker sandbox, since upstream publishes its task images for arm64 only, so this input does not need changing to include it. A closed choice so a run cannot be pointed at an unintended runner pool."
         type: choice
         default: "ubuntu-latest"
         options:

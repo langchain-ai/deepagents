@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from textual.app import ComposeResult
+    from textual.timer import Timer
 
 from deepagents_code import theme
 from deepagents_code.auth_display import format_auth_indicator
@@ -508,6 +509,12 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # True while the footer is displaying a Ctrl+S failure notice, so other
         # footer writers (Ctrl+N) leave it alone until its restore timer fires.
         self._help_error_shown = False
+        # The pending Ctrl+S success-message restore timer, tracked so a
+        # subsequent failure can cancel it: an orphaned timer would otherwise
+        # fire mid-error and wipe the persistent failure notice. Failure paths
+        # schedule no timer of their own, so this is the only handle that can
+        # clobber an error.
+        self._help_restore_timer: Timer | None = None
 
         self._unfiltered_models: list[tuple[str, str]] = []
         self._recent_specs: list[str] = []
@@ -1992,7 +1999,11 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         Rows whose provider integration is missing are refused rather than
         persisted: unlike the session-only Enter path (which offers to install
         the package), a stored spec that can never build would degrade every
-        future launch with no prompt at the moment of the keypress.
+        future launch with no prompt at the moment of the keypress. The refusal
+        applies only to *storing* — when the highlighted row is already the
+        stored spec, Ctrl+S must still clear it, since the clear path is the
+        only in-app way to drop a persisted value whose provider integration
+        was later removed.
 
         Failures leave their notice in place instead of scheduling a restore
         timer, and raise a toast naming the remedy — a 3-second footer flash is
@@ -2020,15 +2031,38 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 )
             )
             self._help_error_shown = True
+            # A restore timer left over from an immediately preceding
+            # successful Ctrl+S would fire mid-error and wipe this notice;
+            # cancel it so the failure stays visible as intended.
+            if self._help_restore_timer is not None:
+                self._help_restore_timer.stop()
+                self._help_restore_timer = None
             if self.is_running:
                 self.notify(remedy, severity="error", timeout=10, markup=False)
 
-        if provider in self._install_extras:
+        if provider in self._install_extras and model_spec != self._default_spec:
+            from deepagents_code.update_check import (
+                install_extra_command,
+                safe_install_extra_recovery_command,
+            )
+
+            extra = self._install_extras[provider]
+            # Build the recovery hint the same way `/install` failures do:
+            # `install_extra_command` is the display-only install-script
+            # command, upgraded to the receipt-preserving uv command when the
+            # running install supports it — a bare `pip install` would target
+            # the wrong environment for `uv tool` installs.
+            try:
+                fallback = install_extra_command(extra)
+            except ValueError:
+                # `_install_extras` values come from curated metadata, but a
+                # malformed one must not turn a footer notice into a crash.
+                fallback = f"pip install 'deepagents-code[{extra}]'"
+            remedy_cmd = safe_install_extra_recovery_command(extra, fallback=fallback)
             _fail(
                 f"Cannot store {noun}: {provider} not installed",
                 f"{provider} is not installed, so {model_spec} could never be "
-                f"used. Install it with: pip install "
-                f"'deepagents-code[{self._install_extras[provider]}]'",
+                f"used. Install it with: {remedy_cmd}",
             )
             return
 
@@ -2038,7 +2072,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 self._default_spec = None
                 self.call_after_refresh(self._update_display)
                 help_widget.update(Content.styled(f"{sentence_noun} cleared", "bold"))
-                self.set_timer(3.0, self._restore_help_text)
+                self._help_restore_timer = self.set_timer(3.0, self._restore_help_text)
             else:
                 _fail(
                     f"Failed to clear {noun}",
@@ -2055,7 +2089,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     spec=model_spec,
                 )
             )
-            self.set_timer(3.0, self._restore_help_text)
+            self._help_restore_timer = self.set_timer(3.0, self._restore_help_text)
         else:
             _fail(
                 f"Failed to save {noun}",
@@ -2070,6 +2104,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         a timer scheduled before a Ctrl+N press still restores the hint for the
         display mode that is current when it fires.
         """
+        self._help_restore_timer = None
         self._help_error_shown = False
         help_widget = self.query_one(".model-selector-help", Static)
         help_widget.update(self._help_text())
@@ -2131,9 +2166,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         The refresh is skipped while a Ctrl+S *error* notice is on the footer,
         since that notice is the only signal a save failed and the user may not
         have read it yet. Successful Ctrl+S messages are clobbered freely. The
-        pending restore timer is never cancelled, but it is idempotent — it
-        re-renders `_help_text()` for whatever mode is current when it fires,
-        so an orphaned timer cannot resurrect a stale hint.
+        pending success restore timer is left to fire afterwards — it is
+        idempotent, re-rendering `_help_text()` for whatever mode is current
+        when it fires, so it cannot resurrect a stale hint. (Failures cancel
+        that timer in `_fail` rather than letting it erase the error notice.)
         """
         if not self._loaded:
             return

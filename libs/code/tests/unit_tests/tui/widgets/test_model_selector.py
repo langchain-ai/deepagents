@@ -765,6 +765,129 @@ class TestDefaultModelScope:
 
         assert not config_path.exists()
 
+    async def test_install_refusal_remedy_uses_recovery_command(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The install-required toast names an environment-correct command.
+
+        Plain `pip install ...` would target the caller's current Python
+        environment; for `uv tool` installs (the supported path) that leaves
+        the provider unavailable to `dcode`. The remedy must flow through
+        `safe_install_extra_recovery_command` like `/install` failures do.
+        """
+        from deepagents_code.tui.widgets import model_selector
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        monkeypatch.setattr(
+            "deepagents_code.update_check.install_extra_recovery_command",
+            lambda _extra: "uv tool install deepagents-code --with langchain-anthropic",
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._install_extras = {"anthropic": "anthropic"}
+
+            notified: list[str] = []
+            monkeypatch.setattr(screen, "notify", lambda msg, **_: notified.append(msg))
+
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+        assert notified
+        assert (
+            "uv tool install deepagents-code --with langchain-anthropic"
+            in (notified[0])
+        )
+        assert "pip install" not in notified[0]
+
+    async def test_ctrl_s_clears_stored_model_with_missing_provider(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Ctrl+S clears a stored spec even when its provider was uninstalled.
+
+        The install-required refusal exists so a spec that can never build is
+        not *stored*; applying it to an already-stored row would block the
+        only in-app path for removing the now-unusable persisted value.
+        """
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        (tmp_path / "config.toml").write_text(
+            '[models]\nauto_classifier = "anthropic:claude-sonnet-5"\n',
+            encoding="utf-8",
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._install_extras = {"anthropic": "anthropic"}
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert "Default classifier model cleared" in str(help_widget.content)
+            assert screen._default_spec is None
+
+        with (tmp_path / "config.toml").open("rb") as handle:
+            data = tomllib.load(handle)
+        assert "auto_classifier" not in data["models"]
+
+    async def test_failure_cancels_pending_success_restore_timer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Ctrl+S failure must not be erased by a prior success's timer.
+
+        Successful saves schedule a 3-second footer restore; a failed save
+        schedules nothing. If the failure lands before the prior timer fires,
+        the orphaned timer would wipe the persistent error notice unless
+        `_fail` cancels it.
+        """
+        from deepagents_code.tui.widgets import model_selector
+
+        self._stub_catalog(monkeypatch)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            screen._default_spec = None
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert "Default set to" in str(help_widget.content)
+            timer = screen._help_restore_timer
+            assert timer is not None
+
+            # The row just saved is now the stored spec, so the next Ctrl+S
+            # takes the clear branch. Swap in a failing clear before the
+            # success timer fires.
+            screen._default_scope = model_selector.MAIN_MODEL_DEFAULT_SCOPE._replace(
+                clear=lambda: False
+            )
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert "Failed to clear default" in str(help_widget.content)
+            assert screen._help_restore_timer is None
+            # `Timer.stop()` cancels the underlying task, so the orphaned
+            # timer can never fire and erase the error notice.
+            assert timer._task is None
+
 
 class TestNamesToggle:
     """Tests for the Ctrl+N names/raw-spec toggle in `/model`."""

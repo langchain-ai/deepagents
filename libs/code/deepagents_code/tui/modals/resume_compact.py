@@ -9,19 +9,17 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from deepagents_code._session_stats import format_token_count
 from deepagents_code.config import get_glyphs
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
-ResumeCompactChoice = Literal["compact", "continue", "cancel"]
 
-
-class ResumeCompactPromptScreen(ModalScreen[ResumeCompactChoice]):
+class ResumeCompactPromptScreen(ModalScreen[Literal["compact", "continue", "cancel"]]):
     """Ask whether to compact a large thread before resuming it."""
 
     can_focus = True
-    can_focus_children = False
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "compact", "Compact", show=False, priority=True),
@@ -89,9 +87,6 @@ class ResumeCompactPromptScreen(ModalScreen[ResumeCompactChoice]):
         Yields:
             Title, explanation, and keyboard help.
         """
-        from deepagents_code._session_stats import format_token_count
-
-        separator = f" {get_glyphs().bullet} "
         with Vertical():
             yield Static(
                 "Compact before resuming?",
@@ -107,7 +102,7 @@ class ResumeCompactPromptScreen(ModalScreen[ResumeCompactChoice]):
                 markup=False,
             )
             yield Static(
-                separator.join(
+                f" {get_glyphs().bullet} ".join(
                     (
                         "Enter: compact and resume",
                         "C: resume without compact",

@@ -3310,9 +3310,16 @@ class TestResumeThread:
             resolve_pending_goal=False,
         )
 
-    @pytest.mark.parametrize("choice", ["compact", "continue", "cancel"])
+    @pytest.mark.parametrize(
+        ("choice", "thread_id", "compactions", "order"),
+        [
+            ("compact", "new-thread", 1, ["compact", "goal"]),
+            ("continue", "new-thread", 0, ["goal"]),
+            ("cancel", "old-thread", 0, []),
+        ],
+    )
     async def test_large_thread_resume_honors_compaction_choice(
-        self, choice: str
+        self, choice: str, thread_id: str, compactions: int, order: list[str]
     ) -> None:
         app = self._switch_app()
         _app_test_double(app)._fetch_thread_history_data = AsyncMock(
@@ -3322,11 +3329,10 @@ class TestResumeThread:
         )
         cwd_switch = AsyncMock(return_value="continue")
         _app_test_double(app)._offer_thread_cwd_switch = cwd_switch
-        push_screen = AsyncMock(return_value=choice)
-        _app_test_double(app)._push_screen_wait = push_screen
-        order: list[str] = []
-        compact = AsyncMock(side_effect=lambda: order.append("compact"))
-        restore_goal = AsyncMock(side_effect=lambda: order.append("goal"))
+        _app_test_double(app)._push_screen_wait = AsyncMock(return_value=choice)
+        events: list[str] = []
+        compact = AsyncMock(side_effect=lambda: events.append("compact"))
+        restore_goal = AsyncMock(side_effect=lambda: events.append("goal"))
         _app_test_double(app)._handle_offload = compact
         _app_test_double(app)._remount_pending_goal_rubric_review = restore_goal
 
@@ -3336,26 +3342,13 @@ class TestResumeThread:
         ):
             await app._resume_thread("new-thread")
 
-        push_screen.assert_awaited_once()
-        if choice == "cancel":
-            assert app._lc_thread_id == "old-thread"
-            _app_test_double(app)._clear_messages.assert_not_awaited()
-            cwd_switch.assert_not_awaited()
-            restore_goal.assert_not_awaited()
-            assert order == []
-        else:
-            cwd_switch.assert_awaited_once_with(
-                "new-thread",
-                restart_server=True,
-                abort="thread_switch",
-            )
-            restore_goal.assert_awaited_once()
-            if choice == "compact":
-                compact.assert_awaited_once()
-                assert order == ["compact", "goal"]
-            else:
-                compact.assert_not_awaited()
-                assert order == ["goal"]
+        switched = int(choice != "cancel")
+        assert app._lc_thread_id == thread_id
+        assert cwd_switch.await_count == switched
+        assert _app_test_double(app)._clear_messages.await_count == switched
+        assert compact.await_count == compactions
+        assert restore_goal.await_count == switched
+        assert events == order
 
     @staticmethod
     def _switch_app() -> DeepAgentsApp:

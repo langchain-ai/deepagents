@@ -739,7 +739,6 @@ if TYPE_CHECKING:
     from deepagents_code.resume_state import GoalProposalKind, GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
     from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
-    from deepagents_code.tui.modals.resume_compact import ResumeCompactChoice
     from deepagents_code.tui.textual_adapter import TextualUIAdapter
     from deepagents_code.tui.widgets.approval import ApprovalMenu
     from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
@@ -9351,12 +9350,8 @@ class DeepAgentsApp(App):
             elif self._has_initial_submission():
                 try:
                     await self._adopt_resumed_model_if_needed(
-                        model_spec=(
-                            resume_payload.model_spec if resume_payload else None
-                        ),
-                        model_params=(
-                            resume_payload.model_params if resume_payload else None
-                        ),
+                        model_spec=getattr(resume_payload, "model_spec", None),
+                        model_params=getattr(resume_payload, "model_params", None),
                         thread_id=self._lc_thread_id,
                     )
                 except Exception:
@@ -16531,7 +16526,7 @@ class DeepAgentsApp(App):
 
     async def _offer_resume_compaction(
         self, context_tokens: int
-    ) -> ResumeCompactChoice:
+    ) -> Literal["compact", "continue", "cancel"]:
         """Offer to compact a large-context thread before resuming it.
 
         Args:
@@ -16542,15 +16537,14 @@ class DeepAgentsApp(App):
         """
         from deepagents_code import config_manifest
 
-        default = config_manifest.COMPACT_ON_RESUME_THRESHOLD_DEFAULT
         option = config_manifest.get_option("threads.compact_on_resume_threshold")
-        threshold = default
+        threshold = config_manifest.COMPACT_ON_RESUME_THRESHOLD_DEFAULT
         if option is not None:
             threshold, _ = config_manifest.resolve_scalar(
                 option, toml_data=config_manifest.load_config_toml()
             )
             if threshold < 0:
-                threshold = default
+                threshold = config_manifest.COMPACT_ON_RESUME_THRESHOLD_DEFAULT
         if context_tokens <= threshold:
             return "continue"
 
@@ -16594,23 +16588,26 @@ class DeepAgentsApp(App):
             self._assistant_id = launch_agent
             if self._server_kwargs is not None:
                 self._server_kwargs["assistant_id"] = launch_agent
-            if self._server_kwargs is not None and self._server_proc is not None:
-                from deepagents_code._env_vars import SERVER_ENV_PREFIX
+                if self._server_proc is not None:
+                    from deepagents_code._env_vars import SERVER_ENV_PREFIX
 
-                self._server_proc.update_env(
-                    **{f"{SERVER_ENV_PREFIX}ASSISTANT_ID": launch_agent}
-                )
-                restarted = await self._respawn_server(
-                    log_message=(
-                        "Failed to restore the launch agent after resume cancel"
-                    ),
-                    mcp_failure_log=("MCP metadata preload after resume cancel failed"),
-                    mcp_failure_toast=(
-                        "MCP tool metadata could not be refreshed. Use /mcp to check."
-                    ),
-                )
-                if not restarted:
-                    return False
+                    self._server_proc.update_env(
+                        **{f"{SERVER_ENV_PREFIX}ASSISTANT_ID": launch_agent}
+                    )
+                    restarted = await self._respawn_server(
+                        log_message=(
+                            "Failed to restore the launch agent after resume cancel"
+                        ),
+                        mcp_failure_log=(
+                            "MCP metadata preload after resume cancel failed"
+                        ),
+                        mcp_failure_toast=(
+                            "MCP tool metadata could not be refreshed. "
+                            "Use /mcp to check."
+                        ),
+                    )
+                    if not restarted:
+                        return False
             await self._reload_hooks()
             self.run_worker(
                 self._discover_skills(),
@@ -25325,7 +25322,6 @@ class DeepAgentsApp(App):
         if self._chat_input:
             self._chat_input.set_cursor_active(active=False)
 
-        compact_before_resume = False
         switch_started = False
         outgoing_ended = False
         try:
@@ -25340,7 +25336,6 @@ class DeepAgentsApp(App):
             )
             if compact_choice == "cancel":
                 return
-            compact_before_resume = compact_choice == "compact"
 
             cwd_choice = await self._offer_thread_cwd_switch(
                 thread_id,
@@ -25426,21 +25421,17 @@ class DeepAgentsApp(App):
             # Landing on a new thread re-arms the same-thread toast, so stepping
             # back to a thread and re-selecting it announces itself again.
             self._last_thread_unchanged = None
-            session_started = await self._run_session_start_hook(
-                SessionStartCause.RESUME
-            )
-            if session_started and compact_before_resume:
+            if (
+                await self._run_session_start_hook(SessionStartCause.RESUME)
+                and compact_choice == "compact"
+            ):
                 await self._handle_offload()
 
-            # Deferred above so it lands below both the previous-thread hint and
-            # any compaction output. Guarded because a cosmetic restore failure
-            # must not undo a switch that already completed.
+            # Keep a restored goal review below any compaction output.
             try:
                 await self._remount_pending_goal_rubric_review()
             except Exception:
                 logger.exception("Failed to restore pending goal review")
-            if not session_started:
-                return
         except Exception as exc:
             if not switch_started:
                 logger.exception("Failed to prepare thread %s for resume", thread_id)

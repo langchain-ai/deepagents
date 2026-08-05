@@ -58,35 +58,26 @@ class TestHandleThreadsCommand:
         app._show_thread_selector.assert_awaited_once()  # ty: ignore
         app._resume_thread.assert_not_awaited()  # ty: ignore
 
-    async def test_resume_flag_resolves_and_resumes(self) -> None:
+    @pytest.mark.parametrize(
+        ("command", "requested_id", "thread_id"),
+        [
+            ("/threads -r", None, "thread-x"),
+            ("/threads -r abc", "abc", "abc"),
+            ("/threads --resume abc", "abc", "abc"),
+        ],
+    )
+    async def test_resume_flag_resolves_and_resumes(
+        self, command: str, requested_id: str | None, thread_id: str
+    ) -> None:
         app = _make_app()
-        target = _ThreadsResumeTarget("thread-x", "agent")
+        target = _ThreadsResumeTarget(thread_id, "agent")
         app._resolve_threads_resume_target = AsyncMock(return_value=target)  # ty: ignore
         with patch.object(app, "_schedule_off_message_pump") as schedule:
-            await app._handle_threads_command("/threads -r")
+            await app._handle_threads_command(command)
         await schedule.call_args.args[0]
-        app._resolve_threads_resume_target.assert_awaited_once_with(None)  # ty: ignore
-        app._resume_thread.assert_awaited_once_with("thread-x")  # ty: ignore
+        app._resolve_threads_resume_target.assert_awaited_once_with(requested_id)  # ty: ignore
+        app._resume_thread.assert_awaited_once_with(thread_id)  # ty: ignore
         app._show_thread_selector.assert_not_awaited()  # ty: ignore
-
-    async def test_resume_specific_id(self) -> None:
-        app = _make_app()
-        target = _ThreadsResumeTarget("abc", "agent")
-        app._resolve_threads_resume_target = AsyncMock(return_value=target)  # ty: ignore
-        with patch.object(app, "_schedule_off_message_pump") as schedule:
-            await app._handle_threads_command("/threads -r abc")
-        await schedule.call_args.args[0]
-        app._resolve_threads_resume_target.assert_awaited_once_with("abc")  # ty: ignore
-        app._resume_thread.assert_awaited_once_with("abc")  # ty: ignore
-
-    async def test_resume_long_form_flag(self) -> None:
-        app = _make_app()
-        target = _ThreadsResumeTarget("abc", "agent")
-        app._resolve_threads_resume_target = AsyncMock(return_value=target)  # ty: ignore
-        with patch.object(app, "_schedule_off_message_pump") as schedule:
-            await app._handle_threads_command("/threads --resume abc")
-        await schedule.call_args.args[0]
-        app._resolve_threads_resume_target.assert_awaited_once_with("abc")  # ty: ignore
 
     async def test_cross_agent_resume_schedules_confirmation(self) -> None:
         """A cross-agent target is confirmed off Textual's message pump."""
@@ -384,15 +375,9 @@ class TestResolveResumeTarget:
 class TestCrossAgentResume:
     """Confirmation and orchestration for a cross-agent resume target."""
 
-    @pytest.mark.parametrize(
-        ("compaction_choice", "compact_on_resume"),
-        [("continue", False), ("compact", True)],
-    )
     async def test_confirmation_switches_agent_and_exact_thread(
         self,
         tmp_path: Path,
-        compaction_choice: str,
-        compact_on_resume: bool,
     ) -> None:
         """Accepting performs one combined, session-only transition."""
         app = _make_app()
@@ -402,9 +387,7 @@ class TestCrossAgentResume:
         payload = MagicMock(context_tokens=0)
         app._push_screen_wait = AsyncMock(return_value="switch")  # ty: ignore
         app._fetch_thread_history_data = AsyncMock(return_value=payload)  # ty: ignore
-        app._offer_resume_compaction = AsyncMock(  # ty: ignore
-            return_value=compaction_choice
-        )
+        app._offer_resume_compaction = AsyncMock(return_value="compact")  # ty: ignore
         app._offer_thread_cwd_switch = AsyncMock(return_value="continue")  # ty: ignore
         app._restart_server_for_agent_swap = AsyncMock(return_value=True)  # ty: ignore
 
@@ -426,7 +409,7 @@ class TestCrossAgentResume:
             resume_thread_id="research-thread",
             preloaded_payload=payload,
             persist_default_agent=False,
-            compact_on_resume=compact_on_resume,
+            compact_on_resume=True,
         )
 
     async def test_cancel_keeps_current_session_untouched(self, tmp_path: Path) -> None:

@@ -232,18 +232,39 @@ def test_local_dataset_categories_exist_on_disk():
 
 def test_lite_task_ids_exist_in_their_local_dataset():
     # Lite runs pass these as `--include-task-name`; a stale id silently narrows the run
-    # (or empties a shard) instead of failing, so check them against the real task dirs.
+    # (or empties a shard) instead of failing, so check them against the real task list.
+    import json
     from pathlib import Path
 
     import lite_tasks
+
+    # Datasets whose task directories are generated from an upstream pin rather than
+    # committed declare their authoritative id list here: their directory holds no task
+    # until it is built, so there is nothing on disk for this job to look at.
+    generated_task_lists = {
+        "datasets/drbench-evals": "harbor_adapters/drbench/vendor/subsets/val.jsonl",
+    }
 
     repo_root = Path(up.__file__).resolve().parents[3]
     for category, entry in up.CATEGORY_MAP.items():
         path = entry["dataset_path"]
         if not path:
             continue
+        expected = lite_tasks.LITE_TASKS.get(category, [])
+        subset = generated_task_lists.get(path)
+        if subset:
+            known = {
+                json.loads(line)["task_id"]
+                for line in (repo_root / "libs" / "evals" / subset)
+                .read_text(encoding="utf-8")
+                .splitlines()
+                if line.strip()
+            }
+            for task_id in expected:
+                assert task_id in known, f"{category}: {task_id}"
+            continue
         dataset_dir = repo_root / "libs" / "evals" / path
-        for task_id in lite_tasks.LITE_TASKS.get(category, []):
+        for task_id in expected:
             assert (dataset_dir / task_id / "task.toml").is_file(), f"{category}: {task_id}"
 
 def test_every_category_has_a_lite_subset():
@@ -831,15 +852,26 @@ def test_research_full_extends_lite_and_matches_the_benchmark_split():
     }
 
 def test_research_full_task_ids_all_exist():
+    # Checked against upstream's own task list rather than the dataset directory: no task
+    # directory is committed (they are generated from a pinned upstream commit), so the
+    # directory is empty in any job that has not built it.
+    import json
     from pathlib import Path
 
     import lite_tasks
 
-    dataset = (
-        Path(up.__file__).resolve().parents[3] / "libs/evals/datasets/drbench-evals"
+    val = (
+        Path(up.__file__).resolve().parents[3]
+        / "libs/evals/harbor_adapters/drbench/vendor/subsets/val.jsonl"
     )
+    known = {
+        json.loads(line)["task_id"]
+        for line in val.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    assert len(known) == 100
     for task_id in lite_tasks.FULL_TASKS["research"]:
-        assert (dataset / task_id / "task.toml").is_file(), task_id
+        assert task_id in known, task_id
 
 def test_cap_full_profile_only_narrows_declared_categories():
     enumerated = {

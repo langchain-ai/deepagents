@@ -1,12 +1,13 @@
-"""Raise `langchain*` dependency lower bounds in release manifests to the latest stable PyPI release.
+"""Raise LangChain-ecosystem dependency lower bounds to the latest stable PyPI release.
 
-For every `langchain*` requirement that declares a concrete lower bound
-(`>=` or `~=`) in `[project.dependencies]`, `[project.optional-dependencies]`,
-or `[dependency-groups]`, this rewrites that lower bound in place to the
-newest non-yanked stable PyPI version. Upper bounds, extras, and environment
-markers are preserved. Exact pins (`==`) are left alone — raising a floor only
-applies to range floors. A bound already ahead of the latest stable release
-(intentional prerelease coordination) is respected and never lowered.
+For every in-scope requirement (see `IN_SCOPE_PREFIXES`) that declares a
+concrete lower bound (`>=` or `~=`) in `[project.dependencies]`,
+`[project.optional-dependencies]`, or `[dependency-groups]`, this rewrites that
+lower bound in place to the newest non-yanked stable PyPI version. Upper
+bounds, extras, and environment markers are preserved. Exact pins (`==`) are
+left alone — raising a floor only applies to range floors. A bound already
+ahead of the latest stable release (intentional prerelease coordination) is
+respected and never lowered.
 """
 
 from __future__ import annotations
@@ -36,9 +37,12 @@ MAX_FETCH_WORKERS = 8
 # Only `>=` / `~=` floors are raiseable. `==` is an exact pin (handled by the
 # dedicated pin-bump workflow), and a bare upper bound has no floor to raise.
 RAISEABLE_OPERATORS = frozenset({">=", "~="})
-# A marker string that can never be satisfied, used for the floor bump so we
-# preserve the original operator instead of normalizing it to `>=`.
-LANGCHAIN_PREFIX = "langchain"
+# Distribution-name prefixes whose floors are raised. Covers the LangChain
+# integrations (langchain-*, the base langchain/langgraph/langsmith packages,
+# and langgraph-* companion packages) plus the deepagents-* workspace packages
+# that one package pulls from PyPI (e.g. deepagents-code -> deepagents-acp).
+# Workspace-local sources and a package's own name are excluded per manifest.
+IN_SCOPE_PREFIXES = ("langchain", "langgraph", "langsmith", "deepagents")
 
 
 def _notice(message: str) -> None:
@@ -137,8 +141,26 @@ def _raise_lower_bound(requirement_string: str, new_minimum: Version) -> str | N
     return replaced
 
 
-def _collect_langchain_names(manifest_path: str) -> set[str]:
-    """Return the canonicalized `langchain*` names declared in one manifest."""
+def _self_name(project: Mapping[str, object]) -> str | None:
+    """Return the canonicalized name of the package the manifest publishes."""
+    name = project.get("name")
+    return canonicalize_name(name) if isinstance(name, str) else None
+
+
+def _in_scope(
+    requirement: Requirement,
+    canonical_name: str,
+    local_names: frozenset[str],
+    self_name: str | None,
+) -> bool:
+    """Return whether a dependency is an in-scope, externally-resolved floor."""
+    if requirement.url or canonical_name in local_names or canonical_name == self_name:
+        return False
+    return canonical_name.startswith(IN_SCOPE_PREFIXES)
+
+
+def _collect_in_scope_names(manifest_path: str) -> set[str]:
+    """Return the canonicalized in-scope dependency names declared in a manifest."""
     manifest = tomllib.loads((REPO_ROOT / manifest_path).read_text(encoding="utf-8"))
     project = manifest.get("project")
     if not isinstance(project, Mapping):
@@ -146,6 +168,7 @@ def _collect_langchain_names(manifest_path: str) -> set[str]:
         raise TypeError(msg)
 
     local_names = local_dependency_names(manifest)
+    self_name = _self_name(project)
     names: set[str] = set()
     for raw in _project_requirement_strings(project) + _group_requirement_strings(
         manifest
@@ -155,11 +178,7 @@ def _collect_langchain_names(manifest_path: str) -> set[str]:
         except InvalidRequirement:
             continue
         canonical_name = canonicalize_name(requirement.name)
-        if (
-            requirement.url
-            or canonical_name in local_names
-            or not canonical_name.startswith(LANGCHAIN_PREFIX)
-        ):
+        if not _in_scope(requirement, canonical_name, local_names, self_name):
             continue
         names.add(canonical_name)
     return names
@@ -191,7 +210,7 @@ def _fetch_latest_versions(names: set[str]) -> dict[str, Version]:
 def _raise_manifest(
     manifest_path: str, latest: Mapping[str, Version]
 ) -> list[RequirementEdit]:
-    """Rewrite `langchain*` lower bounds in one manifest, returning the edits."""
+    """Rewrite in-scope lower bounds in one manifest, returning the edits."""
     path = REPO_ROOT / manifest_path
     original = path.read_text(encoding="utf-8")
     lines = original.splitlines(keepends=True)
@@ -202,6 +221,7 @@ def _raise_manifest(
         raise TypeError(msg)
 
     local_names = local_dependency_names(manifest)
+    self_name = _self_name(project)
     requirement_strings = set(
         _project_requirement_strings(project) + _group_requirement_strings(manifest)
     )
@@ -214,11 +234,7 @@ def _raise_manifest(
         except InvalidRequirement:
             continue
         canonical_name = canonicalize_name(requirement.name)
-        if (
-            requirement.url
-            or canonical_name in local_names
-            or not canonical_name.startswith(LANGCHAIN_PREFIX)
-        ):
+        if not _in_scope(requirement, canonical_name, local_names, self_name):
             continue
         minimum = extract_minimum(requirement.specifier)
         if minimum is None:
@@ -297,16 +313,16 @@ def main() -> int:
         selected = sorted(matched)
 
     manifests = [f"{path}/pyproject.toml" for path in selected]
-    _notice(f"Raising langchain minimums for {args.package}: " + ", ".join(manifests))
+    _notice(f"Raising dependency minimums for {args.package}: " + ", ".join(manifests))
 
-    langchain_names: set[str] = set()
+    in_scope_names: set[str] = set()
     for manifest_path in manifests:
-        langchain_names |= _collect_langchain_names(manifest_path)
-    if not langchain_names:
-        _notice(f"No langchain* requirements found for {args.package}; nothing to do.")
+        in_scope_names |= _collect_in_scope_names(manifest_path)
+    if not in_scope_names:
+        _notice(f"No in-scope requirements found for {args.package}; nothing to do.")
         return 0
 
-    latest = _fetch_latest_versions(langchain_names)
+    latest = _fetch_latest_versions(in_scope_names)
 
     all_edits: list[RequirementEdit] = []
     for manifest_path in manifests:
@@ -314,30 +330,29 @@ def main() -> int:
 
     if not all_edits:
         _notice(
-            f"All langchain* minimums for {args.package} are already at or above "
+            f"All in-scope minimums for {args.package} are already at or above "
             "the latest stable PyPI releases; nothing to do."
         )
         return 0
 
-    summary = edits_markdown(
-        all_edits, heading=f"Raised {len(all_edits)} langchain* minimum(s):"
-    )
+    summary = edits_markdown(all_edits, heading=f"Raised {len(all_edits)} minimum(s):")
     print(summary)
 
     changed_files = sorted({edit.manifest_path for edit in all_edits})
+    # Package dirs (the parent of each edited pyproject.toml) whose adjacent
+    # uv.lock must be regenerated so the lockfile check stays green.
+    lock_dirs = sorted({path.rsplit("/", 1)[0] for path in changed_files})
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
         Path(summary_path).write_text(summary + "\n", encoding="utf-8")
     output_path = os.environ.get("GITHUB_OUTPUT")
     if output_path:
         with Path(output_path).open("a", encoding="utf-8") as handle:
-            handle.write(f"changed={'true'}\n")
+            handle.write("changed=true\n")
             handle.write(f"changed_files={','.join(changed_files)}\n")
+            handle.write(f"lock_dirs={','.join(lock_dirs)}\n")
     return 0
 
 
 if __name__ == "__main__":
-    import os
-    import sys
-
     sys.exit(main())

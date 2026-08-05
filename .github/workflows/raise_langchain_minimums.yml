@@ -1,32 +1,43 @@
-# Raise `langchain*` dependency lower bounds to the latest stable PyPI release.
+# Raise LangChain-ecosystem dependency lower bounds to the latest stable PyPI release.
 #
-# For each `langchain*` requirement that declares a concrete lower bound
-# (`>=` / `~=`) in the selected package's manifest(s) — across
-# `[project.dependencies]`, `[project.optional-dependencies]`, and
-# `[dependency-groups]` — this rewrites that lower bound in place to the newest
-# non-yanked stable PyPI version, preserving upper bounds, extras, and markers.
-# Exact `==` pins are left to `bump_code_sdk_pin.yml`, and a floor already ahead
-# of the latest stable release (intentional prerelease coordination) is never
-# lowered.
+# For each in-scope requirement (`langchain*`, `langgraph*`, `langsmith*`,
+# `deepagents*`) that declares a concrete lower bound (`>=` / `~=`) in the
+# selected package's manifest(s) — across `[project.dependencies]`,
+# `[project.optional-dependencies]`, and `[dependency-groups]` — this rewrites
+# that lower bound in place to the newest non-yanked stable PyPI version,
+# preserving upper bounds, extras, and markers. Exact `==` pins are left to
+# `bump_code_sdk_pin.yml`, and a floor already ahead of the latest stable
+# release (intentional prerelease coordination) is never lowered.
+#
+# Triggering:
+# - Runs on a weekly cron (Monday 09:00 UTC) for every release package
+#   (`package = all`).
+# - Can also be run manually from the Actions UI / `gh` CLI against a single
+#   package or `all`.
 #
 # Notes:
-# - One PR is opened per run containing every raised bound. The PR title is
-#   `chore(deps):` on purpose: a bump-worthy type touching files inside a
-#   managed package would make release-please open a separate release PR
-#   (multi-component fan-out).
+# - One PR is opened per run containing every raised bound plus the
+#   regenerated `uv.lock` for each edited package (raising a floor makes the
+#   adjacent lockfile stale; committing it keeps `check_lockfiles.yml` green).
+# - The PR title is `chore(deps):` on purpose: a bump-worthy type touching
+#   files inside a managed package would make release-please open a separate
+#   release PR (multi-component fan-out).
 # - The PR is created with the Org Membership App installation token rather
 #   than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
 #   `pull_request` workflows, so the required checks would never run.
 # - Idempotent: if a PR for the selected package is already open (or no bound
 #   needs raising), the workflow exits without creating a duplicate.
 
-name: "Raise langchain minimums"
+name: "Raise dependency minimums"
 
 on:
+  schedule:
+    # Monday 09:00 UTC.
+    - cron: "0 9 * * 1"
   workflow_dispatch:
     inputs:
       package:
-        description: "Release package whose langchain* minimums to raise"
+        description: "Release package whose dependency minimums to raise"
         required: true
         type: choice
         default: "deepagents-code"
@@ -46,13 +57,14 @@ on:
 permissions:
   contents: read
 
+# Cron runs have no `inputs.package`, so they fall back to `all`.
 concurrency:
-  group: raise-langchain-minimums-${{ inputs.package }}
+  group: raise-dependency-minimums-${{ inputs.package || 'all' }}
   cancel-in-progress: false
 
 jobs:
   raise:
-    name: "Raise langchain minimums for ${{ inputs.package }}"
+    name: "Raise dependency minimums for ${{ inputs.package || 'all' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -66,23 +78,43 @@ jobs:
           python-version: "3.14"
           enable-cache: "false"
 
-      - name: Raise langchain minimums
+      - name: Raise dependency minimums
         id: raise
         env:
-          PACKAGE: ${{ inputs.package }}
+          PACKAGE: ${{ inputs.package || 'all' }}
         run: |
           set -euo pipefail
           uv run --no-project --with packaging \
             python .github/scripts/release/raise_langchain_minimums.py \
             --package "$PACKAGE"
-          echo "branch=chore/raise-langchain-minimums-${PACKAGE}" >> "$GITHUB_OUTPUT"
+          echo "branch=chore/raise-dependency-minimums-${PACKAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Regenerate lockfiles for edited packages
+        # Raising a floor makes the edited package's adjacent uv.lock stale
+        # (it embeds the direct requirement specifiers). Regenerate it so the
+        # required check_lockfiles.yml job passes on the opened PR. The Python
+        # version mirrors check_lockfiles_pre_commit.py: 3.14 for acp, else 3.12.
+        if: steps.raise.outputs.changed == 'true'
+        env:
+          LOCK_DIRS: ${{ steps.raise.outputs.lock_dirs }}
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra dirs <<< "$LOCK_DIRS"
+          for dir in "${dirs[@]}"; do
+            py="3.12"
+            if [ "$dir" = "libs/acp" ]; then
+              py="3.14"
+            fi
+            echo "Regenerating $dir/uv.lock (python $py)"
+            uv lock --directory "$dir" --python "$py"
+          done
 
       - name: Log if nothing to do
         # The actual skip is implemented by the `if:` guards on every
         # subsequent step; this step only emits a log line so the run
         # history shows why no PR was opened.
         if: steps.raise.outputs.changed != 'true'
-        run: echo "No langchain* minimum needed raising for ${{ inputs.package }}; nothing to do."
+        run: echo "No in-scope minimum needed raising for ${{ inputs.package || 'all' }}; nothing to do."
 
       - name: Skip if PR already open for this package
         id: existing
@@ -98,7 +130,7 @@ jobs:
           if [ "$count" -gt 0 ]; then
             pr_url=$(printf '%s' "$existing_json" | jq -r '.[0].url')
             echo "Open PR already exists for $BRANCH; skipping."
-            echo "::notice::Open langchain minimums PR already exists: $pr_url"
+            echo "::notice::Open dependency minimums PR already exists: $pr_url"
           fi
 
       - name: Generate GitHub App token
@@ -115,8 +147,9 @@ jobs:
         if: steps.raise.outputs.changed == 'true' && steps.existing.outputs.count == '0'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PACKAGE: ${{ inputs.package }}
+          PACKAGE: ${{ inputs.package || 'all' }}
           BRANCH: ${{ steps.raise.outputs.branch }}
+          LOCK_DIRS: ${{ steps.raise.outputs.lock_dirs }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
@@ -138,22 +171,28 @@ jobs:
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
 
-          # Stage only the manifests the script edited.
+          # Stage the edited manifests plus the regenerated lockfile for each
+          # edited package (raising a floor makes the adjacent uv.lock stale).
           IFS=',' read -ra files <<< "$changed_files"
-          git add -- "${files[@]}"
-          git commit -m "chore(deps): raise langchain* minimums for $PACKAGE"
+          IFS=',' read -ra dirs <<< "$LOCK_DIRS"
+          lockfiles=()
+          for dir in "${dirs[@]}"; do
+            lockfiles+=("$dir/uv.lock")
+          done
+          git add -- "${files[@]}" "${lockfiles[@]}"
+          git commit -m "chore(deps): raise dependency minimums for $PACKAGE"
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
 
           body_file="$(mktemp)"
           {
-            printf 'Raises the `langchain*` dependency lower bounds for `%s` to the latest stable PyPI release. Upper bounds, extras, and markers are preserved; exact `==` pins are left to `bump_code_sdk_pin.yml`.\n\n' "$PACKAGE"
+            printf 'Raises the LangChain-ecosystem dependency lower bounds (`langchain*`, `langgraph*`, `langsmith*`, `deepagents*`) for `%s` to the latest stable PyPI release, and regenerates the affected `uv.lock` files. Upper bounds, extras, and markers are preserved; exact `==` pins are left to `bump_code_sdk_pin.yml`.\n\n' "$PACKAGE"
             printf 'Opened automatically by `raise_langchain_minimums.yml`. Review the raised bounds against any compatibility notes in the manifest comments before merging.\n'
           } > "$body_file"
 
           pr_url=$(gh pr create \
             --head "$BRANCH" \
             --base "$DEFAULT_BRANCH" \
-            --title "chore(deps): raise langchain* minimums for $PACKAGE" \
+            --title "chore(deps): raise dependency minimums for $PACKAGE" \
             --body-file "$body_file")
-          echo "Opened langchain minimums PR: $pr_url"
-          echo "::notice::Opened langchain minimums PR: $pr_url"
+          echo "Opened dependency minimums PR: $pr_url"
+          echo "::notice::Opened dependency minimums PR: $pr_url"

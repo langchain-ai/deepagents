@@ -27,18 +27,6 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 import tomllib
-from check_dep_freshness import (
-    available_pypi_versions,
-    extract_minimum,
-    local_dependency_names,
-)
-from check_release_deps import (
-    PyPIRequestError,
-    _write_output,
-    _write_step_summary,
-    fetch_pypi_json,
-    load_release_packages,
-)
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import Specifier, SpecifierSet
 from packaging.utils import canonicalize_name
@@ -46,15 +34,29 @@ from packaging.version import Version
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# `check_lockfiles_pre_commit` owns the package list and the per-package
-# interpreter version used to resolve lockfiles. Import it rather than
-# duplicating either, so a lockfile regenerated here always matches what
+# Sibling helper scripts: `check_dep_freshness` and `check_release_deps` live
+# under `release/`; `check_lockfiles_pre_commit` owns the package list and the
+# per-package interpreter version used to resolve lockfiles. Import them rather
+# than duplicating either, so a lockfile regenerated here always matches what
 # `check_lockfiles.yml` will verify on the opened PR.
-_CHECKS_DIR = Path(__file__).resolve().parents[1] / "checks"
-if str(_CHECKS_DIR) not in sys.path:
-    sys.path.insert(0, str(_CHECKS_DIR))
+_SCRIPTS_DIR = Path(__file__).resolve().parents[1]
+for _domain in (_SCRIPTS_DIR / "release", _SCRIPTS_DIR / "checks"):
+    if str(_domain) not in sys.path:
+        sys.path.insert(0, str(_domain))
 
+from check_dep_freshness import (  # noqa: E402
+    available_pypi_versions,
+    extract_minimum,
+    local_dependency_names,
+)
 from check_lockfiles_pre_commit import package_dirs, python_version  # noqa: E402
+from check_release_deps import (  # noqa: E402
+    PyPIRequestError,
+    _write_output,
+    _write_step_summary,
+    fetch_pypi_json,
+    load_release_packages,
+)
 
 MAX_FETCH_WORKERS = 8
 # Only `>=` / `~=` floors are raiseable. `==` is an exact pin (the only in-scope

@@ -98,7 +98,7 @@ jobs:
         run: |
           set -euo pipefail
           uv run --no-project --with "packaging>=26.2" \
-            python .github/scripts/release/raise_langchain_minimums.py \
+            python .github/scripts/checks/raise_langchain_minimums.py \
             --package "$PACKAGE"
           echo "branch=chore/raise-dependency-minimums-${PACKAGE}" >> "$GITHUB_OUTPUT"
 

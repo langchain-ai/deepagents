@@ -249,10 +249,8 @@ class TestCLICompactionMiddleware:
             extra_kwargs={"temperature": 0},
             profile_overrides=None,
         )
-        create_summarization.assert_called_once()
-        assert create_summarization.call_args.args[0] is active_model
-        guarded_backend = create_summarization.call_args.args[1]
-        assert guarded_backend._backend is startup._backend
+        create_summarization.assert_called_once_with(active_model, startup._backend)
+        assert actual._backend._backend is startup._backend
 
     def test_runtime_profile_overrides_and_context_limit_are_applied(self) -> None:
         """Server-side offload uses the CLI's effective model profile."""
@@ -287,10 +285,7 @@ class TestCLICompactionMiddleware:
             profile_overrides={"max_input_tokens": 32_000},
         )
         assert active_model.profile["max_input_tokens"] == 24_000
-        create_summarization.assert_called_once()
-        assert create_summarization.call_args.args[0] is active_model
-        guarded_backend = create_summarization.call_args.args[1]
-        assert guarded_backend._backend is startup._backend
+        create_summarization.assert_called_once_with(active_model, startup._backend)
 
     async def test_force_noops_when_nothing_old_enough(self) -> None:
         """Forced compaction still no-ops at cutoff 0 (bypasses only the gate)."""

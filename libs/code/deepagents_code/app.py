@@ -439,11 +439,27 @@ otherwise wedge the thread with only a log warning; surfacing this tells the
 user why an unrelated next turn might fail and how to recover.
 """
 
+_OFFLOAD_REBIND_WARNING = (
+    "Offload finished, but the thread could not be re-associated with the main "
+    "agent. Commands that write thread state (/goal, /rubric) may error until "
+    "you send a new message."
+)
+"""Shown when the post-`/offload` graph rebind fails.
+
+Distinct from `_OFFLOAD_WEDGE_WARNING`: nothing is wedged and the offload itself
+succeeded, but the thread is still bound to the `offload` graph, so an out-of-run
+`aupdate_state(as_node="model")` resolves against a graph with no `model` node
+until the next agent turn rebinds it. Naming the affected commands beats letting
+an unrelated `/goal` fail with no explanation.
+"""
+
 _OFFLOAD_MAX_RESUME_ROUNDS = 10
 """Bound on hook-interrupt resume rounds during a server-side `/offload`.
 
 A hook that keeps returning `ask`-style outcomes would otherwise loop the
-fulfill/resume cycle forever; the bound matches the seeded driver's drain cap.
+fulfill/resume cycle forever. Shared with the seeded driver's drain loop so the
+two paths bound the same behavior with one number rather than two literals that
+can drift apart.
 """
 
 
@@ -14673,11 +14689,9 @@ class DeepAgentsApp(App):
         drive the agent's own `compact_conversation` tool (with `force=True`)
         via a seeded tool call instead. Either way the offloaded archive lands
         in the agent's composite backend so it is readable via `read_file` in
-        every run mode (server, sandbox, in-process). For the seeded path, the
-        Auto-mode HITL middleware recognizes the seeded call from the run
-        context and lets it through without an approval round trip; if a HITL
-        interrupt still surfaces (e.g. a graph without that middleware), the
-        driver approves the seed itself as a fail-closed fallback.
+        every run mode (server, sandbox, in-process). The seeded path's tool is
+        HITL-gated with no approval bypass, so its driver answers the resulting
+        interrupt itself, approving only the forced `compact_conversation` call.
         """
         from langchain_core.messages.utils import count_tokens_approximately
 
@@ -14842,10 +14856,16 @@ class DeepAgentsApp(App):
                 # the lifecycle (compaction has committed), so a configured
                 # `SessionStart` hook sees `/offload` exactly as it sees
                 # automatic compaction.
+                #
+                # A stop is deliberately not returned on: compaction has already
+                # committed to the checkpoint, so returning here would leave the
+                # user with only "stopped by a hook" while their conversation was
+                # in fact compacted and the status bar kept pre-offload counts.
+                # `_run_session_start_hook` mounts the stop reason itself, so the
+                # user sees both facts in lifecycle order.
                 from deepagents_code.hooks.models.domain import SessionStartCause
 
-                if not await self._run_session_start_hook(SessionStartCause.COMPACT):
-                    return
+                await self._run_session_start_hook(SessionStartCause.COMPACT)
 
             archive_path = (
                 new_event.get("file_path")
@@ -14954,20 +14974,23 @@ class DeepAgentsApp(App):
 
         Args:
             config: Config with `configurable.thread_id`.
-            state_values: Current thread state, replayed as the run input. A
-                bare `{}` would *overwrite* the checkpointed message list with
-                an empty one before the node reads it (and `astream(None)`
-                never starts a run on `RemoteAgent`). `_summarization_event` is
-                stripped: its embedded summary message is a private-shape dict
-                the server cannot deserialize, and the event survives through
-                the checkpoint channels without being replayed.
+            state_values: Current thread state. Only `messages` is replayed as
+                run input; a bare `{}` would *overwrite* the checkpointed
+                message list with an empty one before the node reads it (and
+                `astream(None)` never starts a run on `RemoteAgent`). Every
+                other channel is deliberately withheld -- see the comment at the
+                `stream_input` construction for why replaying the cost channels
+                corrupts them.
 
         Returns:
-            `None` always: the graph has no model or tool nodes, so failure
-                surfaces only as a raised stream error, which the caller
-                reconciles against the checkpointed `_summarization_event`.
-                The `str | None` shape matches the seeded driver so
-                `_handle_offload` handles both paths uniformly.
+            An error string when the run could not be driven to completion
+                (an interrupt this client cannot answer, or a hook that
+                outlasted `_OFFLOAD_MAX_RESUME_ROUNDS`), otherwise `None`.
+                Compaction failures inside the node are *not* reported this way:
+                the graph has no tool node to carry a message, so it raises and
+                the caller reconciles against the checkpointed
+                `_summarization_event`. The `str | None` shape matches the
+                seeded driver so `_handle_offload` handles both paths uniformly.
 
         Raises:
             RuntimeError: If the app is not connected to its server graph.
@@ -14977,9 +15000,6 @@ class DeepAgentsApp(App):
         from deepagents_code.config import settings
         from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
 
-        agent = self._agent
-        if agent is None:
-            return None
         remote = self._remote_agent()
         if remote is None:
             msg = "The explicit /offload operation requires the server graph."
@@ -14994,28 +15014,31 @@ class DeepAgentsApp(App):
             thread_id=self._lc_thread_id,
         )
         self._hooks.apply_graph_context(stream_context)
-        # Replay the thread's own state as the run input. This is load-bearing
-        # against a real server even though `messages` carries the `add_messages`
-        # reducer: an empty input starts the run with an empty message list and
-        # the node finds nothing to compact (verified in
-        # `test_offload_server_side.py`; an in-process checkpointer does resolve
-        # it from the checkpoint, so unit tests alone will not catch this).
-        # `astream(None)` is not an option either -- it never starts a run on
-        # `RemoteAgent`. `_summarization_event` is stripped: its embedded summary
-        # message is a private-shape dict the server cannot deserialize, and the
-        # event reaches the node through the checkpoint channels regardless.
-        stream_input = {
-            key: value
-            for key, value in state_values.items()
-            if key != "_summarization_event"
-        }
+        # Replay the thread's messages -- and *only* the messages -- as the run
+        # input. Replaying is load-bearing against a real server even though
+        # `messages` carries the `add_messages` reducer: an empty input starts
+        # the run with an empty message list and the node finds nothing to
+        # compact (regressed by `test_offload_server_side.py`, which fails if
+        # this is `{}`; an in-process checkpointer does resolve it from the
+        # checkpoint, so unit tests alone will not catch this). `astream(None)`
+        # is not an option either -- it never starts a run on `RemoteAgent`.
+        #
+        # Nothing else may be replayed. Every other channel either reaches the
+        # node through the checkpoint anyway or is actively corrupted by a
+        # replay: `_session_cost_usd` reduces with `operator.add`, so echoing the
+        # checkpointed total back as input *doubles* the thread's persisted cost
+        # on every `/offload`, and `_session_cost_transfers` (`operator.or_`)
+        # resurrects already-settled subagent transfers. `_summarization_event`
+        # is private to the schema (see `offload_middleware._OffloadState`) and
+        # its embedded summary message is a shape the server cannot deserialize.
+        stream_input: dict[str, Any] = {"messages": state_values.get("messages", [])}
 
         # `stream_mode=["updates"]` only: unlike the seeded driver, this path
         # cannot itemize the offload under the `offload` kind in `/cost`. The
         # summarizer runs as a direct model invoke inside the node and passes its
         # own `config`, which replaces the ambient run config the `messages`
-        # stream is built from, so no message chunk ever reaches this client
-        # (verified in `test_offload_server_side.py`). The spend itself is not
+        # stream is built from, so no message chunk ever reaches this client.
+        # The spend itself is not
         # lost: the process-wide recorder captures the request and the graph's
         # `CostTrackingMiddleware` prices it onto `_session_cost_usd`, which
         # `_sync_session_cost_from_state` reads back. Only the per-kind token
@@ -15025,13 +15048,17 @@ class DeepAgentsApp(App):
         # Configured `PreCompact`/`PreToolUse` server hooks interrupt the graph
         # at the hook boundary rather than returning a decision; fulfill each
         # interrupt against the client hook engine and resume, mirroring the
-        # seeded driver's drain loop. HITL approvals are not resumed: the
-        # operation graph has no HITL middleware, so any approval-shaped
-        # interrupt is left pending for the caller's reconciliation.
+        # seeded driver's drain loop.
         resume_input: Any = cast("Any", stream_input)
+        drain_error: str | None = None
+        # Distinguishes "the stream finished" from "an exception is propagating"
+        # inside the `finally` below, which must not claim the offload finished.
+        stream_completed = False
         try:
-            for _ in range(_OFFLOAD_MAX_RESUME_ROUNDS):
+            rounds = 0
+            while True:
                 pending: dict[str, Any] = {}
+                unresolvable = 0
                 async for chunk in offload_agent.astream(
                     resume_input,
                     stream_mode=["updates"],
@@ -15054,28 +15081,82 @@ class DeepAgentsApp(App):
                         value = getattr(interrupt_obj, "value", None)
                         if iid and is_hook_interrupt_payload(value):
                             pending[iid] = await self._hooks.fulfill_interrupt(value)
+                        else:
+                            unresolvable += 1
+                if unresolvable:
+                    # Not every interrupt this graph can raise is a hook
+                    # invocation this client can answer: a `PreToolUse` hook
+                    # returning an `ask` permission makes the hook middleware
+                    # itself raise a plain `HITLRequest`, and the operation graph
+                    # has no HITL middleware to route it. Report rather than
+                    # break silently -- the run stays paused either way, and the
+                    # caller would otherwise see an unchanged event and tell the
+                    # user the conversation is already compact.
+                    logger.warning(
+                        "Offload received %d interrupt(s) this client cannot "
+                        "answer; leaving the run paused",
+                        unresolvable,
+                    )
+                    drain_error = (
+                        "Offload could not complete: the run requested an "
+                        "approval that /offload cannot answer. Check your "
+                        "PreToolUse/PreCompact hook configuration for "
+                        "`compact_conversation`. Send a new message to "
+                        "continue; the thread may need to reset."
+                    )
+                    break
                 if not pending:
                     break
+                rounds += 1
+                if rounds > _OFFLOAD_MAX_RESUME_ROUNDS:
+                    # Nothing has committed yet -- the hook boundary runs before
+                    # compaction -- so unlike the seeded driver's equivalent
+                    # this is a failure, not a completed offload with a messy
+                    # tail. Report it rather than letting the caller read the
+                    # unchanged event as "nothing to offload".
+                    logger.warning(
+                        "Offload exceeded %d resume rounds; leaving %d "
+                        "interrupt(s) unresolved",
+                        _OFFLOAD_MAX_RESUME_ROUNDS,
+                        len(pending),
+                    )
+                    drain_error = (
+                        "Offload could not complete: a configured hook kept "
+                        f"interrupting after {_OFFLOAD_MAX_RESUME_ROUNDS} "
+                        "rounds. Send a new message to continue; the thread may "
+                        "need to reset."
+                    )
+                    break
                 resume_input = Command(resume=pending)
+            stream_completed = True
         finally:
             # A run on the named `offload` graph rebinds the server thread's
             # `graph_id`, so a later out-of-run `aupdate_state(as_node="model")`
             # through the main client (e.g. `_aupdate_thread_state` for
             # goal/rubric commands) would resolve against a graph with no
             # `model` node and fail. Restore the binding through the main
-            # client's own graph so those writes persist again. Best-effort:
-            # the offload result must not be misreported when only this
-            # bookkeeping fails, and the caller already reconciles committed
-            # state for error reporting.
+            # client's own graph so those writes persist again. This must
+            # update the thread metadata; an empty state update still resolves
+            # against the current (offload) graph.
+            #
+            # Never fatal: the offload result must not be misreported when only
+            # this bookkeeping fails. But it is not silent either -- the failure
+            # leaves an unrelated later command (`/goal`, `/rubric`) to fail
+            # confusingly, so `_OFFLOAD_REBIND_WARNING` is mounted alongside the
+            # offload's own result rather than replacing it. Only when the stream
+            # itself succeeded, though: that message says the offload finished,
+            # and the caller is already reporting the real failure otherwise.
             try:
-                await remote.aupdate_state(config, {})
+                await remote.arebind_thread(config)
             except Exception:
                 logger.warning(
                     "Failed to restore the thread's main graph association "
                     "after /offload; the next agent turn will rebind it",
                     exc_info=True,
                 )
-        return None
+                if stream_completed:
+                    await self._mount_message(ErrorMessage(_OFFLOAD_REBIND_WARNING))
+        return drain_error
 
     async def _drive_legacy_seeded_compaction(
         self, config: RunnableConfig, seed_tool_call_id: str | None = None
@@ -15084,16 +15165,13 @@ class DeepAgentsApp(App):
 
         Seeds an assistant `compact_conversation` tool call attributed to the
         model node, then advances the graph so the agent's own `ToolNode`
-        executes the tool. The tool is HITL-gated; on the normal path the
-        Auto-mode HITL middleware recognizes the seeded call from the run
-        context and lets it through without interrupting. If an approval
-        interrupt still surfaces (e.g. a graph without that middleware),
-        only the first forced `compact_conversation` request is approved
-        here (this is an explicit user-initiated `/offload`). The runtime
-        context carries the seeded call ID so the
-        compaction middleware can reject every other tool independently of
-        HITL configuration, including tools requested by the trailing model
-        turn.
+        executes the tool. The tool is HITL-gated and the seed is not an
+        approval bypass, so `astream(None)` surfaces an approval interrupt; only
+        the first forced `compact_conversation` request is approved here (this is
+        an explicit user-initiated `/offload`). The runtime context carries the
+        seeded call ID so the compaction middleware can reject every other tool
+        independently of HITL configuration, including tools requested by the
+        trailing model turn.
 
         A first-turn `Command(update=..., goto=...)` is intentionally avoided:
         the LangGraph API server rebuilds it with `goto=None` and crashes
@@ -15331,16 +15409,15 @@ class DeepAgentsApp(App):
         # rejected gated call could prompt another. The middleware blocks
         # execution even when HITL is disabled; this bound handles HITL retries.
         try:
-            max_resume_rounds = 10
             pending = await _drain(None)
             rounds = 0
             while pending:
                 rounds += 1
-                if rounds > max_resume_rounds:
+                if rounds > _OFFLOAD_MAX_RESUME_ROUNDS:
                     logger.warning(
                         "Offload exceeded %d resume rounds; leaving %d interrupt(s) "
                         "unresolved",
-                        max_resume_rounds,
+                        _OFFLOAD_MAX_RESUME_ROUNDS,
                         len(pending),
                     )
                     # Compaction itself already committed in round 1, so the caller

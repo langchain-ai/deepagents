@@ -1129,3 +1129,59 @@ class TestForGraph:
         assert parent_graph is not sibling_graph
         assert parent_graph.name == "agent"
         assert sibling_graph.name == "offload"
+
+
+# ---------------------------------------------------------------------------
+# RemoteAgent.arebind_thread
+# ---------------------------------------------------------------------------
+
+
+class TestArebindThread:
+    """Re-associating a thread with this client's graph after a sibling run."""
+
+    def _agent(self) -> RemoteAgent:
+        return RemoteAgent("http://localhost:1234", graph_name="agent")
+
+    async def test_writes_graph_id_into_thread_metadata(self) -> None:
+        """The rebind must go through thread *metadata*, not a state update.
+
+        The server resolves an out-of-run `as_node=` write from
+        `thread["metadata"]["graph_id"]`. `threads.update_state` sends no graph
+        id at all, so an empty state update resolves against whichever graph ran
+        last -- i.e. it cannot undo a sibling-graph run. Only a metadata write
+        rebinds the thread.
+        """
+        agent = self._agent()
+        client = MagicMock()
+        client.threads.update = AsyncMock()
+
+        graph = SimpleNamespace(_validate_client=lambda: client)
+        with patch.object(agent, "_get_graph", return_value=graph):
+            await agent.arebind_thread({"configurable": {"thread_id": "t-1"}})
+
+        client.threads.update.assert_awaited_once_with(
+            "t-1", metadata={"graph_id": "agent"}
+        )
+
+    async def test_missing_thread_id_raises(self) -> None:
+        """A silent no-op would leave the thread bound to the sibling graph."""
+        agent = self._agent()
+
+        with pytest.raises(ValueError, match="thread_id"):
+            await agent.arebind_thread({"configurable": {}})
+
+    async def test_transport_failure_propagates(self) -> None:
+        """The caller decides whether a failed rebind is fatal, so re-raise."""
+        agent = self._agent()
+        client = MagicMock()
+        client.threads.update = AsyncMock(side_effect=RuntimeError("server gone"))
+
+        with (
+            patch.object(
+                agent,
+                "_get_graph",
+                return_value=SimpleNamespace(_validate_client=lambda: client),
+            ),
+            pytest.raises(RuntimeError, match="server gone"),
+        ):
+            await agent.arebind_thread({"configurable": {"thread_id": "t-1"}})

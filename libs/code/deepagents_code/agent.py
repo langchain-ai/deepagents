@@ -41,7 +41,6 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
     from langgraph.types import Command
 
-    from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.output import OutputFormat
     from deepagents_code.plugins.adapters.skills import CodeSkillSource
@@ -2854,7 +2853,6 @@ def create_cli_agent(
         )
 
     compaction_middleware = _create_cli_compaction_middleware(model, composite_backend)
-    server_hooks_middleware: ServerHooksMiddleware
     if auto_mode_config is not None and resolved_interrupt_on is not None:
         from deepagents_code.auto_mode import AutoModeHITLMiddleware
         from deepagents_code.config import resolve_auto_classifier_model
@@ -2863,7 +2861,7 @@ def create_cli_agent(
         trusted_root, narrow_allow_list = auto_mode_config
         # An explicit argument wins; otherwise the env var / `config.toml`
         # preference is read here, where agent construction already runs off the
-        # blockbuster-guarded server loop (see `server_graph._make_graph`).
+        # blockbuster-guarded server loop (see `server_graph._make_graphs`).
         classifier_model = (
             auto_classifier_model
             if auto_classifier_model is not None
@@ -2899,7 +2897,8 @@ def create_cli_agent(
     # The dedicated server-side `/offload` graph has no model or tool nodes, so
     # it reuses these exact instances through the shared composite backend: the
     # same summarizer/backend setup, and the same lifecycle implementation for
-    # its in-memory `PreCompact` dispatch.
+    # the `PreCompact`/`PreToolUse` dispatch it runs against an in-memory forced
+    # tool call.
     attach_offload_resources(
         composite_backend,
         OffloadServerResources(

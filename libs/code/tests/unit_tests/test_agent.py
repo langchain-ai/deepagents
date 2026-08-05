@@ -152,6 +152,41 @@ def test_add_interrupt_on_attaches_auto_approve_predicate() -> None:
         assert config.get("when") is _should_interrupt_tool_call
 
 
+def test_offload_resources_are_published_on_the_backend(tmp_path: Path) -> None:
+    """The `/offload` graph resolves its middleware off the returned backend.
+
+    `create_cli_agent` returns only `(agent, backend)`, so the separately-resolved
+    server `offload` graph reads its compaction and hook middleware from an
+    attribute on the backend. Nothing else asserts this wiring: if the
+    `attach_offload_resources` call were dropped or moved above the middleware it
+    publishes, `/offload` would break for every server-backed agent and only the
+    slow subprocess integration test would notice.
+    """
+    from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
+    from deepagents_code.offload_middleware import (
+        CLICompactionMiddleware,
+        offload_resources_from,
+    )
+
+    _agent, backend = create_cli_agent(
+        model=_make_fake_chat_model(),
+        assistant_id="test-agent",
+        enable_memory=False,
+        enable_skills=False,
+        enable_shell=False,
+        system_prompt="test prompt",
+        cwd=tmp_path,
+    )
+
+    resources = offload_resources_from(backend)
+
+    assert resources is not None
+    assert isinstance(resources.compaction, CLICompactionMiddleware)
+    # Non-optional: an absent instance would silently skip the `PreCompact` /
+    # `PreToolUse` gate, the only hook boundary `/offload` still crosses.
+    assert isinstance(resources.hooks, ServerHooksMiddleware)
+
+
 def test_local_conversation_history_route_is_persistent(tmp_path: Path) -> None:
     """Local archives use the stable user data directory across server restarts."""
     history_root = tmp_path / ".deepagents"

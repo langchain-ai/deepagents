@@ -7,6 +7,7 @@ import os
 import sys
 import threading
 from types import ModuleType, SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -40,7 +41,7 @@ class TestServerGraph:
         with patch.object(
             module,
             "_make_graphs",
-            new=AsyncMock(return_value=(graph_obj, object())),
+            new=AsyncMock(return_value=module.ServerRuntime(graph_obj, object())),
         ) as make_graph:
             assert await module.make_graph() is graph_obj
             assert await module.make_graph() is graph_obj
@@ -65,15 +66,15 @@ class TestServerGraph:
         )
 
         attach_offload_resources(
-            backend,
-            OffloadServerResources(compaction=MagicMock(), hooks=None),
+            cast("Any", backend),
+            OffloadServerResources(compaction=MagicMock(), hooks=MagicMock()),
         )
 
         with (
             patch.object(
                 module,
                 "_make_graphs",
-                new=AsyncMock(return_value=(graph_obj, backend)),
+                new=AsyncMock(return_value=module.ServerRuntime(graph_obj, backend)),
             ) as make_graphs,
             patch(
                 "deepagents_code.offload_middleware.create_forced_compaction_graph",
@@ -100,7 +101,7 @@ class TestServerGraph:
         )
 
         attach_offload_resources(
-            backend,
+            cast("Any", backend),
             OffloadServerResources(compaction=compaction, hooks=hooks),
         )
 
@@ -108,7 +109,7 @@ class TestServerGraph:
             patch.object(
                 module,
                 "_make_graphs",
-                new=AsyncMock(return_value=(object(), backend)),
+                new=AsyncMock(return_value=module.ServerRuntime(object(), backend)),
             ),
             patch(
                 "deepagents_code.offload_middleware.create_forced_compaction_graph",
@@ -129,11 +130,75 @@ class TestServerGraph:
             patch.object(
                 module,
                 "_make_graphs",
-                new=AsyncMock(return_value=(object(), SimpleNamespace())),
+                new=AsyncMock(
+                    return_value=module.ServerRuntime(object(), SimpleNamespace())
+                ),
             ),
             pytest.raises(RuntimeError, match="did not publish its offload"),
         ):
             await module.make_offload_graph()
+
+    async def test_concurrent_resolution_builds_one_runtime(self) -> None:
+        """The server resolves named graphs concurrently, not in sequence.
+
+        The sequential test above would pass even with a broken double-check;
+        `gather` is what the server actually does when both graphs are requested
+        at once, and a lost race here means two sandboxes and two MCP discoveries.
+        """
+        import asyncio
+
+        module = _import_fresh_server_graph()
+        graph_obj = object()
+        backend = SimpleNamespace()
+
+        from deepagents_code.offload_middleware import (
+            OffloadServerResources,
+            attach_offload_resources,
+        )
+
+        attach_offload_resources(
+            cast("Any", backend),
+            OffloadServerResources(compaction=MagicMock(), hooks=MagicMock()),
+        )
+
+        calls = 0
+
+        async def build() -> object:
+            nonlocal calls
+            calls += 1
+            # Yield so a second waiter can enter before the cache is populated.
+            await asyncio.sleep(0)
+            return module.ServerRuntime(graph_obj, backend)
+
+        offload_graph = object()
+        with (
+            patch.object(module, "_make_graphs", new=build),
+            patch(
+                "deepagents_code.offload_middleware.create_forced_compaction_graph",
+                return_value=offload_graph,
+            ) as create_graph,
+        ):
+            results = await asyncio.gather(
+                module.make_graph(),
+                module.make_offload_graph(),
+                module.make_offload_graph(),
+                module.make_graph(),
+            )
+
+        assert calls == 1
+        assert results == [graph_obj, offload_graph, offload_graph, graph_obj]
+        create_graph.assert_called_once()
+
+    def test_server_runtime_slots_are_named(self) -> None:
+        """Both slots are opaque to the type checker, so name them.
+
+        A positional transposition would hand LangGraph the backend as its
+        compiled graph and make `/offload` report "no implementation" — pointing
+        at the wrong subsystem entirely.
+        """
+        module = _import_fresh_server_graph()
+
+        assert module.ServerRuntime._fields == ("agent", "backend")
 
     def test_criteria_context_tools_use_identity_allowlist_in_tool_order(self) -> None:
         """Criteria tools should be known context objects in main-tool order."""

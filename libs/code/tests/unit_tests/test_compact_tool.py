@@ -242,6 +242,46 @@ class TestCLICompactionMiddleware:
         assert write_backend._backend is summarization._backend
         assert not hasattr(write_backend, "artifacts_root")
 
+    async def test_operation_path_writes_through_the_archive_guard(self) -> None:
+        """The `/offload` operation graph's write path has the same invariant.
+
+        The guard is applied per write site rather than by the backend's type, so
+        the operation graph's entry point does not inherit it from the tool paths
+        — it has to apply it itself, and nothing but a test says so.
+        """
+        summarization = self._summarization()
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+
+        await middleware.arun_forced_compaction_update(
+            {"messages": [HumanMessage("one"), HumanMessage("two")]}, runtime
+        )
+
+        write_backend = summarization._aoffload_to_backend.await_args.args[0]
+        assert isinstance(write_backend, _ArchiveReadGuard)
+        assert write_backend._backend is summarization._backend
+
+    async def test_operation_path_returns_none_when_nothing_to_compact(self) -> None:
+        """A cutoff of 0 must be `None`, not an event pinning cutoff 0.
+
+        The caller distinguishes "nothing old enough" from a real compaction by
+        this return value; an empty-but-present event would advance nothing while
+        still reading as success.
+        """
+        summarization = self._summarization()
+        summarization._determine_cutoff_index = MagicMock(return_value=0)
+        middleware = CLICompactionMiddleware(summarization)
+        runtime = MagicMock()
+        runtime.context = None
+
+        result = await middleware.arun_forced_compaction_update(
+            {"messages": [HumanMessage("one")]}, runtime
+        )
+
+        assert result is None
+        summarization._aoffload_to_backend.assert_not_awaited()
+
     def test_runtime_model_builds_matching_summarizer(self) -> None:
         """A `/model` override selects the summarizer used by `/offload`."""
         startup = self._summarization()

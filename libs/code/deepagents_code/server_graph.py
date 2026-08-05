@@ -15,7 +15,7 @@ import asyncio
 import atexit
 import logging
 import sys
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from deepagents_code._server_config import ServerConfig
 from deepagents_code._startup_error import (
@@ -26,6 +26,8 @@ from deepagents_code.project_utils import ProjectContext, get_server_project_con
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+
+    from deepagents.backends.composite import CompositeBackend
 
 logger = logging.getLogger(__name__)
 
@@ -185,8 +187,27 @@ def _mcp_tool_is_explicitly_read_only(tool: Any) -> bool:  # noqa: ANN401
     return mcp_tool_is_coherently_read_only(tool)
 
 
-async def _make_graphs() -> tuple[Any, Any]:
-    """Create the agent graph and its shared compaction resources.
+class ServerRuntime(NamedTuple):
+    """The one-per-process result of building this server's agent.
+
+    A named tuple rather than a bare pair so the two slots are addressed by name:
+    both are structurally opaque to the type checker, and a positional
+    transposition would hand LangGraph the backend as its compiled graph while
+    making `offload_resources_from` return `None` — surfacing as "/offload has
+    no implementation", which points at the wrong subsystem entirely.
+    """
+
+    agent: Any
+    """Compiled LangGraph agent graph served as `agent`."""
+
+    backend: CompositeBackend
+    """Composite backend the agent was built with, carrying the offload
+    resources the `offload` graph resolves through
+    `offload_middleware.offload_resources_from`."""
+
+
+async def _make_graphs() -> ServerRuntime:
+    """Create the agent graph and the backend carrying its shared resources.
 
     Reads `DEEPAGENTS_CODE_SERVER_*` env vars via `ServerConfig.from_env()`
     (the inverse of `ServerConfig.to_env()` used by the app process), resolves a
@@ -319,7 +340,7 @@ async def _make_graphs() -> tuple[Any, Any]:
             )
             sys.exit(1)
 
-    def _create_cli_graphs_sync() -> tuple[Any, Any]:
+    def _create_cli_graphs_sync() -> ServerRuntime:
         async_subagents = load_async_subagents() or None
         auto_mode_enabled = config.interactive and sandbox_backend is None
 
@@ -363,13 +384,13 @@ async def _make_graphs() -> tuple[Any, Any]:
             goal_criteria_tools=read_only_context_tools,
             rubric_grader_tools=read_only_context_tools,
         )
-        return agent, composite_backend
+        return ServerRuntime(agent=agent, backend=composite_backend)
 
     return await asyncio.to_thread(_create_cli_graphs_sync)
 
 
 def _build_graph_factories(
-    builder: Callable[[], Awaitable[tuple[Any, Any]]] | None = None,
+    builder: Callable[[], Awaitable[ServerRuntime]] | None = None,
 ) -> tuple[Callable[[], Awaitable[Any]], Callable[[], Awaitable[Any]]]:
     """Build paired factories that share one server-resource initialization.
 
@@ -388,12 +409,13 @@ def _build_graph_factories(
     Returns:
         Factories for the interactive agent and `/offload` operation graphs.
     """
-    missing = object()
-    resources: tuple[Any, Any] | object = missing
-    offload_graph: Any = missing
+    # `None` is a sound sentinel for both: the builder always returns a
+    # `ServerRuntime`, and `create_forced_compaction_graph` always a graph.
+    runtime: ServerRuntime | None = None
+    offload_graph: Any = None
     lock = asyncio.Lock()
 
-    async def shared_resources() -> tuple[Any, Any]:
+    async def shared_resources() -> ServerRuntime:
         """Build (or return the cached) agent graph and composite backend.
 
         LangGraph loads the factories below from the generated `langgraph.json`
@@ -406,16 +428,16 @@ def _build_graph_factories(
         Returns:
             The agent graph and the composite backend it was built with.
         """
-        nonlocal resources
-        if resources is missing:
+        nonlocal runtime
+        if runtime is None:
             async with lock:
-                if resources is missing:
+                if runtime is None:
                     try:
-                        resources = await (builder or _make_graphs)()
+                        runtime = await (builder or _make_graphs)()
                     except Exception as exc:  # noqa: BLE001  # top-level barrier: any construction failure must surface to the parent as a marker
                         emit_startup_failure(exc)
                         sys.exit(1)
-        return cast("tuple[Any, Any]", resources)
+        return runtime
 
     async def make_graph() -> Any:  # noqa: ANN401
         """Return the normal interactive agent graph.
@@ -423,8 +445,7 @@ def _build_graph_factories(
         Returns:
             Compiled LangGraph agent graph.
         """
-        agent_graph, _backend = await shared_resources()
-        return agent_graph
+        return (await shared_resources()).agent
 
     async def make_offload_graph() -> Any:  # noqa: ANN401
         """Return the explicit server-side `/offload` operation graph.
@@ -437,10 +458,12 @@ def _build_graph_factories(
                 middleware, which would leave `/offload` with no implementation.
         """
         nonlocal offload_graph
-        _agent_graph, backend = await shared_resources()
-        if offload_graph is missing:
+        # Awaited to completion before taking `lock`, so the two critical
+        # sections are sequential rather than nested and cannot deadlock.
+        backend = (await shared_resources()).backend
+        if offload_graph is None:
             async with lock:
-                if offload_graph is missing:
+                if offload_graph is None:
                     from deepagents_code.offload_middleware import (
                         create_forced_compaction_graph,
                         offload_resources_from,

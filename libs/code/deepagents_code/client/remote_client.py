@@ -496,6 +496,36 @@ class RemoteAgent:
             )
             raise
 
+    async def arebind_thread(self, config: Mapping[str, Any]) -> None:
+        """Associate an existing remote thread with this client's graph.
+
+        A run through a sibling graph changes the server-side thread's
+        `graph_id`. Restore it before a caller makes an out-of-run state
+        update, whose `as_node` is resolved against that association.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Raises:
+            ValueError: If `thread_id` is not present in `config`.
+        """  # noqa: DOC502 — raised by `_require_thread_id`
+        thread_id = _require_thread_id(config)
+        graph = self._get_graph()
+
+        try:
+            client = graph._validate_client()
+            await client.threads.update(
+                thread_id, metadata={"graph_id": self._graph_name}
+            )
+        except Exception:
+            logger.warning(
+                "Failed to associate thread %s with graph %s",
+                thread_id,
+                self._graph_name,
+                exc_info=True,
+            )
+            raise
+
     def with_config(self, config: dict[str, Any]) -> RemoteAgent:  # noqa: ARG002
         """Return self (config is passed per-call, not stored).
 

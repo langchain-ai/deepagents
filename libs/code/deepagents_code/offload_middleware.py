@@ -7,11 +7,13 @@ import hashlib
 import logging
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, Protocol, cast
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, Protocol, TypedDict, cast
+from uuid import uuid4
 
 from deepagents.backends.protocol import FILE_NOT_FOUND
 from deepagents.middleware.summarization import (
     SummarizationEvent,
+    SummarizationState,
     SummarizationToolMiddleware,
     create_summarization_middleware,
     create_summarization_tool_middleware,
@@ -20,8 +22,9 @@ from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # inspected for runtime injection
 )
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
 from langchain_core.tools import InjectedToolArg, StructuredTool
+from langgraph.graph.message import add_messages
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
@@ -44,6 +47,7 @@ from deepagents_code.hooks.server_middleware import (
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from deepagents.backends.composite import CompositeBackend
     from deepagents.backends.protocol import (
         BackendProtocol,
         EditResult,
@@ -66,10 +70,38 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class _OffloadState(CostState, total=False):
-    """Checkpoint fields required by the explicit forced-compaction graph."""
+class _OffloadState(CostState, SummarizationState, total=False):
+    """Checkpoint channels the explicit forced-compaction graph reads and writes.
 
-    _summarization_event: SummarizationEvent
+    `_summarization_event` is inherited from `SummarizationState` rather than
+    re-declared so it keeps the SDK's own annotation (`NotRequired`, `| None`,
+    and the `PrivateStateAttr` marker) instead of a divergent copy that claimed
+    the value is always present.
+
+    Note this schema does *not* by itself keep any channel out of the graph's
+    input: `PrivateStateAttr` / `OmitFromInput` are honored by `create_agent`,
+    not by a raw `StateGraph`, so every declared channel would otherwise be
+    client-writable. `_OffloadInput` is what actually restricts the surface.
+    """
+
+
+class _OffloadInput(TypedDict, total=False):
+    """The only channel a caller may write when starting an `/offload` run.
+
+    Passed as `StateGraph(input_schema=...)` so the restriction is enforced by
+    the graph rather than by the client's discipline in what it sends. Replaying
+    any other channel is actively harmful: `_session_cost_usd` reduces with
+    `operator.add`, so echoing back the checkpointed total would double the
+    thread's recorded spend on every `/offload`, and `_session_cost_transfers`
+    (`operator.or_`) would resurrect settled subagent transfers. Writable
+    `_summarization_event` would additionally let a local caller set the
+    compaction cutoff directly (see THREAT_MODEL TB10).
+
+    The node still reads the full `_OffloadState` from the checkpoint; only the
+    run *input* is narrowed.
+    """
+
+    messages: Annotated[list[AnyMessage], add_messages]
 
 
 class OffloadServerResources(NamedTuple):
@@ -78,25 +110,31 @@ class OffloadServerResources(NamedTuple):
     compaction: CLICompactionMiddleware
     """Compaction implementation bound to the agent's composite backend."""
 
-    hooks: ServerHooksMiddleware | None
-    """Lifecycle middleware, or `None` when hooks are not mounted."""
+    hooks: ServerHooksMiddleware
+    """Lifecycle middleware carrying the `PreCompact`/`PreToolUse` boundary.
+
+    Not optional: `create_cli_agent` mounts this middleware unconditionally, and
+    an absent instance would make the operation graph skip the only hook gate
+    `/offload` still crosses.
+    """
 
 
 _OFFLOAD_RESOURCES_ATTR = "_cli_offload_resources"
 """Attribute carrying `OffloadServerResources` on the composite backend.
 
 `create_cli_agent` builds this middleware but returns only the agent and the
-backend, and its 60-plus call sites unpack that pair positionally, so widening
-the return is not viable. The backend is the one object both the agent graph and
-the separately-resolved `offload` graph already hold, which makes it the
-carrier. Reaching it through `attach_offload_resources` /
+backend, and every call site unpacks that pair positionally (3 in
+`deepagents_code`, 61 in `tests`), so widening the return would churn the whole
+test suite for one server-only consumer. The backend is the one object both the
+agent graph and the separately-resolved `offload` graph already hold, which
+makes it the carrier. Reaching it through `attach_offload_resources` /
 `offload_resources_from` instead of a bare `getattr` keeps the attribute name in
 one place and the unchecked write behind a single type assertion.
 """
 
 
 def attach_offload_resources(
-    backend: object, resources: OffloadServerResources
+    backend: CompositeBackend, resources: OffloadServerResources
 ) -> None:
     """Publish the operation graph's middleware on the shared backend.
 
@@ -107,7 +145,7 @@ def attach_offload_resources(
     setattr(backend, _OFFLOAD_RESOURCES_ATTR, resources)
 
 
-def offload_resources_from(backend: object) -> OffloadServerResources | None:
+def offload_resources_from(backend: CompositeBackend) -> OffloadServerResources | None:
     """Read back the middleware published by `attach_offload_resources`.
 
     Args:
@@ -218,8 +256,13 @@ class _HasRunContext(Protocol):
     """
 
     @property
-    def context(self) -> Any:  # noqa: ANN401  # context shape is validated at use
-        """The run's context object."""
+    def context(self) -> object:
+        """The run's context object.
+
+        Typed as `object` rather than `Any`: every consumer narrows the shape
+        with `isinstance` before touching it, so `object` type-checks the same
+        code while still rejecting an unnarrowed attribute access.
+        """
         ...
 
 
@@ -242,10 +285,13 @@ def _runtime_model_config(runtime: _HasRunContext) -> RuntimeModelConfig:
             context_limit=context.model_context_limit,
         )
     if isinstance(context, dict):
-        model = context.get("model")
-        params = context.get("model_params")
-        profile_overrides = context.get("profile_overrides")
-        context_limit = context.get("model_context_limit")
+        # The remote boundary delivers the context as JSON, so the keys are
+        # strings; the values stay unknown and are narrowed individually below.
+        fields = cast("dict[str, Any]", context)
+        model = fields.get("model")
+        params = fields.get("model_params")
+        profile_overrides = fields.get("profile_overrides")
+        context_limit = fields.get("model_context_limit")
         return RuntimeModelConfig(
             model_spec=model if isinstance(model, str) else None,
             model_params=dict(params) if isinstance(params, dict) else {},
@@ -749,11 +795,15 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                         exc_info=True,
                     )
         # Reuse the original composite backend, not the `_ArchiveReadGuard`
-        # wrapper: the summarizer reads `CompositeBackend.artifacts_root` to
-        # prefix the archive path, and the guard would hide that attribute and
-        # rebuild the prefix as `/`, routing the archive write to the default
-        # (read-only) backend. The offload call sites apply the guard
-        # separately when writing.
+        # wrapper: the SDK resolves the archive prefix once in its constructor
+        # via `backend.artifacts_root if isinstance(backend, CompositeBackend)`,
+        # and the guard is not a `CompositeBackend`, so that check falls back to
+        # a `/` prefix. The archive write would then miss the
+        # `conversation_history` route and land in the default backend --
+        # silently writing into the user's project tree. Adding an
+        # `artifacts_root` passthrough to the guard would not help; the
+        # `isinstance` is what fails. The offload call sites apply the guard
+        # separately when writing (see `_guarded_backend` call sites).
         return create_summarization_middleware(model, self._summarization._backend)
 
     def _run_forced_compact(self, runtime: ToolRuntime) -> Command:
@@ -950,7 +1000,7 @@ def _create_cli_compaction_middleware(
 def create_forced_compaction_graph(
     middleware: CLICompactionMiddleware,
     *,
-    hooks_middleware: ServerHooksMiddleware | None = None,
+    hooks_middleware: ServerHooksMiddleware | None,
 ) -> CompiledStateGraph[Any, CLIContextSchema, Any, Any]:
     """Create the dedicated server graph used by the `/offload` command.
 
@@ -962,10 +1012,13 @@ def create_forced_compaction_graph(
     Args:
         middleware: Compaction implementation configured with the agent's
             composite backend.
-        hooks_middleware: Optional server lifecycle middleware shared with the
-            interactive graph. It is invoked against an in-memory forced tool
-            call so `PreCompact` retains its normal authorization boundary
-            without persisting synthetic conversation messages.
+        hooks_middleware: Server lifecycle middleware shared with the
+            interactive graph, or an explicit `None` to run with no hook gate.
+            It is invoked against an in-memory forced tool call so `PreCompact`
+            (and `PreToolUse`, which the same hook boundary dispatches for the
+            forced call) retains its normal authorization boundary without
+            persisting synthetic conversation messages. Required rather than
+            defaulted so skipping the gate cannot happen by omission.
 
     Returns:
         A checkpointable graph that performs one forced compaction attempt.
@@ -978,34 +1031,54 @@ def create_forced_compaction_graph(
         state: _OffloadState, runtime: Runtime[CLIContextSchema]
     ) -> dict[str, object]:
         if hooks_middleware is not None:
-            hook_update = await hooks_middleware.aafter_model(
-                cast(
-                    "Any",
-                    {
-                        "messages": [
-                            AIMessage(
-                                content="",
-                                tool_calls=[
-                                    {
-                                        "name": "compact_conversation",
-                                        "args": {"force": True},
-                                        "id": "offload-precompact",
-                                    }
-                                ],
-                            )
-                        ]
-                    },
-                ),
-                cast("Runtime[Any]", runtime),
-            )
+            # A fresh id per invocation. `ServerHooksMiddleware` derives its hook
+            # `invocation_id` from this value together with the thread, hook
+            # snapshot, and prompt id, then memoizes fulfillments by that id.
+            # Because the prompt id only rotates on user-prompt submit, a
+            # constant here would make two `/offload`s within one turn collide
+            # and replay the first run's decision -- including a denial --
+            # instead of re-running the user's hook.
+            forced_call_id = f"offload-precompact-{uuid4()}"
+            try:
+                hook_update = await hooks_middleware.aafter_model(
+                    cast(
+                        "Any",
+                        {
+                            "messages": [
+                                AIMessage(
+                                    content="",
+                                    tool_calls=[
+                                        {
+                                            "name": "compact_conversation",
+                                            "args": {"force": True},
+                                            "id": forced_call_id,
+                                        }
+                                    ],
+                                )
+                            ]
+                        },
+                    ),
+                    cast("Runtime[Any]", runtime),
+                )
+            except Exception as exc:
+                logger.exception("/offload hook dispatch failed")
+                # Same `RuntimeError` re-raise rationale as the compaction
+                # failure below, but worded so a hook-layer failure is not read
+                # as a compaction failure. Nothing has been written yet here.
+                msg = (
+                    f"Offload hooks failed: {type(exc).__name__}: {exc}. "
+                    "Your conversation is unchanged."
+                )
+                raise RuntimeError(msg) from exc
             outcomes = hook_update.get("_hooks_pre_tool_outcomes", {})
-            outcome = outcomes.get("offload-precompact", {})
+            outcome = outcomes.get(forced_call_id, {})
             if outcome.get("behavior") == "deny":
                 # Returning `{}` here would be indistinguishable from "nothing
                 # old enough to compact", so the client would report a hook
                 # veto as "the conversation is already compact". Raise instead
-                # so the reason reaches the user.
-                reason = outcome.get("reason") or "Blocked by PreCompact hook"
+                # so the reason reaches the user. Deliberately not re-wrapped by
+                # the handler below: this message is already user-facing.
+                reason = outcome.get("reason") or "Blocked by a compaction hook"
                 raise RuntimeError(str(reason))
         try:
             update = await middleware.arun_forced_compaction_update(state, runtime)
@@ -1028,10 +1101,28 @@ def create_forced_compaction_graph(
             raise RuntimeError(msg) from exc
         # Summary generation invokes a model outside the normal agent loop, so
         # drain it here rather than leaving this run's checkpoint incomplete.
-        cost_update = await cost_tracking.aafter_agent(state, runtime)
+        #
+        # A drain failure must not propagate: `update` already reflects an
+        # archive section written to the backend, so raising here would discard
+        # it and tell the user their conversation is unchanged while leaving an
+        # orphaned section no `_summarization_event` references. Undrained spend
+        # is merely charged on the next turn, which is the same outcome as the
+        # failure path above.
+        try:
+            cost_update = await cost_tracking.aafter_agent(state, runtime)
+        except Exception:
+            logger.exception(
+                "Failed to drain summary cost after /offload; the spend is "
+                "charged on the next turn instead"
+            )
+            cost_update = None
         return {**(update or {}), **(cost_update or {})}
 
-    graph = StateGraph(cast("Any", _OffloadState), context_schema=CLIContextSchema)
+    graph = StateGraph(
+        cast("Any", _OffloadState),
+        context_schema=CLIContextSchema,
+        input_schema=cast("Any", _OffloadInput),
+    )
     graph.add_node("force_compact", force_compact)
     graph.add_edge(START, "force_compact")
     graph.add_edge("force_compact", END)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import stat
 import tempfile
+from collections.abc import Callable  # noqa: TC003
 from contextlib import nullcontext
 from pathlib import Path, PureWindowsPath
 from typing import Annotated, Any, TypedDict, cast
@@ -1130,6 +1131,51 @@ class TestOffloadErrorHandling:
             error_msgs = app.query(ErrorMessage)
             assert any("Offload failed" in str(w._content) for w in error_msgs)
 
+    async def test_remote_exception_is_unwrapped_not_shown_as_a_dict(self) -> None:
+        """A server-side failure must read as prose, not a Python dict repr.
+
+        The operation graph reports failure by raising, so a server-backed
+        `/offload` surfaces a `RemoteException` whose sole arg is the server's
+        error payload dict. `str()` on that renders `{'error': ..., 'message':
+        ...}`; only `format_agent_exception` unwraps it. Every other test on this
+        path raises a plain `RuntimeError`, for which the two are identical.
+        """
+        from langgraph.pregel.remote import RemoteException
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before = _state_values(_make_dict_messages(10))
+            remote_exc = RemoteException(
+                {
+                    "error": "RuntimeError",
+                    "message": "Compaction failed: OSError: disk full.",
+                }
+            )
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, before],
+                ),
+                patch.object(
+                    app,
+                    "_drive_offload_operation_graph",
+                    new_callable=AsyncMock,
+                    side_effect=remote_exc,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            error_text = " ".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "disk full" in error_text
+            assert "{'error'" not in error_text
+
     async def test_spinner_hidden_after_failure(self) -> None:
         """Should hide spinner even when offload fails."""
         app = DeepAgentsApp()
@@ -1778,6 +1824,147 @@ class TestOffloadToolGuard:
         handler.assert_awaited_once_with(request)
 
 
+class TestOffloadSessionStartHook:
+    """`SessionStart(COMPACT)` fires once, from whichever driver ran."""
+
+    @staticmethod
+    def _offloaded_state() -> tuple[dict[str, Any], dict[str, Any]]:
+        """Build before/after state where compaction advanced the cutoff.
+
+        Returns:
+            The pre-run and post-run thread state.
+        """
+        before = _state_values(_make_dict_messages(6))
+        after = _state_values(_make_dict_messages(6))
+        after["_summarization_event"] = {
+            "cutoff_index": 4,
+            "summary_message": {"type": "ai", "content": "summary"},
+            "file_path": "/conversation_history/t.md",
+        }
+        return before, after
+
+    async def test_operation_graph_path_fires_the_compact_boundary(self) -> None:
+        """A configured `SessionStart` hook must see `/offload` on this path too.
+
+        The seeded driver fires this from inside its drain, keyed on the
+        compaction tool result. The operation graph produces no tool result, so
+        without an explicit call here a configured hook would silently never run
+        for server-backed `/offload` — and every success test would still pass.
+        """
+        from deepagents_code.hooks.models.domain import SessionStartCause
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+            before, after = self._offloaded_state()
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_offload_operation_graph",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch.object(
+                    app,
+                    "_run_session_start_hook",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ) as hook,
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            hook.assert_awaited_once_with(SessionStartCause.COMPACT)
+
+    async def test_seeded_path_does_not_fire_it_twice(self) -> None:
+        """The seeded driver owns the boundary, so `_handle_offload` must not.
+
+        Both firing would run a user's `SessionStart` hook twice for one
+        `/offload`.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_local_offload_app(app)
+            before, after = self._offloaded_state()
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_legacy_seeded_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch.object(
+                    app,
+                    "_run_session_start_hook",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ) as hook,
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            hook.assert_not_awaited()
+
+    async def test_hook_stop_still_reports_the_committed_offload(self) -> None:
+        """A stopping hook must not hide an offload that already committed.
+
+        Compaction is durable by the time this hook runs, so returning early
+        would leave the user with only "stopped by a hook" while their
+        conversation *was* compacted and the status bar kept pre-offload counts.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+            before, after = self._offloaded_state()
+            tokens: list[int] = []
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_offload_operation_graph",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+                patch.object(
+                    app,
+                    "_run_session_start_hook",
+                    new_callable=AsyncMock,
+                    return_value=False,
+                ),
+                patch.object(app, "_on_tokens_update", side_effect=tokens.append),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            text = " ".join(str(w._content) for w in app.query(AppMessage))
+            assert "Offloaded" in text
+            # The status bar is refreshed rather than left pre-offload.
+            assert tokens
+
+
 class TestServerOperationOffload:
     """The slash command uses the explicit server operation graph."""
 
@@ -1796,9 +1983,20 @@ class TestServerOperationOffload:
         operation.astream = stream
         remote = MagicMock()
         remote.aensure_thread = AsyncMock()
+        remote.arebind_thread = AsyncMock()
         remote.for_graph.return_value = operation
 
-        state_values = {"messages": [{"type": "human", "content": "hi"}]}
+        messages = [{"type": "human", "content": "hi"}]
+        # A realistic thread carries far more than `messages`. Every extra
+        # channel here must be withheld from the run input.
+        state_values = {
+            "messages": messages,
+            "_summarization_event": {"cutoff_index": 2, "summary_message": {}},
+            "_session_cost_usd": 0.42,
+            "_session_cost_transfers": {"scope": {"total": 1.0}},
+            "_goal_objective": "ship it",
+            "todos": [{"content": "t", "status": "pending"}],
+        }
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent = MagicMock()
@@ -1812,9 +2010,13 @@ class TestServerOperationOffload:
             {"configurable": {"thread_id": "test-thread"}}
         )
         remote.for_graph.assert_called_once_with("offload")
-        # The persisted state is replayed as the input so the node sees the
-        # real conversation rather than an emptied message list.
-        assert stream_args == [state_values]
+        # `messages` is replayed so the node sees the real conversation rather
+        # than an emptied list -- and *nothing else* is. Replaying
+        # `_session_cost_usd` would double the thread's persisted spend on every
+        # `/offload` (it reduces with `operator.add`), and a writable
+        # `_summarization_event` would let the caller set the compaction cutoff.
+        # Asserted by exact key set so a newly-replayed channel fails here.
+        assert stream_args == [{"messages": messages}]
         context = stream_kwargs["context"]
         assert isinstance(context, dict)
         assert "offload_tool_call_id" not in context
@@ -1824,8 +2026,10 @@ class TestServerOperationOffload:
 
         The server records the last-run graph on the thread; leaving it at
         `offload` would send later out-of-run `as_node="model"` state writes to
-        a graph with no model node. The driver writes an empty update through
-        the main client to bind the thread back to the interactive graph.
+        a graph with no model node. The driver rebinds the thread's `graph_id`
+        metadata through the main client. An empty `aupdate_state` cannot do
+        this -- it resolves against the thread's *current* graph association --
+        so the rebind must go through `arebind_thread`.
         """
         app = DeepAgentsApp()
         operation = MagicMock()
@@ -1836,7 +2040,7 @@ class TestServerOperationOffload:
         operation.astream = stream
         remote = MagicMock()
         remote.aensure_thread = AsyncMock()
-        remote.aupdate_state = AsyncMock()
+        remote.arebind_thread = AsyncMock()
         remote.for_graph.return_value = operation
 
         async with app.run_test() as pilot:
@@ -1849,12 +2053,22 @@ class TestServerOperationOffload:
                     {"messages": [{"type": "human", "content": "hi"}]},
                 )
 
-        remote.aupdate_state.assert_awaited_once_with(
-            {"configurable": {"thread_id": "test-thread"}}, {}
+        remote.arebind_thread.assert_awaited_once_with(
+            {"configurable": {"thread_id": "test-thread"}}
         )
 
-    async def test_graph_restore_failure_does_not_mask_offload(self) -> None:
-        """A failed `graph_id` restore logs and still reports the offload result."""
+    async def test_graph_restore_failure_warns_without_failing_the_offload(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failed rebind is reported to the user but does not fail the offload.
+
+        The offload itself succeeded, so this must not surface as a failure. It
+        must not be silent either: the thread stays bound to the `offload`
+        graph, so an unrelated later `/goal` or `/rubric` would fail with no
+        explanation.
+        """
+        from deepagents_code.app import _OFFLOAD_REBIND_WARNING
+
         app = DeepAgentsApp()
         operation = MagicMock()
 
@@ -1864,20 +2078,75 @@ class TestServerOperationOffload:
         operation.astream = stream
         remote = MagicMock()
         remote.aensure_thread = AsyncMock()
-        remote.aupdate_state = AsyncMock(side_effect=RuntimeError("server gone"))
+        remote.arebind_thread = AsyncMock(side_effect=RuntimeError("server gone"))
         remote.for_graph.return_value = operation
 
         async with app.run_test() as pilot:
             await pilot.pause()
             app._agent = MagicMock()
             app._lc_thread_id = "test-thread"
-            with patch.object(app, "_remote_agent", return_value=remote):
+            with (
+                patch.object(app, "_remote_agent", return_value=remote),
+                caplog.at_level("WARNING"),
+            ):
                 result = await app._drive_offload_operation_graph(
                     {"configurable": {"thread_id": "test-thread"}},
                     {"messages": [{"type": "human", "content": "hi"}]},
                 )
+                await pilot.pause()
 
-        assert result is None
+                # Not reported as a drain failure -- the offload still succeeded.
+                assert result is None
+                error_text = " ".join(
+                    str(widget._content) for widget in app.query(ErrorMessage)
+                )
+
+        assert "Failed to restore the thread's main graph association" in caplog.text
+        assert _OFFLOAD_REBIND_WARNING in error_text
+
+    async def test_stream_error_is_not_masked_by_a_failing_rebind(self) -> None:
+        """A rebind failure in the `finally` must not replace the stream error.
+
+        The caller distinguishes a committed-but-interrupted offload from a
+        failed one by the exception it sees; swallowing the real error in favor
+        of the bookkeeping failure would lose that. The rebind warning is also
+        suppressed here — it says the offload finished, which is false on this
+        path, and the caller reports the real failure instead.
+        """
+        from deepagents_code.app import _OFFLOAD_REBIND_WARNING
+
+        app = DeepAgentsApp()
+        operation = MagicMock()
+
+        async def stream(*_args: object, **_kwargs: object):  # noqa: ANN202, RUF029
+            yield (), "updates", {"force_compact": {}}
+            msg = "stream died"
+            raise RuntimeError(msg)
+
+        operation.astream = stream
+        remote = MagicMock()
+        remote.aensure_thread = AsyncMock()
+        remote.arebind_thread = AsyncMock(side_effect=RuntimeError("server gone"))
+        remote.for_graph.return_value = operation
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = MagicMock()
+            app._lc_thread_id = "test-thread"
+            with (
+                patch.object(app, "_remote_agent", return_value=remote),
+                pytest.raises(RuntimeError, match="stream died"),
+            ):
+                await app._drive_offload_operation_graph(
+                    {"configurable": {"thread_id": "test-thread"}},
+                    {"messages": [{"type": "human", "content": "hi"}]},
+                )
+            await pilot.pause()
+            error_text = " ".join(
+                str(widget._content) for widget in app.query(ErrorMessage)
+            )
+
+        assert _OFFLOAD_REBIND_WARNING not in error_text
 
     @staticmethod
     def _hooks_patch(manager: MagicMock):  # noqa: ANN205
@@ -1915,7 +2184,7 @@ class TestServerOperationOffload:
         operation.astream = stream
         remote = MagicMock()
         remote.aensure_thread = AsyncMock()
-        remote.aupdate_state = AsyncMock()
+        remote.arebind_thread = AsyncMock()
         remote.for_graph.return_value = operation
 
         async with app.run_test() as pilot:
@@ -1943,7 +2212,14 @@ class TestServerOperationOffload:
         assert getattr(resume, "resume", None) == {"interrupt-1": {"decision": "ok"}}
 
     async def test_unbounded_hook_interrupts_stop_at_resume_cap(self) -> None:
-        """A hook that interrupts every round cannot loop the driver forever."""
+        """A hook interrupting every round is bounded *and* reported.
+
+        Reporting is the load-bearing half. The driver returns `None` for a
+        successful run, and the caller reads an unchanged `_summarization_event`
+        as "nothing to offload" -- so a silent give-up would tell the user their
+        conversation is already compact while the run sits paused mid-interrupt
+        and nothing was compacted at all.
+        """
         app = DeepAgentsApp()
         operation = MagicMock()
         hook_interrupt = MagicMock()
@@ -1959,7 +2235,7 @@ class TestServerOperationOffload:
         operation.astream = stream
         remote = MagicMock()
         remote.aensure_thread = AsyncMock()
-        remote.aupdate_state = AsyncMock()
+        remote.arebind_thread = AsyncMock()
         remote.for_graph.return_value = operation
 
         async with app.run_test() as pilot:
@@ -1980,8 +2256,62 @@ class TestServerOperationOffload:
 
         from deepagents_code.app import _OFFLOAD_MAX_RESUME_ROUNDS
 
-        assert result is None
-        assert rounds == _OFFLOAD_MAX_RESUME_ROUNDS
+        assert rounds == _OFFLOAD_MAX_RESUME_ROUNDS + 1
+        assert result is not None
+        assert "could not complete" in result
+        assert str(_OFFLOAD_MAX_RESUME_ROUNDS) in result
+
+    async def test_unanswerable_interrupt_is_reported_not_silently_dropped(
+        self,
+    ) -> None:
+        """An approval-shaped interrupt this client cannot answer is an error.
+
+        A `PreToolUse` hook returning an `ask` permission makes the hook
+        middleware raise a plain `HITLRequest`, which is not a hook-invocation
+        payload. The operation graph has no HITL middleware to route it, so the
+        run stays paused; dropping it silently would surface as "the
+        conversation is already compact".
+        """
+        app = DeepAgentsApp()
+        operation = MagicMock()
+        approval = MagicMock()
+        approval.id = "interrupt-1"
+        approval.value = {"action_request": {"action": "compact_conversation"}}
+        rounds = 0
+
+        async def stream(_input: object, **_kwargs: object):  # noqa: ANN202, RUF029
+            nonlocal rounds
+            rounds += 1
+            yield (), "updates", {"__interrupt__": [approval]}
+
+        operation.astream = stream
+        remote = MagicMock()
+        remote.aensure_thread = AsyncMock()
+        remote.arebind_thread = AsyncMock()
+        remote.for_graph.return_value = operation
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._agent = MagicMock()
+            app._lc_thread_id = "test-thread"
+            manager = MagicMock(spec=HooksManager)
+            manager.apply_graph_context = MagicMock()
+            manager.fulfill_interrupt = AsyncMock()
+            with (
+                patch.object(app, "_remote_agent", return_value=remote),
+                self._hooks_patch(manager),
+            ):
+                result = await app._drive_offload_operation_graph(
+                    {"configurable": {"thread_id": "test-thread"}},
+                    {"messages": [{"type": "human", "content": "hi"}]},
+                )
+
+        # Bails on the first round rather than burning the whole resume budget,
+        # and never tries to fulfill a payload the hook engine cannot parse.
+        assert rounds == 1
+        assert result is not None
+        assert "approval" in result
+        manager.fulfill_interrupt.assert_not_awaited()
 
 
 class TestDriveLegacySeededCompaction:
@@ -2972,6 +3302,34 @@ class TestOffloadHelpers:
         assert _find_compaction_failure([{"type": "tool", "content": "ok"}]) is None
 
 
+def _deny_dispatched_call(
+    reason: str | None,
+) -> Callable[[Any, Any], dict[str, Any]]:
+    """Build an `aafter_model` stub that denies whichever call was dispatched.
+
+    Keys the outcome on the tool-call id the node actually generated rather than
+    a fixed literal. The node mints a fresh id per invocation (so a hook
+    fulfillment cannot be memoized across two `/offload`s in one turn), so a
+    hardcoded key here would silently stop matching and the denial would be
+    read as "no outcome" instead of failing loudly.
+
+    Args:
+        reason: Denial reason, or `None` to omit it.
+
+    Returns:
+        A side-effect callable for an `AsyncMock`.
+    """
+
+    def deny(state: Any, _runtime: Any) -> dict[str, Any]:  # noqa: ANN401
+        call_id = state["messages"][0].tool_calls[0]["id"]
+        outcome: dict[str, Any] = {"behavior": "deny"}
+        if reason is not None:
+            outcome["reason"] = reason
+        return {"_hooks_pre_tool_outcomes": {call_id: outcome}}
+
+    return deny
+
+
 class TestForcedCompactionGraph:
     """Lifecycle and cost guarantees of the dedicated `/offload` graph."""
 
@@ -2990,14 +3348,7 @@ class TestForcedCompactionGraph:
         middleware.arun_forced_compaction_update = AsyncMock()
         hooks = MagicMock()
         hooks.aafter_model = AsyncMock(
-            return_value={
-                "_hooks_pre_tool_outcomes": {
-                    "offload-precompact": {
-                        "behavior": "deny",
-                        "reason": "policy forbids compaction",
-                    }
-                }
-            }
+            side_effect=_deny_dispatched_call("policy forbids compaction")
         )
 
         graph = create_forced_compaction_graph(middleware, hooks_middleware=hooks)
@@ -3015,14 +3366,10 @@ class TestForcedCompactionGraph:
         middleware = MagicMock()
         middleware.arun_forced_compaction_update = AsyncMock()
         hooks = MagicMock()
-        hooks.aafter_model = AsyncMock(
-            return_value={
-                "_hooks_pre_tool_outcomes": {"offload-precompact": {"behavior": "deny"}}
-            }
-        )
+        hooks.aafter_model = AsyncMock(side_effect=_deny_dispatched_call(None))
 
         graph = create_forced_compaction_graph(middleware, hooks_middleware=hooks)
-        with pytest.raises(RuntimeError, match="Blocked by PreCompact hook"):
+        with pytest.raises(RuntimeError, match="Blocked by a compaction hook"):
             await cast("Any", graph).ainvoke({"messages": []}, context=CLIContext())
 
         middleware.arun_forced_compaction_update.assert_not_awaited()
@@ -3043,7 +3390,7 @@ class TestForcedCompactionGraph:
             side_effect=OSError("disk is full")
         )
 
-        graph = create_forced_compaction_graph(middleware)
+        graph = create_forced_compaction_graph(middleware, hooks_middleware=None)
         with pytest.raises(RuntimeError, match="OSError: disk is full") as exc_info:
             await cast("Any", graph).ainvoke({"messages": []}, context=CLIContext())
 
@@ -3071,11 +3418,148 @@ class TestForcedCompactionGraph:
             side_effect=OSError("disk is full")
         )
 
-        graph = offload_middleware.create_forced_compaction_graph(middleware)
+        graph = offload_middleware.create_forced_compaction_graph(
+            middleware, hooks_middleware=None
+        )
         with pytest.raises(RuntimeError):
             await cast("Any", graph).ainvoke({"messages": []}, context=CLIContext())
 
         cost_tracking.aafter_agent.assert_not_awaited()
+
+    def test_only_messages_is_a_writable_input_channel(self) -> None:
+        """The run input surface is restricted by the graph, not by the client.
+
+        `PrivateStateAttr` / `OmitFromInput` on the state schema are honored by
+        `create_agent`, *not* by a raw `StateGraph`, so without an explicit
+        `input_schema` every channel `_OffloadState` declares would be writable
+        by any local caller on the same `noop`-auth port (see THREAT_MODEL TB10):
+        `_summarization_event` would let them set the compaction cutoff, and
+        `_session_cost_usd` (an `operator.add` channel) would let them inflate
+        the thread's recorded spend.
+        """
+        from deepagents_code.offload_middleware import create_forced_compaction_graph
+
+        graph = create_forced_compaction_graph(MagicMock(), hooks_middleware=None)
+
+        assert set(graph.get_input_jsonschema()["properties"]) == {"messages"}
+
+    async def test_private_channel_in_input_is_dropped_not_applied(self) -> None:
+        """An injected private channel must not reach the node or the checkpoint.
+
+        The schema check above is the mechanism; this is the behavior. A replayed
+        `_session_cost_usd` would *add* to the thread's total, so echoing the
+        checkpointed value back would double the recorded spend on every
+        `/offload` and compound across runs.
+        """
+        from langchain_core.messages import HumanMessage
+
+        from deepagents_code._cli_context import CLIContext
+        from deepagents_code.offload_middleware import create_forced_compaction_graph
+
+        seen: dict[str, Any] = {}
+        middleware = MagicMock()
+
+        async def capture(state: Any, _runtime: Any) -> dict[str, Any]:  # noqa: ANN401, RUF029
+            seen.update(state)
+            return {}
+
+        middleware.arun_forced_compaction_update = AsyncMock(side_effect=capture)
+        graph = create_forced_compaction_graph(middleware, hooks_middleware=None)
+
+        out = await cast("Any", graph).ainvoke(
+            {
+                "messages": [HumanMessage("hi", id="m1")],
+                "_session_cost_usd": 0.42,
+                "_summarization_event": {"cutoff_index": 99},
+            },
+            context=CLIContext(),
+        )
+
+        assert seen.get("_session_cost_usd") == pytest.approx(0.0)
+        assert seen.get("_summarization_event") is None
+        assert [m.content for m in seen["messages"]] == ["hi"]
+        assert out.get("_session_cost_usd") == pytest.approx(0.0)
+
+    async def test_forced_hook_call_id_is_unique_per_invocation(self) -> None:
+        """Two `/offload`s in one turn must not share a hook invocation id.
+
+        `ServerHooksMiddleware` derives its `invocation_id` from this id plus the
+        thread, hook snapshot, and prompt id — and the prompt id only rotates on
+        user-prompt submit. A constant id would therefore collide across two
+        `/offload`s in one turn and replay the first decision, so a first-run
+        *denial* would silently deny the second run too.
+        """
+        from deepagents_code._cli_context import CLIContext
+        from deepagents_code.offload_middleware import create_forced_compaction_graph
+
+        seen_ids: list[str] = []
+        middleware = MagicMock()
+        middleware.arun_forced_compaction_update = AsyncMock(return_value={})
+        hooks = MagicMock()
+
+        async def record(state: Any, _runtime: Any) -> dict[str, Any]:  # noqa: ANN401, RUF029
+            seen_ids.append(state["messages"][0].tool_calls[0]["id"])
+            return {}
+
+        hooks.aafter_model = AsyncMock(side_effect=record)
+        graph = create_forced_compaction_graph(middleware, hooks_middleware=hooks)
+
+        await cast("Any", graph).ainvoke({"messages": []}, context=CLIContext())
+        await cast("Any", graph).ainvoke({"messages": []}, context=CLIContext())
+
+        assert len(seen_ids) == 2
+        assert seen_ids[0] != seen_ids[1]
+
+    async def test_hook_dispatch_failure_is_reported_as_a_hook_failure(self) -> None:
+        """A hook-layer crash must not reach the user as "internal error".
+
+        The server replaces the message of any exception outside its builtin
+        allowlist, so this has to be re-raised as `RuntimeError` like the
+        compaction failure — but worded so it is not read as a compaction bug.
+        """
+        from deepagents_code._cli_context import CLIContext
+        from deepagents_code.offload_middleware import create_forced_compaction_graph
+
+        middleware = MagicMock()
+        middleware.arun_forced_compaction_update = AsyncMock()
+        hooks = MagicMock()
+        hooks.aafter_model = AsyncMock(side_effect=OSError("hook socket died"))
+        graph = create_forced_compaction_graph(middleware, hooks_middleware=hooks)
+
+        with pytest.raises(RuntimeError, match=r"Offload hooks failed.*socket died"):
+            await cast("Any", graph).ainvoke({"messages": []}, context=CLIContext())
+
+        middleware.arun_forced_compaction_update.assert_not_awaited()
+
+    async def test_cost_drain_failure_does_not_discard_the_compaction(self) -> None:
+        """A bookkeeping failure must not throw away a committed archive write.
+
+        By the time the drain runs, the archive section is already written. Raising
+        here would report "your conversation is unchanged" while leaving an
+        orphaned section no `_summarization_event` references.
+        """
+        from deepagents_code import offload_middleware
+        from deepagents_code._cli_context import CLIContext
+
+        event = {"cutoff_index": 3, "summary_message": None, "file_path": "/a.md"}
+        middleware = MagicMock()
+        middleware.arun_forced_compaction_update = AsyncMock(
+            return_value={"_summarization_event": event}
+        )
+
+        with patch.object(
+            offload_middleware.CostTrackingMiddleware,
+            "aafter_agent",
+            new=AsyncMock(side_effect=RuntimeError("pricing down")),
+        ):
+            graph = offload_middleware.create_forced_compaction_graph(
+                middleware, hooks_middleware=None
+            )
+            out = await cast("Any", graph).ainvoke(
+                {"messages": []}, context=CLIContext()
+            )
+
+        assert out["_summarization_event"] == event
 
     async def test_operation_graph_preserves_agent_only_channels(self) -> None:
         """The narrow operation schema must not drop the agent's other state.
@@ -3117,7 +3601,7 @@ class TestForcedCompactionGraph:
         middleware.arun_forced_compaction_update = AsyncMock(
             return_value={"_summarization_event": {"cutoff_index": 1}}
         )
-        offload = create_forced_compaction_graph(middleware)
+        offload = create_forced_compaction_graph(middleware, hooks_middleware=None)
         # `create_forced_compaction_graph` compiles without a checkpointer
         # because the LangGraph server attaches its own to every registered
         # graph. Do the same here so both graphs share one thread.
@@ -3169,7 +3653,7 @@ class TestForcedCompactionGraph:
 
         middleware = MagicMock()
         middleware.arun_forced_compaction_update = AsyncMock(return_value=None)
-        offload = create_forced_compaction_graph(middleware)
+        offload = create_forced_compaction_graph(middleware, hooks_middleware=None)
         cast("Any", offload).checkpointer = checkpointer
         await cast("Any", offload).ainvoke(
             {"messages": seeded}, config, context=CLIContext()
@@ -3188,7 +3672,7 @@ class TestForcedCompactionGraph:
         middleware = MagicMock()
         middleware.arun_forced_compaction_update = AsyncMock(return_value=None)
 
-        graph = create_forced_compaction_graph(middleware)
+        graph = create_forced_compaction_graph(middleware, hooks_middleware=None)
         result = await cast("Any", graph).ainvoke(
             {"messages": []}, context=CLIContext()
         )
@@ -3212,7 +3696,9 @@ class TestForcedCompactionGraph:
             return_value={"_summarization_event": {"cutoff_index": 2}}
         )
 
-        graph = offload_middleware.create_forced_compaction_graph(middleware)
+        graph = offload_middleware.create_forced_compaction_graph(
+            middleware, hooks_middleware=None
+        )
         result = await cast("Any", graph).ainvoke(
             {"messages": []}, context=CLIContext()
         )

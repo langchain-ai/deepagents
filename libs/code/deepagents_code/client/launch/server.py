@@ -167,6 +167,9 @@ def generate_langgraph_json(
 ) -> Path:
     """Generate a `langgraph.json` config file for `langgraph dev`.
 
+    Registers two graphs: the interactive `agent` and the `offload` operation
+    graph the `/offload` command streams.
+
     Args:
         output_dir: Directory to write the config file.
         graph_ref: Python "module:attribute" reference to the graph, where the
@@ -179,11 +182,18 @@ def generate_langgraph_json(
     Returns:
         Path to the generated config file.
     """
+    # Derive the offload factory from the same module as the agent factory. The
+    # two graphs share one server runtime only because both refs resolve into
+    # the same `_build_graph_factories` closure; a hardcoded offload ref would
+    # silently build a *second* runtime (duplicate sandbox, MCP discovery, and
+    # `atexit` handlers) the moment `graph_ref` named a different module.
+    module, _, _attr = graph_ref.rpartition(":")
+    offload_ref = f"{module}:make_offload_graph" if module else graph_ref
     config: dict[str, Any] = {
         "dependencies": ["."],
         "graphs": {
             "agent": graph_ref,
-            "offload": "deepagents_code.server_graph:make_offload_graph",
+            "offload": offload_ref,
         },
     }
     if env_file:

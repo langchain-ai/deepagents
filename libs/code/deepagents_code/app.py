@@ -9350,14 +9350,10 @@ class DeepAgentsApp(App):
                 try:
                     await self._adopt_resumed_model_if_needed(
                         model_spec=(
-                            resume_payload.model_spec
-                            if resume_payload is not None
-                            else None
+                            resume_payload.model_spec if resume_payload else None
                         ),
                         model_params=(
-                            resume_payload.model_params
-                            if resume_payload is not None
-                            else None
+                            resume_payload.model_params if resume_payload else None
                         ),
                         thread_id=self._lc_thread_id,
                     )
@@ -16540,9 +16536,7 @@ class DeepAgentsApp(App):
             context_tokens: Latest model-reported context size for the thread.
 
         Returns:
-            The user's choice. Threads at or below the configured threshold
-            continue without showing a prompt. A prompt failure also continues so
-            a cosmetic UI fault cannot strand a resumable thread.
+            The user's choice, or `"continue"` when no prompt is needed or it fails.
         """
         from deepagents_code.config import get_compact_on_resume_threshold
 
@@ -20679,9 +20673,6 @@ class DeepAgentsApp(App):
         if preloaded_payload is not None and resume_thread_id is None:
             msg = "preloaded thread history requires resume_thread_id"
             raise ValueError(msg)
-        if compact_on_resume and resume_thread_id is None:
-            msg = "resume compaction requires resume_thread_id"
-            raise ValueError(msg)
 
         from deepagents_code._env_vars import SERVER_ENV_PREFIX
         from deepagents_code.client.remote_client import RemoteAgent as _RemoteAgent
@@ -24335,35 +24326,27 @@ class DeepAgentsApp(App):
         # message pump so those modals can receive their resolving key events.
         active_agent = self._assistant_id or DEFAULT_ASSISTANT_ID
         if target.agent_name == active_agent:
-            self._schedule_off_message_pump(
-                self._resume_same_agent_thread(target.thread_id),
-                context=f"threads-resume:{target.thread_id}",
-            )
-            return
 
+            async def resume() -> None:
+                try:
+                    await self._resume_thread(target.thread_id)
+                except Exception as exc:
+                    logger.exception(
+                        "Same-agent resume failed for thread %s", target.thread_id
+                    )
+                    await self._mount_message(
+                        ErrorMessage(
+                            f"Could not resume thread {target.thread_id}: {exc}."
+                        )
+                    )
+
+            continuation = resume()
+        else:
+            continuation = self._confirm_then_resume_cross_agent_thread(target)
         self._schedule_off_message_pump(
-            self._confirm_then_resume_cross_agent_thread(target),
+            continuation,
             context=f"threads-resume:{target.thread_id}",
         )
-
-    async def _resume_same_agent_thread(self, thread_id: str) -> None:
-        """Resume a thread from a detached slash-command continuation.
-
-        Args:
-            thread_id: Thread to resume.
-
-        Raises:
-            asyncio.CancelledError: If app shutdown cancels the continuation.
-        """
-        try:
-            await self._resume_thread(thread_id)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.exception("Same-agent resume failed for thread %s", thread_id)
-            await self._mount_message(
-                ErrorMessage(f"Could not resume thread {thread_id}: {exc}.")
-            )
 
     async def _resolve_threads_resume_target(
         self, requested_id: str | None

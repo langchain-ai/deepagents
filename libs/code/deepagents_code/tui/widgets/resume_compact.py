@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
@@ -10,16 +10,13 @@ from textual.screen import ModalScreen
 from textual.widgets import Static
 
 from deepagents_code._session_stats import format_token_count
+from deepagents_code.tui.widgets.cwd_switch import CwdSwitchPromptScreen
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult
 
-    from deepagents_code.app import DeepAgentsApp
 
-ResumeCompactChoice = Literal["compact", "continue", "cancel"]
-
-
-class ResumeCompactPromptScreen(ModalScreen[ResumeCompactChoice]):
+class ResumeCompactPromptScreen(ModalScreen[Literal["compact", "continue", "cancel"]]):
     """Ask whether to compact a large thread before resuming it."""
 
     can_focus = True
@@ -29,50 +26,15 @@ class ResumeCompactPromptScreen(ModalScreen[ResumeCompactChoice]):
         Binding("enter", "compact", "Compact", show=False, priority=True),
         Binding("c", "continue", "Continue", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
-        Binding(
-            "ctrl+c",
-            "quit_or_interrupt",
-            "Quit/Interrupt",
-            show=False,
-            priority=True,
-        ),
-        Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
     ]
 
-    CSS = """
-    ResumeCompactPromptScreen {
-        align: center middle;
-    }
-
-    ResumeCompactPromptScreen > Vertical {
-        width: 72;
-        max-width: 90%;
-        height: auto;
-        background: $surface;
-        border: solid $warning;
-        padding: 1 2;
-    }
-
-    ResumeCompactPromptScreen .resume-compact-title {
-        text-style: bold;
-        color: $warning;
-        text-align: center;
-        margin-bottom: 1;
-    }
-
-    ResumeCompactPromptScreen .resume-compact-body {
-        height: auto;
-        color: $text;
-        margin-bottom: 1;
-    }
-
-    ResumeCompactPromptScreen .resume-compact-help {
-        height: auto;
-        color: $text-muted;
-        text-style: italic;
-        text-align: center;
-    }
-    """
+    CSS = (
+        CwdSwitchPromptScreen.CSS.replace(
+            "CwdSwitchPromptScreen", "ResumeCompactPromptScreen"
+        )
+        .replace("cwd-switch", "resume-compact")
+        .replace("height: 1;", "height: auto;")
+    )
 
     def __init__(self, *, context_tokens: int, threshold: int) -> None:
         """Initialize the prompt.
@@ -91,25 +53,18 @@ class ResumeCompactPromptScreen(ModalScreen[ResumeCompactChoice]):
         Yields:
             Title, explanation, and keyboard help.
         """
-        context = format_token_count(self._context_tokens)
-        threshold = format_token_count(self._threshold)
         with Vertical():
+            yield Static("Compact before resuming?", classes="resume-compact-title")
             yield Static(
-                "Compact before resuming?",
-                classes="resume-compact-title",
-                markup=False,
-            )
-            yield Static(
-                f"This thread uses {context} context tokens, above the configured "
-                f"{threshold} token threshold. Compacting summarizes older messages "
-                "to reduce context usage and cost.",
+                f"This thread uses {format_token_count(self._context_tokens)} context "
+                "tokens, above the configured "
+                f"{format_token_count(self._threshold)} token threshold. Compacting "
+                "summarizes older messages to reduce context usage and cost.",
                 classes="resume-compact-body",
-                markup=False,
             )
             yield Static(
                 "Enter: compact and resume · C: resume without compact · Esc: cancel",
                 classes="resume-compact-help",
-                markup=False,
             )
 
     def on_mount(self) -> None:
@@ -127,11 +82,3 @@ class ResumeCompactPromptScreen(ModalScreen[ResumeCompactChoice]):
     def action_cancel(self) -> None:
         """Cancel the resume."""
         self.dismiss("cancel")
-
-    def action_quit_or_interrupt(self) -> None:
-        """Delegate Ctrl+C to the app-level quit/interrupt handler."""
-        cast("DeepAgentsApp", self.app).action_quit_or_interrupt()
-
-    def action_quit_app(self) -> None:
-        """Delegate Ctrl+D to the app-level quit handler."""
-        cast("DeepAgentsApp", self.app).action_quit_app()

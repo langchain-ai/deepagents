@@ -23,6 +23,7 @@ from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
 from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.sessions import ThreadInfo
 from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
+from deepagents_code.tui.widgets.resume_compact import ResumeCompactPromptScreen
 from deepagents_code.tui.widgets.thread_selector import (
     ContainedSelect,
     ContainedSelectOverlay,
@@ -3314,17 +3315,11 @@ class TestResumeThread:
     async def test_large_thread_resume_honors_compaction_choice(
         self, choice: str
     ) -> None:
-        """Large-thread resumes compact, continue, or cancel as selected."""
-        from deepagents_code.tui.widgets.resume_compact import (
-            ResumeCompactPromptScreen,
-        )
-
         app = self._switch_app()
-        payload = _ThreadHistoryPayload(
-            messages=[], context_tokens=400_001, model_spec=""
-        )
         _app_test_double(app)._fetch_thread_history_data = AsyncMock(
-            return_value=payload
+            return_value=_ThreadHistoryPayload(
+                messages=[], context_tokens=400_001, model_spec=""
+            )
         )
         _app_test_double(app)._offer_thread_cwd_switch = AsyncMock(
             return_value="continue"
@@ -3342,11 +3337,10 @@ class TestResumeThread:
 
         assert push_screen.await_args is not None
         assert isinstance(push_screen.await_args.args[0], ResumeCompactPromptScreen)
+        expected_thread = "old-thread" if choice == "cancel" else "new-thread"
+        assert app._lc_thread_id == expected_thread
         if choice == "cancel":
-            assert app._lc_thread_id == "old-thread"
             _app_test_double(app)._clear_messages.assert_not_awaited()
-        else:
-            assert app._lc_thread_id == "new-thread"
         if choice == "compact":
             compact.assert_awaited_once()
         else:

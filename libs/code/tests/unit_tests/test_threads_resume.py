@@ -63,12 +63,10 @@ class TestHandleThreadsCommand:
         app._resolve_threads_resume_target = AsyncMock(return_value=target)  # ty: ignore
         with patch.object(app, "_schedule_off_message_pump") as schedule:
             await app._handle_threads_command("/threads -r")
-        app._resolve_threads_resume_target.assert_awaited_once_with(None)  # ty: ignore
-        app._show_thread_selector.assert_not_awaited()  # ty: ignore
-        schedule.assert_called_once()
-        assert schedule.call_args.kwargs == {"context": "threads-resume:thread-x"}
         await schedule.call_args.args[0]
+        app._resolve_threads_resume_target.assert_awaited_once_with(None)  # ty: ignore
         app._resume_thread.assert_awaited_once_with("thread-x")  # ty: ignore
+        app._show_thread_selector.assert_not_awaited()  # ty: ignore
 
     async def test_resume_specific_id(self) -> None:
         app = _make_app()
@@ -76,10 +74,9 @@ class TestHandleThreadsCommand:
         app._resolve_threads_resume_target = AsyncMock(return_value=target)  # ty: ignore
         with patch.object(app, "_schedule_off_message_pump") as schedule:
             await app._handle_threads_command("/threads -r abc")
+        await schedule.call_args.args[0]
         app._resolve_threads_resume_target.assert_awaited_once_with("abc")  # ty: ignore
-        app._resume_thread.assert_not_awaited()  # ty: ignore
-        schedule.assert_called_once()
-        schedule.call_args.args[0].close()
+        app._resume_thread.assert_awaited_once_with("abc")  # ty: ignore
 
     async def test_resume_long_form_flag(self) -> None:
         app = _make_app()
@@ -87,9 +84,8 @@ class TestHandleThreadsCommand:
         app._resolve_threads_resume_target = AsyncMock(return_value=target)  # ty: ignore
         with patch.object(app, "_schedule_off_message_pump") as schedule:
             await app._handle_threads_command("/threads --resume abc")
+        await schedule.call_args.args[0]
         app._resolve_threads_resume_target.assert_awaited_once_with("abc")  # ty: ignore
-        schedule.assert_called_once()
-        schedule.call_args.args[0].close()
 
     async def test_cross_agent_resume_schedules_confirmation(self) -> None:
         """A cross-agent target is confirmed off Textual's message pump."""

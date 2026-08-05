@@ -330,6 +330,67 @@ def test_filesystem_backend_read_empty_file_leaves_pagination_unset(tmp_path: Pa
     assert result.next_offset is None
 
 
+@pytest.mark.parametrize("limit", [0, -3])
+def test_filesystem_backend_read_non_positive_limit_returns_empty_read(tmp_path: Path, limit: int) -> None:
+    """A degenerate `limit` returns an empty read, not a line-range error."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=0, limit=limit)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+    assert result.total_lines is None
+    assert result.start_line is None
+    assert result.end_line is None
+    assert result.next_offset is None
+
+
+def test_filesystem_backend_read_negative_offset_starts_at_first_line(tmp_path: Path) -> None:
+    """A negative offset is clamped to the start of the file instead of erroring."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=-1, limit=2)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "one\ntwo\n"
+    assert result.start_line == 1
+    assert result.end_line == 2
+    assert result.next_offset == 2
+
+
+def test_filesystem_backend_read_zero_limit_on_empty_file_reports_empty_file(tmp_path: Path) -> None:
+    """The empty-file check precedes the slice, so the reminder wins over the limit."""
+    target = tmp_path / "blank.txt"
+    target.write_text("")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=0, limit=0)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert "empty contents" in result.file_data["content"]
+
+
+def test_filesystem_backend_read_zero_limit_on_binary_returns_full_payload(tmp_path: Path) -> None:
+    """`limit` does not apply to binary reads, so a zero limit is not an empty read."""
+    target = tmp_path / "clip.png"
+    target.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=0, limit=0)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["encoding"] == "base64"
+    assert result.file_data["content"] != ""
+
+
 def test_filesystem_backend_reads_mkv_as_binary(tmp_path: Path) -> None:
     """Local `.mkv` reads must be routed as binary before UTF-8 decoding."""
     target = tmp_path / "clip.mkv"

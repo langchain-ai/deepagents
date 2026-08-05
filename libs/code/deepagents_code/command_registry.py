@@ -80,9 +80,18 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/auto",
-        description="Switch to Auto approval mode",
-        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
-        hidden_keywords="approval mode classifier automatic auto-approve shift+tab",
+        description=(
+            "Switch to Auto approval mode, or pick its classifier model for "
+            "this session"
+        ),
+        # Bare `/auto` still switches mode immediately (the switcher must work
+        # mid-turn); `/auto model ...` opens UI or resolves a model, so it waits
+        # for idle like every other argument form.
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords=(
+            "approval mode classifier automatic auto-approve shift+tab model"
+        ),
+        argument_hint="[model [<spec>|clear]]",
     ),
     SlashCommand(
         name="/manual",
@@ -115,6 +124,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         name="/copy",
         description="Copy the latest assistant message to clipboard",
         bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+    ),
+    SlashCommand(
+        name="/cost",
+        description="Show estimated thread cost",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="price spend usage tokens dollars usd",
     ),
     SlashCommand(
         name="/force-clear",

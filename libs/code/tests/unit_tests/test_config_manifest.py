@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import argparse
 import os
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -30,6 +32,7 @@ from deepagents_code.config_manifest import (
     get_option,
     is_provider_package_installed,
     option_keys,
+    options_with_key_prefix,
     provider_install_extra,
     resolve_interpreter_kwargs,
     resolve_scalar,
@@ -198,6 +201,136 @@ def test_is_openai_prompt_cache_key_enabled_unrecognized_env_falls_through(
         lambda: {"models": {"openai_prompt_cache_key": False}},
     )
     assert is_openai_prompt_cache_key_enabled() is False
+
+
+def test_resolve_auto_classifier_model_defaults_to_inheriting(monkeypatch) -> None:
+    """No preference leaves the Auto classifier on the main agent model."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+    assert resolve_auto_classifier_model() is None
+
+
+def test_resolve_auto_classifier_model_reads_toml(monkeypatch) -> None:
+    """`[models].auto_classifier` selects the classifier when env is unset."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "openai:gpt-5.5-mini"}},
+    )
+    assert resolve_auto_classifier_model() == "openai:gpt-5.5-mini"
+
+
+def test_resolve_auto_classifier_model_env_overrides_toml(monkeypatch) -> None:
+    """The env var wins over config.toml; a blank value means inherit."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "openai:gpt-5.5-mini"}},
+    )
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "anthropic:claude-haiku-4-5")
+    assert resolve_auto_classifier_model() == "anthropic:claude-haiku-4-5"
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "   ")
+    assert resolve_auto_classifier_model() is None
+
+
+def test_resolve_auto_classifier_model_warns_on_blank_value(
+    monkeypatch, caplog
+) -> None:
+    """A blank configured classifier is reported, not dropped in silence.
+
+    Reverting to the main agent model is a security control quietly changing
+    behavior, so it gets the same audible treatment a malformed value gets.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "   "}},
+    )
+
+    with caplog.at_level("WARNING", logger="deepagents_code.config"):
+        assert resolve_auto_classifier_model() is None
+
+    assert any(
+        "blank" in record.getMessage() and "auto_classifier" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_resolve_auto_classifier_model_reports_blank_problem(monkeypatch) -> None:
+    """A blank value is returned as a problem, not just logged.
+
+    A `logger.warning` lands in the debug log, which is not a surface the user
+    reads; the caller needs the description to show it at startup.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model_with_problem
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": "   "}},
+    )
+
+    spec, problem = resolve_auto_classifier_model_with_problem()
+
+    assert spec is None
+    assert problem is not None
+    assert "blank" in problem
+    assert "main agent model" in problem
+
+
+def test_resolve_auto_classifier_model_reports_malformed_problem(monkeypatch) -> None:
+    """A wrong-typed value must not silently revert to self-review.
+
+    `resolve_scalar` coerces a non-string to the option default, making a
+    malformed entry indistinguishable from an absent one — so the agent resumed
+    grading its own actions with nothing logged at all.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model_with_problem
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "load_config_toml",
+        lambda: {"models": {"auto_classifier": 3}},
+    )
+
+    spec, problem = resolve_auto_classifier_model_with_problem()
+
+    assert spec is None
+    assert problem is not None
+    assert "malformed" in problem
+    assert "main agent model" in problem
+
+
+def test_resolve_auto_classifier_model_reports_no_problem_when_absent(
+    monkeypatch,
+) -> None:
+    """An unconfigured classifier is the default, not a problem to report."""
+    from deepagents_code import config_manifest
+    from deepagents_code.config import resolve_auto_classifier_model_with_problem
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+    monkeypatch.setattr(config_manifest, "load_config_toml", dict)
+
+    assert resolve_auto_classifier_model_with_problem() == (None, None)
 
 
 def test_goal_auto_accept_criteria_defaults_to_review(monkeypatch) -> None:
@@ -994,6 +1127,23 @@ def test_langsmith_project_empty_bare_is_default(monkeypatch) -> None:
     assert resolve_scalar(opt, toml_data={}) == (LANGSMITH_PROJECT_DEFAULT, "default")
 
 
+def test_onboarding_empty_env_reports_env_opt_out(monkeypatch) -> None:
+    """An explicitly empty `DEEPAGENTS_CODE_ONBOARDING` resolves as an env opt-out.
+
+    `should_run_onboarding` treats an empty value as falsy and suppresses the
+    flow, so `config` must report the option as set by the environment rather
+    than unset/default.
+    """
+    from deepagents_code.onboarding import should_run_onboarding
+
+    opt = get_option("startup.onboarding")
+    assert opt is not None
+    monkeypatch.setenv("DEEPAGENTS_CODE_ONBOARDING", "")
+    value, source = resolve_scalar(opt, toml_data={})
+    assert (value, source) == (False, "env (DEEPAGENTS_CODE_ONBOARDING)")
+    assert should_run_onboarding() is False
+
+
 def test_fallback_env_vars_yield_to_toml_when_env_unset(monkeypatch) -> None:
     """A synthetic option exercises the empty-fallback → `config.toml` path.
 
@@ -1217,6 +1367,60 @@ def test_no_update_check_resolves_inverted_persisted_check() -> None:
     )
 
 
+def test_prices_auto_update_default_matches_runtime(monkeypatch) -> None:
+    """The manifest default must agree with the one `_start_price_updater` uses.
+
+    They are declared independently, so a drift makes `dcode config get
+    update.prices_auto_update` report the opposite of what the updater does.
+    """
+    from deepagents_code import cost_tracking
+
+    opt = get_option("update.prices_auto_update")
+    assert opt is not None
+    monkeypatch.delenv(_env_vars.PRICES_AUTO_UPDATE, raising=False)
+    # Suite-wide fixtures set both; the updater honors OFFLINE as well.
+    monkeypatch.delenv(_env_vars.OFFLINE, raising=False)
+    # The runtime gate resolves the option, which reads the user's real
+    # `config.toml` here; an empty table keeps this test on defaults.
+    monkeypatch.setattr("deepagents_code.config_manifest.load_config_toml", dict)
+
+    started: list[object] = []
+    monkeypatch.setattr(cost_tracking, "_PRICE_UPDATER_ATTEMPTED", False)
+    monkeypatch.setattr(cost_tracking, "_PRICE_UPDATER", None)
+    monkeypatch.setattr(
+        cost_tracking,
+        "_build_price_updater",
+        lambda cls: started.append(cls) or MagicMock(),
+    )
+    cost_tracking._start_price_updater()
+
+    assert opt.default is True
+    assert bool(started) is opt.default
+
+
+def test_prices_auto_update_persists_in_toml(monkeypatch) -> None:
+    """The dotted key resolves from `config.toml`, not env vars only."""
+    opt = get_option("update.prices_auto_update")
+    assert opt is not None
+    monkeypatch.delenv(_env_vars.PRICES_AUTO_UPDATE, raising=False)
+    assert opt.toml_keys == ("update", "prices_auto_update")
+    assert resolve_scalar(opt, toml_data={"update": {"prices_auto_update": False}}) == (
+        False,
+        "config.toml",
+    )
+
+
+def test_prices_auto_update_empty_env_disables(monkeypatch) -> None:
+    """An explicitly empty env value opts out, matching `_start_price_updater`."""
+    opt = get_option("update.prices_auto_update")
+    assert opt is not None
+    monkeypatch.setenv(_env_vars.PRICES_AUTO_UPDATE, "")
+    assert resolve_scalar(opt, toml_data={}) == (
+        False,
+        f"env ({_env_vars.PRICES_AUTO_UPDATE})",
+    )
+
+
 def test_resolve_ptc_delegates_to_parser() -> None:
     """The PTC kind routes through the dedicated allowlist parser."""
     opt = get_option("interpreter.ptc")
@@ -1309,14 +1513,6 @@ def test_resolve_theme_env_wins_over_config(monkeypatch) -> None:
 
 def test_get_option_unknown_returns_none() -> None:
     assert get_option("does.not.exist") is None
-
-
-def test_run_get_unknown_key_returns_error_code(capsys) -> None:
-    args = argparse.Namespace(config_command="get", key="nope", output_format="text")
-    assert run_config_command(args) == 1
-    err = capsys.readouterr().err
-    assert "Unknown config option" in err
-    assert "config --verbose" in err
 
 
 def test_run_get_missing_key_hints_available_keys(capsys) -> None:
@@ -1634,6 +1830,31 @@ def test_config_parser_wires_default_and_verbose_flag(monkeypatch) -> None:
     assert ns.output_format == "json"
 
 
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["dcode", "config", "get", "credentials", "--verbose", "--json"],
+        ["dcode", "config", "--verbose", "--json", "get", "credentials"],
+    ],
+)
+def test_config_get_parser_accepts_verbose_on_either_side(monkeypatch, argv) -> None:
+    """`--verbose`/`--json` reach `config get` before or after the subcommand.
+
+    The `get` subparser suppresses its own defaults, so a flag set on the parent
+    `config` parser survives the subparser namespace merge.
+    """
+    import sys
+
+    from deepagents_code.main import parse_args
+
+    monkeypatch.setattr(sys, "argv", argv)
+    ns = parse_args()
+    assert ns.config_command == "get"
+    assert ns.key == "credentials"
+    assert ns.verbose is True
+    assert ns.output_format == "json"
+
+
 @pytest.mark.parametrize("removed_subcommand", ["show", "list", "ls"])
 def test_config_parser_rejects_removed_subcommands(
     monkeypatch, removed_subcommand
@@ -1655,6 +1876,325 @@ def test_run_get_text_returns_zero() -> None:
         config_command="get", key="interpreter.memory_limit_mb", output_format="text"
     )
     assert run_config_command(args) == 0
+
+
+# --- `config get` sections --------------------------------------------------
+
+
+def _get_args(
+    key: str, output_format: str = "text", *, verbose: bool = False
+) -> argparse.Namespace:
+    """Build a parsed `config get <key>` namespace."""
+    return argparse.Namespace(
+        config_command="get", key=key, output_format=output_format, verbose=verbose
+    )
+
+
+def _get_json_data(
+    key: str, capsys: pytest.CaptureFixture[str], *, verbose: bool = False
+) -> dict[str, Any] | list[dict[str, Any]]:
+    """Run `config get <key> --json` and return the decoded `data` payload."""
+    import json
+
+    assert run_config_command(_get_args(key, "json", verbose=verbose)) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["command"] == "config get"
+    return payload["data"]
+
+
+def _get_json_object(
+    key: str, capsys: pytest.CaptureFixture[str], *, verbose: bool = False
+) -> dict[str, Any]:
+    """Return the single-option `config get --json` payload for `key`."""
+    data = _get_json_data(key, capsys, verbose=verbose)
+    assert isinstance(data, dict)
+    return data
+
+
+def _get_json_rows(
+    key: str, capsys: pytest.CaptureFixture[str], *, verbose: bool = False
+) -> list[dict[str, Any]]:
+    """Return the section `config get --json` rows for `key`."""
+    data = _get_json_data(key, capsys, verbose=verbose)
+    assert isinstance(data, list)
+    return data
+
+
+def test_options_with_key_prefix_matches_whole_segments_only() -> None:
+    """A key prefix matches on the dot boundary, never a truncated guess."""
+    matched = options_with_key_prefix("credentials")
+    assert len(matched) > 1
+    assert all(opt.key.startswith("credentials.") for opt in matched)
+    assert options_with_key_prefix("credential") == ()
+    assert options_with_key_prefix("") == ()
+    # No `tools.*` key exists, so the `Tools` heading has no prefix section.
+    assert options_with_key_prefix("tools") == ()
+
+
+def test_options_with_key_prefix_is_case_insensitive() -> None:
+    """Prefix matching casefolds, so capitalization cannot change the result."""
+    lower = options_with_key_prefix("models")
+    assert len(lower) > 1
+    assert options_with_key_prefix("Models") == lower
+    assert options_with_key_prefix("MODELS") == lower
+    # A truncated guess stays unmatched in every case.
+    assert options_with_key_prefix("Model") == ()
+
+
+def test_run_get_exact_key_keeps_single_line_text(capsys) -> None:
+    """An exact key still renders the compact `key = value (source)` line."""
+    assert run_config_command(_get_args("interpreter.memory_limit_mb")) == 0
+    rendered = " ".join(capsys.readouterr().out.split())
+    assert rendered.startswith("interpreter.memory_limit_mb = ")
+
+
+def test_run_get_exact_key_json_stays_single_object(capsys) -> None:
+    """Existing single-key JSON consumers keep their one-object payload."""
+    data = _get_json_object("interpreter.memory_limit_mb", capsys)
+    assert data["key"] == "interpreter.memory_limit_mb"
+    assert "group" not in data
+
+
+def test_run_get_credentials_section_lists_every_credential(
+    capsys, monkeypatch
+) -> None:
+    """`config get credentials` renders the grouped section, not one option."""
+    from deepagents_code.config import console
+
+    monkeypatch.setattr(console, "width", 200)
+    assert run_config_command(_get_args("credentials")) == 0
+    rendered = capsys.readouterr().out
+    assert "Credentials" in rendered
+    expected = options_with_key_prefix("credentials")
+    assert len(expected) > 1
+    assert all(opt.key in rendered for opt in expected)
+    # Credentials render a presence word, never a key value. Matches both
+    # "configured" and "not configured", so this does not depend on which
+    # providers the developer running the suite happens to have set.
+    assert "configured" in rendered
+
+
+@pytest.mark.parametrize("key", ["credentials", "credentials.", "CREDENTIALS"])
+def test_run_get_credentials_section_accepts_prefix_dot_and_case(key, capsys) -> None:
+    """Prefix, trailing dot, and any casing all select the same options."""
+    rows = _get_json_rows(key, capsys)
+    assert [row["key"] for row in rows] == [
+        opt.key for opt in options_with_key_prefix("credentials")
+    ]
+    # Secret-flagged rows report presence only, exactly as bare `config` does.
+    assert any(row["redacted"] for row in rows)
+    assert all(row["value"] is None for row in rows if row["redacted"])
+
+
+def test_run_get_section_json_matches_bare_config_row_shape(capsys) -> None:
+    """Section rows carry the same fields as each bare `config --json` row."""
+    rows = _get_json_rows("interpreter", capsys)
+    assert len(rows) > 1
+    assert all(
+        {"key", "group", "source", "set", "redacted", "value"} <= set(row)
+        for row in rows
+    )
+    assert all("type" not in row for row in rows)
+
+
+def test_run_get_section_verbose_json_folds_in_catalog(capsys) -> None:
+    """`config get <section> --verbose --json` adds the static catalog fields."""
+    rows = _get_json_rows("interpreter", capsys, verbose=True)
+    assert all(
+        {"summary", "type", "default", "env_var", "toml_path", "cli_flag"} <= set(row)
+        for row in rows
+    )
+    assert any(
+        row["key"] == "interpreter.memory_limit_mb" and row["default"] == 64
+        for row in rows
+    )
+
+
+def test_run_get_section_verbose_text_shows_descriptions(capsys) -> None:
+    """`config get <section> --verbose` matches the verbose bare-`config` view."""
+    opt = get_option("display.charset")
+    assert opt is not None
+    assert run_config_command(_get_args("display", verbose=True)) == 0
+    rendered = " ".join(capsys.readouterr().out.split())
+    assert " ".join(opt.summary.split()) in rendered
+    assert "set via" in rendered
+
+
+def test_run_get_section_selects_every_prefixed_key_across_headings(capsys) -> None:
+    """`models` resolves to every `models.*` key, even across group headings."""
+    rows = _get_json_rows("models", capsys)
+    keys = [row["key"] for row in rows]
+    assert keys == [opt.key for opt in options_with_key_prefix("models")]
+    # The `Models` heading covers only some of the `models.*` keys; the
+    # section is the full prefix set, regardless of display grouping.
+    assert len(keys) > sum(opt.group == "Models" for opt in get_config_options())
+
+
+@pytest.mark.parametrize("title", ["Tools", "Updates"])
+def test_run_get_group_title_is_not_a_section(title, capsys) -> None:
+    """Display group titles are rejected; only key prefixes name a section.
+
+    `Tools` has no matching key prefix at all, and `Updates` differs from the
+    `update` prefix by an English plural — matching is case-insensitive on the
+    prefix but never pluralized or fuzzy, so a heading word that isn't a
+    prefix stays an error.
+    """
+    assert run_config_command(_get_args(title)) == 1
+    assert "Unknown config option or section" in capsys.readouterr().err
+
+
+def test_run_get_single_option_section_still_renders_as_a_list(capsys) -> None:
+    """A one-option section stays list-shaped so responses are unambiguous.
+
+    This is what the `is_exact` flag on `_Selection` protects: a single-option
+    section and an exact key both yield one option, so a length check alone
+    would collapse this into the single-key object shape.
+    """
+    prefix = next(
+        segment
+        for segment in dict.fromkeys(
+            key.split(".")[0] for key in option_keys() if "." in key
+        )
+        if len(options_with_key_prefix(segment)) == 1
+    )
+    rows = _get_json_rows(prefix, capsys)
+    assert [row["key"] for row in rows] == [
+        opt.key for opt in options_with_key_prefix(prefix)
+    ]
+    assert len(rows) == 1
+
+
+def test_run_get_section_is_case_insensitive_end_to_end(capsys) -> None:
+    """A capitalized section selects the same options as the lowercase form.
+
+    `dcode config` prints `Models` as a heading; typing that word back must
+    resolve to the same `models.*` prefix section, not to the narrower heading
+    or to an error.
+    """
+    lower = _get_json_rows("models", capsys)
+    upper = _get_json_rows("Models", capsys)
+    assert [row["key"] for row in upper] == [row["key"] for row in lower]
+    # The `Models` heading covers only some of the `models.*` keys, so this
+    # equality holds only when both casings resolve via the prefix.
+    assert len(lower) > sum(opt.group == "Models" for opt in get_config_options())
+
+
+def test_run_get_exact_key_verbose_json_folds_in_catalog(capsys) -> None:
+    """`config get <key> --verbose --json` adds catalog fields but no `group`.
+
+    The absent `group` key is load-bearing: it is how a consumer tells the
+    single-key object from a section list, so `--verbose` must not introduce it.
+    """
+    data = _get_json_object("interpreter.memory_limit_mb", capsys, verbose=True)
+    assert {
+        "summary",
+        "type",
+        "default",
+        "env_var",
+        "toml_path",
+        "cli_flag",
+    } <= set(data)
+    assert data["default"] == 64
+    assert "group" not in data
+
+
+def test_run_get_exact_key_plain_json_omits_catalog(capsys) -> None:
+    """Without `--verbose`, the single-key payload keeps its original fields."""
+    data = _get_json_object("interpreter.memory_limit_mb", capsys)
+    assert set(data) == {"key", "source", "set", "redacted", "value"}
+
+
+def test_run_get_exact_key_verbose_text_shows_description(capsys) -> None:
+    """`config get <key> --verbose` appends the description and how-to-set."""
+    opt = get_option("interpreter.memory_limit_mb")
+    assert opt is not None
+    assert run_config_command(_get_args(opt.key, verbose=True)) == 0
+    rendered = " ".join(capsys.readouterr().out.split())
+    assert rendered.startswith(f"{opt.key} = ")
+    assert " ".join(opt.summary.split()) in rendered
+    assert "default 64" in rendered
+
+
+def test_run_get_section_json_flags_unreadable_store(stored_auth_dir, capsys) -> None:
+    """A corrupt store is reported in-band on every credential section row.
+
+    Without this a corrupt `auth.json` is indistinguishable from one holding no
+    keys — the silent failure `store_error` exists to prevent.
+    """
+    import json
+
+    stored_auth_dir.mkdir(parents=True, exist_ok=True)
+    (stored_auth_dir / "auth.json").write_text("{ not json", encoding="utf-8")
+    assert run_config_command(_get_args("credentials", "json")) == 0
+    rows = json.loads(capsys.readouterr().out)["data"]
+    assert rows
+    assert all("store_error" in row for row in rows)
+    # Redaction holds even when the store could not be read.
+    assert all(row["value"] is None for row in rows if row["redacted"])
+
+
+def test_run_get_section_text_warns_on_unreadable_store(
+    stored_auth_dir, capsys
+) -> None:
+    """Both section text renderers surface the unreadable-store banner."""
+    stored_auth_dir.mkdir(parents=True, exist_ok=True)
+    (stored_auth_dir / "auth.json").write_text("{ not json", encoding="utf-8")
+    for verbose in (False, True):
+        assert run_config_command(_get_args("credentials", verbose=verbose)) == 0
+        out = capsys.readouterr().out
+        assert "Warning" in out
+        assert "unreadable" in out
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_run_get_section_skips_store_when_no_credentials(monkeypatch) -> None:
+    """A credential-free section never reads the store, and reads it once if not.
+
+    Pins the documented skip in `_run_get_section`: always loading would emit a
+    spurious store warning for sections that cannot consult it, and the JSON
+    would look identical either way.
+    """
+    from deepagents_code import auth_store
+
+    calls = 0
+    real_load = auth_store.load_credentials
+
+    def _counting_load() -> dict:
+        nonlocal calls
+        calls += 1
+        return real_load()
+
+    monkeypatch.setattr(auth_store, "load_credentials", _counting_load)
+
+    assert run_config_command(_get_args("display", "json")) == 0
+    assert calls == 0
+
+    assert run_config_command(_get_args("credentials", "json")) == 0
+    assert calls == 1
+
+
+@pytest.mark.parametrize("key", ["credential", "credentials.open", "nope", "", "."])
+def test_run_get_rejects_partial_matches(key, capsys) -> None:
+    """Truncated keys, partial leaves, typos, and degenerate input stay errors."""
+    assert run_config_command(_get_args(key)) == 1
+    err = capsys.readouterr().err
+    assert "Unknown config option" in err
+    assert "`dcode config` to list keys" in err
+    assert "config get <section>" in err
+
+
+def test_run_get_unknown_key_json_names_sections_too(capsys) -> None:
+    """The JSON error string matches the text branch's wording.
+
+    A consumer surfacing `error` verbatim would otherwise tell a user who
+    mistyped a section that no such *option* exists, steering them away from the
+    section form.
+    """
+    import json
+
+    assert run_config_command(_get_args("nope", "json")) == 1
+    payload = json.loads(capsys.readouterr().out)["data"]
+    assert payload == {"key": "nope", "error": "unknown option or section"}
 
 
 def test_run_path_text_returns_zero() -> None:
@@ -2079,6 +2619,298 @@ def test_provider_dependency_metadata_is_exhaustive() -> None:
         "_PROVIDER_DEPENDENCIES must include every model-provider extra so the "
         "model selector can surface install-required recommended models"
     )
+
+
+# --- Auto classifier timeout -----------------------------------------------
+
+
+def test_auto_classifier_timeout_option_metadata() -> None:
+    """The classifier-timeout option exposes the env/TOML override surface."""
+    opt = get_option("models.auto_classifier_timeout")
+    assert opt is not None
+    assert opt.kind is OptionKind.FLOAT
+    assert opt.env_var == _env_vars.AUTO_CLASSIFIER_TIMEOUT
+    assert opt.toml_keys == ("models", "auto_classifier_timeout")
+    assert "models.auto_classifier_timeout" in option_keys()
+
+
+def test_auto_classifier_timeout_default_matches_middleware_default() -> None:
+    """The middleware constant and the manifest default stay single-sourced."""
+    from deepagents_code.auto_mode import _CLASSIFIER_TIMEOUT_SECONDS
+    from deepagents_code.config_manifest import (
+        AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        resolve_auto_classifier_timeout,
+    )
+
+    assert _CLASSIFIER_TIMEOUT_SECONDS == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+    assert (
+        resolve_auto_classifier_timeout(toml_data={})
+        == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+    )
+
+
+def test_resolve_auto_classifier_timeout_env_wins(monkeypatch) -> None:
+    """A valid env var overrides both TOML and the default."""
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "45")
+    resolved = resolve_auto_classifier_timeout(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert resolved == pytest.approx(45.0)
+
+
+def test_resolve_auto_classifier_timeout_toml_when_env_unset(monkeypatch) -> None:
+    """`config.toml` is used when no env var is set, including bare integers."""
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
+    resolved = resolve_auto_classifier_timeout(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert resolved == pytest.approx(30.0)
+
+
+@pytest.mark.parametrize(
+    "raw", ["0", "-5", "0.5", "100000", "inf", "-inf", "nan", "soon"]
+)
+def test_resolve_auto_classifier_timeout_out_of_range_falls_back(
+    monkeypatch, raw
+) -> None:
+    """Non-positive, unbounded, non-finite, or malformed values fall back."""
+    from deepagents_code.config_manifest import (
+        AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        resolve_auto_classifier_timeout,
+    )
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raw)
+    assert (
+        resolve_auto_classifier_timeout(toml_data={})
+        == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+    )
+
+
+def test_resolve_auto_classifier_timeout_invalid_env_falls_through_to_toml(
+    monkeypatch,
+) -> None:
+    """An out-of-range env value does not mask a valid TOML override."""
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
+    resolved = resolve_auto_classifier_timeout(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert resolved == pytest.approx(30.0)
+
+
+def test_resolve_auto_classifier_timeout_invalid_env_leaves_env_intact(
+    monkeypatch,
+) -> None:
+    """Fall-through resolution must restore the rejected env var afterward."""
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
+    resolve_auto_classifier_timeout(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert os.environ[_env_vars.AUTO_CLASSIFIER_TIMEOUT] == "0"
+
+
+def test_resolve_auto_classifier_timeout_invalid_env_warns(monkeypatch, caplog) -> None:
+    """The rejection warning is a user's only signal; it must not be dropped.
+
+    Nothing else surfaces a discarded timeout, so a refactor that removed the
+    warning (or lowered it to `debug`) would make the fall-through silent.
+    """
+    import logging
+
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        resolve_auto_classifier_timeout(
+            toml_data={"models": {"auto_classifier_timeout": 30}}
+        )
+    assert any(
+        "auto_classifier_timeout" in r.getMessage()
+        and _env_vars.AUTO_CLASSIFIER_TIMEOUT in r.getMessage()
+        for r in caplog.records
+    )
+
+
+@pytest.mark.parametrize("raw", [0, 0.5, 100000, True, "30"])
+def test_resolve_auto_classifier_timeout_rejects_unusable_toml(
+    monkeypatch, caplog, raw
+) -> None:
+    """An unusable `config.toml` value falls back to the default with a warning.
+
+    TOML is the only non-env surface for this option (no CLI flag, no `/auto`
+    subcommand), and the threat model claims it cannot remove the deadline — so
+    a `= 0` that reached the middleware would deny every gated batch.
+    """
+    import logging
+
+    from deepagents_code.config_manifest import (
+        AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        resolve_auto_classifier_timeout,
+    )
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+        resolved = resolve_auto_classifier_timeout(
+            toml_data={"models": {"auto_classifier_timeout": raw}}
+        )
+    assert resolved == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+    assert any("auto_classifier_timeout" in r.getMessage() for r in caplog.records)
+
+
+def test_resolve_auto_classifier_timeout_malformed_env_falls_through_to_toml(
+    monkeypatch,
+) -> None:
+    """A malformed env value takes the other fall-through path than an out-of-range one.
+
+    `"soon"` is dropped inside `resolve_scalar`, so the env layer never reports
+    itself as the source and no `os.environ` pop happens; `"0"` coerces fine and
+    is rejected later, taking the pop-and-re-resolve branch. Both must land on
+    the valid TOML value.
+    """
+    from deepagents_code.config_manifest import resolve_auto_classifier_timeout
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "soon")
+    resolved = resolve_auto_classifier_timeout(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert resolved == pytest.approx(30.0)
+    assert os.environ[_env_vars.AUTO_CLASSIFIER_TIMEOUT] == "soon"
+
+
+def test_resolve_auto_classifier_timeout_guards_unpoppable_env_source(
+    monkeypatch,
+) -> None:
+    """A source label that is not an environ key must not recurse forever.
+
+    Termination of the fall-through branch depends on the reconstructed env name
+    actually being the key `resolve_scalar` read. If it is not, the pop is a
+    no-op and re-resolving would see the same rejected value again.
+    """
+    from deepagents_code import config_manifest
+    from deepagents_code.config_manifest import (
+        AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT,
+        resolve_auto_classifier_timeout,
+    )
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
+    monkeypatch.setattr(
+        config_manifest,
+        "resolve_scalar",
+        lambda *_args, **_kwargs: (0.0, "env (NOT_AN_ENVIRON_KEY)"),
+    )
+    assert (
+        resolve_auto_classifier_timeout(toml_data={})
+        == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+    )
+
+
+def test_resolve_auto_classifier_timeout_accepts_floor_and_ceiling(
+    monkeypatch,
+) -> None:
+    """The inclusive floor and ceiling are accepted verbatim."""
+    from deepagents_code.config_manifest import (
+        AUTO_CLASSIFIER_TIMEOUT_CEILING,
+        AUTO_CLASSIFIER_TIMEOUT_FLOOR,
+        resolve_auto_classifier_timeout,
+    )
+
+    monkeypatch.setenv(
+        _env_vars.AUTO_CLASSIFIER_TIMEOUT, str(AUTO_CLASSIFIER_TIMEOUT_FLOOR)
+    )
+    assert (
+        resolve_auto_classifier_timeout(toml_data={}) == AUTO_CLASSIFIER_TIMEOUT_FLOOR
+    )
+    monkeypatch.setenv(
+        _env_vars.AUTO_CLASSIFIER_TIMEOUT, str(AUTO_CLASSIFIER_TIMEOUT_CEILING)
+    )
+    assert (
+        resolve_auto_classifier_timeout(toml_data={}) == AUTO_CLASSIFIER_TIMEOUT_CEILING
+    )
+
+
+def test_resolve_auto_classifier_timeout_with_source_reports_effective_layer(
+    monkeypatch,
+) -> None:
+    """The source variant credits the layer the runtime actually enforces."""
+    from deepagents_code.config_manifest import (
+        resolve_auto_classifier_timeout_with_source,
+    )
+
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
+    value, source = resolve_auto_classifier_timeout_with_source(
+        toml_data={"models": {"auto_classifier_timeout": 30}}
+    )
+    assert value == pytest.approx(30.0)
+    assert source == "config.toml"
+
+
+def test_config_resolve_reports_effective_auto_classifier_timeout(
+    monkeypatch,
+) -> None:
+    """`config get` must not credit an out-of-range env value the runtime drops."""
+    option = get_option("models.auto_classifier_timeout")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "0")
+    is_set, source, value = _resolve(
+        option, {"models": {"auto_classifier_timeout": 30}}
+    )
+    assert is_set is True
+    assert source == "config.toml"
+    assert value == pytest.approx(30.0)
+
+
+def test_config_resolve_discards_out_of_range_toml_auto_classifier_timeout(
+    monkeypatch,
+) -> None:
+    """`config get` reports the default when TOML provides an unusable timeout."""
+    from deepagents_code.config_manifest import AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+
+    option = get_option("models.auto_classifier_timeout")
+    assert option is not None
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
+    is_set, source, value = _resolve(
+        option, {"models": {"auto_classifier_timeout": 500}}
+    )
+    assert is_set is False
+    assert source == "default"
+    assert value == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+
+
+def test_config_resolve_reports_valid_env_auto_classifier_timeout(
+    monkeypatch,
+) -> None:
+    """An in-range env override still wins in the config reporting path."""
+    option = get_option("models.auto_classifier_timeout")
+    assert option is not None
+    monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, "45")
+    is_set, source, value = _resolve(
+        option, {"models": {"auto_classifier_timeout": 30}}
+    )
+    assert is_set is True
+    assert source == f"env ({_env_vars.AUTO_CLASSIFIER_TIMEOUT})"
+    assert value == pytest.approx(45.0)
+
+
+def test_config_resolve_reports_default_auto_classifier_timeout_as_unset(
+    monkeypatch,
+) -> None:
+    """A default-resolved timeout reports the default source, not a set value."""
+    option = get_option("models.auto_classifier_timeout")
+    assert option is not None
+    from deepagents_code.config_manifest import AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
+
+    monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_TIMEOUT, raising=False)
+    is_set, source, value = _resolve(option, {})
+    assert is_set is False
+    assert source == "default"
+    assert value == AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
 
 
 # --- Recursion limit -------------------------------------------------------

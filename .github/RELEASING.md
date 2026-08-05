@@ -63,6 +63,8 @@ Keep the release PR in draft while changes are still accumulating. When it is re
 
 Run `@release-bot draft` to regenerate the draft if the automatic run fails or new changes cause release-please to add changelog entries to the release PR. If release-please updates the PR after the notes were applied, the check will fail until you run `draft` and `apply` again.
 
+`@release-bot draft` accepts optional one-off editing instructions on the same line, for example `@release-bot draft emphasize the breaking SDK change`. The instruction is passed to the drafting model as guidance subordinate to its fixed editing rules, capped at 500 characters, and echoed in the posted draft comment so the prompt that produced a draft is auditable. Anything after a second `@` on the line is dropped. `@release-bot apply` takes no instructions — it republishes the stored draft verbatim, so text after `apply` is ignored.
+
 During a fanout release each package gets its own release PR, and each needs its own `draft`/`apply`. Commands act only on the PR they are posted to.
 
 The merged changelog is the source for the published GitHub release notes.
@@ -845,6 +847,59 @@ gh pr edit <PR_NUMBER> --remove-label "autorelease: pending" --add-label "autore
 On the normal mainline publish path, a failed label swap fails `mark-release`
 after the tag and GitHub release already exist. Treat the package release as
 done and fix only the stuck label so later release-please maintenance can run.
+
+### Release Notes Job Failed or GitHub Release Body Is Empty
+
+The `release-notes` job builds the published GitHub release body from the package `CHANGELOG.md`, contributor shoutouts, and a collapsible package-scoped git log. It is intentionally fail-open: if the job fails or produces an empty body, the publish to PyPI and the GitHub tag still succeed. The release is real — do **not** re-dispatch the full publish workflow for the same version.
+
+A failed notes job is surfaced in the `mark-release` job of the same workflow run: look for an `::error::` annotation ("Release notes job failed") and a job summary with a paste-ready rebuild command. Degraded bodies (built with warnings) are instead summarized by the `release-notes` job itself under "⚠️ Release notes built with warnings."
+
+To rebuild and apply the release body manually:
+
+1. **Check out the release commit locally.** Use the same SHA that was used for the release (visible in the workflow run's "Resolved release target" summary, or via `gh pr view <pr-number> --json mergeCommit --jq .mergeCommit.oid`).
+
+   The clone must have **full history and all tags** — the script resolves the predecessor tag that bounds the git log, and CI does this with `fetch-depth: 0` and `fetch-tags: true`. On a tag-less clone, run `git fetch --tags` first; if the clone is also shallow (`git rev-parse --is-shallow-repository` reports `true`), additionally run `git fetch --unshallow`.
+
+2. **Rebuild the body** with the shared script. Run it **from the repository root** (or pass `--repo-root`):
+
+   ```bash
+   python .github/scripts/release/build_release_notes.py \
+     --package <PACKAGE> \
+     --version <VERSION> \
+     --sha <RELEASE_SHA> \
+     --repo langchain-ai/deepagents \
+     --actor <YOUR_GITHUB_USERNAME> \
+     --base-branch <BRANCH_RELEASED_FROM> \
+     --out /tmp/release-body.md
+   ```
+
+   `--actor` supplies the `Released by:` line when the release commit has no merged PR to read the merger from. `--base-branch` is required to reproduce the `Released from <branch> at commit ...` provenance line — omit it and that line is silently absent, which matters most for the `vX.Y` and `alpha/*` releases this recovery path usually serves. Pass `--default-branch` too if the repository default is not `main`.
+
+   Add `--offline` to skip GitHub API calls entirely (contributors *and* the releaser). The body will still include the changelog section and git log scaffolding. Note that a missing `gh` CLI is **not** equivalent: contributor collection yields nothing either way, but the releaser still falls back to `--actor`, so the `Released by:` line survives.
+
+   Review the generated file before applying it. The script exits non-zero and prints an `::error::` line if the SHA does not resolve, the package directory is missing, or an unexpected git command fails. Most git failures are deliberately tolerated and downgraded to warnings so a degraded body still gets built, so a zero exit status is **not** by itself evidence the body is complete — read the warnings. They are printed as `::warning::` lines on stderr; any warning containing `INCOMPLETE` is listed first.
+
+   The script detects the most common recovery mistake for you: if it finds no predecessor tag but the package `CHANGELOG.md` documents earlier releases, it warns that **the clone is probably missing tags**. Re-fetch and rebuild rather than publishing that body. `<summary>Git log for initial release</summary>` on a package that has shipped before is the same symptom seen from the other side.
+
+3. **Apply the body** to the existing GitHub release:
+
+   ```bash
+   gh release edit "<PACKAGE>==<VERSION>" \
+     --repo langchain-ai/deepagents \
+     --notes-file /tmp/release-body.md
+   ```
+
+   Pass **only** `--notes-file`. Flags such as `--tag`, `--target`, `--prerelease`, or `--latest` can change release metadata and are not part of note recovery. See [Enrich the published pre-release notes](#enrich-the-published-pre-release-notes) for the same `gh release edit` pattern used in pre-release workflows.
+
+4. **Verify** the result:
+
+   ```bash
+   gh release view "<PACKAGE>==<VERSION>" \
+     --repo langchain-ai/deepagents \
+     --json url,isPrerelease,targetCommitish,body
+   ```
+
+The source of truth for release notes is the merged package `CHANGELOG.md`. For `deepagents-code`, the curated release-notes workflow should already have applied the notes to `CHANGELOG.md` before the release PR merged; recovery here is about reconstructing the published GitHub body scaffolding (contributors, git log, size limits) when the CI notes job failed.
 
 ### Release Failed: Pre-release Checks
 

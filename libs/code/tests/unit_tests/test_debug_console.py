@@ -15,6 +15,7 @@ from textual.widgets._select import SelectOverlay
 import deepagents_code.tui.widgets.debug_console as debug_console_mod
 from deepagents_code._debug_buffer import InMemoryLogRecord, get_log_buffer
 from deepagents_code.app import DeepAgentsApp
+from deepagents_code.tui.widgets._copy_spans import COPY_LABEL_META, COPY_TEXT_META
 from deepagents_code.tui.widgets.debug_console import (
     DebugConsoleScreen,
     SnapshotField,
@@ -125,7 +126,29 @@ class TestDebugConsoleScreen:
         assert strip._segments
         assert all(segment.style is not None for segment in strip._segments)
 
-    async def test_live_tail_appends_new_records_incrementally(self) -> None:
+    async def test_live_tail_appends_new_records_incrementally(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Drives a controlled buffer rather than the process-wide one. Against
+        # the global buffer this test depended on how many records the rest of
+        # the suite happened to have emitted first: once retained records cross
+        # `_RECORD_LIMIT` for a level, every poll takes the prune-and-re-render
+        # path, which rebuilds the view instead of appending, so `before + 1`
+        # stops holding for reasons unrelated to incremental append.
+        retained = [_log_record("debug-console-existing")]
+
+        class FakeBuffer:
+            @property
+            def total_emitted(self) -> int:
+                return len(retained)
+
+            def snapshot_records_since(
+                self, index: int
+            ) -> tuple[list[InMemoryLogRecord], int]:
+                return retained[index:], len(retained)
+
+        monkeypatch.setattr(debug_console_mod, "get_log_buffer", lambda: FakeBuffer())
+
         app = _Harness()
         async with app.run_test() as pilot:
             screen = DebugConsoleScreen(_snapshot())
@@ -134,12 +157,13 @@ class TestDebugConsoleScreen:
             log = screen.query_one("#debug-log", _DebugLogView)
             before = len(log.records)
 
-            logger.info("debug-console-incremental-marker")
+            retained.append(_log_record("debug-console-incremental-marker"))
             screen._poll_logs()
             await pilot.pause()
 
             # Exactly one new record appended; already-consumed records not re-written.
             assert len(log.records) == before + 1
+            assert log.records[-1].message == "debug-console-incremental-marker"
 
     async def test_snapshot_provider_refreshes_header_on_poll(self) -> None:
         """A live provider rewrites the header when session state changes."""
@@ -1310,10 +1334,8 @@ class TestDebugConsoleScreen:
                 span
                 for span in content.spans
                 if isinstance(span.style, debug_console_mod.TStyle)
-                and span.style.meta.get(debug_console_mod._SNAPSHOT_COPY_META)
-                == "thread-abc"
-                and span.style.meta.get(debug_console_mod._SNAPSHOT_COPY_LABEL_META)
-                == "Thread"
+                and span.style.meta.get(COPY_TEXT_META) == "thread-abc"
+                and span.style.meta.get(COPY_LABEL_META) == "Thread"
             ]
             assert any(
                 content.plain[span.start : span.end] == "thread-abc"

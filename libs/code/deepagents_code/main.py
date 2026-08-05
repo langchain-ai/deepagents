@@ -1916,6 +1916,16 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--auto-classifier-model",
+        dest="auto_classifier_model",
+        metavar="MODEL",
+        help="Model the Auto approval classifier reviews actions with "
+        "(e.g. anthropic:claude-haiku-4-5). Interactive TUI only. Defaults to "
+        "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL, then [models].auto_classifier, "
+        "then the main agent model. A weaker model weakens Auto's review.",
+    )
+
+    parser.add_argument(
         "--default-model",
         metavar="MODEL",
         nargs="?",
@@ -2228,6 +2238,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
+    # `--auto-classifier-model ""` yields the empty string, not `None`. Keep it
+    # distinct from an absent flag (just trimmed): an explicit blank is the
+    # "inherit the main agent model" instruction and must override a classifier
+    # configured via env var or `config.toml`, which collapsing it to `None`
+    # here would silently re-enable.
+    if getattr(args, "auto_classifier_model", None) is not None:
+        args.auto_classifier_model = args.auto_classifier_model.strip()
     _resolve_and_validate_sandbox(args, parser)
     return args
 
@@ -2316,6 +2333,55 @@ def _resolve_and_validate_sandbox(
         parser.error(f"--sandbox-id is not supported by provider '{args.sandbox}'")
 
 
+def _auto_classifier_spec_problem(spec: str) -> str | None:
+    """Return why a configured Auto classifier spec looks unusable, if it does.
+
+    `/auto model` validates by constructing the model and refuses a spec it
+    cannot build. The startup surfaces — `--auto-classifier-model`, the env var,
+    `[models].auto_classifier` — reached the middleware unchecked, so a typo was
+    announced as the active reviewer and only surfaced as a denied tool call
+    mid-turn.
+
+    This is the cheap half of what the slash command does: parse the spec and
+    check the provider's credentials. It deliberately does not call
+    `create_model`, which would pull LangChain onto the launch path (see
+    `AGENTS.md`), so it catches the two common mistakes — unknown provider and
+    missing credential — and leaves the rest to the middleware's fail-closed
+    path.
+
+    Args:
+        spec: Resolved `provider:model` specification.
+
+    Returns:
+        A one-line problem description, or `None` when the spec looks usable.
+    """
+    from deepagents_code.config import detect_provider
+    from deepagents_code.model_config import ModelSpec, get_provider_auth_status
+
+    parsed = ModelSpec.try_parse(spec)
+    provider = parsed.provider if parsed else detect_provider(spec)
+    if not provider:
+        return (
+            f"Auto classifier model {spec!r} has no recognizable provider; "
+            "Auto will deny gated actions until it is fixed. Use "
+            "provider:model, e.g. anthropic:claude-haiku-4-5."
+        )
+    try:
+        status = get_provider_auth_status(provider)
+    except Exception:
+        # Advisory check only — a probe failure must never block startup.
+        logger.debug("Auto classifier provider auth probe failed", exc_info=True)
+        return None
+    if status.blocks_start:
+        env_var = f" Set {status.env_var}." if status.env_var else ""
+        return (
+            f"Auto classifier model {spec!r} has no credentials for provider "
+            f"{provider!r}; Auto will deny gated actions until it is "
+            f"fixed.{env_var}"
+        )
+    return None
+
+
 async def run_textual_cli_async(
     assistant_id: str,
     *,
@@ -2343,6 +2409,7 @@ async def run_textual_cli_async(
     interpreter_ptc: str | list[str] | None = None,
     interpreter_ptc_acknowledge_unsafe: bool = False,
     allow_fs_tools: "list[FsToolName] | None" = None,
+    auto_classifier_model: str | None = None,
     recursion_limit: int | None = None,
 ) -> "AppResult":
     """Run the Textual TUI interface (async version).
@@ -2412,6 +2479,13 @@ async def run_textual_cli_async(
             from `--allow-fs-tools`.
 
             `None` leaves the SDK default (all tools).
+        auto_classifier_model: Model spec the Auto approval classifier reviews
+            with, from `--auto-classifier-model`.
+
+            `None` resolves from env / `config.toml` and then reuses the main
+            agent model. A blank string means the flag was explicitly supplied
+            with no value: it overrides any env / `config.toml` classifier so
+            reviews inherit the main agent model.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from env / `config.toml` / default at agent-build time.
 
@@ -2425,6 +2499,7 @@ async def run_textual_cli_async(
     from deepagents_code.config import (
         _get_default_model_spec,
         detect_provider,
+        resolve_auto_classifier_model_with_problem,
         settings,
     )
     from deepagents_code.model_config import (
@@ -2470,6 +2545,43 @@ async def run_textual_cli_async(
         settings.model_provider = ""
         settings.model_name = ""
 
+    # Distinguish "flag absent" from "flag explicitly blank": `--auto-classifier-
+    # model ""` is the "inherit the main agent model" instruction and overrides
+    # any env / `config.toml` classifier, while an absent flag defers to those
+    # sources. Map the explicit blank to `INHERIT_CLASSIFIER_MODEL`, the sentinel
+    # the server and Auto middleware already understand as inherit, so the
+    # override survives the trip to the agent server (a bare `""` would collapse
+    # to `None` in `ServerConfig.from_env` and silently re-enable a configured
+    # classifier there).
+    from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+
+    flag_supplied = auto_classifier_model is not None
+    flag_classifier_model = (auto_classifier_model or "").strip() or None
+    auto_classifier_problem: str | None = None
+    if flag_classifier_model is not None:
+        resolved_auto_classifier_model = flag_classifier_model
+    elif flag_supplied:
+        resolved_auto_classifier_model = INHERIT_CLASSIFIER_MODEL
+    else:
+        (
+            resolved_auto_classifier_model,
+            auto_classifier_problem,
+        ) = resolve_auto_classifier_model_with_problem()
+    if (
+        resolved_auto_classifier_model is not None
+        and resolved_auto_classifier_model != INHERIT_CLASSIFIER_MODEL
+    ):
+        auto_classifier_problem = _auto_classifier_spec_problem(
+            resolved_auto_classifier_model
+        )
+    if auto_classifier_problem is not None:
+        from rich.console import Console as _WarnConsole
+        from rich.markup import escape
+
+        _WarnConsole(stderr=True).print(
+            f"[bold yellow]Warning:[/bold yellow] {escape(auto_classifier_problem)}"
+        )
+
     model_kwargs: dict[str, Any] | None = None
     if not defer_server_start:
         model_kwargs = {
@@ -2494,6 +2606,7 @@ async def run_textual_cli_async(
         "interpreter_ptc": interpreter_ptc,
         "interpreter_ptc_acknowledge_unsafe": interpreter_ptc_acknowledge_unsafe,
         "allow_fs_tools": allow_fs_tools,
+        "auto_classifier_model": resolved_auto_classifier_model,
         "mcp_config_path": mcp_config_path,
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
@@ -3601,14 +3714,11 @@ def _check_project_hooks_trust(
     Returns:
         The trust policy to run the session under, `INTERRUPTED` when the user
         presses Ctrl+C, or `CANCELLED` when the user presses Esc or Ctrl+D to
-        abort startup. Nothing is trusted, and no prompt is shown, unless
-        `DEEPAGENTS_CODE_EXPERIMENTAL` is truthy, since hooks stay off without
-        it.
+        abort startup.
     """
     from rich.console import Console
     from rich.text import Text
 
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
     from deepagents_code.hooks.loading import project_hooks_path
     from deepagents_code.hooks.trust import (
         WorkspaceTrust,
@@ -3617,8 +3727,6 @@ def _check_project_hooks_trust(
     )
     from deepagents_code.project_utils import ProjectContext
 
-    if not is_env_truthy(EXPERIMENTAL):
-        return WorkspaceTrust.none()
     try:
         context = ProjectContext.from_user_cwd(Path.cwd())
         project_root = context.project_root or context.user_cwd
@@ -3853,6 +3961,12 @@ def cli_main() -> None:
                     f"Error: {flag} is only supported by the interactive Textual TUI.\n"
                 )
                 sys.exit(2)
+            if getattr(args, "auto_classifier_model", None) is not None:
+                sys.stderr.write(
+                    "Error: --auto-classifier-model is only supported by the "
+                    "interactive Textual TUI.\n"
+                )
+                sys.exit(2)
             assistant_id = _resolve_agent_arg(args)
             try:
                 from acp import run_agent as run_acp_agent
@@ -4036,6 +4150,28 @@ def cli_main() -> None:
                 "--rubric-max-iterations require "
                 "--non-interactive (-n) or piped stdin\n"
                 "  dcode -n 'implement X' --rubric 'tests pass'"
+            )
+            sys.exit(2)
+
+        # Auto approval mode (and therefore its classifier) requires the
+        # interactive TUI *and* no sandbox — `agent.create_cli_agent` disables
+        # Auto for either. Accepting the flag in those runs would silently do
+        # nothing to a setting that governs action authorization.
+        if getattr(args, "auto_classifier_model", None) is not None and (
+            args.non_interactive_message or args.sandbox not in {"none", None}
+        ):
+            from rich.console import Console as _Console
+
+            unavailable_because = (
+                "a sandbox is in use"
+                if not args.non_interactive_message
+                else "it runs headlessly"
+            )
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --auto-classifier-model is only "
+                "supported in the interactive TUI, where Auto approval mode "
+                f"runs; {unavailable_because}.\n"
+                "  dcode --auto-classifier-model anthropic:claude-haiku-4-5"
             )
             sys.exit(2)
 
@@ -4686,6 +4822,9 @@ def cli_main() -> None:
                         interpreter_arg=args.interpreter,
                         interpreter_ptc=interpreter_ptc,
                         allow_fs_tools=allow_fs_tools,
+                        auto_classifier_model=getattr(
+                            args, "auto_classifier_model", None
+                        ),
                         recursion_limit=getattr(args, "recursion_limit", None),
                     )
                 )

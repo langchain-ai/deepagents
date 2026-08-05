@@ -749,9 +749,32 @@ jobs:
   # release-please updates pyproject.toml versions but doesn't regenerate lockfiles
   # https://github.com/googleapis/release-please/issues/2561
   update-lockfiles:
-    needs: release-please
-    if: needs.release-please.outputs.prs != '[]' && needs.release-please.outputs.prs
-      != ''
+    # The `needs` list must cover every job the `if:` references: the `needs`
+    # context only carries direct dependencies, so checking an undeclared
+    # ancestor's result compares an empty string against 'success' and the
+    # condition always fails.
+    needs: [guard-empty-commit, detect-release-commit, guard-pending-release, release-please]
+    # Same skip poison as #5161/#5169: `release-please` transitively needs
+    # `trigger-releases` (via the guard), which is legitimately skipped on
+    # ordinary pushes, and this job's bare `if:` kept Actions' implicit
+    # success() gate — so a successful `release-please` that opened PRs still
+    # left this job skipped on a green workflow, and the release PR's
+    # lockfiles went stale until fixed by hand. Override the gate with
+    # `!cancelled()` plus explicit result checks on every dependency in the
+    # direct needs chain, and still require a positively non-empty `prs` (unset
+    # after a crash stays blocked). `trigger-releases` itself is deliberately
+    # NOT re-checked (and deliberately NOT in `needs`): it is skipped on
+    # release-commit pushes, where `release-please` succeeding already implies
+    # the guard saw a successful dispatch — depending on it would reintroduce
+    # the poison.
+    if: |
+      !cancelled() &&
+      needs.guard-empty-commit.result == 'success' &&
+      needs.detect-release-commit.result == 'success' &&
+      needs.guard-pending-release.result == 'success' &&
+      needs.release-please.result == 'success' &&
+      needs.release-please.outputs.prs != '[]' &&
+      needs.release-please.outputs.prs != ''
     name: Update lockfiles
     runs-on: ubuntu-latest
     permissions:
@@ -864,10 +887,23 @@ jobs:
   # deliberately does NOT gate on `needs.update-lockfiles.result` — combined with
   # `always()`, a lockfile-update failure (which is loud on its own: that job goes red)
   # still lets the gate fire against the current head rather than silently skipping it.
+  #
+  # `always()` alone would also run this job after a cancelled workflow and would
+  # tolerate red ancestors, so the same explicit checks as `update-lockfiles`
+  # are pinned alongside it: every guard in the needs chain above `release-please`
+  # must have succeeded, and `prs` must be positively non-empty. Skipped
+  # `trigger-releases` is not re-checked — on release commits, a successful
+  # `release-please` already implies the guard saw the dispatch succeed.
   dispatch-release-notes-check:
-    needs: [release-please, update-lockfiles]
+    # `needs` must list every job the `if:` references (see update-lockfiles);
+    # `update-lockfiles` is sequencing-only, so its result is not checked.
+    needs: [guard-empty-commit, detect-release-commit, guard-pending-release, release-please, update-lockfiles]
     if: |
       always() &&
+      !cancelled() &&
+      needs.guard-empty-commit.result == 'success' &&
+      needs.detect-release-commit.result == 'success' &&
+      needs.guard-pending-release.result == 'success' &&
       needs.release-please.result == 'success' &&
       needs.release-please.outputs.prs != '[]' &&
       needs.release-please.outputs.prs != ''

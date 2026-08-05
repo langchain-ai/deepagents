@@ -655,6 +655,29 @@ class TestFilesystemMiddlewareAsync:
         assert "Line 2" in result.content
         assert "Line 3" in result.content
 
+    async def test_aread_file_degenerate_arguments(self):
+        """The async tool applies the same disclosure and no-lines reminder as the sync one."""
+        files = {
+            "/test.txt": FileData(
+                content="Line 1\nLine 2\nLine 3",
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        zero_limit = await read_file_tool.ainvoke({"file_path": "/test.txt", "offset": 0, "limit": 0, "runtime": _runtime()})
+        assert zero_limit.status == "success"
+        assert "empty contents" not in zero_limit.content
+        assert "`limit` was 0" in zero_limit.content
+
+        negative_offset = await read_file_tool.ainvoke({"file_path": "/test.txt", "offset": -1, "limit": 100, "runtime": _runtime()})
+        assert negative_offset.status == "success"
+        assert negative_offset.content.startswith("1  Line 1")
+        assert "before the start of the file" in negative_offset.content
+
     async def test_aread_file_with_offset(self):
         """Test async read_file tool with offset."""
         files = {
@@ -914,6 +937,7 @@ class TestFilesystemMiddlewareAsync:
         assert "Async Hello world\nAsync Line 2" in result.content
         assert "succeeded" in result.content
         assert "exit code 0" in result.content
+        assert result.artifact == {"exit_code": 0}
 
     async def test_aexecute_tool_output_formatting_with_failure(self):
         """Test async execute tool formats failure output correctly."""
@@ -957,6 +981,76 @@ class TestFilesystemMiddlewareAsync:
         assert "Async Error: command not found" in result.content
         assert "failed" in result.content
         assert "exit code 127" in result.content
+        assert result.artifact == {"exit_code": 127}
+
+    async def test_aexecute_tool_omits_artifact_exit_code_when_unknown(self):
+        """Test async execute tool omits `exit_code` when the backend reports none."""
+
+        # See the sync twin: None is falsy like a successful 0 but unequal to it, so
+        # publishing it as a value would misclassify under either comparison.
+        class UnknownExitCodeMockSandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="sync output")
+
+            async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
+                return ExecuteResponse(output="async output")
+
+            @property
+            def id(self):
+                return "unknown-exit-code-mock-sandbox-backend"
+
+        rt = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="test_unknown_ec",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        middleware = FilesystemMiddleware(backend=UnknownExitCodeMockSandboxBackend())
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        result = await execute_tool.ainvoke({"command": "echo test", "runtime": rt})
+
+        assert "async output" in result.content
+        assert "exit code" not in result.content
+        assert result.artifact == {}
+
+    async def test_aexecute_tool_error_paths_carry_no_artifact(self):
+        """Test async execute tool returns no artifact when no command ran."""
+
+        class ErrorPathMockSandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                msg = "bad parameter"
+                raise ValueError(msg)
+
+            async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
+                msg = "bad parameter"
+                raise ValueError(msg)
+
+            @property
+            def id(self):
+                return "error-path-mock-sandbox-backend"
+
+        rt = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="test_err_artifact",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        middleware = FilesystemMiddleware(backend=ErrorPathMockSandboxBackend())
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+
+        rejected = await execute_tool.ainvoke({"command": "echo test", "timeout": -1, "runtime": rt})
+        assert rejected.status == "error"
+        assert rejected.artifact is None
+
+        raised = await execute_tool.ainvoke({"command": "echo test", "runtime": rt})
+        assert raised.status == "error"
+        assert raised.artifact is None
 
     async def test_aexecute_tool_output_formatting_with_truncation(self):
         """Test async execute tool formats truncated output correctly."""

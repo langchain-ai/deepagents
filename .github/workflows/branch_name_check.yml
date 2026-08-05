@@ -1,0 +1,226 @@
+# PR head-branch naming check.
+#
+# Why this exists:
+#   AGENTS.md requires internal branches to follow
+#   `<github-username>/<scope>/<short-description>` (e.g. `mdrxy/cli/startup-cmd-flag`).
+#   The local pre-push hook in .githooks/ catches this before push, but it is
+#   client-side and can be skipped with `--no-verify` or never installed. This
+#   check is the server-side reminder for PRs opened from branches in this repo.
+#   It is advisory only — it posts a sticky PR comment and a workflow warning
+#   but always passes, so it never blocks a merge.
+#
+# Scope:
+#   - Only runs for same-repo (non-fork) PRs. Fork PRs have head branches in
+#     the contributor's fork, where this repo's naming convention does not apply.
+#   - Skips protected branches (`main`, `master`, `vX.Y...`), automation branches
+#     (release-please, dependabot, copilot) and the release branches mandated by
+#     RELEASING.md (`alpha/`, `beta/`, `rc/`, `dev/`) — none carry a username
+#     prefix.
+#   - Validates the `<scope>` segment against the same scope list enforced by
+#     pr_lint.yml (plus `docs`, which AGENTS.md lists as a branch scope), so
+#     branch scopes and PR title scopes stay aligned. The `branch-scopes-sync`
+#     pre-commit hook enforces that this list, pr_lint.yml and .githooks/pre-push
+#     agree.
+#   - Does NOT enforce that the username segment equals the PR author's login —
+#     branches are sometimes pushed by automation or another maintainer on the
+#     author's behalf.
+#
+# Trust model:
+#   - Runs under `pull_request` (not `pull_request_target`); the only input is
+#     the head branch name from the event payload. Same-repo PRs only, so the
+#     `issues: write` token used for the sticky comment is never exposed to
+#     fork-controlled code.
+
+name: "🌿 Branch name check"
+
+permissions:
+  contents: read
+  issues: write
+
+on:
+  pull_request:
+    # No `edited`: a PR's head ref cannot be changed after opening, so a title
+    # or body edit can never change this check's outcome. `synchronize` and
+    # `reopened` already cover re-running after the allowed-branch rules change.
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  # Serialize per-PR so rapid pushes can't race the sticky comment's
+  # find-then-create logic into posting duplicates.
+  group: branch-name-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  branch-name-check:
+    name: "validate head branch name"
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    # Fork PRs: head branch lives in the fork; repo conventions don't apply.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: "✅ Validate branch name"
+        id: check
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+
+          # These three patterns are duplicated in .githooks/pre-push; the
+          # `branch-scopes-sync` pre-commit hook fails the commit if they drift.
+          ALLOWED_RE='^(main|master|v[0-9]+\.[0-9]+.*)$'
+          ALLOWED_PREFIX_RE='^(release-please--|dependabot/|copilot/|alpha/|beta/|rc/|dev/)'
+          SCOPES_RE='(acp|ci|cli|code|dcode-gha|daytona|deepagents|deepagents-acp|deepagents-cli|deepagents-code|deepagents-talon|deps|deps-dev|docs|evals|examples|harbor|infra|langchain-daytona|langchain-modal|langchain-quickjs|langchain-runloop|langchain-vercel-sandbox|langsmith-sandbox|modal|quickjs|repo|runloop|sdk|talon|vercel)'
+
+          if [[ "$HEAD_REF" =~ $ALLOWED_RE ]] || [[ "$HEAD_REF" =~ $ALLOWED_PREFIX_RE ]]; then
+            echo "::notice::Branch '$HEAD_REF' is protected or automation-owned; skipping name check."
+            echo "nonconformant=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # <github-username>: a GitHub login segment; not compared to the PR
+          # author (see workflow header). The class accepts uppercase, because
+          # logins may contain it and refs preserve case — a lowercase-only
+          # class here would warn on names the local hook accepts. Advisory
+          # only: warn, don't fail.
+          # Kebab-case description: the final group is optional so
+          # one-character descriptions are valid; still no trailing hyphen.
+          if [[ ! "$HEAD_REF" =~ ^[A-Za-z0-9](-?[A-Za-z0-9])*/${SCOPES_RE}/[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+            echo "::warning::Branch '$HEAD_REF' does not follow the repo naming convention '<github-username>/<scope>/<short-description>'."
+            echo "nonconformant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Branch '$HEAD_REF' follows the naming convention."
+            echo "nonconformant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: "💬 Post or remove sticky comment"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          NONCONFORMANT: ${{ steps.check.outputs.nonconformant }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request?.number;
+            // Defensive guard — every supported trigger type carries a PR
+            // payload, but a future trigger expansion should fail with an
+            // actionable message rather than a raw TypeError.
+            if (!prNumber) {
+              core.setFailed('No PR number in payload — workflow may have triggered on an unexpected event type.');
+              return;
+            }
+            const STICKY_MARKER = '<!-- branch-name-check -->';
+            const headRef = process.env.HEAD_REF;
+
+            // The verdict must be an explicit `true`/`false` from the validate
+            // step. Treating anything else as "conformant" would let a renamed
+            // step id, a renamed output key, or an early `exit 0` that forgets
+            // to write `$GITHUB_OUTPUT` pass silently — and worse, delete an
+            // existing warning comment. That is indistinguishable from "every
+            // branch is conformant", so it fails loudly. Unlike the comment API
+            // errors below, this can only come from a wiring bug in this file;
+            // it will not fix itself on a re-run.
+            const verdict = process.env.NONCONFORMANT;
+            if (verdict !== 'true' && verdict !== 'false') {
+              core.setFailed(
+                `The validate step reported no verdict (nonconformant='${verdict}') — ` +
+                `the check ran but validated nothing. Check the 'check' step's outputs ` +
+                `in branch_name_check.yml.`,
+              );
+              return;
+            }
+            const nonconformant = verdict === 'true';
+
+            // Only this workflow's own comments are eligible: the marker alone
+            // would also match a human's comment that happens to quote it,
+            // which this job may go on to edit or delete.
+            async function findStickyComment() {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: prNumber, per_page: 100,
+              });
+              return comments.find(
+                c => c.body && c.body.startsWith(STICKY_MARKER) && c.user?.type === 'Bot',
+              );
+            }
+
+            // Comment API failures must not make this explicitly advisory
+            // workflow fail. In particular, GitHub uses 403 for both missing
+            // permissions and temporary secondary-rate-limit/abuse responses,
+            // and a comment can disappear between the lookup and update/delete.
+            function reportApiError(err, context) {
+              const status = err.status ? `HTTP ${err.status}` : 'an unknown error';
+              core.warning(`${context} failed with ${status}: ${err.message}`);
+            }
+
+            // Conformant branch: clean up any stale warning and pass. Rarely
+            // reached in practice — a PR's head ref cannot be renamed in place,
+            // so this mostly serves re-runs after the allowed-branch rules
+            // change. On a delete failure, edit the comment instead so a
+            // now-conformant PR never keeps a bare ⚠️ with no explanation.
+            if (!nonconformant) {
+              try {
+                const existing = await findStickyComment();
+                if (existing) {
+                  try {
+                    await github.rest.issues.deleteComment({
+                      owner, repo, comment_id: existing.id,
+                    });
+                    console.log('Branch name is conformant — deleted sticky warning comment');
+                  } catch (deleteErr) {
+                    await github.rest.issues.updateComment({
+                      owner, repo, comment_id: existing.id,
+                      body: `${STICKY_MARKER}\n✅ Branch \`${headRef}\` now follows the repo naming convention. This warning is stale.`,
+                    });
+                    console.log('Could not delete sticky comment — marked it resolved instead');
+                  }
+                }
+              } catch (e) {
+                reportApiError(e, `Sticky comment cleanup for PR #${prNumber}`);
+              }
+              return;
+            }
+
+            const body = [
+              STICKY_MARKER,
+              `⚠️ **Branch \`${headRef}\` doesn't follow the repo naming convention.**`,
+              '',
+              'Internal branches are expected to be named `<github-username>/<scope>/<short-description>` — see the "Branch naming" section of AGENTS.md. Example: `mdrxy/cli/startup-cmd-flag`. Valid scopes are the ones in `pr_lint.yml`, plus `docs`.',
+              '',
+              'This is advisory only and does not block merge.',
+              '',
+              'GitHub does not allow an open PR\'s head branch to be changed, so renaming means opening a new PR from the renamed branch:',
+              '',
+              '```bash',
+              `git branch -m ${headRef} <new-name>`,
+              'git push origin <new-name>',
+              '```',
+              '',
+              `Then open a PR from \`<new-name>\` and close this one. (Deleting \`${headRef}\` before that will close this PR automatically.)`,
+            ].join('\n');
+
+            // Fall back to the job summary if any comment operation fails so
+            // the warning stays visible without turning this advisory check red.
+            try {
+              const existing = await findStickyComment();
+              if (existing) {
+                if (existing.body !== body) {
+                  await github.rest.issues.updateComment({
+                    owner, repo, comment_id: existing.id, body,
+                  });
+                  console.log('Updated sticky warning comment');
+                } else {
+                  console.log('Sticky warning comment already up to date');
+                }
+              } else {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: prNumber, body,
+                });
+                console.log('Posted sticky warning comment');
+              }
+            } catch (commentErr) {
+              reportApiError(commentErr, 'Posting the sticky branch-name comment');
+              await core.summary
+                .addHeading('Branch name warning; comment could not be posted')
+                .addRaw('Paste the following into the PR as a comment:')
+                .addCodeBlock(body, 'markdown')
+                .write();
+            }

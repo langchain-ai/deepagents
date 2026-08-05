@@ -457,7 +457,14 @@ jobs:
           fi
 
   # Generate release notes from CHANGELOG.md, append the package commit history,
-  # and collect contributor shoutouts
+  # and collect contributor shoutouts.
+  #
+  # Intentionally fail-open: `publish` does not depend on this job, and
+  # `mark-release` deliberately omits it from its `if:` condition, so a failure
+  # here still tags and publishes the release — with an empty body. Do not add
+  # `needs.release-notes.result == 'success'` to `mark-release`; that would
+  # trade a cosmetic failure for a blocked release. Recovery is documented in
+  # RELEASING.md > Release Notes Job Failed or GitHub Release Body Is Empty.
   release-notes:
     name: 📝 Generate release notes
     needs:
@@ -490,677 +497,61 @@ jobs:
           TAG="${PKG_NAME}==${VERSION}"
           echo tag="$TAG" >> $GITHUB_OUTPUT
 
-      - name: Resolve previous tag and release commit
-        id: resolve-refs
-        env:
-          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
-          RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
-          VERSION: ${{ needs.build.outputs.version }}
-        run: |
-          set -euo pipefail
-
-          # Detect PEP 440 pre-release versions:
-          #   - Dash separator: 1.0.0-rc.1
-          #   - PEP 440 suffixes: 1.0.0a1, 1.0.0b1, 1.0.0rc1, 1.0.0.dev1
-          IS_PRERELEASE=false
-          if [[ "$VERSION" == *"-"* ]] || [[ "$VERSION" =~ [0-9](a|b|rc)[0-9] ]] || [[ "$VERSION" =~ [.]dev[0-9] ]]; then
-            IS_PRERELEASE=true
-          fi
-          echo "is-prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
-
-          # Fail loudly if RELEASE_SHA does not resolve. The helpers below pass it
-          # to git as the second arg of `merge-base --is-ancestor` and to `git tag
-          # --merged`, where an unresolvable value exits 128 — indistinguishable
-          # from "no predecessor" — and would silently mislabel the Git log as an
-          # initial release. Verifying it once here rules that failure mode out.
-          if ! git rev-parse -q --verify "$RELEASE_SHA^{commit}" >/dev/null; then
-            echo "::error::RELEASE_SHA '$RELEASE_SHA' does not resolve to a commit"
-            exit 1
-          fi
-
-          valid_previous_tag() {
-            local tag="$1"
-            # merge-base --is-ancestor exits 1 for "not an ancestor" and 128 on
-            # error; both are treated as "invalid predecessor" and trigger the
-            # fallback below. Both arguments are known to resolve — the tag via the
-            # rev-parse --verify below, and RELEASE_SHA via the check above — so a
-            # non-zero exit reflects ancestry, not a bad ref, and the fallback is
-            # the safe response.
-            [ -n "$tag" ] \
-              && [ "$tag" != "$PKG_NAME==0.0.0" ] \
-              && git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null \
-              && git merge-base --is-ancestor "$tag" "$RELEASE_SHA"
-          }
-
-          latest_stable_tag() {
-            local tag
-            local tag_version
-            while IFS= read -r tag; do
-              [ "$tag" = "$PKG_NAME==$VERSION" ] && continue
-              tag_version="${tag#"$PKG_NAME=="}"
-              if [[ "$tag_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                printf '%s' "$tag"
-                return
-              fi
-            done < <(git tag --merged "$RELEASE_SHA" --sort=-version:refname \
-              --list "$PKG_NAME==*")
-          }
-
-          parse_prerelease() {
-            local version="$1"
-            PRE_BASE=""
-            PRE_RANK=-1
-            PRE_SERIAL=-1
-
-            if [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.dev([0-9]+)$ ]]; then
-              PRE_BASE="${BASH_REMATCH[1]}"
-              PRE_RANK=0
-              PRE_SERIAL=$((10#${BASH_REMATCH[2]}))
-            elif [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)(a|b|rc)([0-9]+)$ ]]; then
-              PRE_BASE="${BASH_REMATCH[1]}"
-              PRE_SERIAL=$((10#${BASH_REMATCH[3]}))
-              case "${BASH_REMATCH[2]}" in
-                a) PRE_RANK=1 ;;
-                b) PRE_RANK=2 ;;
-                rc) PRE_RANK=3 ;;
-              esac
-            elif [[ "$version" =~ ^([0-9]+\.[0-9]+\.[0-9]+)-(dev|a|alpha|b|beta|rc|pre|preview)[.-]?([0-9]+)$ ]]; then
-              PRE_BASE="${BASH_REMATCH[1]}"
-              PRE_SERIAL=$((10#${BASH_REMATCH[3]}))
-              case "${BASH_REMATCH[2]}" in
-                dev) PRE_RANK=0 ;;
-                a|alpha) PRE_RANK=1 ;;
-                b|beta) PRE_RANK=2 ;;
-                rc|pre|preview) PRE_RANK=3 ;;
-              esac
-            else
-              return 1
-            fi
-          }
-
-          latest_earlier_prerelease_tag() {
-            local best_rank=-1
-            local best_serial=-1
-            local candidate_base
-            local candidate_rank
-            local candidate_serial
-            local current_base
-            local current_rank
-            local current_serial
-            local tag
-            local tag_version
-            local tags
-            local ahead_status
-
-            EARLIER_PRERELEASE_TAG=""
-
-            if ! parse_prerelease "$VERSION"; then
-              echo "::warning::VERSION '$VERSION' is treated as a pre-release but does not match a recognized pre-release format; predecessor selection will fall back to the base-version or latest stable tag"
-              return
-            fi
-            current_base="$PRE_BASE"
-            current_rank="$PRE_RANK"
-            current_serial="$PRE_SERIAL"
-
-            # Capture the tag list up front so a `git tag` failure surfaces instead of
-            # being swallowed by process substitution (exempt from `set -e`) and
-            # masquerading as "no earlier pre-release".
-            if ! tags=$(git tag --list "$PKG_NAME==*"); then
-              echo "::warning::git tag --list failed; skipping earlier-prerelease predecessor detection"
-              return
-            fi
-
-            while IFS= read -r tag; do
-              [ -z "$tag" ] && continue
-              [ "$tag" = "$PKG_NAME==$VERSION" ] && continue
-              tag_version="${tag#"$PKG_NAME=="}"
-              if ! parse_prerelease "$tag_version"; then
-                continue
-              fi
-              candidate_base="$PRE_BASE"
-              candidate_rank="$PRE_RANK"
-              candidate_serial="$PRE_SERIAL"
-
-              # Keep only same-base candidates strictly earlier than $VERSION. On equal
-              # rank, `>=` (not `>`) excludes an equal serial: that is either $VERSION
-              # itself under a different tag spelling, or a same-precedence duplicate —
-              # neither is a valid predecessor.
-              if [ "$candidate_base" != "$current_base" ] \
-                || (( candidate_rank > current_rank )) \
-                || (( candidate_rank == current_rank && candidate_serial >= current_serial )); then
-                continue
-              fi
-              # Skip tags that don't resolve, or that share no history with the release
-              # commit (disjoint/grafted history — nearly always false within one repo,
-              # but cheap insurance).
-              if ! git rev-parse -q --verify "refs/tags/$tag^{commit}" >/dev/null \
-                || ! git merge-base "$tag" "$RELEASE_SHA" >/dev/null; then
-                continue
-              fi
-              # Skip "future" siblings: a tag that descends from RELEASE_SHA cannot be a
-              # predecessor. --is-ancestor exits 0 (ancestor -> skip), 1 (not -> keep),
-              # or 128 (error); treat any non-1 as skip so a git error never silently
-              # accepts a bad candidate. Warn on the error case (non-0, non-1) so it is
-              # not silently bucketed with the expected future-sibling skip, matching
-              # the git-tag-list and parse-failure warnings above.
-              ahead_status=0
-              git merge-base --is-ancestor "$RELEASE_SHA" "$tag" || ahead_status=$?
-              if [ "$ahead_status" -ne 1 ]; then
-                if [ "$ahead_status" -ne 0 ]; then
-                  echo "::warning::git merge-base --is-ancestor exited $ahead_status for '$tag'; skipping as a predecessor candidate"
-                fi
-                continue
-              fi
-              # Track the latest earlier sibling: highest rank, then highest serial.
-              if (( candidate_rank > best_rank )) \
-                || (( candidate_rank == best_rank && candidate_serial > best_serial )); then
-                EARLIER_PRERELEASE_TAG="$tag"
-                best_rank="$candidate_rank"
-                best_serial="$candidate_serial"
-              fi
-            done <<< "$tags"
-          }
-
-          # Choose the predecessor tag whose `..RELEASE_SHA` range defines the log.
-          # Pre-releases use a three-tier fallback: (1) the latest earlier sibling
-          # pre-release of the same base version, else (2) the base-version tag if it
-          # is reachable, else (3) the highest stable tag in the release's history.
-          # Stable releases use the immediate previous patch, else the highest stable.
-          if [ "$IS_PRERELEASE" = "true" ]; then
-            # Strip pre-release suffix to get base version (e.g. 0.5.2a1 -> 0.5.2)
-            # Strip suffixes inside-out: dash first, then .dev, then a/b/rc
-            BASE_VERSION=$(echo "$VERSION" | sed 's/-.*$//' | sed -E 's/\.dev[0-9]+$//' | sed -E 's/(a|b|rc)[0-9]+$//')
-            echo "Pre-release detected: base version is $BASE_VERSION"
-
-            if [[ ! "$BASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::warning::BASE_VERSION '$BASE_VERSION' is not a clean X.Y.Z after stripping pre-release suffixes from '$VERSION'"
-            fi
-
-            latest_earlier_prerelease_tag
-            PREV_TAG="$EARLIER_PRERELEASE_TAG"
-            if [ -z "$PREV_TAG" ]; then
-              PREV_TAG="$PKG_NAME==$BASE_VERSION"
-              if ! valid_previous_tag "$PREV_TAG"; then
-                PREV_TAG=$(latest_stable_tag)
-              fi
-            fi
-          else
-            PREV_TAG="$PKG_NAME==${VERSION%.*}.$(( ${VERSION##*.} - 1 ))"
-            [[ "${VERSION##*.}" -eq 0 ]] && PREV_TAG=""
-            if ! valid_previous_tag "$PREV_TAG"; then
-              PREV_TAG=$(latest_stable_tag)
-            fi
-          fi
-
-          # A stable release with no reachable predecessor tag is anomalous unless
-          # this is genuinely the package's first release. Distinguish the two by
-          # whether any prior stable package tag exists at all: none means a true
-          # initial release (the log spanning full history is expected); some, but
-          # none reachable from the release commit, means the log would wrongly span
-          # the full history and be labeled an initial release — surface that. This
-          # covers minor/major bumps (X.Y.0), not just patches.
-          if [ -z "$PREV_TAG" ] && [ "$IS_PRERELEASE" != "true" ]; then
-            PRIOR_STABLE_TAGS=$(git tag --list "$PKG_NAME==*" \
-              | (grep -Ev "^${PKG_NAME}==${VERSION}$" || true) \
-              | (grep -E "^${PKG_NAME}==[0-9]+\.[0-9]+\.[0-9]+$" || true))
-            if [ -n "$PRIOR_STABLE_TAGS" ]; then
-              echo "::warning::No prior stable tag reachable from $RELEASE_SHA for $PKG_NAME==$VERSION; Git log will span the package's full history"
-            fi
-          fi
-
-          echo "Previous tag: $PREV_TAG"
-          echo "prev-tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
-
-          # Resolve the actual release commit.
-          # For stable releases: release-please updates CHANGELOG.md in the release
-          # commit, so we use the last CHANGELOG.md touch. On workflow_dispatch
-          # (manual/recovery), HEAD may be ahead — this avoids attributing
-          # post-release commits to this release's contributor list.
-          # For pre-releases: CHANGELOG.md is not updated, so use HEAD directly.
-          if [ "$IS_PRERELEASE" = "true" ]; then
-            RELEASE_COMMIT=$(git rev-parse HEAD)
-            echo "Pre-release: using HEAD as release commit"
-          else
-            RELEASE_COMMIT=$(git log -1 --format=%H -- "$WORKING_DIR/CHANGELOG.md")
-            if [ -z "$RELEASE_COMMIT" ]; then
-              echo "Warning: no CHANGELOG.md history found, falling back to HEAD"
-              RELEASE_COMMIT=$(git rev-parse HEAD)
-            fi
-          fi
-          echo "Release commit: $RELEASE_COMMIT"
-          echo "release-commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
-
-      - name: Generate package Git log
-        id: generate-git-log
-        env:
-          PREV_TAG: ${{ steps.resolve-refs.outputs.prev-tag }}
-          RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-
-          RANGE="$RELEASE_SHA"
-          SUMMARY="Git log for initial release"
-          if [ -n "$PREV_TAG" ]; then
-            RANGE="$PREV_TAG..$RELEASE_SHA"
-            SUMMARY="Git log since $PREV_TAG"
-          fi
-
-          MAX_COMMITS=100
-          MAX_GIT_LOG_BYTES=25000
-          MAX_SUBJECT_LENGTH=200
-          COMMIT_COUNT=0
-          GIT_LOG_BYTES=0
-          TRUNCATED=false
-          GIT_LOG_FAILED=false
-          GIT_LOG=""
-
-          # Capture the SHAs first so a `git log` failure is caught here. A command
-          # inside a `< <(...)` process substitution is exempt from `set -e`, so its
-          # failure would otherwise be swallowed and mistaken for an empty history.
-          if ! COMMITS=$(git log --date-order --max-count=$((MAX_COMMITS + 1)) \
-            --format=%H "$RANGE" -- "$WORKING_DIR"); then
-            echo "::warning::git log failed for range '$RANGE'; the Git log section will note the failure"
-            GIT_LOG_FAILED=true
-            COMMITS=""
-          fi
-
-          while IFS= read -r SHA; do
-            if [ -z "$SHA" ]; then
-              continue
-            fi
-            SUBJECT=$(git show -s --format=%s "$SHA")
-
-            if [ "$COMMIT_COUNT" -ge "$MAX_COMMITS" ]; then
-              TRUNCATED=true
-              break
-            fi
-            if [ "${#SUBJECT}" -gt "$MAX_SUBJECT_LENGTH" ]; then
-              SUBJECT="${SUBJECT:0:$MAX_SUBJECT_LENGTH}…"
-            fi
-            SUBJECT=$(printf '%s' "$SUBJECT" \
-              | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g')
-
-            SHORT_SHA=$(git rev-parse --short=7 "$SHA")
-            ENTRY="- [\`$SHORT_SHA\`](https://github.com/$REPOSITORY/commit/$SHA) $SUBJECT"
-            ENTRY_BYTES=$(printf '%s' "$ENTRY" | wc -c | tr -d ' ')
-            SEPARATOR_BYTES=0
-            if [ -n "$GIT_LOG" ]; then
-              SEPARATOR_BYTES=1
-            fi
-            if [ $((GIT_LOG_BYTES + SEPARATOR_BYTES + ENTRY_BYTES)) \
-              -gt "$MAX_GIT_LOG_BYTES" ]; then
-              TRUNCATED=true
-              break
-            fi
-
-            if [ -z "$GIT_LOG" ]; then
-              GIT_LOG="$ENTRY"
-            else
-              GIT_LOG=$(printf "%s\n%s" "$GIT_LOG" "$ENTRY")
-            fi
-            GIT_LOG_BYTES=$((GIT_LOG_BYTES + SEPARATOR_BYTES + ENTRY_BYTES))
-            COMMIT_COUNT=$((COMMIT_COUNT + 1))
-          done <<< "$COMMITS"
-
-          if [ "$GIT_LOG_FAILED" = "true" ]; then
-            GIT_LOG="Git log unavailable: \`git log\` failed for range \`$RANGE\`."
-          elif [ -z "$GIT_LOG" ]; then
-            GIT_LOG="No commits found."
-          fi
-
-          DESCRIPTION="This commit history includes changes to this package. Commits are listed newest first."
-          if [ "$TRUNCATED" = "true" ]; then
-            DESCRIPTION="$DESCRIPTION The log is truncated to the newest $COMMIT_COUNT commits to keep the release notes a reasonable size."
-          fi
-          DETAILS=$(printf '<details>\n<summary>%s</summary>\n\n%s\n\n%s\n\n</details>' "$SUMMARY" "$DESCRIPTION" "$GIT_LOG")
-          {
-            echo 'details<<EOF'
-            echo "$DETAILS"
-            echo EOF
-          } >> "$GITHUB_OUTPUT"
-
-      # Resolve the human who shipped this release so release notes can credit
-      # them. Primary source is whoever merged the release PR (the release commit
-      # is that PR's squash-merge); when the release commit has no associated
-      # merged PR (initial release, or a direct push / manual recovery), fall back
-      # to the actor who triggered the workflow. Bot accounts are dropped — there's
-      # no human to credit (e.g. the auto path's dispatcher is github-actions[bot]).
-      - name: Resolve releaser
-        id: resolve-releaser
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_COMMIT: ${{ steps.resolve-refs.outputs.release-commit }}
-          ACTOR: ${{ github.actor }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -uo pipefail
-
-          RELEASER=""
-
-          # Primary: the user who merged the release PR. Distinguish "commit has no
-          # associated merged PR" (initial release, direct push, manual recovery, or
-          # eventual-consistency on a fresh squash-merge) from a real API failure.
-          # The latter must warn rather than silently fall through to the actor —
-          # on a manual release that would credit the dispatcher instead of the
-          # merger, with no breadcrumb. Mirrors the lookup pattern used below for
-          # release-label resolution.
-          if [ -n "$RELEASE_COMMIT" ]; then
-            if PULLS=$(gh api "/repos/$REPOSITORY/commits/$RELEASE_COMMIT/pulls" 2>&1); then
-              PR_NUM=$(printf '%s' "$PULLS" | jq -r '.[0].number // empty')
-            else
-              echo "::warning::releaser lookup: commit-pulls API failed: $PULLS — falling back to actor"
-              PR_NUM=""
-            fi
-            if [ -n "$PR_NUM" ]; then
-              if MERGED_BY=$(gh pr view "$PR_NUM" --repo "$REPOSITORY" \
-                --json mergedBy --jq '.mergedBy.login // empty' 2>&1); then
-                RELEASER="$MERGED_BY"
-              else
-                echo "::warning::releaser lookup: gh pr view #$PR_NUM failed: $MERGED_BY — falling back to actor"
-              fi
-            fi
-          fi
-
-          # Fallback: the actor who dispatched the workflow (manual releases).
-          if [ -z "$RELEASER" ]; then
-            RELEASER="$ACTOR"
-          fi
-
-          # Drop bot accounts. Quoted patterns are literal, so "[bot]" matches as a
-          # literal suffix, not a glob char class — "*[bot]" matches any login ending
-          # in "[bot]". The bare "github-actions" arm covers github.actor surfacing
-          # without the "[bot]" suffix, which "*[bot]" would not catch.
-          case "$RELEASER" in
-            ""|*"[bot]"|github-actions) RELEASER="" ;;
-          esac
-
-          echo "Resolved releaser: ${RELEASER:-<none>}"
-          echo "releaser=$RELEASER" >> "$GITHUB_OUTPUT"
-
-      - name: Generate release body
-        id: generate-release-body
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
-          VERSION: ${{ needs.build.outputs.version }}
-          PREV_TAG: ${{ steps.resolve-refs.outputs.prev-tag }}
-          RELEASE_COMMIT: ${{ steps.resolve-refs.outputs.release-commit }}
-          RELEASER: ${{ steps.resolve-releaser.outputs.releaser }}
-          IS_PRERELEASE: ${{ needs.build.outputs.is-prerelease }}
-          BASE_BRANCH: ${{ github.ref_name }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          if [ -z "$RELEASE_COMMIT" ]; then
-            echo "::error::RELEASE_COMMIT is empty — resolve-refs step may have failed"
-            exit 1
-          fi
-
-          CHANGELOG_PATH="$WORKING_DIR/CHANGELOG.md"
-          RELEASE_BODY=""
-
-          # Try to extract the current version's section from CHANGELOG.md. When
-          # there is no matching section, the package Git log appended below
-          # serves as the release notes instead.
-          if [ -f "$CHANGELOG_PATH" ]; then
-            echo "Found CHANGELOG.md, extracting version $VERSION section..."
-
-            # Extract section between current version header and next version header (or EOF)
-            # Matches headers like: ## [0.0.16] or ## 0.0.16
-            RELEASE_BODY=$(awk -v ver="$VERSION" '
-              BEGIN { found=0; printing=0 }
-              /^## \[?[0-9]+\.[0-9]+\.[0-9]+/ {
-                if (printing) { exit }
-                if (index($0, ver)) { found=1; printing=1; next }
-              }
-              printing { print }
-            ' "$CHANGELOG_PATH")
-
-            if [ -n "$RELEASE_BODY" ]; then
-              echo "Successfully extracted changelog for version $VERSION"
-            else
-              echo "Could not find version $VERSION in CHANGELOG.md"
-            fi
-          else
-            echo "No CHANGELOG.md found at $CHANGELOG_PATH"
-          fi
-
-          # ── Collect contributors from merged PRs ──
-
-          # Get commits between previous tag and release commit for this package
-          if [ -z "$PREV_TAG" ]; then
-            COMMITS=$(git rev-list "$RELEASE_COMMIT" -- "$WORKING_DIR" | head -100)
-          else
-            COMMITS=$(git rev-list "$PREV_TAG".."$RELEASE_COMMIT" -- "$WORKING_DIR" | head -100)
-          fi
-
-          # Find PRs and collect contributors (GitHub username + optional Twitter/LinkedIn)
-          declare -A TWITTER_HANDLES  # Map: github_username -> twitter_handle (or empty)
-          declare -A LINKEDIN_URLS    # Map: github_username -> linkedin_url (or empty)
-          declare -A INTERNAL_USERS   # Map: github_username -> 1 (for dedup)
-          SEEN_PRS=""
-
-          for sha in $COMMITS; do
-            # Get PR number for this commit (if merged via PR)
-            PR_NUM=$(gh api "/repos/${{ github.repository }}/commits/$sha/pulls" \
-              --jq '.[0].number // empty' 2>/dev/null || true)
-
-            if [ -n "$PR_NUM" ] && [[ ! "$SEEN_PRS" =~ ":$PR_NUM:" ]]; then
-              SEEN_PRS="$SEEN_PRS:$PR_NUM:"
-
-              # Get PR author, body, and labels
-              PR_DATA=$(gh pr view "$PR_NUM" --json author,body,labels 2>/dev/null || true)
-              if [ -n "$PR_DATA" ]; then
-                GH_USER=$(echo "$PR_DATA" | jq -r '.author.login // empty')
-                PR_BODY=$(echo "$PR_DATA" | jq -r '.body // empty')
-
-                # Skip bots and automated accounts
-                IS_BOT=$(echo "$PR_DATA" | jq -r '.author.is_bot // false')
-                if [ "$IS_BOT" = "true" ]; then
-                  echo "Skipping bot account: $GH_USER (PR #$PR_NUM)"
-                  continue
-                fi
-
-                # Separate internal contributors (PRs labeled "internal" by pr_labeler workflow)
-                IS_INTERNAL=$(echo "$PR_DATA" | jq -r '.labels[].name // empty' | grep -qx "internal" && echo "true" || echo "false")
-                if [ "$IS_INTERNAL" = "true" ]; then
-                  if [ -n "$GH_USER" ]; then
-                    INTERNAL_USERS[$GH_USER]=1
-                    echo "Collected internal contributor: $GH_USER (PR #$PR_NUM)"
-                  else
-                    echo "::warning::Internal PR #$PR_NUM has no author login — contributor will not appear in release notes"
-                  fi
-                  continue
-                fi
-
-                if [ -n "$GH_USER" ]; then
-                  # Extract Twitter handle if present (matches "Twitter: @handle" or "Twitter: handle")
-                  TWITTER=$(echo "$PR_BODY" | grep -iE '^\s*Twitter:\s' | sed -nE 's/.*:[[:space:]]*@?[[:space:]]*([a-zA-Z0-9_]+).*/\1/p' | head -1 || true)
-
-                  # Extract LinkedIn URL if present (matches "LinkedIn: https://linkedin.com/in/username" or similar)
-                  LINKEDIN=$(echo "$PR_BODY" | grep -iE '^\s*LinkedIn:\s' | grep -oE '(https?://)?(www\.)?linkedin\.com/in/[a-zA-Z0-9_-]+/?' | head -1 || true)
-
-                  # Add user if not seen, or update socials if newly provided
-                  if [ -z "${TWITTER_HANDLES[$GH_USER]+x}" ]; then
-                    TWITTER_HANDLES[$GH_USER]="$TWITTER"
-                    LINKEDIN_URLS[$GH_USER]="$LINKEDIN"
-                  else
-                    [ -n "$TWITTER" ] && [ -z "${TWITTER_HANDLES[$GH_USER]}" ] && TWITTER_HANDLES[$GH_USER]="$TWITTER"
-                    [ -n "$LINKEDIN" ] && [ -z "${LINKEDIN_URLS[$GH_USER]}" ] && LINKEDIN_URLS[$GH_USER]="$LINKEDIN"
-                  fi
-                fi
-              fi
-            fi
-          done
-
-          # Dedup: if a user has both internal and community PRs, keep them
-          # in internal only (they are an org member regardless of PR labels)
-          for GH_USER in "${!INTERNAL_USERS[@]}"; do
-            unset "TWITTER_HANDLES[$GH_USER]"
-            unset "LINKEDIN_URLS[$GH_USER]"
-          done
-
-          # Build contributor list: @ghuser ([Twitter](url), [LinkedIn](url)) or just @ghuser
-          CONTRIBUTOR_LIST=""
-          for GH_USER in "${!TWITTER_HANDLES[@]}"; do
-            TWITTER="${TWITTER_HANDLES[$GH_USER]}"
-            LINKEDIN="${LINKEDIN_URLS[$GH_USER]}"
-
-            # Build social links
-            SOCIALS=""
-            if [ -n "$TWITTER" ]; then
-              SOCIALS="[Twitter](https://x.com/$TWITTER)"
-            fi
-            if [ -n "$LINKEDIN" ]; then
-              # Ensure LinkedIn URL has https:// prefix
-              if [[ ! "$LINKEDIN" =~ ^https?:// ]]; then
-                LINKEDIN="https://$LINKEDIN"
-              fi
-              if [ -n "$SOCIALS" ]; then
-                SOCIALS="$SOCIALS, [LinkedIn]($LINKEDIN)"
-              else
-                SOCIALS="[LinkedIn]($LINKEDIN)"
-              fi
-            fi
-
-            if [ -n "$SOCIALS" ]; then
-              ENTRY="@$GH_USER ($SOCIALS)"
-            else
-              ENTRY="@$GH_USER"
-            fi
-
-            if [ -z "$CONTRIBUTOR_LIST" ]; then
-              CONTRIBUTOR_LIST="$ENTRY"
-            else
-              CONTRIBUTOR_LIST="$CONTRIBUTOR_LIST, $ENTRY"
-            fi
-          done
-
-          if [ -n "$CONTRIBUTOR_LIST" ]; then
-            echo "Found community contributors: $CONTRIBUTOR_LIST"
-          fi
-
-          # Build internal maintainers list: @ghuser, @ghuser, ...
-          INTERNAL_LIST=""
-          for GH_USER in "${!INTERNAL_USERS[@]}"; do
-            if [ -z "$INTERNAL_LIST" ]; then
-              INTERNAL_LIST="@$GH_USER"
-            else
-              INTERNAL_LIST="$INTERNAL_LIST, @$GH_USER"
-            fi
-          done
-
-          if [ -n "$INTERNAL_LIST" ]; then
-            echo "Found internal maintainers: $INTERNAL_LIST"
-          fi
-
-          if [ -n "$RELEASER" ]; then
-            echo "Found releaser: @$RELEASER"
-          fi
-
-          # Prepend pre-release banner
-          if [ "$IS_PRERELEASE" = "true" ]; then
-            RELEASE_BODY=$(printf "> [!WARNING]\n> This is a pre-release version. Install with: \`pip install %s==%s\`\n\n%s" "$PKG_NAME" "$VERSION" "$RELEASE_BODY")
-          fi
-
-          # Append contributor shoutouts
-          SEPARATOR_ADDED=false
-          if [ -n "$CONTRIBUTOR_LIST" ]; then
-            RELEASE_BODY=$(printf "%s\n\n---\n\nThanks to our community contributors: %s" "$RELEASE_BODY" "$CONTRIBUTOR_LIST")
-            SEPARATOR_ADDED=true
-          fi
-
-          if [ -n "$INTERNAL_LIST" ]; then
-            if [ "$SEPARATOR_ADDED" = "false" ]; then
-              RELEASE_BODY=$(printf "%s\n\n---" "$RELEASE_BODY")
-              SEPARATOR_ADDED=true
-            fi
-            RELEASE_BODY=$(printf "%s\n\nInternal maintainers: %s" "$RELEASE_BODY" "$INTERNAL_LIST")
-          fi
-
-          # Credit whoever shipped the release. This is a distinct role from
-          # contributing release changes, so show it even when the same user also
-          # appears as a community contributor or internal maintainer.
-          if [ -n "$RELEASER" ]; then
-            if [ "$SEPARATOR_ADDED" = "false" ]; then
-              RELEASE_BODY=$(printf "%s\n\n---" "$RELEASE_BODY")
-              SEPARATOR_ADDED=true
-            fi
-            RELEASE_BODY=$(printf "%s\n\nReleased by: @%s" "$RELEASE_BODY" "$RELEASER")
-          fi
-
-          # Annotate releases cut from a non-default branch (a vX.Y version line
-          # or an alpha/* throwaway branch) with the originating branch and the
-          # immutable release commit. Placed after attribution so provenance sits
-          # with the ship metadata. Skipped for normal default-branch releases,
-          # where the branch carries no signal. The branch is rendered as plain
-          # text and the link targets the commit SHA, never tree/<branch>: alpha
-          # branches are deleted after release, so a branch link would 404, and
-          # the commit is the exact code that shipped even when release-sha points
-          # somewhere other than the branch tip.
-          DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
-          if [ -n "$BASE_BRANCH" ] && [ "$BASE_BRANCH" != "$DEFAULT_BRANCH" ]; then
-            RELEASE_BODY=$(printf "%s\n\nReleased from \`%s\` at commit [\`%s\`](https://github.com/%s/commit/%s)" "$RELEASE_BODY" "$BASE_BRANCH" "${RELEASE_COMMIT:0:7}" "$REPOSITORY" "$RELEASE_COMMIT")
-          fi
-
-          # Output release body using heredoc for proper multiline handling
-          {
-            echo 'release-body<<EOF'
-            echo "$RELEASE_BODY"
-            echo EOF
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Add package Git log to release body
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # The release target checkout (above) uses the release SHA, which may
+      # predate the notes script. Check out the workflow's own revision into
+      # a separate path so the helper is always available.
+      - name: Check out release-notes script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: _workflow
+          sparse-checkout: |
+            .github/scripts/release/build_release_notes.py
+          sparse-checkout-cone-mode: false
+
+      # Build the release body with the shared script. This replaces the
+      # previous inline bash steps so the same logic can be reused locally for
+      # post-publish recovery (see RELEASING.md > Release Notes Job Failed or
+      # GitHub Release Body Is Empty).
+      #
+      # WORKING_DIR and IS_PRERELEASE are passed explicitly rather than
+      # re-derived by the script: the workflow already resolved both, and
+      # IS_PRERELEASE is the same value that drives the GitHub release's
+      # `prerelease:` flag below, so the banner and the flag cannot disagree.
+      #
+      # --repo-root is passed explicitly rather than relying on the script's
+      # cwd default, so adding a `working-directory:` to this step (as most
+      # other steps in this file have) cannot break predecessor resolution.
+      - name: Build release notes
         id: finalize-release-body
         env:
-          BASE_RELEASE_BODY: ${{ steps.generate-release-body.outputs.release-body }}
-          GIT_LOG_DETAILS: ${{ steps.generate-git-log.outputs.details }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
+          ACTOR: ${{ github.actor }}
+          BASE_BRANCH: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+          REPOSITORY: ${{ github.repository }}
+          IS_PRERELEASE: ${{ needs.build.outputs.is-prerelease }}
         run: |
-          set -euo pipefail
-
-          # Keep the generated output below 120,000 bytes as a conservative margin
-          # beneath GitHub's 125,000-character release-body limit. Replace the log
-          # with a small notice when room is tight, or drop it entirely if even the
-          # notice would not fit.
-          MAX_RELEASE_BODY_BYTES=120000
-          BODY_BYTES=$(printf '%s' "$BASE_RELEASE_BODY" | wc -c | tr -d ' ')
-          DETAILS_BYTES=$(printf '%s' "$GIT_LOG_DETAILS" | wc -c | tr -d ' ')
-          RELEASE_BODY="$BASE_RELEASE_BODY"
-          SEPARATOR_BYTES=0
-          if [ -n "$BASE_RELEASE_BODY" ]; then
-            SEPARATOR_BYTES=2
-          fi
-          # The base body alone can exceed the budget (e.g. a very large CHANGELOG
-          # section). Nothing here can shrink it, so surface that accurately rather
-          # than blaming the Git log in the branch below, and append nothing —
-          # RELEASE_BODY stays as the base body initialized above.
-          if [ "$BODY_BYTES" -gt "$MAX_RELEASE_BODY_BYTES" ]; then
-            echo "::warning::Base release body ($BODY_BYTES bytes) already exceeds the ${MAX_RELEASE_BODY_BYTES}-byte budget before the Git log is added; GitHub may reject it"
-          elif [ $((BODY_BYTES + DETAILS_BYTES + SEPARATOR_BYTES)) -le "$MAX_RELEASE_BODY_BYTES" ]; then
-            if [ -n "$BASE_RELEASE_BODY" ]; then
-              RELEASE_BODY=$(printf "%s\n\n%s" "$BASE_RELEASE_BODY" "$GIT_LOG_DETAILS")
-            else
-              RELEASE_BODY="$GIT_LOG_DETAILS"
-            fi
-          else
-            echo "::warning::Full Git log omitted to keep the release body within GitHub's size limit"
-            COMPACT_DETAILS=$(printf '<details>\n<summary>Git log</summary>\n\nGit log omitted because the rest of these release notes is near GitHub'"'"'s size limit.\n\n</details>')
-            COMPACT_BYTES=$(printf '%s' "$COMPACT_DETAILS" | wc -c | tr -d ' ')
-            if [ $((BODY_BYTES + COMPACT_BYTES + SEPARATOR_BYTES)) -le "$MAX_RELEASE_BODY_BYTES" ]; then
-              if [ -n "$BASE_RELEASE_BODY" ]; then
-                RELEASE_BODY=$(printf "%s\n\n%s" "$BASE_RELEASE_BODY" "$COMPACT_DETAILS")
-              else
-                RELEASE_BODY="$COMPACT_DETAILS"
-              fi
-            fi
-          fi
-
-          {
-            echo 'release-body<<EOF'
-            echo "$RELEASE_BODY"
-            echo EOF
-          } >> "$GITHUB_OUTPUT"
+          python _workflow/.github/scripts/release/build_release_notes.py \
+            --package "$PKG_NAME" \
+            --version "$VERSION" \
+            --sha "$RELEASE_SHA" \
+            --repo "$REPOSITORY" \
+            --actor "$ACTOR" \
+            --base-branch "$BASE_BRANCH" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --working-dir "$WORKING_DIR" \
+            --is-prerelease "$IS_PRERELEASE" \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --github-output
 
   test-pypi-publish:
     name: 🧪 Publish to TestPyPI
@@ -1190,7 +581,7 @@ jobs:
           path: ${{ env.WORKING_DIR }}/dist/
 
       - name: Publish to test PyPI
-        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: ${{ env.WORKING_DIR }}/dist/
           verbose: true
@@ -1340,7 +731,7 @@ jobs:
           VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
       - name: Run unit tests
-        run: make test COV_ARGS= PYTEST_EXTRA="--no-cov -v"
+        run: make test COV_ARGS= PYTEST_EXTRA="-v"
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Run integration tests
@@ -1410,7 +801,7 @@ jobs:
           path: ${{ env.WORKING_DIR }}/dist/
 
       - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: ${{ env.WORKING_DIR }}/dist/
           verbose: true
@@ -1418,7 +809,13 @@ jobs:
           # Temp workaround since attestations are on by default as of gh-action-pypi-publish v1.11.0
           attestations: false
 
-  # Create GitHub release after checks pass
+  # Create GitHub release after checks pass.
+  #
+  # The `if:` below gates on pre-release-checks and publish only. `release-notes`
+  # is listed in `needs` purely to consume its output — its result is
+  # deliberately not a condition, so a failed notes job publishes an empty body
+  # rather than blocking an already-published PyPI release. See the fail-open
+  # note on the `release-notes` job.
   mark-release:
     name: 🏷️ Tag GitHub release
     needs:
@@ -1473,6 +870,52 @@ jobs:
           makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents' &&
             needs.build.outputs.is-prerelease != 'true' }}
           draft: false
+
+      # `release-notes` is fail-open: a failed notes job still reaches this
+      # point and publishes an empty body. Emit an ::error:: here so the
+      # green `mark-release` job — the one the maintainer actually sees on the
+      # workflow summary — names the symptom instead of leaving the empty
+      # release page as the only evidence. Runs for failure, cancelled, and
+      # skipped alike: all three produce an empty body.
+      - name: Surface failed release notes
+        if: needs.release-notes.result != 'success'
+        env:
+          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
+          ACTOR: ${{ github.actor }}
+          BASE_BRANCH: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+          REPOSITORY: ${{ github.repository }}
+          NOTES_RESULT: ${{ needs.release-notes.result }}
+        run: |
+          echo "::error title=Release notes job ${NOTES_RESULT}::\
+          GitHub release ${PKG_NAME}==${VERSION} was published with an empty body. \
+          See the job summary for the recovery command."
+          {
+            echo ""
+            echo "### ❌ Release notes job ${NOTES_RESULT}"
+            echo ""
+            echo "\`${PKG_NAME}==${VERSION}\` was published with an **empty body**. \
+          Rebuild and apply the notes (see RELEASING.md > Release Notes Job \
+          Failed or GitHub Release Body Is Empty):"
+            echo ""
+            echo '```bash'
+            echo "python .github/scripts/release/build_release_notes.py \\"
+            echo "  --package \"${PKG_NAME}\" --version \"${VERSION}\" \\"
+            echo "  --sha \"${RELEASE_SHA}\" --repo \"${REPOSITORY}\" \\"
+            echo "  --actor \"${ACTOR}\" --base-branch \"${BASE_BRANCH}\" \\"
+            if [ "${BASE_BRANCH}" != "${DEFAULT_BRANCH:-main}" ] \
+              && [ "${DEFAULT_BRANCH:-main}" != "main" ]; then
+              echo "  --default-branch \"${DEFAULT_BRANCH}\" \\"
+            fi
+            echo "  --out /tmp/release-body.md"
+            echo ""
+            echo "gh release edit \"${PKG_NAME}==${VERSION}\" --repo \"${REPOSITORY}\" \\"
+            echo "  --notes-file /tmp/release-body.md"
+            echo '```'
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Mark the release PR as tagged so release-please knows it's been released
       # This is required because skip-github-release is true in release-please config
@@ -1604,3 +1047,41 @@ jobs:
               fi
             fi
           fi
+
+  # Kick the Code SDK pin auto-bump once the SDK is live on PyPI. Only the
+  # `deepagents` package release triggers this: the pin-bump workflow itself
+  # compares the workspace SDK version to the Code pin and exits cleanly
+  # when there is nothing to do, so redundant dispatches (e.g. a re-run of
+  # this job) are harmless. The pin-bump workflow opens a `chore(deps):` PR
+  # against `main` via the Org Membership App token, so its required checks
+  # run normally.
+  bump-code-sdk-pin:
+    name: 🔗 Trigger Code SDK pin bump
+    needs:
+      - setup
+      - build
+      - publish
+    if: always() && needs.publish.result == 'success' &&
+      needs.build.outputs.pkg-name == 'deepagents'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      SDK_VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
+          permission-actions: write
+
+      - name: Dispatch bump_code_sdk_pin.yml
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run bump_code_sdk_pin.yml --ref main
+          echo "::notice::Dispatched bump_code_sdk_pin.yml after publishing deepagents==${SDK_VERSION}."

@@ -322,3 +322,22 @@ class TestReadResultPaginationInvariants:
     def test_malformed_combinations_raise(self, kwargs: dict[str, int]) -> None:
         with pytest.raises(ValueError, match="ReadResult"):
             ReadResult(**kwargs)
+
+    def test_no_lines_requested_valid_window(self) -> None:
+        """The zero-line flag is valid on its own with empty file data."""
+        result = ReadResult(file_data={"content": "", "encoding": "utf-8"}, no_lines_requested=True)
+        assert result.no_lines_requested is True
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            pytest.param({"error": "boom"}, id="with_error"),
+            pytest.param({"start_line": 1, "end_line": 1}, id="with_window"),
+            pytest.param({"total_lines": 3, "start_line": 1, "end_line": 1}, id="with_total"),
+            pytest.param({"start_line": 1, "end_line": 1, "next_offset": 1}, id="with_next_offset"),
+        ],
+    )
+    def test_no_lines_requested_rejects_other_dispositions(self, kwargs: dict) -> None:
+        """A never-inspected window cannot also claim an error or a line range."""
+        with pytest.raises(ValueError, match="no_lines_requested"):
+            ReadResult(no_lines_requested=True, **kwargs)

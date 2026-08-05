@@ -8,9 +8,9 @@ on:
         type: string
         required: true
       categories:
-        description: "Comma list"
+        description: "Comma list of capability axes: autonomous, conversation, context, research. Replaces the default set rather than adding to it. `research` (DRBench enterprise deep research) pins its own runner, sandbox, and concurrency regardless of the inputs below; `context` is available but not in the default set."
         type: string
-        default: "autonomous,conversation,context"
+        default: "autonomous,conversation,research"
       agent_impls:
         description: "Comma-separated deep-agents harnesses for the autonomous and context categories (conversation always uses tau3). Each must be bare (SDK create_deep_agent) or dcode (deep-agents-code product agent). Every listed config runs as its own (model, config) row."
         type: string
@@ -47,8 +47,15 @@ on:
       sandbox_env:
         type: string
         default: "langsmith"
+      runner_label:
+        description: "Default runner for eval jobs that do not pin their own. `research` always runs on `ubuntu-24.04-arm` with the docker sandbox, since upstream publishes its task images for arm64 only, so this input does not need changing to include it. A closed choice so a run cannot be pointed at an unintended runner pool."
+        type: choice
+        default: "ubuntu-latest"
+        options:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
       force_build:
-        description: "Force a rebuild of each task's environment image/snapshot, bypassing any cached or stale record. Required the first time a local dataset runs on the LangSmith sandbox (the snapshot must be built), and to recover from a broken snapshot record."
+        description: "Force a rebuild of each task's environment image/snapshot, bypassing any cached or stale record. Required the first time a local dataset runs on the LangSmith sandbox (the snapshot must be built), and to recover from a broken snapshot record. Has almost no effect with `sandbox_env: docker`: there it only switches a task that declares BOTH `docker_image` and a Dockerfile over to building the Dockerfile, and it neither passes `--no-cache`/`--pull` nor busts the local layer cache."
         type: boolean
         default: false
       harbor_package_override:
@@ -56,7 +63,11 @@ on:
         type: string
         default: ""
       judge_models:
-        description: "Optional: grader model(s) for LLM-judge verifiers (conversation/tau3, harbor-index), passed as JUDGE_MODELS with JUDGE_PROVIDER=openai. Use an independent grader to avoid self-grading (e.g. gpt-5.6-terra when testing gpt-5.6-luna). Empty defaults to gpt-5.6-luna."
+        description: "Optional: grader model(s) for LLM-judge verifiers (conversation/tau3, harbor-index, research/DRBench), passed as JUDGE_MODELS with JUDGE_PROVIDER=openai. Use an independent grader to avoid self-grading (e.g. gpt-5.6-terra when testing gpt-5.6-luna). Empty defaults to gpt-5.6-luna. The DRBench verifier only drives gpt-4o/gpt-4o-mini directly, since upstream routes on the model name — a value it cannot drive does NOT fail the research leaf, it falls back to gpt-4o and says so in the summary. Use `research_judge_models` to choose DRBench's grader deliberately."
+        type: string
+        default: ""
+      research_judge_models:
+        description: "Optional: grader for `research` (DRBench) only, when it must differ from `judge_models` — for example an independent grader for tau3 alongside gpt-4o for DRBench in one dispatch. Must be gpt-4o, gpt-4o-mini, or a single `openrouter/<vendor>/<model>` slug such as `openrouter/openai/gpt-5.6-sol`, since upstream routes on the model name; anything else fails prep rather than being silently rewritten. Empty inherits `judge_models` when DRBench can drive it, else gpt-4o. A different grader is not comparable to earlier DRBench runs or to the paper, so re-baseline rather than reading a delta."
         type: string
         default: ""
 
@@ -149,14 +160,19 @@ jobs:
               dataset_path = CATEGORY_MAP[category]["dataset_path"]
               env = os.environ.copy()
               if dataset_path:
-                  # Local dataset: the per-task corpus is git-ignored and must be
-                  # regenerated from the vendored copy before enumeration can see
-                  # any task.toml files, mirroring the leaf's own populate step.
+                  # Local dataset: git-ignored task content must be regenerated
+                  # before enumeration can see any task.toml files, mirroring the
+                  # leaf's own populate step. Route through the shared dispatcher so
+                  # each dataset gets ITS adapter -- hardcoding one module here ran
+                  # the wrong adapter for every dataset but the first.
                   subprocess.run(
                       [
-                          "uv", "run", "python", "-m",
-                          "harbor_adapters.contextbench.main",
-                          "--populate", dataset_path,
+                          "uv", "run", "python",
+                          os.path.join(
+                              os.environ["GITHUB_WORKSPACE"],
+                              ".github", "scripts", "prepare_local_dataset.py",
+                          ),
+                          dataset_path,
                       ],
                       check=True,
                   )
@@ -307,9 +323,11 @@ jobs:
       agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}
       concurrency: ${{ inputs.concurrency }}
       sandbox_env: ${{ inputs.sandbox_env }}
+      runner_label: ${{ inputs.runner_label }}
       force_build: ${{ inputs.force_build }}
       harbor_package_override: ${{ inputs.harbor_package_override }}
       judge_models: ${{ inputs.judge_models }}
+      research_judge_models: ${{ inputs.research_judge_models }}
 
   usage:
     name: "💰 Collect LangSmith usage"

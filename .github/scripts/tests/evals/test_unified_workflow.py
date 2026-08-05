@@ -16,6 +16,7 @@ HARBOR_DISPATCH_WORKFLOW = ROOT / ".github/workflows/harbor.yml"
 EVALS_WORKFLOW = ROOT / ".github/workflows/evals.yml"
 CI_WORKFLOW = ROOT / ".github/workflows/ci.yml"
 PREP_SCRIPT = ROOT / ".github/scripts/evals/unified_prep.py"
+UNIFIED_EVALS_DOC = ROOT / "libs/evals/UNIFIED_EVALS.md"
 
 
 def _indented_block(text: str, marker: str) -> str:
@@ -89,7 +90,7 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     assert "Leave empty to use the pinned Harbor" in harbor_override
 
     categories = _indented_block(dispatch, "      categories:")
-    assert 'default: "autonomous,conversation,context"' in categories
+    assert 'default: "autonomous,conversation,research"' in categories
 
     # The deep-agents harness list for autonomous/context defaults to bare.
     agent_impls = _indented_block(dispatch, "      agent_impls:")
@@ -123,6 +124,33 @@ def test_dispatch_inputs_reach_every_provider_without_changing_categories() -> N
     assert '"dataset": "tau3-subset"' in conversation
     assert '"dataset_path": ""' in conversation
     assert '"agent_impl": "tau3"' in conversation
+
+
+def test_the_documented_default_categories_match_the_workflow() -> None:
+    """The runbook's stated default must be the workflow's actual default.
+
+    These drifted once: the workflow default changed to include `research` while
+    UNIFIED_EVALS.md still said `context` and called research opt-in. Someone following
+    the runbook would dispatch the default expecting Context-Bench and start DRBench
+    instead -- different runner, sandbox, credentials, and cost. `unified_prep`'s own
+    fallback is checked too, since it defines the default a second time.
+    """
+    workflow = UNIFIED_WORKFLOW.read_text()
+    categories = _indented_block(_indented_block(workflow, "  workflow_dispatch:"), "      categories:")
+    match = re.search(r'default: "([^"]+)"', categories)
+    assert match is not None, "categories input has no default"
+    default = match.group(1)
+
+    doc = UNIFIED_EVALS_DOC.read_text()
+    assert default in doc, f"UNIFIED_EVALS.md does not document the default {default!r}"
+
+    # The prep script repeats the default for the case where the env var is absent.
+    assert f'"UNIFIED_CATEGORIES", "{default}"' in PREP_SCRIPT.read_text()
+
+    # And no stale copy of a previous default survives anywhere in the runbook.
+    others = {"autonomous,conversation,context"} - {default}
+    for stale in others:
+        assert stale not in doc, f"UNIFIED_EVALS.md still cites the old default {stale!r}"
 
 
 def test_eval_job_uses_single_flat_pool_matrix() -> None:
@@ -185,8 +213,11 @@ def test_enumerate_step_gated_on_full_profile() -> None:
     assert "if: ${{ inputs.profile == 'full' }}" in enumerate_step
     assert "ENUM_DATASET" in enumerate_step
     assert "ENUM_DATASET_PATH" in enumerate_step
-    assert "harbor_adapters.contextbench.main" in enumerate_step
-    assert "--populate" in enumerate_step
+    # Populate goes through the shared dispatcher, which resolves each dataset to ITS
+    # adapter. A hardcoded module here silently ran the wrong adapter for every local
+    # dataset but the first, leaving the rest unpopulated.
+    assert "prepare_local_dataset.py" in enumerate_step
+    assert "harbor_adapters." not in enumerate_step
     assert "UNIFIED_TASKS_JSON" in enumerate_step
 
     p_step = _indented_block(
@@ -275,15 +306,61 @@ def test_unified_dispatch_forwards_retry_and_timeout_controls() -> None:
     assert "Actual retries" in summary
 
 
+def test_runner_label_is_an_input_constrained_to_known_labels() -> None:
+    """Only the container-running job takes the label, and callers can't invent one."""
+    reusable = HARBOR_WORKFLOW.read_text()
+    unified = UNIFIED_WORKFLOW.read_text()
+
+    # Defaulted in the reusable workflow so its other caller (harbor.yml) is unaffected.
+    assert "runner_label:" in reusable
+    assert 'default: "ubuntu-latest"' in reusable
+    # Per-leaf with an input fallback: a category that pins a runner (research, arm64-only)
+    # must be able to run in the same dispatch as categories that use the input.
+    assert "runs-on: ${{ matrix.runner || inputs.runner_label }}" in reusable
+
+    harbor = _indented_block(reusable, "  harbor:")
+    assert "runs-on: ${{ matrix.runner || inputs.runner_label }}" in harbor
+    # Sandbox and concurrency take the same override path, so research keeps the docker
+    # sandbox and one-rollout-at-a-time regardless of what the dispatch asked for.
+    assert "HARBOR_SANDBOX_ENV: ${{ matrix.sandbox_env || inputs.sandbox_env }}" in harbor
+    assert "HARBOR_CONCURRENCY: ${{ matrix.concurrency || inputs.concurrency }}" in harbor
+    # prep and aggregate run no containers, so they stay on the default runner.
+    for job in ("  prep:", "  aggregate:"):
+        assert "runs-on: ubuntu-latest" in _indented_block(reusable, job)
+
+    # A closed choice at the dispatch boundary: `runs-on` is evaluated before any
+    # step could validate it, so the input itself has to be constrained.
+    runner_input = _indented_block(unified, "      runner_label:")
+    assert "type: choice" in runner_input
+    assert "ubuntu-24.04-arm" in runner_input
+    assert "runner_label: ${{ inputs.runner_label }}" in unified
+
+
+def test_jobs_dir_is_derived_per_suite_not_hardcoded() -> None:
+    """Every suite gets its own jobs dir, so `terminal-bench` can't label a DRBench run."""
+    reusable = HARBOR_WORKFLOW.read_text()
+
+    assert 'HARBOR_JOBS_DIR="harbor-jobs/${HARBOR_CATEGORY}"' in reusable
+    assert '--jobs-dir "$HARBOR_JOBS_DIR"' in reusable
+    # No suite name may remain hardcoded as a path.
+    assert "harbor-jobs/terminal-bench" not in reusable
+    # The category becomes a path component, and the category pattern admits "."
+    # and "..", so those must be rejected explicitly.
+    assert '"$HARBOR_CATEGORY" == ".."' in reusable
+
+
 def test_latest_harbor_job_reports_actual_retry_count(tmp_path: Path) -> None:
     reusable = HARBOR_WORKFLOW.read_text()
     harbor = _indented_block(reusable, "  harbor:")
     latest_job = _indented_block(harbor, '      - name: "🔍 Find latest Harbor job"')
-    job = tmp_path / "harbor-jobs" / "terminal-bench" / "2026-07-21__12-00-00"
+    # The jobs dir is per-suite now, derived from HARBOR_CATEGORY by an earlier step
+    # and exported via GITHUB_ENV, so this step reads it from the environment.
+    jobs_dir = "harbor-jobs/research"
+    job = tmp_path / jobs_dir / "2026-07-21__12-00-00"
     job.mkdir(parents=True)
     (job / "result.json").write_text('{"stats":{"n_retries":2}}')
     output = tmp_path / "github-output"
-    env = {**os.environ, "GITHUB_OUTPUT": str(output)}
+    env = {**os.environ, "GITHUB_OUTPUT": str(output), "HARBOR_JOBS_DIR": jobs_dir}
 
     subprocess.run(
         ["bash", "-e", "-o", "pipefail", "-c", _step_script(latest_job)],
@@ -524,8 +601,7 @@ def test_leaf_aggregation_requires_every_expected_shard() -> None:
     # run can't collide on the same shard index's marker basename (aggregate_shards.py
     # counts markers by basename alone).
     assert (
-        'touch "harbor-jobs/terminal-bench/empty-shard-${HARBOR_CATEGORY}-${HARBOR_SHARD_INDEX}"'
-        in harbor
+        'touch "$HARBOR_JOBS_DIR/empty-shard-${HARBOR_CATEGORY}-${HARBOR_SHARD_INDEX}"' in harbor
     )
     assert "    needs: [prep, harbor]" in aggregate
     # expected_shards now flows per-category via aggregate_matrix (derived in prep

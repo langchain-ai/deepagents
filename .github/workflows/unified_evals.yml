@@ -63,7 +63,7 @@ on:
         type: string
         default: ""
       judge_models:
-        description: "Optional: grader model(s) for LLM-judge verifiers (conversation/tau3, harbor-index), passed as JUDGE_MODELS with JUDGE_PROVIDER=openai. Use an independent grader to avoid self-grading (e.g. gpt-5.6-terra when testing gpt-5.6-luna). Empty defaults to gpt-5.6-luna."
+        description: "Optional: grader model(s) for LLM-judge verifiers (conversation/tau3, harbor-index, research/DRBench), passed as JUDGE_MODELS with JUDGE_PROVIDER=openai. Use an independent grader to avoid self-grading (e.g. gpt-5.6-terra when testing gpt-5.6-luna). Empty defaults to gpt-5.6-luna. The DRBench verifier only drives gpt-4o/gpt-4o-mini directly, since upstream routes on the model name — to grade `research` with any other model, pass a single `openrouter/<vendor>/<model>` slug such as `openrouter/openai/gpt-5.6-sol`. A different grader is not comparable to earlier DRBench runs or to the paper, so re-baseline rather than reading a delta."
         type: string
         default: ""
 

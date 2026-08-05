@@ -23,8 +23,9 @@ computes the four but not the mean, so the combination happens here. EPSILON bel
 only deviation from the paper.
 
 Judge selection and credentials come from the verifier environment the harness injects
-(``JUDGE_MODELS``, ``OPENAI_API_KEY``, ``OPENAI_BASE_URL``). Nothing is hardcoded, and no
-key is ever printed or written to a reward or breakdown file.
+(``JUDGE_MODELS``, ``OPENAI_API_KEY``, ``OPENAI_BASE_URL``, and ``OPENROUTER_API_KEY`` for
+an ``openrouter/`` judge). Nothing is hardcoded, and no key is ever printed or written to a
+reward or breakdown file.
 """
 
 from __future__ import annotations
@@ -74,6 +75,17 @@ MAX_REPORT_LENGTH = 60_000
 # on every judge call.
 _DEFAULT_JUDGE_MODEL = "gpt-4o"
 
+# Upstream routes an `openrouter/<vendor>/<model>` slug to OpenRouter's OpenAI-compatible
+# endpoint in both transports, resolving it before either model registry is consulted.
+_OPENROUTER_SLUG_RE = re.compile(
+    r"^openrouter/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(?::[A-Za-z0-9._-]+)?$"
+)
+
+# Output cap for an OpenRouter judge; `AIAgentManager`'s 1000-token default truncates a
+# reasoning model's verdict. The direct-OpenAI path keeps upstream's default, both because
+# 1000 tokens suffice there and because it is what earlier runs scored with.
+_OPENROUTER_JUDGE_MAX_TOKENS = 32_000
+
 
 def _requested_judge_model() -> str:
     """First model in the harness-injected ``JUDGE_MODELS``, or the default."""
@@ -101,19 +113,23 @@ def _supported_judge_models() -> set[str]:
 
 
 def _judge_model() -> str:
-    """Return a judge model the installed DRBench supports.
+    """Return a judge model the installed DRBench can drive.
 
-    The harness picks one judge for the whole eval suite via ``JUDGE_MODELS``, but DRBench
-    only drives a fixed set, and its default is a reasoning model that upstream cannot use:
-    it is absent from both registries and rejects the ``temperature=0`` upstream sends on
-    every call. Rather than monkeypatch three separate upstream internals to force it
-    through, fall back to a supported model and say so.
+    An ``openrouter/<vendor>/<model>`` slug passes straight through, because upstream
+    resolves the prefix before consulting either registry -- that is the supported route to
+    a frontier judge, and the only route to a non-OpenAI one.
 
-    That is also the more faithful choice. DRBench's prompts and thresholds were calibrated
-    with a GPT-4o-class judge, so scoring with one keeps our numbers comparable to the
-    paper -- which is the whole reason for using upstream's metrics.
+    Any other request must be in the intersection of both registries or scoring fails
+    partway through, so an unsupported one falls back to a model that is and says so;
+    `_grade` records the requested and actual names either way.
+
+    Note that DRBench's prompts and thresholds were calibrated with a GPT-4o-class judge,
+    so a different judge produces scores that are not comparable to the paper's or to
+    earlier runs.
     """
     requested = _requested_judge_model()
+    if _OPENROUTER_SLUG_RE.match(requested):
+        return requested
     supported = _supported_judge_models()
     if not supported:
         print(f"upstream exposes no usable judge model; trying {requested!r} anyway")
@@ -331,6 +347,34 @@ def _install_embedding_batching() -> None:
     utils.get_embeddings = batched
 
 
+def _install_judge_sampling(max_tokens: int = _OPENROUTER_JUDGE_MAX_TOKENS) -> None:
+    """Raise `AIAgentManager`'s output cap so a reasoning judge's verdict is not truncated.
+
+    `QASimilarityV2` -- the insight-recall metric, and the only metric on this transport --
+    constructs the manager with no arguments (`metrics/qa_similarity_v2.py`), so it takes
+    upstream's 1000-token default. That is ample for a GPT-4o-class verdict but not for a
+    reasoning model, whose thinking tokens count against the same cap.
+
+    Only the default is replaced, so an explicit caller value still wins, and nothing about
+    the prompts, parsing, or thresholds changes.
+    """
+    from drbench import gen_agent  # noqa: PLC0415 - installed only in the sandbox
+
+    original = gen_agent.AIAgentManager.__init__
+    if getattr(original, "_deepagents_sampling", False):
+        return
+
+    def patched(self: Any, *args: Any, **kwargs: Any) -> None:
+        # `max_tokens` is the fourth positional parameter after `self`; injecting the
+        # keyword as well when it was passed positionally would be a TypeError.
+        if len(args) <= 3:
+            kwargs.setdefault("max_tokens", max_tokens)
+        original(self, *args, **kwargs)
+
+    patched._deepagents_sampling = True  # type: ignore[attr-defined]
+    gen_agent.AIAgentManager.__init__ = patched  # type: ignore[method-assign]
+
+
 def composite(components: dict[str, float]) -> float:
     """Harmonic mean of the scored components, each floored at EPSILON.
 
@@ -404,6 +448,8 @@ def _grade() -> tuple[dict[str, float], dict[str, Any]]:
     # package, which is also where `CitationFactuality` resolves cited documents from --
     # so email, chat, file-browser, and Nextcloud sources all resolve as plain files.
     _install_embedding_batching()
+    if model.startswith("openrouter/"):
+        _install_judge_sampling()
     url_failures: list[dict[str, str]] = []
     _install_url_fetch_guard(url_failures)
     task = task_loader.get_task_from_id(task_id)

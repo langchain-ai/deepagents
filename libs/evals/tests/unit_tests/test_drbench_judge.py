@@ -121,6 +121,28 @@ def _install_fake_drbench(
         else service_to_models
     )
 
+    class AIAgentManager:
+        """Mirrors upstream's signature, whose parameter order the shim's guard depends on.
+
+        `QASimilarityV2` constructs this with only `model=`, so `max_tokens` takes the
+        1000-token default that truncates a reasoning judge's verdict.
+        """
+
+        def __init__(
+            self,
+            api_key: str | None = None,
+            api_url: str | None = None,
+            model: str = "meta-llama/Meta-Llama-3-8B-Instruct-Lite",
+            max_tokens: int = 1000,
+            temperature: float = 0.7,
+            with_linebreak: bool = False,
+        ) -> None:
+            recorded.setdefault("manager_max_tokens", []).append(max_tokens)
+            self.model = model
+            self.max_tokens = max_tokens
+
+    gen_agent.AIAgentManager = AIAgentManager
+
     agents: Any = types.ModuleType("drbench.agents")
     agents.utils = utils
 
@@ -230,6 +252,47 @@ def test_judge_model_rejects_a_model_in_only_one_registry(
     # `gpt-4.1` is the trap: allowlisted by `prompt_llm`, unknown to `AIAgentManager`.
     _install_fake_drbench(monkeypatch, scores={})
     monkeypatch.setenv("JUDGE_MODELS", "gpt-4.1")
+    assert judge._judge_model() == "gpt-4o"
+
+
+def test_judge_model_passes_an_openrouter_slug_through(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Upstream resolves the `openrouter/` prefix ahead of both registries (`prompt_llm`, and
+    # `AIAgentManager`, which reads `actual_model` before its `AVAILABLE_MODELS` check), so a
+    # model neither registry lists still scores. This is the route to a frontier judge.
+    _install_fake_drbench(monkeypatch, scores={})
+    monkeypatch.setenv("JUDGE_MODELS", "openrouter/openai/gpt-5.6-sol")
+    assert judge._judge_model() == "openrouter/openai/gpt-5.6-sol"
+
+
+def test_judge_model_accepts_an_openrouter_variant_suffix(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_drbench(monkeypatch, scores={})
+    monkeypatch.setenv("JUDGE_MODELS", "openrouter/anthropic/claude-opus-4-7:beta")
+    assert judge._judge_model() == "openrouter/anthropic/claude-opus-4-7:beta"
+
+
+@pytest.mark.parametrize(
+    "slug",
+    [
+        "openrouter/",
+        "openrouter/openai",
+        "openrouter//gpt-5.6-sol",
+        "openrouter/openai/gpt-5.6-sol/extra",
+        "myopenrouter/openai/gpt-5.6-sol",
+    ],
+)
+def test_judge_model_rejects_a_malformed_openrouter_slug(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, slug: str
+) -> None:
+    # The slug becomes the `model` field of an outbound request, so only the published
+    # `<vendor>/<model>[:variant]` shape passes. A malformed one falls back rather than
+    # raising, because `main` turns any exception into a 0.0 reward that reads as a real
+    # score; the CI preflight is what fails the job outright on a typo.
+    _install_fake_drbench(monkeypatch, scores={})
+    monkeypatch.setenv("JUDGE_MODELS", slug)
     assert judge._judge_model() == "gpt-4o"
 
 
@@ -728,6 +791,87 @@ def test_grade_installs_batching_and_skips_the_per_insight_pass(
     # The per-insight results are only written to `savedir`, which we never pass, so the
     # pass costs a judge call per insight plus retries and returns nothing readable.
     assert calls["score_report_kwargs"]["include_per_insight_scores"] is False
+
+
+# --- judge output cap -----------------------------------------------------------------
+
+
+def test_install_judge_sampling_replaces_the_default_output_cap(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: dict[str, Any] = {}
+    _install_fake_drbench(monkeypatch, scores={}, calls=calls)
+    from drbench import gen_agent  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    judge._install_judge_sampling(max_tokens=32_000)
+    # The construction `QASimilarityV2` makes: model only, everything else defaulted.
+    gen_agent.AIAgentManager(model="openrouter/openai/gpt-5.6-sol")
+
+    assert calls["manager_max_tokens"] == [32_000]
+
+
+def test_install_judge_sampling_keeps_an_explicit_keyword(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: dict[str, Any] = {}
+    _install_fake_drbench(monkeypatch, scores={}, calls=calls)
+    from drbench import gen_agent  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    judge._install_judge_sampling(max_tokens=32_000)
+    gen_agent.AIAgentManager(model="gpt-4o", max_tokens=64)
+
+    assert calls["manager_max_tokens"] == [64]
+
+
+def test_install_judge_sampling_tolerates_a_positional_max_tokens(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `max_tokens` is the fourth positional parameter after `self`. Injecting the keyword
+    # on top of a positional value would raise "got multiple values for max_tokens".
+    calls: dict[str, Any] = {}
+    _install_fake_drbench(monkeypatch, scores={}, calls=calls)
+    from drbench import gen_agent  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    judge._install_judge_sampling(max_tokens=32_000)
+    gen_agent.AIAgentManager(None, None, "gpt-4o", 128)
+
+    assert calls["manager_max_tokens"] == [128]
+
+
+def test_install_judge_sampling_is_idempotent(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_fake_drbench(monkeypatch, scores={})
+    from drbench import gen_agent  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    judge._install_judge_sampling()
+    first = gen_agent.AIAgentManager.__init__
+    judge._install_judge_sampling()
+
+    assert gen_agent.AIAgentManager.__init__ is first
+
+
+def test_grade_raises_the_output_cap_only_for_an_openrouter_judge(
+    judge: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The direct-OpenAI path keeps upstream's 1000-token default, so scores from earlier
+    # runs stay reproducible; only the OpenRouter path needs the larger cap.
+    _install_fake_drbench(monkeypatch, scores=dict(_SCORES))
+    _stage_paths(judge, monkeypatch, tmp_path)
+    monkeypatch.setenv("JUDGE_MODELS", "gpt-4o")
+    from drbench import gen_agent  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    judge._grade()
+
+    assert not getattr(gen_agent.AIAgentManager.__init__, "_deepagents_sampling", False)
+
+    _install_fake_drbench(monkeypatch, scores=dict(_SCORES))
+    monkeypatch.setenv("JUDGE_MODELS", "openrouter/openai/gpt-5.6-sol")
+    from drbench import gen_agent as reinstalled  # noqa: PLC0415  # ty: ignore[unresolved-import]
+
+    judge._grade()
+
+    assert getattr(reinstalled.AIAgentManager.__init__, "_deepagents_sampling", False)
 
 
 # --- cited-URL fetch guard ------------------------------------------------------------

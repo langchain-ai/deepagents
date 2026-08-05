@@ -100,6 +100,11 @@ on:
         # Grader model(s) for LLM-judge verifiers (e.g. harbor-index), passed as
         # JUDGE_MODELS with JUDGE_PROVIDER=openai. Prefer an independent grader,
         # not the model under test, to avoid self-grading bias.
+        #
+        # The `research` (DRBench) verifier only drives `gpt-4o`/`gpt-4o-mini` directly,
+        # because upstream routes on the model name. To grade with any other model, pass an
+        # `openrouter/<vendor>/<model>` slug, which upstream resolves ahead of its own
+        # registries; that needs OPENROUTER_API_KEY in the `evals` environment.
         type: string
         default: "gpt-5.6-luna"
 
@@ -314,10 +319,15 @@ jobs:
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          # The verifier's judge is always an OpenAI model (JUDGE_PROVIDER=openai),
-          # so this key is required regardless of the model under test.
+          # Required regardless of the model under test: the verifiers judge with
+          # JUDGE_PROVIDER=openai, and DRBench's factuality metric embeds with an OpenAI
+          # model even when its judge is routed through OpenRouter.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
+          # Granted when OpenRouter serves either side: the model under test
+          # (`openrouter:<vendor>/<model>`) or the verifier's judge, which upstream DRBench
+          # addresses with a slash (`judge_models: openrouter/<vendor>/<model>`). The two
+          # are independent, so a non-OpenRouter model can still need this key.
+          OPENROUTER_API_KEY: ${{ (startsWith(matrix.model, 'openrouter:') || startsWith(inputs.judge_models, 'openrouter/')) && secrets.OPENROUTER_API_KEY || '' }}
           XAI_API_KEY: ${{ startsWith(matrix.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
           missing=()
@@ -358,6 +368,18 @@ jobs:
 
           if [[ "$HARBOR_DATASET" == *tau3* ]] && [ "$model_provider" != "openai" ] && [ -z "$OPENAI_API_KEY" ]; then
             missing+=("OPENAI_API_KEY")
+          fi
+
+          # An OpenRouter judge needs its own key and a well-formed slug, neither of which
+          # the model-provider case above covers when the model under test is not
+          # OpenRouter. Checked here so a typo fails the job now rather than surfacing as a
+          # silent fallback to the default judge after a full run's spend.
+          if [[ "$HARBOR_JUDGE_MODELS" == openrouter/* ]]; then
+            [ -z "$OPENROUTER_API_KEY" ] && missing+=("OPENROUTER_API_KEY")
+            if [[ ! "$HARBOR_JUDGE_MODELS" =~ ^openrouter/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+(:[A-Za-z0-9._-]+)?$ ]]; then
+              echo "::error::judge_models must be a single openrouter/<vendor>/<model> slug: $HARBOR_JUDGE_MODELS"
+              exit 1
+            fi
           fi
 
           if [ ${#missing[@]} -gt 0 ]; then
@@ -554,10 +576,15 @@ jobs:
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          # The verifier's judge is always an OpenAI model (JUDGE_PROVIDER=openai),
-          # so this key is required regardless of the model under test.
+          # Required regardless of the model under test: the verifiers judge with
+          # JUDGE_PROVIDER=openai, and DRBench's factuality metric embeds with an OpenAI
+          # model even when its judge is routed through OpenRouter.
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENROUTER_API_KEY: ${{ startsWith(matrix.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
+          # Granted when OpenRouter serves either side: the model under test
+          # (`openrouter:<vendor>/<model>`) or the verifier's judge, which upstream DRBench
+          # addresses with a slash (`judge_models: openrouter/<vendor>/<model>`). The two
+          # are independent, so a non-OpenRouter model can still need this key.
+          OPENROUTER_API_KEY: ${{ (startsWith(matrix.model, 'openrouter:') || startsWith(inputs.judge_models, 'openrouter/')) && secrets.OPENROUTER_API_KEY || '' }}
           # Open-web search for the deep-research category only; empty elsewhere, which
           # is what keeps the agent's `web_search` tool absent for every other category.
           TAVILY_API_KEY: ${{ (matrix.category || inputs.category) == 'research' && secrets.TAVILY_API_KEY || '' }}
@@ -848,6 +875,9 @@ jobs:
             # reward file. Mirrors the always-on base URL above; forwards empty
             # when the job wasn't granted a key (harmless for non-judge verifiers).
             --verifier-env 'OPENAI_API_KEY=${OPENAI_API_KEY}'
+            # Non-empty only for an `openrouter/...` judge, which upstream DRBench reads
+            # this for. Empty otherwise, which the OpenAI judge path never consults.
+            --verifier-env 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}'
             # native_judge config the harbor-index verifiers require ("set by the
             # job yaml"); without these the judge raises JudgeConfigurationError
             # and writes no reward. Non-judge verifiers ignore the unused vars.

@@ -90,6 +90,10 @@ from deepagents.middleware._video import (
     video_dependencies_available,
 )
 
+# `ChatOpenAI`, `AzureChatOpenAI`, and `ChatGoogleGenerativeAI` accept non-PDF
+# `file` blocks such as `.docx` and `.pptx`. `ModelProfile` only encodes PDF
+# support today, so these providers get a hard-coded pass until profiles can
+# describe support for other office and document formats.
 try:
     from langchain_openai import AzureChatOpenAI as _AzureChatOpenAI, ChatOpenAI as _ChatOpenAI
 except ImportError:

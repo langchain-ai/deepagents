@@ -90,6 +90,24 @@ from deepagents.middleware._video import (
     video_dependencies_available,
 )
 
+# `ChatOpenAI`, `AzureChatOpenAI`, and `ChatGoogleGenerativeAI` accept non-PDF
+# `file` blocks such as `.docx` and `.pptx`. `ModelProfile` only encodes PDF
+# support today, so these providers get a hard-coded pass until profiles can
+# describe support for other office and document formats.
+try:
+    from langchain_openai import AzureChatOpenAI as _AzureChatOpenAI, ChatOpenAI as _ChatOpenAI
+except ImportError:
+    _OPENAI_FILE_MODEL_TYPES: tuple[type[Any], ...] = ()
+else:
+    _OPENAI_FILE_MODEL_TYPES = (_AzureChatOpenAI, _ChatOpenAI)
+
+try:
+    from langchain_google_genai import ChatGoogleGenerativeAI as _ChatGoogleGenerativeAI
+except ImportError:
+    _GOOGLE_FILE_MODEL_TYPES: tuple[type[Any], ...] = ()
+else:
+    _GOOGLE_FILE_MODEL_TYPES = (_ChatGoogleGenerativeAI,)
+
 if TYPE_CHECKING:
     from langchain.chat_models import BaseChatModel
 
@@ -127,17 +145,6 @@ since it's `_get_file_type`'s default for unmapped extensions).
 """
 
 _PDF_MIME_TYPE: Final = "application/pdf"
-
-_NON_PDF_FILE_TOLERANT_LLM_TYPES: Final = frozenset({"openai-chat", "azure-openai-chat", "chat-google-generative-ai"})
-"""Exact `_llm_type` values for chat models known to accept non-PDF `file`
-blocks (e.g. `.docx`, `.pptx`) today: `ChatOpenAI`, `AzureChatOpenAI`, and
-`ChatGoogleGenerativeAI`.
-
-[`ModelProfile`][langchain_core.language_models.model_profile.ModelProfile] only
-encodes PDF support (`pdf_inputs`/`pdf_tool_message`); it has no field yet for
-other office/document formats. Until it does, these providers get a hard-coded
-pass for non-PDF `file` blocks instead of being blocked by that profile gap.
-"""
 
 
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
@@ -183,20 +190,15 @@ def _move_media_results_after_tool_results(messages: list[AnyMessage]) -> list[A
 
 _PROFILE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_inputs", "audio": "audio_inputs", "video": "video_inputs", "file": "pdf_inputs"}
 """`ModelProfile` field gating each block type. `file` only applies to PDF `mime_type`; other
-file types have no field yet and are handled separately via `_NON_PDF_FILE_TOLERANT_LLM_TYPES`."""
+file types have no field yet and are handled separately via provider class checks."""
 
 _TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message", "file": "pdf_tool_message"}
 """Extra `ModelProfile` field that can gate a block type specifically within a `ToolMessage`."""
 
 
 def _model_tolerates_non_pdf_files(model: "BaseChatModel | None") -> bool:
-    """Whether `model` is known to accept non-PDF `file` blocks.
-
-    Checks `_llm_type`, a property every `BaseChatModel` implements
-    """
-    if model is None:
-        return False
-    return model._llm_type in _NON_PDF_FILE_TOLERANT_LLM_TYPES
+    """Whether `model` is a provider class known to accept non-PDF `file` blocks."""
+    return isinstance(model, _OPENAI_FILE_MODEL_TYPES + _GOOGLE_FILE_MODEL_TYPES)
 
 
 def _multimodal_block_supported(

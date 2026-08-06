@@ -27,6 +27,8 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 if TYPE_CHECKING:
     from deepagents import FsToolName
+    from deepagents_acp.server import AgentSessionContext
+    from langgraph.pregel import Pregel
     from rich.console import Console
 
     from deepagents_code.app import AppResult
@@ -2926,15 +2928,13 @@ async def _run_acp_cli_async(
         async with get_checkpointer() as checkpointer:
             await checkpointer.setup()
 
-            def build_agent(context: Any) -> Any:  # noqa: ANN401  # ACP factory protocol
-                session_project_context = ProjectContext.from_user_cwd(
-                    Path(context.cwd)
-                )
+            def build_agent(
+                context: "AgentSessionContext",
+            ) -> "Pregel[Any, Any, Any, Any]":
                 agent_graph, _backend = create_cli_agent(
                     model=model_result.model,
                     assistant_id=assistant_id,
                     tools=tools,
-                    mcp_tools=mcp_tools,
                     mcp_server_info=mcp_server_info,
                     checkpointer=checkpointer,
                     async_subagents=async_subagents,
@@ -2942,7 +2942,7 @@ async def _run_acp_cli_async(
                     recursion_limit=recursion_limit,
                     memory_auto_save=is_memory_auto_save_enabled(),
                     cwd=context.cwd,
-                    project_context=session_project_context,
+                    project_context=ProjectContext.from_user_cwd(Path(context.cwd)),
                 )
                 return agent_graph
 
@@ -2951,19 +2951,13 @@ async def _run_acp_cli_async(
                 load_sessions=True,
                 checkpoint_metadata={"agent_name": assistant_id},
             )
-            try:
-                await run_acp_agent(server)
-            except KeyboardInterrupt:
-                pass
-            except Exception as exc:
-                sys.stderr.write(f"Error: ACP server failed: {exc}\n")
-                sys.stderr.flush()
-                logger.exception("ACP server crashed")
-                exit_code = 1
+            await run_acp_agent(server)
+    except KeyboardInterrupt:
+        pass
     except Exception as exc:
-        sys.stderr.write(f"Error: failed to create agent: {exc}\n")
+        sys.stderr.write(f"Error: ACP server failed: {exc}\n")
         sys.stderr.flush()
-        logger.debug("ACP agent creation failed", exc_info=True)
+        logger.exception("ACP server crashed")
         exit_code = 1
     finally:
         if mcp_session_manager is not None:

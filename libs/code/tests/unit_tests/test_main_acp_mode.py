@@ -31,11 +31,9 @@ def test_acp_checkpointer() -> AsyncIterator[SimpleNamespace]:
 
 
 def _build_agent_server(server: object) -> Callable[..., object]:
-    def build(agent_factory: Callable[..., object], **kwargs: object) -> object:
-        assert kwargs == {
-            "load_sessions": True,
-            "checkpoint_metadata": {"agent_name": "agent"},
-        }
+    """Stand in for `AgentServerACP`, exercising the agent factory it is handed."""
+
+    def build(agent_factory: Callable[..., object], **_kwargs: object) -> object:
         agent_factory(SimpleNamespace(cwd="/tmp"))
         return server
 
@@ -198,16 +196,17 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server(
     assert call_kwargs["model"] is model_obj
     assert call_kwargs["assistant_id"] == "agent"
     assert call_kwargs["tools"] == [fetch_tool, thread_tool, search_tool, mcp_tool]
-    assert call_kwargs["mcp_tools"] == [mcp_tool]
     assert call_kwargs["mcp_server_info"] is mcp_server_info
-    assert call_kwargs["checkpointer"] is not None
     assert call_kwargs["checkpointer"] is test_acp_checkpointer
     assert call_kwargs["cwd"] == "/tmp"
     assert call_kwargs["project_context"] is acp_project_context
     assert call_kwargs["memory_auto_save"] is False
     mock_memory_auto_save.assert_called_once_with()
     test_acp_checkpointer.setup.assert_awaited_once_with()
-    mock_server_cls.assert_called_once()
+    assert mock_server_cls.call_args.kwargs == {
+        "load_sessions": True,
+        "checkpoint_metadata": {"agent_name": "agent"},
+    }
     run_agent.assert_awaited_once_with(server)
     mcp_manager.cleanup.assert_awaited_once_with()
 

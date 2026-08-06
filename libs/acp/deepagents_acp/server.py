@@ -340,8 +340,8 @@ class AgentServerACP(ACPAgent):
         self,
         cwd: str,
         session_id: str,
-        mcp_servers: list[McpServer] | None = None,
         additional_directories: list[str] | None = None,  # noqa: ARG002  # capability is not advertised
+        mcp_servers: list[McpServer] | None = None,
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> LoadSessionResponse:
         """Restore and replay a persisted ACP session."""
@@ -353,10 +353,10 @@ class AgentServerACP(ACPAgent):
         agent = self._checkpointed_agent(session_id)
         metadata = (await agent.aget_state(self._session_config(session_id))).metadata or {}
         if metadata.get(_ACP_SESSION_METADATA_KEY) is not True:
-            del self._session_cwds[session_id]
+            self._forget_session(session_id)
             raise RequestError.resource_not_found(session_id)
         if metadata.get("cwd") != cwd:
-            del self._session_cwds[session_id]
+            self._forget_session(session_id)
             raise RequestError.invalid_params(
                 {"cwd": "must match the working directory used to create the session"}
             )
@@ -876,6 +876,13 @@ class AgentServerACP(ACPAgent):
             ),
             source="DeepAgent",
         )
+
+    def _forget_session(self, session_id: str) -> None:
+        """Discard state created while validating a session."""
+        self._session_cwds.pop(session_id, None)
+        if self._agent_session_id == session_id:
+            self._agent = None
+            self._agent_session_id = None
 
     def _reset_agent(self, session_id: str) -> None:
         """Reset the agent instance, re-creating it from the factory if applicable."""

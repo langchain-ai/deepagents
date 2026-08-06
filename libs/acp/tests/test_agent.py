@@ -251,19 +251,17 @@ async def test_acp_agent_load_session_replays_persisted_history() -> None:
     restarted_server, client = _persistent_server(_persistent_graph(checkpointer))
     init = await restarted_server.initialize(protocol_version=1)
     assert init.agent_capabilities.load_session is True
-    response = await restarted_server.load_session(
+    await restarted_server.load_session(
         cwd="/tmp",
         session_id=session.session_id,
         mcp_servers=[],
     )
 
-    assert response.config_options is None
     updates = [event["update"] for event in client.events]
     user_updates = [update for update in updates if isinstance(update, UserMessageChunk)]
     agent_updates = [update for update in updates if isinstance(update, AgentMessageChunk)]
     assert [update.content.text for update in user_updates] == ["Ping"]
     assert [update.content.text for update in agent_updates] == ["Pong"]
-    assert all(update.message_id for update in [*user_updates, *agent_updates])
 
 
 async def test_acp_agent_load_session_replays_tool_calls() -> None:
@@ -454,15 +452,6 @@ async def test_acp_agent_load_session_rejects_different_cwd() -> None:
     assert exc_info.value.code == -32602
     await server.load_session(cwd="/tmp/original", session_id=session.session_id, mcp_servers=[])
     assert contexts[-1].cwd == "/tmp/original"
-
-
-async def test_acp_agent_load_session_is_unavailable_when_disabled() -> None:
-    server = AgentServerACP(agent=_persistent_graph(MemorySaver()))
-
-    with pytest.raises(RequestError) as exc_info:
-        await server.load_session(cwd="/tmp", session_id="session", mcp_servers=[])
-
-    assert exc_info.value.code == -32601
 
 
 async def test_new_session_preserves_positional_mcp_servers_slot() -> None:

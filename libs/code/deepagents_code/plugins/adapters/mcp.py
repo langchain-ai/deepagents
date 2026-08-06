@@ -128,6 +128,10 @@ def _load_mcp_server_map(path: Path) -> JsonObject:
     return _server_map(raw)
 
 
+def _agent_plugin_paths(plugin: PluginInstance) -> tuple[Path, Path]:
+    return plugin.root.resolve(), plugin.data_dir.resolve()
+
+
 def _plugin_mcp_server_map(plugin: PluginInstance) -> JsonObject:
     """Load a plugin's declared MCP servers without creating runtime state.
 
@@ -136,13 +140,14 @@ def _plugin_mcp_server_map(plugin: PluginInstance) -> JsonObject:
     """
     manifest = plugin.manifest
     if manifest is not None and manifest.format == AGENT_PLUGIN_FORMAT:
+        plugin_root, plugin_data = _agent_plugin_paths(plugin)
         servers: JsonObject = {}
         for path in plugin.inventory.mcp_files:
             servers.update(
                 load_agent_plugin_mcp(
                     path,
-                    plugin_root=plugin.root,
-                    plugin_data=plugin.data_dir,
+                    plugin_root=plugin_root,
+                    plugin_data=plugin_data,
                 )
             )
         return servers
@@ -191,9 +196,10 @@ def _normalize_server(
         if normalized_server.get("type") != "stdio":
             return normalized_server
         env = normalized_server.get("env")
+        plugin_root, plugin_data = _agent_plugin_paths(plugin)
         plugin_env = plugin_environment(
-            plugin_root=plugin.root,
-            plugin_data=plugin.data_dir,
+            plugin_root=plugin_root,
+            plugin_data=plugin_data,
             project_dir=project_dir,
         )
         configured_env = env if isinstance(env, dict) else {}

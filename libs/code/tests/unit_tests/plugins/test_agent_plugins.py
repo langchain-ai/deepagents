@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, cast
+from pathlib import Path
+from typing import cast
 
 import pytest
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 from deepagents_code.mcp_config import (
     MCP_ENV_RESOLUTION_DISABLED,
@@ -328,6 +326,53 @@ def test_agent_plugin_mcp_adapts_portable_servers(tmp_path: Path) -> None:
     }
 
 
+def test_agent_plugin_mcp_resolves_relative_runtime_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    root = Path("plugin")
+    data_dir = Path("cache/data")
+    _write_manifest(root)
+    _write_json(
+        root / "mcp.json",
+        {
+            "$schema": AGENT_PLUGIN_MCP_SCHEMA,
+            "mcpServers": {
+                "local": {
+                    "type": "stdio",
+                    "command": "./bin/server",
+                    "args": ["${PLUGIN_DATA}/state"],
+                }
+            },
+        },
+    )
+    manifest, _path, warnings = load_manifest(root)
+    assert manifest is not None
+    plugin = PluginInstance(
+        plugin_id="portable-plugin@tools",
+        name="portable-plugin",
+        marketplace="tools",
+        version=manifest.version,
+        root=root,
+        data_dir=data_dir,
+        manifest=manifest,
+        inventory=build_inventory(root, manifest, warnings),
+    )
+
+    configs = plugin_mcp_configs((plugin,))
+
+    servers = cast("dict[str, JsonObject]", configs[0]["mcpServers"])
+    local = servers[scoped_mcp_server_name(plugin.plugin_id, "local")]
+    expected_root = root.resolve()
+    expected_data = data_dir.resolve()
+    assert local["command"] == str(expected_root / "bin/server")
+    assert local["cwd"] == str(expected_root)
+    assert local["args"] == [str(expected_data / "state")]
+    env = cast("dict[str, str]", local["env"])
+    assert env["PLUGIN_ROOT"] == str(expected_root)
+    assert env["PLUGIN_DATA"] == str(expected_data)
+
+
 def test_unwritable_plugin_data_skips_only_stdio_servers(tmp_path: Path) -> None:
     root = tmp_path / "plugin"
     data_dir = tmp_path / "data"
@@ -404,6 +449,11 @@ def test_agent_plugin_mcp_skips_invalid_entries_independently(tmp_path: Path) ->
                     "type": "sse",
                     "url": "https://example.com/sse",
                     "headers": {"X-Test": "a", "x-test": "b"},
+                },
+                "unicode-header": {
+                    "type": "streamable-http",
+                    "url": "https://example.com/mcp",
+                    "headers": {"X-Label": "café"},
                 },
                 "unknown-field": {
                     "type": "stdio",

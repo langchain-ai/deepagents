@@ -283,7 +283,7 @@ def _stdio_cwd(value: object, *, plugin_root: Path, plugin_data: Path) -> str:
 def _validate_header_value(value: str) -> None:
     if any(
         (ord(character) < _ASCII_CONTROL_LIMIT and character != "\t")
-        or ord(character) == _ASCII_DELETE
+        or ord(character) >= _ASCII_DELETE
         for character in value
     ):
         _raise_field("mcpServers.*.headers", "contains an invalid header value")

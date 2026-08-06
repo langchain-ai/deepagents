@@ -2411,7 +2411,20 @@ def create_cli_agent(
         # The outer model-node middleware owns retries. Reconstruct supported
         # provider models so their already-initialized SDK clients cannot retry
         # within each middleware attempt.
+        original_model = model
+        original_retries = getattr(model, MODEL_RETRIES_ATTR, None)
+        original_cli_override = get_model_retry_override(model)
         model = disable_prebuilt_model_retries(model)
+        # Reconstruction uses `model_dump()`, which deliberately excludes our
+        # private metadata. Restore it before deciding whether the supplied
+        # count is a CLI override: a config-resolved startup budget must stay
+        # provider-specific when the user switches models later.
+        if model is not original_model and is_valid_retry_count(original_retries):
+            set_model_retry_metadata(
+                model,
+                retries=original_retries,
+                cli_override=original_cli_override,
+            )
         if model_retries is None:
             model_retries = get_model_retries(model, DEFAULT_MODEL_RETRIES)
         else:

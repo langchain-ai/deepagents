@@ -524,9 +524,15 @@ def test_prebuilt_model_budget_does_not_forge_a_cli_override(tmp_path: Path) -> 
     set_model_retry_metadata(model, retries=2, cli_override=None)
     graph = MagicMock()
     graph.with_config.return_value = graph
+    rebuilt_model = FakeListChatModel(responses=["ok"])
+    rebuilt_model.profile = {"max_input_tokens": 20_000}
     with (
         patch("deepagents_code.agent.list_subagents", return_value=[]),
         patch("deepagents_code.agent.create_deep_agent", return_value=graph),
+        patch(
+            "deepagents_code.config.disable_prebuilt_model_retries",
+            return_value=rebuilt_model,
+        ),
     ):
         create_cli_agent(
             model=model,
@@ -540,8 +546,8 @@ def test_prebuilt_model_budget_does_not_forge_a_cli_override(tmp_path: Path) -> 
             model_retries=2,
         )
 
-    assert get_model_retries(model, 99) == 2
-    assert getattr(model, MODEL_RETRY_OVERRIDE_ATTR) is None
+    assert get_model_retries(rebuilt_model, 99) == 2
+    assert getattr(rebuilt_model, MODEL_RETRY_OVERRIDE_ATTR) is None
 
 
 def test_resolve_config_retry_count_direct() -> None:

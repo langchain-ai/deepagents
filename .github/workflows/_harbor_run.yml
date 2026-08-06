@@ -815,6 +815,7 @@ jobs:
           fi
 
           environment_args=(--env "$HARBOR_SANDBOX_ENV")
+          agent_name=langgraph
           router_agent_args=()
           if [ -n "$HARBOR_SWITCHYARD_CONFIG" ]; then
             switchyard_config="$GITHUB_WORKSPACE/libs/evals/switchyard/routes-${HARBOR_SWITCHYARD_CONFIG}.toml"
@@ -828,6 +829,7 @@ jobs:
               --extra-docker-compose "$switchyard_compose"
               --environment-kwarg "switchyard_config=$switchyard_config"
             )
+            agent_name=deepagents_harbor.switchyard_agent:SwitchyardLangGraph
             router_agent_args=(
               --agent-kwarg 'model_kwargs={"base_url":"http://switchyard:4000/v1","api_key":"switchyard","use_responses_api":false}'
             )
@@ -903,7 +905,7 @@ jobs:
 
           uv run harbor run \
             --yes \
-            --agent langgraph \
+            --agent "$agent_name" \
             --agent-kwarg project_path=deepagents_harbor/langgraph_project \
             --agent-kwarg config=langgraph.json \
             --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \

@@ -204,6 +204,7 @@ def test_unified_dispatch_wires_switchyard_sidecar_inputs() -> None:
     assert "switchyard_image must be a public digest-pinned image reference" in credentials
     assert "switchyard_keys=(ANTHROPIC_API_KEY BASETEN_API_KEY GOOGLE_API_KEY)" in credentials
     assert "deepagents_harbor.switchyard_environment:SwitchyardLangSmithEnvironment" in run_harbor
+    assert "deepagents_harbor.switchyard_agent:SwitchyardLangGraph" in run_harbor
     assert '--extra-docker-compose "$switchyard_compose"' in run_harbor
     assert '--environment-kwarg "switchyard_config=$switchyard_config"' in run_harbor
     assert '"base_url":"http://switchyard:4000/v1"' in run_harbor

@@ -24,6 +24,7 @@ _COMPOSE_ENV_NAMES = (
 )
 _REMOTE_CONFIG_PATH = "/harbor/compose/switchyard-routes.toml"
 _SWITCHYARD_BASE_URL = "http://switchyard:4000"
+_AGENT_PYTHON = "/opt/harbor-langgraph-venv/bin/python"
 _HEALTH_TIMEOUT_SECONDS = 60
 _DOCKERD_START_TIMEOUT_SECONDS = 15
 _DOCKERD_STARTED_MARKER = "DOCKERD_STARTED"
@@ -64,7 +65,7 @@ def _python_http_command(path: str, *, parse_json: bool) -> str:
         f"response = urllib.request.urlopen('{_SWITCHYARD_BASE_URL}{path}', timeout=10); "
         f"{read}"
     )
-    return shlex.join(["python", "-c", script])
+    return shlex.join([_AGENT_PYTHON, "-c", script])
 
 
 def _bash_health_command() -> str:
@@ -211,6 +212,74 @@ class SwitchyardLangSmithEnvironment(LangSmithEnvironment):
         probe = f" Probe failure: {last_failure}." if last_failure else ""
         msg = f"Switchyard sidecar did not become healthy.{probe} Logs: {detail}"
         raise RuntimeError(msg)
+
+    async def isolate_main_after_setup(self) -> None:
+        """Remove setup egress before the benchmarked agent phase begins.
+
+        Harbor installs the LangGraph runtime after the task container starts,
+        so `main` initially shares Switchyard's egress network. The custom
+        Switchyard agent calls this method in a `finally` block after setup.
+        The topology check fails closed if Docker leaves any network other than
+        the private agent-to-router network attached.
+
+        Raises:
+            RuntimeError: If `main` cannot be identified or fully isolated.
+        """
+        container = await self._compose_exec(["ps", "-q", "main"], timeout_sec=15)
+        container_id = (container.stdout or "").strip()
+        if container.return_code != 0 or not container_id:
+            detail = (container.stderr or container.stdout or "")[-500:]
+            msg = f"Could not identify the Harbor main container: {detail}"
+            raise RuntimeError(msg)
+
+        project = self._compose_project_name()
+        egress_network = f"{project}_switchyard-egress"
+        disconnect = await self._exec_sandbox(
+            shlex.join(["docker", "network", "disconnect", egress_network, container_id]),
+            cwd="/",
+            timeout_sec=15,
+        )
+        if disconnect.return_code != 0:
+            detail = (disconnect.stderr or disconnect.stdout or "")[-500:]
+            msg = f"Could not disconnect Harbor main setup egress: {detail}"
+            raise RuntimeError(msg)
+
+        inspect = await self._exec_sandbox(
+            shlex.join(
+                [
+                    "docker",
+                    "inspect",
+                    "--format",
+                    "{{json .NetworkSettings.Networks}}",
+                    container_id,
+                ]
+            ),
+            cwd="/",
+            timeout_sec=15,
+        )
+        if inspect.return_code != 0:
+            detail = (inspect.stderr or inspect.stdout or "")[-500:]
+            msg = f"Could not inspect Harbor main network isolation: {detail}"
+            raise RuntimeError(msg)
+        try:
+            networks = json.loads(inspect.stdout or "")
+        except json.JSONDecodeError as exc:
+            msg = "Docker returned invalid main-container network metadata"
+            raise RuntimeError(msg) from exc
+
+        expected = {f"{project}_switchyard-internal"}
+        if not isinstance(networks, dict) or set(networks) != expected:
+            found = sorted(networks) if isinstance(networks, dict) else networks
+            msg = (
+                f"Harbor main network isolation failed: expected {sorted(expected)}, found {found}"
+            )
+            raise RuntimeError(msg)
+
+        health = await self.exec(_bash_health_command(), cwd="/", timeout_sec=15)
+        if health.return_code != 0:
+            detail = (health.stderr or health.stdout or "")[-500:]
+            msg = f"Harbor main lost Switchyard access after isolation: {detail}"
+            raise RuntimeError(msg)
 
     async def _snapshot_switchyard_stats(self) -> None:
         if not self._compose_mode:

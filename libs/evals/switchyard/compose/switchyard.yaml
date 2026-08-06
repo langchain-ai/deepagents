@@ -5,6 +5,10 @@ services:
         condition: service_started
     networks:
       - switchyard-internal
+      # Harbor installs the LangGraph runtime after Compose starts. The custom
+      # agent disconnects this network before agent.run(), then verifies that
+      # only the internal Switchyard network remains.
+      - switchyard-egress
 
   switchyard:
     image: "${SWITCHYARD_IMAGE:?set SWITCHYARD_IMAGE to a digest-pinned public image}"

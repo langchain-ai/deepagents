@@ -34,6 +34,7 @@ def test_python_http_command_uses_only_internal_switchyard_origin() -> None:
     health = switchyard_environment._python_http_command("/health", parse_json=False)
     stats = switchyard_environment._python_http_command("/v1/stats", parse_json=True)
 
+    assert health.startswith("/opt/harbor-langgraph-venv/bin/python ")
     assert "http://switchyard:4000/health" in health
     assert "json.load(response)" not in health
     assert "http://switchyard:4000/v1/stats" in stats
@@ -147,16 +148,66 @@ def test_compose_flags_replace_blanket_no_network_overlay(
     ]
 
 
-def test_compose_network_isolates_main_and_gives_switchyard_egress() -> None:
+def test_compose_network_gives_main_temporary_setup_egress() -> None:
     compose_path = Path(__file__).parents[2] / "switchyard/compose/switchyard.yaml"
     compose = yaml.safe_load(compose_path.read_text())
 
-    assert compose["services"]["main"]["networks"] == ["switchyard-internal"]
+    assert compose["services"]["main"]["networks"] == [
+        "switchyard-internal",
+        "switchyard-egress",
+    ]
     assert compose["services"]["switchyard"]["networks"] == [
         "switchyard-internal",
         "switchyard-egress",
     ]
     assert compose["networks"]["switchyard-internal"]["internal"] is True
+
+
+async def test_isolate_main_after_setup_disconnects_and_verifies_topology() -> None:
+    environment = object.__new__(switchyard_environment.SwitchyardLangSmithEnvironment)
+    compose_calls: list[list[str]] = []
+    sandbox_calls: list[str] = []
+
+    async def fake_compose(
+        command: list[str], *, timeout_sec: int | None = None
+    ) -> SimpleNamespace:
+        compose_calls.append(command)
+        assert timeout_sec == 15
+        return SimpleNamespace(return_code=0, stdout="main-container\n", stderr="")
+
+    responses = iter(
+        (
+            SimpleNamespace(return_code=0, stdout="", stderr=""),
+            SimpleNamespace(
+                return_code=0,
+                stdout=json.dumps(
+                    {"harbor-project_switchyard-internal": {"NetworkID": "internal"}}
+                ),
+                stderr="",
+            ),
+        )
+    )
+
+    async def fake_sandbox(command: str, **_kwargs: object) -> SimpleNamespace:
+        sandbox_calls.append(command)
+        return next(responses)
+
+    async def fake_exec(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    environment._compose_exec = fake_compose
+    environment._exec_sandbox = fake_sandbox
+    environment._compose_project_name = lambda: "harbor-project"
+    environment.exec = fake_exec
+
+    await environment.isolate_main_after_setup()
+
+    assert compose_calls == [["ps", "-q", "main"]]
+    assert (
+        "docker network disconnect harbor-project_switchyard-egress main-container"
+        in sandbox_calls[0]
+    )
+    assert "docker inspect --format" in sandbox_calls[1]
 
 
 async def test_snapshot_switchyard_stats_writes_trial_artifact(tmp_path: Path) -> None:

@@ -2401,12 +2401,17 @@ def create_cli_agent(
     else:
         from deepagents_code.config import (
             MODEL_RETRIES_ATTR,
+            disable_prebuilt_model_retries,
             get_model_retries,
             get_model_retry_override,
             is_valid_retry_count,
             set_model_retry_metadata,
         )
 
+        # The outer model-node middleware owns retries. Reconstruct supported
+        # provider models so their already-initialized SDK clients cannot retry
+        # within each middleware attempt.
+        model = disable_prebuilt_model_retries(model)
         if model_retries is None:
             model_retries = get_model_retries(model, DEFAULT_MODEL_RETRIES)
         else:

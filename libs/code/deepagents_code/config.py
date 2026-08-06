@@ -2451,6 +2451,50 @@ def _provider_retry_disable_kwargs(
     return {retry_param: 0}
 
 
+def disable_prebuilt_model_retries(model: BaseChatModel) -> BaseChatModel:
+    """Rebuild a prebuilt model with its provider-owned retries disabled.
+
+    The model-node retry middleware owns dcode's retry budget. Provider models
+    usually construct their underlying SDK client during initialization, so
+    changing a model's retry field in place would leave that already-created
+    client retrying. Reconstruct the model instead to apply the zero value to
+    both layers.
+
+    Args:
+        model: Caller-provided chat model to normalize.
+
+    Returns:
+        A rebuilt model with provider retries disabled when its retry control is
+        known, or the original model otherwise.
+    """
+    from deepagents._models import (  # ruff: ignore[import-private-name]
+        get_model_provider,
+    )
+
+    from deepagents_code.model_config import RETRY_PARAM_BY_PROVIDER
+
+    provider = get_model_provider(model)
+    retry_param = RETRY_PARAM_BY_PROVIDER.get(provider)
+    if retry_param is None:
+        return model
+
+    try:
+        constructor_kwargs = model.model_dump()
+        constructor_kwargs[retry_param] = 0
+        return type(model)(**constructor_kwargs)
+    except (AttributeError, TypeError, ValueError):
+        # Do not prevent callers from using a valid prebuilt model merely
+        # because its integration cannot be reconstructed. The warning makes
+        # any remaining provider-owned retry loop actionable.
+        logger.warning(
+            "Could not disable provider retries on prebuilt %s model; "
+            "SDK retries may multiply dcode's retry budget",
+            provider or type(model).__name__,
+            exc_info=True,
+        )
+        return model
+
+
 CLI_MAX_RETRIES_KEY = "__deepagents_cli_max_retries__"
 """Internal carrier key for the `--max-retries` CLI flag.
 

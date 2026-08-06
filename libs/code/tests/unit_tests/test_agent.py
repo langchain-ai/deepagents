@@ -5371,6 +5371,41 @@ class TestCreateCliAgentInterpreterWiring:
         assert rubrics[0]._model_retry_override == 0
         assert rubrics[0]._model_retry_fallback == 0
 
+    def test_prebuilt_model_disables_provider_sdk_retries(self, tmp_path: Path) -> None:
+        """A prebuilt provider model must not multiply dcode's retry budget."""
+        from langchain_openai import ChatOpenAI
+
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        prebuilt_model = ChatOpenAI(
+            model="gpt-5.5",
+            api_key="test-key",
+            max_retries=2,
+        )
+
+        with (
+            patch("deepagents_code.agent.settings", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ) as mock_create,
+        ):
+            create_cli_agent(
+                model=prebuilt_model,
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        normalized_model = mock_create.call_args.kwargs["model"]
+        assert normalized_model is not prebuilt_model
+        assert normalized_model.max_retries == 0
+        assert normalized_model.root_client.max_retries == 0
+
     def test_auto_approve_disables_rubric_context_hitl(self, tmp_path: Path) -> None:
         from deepagents.middleware.rubric import RubricMiddleware
         from langchain_core.tools import StructuredTool

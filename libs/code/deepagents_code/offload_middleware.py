@@ -7,7 +7,7 @@ import hashlib
 import logging
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, Any, NamedTuple, Protocol, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from deepagents.backends.protocol import FILE_NOT_FOUND
@@ -28,6 +28,7 @@ from langgraph.config import get_config
 from langgraph.errors import GraphBubbleUp
 from langgraph.graph.message import add_messages
 from langgraph.types import Command
+from typing_extensions import TypedDict
 
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.cost_tracking import CostState, CostTrackingMiddleware

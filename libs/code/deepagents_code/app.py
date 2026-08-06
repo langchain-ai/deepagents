@@ -3172,6 +3172,8 @@ class DeepAgentsApp(App):
         during background startup.
         """
         self._initial_resume_requested = resume_thread is not None
+        self._startup_tip_dismissed = False
+        """Whether the startup tip's lifetime ended with the first submission."""
 
         self._resume_thread_resolved_event = asyncio.Event()
         """Set once `-r` resume resolution has completed or is unnecessary."""
@@ -5317,6 +5319,7 @@ class DeepAgentsApp(App):
             # it constructs the state.
             if self._session_state:
                 self._session_state.thread_id = self._lc_thread_id
+            await self._restore_startup_tip_after_resume_fallback()
             self._resume_thread_resolved_event.set()
 
     async def _start_server_background(self) -> None:
@@ -10336,6 +10339,24 @@ class DeepAgentsApp(App):
 
         await self._submit_input(value, mode)
 
+    async def _restore_startup_tip_after_resume_fallback(self) -> None:
+        """Mount a startup tip when resume resolution starts a fresh session."""
+        if (
+            self._initial_resume_requested
+            or self._startup_tip_dismissed
+            or not show_startup_tip()
+            or self.query(StartupTip)
+        ):
+            return
+
+        with suppress(NoMatches):
+            bottom = self.query_one("#bottom-app-container", _BottomChrome)
+            goal = self.query_one("#goal-status-panel", GoalStatusPanel)
+            tip = StartupTip(id="startup-tip")
+            await bottom.mount(tip, before=goal)
+            if self._startup_tip_dismissed and tip.is_mounted:
+                await tip.remove()
+
     async def _dismiss_startup_tip(self) -> None:
         """Remove the startup tip once the first prompt is submitted.
 
@@ -10346,6 +10367,7 @@ class DeepAgentsApp(App):
         the tip. Subsequent calls are no-ops: the widget is already gone and
         `query_one` raises `NoMatches`.
         """
+        self._startup_tip_dismissed = True
         with suppress(NoMatches):
             await self.query_one("#startup-tip", StartupTip).remove()
 

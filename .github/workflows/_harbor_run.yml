@@ -818,8 +818,17 @@ jobs:
           agent_name=langgraph
           router_agent_args=()
           if [ -n "$HARBOR_SWITCHYARD_CONFIG" ]; then
-            switchyard_config="$GITHUB_WORKSPACE/libs/evals/switchyard/routes-${HARBOR_SWITCHYARD_CONFIG}.toml"
-            switchyard_compose="$GITHUB_WORKSPACE/libs/evals/switchyard/compose/switchyard.yaml"
+            switchyard_dir="$GITHUB_WORKSPACE/libs/evals/switchyard"
+            # GitHub's evals environment supplies a direct Anthropic key, while
+            # local benchmark shells may use a LangSmith gateway key. Re-render
+            # only the ephemeral CI checkout with the matching direct endpoint.
+            case "$HARBOR_SWITCHYARD_CONFIG" in
+              opus|escalation|opus-nano)
+                SY_STRONG_BASE_URL="https://api.anthropic.com" "$switchyard_dir/render.sh" >/dev/null
+                ;;
+            esac
+            switchyard_config="$switchyard_dir/routes-${HARBOR_SWITCHYARD_CONFIG}.toml"
+            switchyard_compose="$switchyard_dir/compose/switchyard.yaml"
             if [ ! -f "$switchyard_config" ] || [ ! -f "$switchyard_compose" ]; then
               echo "::error::Switchyard config or compose overlay is missing"
               exit 1
@@ -966,6 +975,7 @@ jobs:
         env:
           HARBOR_JOB_DIR: ${{ steps.latest-job.outputs.job_dir }}
         run: |
+          python3 switchyard/collect_stats.py validate "$HARBOR_JOB_DIR"
           python3 switchyard/collect_stats.py aggregate "$HARBOR_JOB_DIR" \
             --out "$HARBOR_JOB_DIR/switchyard-stats-summary.json"
           python3 - "$HARBOR_JOB_DIR/switchyard-stats-summary.json" <<'PY'

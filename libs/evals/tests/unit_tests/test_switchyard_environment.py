@@ -120,6 +120,52 @@ def test_sandbox_payload_uses_compose_for_agent_network_isolation(
     assert payload == {"name": "sandbox"}
 
 
+@pytest.mark.parametrize(
+    ("memory", "expected"),
+    [(1024**3, 2 * 1024**3), (8 * 1024**3, 8 * 1024**3)],
+)
+def test_sandbox_payload_clamps_only_memory_below_langsmith_minimum(
+    monkeypatch: pytest.MonkeyPatch,
+    memory: int,
+    expected: int,
+) -> None:
+    environment = object.__new__(switchyard_environment.SwitchyardLangSmithEnvironment)
+    monkeypatch.setattr(
+        LangSmithEnvironment,
+        "_create_sandbox_payload",
+        lambda _self, _snapshot: {
+            "vcpus": 1,
+            "mem_bytes": memory,
+            "proxy_config": {"access_control": {"deny_list": ["*"]}},
+        },
+    )
+
+    payload = environment._create_sandbox_payload(None)
+
+    assert payload == {"vcpus": 1, "mem_bytes": expected}
+
+
+async def test_compose_up_uses_extended_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    environment = object.__new__(switchyard_environment.SwitchyardLangSmithEnvironment)
+    calls: list[tuple[list[str], int | None]] = []
+    expected = SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    async def fake_compose(
+        _self: object,
+        subcommand: list[str],
+        timeout_sec: int | None = None,
+    ) -> SimpleNamespace:
+        calls.append((subcommand, timeout_sec))
+        return expected
+
+    monkeypatch.setattr(LangSmithEnvironment, "_compose_exec", fake_compose)
+
+    result = await environment._compose_exec(["up", "-d"], timeout_sec=120)
+
+    assert result is expected
+    assert calls == [(["up", "-d"], 900)]
+
+
 def test_compose_flags_replace_blanket_no_network_overlay(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run unified-evals autonomous tasks through a Switchyard sidecar in a
-# LangSmith sandbox.
+# Run unified-evals autonomous tasks through a Switchyard sidecar in a remote
+# LangSmith sandbox. This is a local launcher, not a local Docker execution.
 #
 #   ./run_harbor_arms.sh --image REGISTRY/IMAGE@sha256:DIGEST [options] [arm ...]
 #
@@ -95,7 +95,7 @@ for arm in "${ARMS[@]}"; do
     cd "$EVALS"
     uv run --no-sync harbor run \
       --yes \
-      --agent langgraph \
+      --agent deepagents_harbor.switchyard_agent:SwitchyardLangGraph \
       --agent-kwarg project_path=deepagents_harbor/langgraph_project \
       --agent-kwarg config=langgraph.json \
       --agent-kwarg graph=bare \
@@ -125,6 +125,7 @@ for arm in "${ARMS[@]}"; do
   )
 
   latest_job=$(find "$EVALS/$jobs_dir" -mindepth 1 -maxdepth 1 -type d | sort | tail -1)
+  python3 "$SW/collect_stats.py" validate "$latest_job"
   echo "Switchyard stats:"
   find "$latest_job" -name switchyard-stats.json -print
 done

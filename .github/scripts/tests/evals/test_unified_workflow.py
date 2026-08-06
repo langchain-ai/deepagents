@@ -207,10 +207,12 @@ def test_unified_dispatch_wires_switchyard_sidecar_inputs() -> None:
     assert "deepagents_harbor.switchyard_agent:SwitchyardLangGraph" in run_harbor
     assert '--extra-docker-compose "$switchyard_compose"' in run_harbor
     assert '--environment-kwarg "switchyard_config=$switchyard_config"' in run_harbor
+    assert 'SY_STRONG_BASE_URL="https://api.anthropic.com"' in run_harbor
     assert '"base_url":"http://switchyard:4000/v1"' in run_harbor
     assert '"api_key":"switchyard"' in run_harbor
     assert '"use_responses_api":false' in run_harbor
     assert "continue-on-error" not in aggregate_stats
+    assert 'collect_stats.py validate "$HARBOR_JOB_DIR"' in aggregate_stats
     assert 'total <= 0' in aggregate_stats
 
 

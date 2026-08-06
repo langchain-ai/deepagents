@@ -94,8 +94,11 @@ def test_harbor_workflow_uses_plugin_instead_of_manual_experiment_steps() -> Non
     run_step = workflow.split('      - name: "⚓ Run Harbor"', maxsplit=1)[1]
     run_step = run_step.split("      - name:", maxsplit=1)[0]
 
-    # Agent is the langgraph deep agent wired to the selected graph.
-    assert "--agent langgraph" in run_step
+    # Ordinary runs use Harbor's LangGraph agent; routed runs select the
+    # isolation-aware subclass before the shared invocation.
+    assert "agent_name=langgraph" in run_step
+    assert "agent_name=deepagents_harbor.switchyard_agent:SwitchyardLangGraph" in run_step
+    assert '--agent "$agent_name"' in run_step
     assert '--agent-kwarg graph="$HARBOR_AGENT_GRAPH"' in run_step
     # Dataset and per-task attempts come from the dispatch inputs.
     assert '--dataset "$HARBOR_DATASET"' in run_step

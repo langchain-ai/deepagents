@@ -15,6 +15,8 @@ from harbor.environments.langsmith import LangSmithEnvironment
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from harbor.environments.base import ExecResult
+
 _COMPOSE_ENV_NAMES = (
     "ANTHROPIC_API_KEY",
     "BASETEN_API_KEY",
@@ -26,6 +28,8 @@ _REMOTE_CONFIG_PATH = "/harbor/compose/switchyard-routes.toml"
 _SWITCHYARD_BASE_URL = "http://switchyard:4000"
 _AGENT_PYTHON = "/opt/harbor-langgraph-venv/bin/python"
 _HEALTH_TIMEOUT_SECONDS = 60
+_COMPOSE_UP_TIMEOUT_SECONDS = 900
+_MIN_MEMORY_BYTES_PER_VCPU = 2 * 1024**3
 _DOCKERD_START_TIMEOUT_SECONDS = 15
 _DOCKERD_STARTED_MARKER = "DOCKERD_STARTED"
 _DOCKERD_START_COMMAND = (
@@ -158,7 +162,22 @@ class SwitchyardLangSmithEnvironment(LangSmithEnvironment):
         """
         payload = super()._create_sandbox_payload(snapshot_name)
         payload.pop("proxy_config", None)
+        vcpus = payload.get("vcpus")
+        memory = payload.get("mem_bytes")
+        if type(vcpus) is int and vcpus > 0 and type(memory) is int:
+            payload["mem_bytes"] = max(memory, vcpus * _MIN_MEMORY_BYTES_PER_VCPU)
         return payload
+
+    @override
+    async def _compose_exec(
+        self,
+        subcommand: list[str],
+        timeout_sec: int | None = None,
+    ) -> ExecResult:
+        """Give large task images enough time to pull during Compose startup."""
+        if subcommand == ["up", "-d"]:
+            timeout_sec = max(timeout_sec or 0, _COMPOSE_UP_TIMEOUT_SECONDS)
+        return await super()._compose_exec(subcommand, timeout_sec=timeout_sec)
 
     @override
     def _compose_file_flags(self) -> list[str]:

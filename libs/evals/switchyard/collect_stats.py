@@ -242,6 +242,7 @@ def _finalize_models(models: dict[str, Any]) -> None:
 def _aggregate_snapshots(paths: list[Path]) -> dict[str, Any]:
     aggregate: dict[str, Any] = {
         "total_requests": 0,
+        "total_errors": 0,
         "models": {},
         "classifier": {"total_requests": 0, "models": {}},
         "snapshot_count": len(paths),
@@ -250,6 +251,7 @@ def _aggregate_snapshots(paths: list[Path]) -> dict[str, Any]:
     for path in paths:
         snapshot = json.loads(path.read_text())
         aggregate["total_requests"] += _tokens(snapshot, "total_requests")
+        aggregate["total_errors"] += _tokens(snapshot, "total_errors")
         _merge_models(aggregate["models"], snapshot.get("models") or {})
         classifier = snapshot.get("classifier") or {}
         aggregate["classifier"]["total_requests"] += _tokens(classifier, "total_requests")
@@ -266,6 +268,61 @@ def _aggregate_snapshots(paths: list[Path]) -> dict[str, Any]:
     return aggregate
 
 
+def _validate_job(job_dir: Path) -> tuple[int, list[str]]:
+    """Validate every trial and its Switchyard snapshot in one Harbor job.
+
+    Args:
+        job_dir: Harbor job directory containing one subdirectory per trial.
+
+    Returns:
+        The trial count and a list of validation failures.
+    """
+    if not job_dir.is_dir():
+        return 0, [f"Harbor job directory does not exist: {job_dir}"]
+
+    trials = sorted(path for path in job_dir.iterdir() if path.is_dir())
+    if not trials:
+        return 0, [f"No Harbor trial results found under {job_dir}"]
+
+    failures: list[str] = []
+    for trial in trials:
+        result_path = trial / "result.json"
+        try:
+            result = json.loads(result_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            failures.append(f"{trial.name}: result.json is unreadable or invalid")
+            continue
+        if not isinstance(result, dict):
+            failures.append(f"{trial.name}: result.json is not an object")
+            continue
+        if "exception_info" not in result or result["exception_info"] is not None:
+            failures.append(f"{trial.name}: trial recorded an exception")
+        if "verifier_result" not in result or result["verifier_result"] is None:
+            failures.append(f"{trial.name}: verifier result is missing")
+
+        stats_path = trial / "artifacts" / "switchyard-stats.json"
+        try:
+            stats = json.loads(stats_path.read_text())
+        except FileNotFoundError:
+            failures.append(f"{trial.name}: Switchyard stats are missing")
+            continue
+        except (OSError, json.JSONDecodeError):
+            failures.append(f"{trial.name}: Switchyard stats are unreadable or invalid")
+            continue
+        if not isinstance(stats, dict):
+            failures.append(f"{trial.name}: Switchyard stats are not an object")
+            continue
+
+        requests = stats.get("total_requests")
+        errors = stats.get("total_errors")
+        if type(requests) is not int or requests <= 0:
+            failures.append(f"{trial.name}: Switchyard recorded no routed requests")
+        if type(errors) is not int or errors != 0:
+            failures.append(f"{trial.name}: Switchyard recorded upstream errors")
+
+    return len(trials), failures
+
+
 def main() -> int:
     """Run the stats reset, snapshot, aggregation, or reporting command."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -278,6 +335,9 @@ def main() -> int:
 
     snap = sub.add_parser("snapshot", help="Write the current /v1/stats to a file.")
     snap.add_argument("out", type=Path)
+
+    validate = sub.add_parser("validate", help="Fail unless every routed Harbor trial succeeded.")
+    validate.add_argument("job_dir", type=Path)
 
     aggregate = sub.add_parser("aggregate", help="Merge per-trial switchyard-stats.json artifacts.")
     aggregate.add_argument("sources", type=Path, nargs="+")
@@ -321,6 +381,15 @@ def main() -> int:
         print(f"wrote {args.out} ({total} requests)")
         if not total:
             print("  warning: zero requests recorded — did traffic actually route here?")
+        return 0
+
+    if args.command == "validate":
+        trial_count, failures = _validate_job(args.job_dir)
+        if failures:
+            for failure in failures:
+                print(f"error: {failure}", file=sys.stderr)
+            return 1
+        print(f"validated {trial_count} routed Harbor trial(s)")
         return 0
 
     if args.command == "aggregate":

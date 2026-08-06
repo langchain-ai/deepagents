@@ -68,7 +68,7 @@ export SY_ULTRA_KEY_ENV="BASETEN_API_KEY"
 # passes through cache_read_input_tokens / cache_creation_input_tokens, which
 # the cost split depends on.
 export SY_STRONG_ID="claude-opus-4-8"
-export SY_STRONG_BASE_URL="https://gateway.smith.langchain.com/anthropic"
+export SY_STRONG_BASE_URL="${SY_STRONG_BASE_URL:-https://gateway.smith.langchain.com/anthropic}"
 export SY_STRONG_KEY_ENV="ANTHROPIC_API_KEY"
 
 # ---- judge: small, fast, and on its own quota bucket ----

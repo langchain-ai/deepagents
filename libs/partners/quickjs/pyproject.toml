@@ -121,7 +121,10 @@ filterwarnings = [
     "ignore:'_UnionGenericAlias' is deprecated:DeprecationWarning:google\\.genai\\.types",
     # This package intentionally tests its own beta surface.
     "ignore:The class `CodeInterpreterMiddleware` is in beta",
-    # pytest-benchmark warns during pytest configuration when xdist is active.
+    # pytest-benchmark warns during pytest configuration when xdist is active and
+    # benchmarks are not already disabled. `make test` runs without `-n`, so this
+    # covers `make integration_test` (which uses `-n auto`) and keeps the warning
+    # from turning into an `INTERNALERROR` if `-n` is added to `make test`.
     "ignore:Benchmarks are automatically disabled:pytest_benchmark.logger.PytestBenchmarkWarning",
 ]
 
